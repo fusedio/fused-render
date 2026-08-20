@@ -113,7 +113,7 @@ class Sink:
         line = {"start": segment.get("start"), "end": segment.get("end"),
                 "text": segment.get("text")}
         # **Word timings ride along, and this line is why the rebuild above is a
-        # trap** (D391). The dict is built KEY BY KEY rather than copied, which
+        # trap** (D392). The dict is built KEY BY KEY rather than copied, which
         # is deliberate — it is what keeps an engine's logprobs and temperatures
         # out of a file a page reads — but it also means a genuinely public field
         # is dropped unless it is named here. `words` was, and the only symptom

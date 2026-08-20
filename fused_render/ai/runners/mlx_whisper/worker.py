@@ -951,7 +951,7 @@ def _decode_clip(module, clip, fetched, task, language, initial_prompt,
     happen ON THIS THREAD — every decode runs on a thread of its own, and the
     weights it is about to touch were primed on another. See `_pin_stream`.
 
-    **`words` changes what is DECODED, not only what is reported** (D391), and
+    **`words` changes what is DECODED, not only what is reported** (D392), and
     that is worth knowing before comparing two runs of one file. Asking for word
     timings turns on the library's hallucination pruning — `word_anomaly_score`
     and the `hal_next_start` skip in `mlx_whisper/transcribe.py` are both gated
@@ -1333,7 +1333,7 @@ def generate(body):
     # Defaults FALSE, so every existing caller's output is byte-identical: no
     # `speaker` on a segment, no `speakers` in the JSON, no 33MB download.
     diarizing = bool(body.get("diarize"))
-    # Per-WORD timings inside each segment (D391). Same shape of default and for
+    # Per-WORD timings inside each segment (D392). Same shape of default and for
     # the same reason: off unless asked, so a JSON null and an absent key mean
     # the same thing and no existing transcript gains a key. It is not free —
     # word timings cost an extra teacher-forced forward pass per 30-second

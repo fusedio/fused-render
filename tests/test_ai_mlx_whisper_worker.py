@@ -2040,7 +2040,7 @@ def test_memory_answers_None_rather_than_raising(monkeypatch, base):
     assert worker.memory() is None
 
 
-# -- word timings (D391) -------------------------------------------------------
+# -- word timings (D392) -------------------------------------------------------
 #
 # The flag is opt-in, its output is ADDITIVE, and its timings travel the same
 # inverse of the VAD packing every segment endpoint does. What is driven here is

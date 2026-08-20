@@ -676,11 +676,11 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     #
     # No runner at all is NOT a 400 here: that is the 409 below, which names
     # the machine's reason rather than the request's.
-    # Per-word timings inside each segment (D391). `bool(...)` and not `is None`
+    # Per-word timings inside each segment (D392). `bool(...)` and not `is None`
     # for `diarize`'s reason: it has no true default to invert, it is off unless
     # asked for, so a JSON null and an absent key mean the same thing.
     #
-    # **NOT refused when the engine has none, unlike everything below** (D391):
+    # **NOT refused when the engine has none, unlike everything below** (D392):
     # an engine without word timings leaves the `words` key off its segments,
     # which a caller reads directly, so the option is answered best-effort
     # instead of turning a page that runs on two machines into a page that has to
@@ -742,7 +742,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # Per-word timings inside each segment. Off unless asked for, so an
         # existing caller's transcript is byte-identical — it costs an extra
         # forward pass per decoded window and changes the decode path, which is
-        # why it is asked for rather than always on (D391).
+        # why it is asked for rather than always on (D392).
         "words": wants_words,
         # `speakers is not None`, not `diarizing`: a diarized run whose count
         # was left out sends no key at all rather than a null the worker would

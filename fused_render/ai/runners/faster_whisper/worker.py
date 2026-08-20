@@ -466,7 +466,7 @@ def generate(body):
         raise ValueError("'out' and 'outText' must be where to write the transcript")
 
     task = str(body.get("task") or "transcribe")
-    # `words` (D391) is ignored here, and ignoring it is the DESIGNED answer
+    # `words` (D392) is ignored here, and ignoring it is the DESIGNED answer
     # rather than an oversight: it is the one option answered best-effort, since
     # a caller sees on the segment whether it was honoured. CTranslate2 could
     # supply it — `model.transcribe` takes `word_timestamps` and returns

@@ -7,7 +7,10 @@
 // would cost nothing to open — this page can, because its sibling tab already
 // measured exactly that. Second, the SIZE: a cache fills up with multi-GB
 // checkpoints nothing on screen mentions, so "≈16 GB" belongs next to a model's
-// name before anyone decides to fetch it, not after.
+// name before anyone decides to fetch it, not after. When the search reply has
+// no size for a repo — a GGUF or mflux repo publishes no dtype map — the card
+// asks the Hub for the repo's total once it is on screen (`hubSize.ts`), rather
+// than showing a dash for a number huggingface.co is perfectly willing to give.
 //
 // **Everything on this tab is ACTIONABLE, and that is what the tab is for**
 // (D313, narrowed by D316). It used to be two features stacked: a curated list
@@ -52,9 +55,15 @@ import {
 import { refreshAiRuntime } from "./aiRuntime";
 import { ModelProgress } from "./AiProgress";
 import type { Job } from "@platform/lib/jobs";
-import { formatSize, formatParams, timeAgo } from "@platform/lib/format";
+import { formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import {
+  hubSizeLabel,
+  hubSizeTitle,
+  knownTotalSize,
+  lookupTotalSize,
+} from "@shell/hubSize";
 import {
   discoverChrome,
   gateChrome,
@@ -183,10 +192,63 @@ function HubCard({
   // unparseable one is a field the card leaves out, not a "NaN ago".
   const updatedAt = model.updated ? Date.parse(model.updated) : NaN;
   const updated = Number.isFinite(updatedAt) ? timeAgo(updatedAt / 1000) : null;
-  const size = model.estimatedSize ? `≈${formatSize(model.estimatedSize)}` : null;
+
+  // The FALLBACK total, for a repo the Hub's dtype map could not measure (see
+  // `hubSize.ts`). Two constraints, and both are about not spending someone
+  // else's rate limit: only a row with no estimate asks at all, and it waits
+  // until this card is actually on screen. A page of two dozen results would
+  // otherwise be two dozen outbound calls on every debounced keystroke.
+  const card = useRef<HTMLDivElement>(null);
+  const wantsTotal = !model.estimatedSize;
+  // Seeded from the page-lifetime cache, so a card scrolled back to paints its
+  // number immediately instead of flashing a dash.
+  const [total, setTotal] = useState<number | null>(
+    (wantsTotal ? knownTotalSize(model.id) : null) ?? null,
+  );
+  useEffect(() => {
+    if (!wantsTotal) return;
+    const known = knownTotalSize(model.id);
+    if (known !== undefined) {
+      setTotal(known);
+      return;
+    }
+    const el = card.current;
+    if (!el) return;
+    let alive = true;
+    // Asked, or asking: one request per visit to the viewport, so a card that
+    // sits on screen while the answer arrives is not asked about twice. Cleared
+    // when the card leaves view, which is what lets a FAILED ask be retried —
+    // scroll away and back and the card tries again, rather than a single 429
+    // costing this repo its size for the rest of the page's life. A card whose
+    // ask succeeded stops observing entirely.
+    let asking = false;
+    const io = new IntersectionObserver((entries) => {
+      if (!entries.some((e) => e.isIntersecting)) {
+        asking = false;
+        return;
+      }
+      if (asking) return;
+      asking = true;
+      lookupTotalSize(model.id).then((bytes) => {
+        if (!alive) return;
+        setTotal(bytes);
+        // An answer — a number, or the Hub having none — is now cached and
+        // cannot change while this page is open. Anything else was a failure
+        // that nobody remembered, so keep watching for another chance.
+        if (knownTotalSize(model.id) !== undefined) io.disconnect();
+      });
+    });
+    io.observe(el);
+    return () => {
+      alive = false;
+      io.disconnect();
+    };
+  }, [model.id, wantsTotal]);
+
+  const size = hubSizeLabel(model, total);
 
   return (
-    <div className="cc-mdcard am-card am-hubcard">
+    <div className="cc-mdcard am-card am-hubcard" ref={card}>
       <div className="cc-mdcard-head">
         {/* The name goes to the Hub, downloaded or not — the same rule the
             cached cards follow, so a model's name means one destination
@@ -215,7 +277,7 @@ function HubCard({
             {gate.pill}
           </span>
         )}
-        <span className="am-card-size" title={sizeTitle(model)}>
+        <span className="am-card-size" title={hubSizeTitle(model, total)}>
           {size ?? "—"}
         </span>
       </div>
@@ -292,19 +354,6 @@ function HubCard({
         </span>
       </div>
     </div>
-  );
-}
-
-function sizeTitle(model: HubModel): string | undefined {
-  if (!model.estimatedSize) {
-    return "No safetensors metadata on the Hub for this repo, so its size can't be computed here.";
-  }
-  // The "≈" is doing real work: the bytes are recovered from the dtype →
-  // parameter-count map the Hub publishes, which is the weights and not the
-  // tokenizer, configs or extra formats sitting beside them.
-  return (
-    `≈${formatSize(model.estimatedSize)} of weights, computed from the parameter counts the Hub ` +
-    "publishes. Other files in the repo are not included."
   );
 }
 

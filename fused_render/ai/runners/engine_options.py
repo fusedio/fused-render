@@ -9,7 +9,7 @@ quietly doing something else is the failure this app rates worst, because a
 page that asked for English and got French has nothing on the row telling it
 which engine decided.
 
-**`words` (D391) does NOT belong in this table**, and it is the one option that
+**`words` (D392) does NOT belong in this table**, and it is the one option that
 does not: an ignored option is refused here because it is undetectable, and word
 timings are detectable — honouring them puts a `words` list on the segment and
 declining leaves the key off, so a caller reads which happened off the reply.

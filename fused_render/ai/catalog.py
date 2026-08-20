@@ -311,6 +311,35 @@ SUGGESTIONS: dict[str, list[dict]] = {
     ],
     "diffusers-image": [
         {
+            "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
+            "label": "FLUX.2 klein 4B (int8)",
+            # The whole repo, per the rule the entry below states: 8.22e9 bytes
+            # of `usedStorage` (2026-08-20 Hub metadata), and here that number
+            # IS the download — one repo, no component repo, and no skipped
+            # subfolder, because the quantization is already in the checkpoint.
+            "size_gb": 8.2,
+            # **No `_GGUF_RECIPES` row, and that is the point of this entry.**
+            # The repo is a full diffusers pipeline whose `transformer/config.json`
+            # carries `"quant_method": "torchao"`, so `from_pretrained` builds
+            # the quantized component itself and the ordinary no-recipe branch
+            # of `torch_image.load()` loads it unchanged. Its weights are a
+            # `.bin` rather than a `.safetensors` — torchao's tensor subclasses
+            # do not serialize to safetensors in this save — which needs no flag
+            # either: `use_safetensors` defaults to None, which ModelMixin reads
+            # as "prefer safetensors, allow pickle", and the fallback to
+            # `diffusion_pytorch_model.bin` is per COMPONENT, so the text
+            # encoder and VAE still come from their safetensors. Forcing
+            # `use_safetensors=False` would break those two instead.
+            #
+            # It leads the list, so it is what a bare `fused.ai.image()` starts:
+            # that is the one ordering rule
+            # (`test_every_suggestion_list_is_ordered_smallest_first`), and the
+            # smaller thing to fetch is the reason this entry exists at all.
+            "note": "Smallest Diffusers download here: one self-contained repo "
+                    "with an int8-quantized transformer, rather than the base "
+                    "pipeline plus a separate GGUF file.",
+        },
+        {
             "id": "black-forest-labs/FLUX.2-klein-4B",
             "label": "FLUX.2 klein 4B",
             # EVERYTHING the Download fetches, both repos: 8.23 of base

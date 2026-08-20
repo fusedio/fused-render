@@ -503,6 +503,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "tonera/FLUX.2-klein-4B-int8-diffusers",
         "black-forest-labs/FLUX.2-klein-4B"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
@@ -3074,7 +3075,7 @@ def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
 
 def test_words_reaches_the_worker_and_defaults_to_OFF(
         client, fake_transcribe_runner, recording, monkeypatch):
-    """`diarize`'s contract for `words` (D391): off unless asked, and a JSON
+    """`diarize`'s contract for `words` (D392): off unless asked, and a JSON
     null means the same as an absent key — the inversion `vad` once shipped,
     where a page spreading an options object with an unset key got the
     opposite of the documented default."""

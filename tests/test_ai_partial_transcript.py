@@ -136,7 +136,7 @@ def test_the_line_carries_the_SAME_keys_the_final_json_will(partial, tmp_path):
 
 def test_a_line_carries_WORDS_when_the_segment_has_them(partial, tmp_path):
     """The same "one shape, not two" rule as the test above, for word timings
-    (D391) — and the case that rule actually failed on.
+    (D392) — and the case that rule actually failed on.
 
     `add` rebuilds its line KEY BY KEY rather than copying the segment, which is
     what keeps an engine's logprobs and temperatures out of a file a page reads.
