@@ -1339,7 +1339,7 @@ def test_a_stale_open_folder_gets_its_configured_root_rescanned(
     _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
     monkeypatch.setattr(index_router.freshness, "QUIET_S", 0.0)
     index_router._run_freshness_check(str(sub))
-    assert started == [str(src)]
+    assert started == [runner.canonical_root(str(src))]
 
 
 def test_a_root_checked_moments_ago_is_not_checked_again(
@@ -1361,8 +1361,11 @@ def test_a_root_checked_moments_ago_is_not_checked_again(
     # root, so checking again buys nothing.
     index_router._run_freshness_check(str(src))
     assert checked == [str(src / "sub")]
-    # ...and it comes back round once the window has passed.
-    index_router._freshness_checked[str(src)] -= index_router.FRESHNESS_CHECK_S + 1
+    # ...and it comes back round once the window has passed. Keyed on
+    # `enclosing_root`'s canonical match, same as the neighbouring tests —
+    # the raw literal was never a key here to begin with.
+    index_router._freshness_checked[runner.canonical_root(str(src))] -= (
+        index_router.FRESHNESS_CHECK_S + 1)
     index_router._run_freshness_check(str(src))
     assert checked == [str(src / "sub"), str(src)]
 
@@ -1566,11 +1569,18 @@ def test_the_models_fencing_is_stripped(answer, expected):
 
 
 def _write_dirs_index(cfg, dirs):
-    """A minimal real index whose dirs.parquet holds {dir: mtime_ns}."""
+    """A minimal real index whose dirs.parquet holds {dir: mtime_ns}.
+
+    Keys go through `canonical_root`: `freshness.indexed_mtime_ns` (and
+    `enclosing_root`) look a directory up by their OWN `norm(abspath(...))`
+    of it, so a row filed under a raw `str(Path)` literal — native-separator
+    on Windows — would silently miss every such lookup."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from fused_render.index.runner import canonical_root
     from fused_render.index.store import Sink, compact
+    dirs = {canonical_root(d): mtime_ns for d, mtime_ns in dirs.items()}
     shards = os.path.join(cfg.dir, "shards")
     os.makedirs(shards, exist_ok=True)
     sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
