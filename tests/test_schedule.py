@@ -120,6 +120,37 @@ def test_create_rejects_what_a_caller_can_get_wrong(target):
                         permission_mode="bypassPermissions")
 
 
+def test_create_target_makes_one_folder_and_only_one(target):
+    """`create_target` is opt-in, and one level deep. Off, a missing target is
+    the same refusal it always was — which is what the re-send path relies on:
+    a target that has since been deleted is a fact its user needs told, not one
+    to paper over with an empty directory (and re-making a deleted FILE's name
+    as a folder would be the worst answer available)."""
+    schedule.create(str(target / "ABC1"), "hi", _in(600), create_target=True)
+    assert (target / "ABC1").is_dir()
+
+    # Two levels is a tree, not a folder — and nothing is left behind.
+    with pytest.raises(ValueError, match="only one new folder"):
+        schedule.create(str(target / "new1" / "new2"), "hi", _in(600),
+                        create_target=True)
+    assert not (target / "new1").exists()
+
+    # Off by default, so every other caller is unchanged.
+    with pytest.raises(ValueError, match="no such file or directory"):
+        schedule.create(str(target / "ABC2"), "hi", _in(600))
+    assert not (target / "ABC2").exists()
+
+
+def test_create_target_leaves_an_existing_target_alone(target):
+    """The flag is permission to create, not an instruction to. Something that is
+    already there is used as-is — including a FILE target, which stays legal
+    (a task can run against one; the agent works in its parent)."""
+    entry = schedule.create(str(target / "index.html"), "hi", _in(600),
+                            create_target=True)
+    assert entry["target"] == str(target / "index.html")
+    assert (target / "index.html").is_file()
+
+
 def test_a_due_time_days_in_the_past_is_accepted_and_recorded_as_given(target):
     """This used to be REFUSED, and the refusal was right while catch-up was
     bounded: an entry the next tick would sweep to `missed` is better refused

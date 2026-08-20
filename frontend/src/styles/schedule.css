@@ -2307,6 +2307,68 @@ input.schedule-when-field {
   gap: 8px;
 }
 
+/* -- Naming a folder that does not exist yet ------------------------------
+   Two surfaces say the same thing: this row inside the picker, and the note
+   under the path field (.schedule-form-new below). Neither writes to disk —
+   the folder is created by the save. */
+
+/* Pushed to the far edge, away from Cancel / Use this folder: it acts on the
+   folder you are standing IN, not on the errand the pair finishes. */
+.schedule-picker-newbtn {
+  margin-right: auto;
+}
+
+/* Sits where the folder it names will sort — first row of the listing — so it
+   reads as a row being typed rather than a dialog laid over the panel.
+   align-self/width for the same reason .schedule-picker-row restates them: the
+   listing is a flex COLUMN with align-content:flex-start, which shrink-wraps a
+   child to its content and left the name box a third of the panel wide. */
+.schedule-picker-new {
+  display: flex;
+  align-self: stretch;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+.schedule-picker-new-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Matched to the field beside it rather than to the foot's pills: the pair is
+   one control, and a full-height Save-shaped pill next to a 28px input read as
+   two. */
+.schedule-picker-new-ok {
+  flex: none;
+  padding: 4px 10px;
+}
+
+/* The path field's new-folder note. NOT the error voice (.schedule-form-bad):
+   nothing is wrong, so it stays in the muted hint colour and lets the badge
+   beside it carry the one word that matters. */
+.schedule-form-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--fg-muted);
+}
+
+.schedule-new-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--fg);
+}
+
 /* One shape for "this is the commit": the modal's Save, the explorer's "Use
    this folder" and the recurrence section's Done are the same promise, so they
    are the same pill (audit 2026-08-16). */

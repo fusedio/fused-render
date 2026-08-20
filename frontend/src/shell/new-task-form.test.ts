@@ -45,6 +45,10 @@ let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
+let targetVerdict: typeof import("./NewJobModal").targetVerdict;
+let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
+let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
+let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -73,6 +77,10 @@ beforeAll(async () => {
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
   defaultTargetOf = mod.defaultTargetOf;
+  targetVerdict = mod.targetVerdict;
+  splitTargetPath = mod.splitTargetPath;
+  PATH_MISSING = mod.PATH_MISSING;
+  twoLevelsMissing = mod.twoLevelsMissing;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1520,5 +1528,81 @@ describe("the folder recents come from the app's own recents", () => {
     // suggestions, never the form.
     expect(src).toContain("getClaudeSessionFolders().then(");
     expect(src).toContain("      () => {},");
+  });
+});
+
+// ---- One new folder, and only one -------------------------------------------
+// The path field accepts a folder that does not exist YET (Akshil, 2026-08-20).
+// `targetVerdict` is the whole decision: it is handed the path and whatever the
+// PARENT's listing came back with, and answers with one of three things.
+describe("the path field's verdict on a folder that isn't there yet", () => {
+  test("a name the parent already holds is a plain target, not a new folder", () => {
+    // How a FILE target reaches here: listing the path itself failed (it is not
+    // a directory), so the parent was listed and the basename found in it.
+    expect(targetVerdict("/Users/a/fused/notes.md", ["notes.md", "src"]))
+      .toEqual({ kind: "ok" });
+  });
+
+  test("a missing last segment under an existing parent is a new folder", () => {
+    expect(targetVerdict("/Users/a/fused/ABC1", ["src", "notes.md"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "/Users/a/fused" });
+  });
+
+  test("a trailing slash names the same folder", () => {
+    // Typing a path usually ends with the separator; it must not turn the name
+    // into an empty segment and read as junk.
+    expect(targetVerdict("/Users/a/fused/ABC1/", ["src"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "/Users/a/fused" });
+  });
+
+  test("a backslash path is normalised before it is split", () => {
+    expect(targetVerdict("C:\\Users\\a\\ABC1", ["Desktop"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "C:/Users/a" });
+  });
+
+  test("two missing levels is refused, and says which one is missing", () => {
+    // null = the PARENT could not be listed either, so this is not "name me a
+    // folder", it is "build me a tree" — the ask a typo makes by accident.
+    expect(targetVerdict("/Users/a/new1/new2", null)).toEqual({
+      kind: "bad",
+      text: twoLevelsMissing("/Users/a/new1"),
+    });
+    expect(twoLevelsMissing("/Users/a/new1")).toContain("Only one new folder");
+    expect(twoLevelsMissing("/Users/a/new1")).toContain("/Users/a/new1");
+  });
+
+  test("a path with no last segment to create is the old refusal", () => {
+    // "." and ".." name somewhere that exists by definition, so arriving here
+    // with one means the string was junk rather than a new name.
+    expect(targetVerdict("/Users/a/fused/..", ["src"]))
+      .toEqual({ kind: "bad", text: PATH_MISSING });
+    expect(targetVerdict("/Users/a/fused/.", ["src"]))
+      .toEqual({ kind: "bad", text: PATH_MISSING });
+  });
+
+  test("splitTargetPath keeps a drive root's slash", () => {
+    // Bare "C:" reads as cwd-relative everywhere else in the shell.
+    expect(splitTargetPath("C:/ABC1")).toEqual({ parent: "C:/", base: "ABC1" });
+    expect(splitTargetPath("/ABC1")).toEqual({ parent: "/", base: "ABC1" });
+    expect(splitTargetPath("/Users/a/fused/ABC1"))
+      .toEqual({ parent: "/Users/a/fused", base: "ABC1" });
+  });
+
+  test("a new folder does not block Save — only a bad path does", () => {
+    // The verdict feeds two separate pieces of state, and only `bad` becomes
+    // `pathError`. The note under the field is not a refusal.
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    expect(src).toContain('setPathError(v.kind === "bad" ? v.text : null);');
+    expect(src).toContain('setNewFolder(v.kind === "new-folder" ? v.name : null);');
+  });
+
+  test("the picker's New folder only NAMES one — nothing is written on cancel", () => {
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    // No /api/fs/mkdir from this modal: the folder is created by the save, so
+    // backing out of the card leaves nothing behind on disk.
+    expect(src).not.toContain("mkdir");
+    expect(src).toContain("+ New folder");
+    // Escape backs out of the naming row before it backs out of the panel.
+    expect(src).toContain("if (namingOpen.current) {");
   });
 });
