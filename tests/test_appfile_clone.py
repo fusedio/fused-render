@@ -169,6 +169,22 @@ def test_staging_leaves_nothing_behind(tmp_path):
     assert sorted(os.listdir(appfile.clone_dir())) == ["demo"]
 
 
+def test_the_clone_is_an_ordinary_workspace_app(tmp_path):
+    """The payoff, and the reason the destination is a workspace TAG DIR rather
+    than anywhere writable: the clone needs no registration to become a real
+    app. `open_app_file` refuses a payload whose entry lost the fused-app
+    marker, so the copy carries it, and the ordinary workspace walk is what
+    finds it — tagged `local`, like anything else in that dir."""
+    from fused_render import app_listing
+    from fused_render.shell.seed import fused_dir
+
+    r = appfile.clone_app_file(str(export(tmp_path)))
+    rows = {a["name"]: a for a in app_listing.workspace_apps(fused_dir())}
+    assert "demo" in rows, sorted(rows)
+    assert rows["demo"]["tag"] == "local"
+    assert os.path.realpath(rows["demo"]["path"]) == os.path.realpath(r["path"])
+
+
 # -- the manifest name is attacker-controlled ---------------------------------
 
 
