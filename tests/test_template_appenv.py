@@ -271,7 +271,12 @@ def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monk
     monkeypatch.setenv("PATH", str(empty))
 
     server.export_app_env()
-    assert shutil.which("uv") == str(uv)
+    # normcase, not a bare ==: shutil.which() on Windows matches "uv" against
+    # PATHEXT (.COM;.EXE;...) and returns cmd + THAT extension's case, e.g.
+    # "uv.EXE", regardless of the actual on-disk filename's case ("uv.exe"
+    # here) — a case difference on a filesystem where it is not a different
+    # file. Same idiom as templates/claude/agent.py's containment check.
+    assert os.path.normcase(shutil.which("uv")) == os.path.normcase(str(uv))
 
 
 def test_ro_mounts_env_tracks_a_store_write(home, monkeypatch):

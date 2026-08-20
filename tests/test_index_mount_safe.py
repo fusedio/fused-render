@@ -15,17 +15,26 @@ import os
 import pytest
 
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import MountGuard, default_ignore, IgnoreRules
+from fused_render.index.ignore import MountGuard, default_ignore, IgnoreRules, norm
+from fused_render.index.runner import canonical_root
 from fused_render.index.scan import run_scan
 from fused_render.index.store import read_manifest
 from tests._mount_safe_helpers import _mount, _no_kernel_on_mount, home  # noqa: F401
 
 
 def _run(cfg, root, mounts_dir):
+    """Write and run a spec exactly as `runner.start` would.
+
+    `run_scan` trusts `spec["root"]` is already canonical — `runner.start`
+    guarantees that before this path is ever reached in production
+    (platform.md §1) — and this helper calls `run_scan` directly, so it has
+    to make the same guarantee itself or the run's own top-level row lands
+    under the native (backslash, on Windows) spelling while everything
+    `scan_dir_once` discovers underneath it is `norm`ed to forward slashes."""
     run_dir = os.path.join(cfg.runs_dir, "run")
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "spec.json"), "w") as f:
-        json.dump({"root": root, "full": False, "started": 0,
+        json.dump({"root": canonical_root(root), "full": False, "started": 0,
                    "config": cfg.to_dict(), "mounts_dir": mounts_dir}, f)
     run_scan(run_dir)
     with open(os.path.join(run_dir, "events.jsonl")) as f:
@@ -60,9 +69,13 @@ def test_a_scan_over_the_home_never_kernel_touches_a_mount(home, tmp_path, monke
 
     end = [e for e in events if e.get("type") == "run_end"][-1]
     assert end["msg"] == "complete", end.get("error")
+    # every discovered path leaves scan_dir_once through `norm` (forward
+    # slashes) regardless of platform, so the literals compared against it
+    # have to make the same trip rather than assume POSIX's `str(Path)` is
+    # already canonical.
     indexed = _paths(cfg)
-    assert str(project / "local.txt") in indexed
-    assert not [p for p in indexed if p.startswith(str(mp))]
+    assert norm(str(project / "local.txt")) in indexed
+    assert not [p for p in indexed if p.startswith(norm(str(mp)))]
 
 
 def test_the_mounts_container_itself_is_never_descended(home, tmp_path, monkeypatch):
@@ -157,5 +170,9 @@ def test_the_default_ignore_list_also_names_the_mounts_dir(home):
     out of the index even for a caller that bypasses the walk (cached rows,
     a replayed FSEvents journal)."""
     rules = IgnoreRules(default_ignore())
-    assert rules.is_ignored(str(home / "mounts"))
-    assert rules.is_ignored_tree(str(home / "mounts" / "m1" / "deep"))
+    # `default_ignore()` builds a `**/mounts` GLOB pattern (already `norm`ed),
+    # matched with a regex that treats "/" as the only separator — so the
+    # path being tested has to be `norm`ed too, or a native (backslash, on
+    # Windows) `str(Path)` never matches at all.
+    assert rules.is_ignored(norm(str(home / "mounts")))
+    assert rules.is_ignored_tree(norm(str(home / "mounts" / "m1" / "deep")))

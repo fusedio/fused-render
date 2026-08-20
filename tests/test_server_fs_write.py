@@ -14,6 +14,7 @@ templates render read-only mode up front.
 import json
 import os
 import stat
+import sys
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -70,6 +71,16 @@ def test_stat_writable_false_for_readonly_file(readonly):
 
 
 @skip_root
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="`writable` on a directory comes from os.access(path, os.W_OK) "
+           "(mount._writable), and Windows' directory read-only attribute is "
+           "largely vestigial — long used only by Explorer's folder-"
+           "customization UI, not access control — so os.access keeps "
+           "reporting a chmod'd-read-only DIRECTORY as writable there. The "
+           "sibling file case (test_stat_writable_false_for_readonly_file) is "
+           "unaffected: Windows' read-only attribute IS honoured for files, "
+           "just not for directories.")
 def test_stat_writable_on_directory(tmp_path):
     assert _data(STAT(str(tmp_path)))["writable"] is True
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)

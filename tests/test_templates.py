@@ -82,8 +82,11 @@ def test_builtin_html_default_is_render_sentinel():
     assert [e["mode"] for e in entries] == [
         "_render", "code", "claude", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
-    assert entries[1]["path"].endswith("code/template.html")
-    assert entries[2]["path"].endswith("claude/template.html")
+    # entries[i]["path"] is a plain os.path.join of TEMPLATES_DIR (native
+    # separators — this internal field is never run through the app's
+    # canonical_fs_path), so normalize before a forward-slash suffix check.
+    assert entries[1]["path"].replace(os.sep, "/").endswith("code/template.html")
+    assert entries[2]["path"].replace(os.sep, "/").endswith("claude/template.html")
 
 
 def test_builtin_parquet_default_is_duckdb():
@@ -91,7 +94,7 @@ def test_builtin_parquet_default_is_duckdb():
     assert error is None
     assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude",
             "geometry_editor"]
-    assert entries[0]["path"].endswith("duckdb/template.html")
+    assert entries[0]["path"].replace(os.sep, "/").endswith("duckdb/template.html")
 
 
 # ------------------------------------------------------------ reader mode (RD)

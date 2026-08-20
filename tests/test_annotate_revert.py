@@ -41,7 +41,10 @@ def _home(tmp_path, monkeypatch):
 
 def _target(tmp_path, content="a\nb\nc\n", name="page.html"):
     f = tmp_path / name
-    f.write_text(content)
+    # `newline=""` — same reason as _claude_history.py's write_version: the
+    # default text-mode write translates "\n" to os.linesep, silently
+    # inflating every byte-size assertion on Windows.
+    f.write_text(content, newline="")
     return str(f)
 
 
@@ -708,8 +711,17 @@ def _run(body, tmp_path, prelude=""):
         pytest.skip("node is required to drive the template's JS")
     harness = tmp_path / "harness.mjs"
     harness.write_text(prelude + body, encoding="utf-8")
-    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
-                         timeout=60)
+    # `encoding="utf-8"` explicitly, not bare `text=True`: node writes UTF-8 to
+    # stdout/stderr regardless of platform, but `text=True` alone decodes with
+    # `locale.getpreferredencoding()`, which on Windows is an ANSI codepage
+    # (cp1252 here), not UTF-8. The dot glyphs a few of these harnesses print
+    # (e.g. "●") encode to bytes cp1252 has no mapping for, which crashes
+    # subprocess's own background reader thread with a `UnicodeDecodeError`
+    # pytest only surfaces as a `PytestUnhandledThreadExceptionWarning` —
+    # `out.stdout` then never gets set and comes back `None`, so the visible
+    # symptom is `json.loads(None)`, several layers away from the real cause.
+    out = subprocess.run([node, str(harness)], capture_output=True,
+                         encoding="utf-8", timeout=60)
     assert out.returncode == 0, out.stderr
     return _json.loads(out.stdout)
 

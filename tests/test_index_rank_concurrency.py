@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.index import store, worker
 from fused_render.index.config import IndexConfig
+from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact
 from fused_render.server import create_app
 
@@ -36,7 +37,12 @@ def test_the_worker_nices_itself_at_startup(monkeypatch, tmp_path):
     """Self-nicing in the child, never a preexec_fn: this repo's spawns must
     stay on posix_spawn (PROJ's atfork handler SIGSEGVs a fork)."""
     seen = []
-    monkeypatch.setattr(os, "nice", lambda inc: seen.append(inc) or 0)
+    # `raising=False`: `os.nice` does not exist on Windows at all, so
+    # asserting it existed first (monkeypatch's default) would fail before
+    # the fake is ever installed — this line means "give the module this
+    # attribute for the test", not "override an attribute already there".
+    monkeypatch.setattr(os, "nice", lambda inc: seen.append(inc) or 0,
+                        raising=False)
     ran = []
     monkeypatch.setattr(worker, "run_scan", ran.append)
     assert worker.main([str(tmp_path)]) == 0
@@ -87,21 +93,29 @@ def _tree(root, n_dirs=400, per_dir=100):
 
 
 def _prime_index(tmp_path, root, n=4000):
-    """A real index over `root` so ranking has a full corpus to scan."""
+    """A real index over `root` so ranking has a full corpus to scan.
+
+    Stored under `canonical_root(root)`, not the caller's raw `root`: the
+    scan/rank routes canonicalize whatever root they are given before
+    querying (platform.md §1), so a row filed under the un-normalized
+    literal — a no-op on POSIX, backslash-native on Windows — would leave
+    `/api/index/rank` answering `covered: false` with no hits before the
+    real scan below ever gets a chance to overlap it."""
     cfg = IndexConfig()
     shards = str(tmp_path / "prime-shards")
     os.makedirs(shards, exist_ok=True)
     sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
+    root = canonical_root(root)
     # The root's own dirs row is what `covered` is decided on — without it the
     # route answers `uncovered` with no hits and the timing means nothing.
     sink.add(root, "s", ("sig", [], 0, 1_000_000_000, 0))
     per_dir = 100
     for d in range(n // per_dir):
-        dirp = os.path.join(root, f"pre{d:04d}")
+        dirp = canonical_root(os.path.join(root, f"pre{d:04d}"))
         rows = []
         for i in range(per_dir):
             name = f"file{i:03d}_alpha.txt"
-            rows.append((os.path.join(dirp, name), dirp, name, "txt",
+            rows.append((dirp + "/" + name, dirp, name, "txt",
                          10 + i, 100.0 + i))
         sink.add(dirp, "s", ("sig", rows, sum(r[4] for r in rows),
                              1_000_000_000, 0))
