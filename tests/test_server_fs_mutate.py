@@ -13,6 +13,8 @@ import errno
 import json
 import os
 import stat
+import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,21 @@ from fused_render.server.fs_mutate import _fs_trash_move as TRASH_MOVE
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="read-only bits are ignored when running as root")
+
+# Windows has no POSIX permission-bit model. os.chmod()/os.stat().st_mode there
+# only ever reflect the read-only DACL flag: a file/dir is either "read-only"
+# (reported back as a fixed mode around 0o444/0o555) or "normal" (a fixed mode
+# around 0o666/0o777) — chmod(0o600) or mkdir(mode=0o700) sets or clears that
+# one bit and nothing else, so a subsequent stat can never read back the exact
+# bits this app asked for. A test asserting an exact numeric round-trip of
+# self-chosen bits (0o700 dirs, 0o600 sidecars) is asserting something
+# categorically outside how Windows works, not a bug this app's own chmod call
+# could get right or wrong there.
+skip_no_posix_modes = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.chmod()/stat().st_mode on Windows only reflect the read-only "
+           "DACL flag, never arbitrary POSIX bits — an exact-mode round-trip "
+           "(0o700/0o600) cannot be observed there at all.")
 
 
 def _status(resp) -> int:
@@ -86,6 +103,16 @@ def test_mkdir_existing_path_409(tmp_path):
 
 
 @skip_root
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the readonly guard falls back to os.access(parent, os.W_OK) for a "
+           "target that doesn't exist yet (mount.py's _writable), and Windows' "
+           "directory read-only attribute is largely vestigial — long used only "
+           "by Explorer's folder-customization UI — so it does not gate creating "
+           "entries inside the directory the way a POSIX missing write-bit does. "
+           "os.access keeps reporting the chmod'd parent writable, mkdir succeeds "
+           "(200), and the 403 this test expects cannot occur: there is no kernel "
+           "mechanism here for the app to have gotten wrong.")
 def test_mkdir_readonly_parent_403(tmp_path):
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
     try:
@@ -330,8 +357,14 @@ def test_xdg_trash_writes_the_spec_sidecar(tmp_path, monkeypatch):
     info = (trash / "info" / "a b#c.txt.trashinfo").read_text()
     lines = info.splitlines()
     assert lines[0] == "[Trash Info]"
-    assert lines[1] == "Path=" + str(f).replace(" ", "%20").replace("#", "%23")
-    assert "/" in lines[1]  # separators stay legible (quote's safe="/")
+    # The real quote() call (_trashinfo_body), not a hand-rolled two-character
+    # replace: str(f) on Windows also carries a drive colon and backslash
+    # separators, and quote()'s default-unsafe set percent-encodes those too
+    # (":" -> "%3A", "\\" -> "%5C") — a POSIX path never has either, which is
+    # why the narrower replace happened to agree with quote() there.
+    assert lines[1] == "Path=" + urllib.parse.quote(str(f), safe="/")
+    if os.sep == "/":
+        assert "/" in lines[1]  # separators stay legible (quote's safe="/")
     date = lines[2].removeprefix("DeletionDate=")
     assert lines[2].startswith("DeletionDate=")
     # YYYY-MM-DDThh:mm:ss, and nothing after it — no "Z", no "+01:00".
@@ -340,6 +373,7 @@ def test_xdg_trash_writes_the_spec_sidecar(tmp_path, monkeypatch):
 
 
 
+@skip_no_posix_modes
 def test_xdg_trash_dirs_are_private(tmp_path, monkeypatch):
     # The bin holds what the user threw away. At the default 0755 every local
     # account on a shared host can list and read it, so all three directories we
@@ -354,6 +388,7 @@ def test_xdg_trash_dirs_are_private(tmp_path, monkeypatch):
         assert stat.S_IMODE(d.stat().st_mode) == 0o700, d
 
 
+@skip_no_posix_modes
 def test_xdg_trash_leaves_an_existing_trash_dir_permissions_alone(tmp_path, monkeypatch):
     # A trash the user (or their desktop) already made is theirs. exist_ok does not
     # chmod, and quietly re-permissioning someone's directory is not this
@@ -712,12 +747,16 @@ def test_trash_move_into_the_trash_writes_the_sidecar(tmp_path, monkeypatch):
     _data(TRASH_MOVE({"from": str(src), "to": str(dst)}, x_fused="1"))
     assert dst.read_text() == "x"
     info = (trash / "info" / "a b.txt.trashinfo").read_text()
-    # Path= names where it came FROM, percent-encoded like the backend's own.
-    assert f"Path={str(src).replace(' ', '%20')}\n" in info
+    # Path= names where it came FROM, percent-encoded like the backend's own —
+    # matched with the real quote() call, not a hand-rolled space-only replace
+    # (see test_xdg_trash_writes_the_spec_sidecar: str(src) on Windows also
+    # carries a drive colon and backslashes, which quote() encodes too).
+    assert f"Path={urllib.parse.quote(str(src), safe='/')}\n" in info
     assert "DeletionDate=" in info
 
 
 
+@skip_no_posix_modes
 def test_trash_move_redo_sidecar_is_as_private_as_the_delete_path(tmp_path, monkeypatch):
     # A REDO is the delete happening again, so it must not leave the bin more
     # exposed than the delete did. This branch used to use Path.write_text and a
@@ -736,6 +775,7 @@ def test_trash_move_redo_sidecar_is_as_private_as_the_delete_path(tmp_path, monk
     assert stat.S_IMODE((trash / "info").stat().st_mode) == 0o700
 
 
+@skip_no_posix_modes
 def test_trash_move_redo_leaves_an_existing_info_dir_alone(tmp_path, monkeypatch):
     # Same rule as the delete path: we set modes on what we CREATE and never
     # re-permission a directory the user (or their desktop) already made. The
@@ -761,7 +801,10 @@ def test_trash_move_redo_overwrites_a_stale_sidecar(tmp_path, monkeypatch):
     src.write_text("x")
     _data(TRASH_MOVE({"from": str(src), "to": str(trash / "files" / "a.txt")}, x_fused="1"))
     body = stale.read_text()
-    assert f"Path={src}\n" in body
+    # quote(), not the bare f-string: see test_xdg_trash_writes_the_spec_sidecar
+    # — on Windows str(src) itself needs percent-encoding (drive colon,
+    # backslash separators), which `_trashinfo_body` applies via quote().
+    assert f"Path={urllib.parse.quote(str(src), safe='/')}\n" in body
     assert "entirely-and-much-longer" not in body  # truncated, not left trailing
 
 
@@ -826,7 +869,14 @@ def test_trash_move_boundary_rejects_a_symlinked_parent(tmp_path, monkeypatch):
     trash = _xdg_trash_root(monkeypatch, tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (trash / "files" / "link").symlink_to(outside)
+    # target_is_directory=True: on Windows symlink_to defaults to a FILE-type
+    # reparse point, and a file-type link to a directory does not resolve
+    # `link/..` through it the way this test's attack path needs — the kernel
+    # never gets the chance to take the wrong turn the test is trying to prove
+    # is refused. POSIX symlinks are type-agnostic, so this is a no-op there
+    # (matches the equivalent link in test_delete_symlink_to_dir_removes_link_
+    # not_target above).
+    (trash / "files" / "link").symlink_to(outside, target_is_directory=True)
     victim = trash / "info" / "y.txt.trashinfo"
     victim.write_text("[Trash Info]\n")
     # The file must sit where the KERNEL resolves the attack path, or the rename
@@ -860,7 +910,15 @@ def test_trash_move_still_recognises_a_trashed_SYMLINK_as_an_entry(tmp_path, mon
     dst = tmp_path / "link.txt"
     _data(TRASH_MOVE({"from": str(entry), "to": str(dst)}, x_fused="1"))
     assert dst.is_symlink()   # the LINK came home, not a copy of its target
-    assert os.readlink(dst) == str(target)
+    # Windows can report the reparse point's target with the "\\?\"
+    # extended-length prefix even though it was created from a plain absolute
+    # path — a cosmetic artifact of how NTFS stores/returns an absolute
+    # SubstituteName, not a different target. Stripped before comparing so
+    # the assertion is still about WHICH file the link names.
+    got_target = os.readlink(dst)
+    if got_target.startswith("\\\\?\\"):
+        got_target = got_target[4:]
+    assert got_target == str(target)
     assert not info.exists()  # and its sidecar went with it
     assert target.read_text() == "payload"  # the target was never touched
     # NOTE a DANGLING trashed link cannot be restored this way, and not because of

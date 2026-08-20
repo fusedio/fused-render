@@ -310,7 +310,11 @@ def test_mountpoint_derives_from_branch_aware_home(home):
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
     assert mp.startswith(str(home))
-    assert mp.endswith("/mounts/data")
+    # mounts_dir() deliberately os.path.normpath's — a mountpoint has to
+    # string-match what rcd itself reports, which is OS-native (backslashed
+    # on Windows), unlike the rest of the app's forward-slash canonical form
+    # (store.py's mounts_dir docstring). So the suffix is OS-native too.
+    assert mp.endswith(mounts_mod.os.path.join("mounts", "data"))
 
 
 

@@ -12,7 +12,21 @@ scan rather than the scan itself: which folder gets scanned, that a burst of
 mutations costs one scan and not fifty, that a mount is never scanned, and
 that a scan already in flight over the folder is waited out rather than raced.
 """
+from fused_render.index.runner import canonical_root
 from fused_render.server.index_touch import RescanQueue
+
+# `RescanQueue.note()` resolves every path it is given through `_folder_of`
+# (index_touch.py), which is `norm(os.path.abspath(...))` — the same
+# canonicalization `canonical_root` does. Every hardcoded "/home/me/..."
+# literal below is a no-op of that on POSIX (already absolute), but on
+# Windows a leading-slash-no-drive literal is only drive-RELATIVE, so it
+# resolves against the runner's current drive (e.g. "D:/home/me/proj"). The
+# FILE paths handed to `q.note(...)` are left as raw literals — that mirrors
+# a real caller, and `_folder_of` canonicalizes them itself — but every
+# FOLDER identity these tests compare against (`Fake(live=...)`,
+# `Fake(blocked=...)`, `Fake(last_scan=...)` keys, and `f.started`) has to be
+# run through the same canonicalization or it silently never matches what
+# `note()` actually produced.
 
 
 class Fake:
@@ -66,7 +80,7 @@ def test_a_mutation_schedules_a_rescan_of_its_folder():
     assert f.started == []  # coalesced, not immediate
     assert f.armed == [q.coalesce_s]
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
 
 
 def test_a_burst_of_mutations_costs_one_scan():
@@ -77,7 +91,7 @@ def test_a_burst_of_mutations_costs_one_scan():
     for i in range(50):
         q.note(f"/home/me/proj/f{i}.txt")
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
     assert len(f.armed) == 1  # one timer, re-noted while already armed
 
 
@@ -89,7 +103,8 @@ def test_a_renamed_directory_is_covered_by_its_parents():
     q = f.queue()
     q.note("/home/me/proj/old", "/home/me/other/new")
     f.fire()
-    assert sorted(f.started) == ["/home/me/other", "/home/me/proj"]
+    assert sorted(f.started) == sorted(
+        [canonical_root("/home/me/other"), canonical_root("/home/me/proj")])
 
 
 def test_nested_folders_collapse_to_the_outermost():
@@ -99,14 +114,14 @@ def test_nested_folders_collapse_to_the_outermost():
     q = f.queue()
     q.note("/home/me/proj/a.txt", "/home/me/proj/sub/b.txt")
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
 
 
 def test_a_mount_backed_folder_is_never_scanned():
     """The structural refusal, checked here as well as in runner.start: a
     kernel crawl of an rclone mount can wedge it, and this path is reached by
     the app's own writes rather than by anything a user asked for."""
-    f = Fake(blocked=["/home/me/.fused-render/mounts/s3"])
+    f = Fake(blocked=[canonical_root("/home/me/.fused-render/mounts/s3")])
     q = f.queue()
     q.note("/home/me/.fused-render/mounts/s3/data.parquet")
     f.fire()
@@ -114,7 +129,16 @@ def test_a_mount_backed_folder_is_never_scanned():
 
 
 def test_the_filesystem_root_is_never_scanned():
-    """A file written directly into "/" must not spawn a whole-disk crawl."""
+    """A file written directly into "/" must not spawn a whole-disk crawl.
+
+    NOT a canonical_root() fixture mismatch like its neighbours: `_folder_of`
+    (index_touch.py) guards against a bare root with `parent in ("", "/")`
+    after `norm(os.path.abspath(...))`, and that guard only recognized the
+    POSIX spelling — on Windows `os.path.dirname("D:/loose.txt")` is `"D:/"`,
+    truthy and not `"/"`, so a drive letter's own root slipped through the
+    same way `query.search_under`'s `.rstrip("/") or "/"` would (both
+    generalize the POSIX bare-root special case, not the Windows one).
+    `_folder_of`'s `_DRIVE_ROOT` regex now recognizes that form too."""
     f = Fake()
     q = f.queue()
     q.note("/loose.txt")
@@ -125,7 +149,7 @@ def test_a_scan_already_covering_the_folder_is_waited_out():
     """Starting a second scan over a tree being scanned races the compaction
     for no benefit — and JOINING the live one is worse than useless here,
     since it may already have walked past the folder we just changed."""
-    f = Fake(live=["/home/me"])
+    f = Fake(live=[canonical_root("/home/me")])
     q = f.queue()
     q.note("/home/me/proj/a.txt")
     f.fire()
@@ -133,21 +157,21 @@ def test_a_scan_already_covering_the_folder_is_waited_out():
     assert f.armed == [q.coalesce_s, q.coalesce_s]  # re-armed, still pending
     f.live.clear()
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
 
 
 def test_waiting_out_a_scan_has_a_ceiling():
     """A run that never ends (a wedged worker) must not keep one folder
     circling for the process lifetime."""
-    f = Fake(live=["/home/me"])
+    f = Fake(live=[canonical_root("/home/me")])
     q = f.queue()
     q.note("/home/me/proj/a.txt")
     f.fire()
     f.t += q.deadline_s + 1
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
     f.fire()
-    assert f.started == ["/home/me/proj"]  # and it is off the queue
+    assert f.started == [canonical_root("/home/me/proj")]  # and it is off the queue
 
 
 def test_nothing_is_armed_when_there_is_nothing_to_do():
@@ -164,7 +188,7 @@ def test_a_start_that_fails_does_not_strand_the_rest():
 
     def start(root):
         f.started.append(root)
-        if root == "/home/me/bad":
+        if root == canonical_root("/home/me/bad"):
             raise ValueError("not a directory")
 
     q = RescanQueue(start=start, live_run_covers=f.live_run_covers,
@@ -172,7 +196,8 @@ def test_a_start_that_fails_does_not_strand_the_rest():
                     schedule=f.schedule, now=f.now)
     q.note("/home/me/bad/x.txt", "/home/me/good/y.txt")
     f.fire()
-    assert sorted(f.started) == ["/home/me/bad", "/home/me/good"]
+    assert sorted(f.started) == sorted(
+        [canonical_root("/home/me/bad"), canonical_root("/home/me/good")])
 
 
 def _mutating_routes():
@@ -231,7 +256,7 @@ def test_the_guard_would_notice_a_new_route():
 # store on a cadence set by whoever is typing.
 
 def test_a_folder_scanned_moments_ago_waits_rather_than_rescanning():
-    f = Fake(last_scan={"/home/me/proj": 995.0})  # 5s ago
+    f = Fake(last_scan={canonical_root("/home/me/proj"): 995.0})  # 5s ago
     q = f.queue()
     q.note("/home/me/proj/a.txt")
     f.fire()
@@ -243,24 +268,24 @@ def test_the_deferred_rescan_is_not_lost():
     """DEFERRED, never dropped. A rename whose rescan is skipped outright is a
     file the search cannot find until something else happens to scan — which is
     the exact failure this whole mechanism exists to prevent."""
-    f = Fake(last_scan={"/home/me/proj": 995.0})
+    f = Fake(last_scan={canonical_root("/home/me/proj"): 995.0})
     q = f.queue()
     q.note("/home/me/proj/a.txt")
     f.fire()
     f.t += q.floor_s
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
 
 
 def test_the_floor_cannot_hold_a_folder_past_the_deadline():
-    f = Fake(last_scan={"/home/me/proj": 995.0})
+    f = Fake(last_scan={canonical_root("/home/me/proj"): 995.0})
     q = f.queue()
     q.note("/home/me/proj/a.txt")
     f.fire()
-    f.scans["/home/me/proj"] = f.t  # something keeps rescanning it
+    f.scans[canonical_root("/home/me/proj")] = f.t  # something keeps rescanning it
     f.t += q.deadline_s + 1
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
 
 
 def test_a_folder_never_scanned_has_no_floor_to_clear():
@@ -268,13 +293,13 @@ def test_a_folder_never_scanned_has_no_floor_to_clear():
     q = f.queue()
     q.note("/home/me/proj/a.txt")
     f.fire()
-    assert f.started == ["/home/me/proj"]
+    assert f.started == [canonical_root("/home/me/proj")]
 
 
 def test_a_folder_the_scan_rules_exclude_is_never_rescanned():
     """A save inside node_modules would otherwise spawn a worker that walks it,
     indexes nothing, and rewrites the whole store to say so."""
-    f = Fake(blocked=["/home/me/proj/node_modules"])
+    f = Fake(blocked=[canonical_root("/home/me/proj/node_modules")])
     q = f.queue()
     q.note("/home/me/proj/node_modules/pkg/index.js")
     f.fire()

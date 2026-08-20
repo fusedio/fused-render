@@ -98,9 +98,18 @@ def test_shimmed_gate_group_true_with_zero_kernel_os_calls(monkeypatch, guard_ke
     # A v3 group root on a mount: isdir(dir) hits, .zmetadata misses, zarr.json
     # hits, its node_type=="group" -> True. Every probe routes via rc; the kernel
     # guard proves not one os.* call touched the mount.
+    #
+    # The marker key has to be os.path.join(STORE, "zarr.json"), not
+    # STORE + "/zarr.json": the gate builds its probe path with
+    # os.path.join(path, marker) (zarr_aoi/condition.py), and the shim passes
+    # that string to rc_kind_for UNCHANGED — only the REAL rc_kind_for (which
+    # this monkeypatch replaces) normalizes it to a forward-slash remote key
+    # via _mount_for's `.replace(os.sep, "/")`. On Windows os.path.join joins
+    # with '\\', so a hand-built '/'-joined key never matched and the marker
+    # read as absent. os.path.join is a no-op separator-wise on POSIX.
     _mount(
         monkeypatch,
-        {STORE: "dir", STORE + "/zarr.json": "file"},
+        {STORE: "dir", os.path.join(STORE, "zarr.json"): "file"},
         read_bytes=b'{"node_type": "group"}',
     )
     allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
@@ -110,9 +119,15 @@ def test_shimmed_gate_group_true_with_zero_kernel_os_calls(monkeypatch, guard_ke
 def test_shimmed_gate_bare_array_is_false(monkeypatch, guard_kernel):
     # v3 bare-array root: zarr.json present but node_type=="array" -> not a group
     # -> False (fail-closed correctness preserved over the shim).
+    #
+    # os.path.join, not STORE + "/zarr.json" — see the comment on
+    # test_shimmed_gate_group_true_with_zero_kernel_os_calls above. Without it
+    # the probe key never matched on Windows and this test's False verdict
+    # came from "no marker found" rather than the array-vs-group check it
+    # claims to exercise, which the assertion could not tell apart.
     _mount(
         monkeypatch,
-        {STORE: "dir", STORE + "/zarr.json": "file"},
+        {STORE: "dir", os.path.join(STORE, "zarr.json"): "file"},
         read_bytes=b'{"node_type": "array"}',
     )
     allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
@@ -147,9 +162,12 @@ def test_shimmed_gate_fail_closed_on_indeterminate(monkeypatch, guard_kernel):
 def test_shimmed_gate_fail_closed_when_read_unavailable(monkeypatch, guard_kernel):
     # zarr.json exists but the bounded serve read fails (no serve / transport
     # error) -> OSError inside the gate -> fail closed, not a group.
+    #
+    # os.path.join, not STORE + "/zarr.json" — see the comment on
+    # test_shimmed_gate_group_true_with_zero_kernel_os_calls above.
     _mount(
         monkeypatch,
-        {STORE: "dir", STORE + "/zarr.json": "file"},
+        {STORE: "dir", os.path.join(STORE, "zarr.json"): "file"},
         read_bytes=None,  # rc_read_bounded raises OSError
     )
     allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
@@ -234,7 +252,12 @@ def test_utime_on_a_mount_is_dropped_not_routed(monkeypatch, guard_kernel, tmp_p
     # SETATTR is exactly the call this shim exists to prevent, so it is dropped.
     # The gate still returns its verdict; the guard proves the kernel was spared.
     import stat as _s
-    _mount(monkeypatch, {STORE: "dir", STORE + "/config.json": "file", "*": "missing"},
+    # os.path.join, not STORE + "/config.json" — model_card/condition.py builds
+    # its probe with os.path.join(path, "config.json") too, and the shim hands
+    # that string straight to rc_kind_for; see the comment on
+    # test_shimmed_gate_group_true_with_zero_kernel_os_calls above.
+    _mount(monkeypatch,
+          {STORE: "dir", os.path.join(STORE, "config.json"): "file", "*": "missing"},
            read_bytes=json.dumps({"model_type": "llama"}).encode())
     monkeypatch.setattr(
         mounts_mod, "rc_stat_result",
@@ -286,9 +309,11 @@ def _client():
 
 
 def test_conditions_endpoint_true_on_mount_group(monkeypatch, guard_kernel):
+    # os.path.join, not STORE + "/zarr.json" — see the comment on
+    # test_shimmed_gate_group_true_with_zero_kernel_os_calls above.
     _mount(
         monkeypatch,
-        {STORE: "dir", STORE + "/zarr.json": "file"},
+        {STORE: "dir", os.path.join(STORE, "zarr.json"): "file"},
         read_bytes=b'{"node_type": "group"}',
     )
     r = _client().get("/api/fs/conditions", params={"path": STORE})

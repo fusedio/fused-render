@@ -36,6 +36,7 @@ exceptions: the page renders an empty state, never a traceback overlay.
 """
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -188,6 +189,31 @@ def _first_line(text):
 _SCRATCH_PREFIX = "fused-render-bundle-"
 
 
+def _clear_readonly_and_retry(func, path, _exc_info):
+    """`shutil.rmtree`'s `onerror` hook: drop the read-only bit and retry once.
+
+    git writes some of what it unpacks (loose objects, fetched packs — exactly
+    what `verify`/history fill the scratch repo with) read-only, and POSIX and
+    Windows disagree about what that means for DELETING them: POSIX consults
+    the parent DIRECTORY's write permission, so a read-only file under a
+    writable temp dir unlinks fine and `rmtree` never even calls this hook
+    there. Windows enforces the file's own read-only attribute against the
+    delete itself, so `os.remove`/`os.rmdir` raises PermissionError on it — and
+    `ignore_errors=True` used to swallow exactly that, which meant this scratch
+    dir simply stopped being removable on Windows and every call to this
+    module leaked one `fused-render-bundle-*` directory into the temp folder,
+    forever. `os.chmod` + a single retry is the standard fix; a second failure
+    (something genuinely locked, e.g. a virus scanner mid-scan) is left alone —
+    this is best-effort cleanup of a throwaway dir, never something a caller
+    should see fail.
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except OSError:
+        pass
+
+
 class _Scratch:
     """A throwaway git repository, for the length of one call.
 
@@ -202,7 +228,10 @@ class _Scratch:
         return self.root
 
     def __exit__(self, *exc):
-        shutil.rmtree(self.root, ignore_errors=True)
+        # `onerror=` rather than `ignore_errors=True` — see
+        # `_clear_readonly_and_retry`. `onerror` (not the 3.12+ `onexc`) is the
+        # spelling that still works on every Python version this ships on.
+        shutil.rmtree(self.root, onerror=_clear_readonly_and_retry)
         return False
 
 

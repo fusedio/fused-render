@@ -13,7 +13,8 @@ import pytest
 from _thread_scoped import this_thread_only
 
 from fused_render.index.config import IndexConfig
-from fused_render.index.ignore import IgnoreRules, MountGuard
+from fused_render.index.ignore import IgnoreRules, MountGuard, norm
+from fused_render.index.runner import canonical_root
 from fused_render.index.scan import keep_subdirs, run_scan, scan_dir_once
 from fused_render.index.store import (
     load_dir_cache,
@@ -30,6 +31,20 @@ def _guard(tmp_path):
     return MountGuard(mounts_dir=str(tmp_path / "nowhere-mounts"))
 
 
+def _p(path) -> str:
+    """The forward-slash spelling `scan_dir_once` itself writes (every
+    discovered path leaves through `norm`, platform.md §1) — plain
+    `str(tmp_path / ...)` gives the NATIVE separator instead, which is a
+    no-op of `norm` on POSIX but backslashes on Windows. That matters here
+    for more than cosmetics: `is_leaf_dir`/`ignored_for_index`/`IgnoreRules`
+    all slice the final path component on "/", so a raw Windows path handed
+    to them (or fed back in as a cache key, a `keep_subdirs` candidate, or a
+    monkeypatched fsevents hint) has no "/" at all and every leaf/ignore-name
+    check silently misses — not just a string that fails to `==` the
+    expected literal."""
+    return norm(str(path))
+
+
 def _tree(root):
     (root / "a.txt").write_text("aa", encoding="utf-8")
     (root / "sub").mkdir()
@@ -43,21 +58,21 @@ def _tree(root):
 def test_scan_dir_once_returns_rows_and_subdirs(tmp_path):
     _tree(tmp_path)
     rules = IgnoreRules([])
-    kind, payload, subs = scan_dir_once(str(tmp_path), {}, rules, _guard(tmp_path))
+    kind, payload, subs = scan_dir_once(_p(tmp_path), {}, rules, _guard(tmp_path))
     sig, rows, total, mtime_ns, n_subdirs = payload
     assert kind == "s"
     assert [r[2] for r in rows] == ["a.txt"]
     assert rows[0][3] == "txt"  # ext lowercased, dot stripped
     assert total == 2
-    assert sorted(subs) == sorted([str(tmp_path / "node_modules"), str(tmp_path / "sub")])
+    assert sorted(subs) == sorted([_p(tmp_path / "node_modules"), _p(tmp_path / "sub")])
     assert n_subdirs == 2
 
 
 def test_scan_dir_once_prunes_ignored_subdirs(tmp_path):
     _tree(tmp_path)
     kind, payload, subs = scan_dir_once(
-        str(tmp_path), {}, IgnoreRules(["node_modules"]), _guard(tmp_path))
-    assert subs == [str(tmp_path / "sub")]
+        _p(tmp_path), {}, IgnoreRules(["node_modules"]), _guard(tmp_path))
+    assert subs == [_p(tmp_path / "sub")]
     assert payload[4] == 1  # n_subdirs is the POST-prune count
 
 
@@ -67,8 +82,8 @@ def test_scan_dir_once_never_follows_symlinks(tmp_path):
     os.symlink(tmp_path / "real", tmp_path / "link")
     os.symlink(tmp_path / "real" / "f.txt", tmp_path / "linkf")
     kind, payload, subs = scan_dir_once(
-        str(tmp_path), {}, IgnoreRules([]), _guard(tmp_path))
-    assert subs == [str(tmp_path / "real")]
+        _p(tmp_path), {}, IgnoreRules([]), _guard(tmp_path))
+    assert subs == [_p(tmp_path / "real")]
     assert payload[1] == []  # the file symlink is not a file row either
 
 
@@ -110,12 +125,12 @@ def test_unchanged_non_leaf_recurses_but_reuses_its_rows(tmp_path):
     d = tmp_path / "parent"
     (d / "child").mkdir(parents=True)
     (d / "f.txt").write_text("x", encoding="utf-8")
-    cache = {str(d): (os.stat(d).st_mtime_ns, 1, 1)}
+    cache = {_p(d): (os.stat(d).st_mtime_ns, 1, 1)}
     kind, payload, subs = scan_dir_once(
-        str(d), cache, IgnoreRules([]), _guard(tmp_path))
+        _p(d), cache, IgnoreRules([]), _guard(tmp_path))
     assert kind == "u"
     assert payload == 1              # cached file count carried forward
-    assert subs == [str(d / "child")]  # still recursed into
+    assert subs == [_p(d / "child")]  # still recursed into
 
 
 def test_changed_directory_is_rescanned(tmp_path):
@@ -162,8 +177,8 @@ def test_a_package_directory_is_recorded_but_not_descended(tmp_path):
     recorded, with no file rows, and not listed."""
     app = _package(tmp_path)
     rules, guard = IgnoreRules([]), _guard(tmp_path)
-    assert scan_dir_once(str(tmp_path), {}, rules, guard)[2] == [str(app)]
-    kind, payload, subs = scan_dir_once(str(app), {}, rules, guard)
+    assert scan_dir_once(_p(tmp_path), {}, rules, guard)[2] == [_p(app)]
+    kind, payload, subs = scan_dir_once(_p(app), {}, rules, guard)
     assert kind == "s"           # recorded: one dirs row
     assert payload[1] == []      # no file rows from inside the package
     assert payload[4] == 0
@@ -194,13 +209,13 @@ def test_dot_git_is_recorded_as_a_leaf_and_never_listed(tmp_path):
     rules, guard = IgnoreRules([]), _guard(tmp_path)
 
     # the repo's own scan offers .git onward — that is how the row gets made
-    kind, payload, subs = scan_dir_once(str(proj), {}, rules, guard)
+    kind, payload, subs = scan_dir_once(_p(proj), {}, rules, guard)
     assert kind == "s"
-    assert str(git) in subs
+    assert _p(git) in subs
     assert [r[2] for r in payload[1]] == ["main.py"]
 
     # and .git itself is one row with nothing in it and nothing below it
-    kind, payload, subs = scan_dir_once(str(git), {}, rules, guard)
+    kind, payload, subs = scan_dir_once(_p(git), {}, rules, guard)
     assert kind == "s"           # recorded
     assert payload[1] == []      # no HEAD/config/index rows
     assert payload[4] == 0
@@ -215,9 +230,9 @@ def test_a_user_ignore_entry_cannot_delete_the_dot_git_row(tmp_path):
     configs really do name it."""
     proj, git = _repo(tmp_path)
     rules, guard = IgnoreRules([".git"]), _guard(tmp_path)
-    assert str(git) in scan_dir_once(str(proj), {}, rules, guard)[2]
+    assert _p(git) in scan_dir_once(_p(proj), {}, rules, guard)[2]
     # ... and it is still opaque: kept, not descended
-    assert scan_dir_once(str(git), {}, rules, guard)[2] == []
+    assert scan_dir_once(_p(git), {}, rules, guard)[2] == []
 
 
 def test_an_ignored_dot_git_row_SURVIVES_an_incremental_rescan(tmp_path):
@@ -236,7 +251,7 @@ def test_an_ignored_dot_git_row_SURVIVES_an_incremental_rescan(tmp_path):
     cfg = _cfg(tmp_path, ignore=["node_modules", ".git"])
 
     _run(cfg, str(src))
-    git_dir = str(src / "proj" / ".git")
+    git_dir = _p(src / "proj" / ".git")
     dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
     assert git_dir in dirs, "the full rescan should record the leaf row"
 
@@ -260,9 +275,9 @@ def test_load_dir_cache_keeps_an_ignored_leaf_but_drops_a_real_ignored_tree(tmp_
     cfg = _cfg(tmp_path, ignore=["node_modules", ".git"])
     _run(cfg, str(src))
 
-    cache = load_dir_cache(cfg, str(src), pqmod)
-    assert str(src / "proj" / ".git") in cache          # leaf: exempt
-    assert str(src / "node_modules") not in cache       # ordinary ignore: gone
+    cache = load_dir_cache(cfg, _p(src), pqmod)
+    assert _p(src / "proj" / ".git") in cache           # leaf: exempt
+    assert _p(src / "node_modules") not in cache        # ordinary ignore: gone
 
 
 def test_keep_subdirs_still_honors_ignores_for_non_leaf_dirs(tmp_path):
@@ -271,28 +286,38 @@ def test_keep_subdirs_still_honors_ignores_for_non_leaf_dirs(tmp_path):
     ignored tree (the walk never reaches its parent to offer it)."""
     guard = _guard(tmp_path)
     rules = IgnoreRules([".git", "node_modules"])
-    assert keep_subdirs([str(tmp_path / "node_modules")], rules, guard) == []
+    assert keep_subdirs([_p(tmp_path / "node_modules")], rules, guard) == []
     # SKIP_DIRS and the mount guard keep their veto over a leaf dir too
     assert keep_subdirs(["/dev"], rules, guard) == []
-    blocked = MountGuard(mounts_dir=str(tmp_path / "m"))
-    assert keep_subdirs([str(tmp_path / "m" / "s3" / ".git")], rules, blocked) == []
+    blocked = MountGuard(mounts_dir=_p(tmp_path / "m"))
+    assert keep_subdirs([_p(tmp_path / "m" / "s3" / ".git")], rules, blocked) == []
 
 
 def test_keep_subdirs_drops_skip_dirs_ignored_and_mount_paths(tmp_path):
-    guard = MountGuard(mounts_dir=str(tmp_path / "mounts"))
-    subs = [str(tmp_path / "ok"), str(tmp_path / "mounts" / "s3"),
-            str(tmp_path / "node_modules"), "/proc"]
+    guard = MountGuard(mounts_dir=_p(tmp_path / "mounts"))
+    subs = [_p(tmp_path / "ok"), _p(tmp_path / "mounts" / "s3"),
+            _p(tmp_path / "node_modules"), "/proc"]
     assert keep_subdirs(subs, IgnoreRules(["node_modules"]), guard) == [
-        str(tmp_path / "ok")]
+        _p(tmp_path / "ok")]
 
 
 # -- a whole run ---------------------------------------------------------------
 
 def _run(cfg, root, full=False, run_name="run"):
+    """Write and execute a run spec exactly as `runner.start` would.
+
+    `runner.start` canonicalizes the root before it ever reaches spec.json
+    (platform.md §1) — `run_scan` trusts that and never re-normalizes it. A
+    raw `str(tmp_path / ...)` root skips that step, so on Windows the run's
+    OWN top-level row would land in dirs.parquet under the native (backslash)
+    spelling while everything the walk discovers underneath it is `norm`ed
+    to forward slashes by `scan_dir_once` — a corpus split across two forms
+    that then makes `load_dir_cache`'s prefix match miss every child on the
+    very next incremental run."""
     run_dir = os.path.join(cfg.runs_dir, run_name)
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, "spec.json"), "w") as f:
-        json.dump({"root": root, "full": full, "started": 0,
+        json.dump({"root": canonical_root(root), "full": full, "started": 0,
                    "config": cfg.to_dict()}, f)
     run_scan(run_dir)
     return run_dir
@@ -320,7 +345,7 @@ def test_a_run_indexes_the_tree_and_skips_ignored_folders(tmp_path):
     assert end["msg"] == "complete", end.get("error")
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
     names = pq.read_table(part).column("path").to_pylist()
-    assert names == [str(src / "a.txt"), str(src / "sub" / "b.md")]
+    assert names == [_p(src / "a.txt"), _p(src / "sub" / "b.md")]
 
 
 def test_a_run_and_the_walk_agree_about_a_package_directory(tmp_path):
@@ -338,10 +363,10 @@ def test_a_run_and_the_walk_agree_about_a_package_directory(tmp_path):
     assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
 
     dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
-    assert str(app) in dirs
-    assert not any(d.startswith(str(app) + "/") for d in dirs)
+    assert _p(app) in dirs
+    assert not any(d.startswith(_p(app) + "/") for d in dirs)
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
-    assert pq.read_table(part).column("path").to_pylist() == [str(src / "a.txt")]
+    assert pq.read_table(part).column("path").to_pylist() == [_p(src / "a.txt")]
 
     corpus = {e["rel"] for e in search_under(cfg, str(src))["entries"]}
     walked = {e["rel"] for e in _walk_bfs(str(src), True) if isinstance(e, dict)}
@@ -373,7 +398,7 @@ def test_the_fsevents_path_does_not_walk_into_a_package(tmp_path, monkeypatch):
     # reported as changed.
     monkeypatch.setattr(
         fsevents, "hint",
-        lambda _cfg, _root: ([], [str(app / "Contents")]))
+        lambda _cfg, _root: ([], [_p(app / "Contents")]))
     run_dir = _run(cfg, str(src), run_name="run2")
     assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
     # the run really took the journal path — otherwise this proves nothing
@@ -381,12 +406,12 @@ def test_the_fsevents_path_does_not_walk_into_a_package(tmp_path, monkeypatch):
                for e in _events(run_dir))
 
     dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
-    assert str(app) in dirs                                    # still recorded
-    assert not any(d.startswith(str(app) + "/") for d in dirs)  # nothing below
+    assert _p(app) in dirs                                    # still recorded
+    assert not any(d.startswith(_p(app) + "/") for d in dirs)  # nothing below
     paths = []
     for part in partition_files(cfg):
         paths += pq.read_table(part).column("path").to_pylist()
-    assert not any(p.startswith(str(app) + "/") for p in paths), \
+    assert not any(p.startswith(_p(app) + "/") for p in paths), \
         "package internals entered the index through the fsevents path"
 
 
@@ -431,7 +456,7 @@ def test_a_rescan_picks_up_a_new_file(tmp_path, monkeypatch):
     run_dir = _run(cfg2, str(src), run_name="run2")
     assert _summary(run_dir)["msg"] == "complete"
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
-    assert str(src / "sub" / "new.txt") in pq.read_table(part).column("path").to_pylist()
+    assert _p(src / "sub" / "new.txt") in pq.read_table(part).column("path").to_pylist()
 
 
 def test_a_missing_applied_fingerprint_forces_a_full_rescan(tmp_path):
@@ -460,7 +485,7 @@ def test_a_missing_applied_fingerprint_forces_a_full_rescan(tmp_path):
     assert "no applied rules fingerprint - full rescan" in msgs
     assert "scanning (full)" in msgs
     dirs = pq.read_table(cfg.dirs_parquet).column("dir").to_pylist()
-    assert str(src / "proj" / ".git") in dirs
+    assert _p(src / "proj" / ".git") in dirs
 
 
 def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):
@@ -475,7 +500,7 @@ def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):
                for e in _events(run_dir))
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
     # the newly-ignored folder's rows are gone without a manual purge
-    assert pq.read_table(part).column("path").to_pylist() == [str(src / "a.txt")]
+    assert pq.read_table(part).column("path").to_pylist() == [_p(src / "a.txt")]
 
 
 def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
@@ -509,7 +534,7 @@ def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
     paths = []
     for part in partition_files(cfg):
         paths += pq.read_table(part).column("path").to_pylist()
-    assert paths == [str(src / "a.txt")]
+    assert paths == [_p(src / "a.txt")]
 
 
 def test_a_rules_changed_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
@@ -534,7 +559,7 @@ def test_a_rules_changed_run_does_not_take_the_journal_path(tmp_path, monkeypatc
     assert msgs.index("ignore rules changed - full rescan") < msgs.index(
         "scanning (full)")
     part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
-    assert pq.read_table(part).column("path").to_pylist() == [str(src / "a.txt")]
+    assert pq.read_table(part).column("path").to_pylist() == [_p(src / "a.txt")]
 
 
 def test_a_hint_that_explodes_fails_the_run_rather_than_scanning_full(
@@ -573,7 +598,7 @@ def test_a_hint_that_explodes_fails_the_run_rather_than_scanning_full(
     paths = []
     for part in partition_files(cfg):
         paths += pq.read_table(part).column("path").to_pylist()
-    assert sorted(paths) == sorted([str(src / "a.txt"), str(src / "sub" / "b.md")])
+    assert sorted(paths) == sorted([_p(src / "a.txt"), _p(src / "sub" / "b.md")])
 
 
 def test_a_cancelled_run_leaves_the_index_untouched(tmp_path):

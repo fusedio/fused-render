@@ -186,7 +186,16 @@ def test_truncated_listing_falls_back_to_probes(monkeypatch, guard_kernel):
             probed.append(p)
         if p == STORE:
             return "dir"
-        if p == STORE + "/.zmetadata":
+        # The gate builds this probe path with `os.path.join(path, marker)`
+        # (zarr_aoi/condition.py) — the shim passes that string through to
+        # rc_kind_for UNCHANGED, and only the REAL rc_kind_for (bypassed here
+        # by this monkeypatch) normalizes it to a forward-slash remote key via
+        # _mount_for's `.replace(os.sep, "/")`. On Windows os.path.join joins
+        # with '\\', so matching on a hand-built '/'-joined literal missed
+        # every probe and made the marker read as absent. os.path.join is a
+        # no-op separator-wise on POSIX, so this mirrors the real call on
+        # every platform.
+        if p == os.path.join(STORE, ".zmetadata"):
             return "file"
         return "missing"
 
@@ -214,7 +223,11 @@ def test_listing_failure_falls_back_to_probes(monkeypatch, guard_kernel):
             probed.append(p)
         if p == STORE:
             return "dir"
-        if p == STORE + "/.zmetadata":
+        # See test_truncated_listing_falls_back_to_probes above: match the
+        # gate's own os.path.join(path, marker), not a hand-built '/'-joined
+        # literal — the real rc_kind_for's forward-slash normalization is
+        # bypassed by this monkeypatch.
+        if p == os.path.join(STORE, ".zmetadata"):
             return "file"
         return "missing"
 
@@ -270,7 +283,11 @@ def test_indeterminate_kind_not_seeded_gate_reprobes(monkeypatch, guard_kernel):
             # 1st call is the endpoint probe (indeterminate); the gate's own
             # reprobe recovers to "dir".
             return "indeterminate" if calls["n"] == 1 else "dir"
-        if p == STORE + "/.zmetadata":
+        # See test_truncated_listing_falls_back_to_probes above: match the
+        # gate's own os.path.join(path, marker), not a hand-built '/'-joined
+        # literal — the real rc_kind_for's forward-slash normalization is
+        # bypassed by this monkeypatch.
+        if p == os.path.join(STORE, ".zmetadata"):
             return "file"
         return "missing"
 
@@ -302,7 +319,12 @@ def test_truncated_listing_with_present_marker_true(monkeypatch, guard_kernel):
     def _kind(p, **k):
         if p == STORE:
             return "dir"
-        if p == STORE + "/.zgroup":
+        # os.path.join, matching the gate's own probe path (see the comment on
+        # test_truncated_listing_falls_back_to_probes above) — this guard is
+        # currently unreachable (.zgroup is answered from the listing before
+        # rc_kind_for is ever consulted) but should still recognise the right
+        # path if that ever changes.
+        if p == os.path.join(STORE, ".zgroup"):
             raise AssertionError("present marker .zgroup was rc probed")
         return "missing"  # .zmetadata / zarr.json legitimately probe -> missing
 

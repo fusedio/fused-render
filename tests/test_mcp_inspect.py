@@ -233,7 +233,11 @@ def _fake_cli(app, monkeypatch, name="fused"):
     """A `fused` wrapper in a dir exported the way the SERVER exports it (D334)."""
     bin_dir = os.path.join(app, "bin")
     os.makedirs(bin_dir, exist_ok=True)
-    path = os.path.join(bin_dir, name)
+    # inspect_app.py itself looks for "<name>.exe" on Windows (that's how a pip/uv
+    # console-script install names the launcher there) — match that filename, or
+    # the file this fixture writes never matches what main() goes looking for.
+    filename = name + ".exe" if os.name == "nt" else name
+    path = os.path.join(bin_dir, filename)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\n")
     os.chmod(path, 0o755)

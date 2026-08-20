@@ -79,6 +79,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import time
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -185,6 +186,18 @@ def _scan_repo(root: str) -> _RepoScan:
             # only date about a model this machine actually knows.
             if oldest == 0.0 or st.st_mtime < oldest:
                 oldest = st.st_mtime
+            if sys.platform == "win32":
+                # entry.stat() above is DirEntry.stat(): on Windows it is built
+                # from the cached FindFirstFile/FindNextFile data, which has no
+                # file-index or link-count field at all, so st_ino/st_dev/
+                # st_nlink from it are always 0 — silently disabling the dedup
+                # below on exactly the platform (no symlink permission) where
+                # huggingface_hub falls back to hardlinks in the first place.
+                # A real (uncached) stat is the only way to get true values;
+                # the extra syscall is paid only here — once per real file,
+                # Windows only — never on the POSIX path above, where
+                # DirEntry.stat() already answers this correctly for free.
+                st = os.stat(entry.path, follow_symlinks=False)
             if st.st_nlink > 1:
                 key = (st.st_dev, st.st_ino)
                 if key in seen:

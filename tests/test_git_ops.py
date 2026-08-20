@@ -114,7 +114,17 @@ def test_stage_covers_an_untracked_file(ops, repo):
     # `git add` is deliberately the one verb for both: the UI's "+" means "make
     # this part of the next commit", and a user does not think of a new file as a
     # different operation from an edited one.
-    write(repo, "pkg/fresh.txt", "new\n")
+    #
+    # Raw bytes here, not the shared `write()` helper: that helper opens in
+    # Python TEXT mode, which silently turns every `\n` into `\r\n` on Windows.
+    # This file is staged a moment later by `ops.py`'s OWN git subprocess — a
+    # different invocation than the one `status()` below uses to read the
+    # result back — so whatever line-ending handling that git decides to apply
+    # while staging is not guaranteed to still agree with the worktree bytes by
+    # the time this test checks the exact status code. Pure `\n` bytes make
+    # that question moot rather than needing to be right about git's answer.
+    with open(os.path.join(repo, "pkg", "fresh.txt"), "wb") as handle:
+        handle.write(b"new\n")
     assert ops.main(os.path.join(repo, "pkg"), op="stage",
                     paths=["pkg/fresh.txt"])["ok"] is True
     assert status(repo)["pkg/fresh.txt"] == "A "
@@ -884,7 +894,12 @@ def test_every_mutating_invocation_is_pinned_hardened_and_bounded(
         # tests/test_git_posix_spawn.py). Still exactly one basename, still a list,
         # still no shell — which is what this assertion is really about.
         assert os.path.isabs(argv[0])
-        assert os.path.basename(argv[0]) in ("git", "git.exe")
+        # `.lower()`: `shutil.which("git")` on Windows resolves the bare name by
+        # trying each `PATHEXT` entry as-is, and the default `PATHEXT` spells its
+        # entries `.EXE` — so the resolved path this app actually runs is
+        # literally `...\git.EXE`, uppercase extension, with no lowercase form on
+        # disk to fall back to. That is still "git", not a different binary.
+        assert os.path.basename(argv[0]).lower() in ("git", "git.exe")
         assert "--no-pager" in argv
         # Exactly one invocation is pinned to the TARGET rather than the root:
         # the `--show-toplevel` bootstrap that discovers the root in the first

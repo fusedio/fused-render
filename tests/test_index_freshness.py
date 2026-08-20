@@ -20,19 +20,29 @@ from fused_render.index.freshness import (
     indexed_mtime_ns,
     note_folder_opened,
 )
+from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact
 
 NS = 1_000_000_000
 
 
 def _index(tmp_path, root, dirs):
-    """A real index whose dirs.parquet holds `dirs` = {abs dir: mtime_ns}."""
+    """A real index whose dirs.parquet holds `dirs` = {abs dir: mtime_ns}.
+
+    Every key goes through `canonical_root` before it becomes a dirs.parquet
+    row: `indexed_mtime_ns`/`enclosing_root` look a directory up by
+    `norm(os.path.abspath(...))` of their OWN argument (freshness.py), so a
+    row filed under the raw literal this helper is handed — "/r", or a
+    native-separator `str(tmp_path / ...)` on Windows — silently misses every
+    query built from the same literal once that literal isn't already its own
+    abspath (a POSIX-only coincidence)."""
     cfg = IndexConfig(dir=str(tmp_path / "ix"))
     shards = str(tmp_path / "run" / "shards")
     os.makedirs(shards, exist_ok=True)
     sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
+    root = canonical_root(root)
     for d, mtime_ns in dirs.items():
-        sink.add(d, "s", ("sig", [], 0, mtime_ns, 0))
+        sink.add(canonical_root(d), "s", ("sig", [], 0, mtime_ns, 0))
     sink.close()
     compact(cfg, root, shards, pa, pq)
     return cfg
@@ -79,13 +89,18 @@ def test_an_index_that_was_never_built_reads_as_unknown(tmp_path):
 # -- which root a folder belongs to -------------------------------------------
 
 @pytest.mark.parametrize("path,expected", [
-    ("/home/me/code/app", "/home/me/code"),
-    ("/home/me/code", "/home/me/code"),
+    ("/home/me/code/app", canonical_root("/home/me/code")),
+    ("/home/me/code", canonical_root("/home/me/code")),
     ("/home/me/other", None),
     # segment-wise, so a sibling with the root as a name prefix is not inside it
     ("/home/me/code-old/app", None),
 ])
 def test_enclosing_root_is_matched_segment_wise(path, expected):
+    # `enclosing_root` returns its OWN canonicalized spelling of a match
+    # (norm+abspath, freshness.py), not the caller's literal — hence
+    # `canonical_root(...)` rather than the bare "/home/me/code" above; the
+    # None cases need no such wrap since a non-match stays a non-match on
+    # every platform.
     assert enclosing_root(["/home/me/code"], path) == expected
 
 
@@ -94,7 +109,7 @@ def test_the_deepest_configured_root_wins():
     narrower one, and firing the outer root as well would scan its subtree
     twice."""
     roots = ["/a", "/a/b"]
-    assert enclosing_root(roots, "/a/b/c") == "/a/b"
+    assert enclosing_root(roots, "/a/b/c") == canonical_root("/a/b")
 
 
 # -- the trigger --------------------------------------------------------------
@@ -105,8 +120,8 @@ def test_a_folder_whose_mtime_moved_since_the_scan_triggers_a_rescan(
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) == root
-    assert spawned == [{"root": root, "full": False}]
+    assert note_folder_opened(cfg, sub, [root], now=now) == canonical_root(root)
+    assert spawned == [{"root": canonical_root(root), "full": False}]
 
 
 def test_an_unchanged_folder_triggers_nothing(tmp_path, spawned):
@@ -159,7 +174,12 @@ def test_a_root_scanned_within_the_floor_is_not_rescanned(tmp_path, spawned):
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    runner._record_scan(cfg, root)
+    # `_record_scan` (unlike `runner.start`, which calls it internally) does
+    # NOT canonicalize its own `root` argument before filing it — only
+    # `last_scan`'s READ side does — so calling it directly, as this test
+    # does to seed the floor without a real scan, has to canonicalize first
+    # or the write and the read never agree on the same key.
+    runner._record_scan(cfg, canonical_root(root))
     assert runner.last_scan(cfg, root) is not None
     # `now` is in the future relative to the record just written, so express the
     # floor from the record itself.
@@ -177,10 +197,10 @@ def test_a_root_scanned_two_minutes_ago_is_rescanned(tmp_path, spawned):
     root = _tree(tmp_path, "root")
     sub = _tree(tmp_path, "root/sub")
     cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
-    runner._record_scan(cfg, root)
+    runner._record_scan(cfg, canonical_root(root))  # see the floor test above
     at = runner.last_scan(cfg, root) + 120
-    assert note_folder_opened(cfg, sub, [root], now=at) == root
-    assert spawned == [{"root": root, "full": False}]
+    assert note_folder_opened(cfg, sub, [root], now=at) == canonical_root(root)
+    assert spawned == [{"root": canonical_root(root), "full": False}]
 
 
 def test_the_scan_floor_matches_the_routers_check_debounce(tmp_path):
@@ -266,7 +286,7 @@ def test_the_scan_it_starts_is_of_the_configured_root_not_the_open_folder(
     monkeypatch.setattr(runner, "_mounts_dir", lambda: "/nonexistent-mounts")
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: _Spawned())
     now = os.stat(sub).st_mtime + QUIET_S + 1
-    assert note_folder_opened(cfg, sub, [root], now=now) == root
+    assert note_folder_opened(cfg, sub, [root], now=now) == canonical_root(root)
     assert runner.last_scan(cfg, root) is not None
     assert runner.last_scan(cfg, sub) is None
 

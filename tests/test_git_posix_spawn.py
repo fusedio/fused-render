@@ -593,5 +593,10 @@ def test_git_bin_is_absolute_and_cached():
     assert os.path.isabs(first) or first == "git"   # "git" only with no PATH
     assert gitignore.git_bin() is first             # cached, not re-resolved
     if first != "git":
-        assert os.path.basename(first) in ("git", "git.exe")
+        # `.lower()`: `shutil.which("git")` on Windows resolves the bare name by
+        # trying each `PATHEXT` entry as-is, and the default `PATHEXT` spells its
+        # entries `.EXE` — so the resolved path is literally `...\git.EXE`,
+        # uppercase extension, with no lowercase form on disk to fall back to.
+        # That is still "git", not a different binary.
+        assert os.path.basename(first).lower() in ("git", "git.exe")
         assert os.access(first, os.X_OK)

@@ -653,7 +653,17 @@ def _node(fn_names, call, html, prelude=""):
                 break
         chunks.append("\n".join(taken))
     script = prelude + "\n" + "\n".join(chunks) + "\n" + call
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    # `encoding="utf-8"` is not decorative: `text=True` alone decodes the
+    # child's stdout with locale.getpreferredencoding(False), and node always
+    # writes its UTF-8 source text as UTF-8 bytes regardless of platform. On
+    # Windows that locale default is commonly cp1252, which would silently
+    # mojibake any non-ASCII character the page's own source hands back
+    # (see tests/test_claude_template_segments.py's identical harness, where
+    # this exact gap did exactly that) — this file's probes just haven't hit
+    # one yet, so pinning it here is prevention, not a fix for an observed
+    # failure.
+    out = subprocess.run(["node", "-e", script], capture_output=True,
+                          text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

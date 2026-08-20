@@ -99,7 +99,11 @@ def test_a_repo_is_the_parent_of_a_dot_git_row(home, tmp_path, client):
     _write_dirs_index([str(tmp_path), str(repo), _git(repo)])
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    # `.as_posix()`, not `str()`: the endpoint canonicalizes every path it
+    # returns to forward slashes (`_view_url_codec.canonical_fs_path`), while a
+    # bare `str(Path)` on Windows is backslashed — comparing against that raw
+    # spelling fails on Windows for no reason the app got wrong.
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_a_dir_without_a_dot_git_row_is_not_a_repo(home, tmp_path, client):
@@ -118,7 +122,7 @@ def test_nested_repos_are_both_listed_in_path_order(home, tmp_path, client):
                        _git(inner), str(other), _git(other)])
     body = client.get("/api/git-repos").json()
     assert [r["path"] for r in body["repos"]] == [
-        str(other), str(outer), str(inner),
+        other.as_posix(), outer.as_posix(), inner.as_posix(),
     ]
 
 
@@ -134,7 +138,7 @@ def test_the_endpoint_does_not_stat_anything(home, tmp_path, client, monkeypatch
     monkeypatch.setattr(mod.os.path, "isdir",
                         lambda p: (probed.append(p), False)[1])
     body = client.get("/api/git-repos").json()
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
     assert not any(str(repo) in p for p in probed)
 
 
@@ -151,7 +155,7 @@ def test_junk_path_screens_the_PARENT_not_the_dot_git_row(home, tmp_path, client
     vendored = tmp_path / "proj" / "node_modules" / "dep"
     _write_dirs_index([_git(mine), _git(hidden), _git(nested), _git(vendored)])
     body = client.get("/api/git-repos").json()
-    assert [r["path"] for r in body["repos"]] == [str(mine)]
+    assert [r["path"] for r in body["repos"]] == [mine.as_posix()]
 
 
 def test_a_repo_inside_a_fused_render_home_is_excluded(home, tmp_path, client):
@@ -162,7 +166,7 @@ def test_a_repo_inside_a_fused_render_home_is_excluded(home, tmp_path, client):
     outside = tmp_path / "real"
     _write_dirs_index([_git(inside), _git(outside)])
     body = client.get("/api/git-repos").json()
-    assert [r["path"] for r in body["repos"]] == [str(outside)]
+    assert [r["path"] for r in body["repos"]] == [outside.as_posix()]
 
 
 # -- states that are not an answer ---------------------------------------------
@@ -217,7 +221,7 @@ def test_a_stale_index_WITH_rows_serves_them_marked_stale(home, tmp_path, client
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
     assert body["stale"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_a_fresh_index_with_no_repos_is_a_real_empty_answer(home, tmp_path, client):
@@ -258,7 +262,7 @@ def test_a_scan_in_flight_over_a_usable_index_serves_it_marked_stale(
     assert body["indexed"] is True
     assert body["scanning"] is True
     assert body["stale"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_no_index_at_all_says_so_distinctly(home, tmp_path, client):
@@ -277,7 +281,7 @@ def test_an_index_with_no_applied_signature_reads_stale_but_still_answers(
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
     assert body["stale"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_a_partially_rescanned_multi_root_index_serves_what_it_has(home, tmp_path,
@@ -286,20 +290,26 @@ def test_a_partially_rescanned_multi_root_index_serves_what_it_has(home, tmp_pat
     under the reconciled root are real and get served; `stale` says the picture is
     incomplete. Hiding them would be the "refuse to answer while behind" mistake —
     an index is essentially always behind on at least one root."""
+    from fused_render.index import runner
+
     a, b = tmp_path / "a", tmp_path / "b"
     repo = a / "repo"
     _set_roots([a, b])
     cfg = _write_dirs_index([str(repo), _git(repo)], applied=False)
-    save_applied_ignore(cfg, str(a))   # only /a reconciled
+    # `_fresh` looks up `applied_ignore_sig(cfg, r)` for `r in scan_roots(cfg)`,
+    # which hands back `runner.canonical_root` spellings — so stamping the RAW
+    # `str(a)` key would never match that lookup on Windows (`C:\...\a` vs the
+    # stored `C:/.../a`), and this root would read as never-reconciled forever.
+    save_applied_ignore(cfg, runner.canonical_root(str(a)))   # only /a reconciled
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
     assert body["stale"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
-    save_applied_ignore(cfg, str(b))
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
+    save_applied_ignore(cfg, runner.canonical_root(str(b)))
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
     assert body["stale"] is False      # every root now reconciled
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_a_root_configured_in_a_NON_canonical_spelling_still_reads_usable(
@@ -332,7 +342,7 @@ def test_a_root_configured_in_a_NON_canonical_spelling_still_reads_usable(
 
     body = client.get("/api/git-repos").json()
     assert body["indexed"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
@@ -349,6 +359,7 @@ def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
     withholding it — but the detection must not: `stale: false` here would promise a
     complete picture of a machine half of which was never scanned under these
     rules."""
+    from fused_render.index import runner
     from fused_render.index.store import applied_ignore_sig
 
     a, b = tmp_path / "a", tmp_path / "b"
@@ -358,14 +369,18 @@ def test_a_legacy_sig_root_is_stale_even_once_another_root_is_stamped(
     # the pre-per-root file, then one root migrated onto the new format
     with open(cfg.applied_ignore_json, "w") as f:
         json.dump({"sig": "a-pre-leaf-rule-global-sig"}, f)
-    save_applied_ignore(cfg, str(a))
+    # canonical, matching what scan_roots()/save_applied_ignore's real caller
+    # stamps — a raw `str(a)` key would just never match `a`'s lookup either,
+    # which would hide the very distinction ("a" migrated, "b" is not) this
+    # test is about.
+    save_applied_ignore(cfg, runner.canonical_root(str(a)))
 
     # the rootless form is exactly as misleading as reported...
     assert applied_ignore_sig(cfg) == cfg.rules.sig()
     # ...and the endpoint must not be fooled into claiming freshness
     body = client.get("/api/git-repos").json()
     assert body["stale"] is True
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
 
 
 def test_an_unreadable_index_is_a_502_not_not_indexed(home, tmp_path, client):
@@ -400,6 +415,7 @@ def test_opening_the_tab_fires_a_freshness_check_on_the_scan_roots(
     """The tab is served entirely from the index, so without this it is the one
     surface in the app that can never notice the index is behind — /api/fs/list
     fires the same check for every folder the explorer opens."""
+    from fused_render.index import runner
     from fused_render.server.routers import index as index_mod
 
     a = tmp_path / "a"
@@ -415,10 +431,13 @@ def test_opening_the_tab_fires_a_freshness_check_on_the_scan_roots(
     _reset_rotation(monkeypatch)
 
     body = client.get("/api/git-repos").json()
-    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    assert [r["path"] for r in body["repos"]] == [repo.as_posix()]
     # A configured root, and nothing else: the tab is machine-wide, so a root is
-    # the only path it can name.
-    assert checked == [str(a)]
+    # the only path it can name. `scan_roots()` hands `note_folder_opened` the
+    # `runner.canonical_root` spelling, not the raw configured one — so the
+    # expectation has to be built the same way, or this compares canonical
+    # against raw on Windows for no reason the app got wrong.
+    assert checked == [runner.canonical_root(str(a))]
 
 
 def test_successive_tab_opens_check_each_root_in_turn(home, tmp_path, client,
@@ -431,6 +450,7 @@ def test_successive_tab_opens_check_each_root_in_turn(home, tmp_path, client,
     config read later, so every subsequent root in the same request fails its
     non-blocking acquire. The first root would win every request forever and the
     second would never be checked at all."""
+    from fused_render.index import runner
     from fused_render.server.routers import index as index_mod
 
     a = tmp_path / "a"
@@ -446,7 +466,8 @@ def test_successive_tab_opens_check_each_root_in_turn(home, tmp_path, client,
 
     for _ in range(4):
         assert client.get("/api/git-repos").status_code == 200
-    assert checked == [str(a), str(b), str(a), str(b)]
+    assert checked == [runner.canonical_root(str(a)), runner.canonical_root(str(b)),
+                       runner.canonical_root(str(a)), runner.canonical_root(str(b))]
 
 
 def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
@@ -458,6 +479,7 @@ def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
     rotation down with it: the roots are independent questions, and a config
     where one of them wedges the check for every other one is the failure that
     hides itself."""
+    from fused_render.index import runner
     from fused_render.server.routers import index as index_mod
 
     a = tmp_path / "a"
@@ -468,10 +490,17 @@ def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
     repo = a / "repo"
     _write_dirs_index([str(a), str(repo), _git(repo)])
     checked = []
+    # `boom` is handed whatever `note_folder_opened` is actually called with —
+    # the `runner.canonical_root` spelling `scan_roots()` returns, not the raw
+    # configured one — so it has to recognise "root a" in that same spelling or
+    # it never raises on Windows and this test silently stops exercising the
+    # "a bad root must not take the rotation down with it" scenario it exists
+    # to pin.
+    canonical_a = runner.canonical_root(str(a))
 
     def boom(path):
         checked.append(path)
-        if path == str(a):
+        if path == canonical_a:
             raise RuntimeError("freshness exploded")
         return True
 
@@ -481,6 +510,6 @@ def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
     for _ in range(2):
         resp = client.get("/api/git-repos")
         assert resp.status_code == 200
-        assert [r["path"] for r in resp.json()["repos"]] == [str(repo)]
+        assert [r["path"] for r in resp.json()["repos"]] == [repo.as_posix()]
     # the throwing root took its turn and the next request moved on regardless
-    assert checked == [str(a), str(b)]
+    assert checked == [canonical_a, runner.canonical_root(str(b))]
