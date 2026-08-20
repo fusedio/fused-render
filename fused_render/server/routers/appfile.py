@@ -78,7 +78,7 @@ async def api_appfile_export_with_preview(
     preview: UploadFile | None = File(default=None),
     x_fused: str | None = Header(default=None),
 ):
-    """The card's export path (D392): same download as the GET, plus an
+    """The card's export path (D396): same download as the GET, plus an
     optional caller-captured screenshot that becomes the payload's
     ``preview.png`` when the folder has no authored one. A POST because it
     carries a body; X-Fused-guarded because — unlike the GET — its caller is
@@ -114,7 +114,7 @@ async def api_appfile_export_with_preview(
 @router.get("/api/appfile/preview")
 def api_appfile_preview(path: str = ""):
     """The ``preview.png`` inside the ``.fused`` at ``path``, as bytes — the
-    exported card's thumbnail (D392). Read-only single-member zip read, no
+    exported card's thumbnail (D396). Read-only single-member zip read, no
     extraction (a grid of thumbnails must never populate the extract cache).
     404 when the file ships without one, so the card's ordinary onError
     fallback shows the empty thumb."""
@@ -141,7 +141,7 @@ def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(defaul
     file = str(body.get("file") or "")
     if not file or not os.path.isabs(file):
         return _error("file must be an absolute .fused file path")
-    # Preview contract (D392): a card thumbnail / listing peek may RE-USE an
+    # Preview contract (D396): a card thumbnail / listing peek may RE-USE an
     # existing extract to live-render the app, but must never extract fresh
     # (reuse_only) and must never count as an open (no recency below).
     preview = body.get("preview") is True
@@ -149,7 +149,7 @@ def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(defaul
         result = appfile.open_app_file(file, reuse_only=preview)
     except appfile.AppFileError as exc:
         return _error(str(exc))
-    # The open IS the recency signal for the .fused file itself (D392): this
+    # The open IS the recency signal for the .fused file itself (D396): this
     # is the one moment the SOURCE path is known (rendering the extracted
     # entry only knows the cache dir, which registered_apps now refuses).
     # Best-effort — a failed write must not fail the open. Previews never

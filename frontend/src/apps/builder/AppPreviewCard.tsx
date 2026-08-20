@@ -87,7 +87,7 @@ export function AppPreviewCard({
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);
-  // The still's source. An exported .fused card (kind "appfile", D392) has no
+  // The still's source. An exported .fused card (kind "appfile", D396) has no
   // folder to hold a preview.png — its still is the payload's, streamed by a
   // single-member zip read; the endpoint 404s when the file ships without one
   // and this <img>'s ordinary onError drops the card to the live branch
@@ -111,7 +111,7 @@ export function AppPreviewCard({
   // page. An exported .fused card (kind "appfile") has no page to point
   // /render at — its live look is its own fusedapp view under `_preview=1`,
   // which re-uses the existing extract (never extracts, never records — the
-  // server's reuse_only preview contract, D392) — offered only for a file the
+  // server's reuse_only preview contract, D396) — offered only for a file the
   // user has OPENED before (`opened_at`): one they never ran stays the empty
   // thumb rather than a placeholder-in-a-frame, and a peek must not be the
   // first run of a stranger's pages anyway.
@@ -237,7 +237,7 @@ export function AppPreviewCard({
           positioning context. A <button> inside the card's <a>: it must both
           preventDefault (or the card link opens the app) and stopPropagation
           (or the click ALSO bubbles to onAppCardClick). Not rendered on an
-          exported .fused card (kind "appfile", D392): its path is the file
+          exported .fused card (kind "appfile", D396): its path is the file
           itself and the export route only takes app folders. */}
       {app.kind !== "appfile" && (
       <button
@@ -249,7 +249,7 @@ export function AppPreviewCard({
           e.preventDefault();
           e.stopPropagation();
           // Also captures a tab screenshot into the file's preview.png when
-          // the folder has no authored one (appShot, D392). The thumb element
+          // the folder has no authored one (appShot, D396). The thumb element
           // rides along as the crop source: a card without a preview.png is
           // already showing the live app there, so nothing has to flash.
           exportAppFile(app, thumbRef.current).catch((err: Error) =>

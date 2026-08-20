@@ -943,22 +943,32 @@ def _packs_to_decode(regions, duration):
     return vad_module.pack_regions(list(regions))
 
 
-def _decode_clip(module, clip, fetched, task, language, initial_prompt):
+def _decode_clip(module, clip, fetched, task, language, initial_prompt,
+                 words=False):
     """One `transcribe()` call, on the thread `_call_with_ticks` gave it.
 
     A named function rather than the lambda it replaced, because the pin has to
     happen ON THIS THREAD — every decode runs on a thread of its own, and the
     weights it is about to touch were primed on another. See `_pin_stream`.
+
+    **`words` changes what is DECODED, not only what is reported** (D392), and
+    that is worth knowing before comparing two runs of one file. Asking for word
+    timings turns on the library's hallucination pruning — `word_anomaly_score`
+    and the `hal_next_start` skip in `mlx_whisper/transcribe.py` are both gated
+    on `word_timestamps` — so a recording can come back with a different number
+    of segments and slightly different segment ends than the same file decoded
+    without it. That is the library's own quality path and not a defect here,
+    but "same file, fewer segments" is otherwise read as one.
     """
     _pin_stream()
     return module.transcribe(clip, path_or_hf_repo=fetched, task=task,
                              language=language, initial_prompt=initial_prompt,
-                             verbose=False)
+                             word_timestamps=words, verbose=False)
 
 
 def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
                         job, row, total, duration, transcribing_since,
-                        progressive=None):
+                        progressive=None, words=False):
     """Transcribe each clip and return `(segments, language)` in ORIGINAL time.
 
     `packs` is `_packs_to_decode`'s list: one entry per `transcribe()` call,
@@ -1089,7 +1099,7 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
         with _watch_progress(position):
             result = _call_with_ticks(
                 lambda: _decode_clip(module, clip, fetched, task, detected,
-                                     initial_prompt),
+                                     initial_prompt, words=words),
                 job, row, progress, cancelled=late_cancel)
 
         # This clip is decoded, whatever its counter last said: the borrowed bar
@@ -1145,11 +1155,19 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
                 # only ever fire on a segment past the end — never on one that
                 # merely crossed a join.
                 continue
-            segments.append({
+            line = {
                 "start": round(at, 2),
                 "end": round(until, 2),
                 "text": str(segment.get("text") or "").strip(),
-            })
+            }
+            if words:
+                # ADDITIVE and only when asked, the rule `diarize` follows: a
+                # run without the flag writes exactly the bytes it always did,
+                # key for key. Placed after `text` so the key order of an
+                # existing transcript is untouched and `words` simply arrives
+                # last.
+                line["words"] = _words_in_original_time(pack, segment, at, until)
+            segments.append(line)
             # Published the instant it is final. This runner reports progress
             # once per decoded 30s WINDOW rather than per segment, so without
             # this a page's bar jumps and its transcript stays empty until the
@@ -1220,6 +1238,81 @@ def _original_end(pack, at):
     return vad_module.original_end(pack, at)
 
 
+def _word_span(pack, at, until):
+    """A word's packed `(start, end)` → RECORDING time, in ONE region.
+
+    `vad.original_word_span` rather than the segment's two endpoint functions,
+    and the difference is the one thing a word does not share with a segment: a
+    segment may straddle a join (real speech on both sides of the silence this
+    runner cut out), a word may not, so mapping a word's two ends independently
+    stretches any token that strictly contains a join across the whole dropped
+    pause. `vad.py` carries that reasoning and the arithmetic, for AI-10f's
+    reason — the packing and its inverse are one decision."""
+    import vad as vad_module
+
+    return vad_module.original_word_span(pack, at, until)
+
+
+def _words_in_original_time(pack, segment, at, until):
+    """One segment's `words`, remapped into RECORDING time and clamped into it.
+
+    Each word travels the same inverse its segment did, because a word carries
+    the same problem: the library timed it against a packed clip whose silence
+    this runner removed, and a page seeking a player off a clip-relative
+    timestamp lands in the wrong minute. Reusing the packing's one inverse
+    rather than a second of its own is the point (AI-10f). It travels that
+    inverse through `_word_span`, NOT through the segment's endpoint pair: a
+    word that strictly contains a join is a 0.2s token mapped to a 25s span
+    otherwise, and the clamp below cannot catch it because the segment is
+    allowed to straddle that same join.
+
+    **Clamped into the segment, never dropped**, which is the opposite of what
+    `_transcribe_regions` does to a segment that inverts — and the asymmetry is
+    deliberate. A dropped SEGMENT loses text that was never spoken in the
+    recording's timeline. A dropped WORD loses text that IS in the transcript,
+    breaking the one invariant a caller will build on: that the words of a
+    segment are that segment's text, in order, complete. So a word that inverts
+    after mapping (the library timing it into the 30-second padding, the same
+    place a segment can invert) collapses to an INSTANT at the nearest bound
+    rather than vanishing. A zero-length word renders as un-highlightable, which
+    is the honest rendering of "this word is here and its span is not known";
+    a missing word renders as a hole in the sentence.
+
+    `probability` is dropped along with the logprobs and temperatures beside it,
+    for `parakeet_mlx/worker.py`'s reason: it is an engine-tell. Whisper's DTW
+    alignment has a per-word probability and a transducer's per-token confidence
+    is a different number measuring a different thing, so publishing it would
+    make the reply depend on which engine ran (AI-10c). `word` keeps the
+    library's LEADING SPACE — it is how the text reconstructs by concatenation,
+    and stripping it would make a caller guess where spaces went.
+    """
+    out = []
+    for word in (segment.get("words") or []):
+        text = str(word.get("word") or "")
+        if not text:
+            # No text to place. Nothing downstream can render it and it would
+            # only add a phantom interval to the list.
+            continue
+        start, end = _word_span(pack,
+                                float(word.get("start") or 0.0),
+                                float(word.get("end") or 0.0))
+        # Into the SEGMENT's bounds, not the pack's: the segment was already
+        # clamped to the pack, and a word outside its own segment is a span a
+        # caller cannot use — it would highlight text belonging to a
+        # neighbouring line.
+        start = min(max(start, at), until)
+        end = min(max(end, at), until)
+        out.append({
+            "start": round(start, 2),
+            # `max`, so rounding cannot invert a word whose two ends round
+            # across each other — 2dp is the transcript's precision everywhere
+            # and the clamp above cannot see it.
+            "end": round(max(end, start), 2),
+            "word": text,
+        })
+    return out
+
+
 # --------------------------------------------------------------- transcription
 
 
@@ -1258,6 +1351,23 @@ def generate(body):
     # Defaults FALSE, so every existing caller's output is byte-identical: no
     # `speaker` on a segment, no `speakers` in the JSON, no 33MB download.
     diarizing = bool(body.get("diarize"))
+    # Per-WORD timings inside each segment (D392). Same shape of default and for
+    # the same reason: off unless asked, so a JSON null and an absent key mean
+    # the same thing and no existing transcript gains a key. It is not free —
+    # word timings cost an extra teacher-forced forward pass per 30-second
+    # window, and they change the decode path (see `_decode_clip`) — which is
+    # why it is a request the caller makes rather than something always on.
+    #
+    # **A TRANSLATION gets none, and it is declined here rather than refused.**
+    # Word timings are positions in the AUDIO, found by aligning the decoded
+    # tokens against it; a translation's tokens are English words the recording
+    # does not contain, so there is nothing to align them to. `transcribe` only
+    # *warns* and returns numbers anyway, which reach a page as a list
+    # indistinguishable from a usable one and highlight the wrong word for the
+    # whole file. Declining reads to a caller exactly like an engine that has no
+    # word timings — the key is absent — which is why this option is answered
+    # best-effort instead of going in `engine_options` with the refusals.
+    words = bool(body.get("words")) and task == "transcribe"
     # Validated HERE, before the decode, and by the shared rule — the bridge
     # and the server both check it first, but neither is the only door into
     # this process, and a `speakers` refused after ninety seconds of `av` is a
@@ -1361,7 +1471,7 @@ def generate(body):
         segments, language = _transcribe_regions(
             audio, packs, fetched, task, language, initial_prompt,
             job, row, total, duration, transcribing_since,
-            progressive=progressive)
+            progressive=progressive, words=words)
 
         # PHASE FOUR — the join. Both engines call the SAME function on the same
         # two lists, which is what makes "identical labels" structural rather

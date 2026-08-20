@@ -213,7 +213,7 @@ def _row(path: str, mtime: float | None, opened: float | None) -> dict:
 
 def recent_exported_apps(limit: int) -> list[dict]:
     """At most ``limit`` recently OPENED exported apps, stored order (newest
-    first) — Home's slice (D392). Recents-only on purpose: Home is a recency
+    first) — Home's slice (D396). Recents-only on purpose: Home is a recency
     strip, so the index query (which knows nothing about opens) has nothing
     to add here, and the hot Home path stays free of duckdb entirely."""
     from fused_render.server.walk import junk_path

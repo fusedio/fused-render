@@ -112,7 +112,11 @@ def test_an_explicit_due_time_is_accepted(client, target):
     # is testing exactly that omission.
     ({"message": "hi", "delay_seconds": 60}, "target"),
     ({"target": "  ", "message": "hi", "delay_seconds": 60}, "target"),
-    ({"target": "/nope/nope", "message": "hi", "delay_seconds": 60}, "no such file"),
+    # TWO missing levels. One missing leaf under an existing parent is legal on
+    # this endpoint now — it creates the folder, see the tests below — so the
+    # refusal a junk path earns is about the parent rather than the leaf.
+    ({"target": "/nope/nope", "message": "hi", "delay_seconds": 60},
+     "only one new folder"),
     ({"target": "TARGET", "message": "   ", "delay_seconds": 60}, "message"),
     ({"target": "TARGET", "delay_seconds": 60}, "message"),
     ({"target": "TARGET", "message": "hi", "delay_seconds": -5}, "positive"),
@@ -125,6 +129,55 @@ def test_bad_requests_are_400s_that_say_why(client, target, body, expect):
     assert res.status_code == 400
     assert expect in res.json()["error"]
     assert schedule.list_entries() == []  # a refused request stores nothing
+
+
+def test_one_new_folder_is_created(client, target):
+    """The New task form lets you name a folder that does not exist yet — you
+    stand in a folder, type `ABC1`, and the task runs in a new `ABC1`. This
+    endpoint is where that promise is kept, because nothing downstream makes
+    directories: the agent's own `_start` refuses a target that is not there."""
+    fresh = target / "ABC1"
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(fresh), "message": "hi",
+                            "delay_seconds": 60})
+    assert res.status_code == 200
+    assert fresh.is_dir()
+    # Stored against the folder it just made, not against some resolved parent.
+    assert schedule.list_entries()[0]["target"] == str(fresh)
+
+
+def test_two_missing_levels_is_refused_and_makes_nothing(client, target):
+    """`.../new1/new2` with no `new1` is not "name me a folder", it is "build me
+    a tree I typed" — the ask a typo makes by accident. Refused, and the first
+    level must not be left behind as a souvenir of the attempt."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "new1" / "new2"),
+                            "message": "hi", "delay_seconds": 60})
+    assert res.status_code == 400
+    assert "only one new folder" in res.json()["error"]
+    assert not (target / "new1").exists()
+    assert schedule.list_entries() == []
+
+
+def test_a_new_folder_is_not_created_for_a_request_that_is_refused_later(client, target):
+    """Order matters: the mount gate runs before anything is made, and a body
+    that fails a LATER check must not leave a directory behind. `delay_seconds`
+    is validated after the target, which is the case to prove."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "ABC1"), "message": "hi",
+                            "delay_seconds": -5})
+    assert res.status_code == 400
+    assert not (target / "ABC1").exists()
+
+    # And the same holds for the checks INSIDE `schedule.create`, which run
+    # after the target is resolved: an unparseable cron line 400s, and the leaf
+    # must not survive it. This is the one the mkdir used to run ahead of.
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "ABC1"), "message": "hi",
+                            "repeats": "every morning"})
+    assert res.status_code == 400
+    assert not (target / "ABC1").exists()
+    assert schedule.list_entries() == []
 
 
 def test_a_mount_backed_target_is_refused(client, target, monkeypatch):

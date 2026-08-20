@@ -24,7 +24,7 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 
 // An exported `.fused` card's path is the FILE, not a folder (kind
-// "appfile", D392): "Open in Explorer" lands on its CONTAINING folder — the
+// "appfile", D396): "Open in Explorer" lands on its CONTAINING folder — the
 // files around it, same promise as the folder case — and "Export App File"
 // is not offered (the card already IS the export). Canonical paths are
 // forward-slashed on every platform (server's canonical_fs_path), so string
@@ -37,7 +37,7 @@ function containingDir(path: string): string {
 export function appCardMenu(
   app: AppInfo,
   // The card's thumb element, when the opener has one: the export entry's
-  // no-flash capture crop source (appShot, D392).
+  // no-flash capture crop source (appShot, D396).
   captureEl?: Element | null,
 ): MenuEntry[] {
   const isAppFile = app.kind === "appfile";
@@ -76,7 +76,7 @@ export function appCardMenu(
             icon: MenuIcons.compress,
             onClick: () => {
               // exportAppFile also captures a tab screenshot into the file's
-              // preview.png when the folder has no authored one (D392).
+              // preview.png when the folder has no authored one (D396).
               exportAppFile(app, captureEl).catch((e: Error) =>
                 pushToast({
                   msg: "Could not export " + app.name + ": " + e.message,

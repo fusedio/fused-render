@@ -1501,7 +1501,7 @@ export async function downloadAppFile(
   path: string,
   name: string,
   // Optional capture of the app to bake into the .fused as its preview.png
-  // (D392). The server only uses it when the folder has no authored one.
+  // (D396). The server only uses it when the folder has no authored one.
   preview?: Blob,
 ): Promise<void> {
   let res: Response;
@@ -1693,7 +1693,7 @@ export interface AppInfo {
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
   // "appfile" for an exported `.fused` FILE discovered via the file index
-  // (tag "exported", D392) — `path`/`entry` are the file itself, so surfaces
+  // (tag "exported", D396) — `path`/`entry` are the file itself, so surfaces
   // must not offer folder actions (open-folder, export) on it. Undefined for
   // every folder-shaped app and on older backends.
   kind?: "appfile";

@@ -16,6 +16,18 @@ from fused_render._view_url_codec import embed_url_path, view_url_path
 MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """Per-test shell home, the same way test_registered_apps.py does it.
+
+    conftest allocates ONE FUSED_RENDER_HOME per process, so without this the
+    AF-8 route test's `/render` of an extracted app writes a `linked` entry for
+    `<tmp>/cache/demo-<hash>` into a registered_apps.json shared with every
+    later test on the same xdist worker — where it surfaced as a phantom
+    `demo-<hash>` card in other modules' /api/apps listing assertions."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
 def make_app(tmp_path, name="demo"):
     d = tmp_path / name
     d.mkdir()
@@ -246,7 +258,7 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     from fused_render.server.app import create_app
 
     monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
-    # Isolated home: the open below records into appfile_recents.json (D392),
+    # Isolated home: the open below records into appfile_recents.json (D396),
     # and a write into the session-shared home would leak an "exported" row
     # into every later /api/apps assertion.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
@@ -292,7 +304,7 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     modes = [t["mode"] for t in r.json().get("templates") or []]
     assert "fusedapp" in modes
 
-    # AF-8 (revised by D392): the hub identity of an opened app file is the
+    # AF-8 (revised by D396): the hub identity of an opened app file is the
     # .fused FILE — POST /api/appfile/open recorded it into appfile_recents —
     # and the extract dir is refused by the registered-apps store, so
     # rendering the extracted entry does NOT register the cache dir.

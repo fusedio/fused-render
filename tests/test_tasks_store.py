@@ -590,8 +590,40 @@ def test_the_annotation_preamble_is_stripped_down_to_the_note():
         records.prefixed(records.APP_STATE, records.ANNOTATION,
                          records.ANNOTATED_ASK)) == records.ANNOTATED_ASK
     # The preamble alone, with no words after the fence, leaves nothing — a real
-    # send (annotations and no typed message), and the client's job to label.
+    # send (annotations and no typed message). The strip's answer stays "";
+    # naming such a send is `ann_notes`' job, not this function's.
     assert tasks_store.strip_machinery(records.ANNOTATION) == ""
+    assert tasks_store.strip_machinery(records.ANNOTATION_NOTED) == ""
+
+
+def test_the_notes_on_the_pins_name_a_send_that_carried_no_words():
+    """Annotations have needed no message since the "apply the comments"
+    prefill was deleted, so for such a send the notes on the pins are the only
+    text in the record a human wrote — and every reader was built on words
+    arriving as free text. A SECOND source rather than a wider strip:
+    `is_machinery` asks `strip_machinery` whether a record is worth keeping,
+    and that question has a different answer."""
+    assert tasks_store.ann_notes(
+        records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                         records.ANNOTATION_NOTED)) == records.ANNOTATION_NOTE
+    # A pin the user placed and wrote nothing on is still not a title, and
+    # neither is anything that is not an annotation block at all.
+    assert tasks_store.ann_notes(records.ANNOTATION) == ""
+    assert tasks_store.ann_notes(records.PROSE) == ""
+    assert tasks_store.ann_notes("") == ""
+
+
+def test_a_head_prompt_falls_back_to_the_notes(tmp_path):
+    """The end the Tasks list actually reads: a chat whose only user record is
+    an annotation send used to hand it a blank title."""
+    path = tmp_path / "t.jsonl"
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"cwd": str(tmp_path), "type": "user",
+                   "timestamp": "2026-08-20T12:00:00Z",
+                   "message": {"role": "user", "content": records.prefixed(
+                       records.APP_STATE, records.ANNOTATION_NOTED)}}, fh)
+        fh.write("\n")
+    assert tasks_store.head(str(path))[2] == records.ANNOTATION_NOTE
 
 
 def test_a_wordless_send_is_empty_but_still_not_machinery():

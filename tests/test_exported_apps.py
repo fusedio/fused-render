@@ -1,7 +1,7 @@
 """Exported apps (fused_render/exported_apps.py): ``.fused`` files anywhere on
 disk, discovered through the file index and listed on /apps under the virtual
 "exported" tag, with recency recorded by POST /api/appfile/open into
-~/.fused-render/appfile_recents.json (D392).
+~/.fused-render/appfile_recents.json (D396).
 
 Like the git-repos tests, the index store is built by hand (a files parquet +
 manifest), not by running a scan — these are listing/screening tests, not scan

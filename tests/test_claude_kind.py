@@ -646,12 +646,14 @@ def test_the_re_render_observer_follows_the_target_document():
         "our own layer's arrival must not re-trigger the render that drew it"
 
     # Nothing installs a PANE observer anywhere else, and in particular not
-    # inside the run-once wiring block that started this bug. The one other
-    # MutationObserver in the file is annFitStrip's (2026-08-19): it watches
-    # the PARENT document's own #anntools clusters for the strip's word-fit
-    # verdict and never touches the target document, so it cannot re-trigger
-    # a pane render.
-    assert code.count("new MutationObserver") == 2
+    # inside the run-once wiring block that started this bug. The other two
+    # MutationObservers in the file are both FIT verdicts about THIS document's
+    # own chrome, and neither can re-trigger a pane render: annFitStrip's
+    # (2026-08-19) watches the #anntools clusters for the strip's word-fit, and
+    # fitComposerChrome's (2026-08-20) watches the composer rows and the landing
+    # title for the control row's compact/stack verdict. Both stay in the PARENT
+    # document and never look at the target's.
+    assert code.count("new MutationObserver") == 3
     fit = code[code.index("const mo = new MutationObserver(annFitStrip);"):]
     fit = fit[:fit.index("\n}")]
     assert "[annToolEl, annCta]" in fit, \

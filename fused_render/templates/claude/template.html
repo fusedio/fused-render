@@ -2187,6 +2187,65 @@
     flex-wrap: wrap;
   }
   .composer-row .spacer { flex: 1; }
+  /* ── the control row's two degradations, stamped by fitComposerRow ──
+     The row is five controls and a column floor of 380px (the sidebar's MIN_W,
+     explorer/lib/side-width.ts), and at that width the full-length approvals
+     label was enough to tip it over: screenshotted live it broke into a ragged
+     wrap with one pill stranded per line, which reads as broken rather than as
+     adapted (Akshil, 2026-08-20: "nor do I see the change in UI to show or hide
+     things"). `flex-wrap: wrap` above is still the last resort and stays — what
+     these two classes do is spend the width DELIBERATELY before the browser has
+     to guess, in the order a reader would: shorten the one long word first, and
+     only then split the row, and split it where its own grammar already splits
+     (the three selects that describe the run / the things you DO with a draft).
+
+     Measured, never a breakpoint: fitComposerRow sums the row's own content
+     against its box, which is the same discipline annFitStrip uses one pane over
+     — a fixed width would have to guess at three select labels whose text the
+     user changes.
+
+     `.compact` carries no declarations on purpose. What it shortens is option
+     TEXT, which is DOM content and not something a stylesheet can rewrite (see
+     PERMISSION_SHORT); the class is still written onto the row so the state is
+     visible in the inspector and readable from the outside. */
+  /* Two tidy lines, never a ragged wrap. The spacer — the row's one elastic cell
+     while everything fits — becomes the LINE BREAK, which is the only way a flex
+     row can be told where to fold.
+
+     `width: 100%` and NOT `flex-basis: 100%`, measured in the browser this
+     template actually ships inside (WKWebView): a percentage basis on this span
+     was ignored outright and the row went on wrapping wherever it liked, which is
+     the bug this class exists to prevent. A width with `flex: 0 0 auto` resolves
+     the basis the long way round and folds the line every time.
+
+     The break's own height is 0, so the two lines sit the row's gap apart TWICE
+     — 12px, because an empty flex line takes a gap above and below it. That is
+     the deliberate answer rather than the tidier 6px: `row-gap: 0` on this row
+     does not take in the same engine (an inline `row-gap` loses to the `gap`
+     shorthand above), and 12px between "what the run is" and "what to do with
+     the draft" reads as the grouping it is. Every gap WITHIN a line is still 6. */
+  /* Stage 3, and the one that keeps the ROW WHOLE: everything stays on one line
+     and the chrome gets denser instead — gaps to 3px, pill insets trimmed, the
+     select carets pulled in. Folding was tried as stage 3 and rejected on sight
+     (Akshil, 2026-08-20: "the chat icons and dropdown are not in single line") —
+     a fold moves controls to a place they never sit at any other width, and a
+     denser line keeps every control exactly where the reader's hand knows it.
+     fitComposerRow re-runs fitSelect after stamping this, because the fitted
+     widths bake the paddings in. */
+  .composer-row.tight { gap: 3px; }
+  .composer-row.tight .pill { padding-left: 5px; padding-right: 5px; }
+  .composer-row.tight select.pill { padding-right: 17px; background-position: right 5px center; }
+  .composer-row.stack .spacer { flex: 0 0 auto; width: 100%; height: 0; }
+  /* Line two stays flush RIGHT, where these controls sit in the wide layout, so
+     folding the row never teleports Send across the composer. `.lead2` is written
+     by fitComposerRow onto the first control that actually lands on line two:
+     `.viewshot` is [hidden] in the narrow layout and when there is no pane at
+     all, so the anchor cannot be named in the stylesheet. `.send` gives up its
+     own `margin-left: auto` here (two autos on one line split the slack and
+     centre the group instead of pinning it), and the `.lead2` rule follows it so
+     it wins on source order for the case where Send IS that first control. */
+  .composer-row.stack .send { margin-left: 0; }
+  .composer-row.stack .lead2 { margin-left: auto; }
   .pill {
     background-color: transparent;
     border: 1px solid transparent;
@@ -2456,7 +2515,23 @@
     text-align: center;
     color: var(--faint);
     font-size: 11px;
+    /* Spelled rather than inherited (body is 1.65) for two reasons: two lines of
+       11px prose under a composer wants less air than a paragraph does, and
+       fitFootnote below measures this box in LINES — an explicit value is the one
+       it can divide by without asking the UA what a footnote's line is. */
+    line-height: 1.5;
   }
+  /* TWO LINES IS THE WHOLE BUDGET. In a 380px column the sentence pair ran to
+     three, which under a composer is no longer a footnote — it is a paragraph
+     competing with the thing it annotates. The second sentence goes instead of
+     the first being ellipsised: half a sentence with a "…" on it says the app
+     ran out of room, while one whole sentence says what it says. Which one is
+     kept is not a coin toss either — "Claude can read and edit files here" is
+     the reach, the part a reader needs before they type; approvals are named by
+     the pill two rows up, which is where that sentence was pointing anyway.
+     `.fn-more` is written by setTargetNoun (the only place this text lives) and
+     the class is decided by measurement, not by a width. */
+  #footnote.tight .fn-more { display: none; }
   #chat.home #footnote { display: none; }
 
   /* ── markdown, in the TWO places rendered markdown lands ──
@@ -2634,13 +2709,39 @@
      stacked. One 32px here, one margin per block below. */
   #home .inner { width: 100%; max-width: 620px; padding: 0 24px 32px; }
   .home-title {
+    /* 26px IS the title, and it stays the title wherever there is room for one.
+       Where there is not — this column's floor is 380px and a folder name is
+       arbitrarily long — fitHomeTitle stamps one of the two steps below, so the
+       name shrinks to its ONE line instead of becoming a 26px two-line headline
+       that outweighs the composer it is introducing (the landing page's actual
+       subject). Measured, and deliberately not a container query — this template
+       detects collisions and declares no breakpoints, a rule
+       tests/test_claude_annotation_modes.py enforces over the whole file — and
+       the thing worth measuring is whether THIS name fits, not how wide the
+       column is.
+       `anywhere` for the case past the last step: these names are paths and
+       slugs with no spaces in them, and without it one unbroken name overflows
+       the column instead of wrapping inside it. */
     font-size: 26px;
+    overflow-wrap: anywhere;
     font-weight: 600;
     letter-spacing: -.02em;
     color: var(--fg-strong);
     text-align: center;
     margin-bottom: 4px;
   }
+  /* TWO STEPS AND A CLASS, not a computed pixel size written inline. The size is
+     declared here for the reason every other verdict in this file is (D146, the
+     narrow layout's collapse, #inputbox): a stylesheet declaration can be
+     overridden by a later rule and reasoned about in the inspector, and the sizes
+     a headline is allowed to take are a design decision that belongs where the
+     rest of the type scale is — fitHomeTitle only decides WHICH.
+     Two steps and not a continuum because a headline has a small number of sizes
+     it can be and still look chosen: 21px is a title in a 380px column, 17px is
+     the last size that still reads as a heading rather than as body text. Past
+     that the name wraps at 17px, which is the honest end. */
+  .home-title.t-mid { font-size: 21px; }
+  .home-title.t-min { font-size: 17px; }
   .home-title .spark { color: var(--accent); margin-right: 10px; font-weight: 400; }
   .home-sub {
     color: var(--faint);
@@ -3453,8 +3554,12 @@
          placeholder is the first), and it ships the kind-FREE wording for the
          same reason: the kind is not known until stat answers, and a sentence
          that flips from a wrong noun to a right one is worse than one that gains
-         a noun. setTargetNoun writes both. -->
-    <div id="footnote">Claude can read and edit files here. Approvals control what runs without asking.</div>
+         a noun. setTargetNoun writes both.
+         The SECOND sentence is wrapped in its own span, in the markup as well as
+         in setTargetNoun's rewrite, because it is the half a narrow column drops
+         (fitFootnote) — and it ships that way rather than being wrapped later so
+         the very first paint is already measurable. -->
+    <div id="footnote">Claude can read and edit files here.<span class="fn-more"> Approvals control what runs without asking.</span></div>
 
     <!-- home view -->
     <div id="home">
@@ -4429,10 +4534,15 @@ const setTargetNoun = (noun) => {
   // and "and the assets it references" is not decoration, it is exactly the
   // reach `_system_prompt` gives the agent for a file target. A folder and a
   // project both CONTAIN the files, so they share the shape.
+  // ONE write for the sentence that depends on the kind, exactly as before —
+  // and it clears the node, so the second sentence is put back after it by
+  // footnoteTail(). The second sentence is its own ELEMENT (not part of this
+  // string) because a narrow column drops it whole rather than ellipsising the
+  // pair; see #footnote.tight and fitFootnote.
   document.getElementById("footnote").textContent =
     (noun === "file" ? "Claude can read and edit this file and the assets it references."
-                     : "Claude can read and edit files in this " + noun + ".")
-    + " Approvals control what runs without asking.";
+                     : "Claude can read and edit files in this " + noun + ".");
+  footnoteTail();
   // A project's pane is the user's own app; a file's is our preview of their file.
   // "folder" never reaches the pane chrome at all — that target has no pane, and
   // applyPaneNoun's nodes are gone by then — but it resolves to the kind-free word
@@ -6527,7 +6637,7 @@ async function shotEncodeBadged(pane, badges, limits) {
   return null;
 }
 
-// Each SEGMENT goes to exactly one click — OpenPointer's fixed lead window
+// Each piece of speech goes to exactly one click — OpenPointer's fixed lead window
 // (each click owns "LEAD seconds before it until the next click") looked
 // right but double-counts by construction: click i's window reaches forward
 // to click i+1's own timestamp, and click i+1's window reaches the same
@@ -6535,29 +6645,55 @@ async function shotEncodeBadged(pane, badges, limits) {
 // landed in BOTH notes the moment two clicks were less than LEAD apart —
 // which a quick "click, say one word, click again" walkthrough hits on
 // nearly every click. Nearest-by-start-time has no such overlap: a segment
-// can only be closest to one click, so it can only ever fill in one note.
+// can only be closest to one click, so it can only ever fill in one note
+// (same for a word, once the pieces are words — see below).
 // It also self-adjusts to the pace of the recording instead of needing a
 // tuned constant — narrating right after a click (the common case) and
 // narrating just before one (also common) both resolve correctly because
 // "closest" means the same thing either direction.
 // It returns the INTRO: everything said before the first click is the user
-// framing the task, not a comment on any one spot, so those segments become
+// framing the task, not a comment on any one spot, so those pieces become
 // the message's own prompt text (annRecEnd seeds the composer with it) rather
 // than being pulled onto click 1 by the nearest-match below.
+// Matched per WORD, not per segment, whenever the engine timed the words
+// (`words: true`, D392): a segment is a sentence or several — "Test 1. This is
+// another comment. This is the third comment." comes back as ONE 7-second span
+// — so a segment-grained match hands every word of it to whichever click its
+// FIRST word started nearest, and a click made mid-sentence (the ordinary case:
+// talk, click, keep talking) drags the words that came after it onto the
+// previous note. Words are on the same absolute timeline as segment starts, so
+// nothing below changes: the units being matched are just finer.
+//
+// The flattening is per SEGMENT, so a reply degrades a segment at a time rather
+// than all-or-nothing. Word timings are answered best-effort and never refused
+// (D392) — an engine that has none leaves the `words` key OFF, which is
+// indistinguishable here from a run that never asked, and a mixed reply (some
+// segments worded, some not) matches each segment at whatever grain it arrived
+// with. A segment whose words are not all timed falls back WHOLE rather than
+// dropping the untimed ones: no words are lost either way.
 function annRecAssign(ids, segments) {
   const timed = ids.map((id) => annotations.find((a) => a.id === id))
                    .filter(Boolean).sort((a, b) => a.t - b.t);
   if (!timed.length || !segments || !segments.length) return "";
+  const units = [];
+  for (const s of segments) {
+    const ws = Array.isArray(s.words) ? s.words : [];
+    if (ws.length && ws.every((w) => w && typeof w.start === "number")) {
+      // `word`, not `text` — and it arrives with its leading space, which the
+      // join below collapses like any other whitespace.
+      for (const w of ws) units.push({ start: w.start, text: w.word || "" });
+    } else units.push({ start: s.start, text: s.text });
+  }
   const intro = [];
   const words = new Map(timed.map((c) => [c.id, []]));
-  for (const s of segments) {
-    if (s.start < timed[0].t) { intro.push(s.text); continue; }
-    let best = timed[0], bestDist = Math.abs(s.start - timed[0].t);
+  for (const u of units) {
+    if (u.start < timed[0].t) { intro.push(u.text); continue; }
+    let best = timed[0], bestDist = Math.abs(u.start - timed[0].t);
     for (const c of timed) {
-      const dist = Math.abs(s.start - c.t);
+      const dist = Math.abs(u.start - c.t);
       if (dist < bestDist) { best = c; bestDist = dist; }
     }
-    words.get(best.id).push(s.text);
+    words.get(best.id).push(u.text);
   }
   for (const c of timed) {
     c.content = words.get(c.id).join(" ").replace(/\s+/g, " ").trim();
@@ -6683,7 +6819,18 @@ async function annRecEnd() {
     const dir = await shotDirPath();
     const path = shotJoin(dir, shotStamp() + "-walkthrough" + annRecExt(blob.type));
     await fused.uploadFile(path, blob);
-    const rec = await fused.ai.transcribe({ path });
+    // `words: true` asks for per-word timings inside each segment (D392), which
+    // is what lets a click that landed MID-sentence take only the words after
+    // it (annRecAssign). Best-effort by contract, never refused: an engine
+    // without word timings just leaves the `words` key off its segments, so the
+    // matcher degrades to whole-segment matching on its own. It costs an extra
+    // forward pass per decoded window (and a one-time Metal compile on the
+    // first worded call in a process) and it changes the decode — the library
+    // gates its hallucination pruning on the same flag, so the same audio can
+    // come back as a different number of segments than it would without this.
+    // Both are fine here: the recording is seconds of speech, and nothing on
+    // this page reads segment COUNT.
+    const rec = await fused.ai.transcribe({ path, words: true });
     // Everything said BEFORE the first click is the main prompt, not a note:
     // it seeds the composer as the message's own words, so the send reads as
     // "here is the task, and here are the spots" rather than a first comment
@@ -9337,6 +9484,26 @@ const PERMISSION_LABELS = {
   acceptEdits: "auto-accept edits",
   auto: "Claude decides",
 };
+// The same four modes in ONE WORD each, for the pill only, and only when the
+// control row has run out of width for the sentence (fitComposerRow). Approvals
+// is the row's long label — "fable" and "medium" beside it are already one word —
+// so it is also the only one that needs a short form, and shortening the one
+// offender is what keeps the row on a single line at the 380px floor.
+//
+// Each short form is the DISTINGUISHING word of its full label, never a
+// truncation: the reader who has seen the menu once recognises "ask" as "ask
+// every time" and "edits" as "auto-accept edits", where "ask ev…" would just look
+// clipped. "decides" and not "auto" for `auto`, even though the key is `auto`:
+// "auto" is the word "auto-accept edits" starts with, and the two loosest modes
+// must not read as the same word in the pill. The MENU always shows the full
+// sentences (openSelPop reads `dataset.full`), so the long form is one press away
+// and this is a label, never the vocabulary.
+const PERMISSION_SHORT = {
+  plan: "plan",
+  prompt: "ask",
+  acceptEdits: "edits",
+  auto: "decides",
+};
 const DEFAULT_MODEL = "sonnet";
 const DEFAULT_EFFORT = "medium";
 // What the user ACTUALLY last used with Claude Code for this project — via this
@@ -9390,6 +9557,13 @@ function fillSelect(el, values, groupLabel, labels) {
     const o = document.createElement("option");
     o.value = v;
     o.textContent = labels ? labels[v] : v;
+    // The label the MENU shows, kept beside the one the pill shows because the
+    // two can differ: fitComposerRow rewrites `textContent` to a one-word form
+    // when the row is out of width, and a menu that shortened with it would take
+    // the vocabulary away at exactly the moment the reader went looking for it.
+    // Written for every select, not just approvals — one rule in openSelPop is
+    // cheaper to trust than a rule that only holds for one pill.
+    o.dataset.full = o.textContent;
     group.appendChild(o);
   }
   el.appendChild(group);
@@ -9636,6 +9810,10 @@ function syncSelects() {
   // on — where the answer is picked for a task rather than borrowed from a chat.
   document.querySelectorAll(".perm-sel").forEach((el) => { el.value = chosen; });
   document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach(fitSelect);
+  // A value change is a WIDTH change ("ask every time" → "Claude decides"), so the
+  // row's fit is stale the moment a pill is picked. Hoisted declaration, defined
+  // below with the rest of the measuring.
+  fitComposerChrome();
 }
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
@@ -9646,6 +9824,267 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
     fused.params.set("permission", el.value);
     syncSelects();
   }));
+
+// ── the composer's chrome fits, shortens, or folds: measured, never a width ──
+//
+// WHAT WAS BROKEN. The sidebar column's floor is 380px (explorer/lib/side-width.ts
+// raised it from 280 for exactly this row), and at 380 — and again at ~440, which
+// is where the column actually opens — the control row did not fit: three select
+// pills, the screenshot and calendar buttons and Send came to more than the
+// column, `flex-wrap` did the only thing it can, and the result was a stack of
+// nearly-empty lines with one control on each. Akshil, 2026-08-20, looking at a
+// 440px column: "I don't see the change in size. Nor do I see the change in UI to
+// show or hide things." Both halves of that are the same complaint — a wider floor
+// alone cannot fix a row that never says what it does when it runs out of room.
+//
+// THE ORDER THINGS GIVE, and it is chosen rather than emergent:
+//   1. everything fits            one line, full labels — the wide layout, unchanged.
+//   2. `.compact`                 approvals shortens to one word (PERMISSION_SHORT).
+//                                 The other two pills are already one word, and the
+//                                 menu still spells all four modes out, so this
+//                                 costs a label and no vocabulary.
+//   3. `.tight`                   the line gets DENSER instead of longer: 3px
+//                                 gaps, trimmed pill insets, carets pulled in —
+//                                 every control stays on the one line, exactly
+//                                 where it sits at every other width (Akshil,
+//                                 2026-08-20: the fold read as controls "not in
+//                                 single line").
+//   4. `.stack`                   last resort, at widths below even the dense
+//                                 line: the row folds ONCE, at the spacer —
+//                                 selects on one line, draft controls on the
+//                                 next, flush right. Never the ragged wrap.
+// Reachable in that order and no further: below ~300px (the listing preview pane
+// floors at 220, see #anntools) even three pills exceed the line and the browser's
+// own wrap takes over, which is the honest end of the ladder rather than a fourth
+// idea.
+//
+// MEASURED, following annFitStrip one pane over (Akshil, 2026-08-19: a fixed
+// breakpoint dropped labels while there was still room). The verdict is recomputed
+// from scratch every time — classes off, ask the row what it needs, put back only
+// what is warranted — so widening undoes itself with no state to get stale, and
+// the probe runs inside observer callbacks (before paint) so nothing flashes.
+const composerRows = [...document.querySelectorAll(".composer-row")];
+const footEl = document.getElementById("footnote");
+
+// What the row needs on ONE line, summed by hand. NOT scrollWidth: on a flex row
+// it is floored at clientWidth, and this row also wraps, so an overflowing row
+// quietly gets taller and reports no overflow at all — the exact failure that made
+// this invisible to CSS. The spacer is skipped because it is slack and not
+// content (flex-basis 0 while the row fits, the line break once it does not).
+function composerRowNeed(row) {
+  const cs = getComputedStyle(row);
+  let need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  let kids = 0;
+  for (const c of row.children) {
+    if (c.classList.contains("spacer") || !c.offsetWidth) continue;  // hidden child, no seat
+    need += c.offsetWidth;
+    kids += 1;
+  }
+  if (kids > 1) need += (parseFloat(cs.columnGap) || 0) * (kids - 1);
+  return need;
+}
+
+// Stage 2, and it is a DOM write rather than a class doing the work: what shortens
+// is the selected option's text, which is the only thing an appearance:none select
+// paints. Every option is rewritten, not just the selected one, so the pill is
+// right whichever mode is picked next — `dataset.full` (fillSelect) is what keeps
+// the MENU spelling the sentences out either way. fitSelect after, because the
+// pill's width is explicitly fitted to its label and a shortened label inside the
+// old box would leave exactly the dead space fitSelect exists to remove.
+function setRowCompact(row, on) {
+  row.classList.toggle("compact", on);
+  for (const sel of row.querySelectorAll(".perm-sel")) {
+    for (const o of sel.options) {
+      o.textContent = on ? (PERMISSION_SHORT[o.value] || o.dataset.full) : o.dataset.full;
+    }
+    fitSelect(sel);
+    permPopupGuard(sel, row);
+  }
+}
+
+// The one reader of the OPTIONS the rewrite above cannot fool: the NATIVE
+// popup. Pointer opens the custom menu, which spells everything out from
+// `dataset.full` — but keyboard (Space, Enter, the arrows) opens the select's
+// own list, and that list paints the options' live textContent, so a compact
+// row offered `ask / edits / decides` as the actual choices (bugbot, #685).
+// The full spellings are restored on the keydown that is about to open the
+// popup — synchronously, before the default action — and the short forms come
+// back on change/blur, the two ways a popup ends. fitSelect is deliberately
+// NOT re-run: the pill's box keeps its fitted width, so nothing in the row
+// moves; the longer selected text can clip inside that box only while the
+// popup is open, which is exactly when nobody is looking at the pill.
+// mousedown is guarded too, for any path where the custom menu does not
+// intercept the pointer.
+function permPopupGuard(sel, row) {
+  if (sel.dataset.popguard) return;
+  sel.dataset.popguard = "1";
+  const full = () => {
+    for (const o of sel.options) o.textContent = o.dataset.full;
+  };
+  const short = () => {
+    if (!row.classList.contains("compact")) return;
+    for (const o of sel.options) o.textContent = PERMISSION_SHORT[o.value] || o.dataset.full;
+  };
+  sel.addEventListener("keydown", (e) => {
+    if (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") full();
+  });
+  sel.addEventListener("mousedown", full);
+  sel.addEventListener("change", short);
+  sel.addEventListener("blur", short);
+}
+
+function fitComposerRow(row) {
+  const box = row.clientWidth;
+  if (!box) return;   // the other view's composer: no box, nothing to decide yet
+  const refit = () => {
+    for (const sel of row.querySelectorAll(".model-sel, .effort-sel, .perm-sel")) fitSelect(sel);
+  };
+  row.classList.remove("stack");
+  const wasTight = row.classList.contains("tight");
+  row.classList.remove("tight");
+  setRowCompact(row, false);
+  // setRowCompact refits only the approvals pill; leaving .tight refits ALL the
+  // selects, whose fitted widths baked the tight paddings in.
+  if (wasTight) refit();
+  if (composerRowNeed(row) > box) {
+    setRowCompact(row, true);
+    if (composerRowNeed(row) > box) {
+      row.classList.add("tight");
+      refit();
+      if (composerRowNeed(row) > box) row.classList.add("stack");
+    }
+  }
+  // Line two's right-hand anchor, decided here because the stylesheet cannot name
+  // it: the first control after the spacer is Send when there is no pane (the
+  // screenshot button is [hidden] then, and in the narrow layout), and the
+  // screenshot button whenever there is one. Cleared on every pass — an anchor
+  // left on a control that has since been hidden pins the wrong thing.
+  let lead = null;
+  if (row.classList.contains("stack")) {
+    let past = false;
+    for (const c of row.children) {
+      if (c.classList.contains("spacer")) { past = true; continue; }
+      if (past && c.offsetWidth) { lead = c; break; }
+    }
+  }
+  for (const c of row.children) c.classList.toggle("lead2", c === lead);
+}
+
+// The footnote's own verdict: two lines is its budget, and the second sentence is
+// what pays when the pair will not fit (see #footnote.tight for why that sentence
+// and not an ellipsis). Measured in LINES rather than at a width, because the
+// sentence's length is the other variable — it names the target's kind, so the
+// same column fits it for a file and not for a long folder name.
+function fitFootnote() {
+  footEl.classList.remove("tight");
+  if (!footEl.offsetWidth) return;   // hidden (the landing page has no footnote)
+  const cs = getComputedStyle(footEl);
+  const lh = parseFloat(cs.lineHeight);
+  const text = footEl.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  if (lh > 0 && text > lh * 2 + 1) footEl.classList.add("tight");
+}
+
+// The second sentence, put back after setTargetNoun's write clears the node. The
+// text lives HERE and in the markup and nowhere else — the markup ships it so the
+// first paint is already measurable, this rebuilds it for every later noun.
+function footnoteTail() {
+  const more = document.createElement("span");
+  more.className = "fn-more";
+  more.textContent = " Approvals control what runs without asking.";
+  footEl.appendChild(more);
+  fitFootnote();
+}
+
+// The landing page's title, same posture as the row above it: it keeps its full
+// 26px until the NAME it is showing collides with the column, and then it takes
+// exactly the size that fits on one line. What the screenshot showed at 440px was
+// a folder name set as a two-line 26px headline — the loudest thing on a page
+// whose subject is the composer under it.
+//
+// Not a formula on the column's width, which would have to guess at the name: the
+// name is MEASURED — off-DOM, through fitSelect's canvas, which is the one way
+// this file prices a single line of text. NOT scrollWidth with a nowrap probe,
+// which is what this reached for first: scrollWidth reads clientWidth back on a
+// block that has no scroller (the trap annFitStrip documents one pane over), and
+// it silently left a 31-character folder name at 26px over two lines. Canvas
+// ignores `letter-spacing`, so the number comes out a hair WIDE on a negatively
+// tracked headline — an error in the direction of shrinking one step early, which
+// is the harmless direction.
+//
+// The steps are the STYLESHEET's (.t-mid / .t-min); this only picks the largest
+// one the name fits on, and picks none at all when the full 26px fits. Ratios,
+// not a re-measure per step: text width scales with font-size, so one canvas pass
+// prices all three candidates.
+const HOME_TITLE_STEPS = [[26, ""], [21, "t-mid"], [17, "t-min"]];
+const homeTitleEl = document.querySelector(".home-title");
+function fitHomeTitle() {
+  if (!homeTitleEl.offsetWidth) return;   // landing page not on screen
+  const box = homeTitleEl.clientWidth;
+  if (!box) return;
+  // Measured at the BASE size, with any step class off, so the reading is the
+  // same one whatever the last verdict was.
+  homeTitleEl.classList.remove("t-mid", "t-min");
+  const s = getComputedStyle(homeTitleEl);
+  _fitCtx.font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+  // The spark is part of the title's own text, so the one thing the text width
+  // misses is the margin holding it off the name.
+  const spark = homeTitleEl.querySelector(".spark");
+  const need = _fitCtx.measureText(homeTitleEl.textContent).width +
+    (spark ? parseFloat(getComputedStyle(spark).marginRight) || 0 : 0);
+  const base = parseFloat(s.fontSize) || HOME_TITLE_STEPS[0][0];
+  for (const [px, cls] of HOME_TITLE_STEPS) {
+    if (need * px / base <= box) {
+      if (cls) homeTitleEl.classList.add(cls);
+      return;
+    }
+  }
+  // Nothing fits on one line: the smallest step, wrapping. A heading over two
+  // short lines at 17px is a heading; the same name at 26px was a billboard.
+  homeTitleEl.classList.add("t-min");
+}
+
+function fitComposerChrome() {
+  for (const row of composerRows) fitComposerRow(row);
+  fitHomeTitle();
+  fitFootnote();
+}
+
+// ONE ResizeObserver, and it watches the COLUMN rather than the rows. Deliberate:
+// what these verdicts write (a class on the row, a class on the footnote, option
+// text) changes the composer's HEIGHT, so an observer on the row would be
+// re-triggered by its own answer — settling, since the verdict is recomputed from
+// scratch, but only after a round of "ResizeObserver loop" noise in the console.
+// The column's box is the actual input to all of this and nothing here can move it.
+new ResizeObserver(fitComposerChrome).observe(chatEl);
+{
+  // Two content changes the box observer cannot see, both of them CLASS flips a
+  // long way from this row: `#chat.home` swaps which composer is on screen (the
+  // one that was hidden has no measurable box until it is shown), and the narrow
+  // layout's `body.view-*` hides the screenshot button, which is a seat leaving
+  // the row while the column stands still.
+  const mo = new MutationObserver(fitComposerChrome);
+  for (const el of [document.body, chatEl]) {
+    mo.observe(el, { attributes: true, attributeFilter: ["class"] });
+  }
+  // And the seat coming and going on its own account: shotBtns() are hidden
+  // whenever there is no pane to photograph. Attributes only, filtered to
+  // `hidden` — this function writes `class` down here, and observing what it
+  // writes is how an observer starts scheduling itself.
+  for (const row of composerRows) {
+    mo.observe(row, { subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  }
+  // And the title's own CONTENT, because what it has to fit is the name: boot
+  // writes it long after this runs (#home-file), and a target with a longer name
+  // is a new collision at the same width. Content only — no `attributes` — for
+  // the reason the rows above are watched the same way: the step this decides is
+  // a CLASS on this very node, and an observer watching what it writes schedules
+  // itself forever.
+  mo.observe(homeTitleEl, { subtree: true, childList: true, characterData: true });
+}
+// The pills' first paint, and with it the row's first verdict (syncSelects ends in
+// fitComposerChrome). It runs HERE, after the measuring is defined, and not up with
+// the change listeners: `composerRows` is a const, so a boot-time syncSelects above
+// this block would reach it before it exists.
 syncSelects();
 
 // ── The pills' dropdown: our own menu over a real <select> ──
@@ -9702,7 +10141,10 @@ function openSelPop(sel) {
     row.type = "button";
     row.className = "selpop-opt" + (opt.value === sel.value ? " on" : "");
     const lbl = document.createElement("span");
-    lbl.textContent = opt.textContent;
+    // `dataset.full` and not `textContent`: the pill's own label may be the
+    // shortened one (fitComposerRow), and this menu is where the full sentence
+    // has to be — it is the only place the four approvals modes are spelled out.
+    lbl.textContent = opt.dataset.full || opt.textContent;
     row.appendChild(lbl);
     // Write the value, then let the select's own `change` listeners do the rest
     // (param write, syncSelects, width refit) — this menu knows nothing about

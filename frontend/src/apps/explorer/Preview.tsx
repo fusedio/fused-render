@@ -212,7 +212,7 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     if (busy) return;
     setBusy(true);
     try {
-      // Same capture-on-export as the /apps card (appShot, D392): the shown
+      // Same capture-on-export as the /apps card (appShot, D396): the shown
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
       // folder carries an authored preview.png; the probe below is only so a

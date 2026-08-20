@@ -20,7 +20,7 @@ external apps' recents: `openedAt` here is what `opened_at` reports for these
 entries, where a workspace app's comes from ``app_recents.json``. One folder,
 one entry: a re-open updates `openedAt` in place.
 
-One carve-out (D392): a ``.fused`` extract dir (under ``appfile.appfiles_root``)
+One carve-out (D396): a ``.fused`` extract dir (under ``appfile.appfiles_root``)
 is refused on write and filtered on read. Rendering an opened app file's entry
 still hits the D301 recorder, but its identity on the hub is the ``.fused``
 FILE (exported_apps.py, tag ``exported``) — registering the cache dir too would
@@ -158,7 +158,7 @@ def record_open(path: str) -> bool:
         return False
     if _in_appfiles_cache(path):
         # An opened .fused's extract dir: its hub identity is the .fused FILE
-        # (exported_apps.record_open, fed by POST /api/appfile/open — D392).
+        # (exported_apps.record_open, fed by POST /api/appfile/open — D396).
         return False
     # BEFORE any syscall on the candidate, same ordering as the walk: a stat
     # under a wedged rclone mount blocks the serving thread, and the guard

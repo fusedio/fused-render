@@ -1,4 +1,4 @@
-// One real-pixels screenshot of an app, for the export path (D392): when a
+// One real-pixels screenshot of an app, for the export path (D396): when a
 // folder without an authored preview.png is exported, this captures what the
 // app actually looks like and downloadAppFile bakes it into the .fused as
 // `files/preview.png`.

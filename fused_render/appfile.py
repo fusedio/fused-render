@@ -151,7 +151,7 @@ def export_app_file(app_dir: str, out_path: str,
     marker), or a folder over budget.
     Non-destructive: refuses an existing ``out_path``.
 
-    ``preview_bytes`` is an optional caller-captured card screenshot (D392):
+    ``preview_bytes`` is an optional caller-captured card screenshot (D396):
     it becomes the payload's ``preview.png`` ONLY when the folder has no
     authored one — an author's chosen still always wins over a capture. It
     must be a real PNG under the preview cap; anything else raises rather
@@ -327,7 +327,7 @@ def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     render-time open-recording key on (D301), so a payload whose page lost it
     is refused rather than opened as a non-app.
 
-    ``reuse_only`` is the PREVIEW contract (D392): answer an existing extract
+    ``reuse_only`` is the PREVIEW contract (D396): answer an existing extract
     of these exact bytes or raise — never extract, never rebuild, never touch
     the cache. A card thumbnail or listing peek must not turn a file the user
     never opened into a populated cache dir and a first run of its pages.
