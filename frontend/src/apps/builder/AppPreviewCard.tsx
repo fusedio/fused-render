@@ -236,8 +236,10 @@ export function AppPreviewCard({
           e.preventDefault();
           e.stopPropagation();
           // Also captures a tab screenshot into the file's preview.png when
-          // the folder has no authored one (appShot, D392).
-          exportAppFile(app).catch((err: Error) =>
+          // the folder has no authored one (appShot, D392). The thumb element
+          // rides along as the crop source: a card without a preview.png is
+          // already showing the live app there, so nothing has to flash.
+          exportAppFile(app, thumbRef.current).catch((err: Error) =>
             pushToast({
               msg: "Could not export " + app.name + ": " + err.message,
               tone: "error",

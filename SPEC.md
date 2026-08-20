@@ -7464,10 +7464,15 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
 - **AF-11** (D392) The exported card's thumbnail is the payload's
   `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
   single-member zip read (never an extraction; 404 → the empty thumb).
-  Export can BAKE one in: `downloadAppFile` captures a tab screenshot
+  Export can BAKE one in: `exportAppFile` captures a tab screenshot
   (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
   chosen over DOM serialization because canvas/WebGL apps rasterize blank)
-  when and only when the folder has no authored `preview.png`, and the
+  when and only when the folder has no authored `preview.png`. The crop
+  source is the card's own thumbnail when it is on screen — a card without
+  a preview.png is already rendering the live app there, so nothing
+  navigates or flashes; the full-viewport stage is the fallback for a
+  missing/off-screen thumb. The share prompt itself cannot be silenced —
+  that is getDisplayMedia's contract. The
   X-Fused `POST /api/appfile/export` variant writes it as
   `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
   wins; every capture failure — unsupported, prompt dismissed, blank —

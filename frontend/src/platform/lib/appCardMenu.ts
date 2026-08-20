@@ -34,7 +34,12 @@ function containingDir(path: string): string {
   return cut > 0 ? path.slice(0, cut) : "/";
 }
 
-export function appCardMenu(app: AppInfo): MenuEntry[] {
+export function appCardMenu(
+  app: AppInfo,
+  // The card's thumb element, when the opener has one: the export entry's
+  // no-flash capture crop source (appShot, D392).
+  captureEl?: Element | null,
+): MenuEntry[] {
   const isAppFile = app.kind === "appfile";
   return [
     { label: "Open", icon: MenuIcons.open, onClick: () => openApp(app) },
@@ -72,7 +77,7 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
             onClick: () => {
               // exportAppFile also captures a tab screenshot into the file's
               // preview.png when the folder has no authored one (D392).
-              exportAppFile(app).catch((e: Error) =>
+              exportAppFile(app, captureEl).catch((e: Error) =>
                 pushToast({
                   msg: "Could not export " + app.name + ": " + e.message,
                   tone: "error",

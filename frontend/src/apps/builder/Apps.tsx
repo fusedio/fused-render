@@ -126,7 +126,10 @@ export default function Apps({ config }: { config: Config }) {
   const openCardMenu = (e: React.MouseEvent, app: AppInfo) => {
     // The card is an anchor: without this the browser's own link menu wins.
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app) });
+    // The card's thumb rides along as the export entry's capture crop source
+    // (appShot, D392) — currentTarget is the card anchor the thumb sits in.
+    const thumb = (e.currentTarget as Element).querySelector(".app-pcard-thumb");
+    setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app, thumb) });
   };
 
   useEffect(() => {
