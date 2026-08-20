@@ -184,6 +184,33 @@ def test_a_windows_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
         s.close()
 
 
+def test_forcing_utf8_stdio_never_refuses_to_serve(monkeypatch, capsys):
+    """`_utf8_stdio` degrades to a stderr line, and never raises.
+
+    Both of its real failure modes, in-process, because neither is reachable
+    from the subprocess tests: a stream that has already been read (a
+    TextIOWrapper cannot be reconfigured after the first read, which is why the
+    call sits at the top of `main`) and no stdio object at all (`sys.stdout is
+    None`, which a windowless interpreter can produce). This server exists to
+    answer a tool call the model is BLOCKED on, so an unsettable encoding has to
+    cost a diagnostic and not the whole session — the wire is ASCII often enough
+    that a mis-encoded stream may never matter on that run.
+    """
+    srv = _load("permission_server")
+
+    class _Read:
+        def reconfigure(self, **kw):
+            raise ValueError("can't set encoding after the first read")
+
+    monkeypatch.setattr(srv.sys, "stdin", _Read())
+    # Something with no `reconfigure` at all — what `sys.stdout is None` reaches
+    # (AttributeError), without nulling the stream pytest is capturing through.
+    monkeypatch.setattr(srv.sys, "stdout", object())
+    srv._utf8_stdio()                              # the assertion: it returns
+    err = capsys.readouterr().err
+    assert err.count("could not force UTF-8 stdio") == 2, err
+
+
 def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, server):
     perm_dir = tmp_path / "perm"
     tool_input = {"command": "ls -la", "description": "list"}
