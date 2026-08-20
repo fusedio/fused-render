@@ -2302,22 +2302,14 @@ export default function NewJobModal({
     };
   }, [target]);
 
-  // The verdict now lives in the dropdown, so a verdict that arrives while the
-  // dropdown is shut would be invisible — the list has to come back up to carry
-  // it. Only after a deliberate act on the path (a keystroke, or a folder named
-  // in the picker), never on the prefill an Edit opens with: a card that popped
-  // a list open by itself before the user touched anything would be a jump
-  // scare, not an answer.
-  const revealNew = useRef(false);
-  useEffect(() => {
-    if (!newFolder || pathError || !revealNew.current) return;
-    // Consumed the moment the verdict is on screen, not only when this effect
-    // is the one that put it there: a verdict landing in an already-open list
-    // is revealed too, and a flag left set past that point would reopen the
-    // list on Escape — a dropdown that cannot stay dismissed (bugbot, #679).
-    revealNew.current = false;
-    if (!recentsOpen) openRecents();
-  }, [newFolder, pathError, recentsOpen, openRecents]);
+  // The verdict row rides the dropdown and NEVER forces it open. The reveal
+  // flag this replaced looked helpful — bring the list back so a late verdict
+  // is seen — but the verdict is debounced 400ms behind the keystroke that
+  // armed it, so "type, then click away" had the list popping back OVER
+  // whatever the user had moved on to, and there was no gesture that made it
+  // stay shut (Akshil, 2026-08-20). Typing holds focus and focus holds the
+  // list open, so in practice the verdict is seen exactly when it should be:
+  // while the path is still the thing being worked on.
 
   // The ask shares Title's borderless surface but not its face, and it grows
   // like a note: with the text, from the CSS floor (`.new-task-ask`'s
@@ -2924,12 +2916,7 @@ export default function NewJobModal({
                 openRecents();
               }}
               onClick={openRecents}
-              onChange={(e) => {
-                // Typed, so whatever the path turns out to be is worth showing:
-                // arm the reveal that brings the list back if it was dismissed.
-                revealNew.current = true;
-                setTarget(e.target.value);
-              }}
+              onChange={(e) => setTarget(e.target.value)}
             />
             {recentsOpen && (
               // mousedown preventDefault: keep focus ON the input while a row
@@ -3034,14 +3021,13 @@ export default function NewJobModal({
               setTarget(p);
               rememberRecent(p);
             }}
-            // Mouse path, same ending as the keyboard one: a folder NAMED in
-            // the picker hands focus back to the field and the list comes up
-            // carrying the new-folder row, so both ways of asking for a new
-            // folder are confirmed in the one place that says what will be
-            // created. Only for a named one — a plain "Use this folder" has
-            // nothing to confirm and must not pop a list over the form.
+            // A folder NAMED in the picker hands focus back to the field —
+            // WITHOUT popping the list over the form (Akshil, 2026-08-20: the
+            // dropdown kept coming back after "+ New folder"). The picker was
+            // the confirmation; the field now shows the path, and the list is
+            // one click away if anyone wants the verdict row too.
             onName={() => {
-              revealNew.current = true;
+              suppressOpen.current = true;
               window.setTimeout(() => pathRef.current?.focus(), 0);
             }}
             onClose={() => {

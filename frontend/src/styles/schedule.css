@@ -1390,7 +1390,6 @@
    every label in the list starts on one edge (audit 2026-08-16). */
 .schedule-form .schedule-picker-row.schedule-recents-browse {
   border-top: 1px solid var(--border);
-  border-radius: 0 0 8px 8px;
   margin-top: 4px;
   /* Plain text, not accent (Akshil, 2026-08-16): the hairline and the
      position already say it is the odd row out, and the accent read as a
@@ -1408,19 +1407,12 @@
 
 /* "+ New folder" sits directly under Browse and belongs to the same verb group,
    so it takes Browse's weight but NOT a second hairline — one rule separates
-   the nouns from the verbs, and the bottom rounding moves to whichever verb is
-   last. */
-.schedule-form .schedule-picker-row.schedule-recents-browse {
-  border-radius: 0;
-}
-
+   the nouns from the verbs. Both verbs keep the base row's 6px hover wash —
+   the panel's own 4px padding already holds every wash off its corners, and a
+   square-cornered wash on the last row read as a different kind of row
+   (Akshil, 2026-08-20). */
 .schedule-form .schedule-picker-row.schedule-recents-mk {
   font-weight: 500;
-}
-
-.schedule-form .schedule-picker-row.schedule-recents-browse:last-child,
-.schedule-form .schedule-picker-row.schedule-recents-mk:last-child {
-  border-radius: 0 0 8px 8px;
 }
 
 /* The verdict row: what the typed path IS, in the row shape of the folders

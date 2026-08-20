@@ -1646,18 +1646,16 @@ describe("where the new-folder answer is shown", () => {
     expect(src()).toContain("newFolder && recentsOpen");
   });
 
-  test("a verdict that lands on a shut dropdown reopens it — once", () => {
+  test("the verdict never forces the dropdown open", () => {
     const s = src();
-    // Armed by a keystroke or by naming a folder in the picker — never by the
-    // prefill an Edit opens with, which would pop a list nobody asked for.
-    expect(s).toContain("revealNew.current = true;");
-    // The flag is consumed the moment the verdict is VISIBLE, even when the
-    // list was already open — an unconsumed flag would fire on the next
-    // recentsOpen flip and reopen a list the user just dismissed (bugbot,
-    // #679: Escape could never stick while newFolder was set).
-    expect(s).toContain("if (!newFolder || pathError || !revealNew.current) return;");
-    expect(s).toContain("if (!recentsOpen) openRecents();");
-    expect(s).not.toContain("recentsOpen || !revealNew.current");
+    // The reveal flag is GONE (Akshil, 2026-08-20): the verdict is debounced
+    // 400ms behind the keystroke, so any "bring the list back for it" logic
+    // reopened the dropdown after the user had clicked away — a dropdown that
+    // could not stay dismissed. The row rides the open list only.
+    expect(s).not.toContain("revealNew");
+    // A folder named in the picker refocuses the field WITHOUT the focus
+    // handler popping the list over the form.
+    expect(s).toContain("suppressOpen.current = true;\n              window.setTimeout(() => pathRef.current?.focus(), 0);");
   });
 });
 
