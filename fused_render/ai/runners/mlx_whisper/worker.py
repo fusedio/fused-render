@@ -65,7 +65,6 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
-import engine_options  # noqa: E402 - the option combinations no engine answers
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
@@ -1299,13 +1298,6 @@ def _words_in_original_time(pack, segment, at, until):
 # --------------------------------------------------------------- transcription
 
 
-#: This runner's own code, as `runners/engine_options.py` and the registry spell
-#: it. A literal because a worker cannot import the registry (its venv has no
-#: `fused_render`), and `tests/test_ai_engine_options.py` pins that every code
-#: those tables name is a registered runner.
-RUNNER_CODE = "mlx-whisper"
-
-
 def generate(body):
     """Transcribe one file. Returns `{path, output, segments, language, …}`.
 
@@ -1347,15 +1339,17 @@ def generate(body):
     # word timings cost an extra teacher-forced forward pass per 30-second
     # window, and they change the decode path (see `_decode_clip`) — which is
     # why it is a request the caller makes rather than something always on.
-    # …and DECLINED on a translation, silently, by the shared rule rather than by
-    # a check spelled here. `words_available` carries the reasoning: a
-    # translation's words were never spoken in the audio, so there is nothing to
-    # align them to, and the library returns them anyway with only a warning.
-    # Declined reads to a caller exactly like an engine that has none — the key
-    # is absent — which is the whole point of answering this option best-effort
-    # instead of refusing it.
-    words = (bool(body.get("words"))
-             and engine_options.words_available(RUNNER_CODE, task=task))
+    #
+    # **A TRANSLATION gets none, and it is declined here rather than refused.**
+    # Word timings are positions in the AUDIO, found by aligning the decoded
+    # tokens against it; a translation's tokens are English words the recording
+    # does not contain, so there is nothing to align them to. `transcribe` only
+    # *warns* and returns numbers anyway, which reach a page as a list
+    # indistinguishable from a usable one and highlight the wrong word for the
+    # whole file. Declining reads to a caller exactly like an engine that has no
+    # word timings — the key is absent — which is why this option is answered
+    # best-effort instead of going in `engine_options` with the refusals.
+    words = bool(body.get("words")) and task == "transcribe"
     # Validated HERE, before the decode, and by the shared rule — the bridge
     # and the server both check it first, but neither is the only door into
     # this process, and a `speakers` refused after ninety seconds of `av` is a

@@ -680,12 +680,12 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     # for `diarize`'s reason: it has no true default to invert, it is off unless
     # asked for, so a JSON null and an absent key mean the same thing.
     #
-    # **NOT refused when the engine has none, unlike everything below**, and
-    # `engine_options.words_available` carries why: an engine without word
-    # timings leaves the `words` key off its segments, which a caller reads
-    # directly, so the option is answered best-effort instead of turning a page
-    # that runs on two machines into a page that has to ask which one it is on.
-    # It is forwarded either way and the worker declines it or does not.
+    # **NOT refused when the engine has none, unlike everything below** (D391):
+    # an engine without word timings leaves the `words` key off its segments,
+    # which a caller reads directly, so the option is answered best-effort
+    # instead of turning a page that runs on two machines into a page that has to
+    # ask which one it is on. It is forwarded either way, and the worker honours
+    # it or does not.
     wants_words = bool(body.get("words"))
 
     engine = registry.for_capability(registry.SPEECH_TO_TEXT)

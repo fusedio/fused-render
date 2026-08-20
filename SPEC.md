@@ -6566,20 +6566,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   `weights.npz` — ten head indices for `small`, byte-identical to the blob
   OpenAI ships — which is what makes the timings worth publishing rather than
   the all-heads average the library would otherwise fall back to. **This is the
-  one option answered BEST-EFFORT instead of refused**, and so the one
-  deliberate exception to AI-10g's mechanism rather than a second crack in
-  AI-10c. The refuse-never-ignore rule exists because an ignored option is
+  one option answered BEST-EFFORT instead of refused**, and the deliberate
+  exception to AI-10g. That rule exists because an ignored option is
   undetectable — a page that asked for English and got French has nothing to
   check — and `words` is not that: honouring it puts a list on the segment and
   declining leaves the key off, so `segment.words || []` is the whole contract
   and one page runs unchanged on every machine. Refusing would do the opposite of
   what AI-10c is for, making a page work on a Mac and 400 on a CTranslate2 box.
-  The other two engines could carry it, and are not equally close: faster-whisper
-  takes `word_timestamps` and returns the same DTW-aligned words, so it is one
-  entry in `engine_options.WORDS_RUNNERS` plus a mapping. Parakeet's native times
-  are per SUBWORD rather than per word and quantized to an 80ms grid by its TDT
-  duration head, so it needs word rebuilding (group on a leading space) and would
-  step visibly under a highlight. **`task:
+  The other two engines could carry it — faster-whisper for a mapping, since it
+  returns the same DTW-aligned words; Parakeet for more, its native times being
+  per SUBWORD on an 80ms grid. **`task:
   "translate"` carries no words on any engine**: word timings are positions in
   the audio and a translation's words were never spoken in it, so there is
   nothing to align them to, and the library's warn-and-return-anyway reaches a
