@@ -146,9 +146,14 @@ class MCPServer:
             pending.failure = failure
             pending.done.set()
             return pending
+        # ensure_ascii=False, matching Node's JSON.stringify: the real client
+        # puts non-ASCII on the wire as UTF-8 BYTES, not as \uXXXX escapes, and
+        # an escaping serializer here cannot reach the decoder at all — every
+        # payload would be pure ASCII, which any codec accepts (Bugbot, PR #677:
+        # the Windows-locale test passed with the fix reverted).
         self.proc.stdin.write(json.dumps({
             "jsonrpc": "2.0", "id": pending.id, "method": method,
-            "params": params or {}}) + "\n")
+            "params": params or {}}, ensure_ascii=False) + "\n")
         self.proc.stdin.flush()
         return pending
 
