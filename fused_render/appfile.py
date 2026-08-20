@@ -79,12 +79,14 @@ _SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
 # no editing surface behind it, so the instructions file stays home.
 _SKIP_FILES = frozenset({"CLAUDE.md"})
 
-# RH-11: fused.ai() runs the claude CLI / a local model on the AUTHOR's
-# machine. The recipient's machine may have neither, and "no claude" is part
-# of this artifact's contract — same textual match as export.py's
-# _UNSUPPORTED, an `if (fused.env === "local")` guard deliberately does not
-# make a page exportable.
-_AI_CALL = re.compile(r"fused\.ai\s*\(")
+# fused.ai() is deliberately ALLOWED in a .fused, unlike the hosted exporter
+# (RH-11): a hosted page has no runtime behind it, but an opened .fused runs
+# inside the recipient's full local fused-render, where /api/ai exists. A
+# recipient without the claude CLI or a resident local model gets the API's
+# own graceful `ai_unavailable` rejection, which pages are already written to
+# handle (the authoring skill's error table). "No claude" in this artifact's
+# contract means no EDITING surface — embed mode strips that — not no AI.
+# (Owner call, D387, reversing the D384 stance.)
 
 # Stale-extract sweep: an interrupted open cannot clean its staging dir.
 _STAGING_TTL_SECONDS = 24 * 3600
@@ -133,7 +135,7 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
 
     Returns the manifest written into the zip. Raises :class:`AppFileError`
     on anything user-correctable: not an app folder (no page carries the
-    marker), a page calling ``fused.ai(`` (RH-11), or a folder over budget.
+    marker), or a folder over budget.
     Non-destructive: refuses an existing ``out_path``.
     """
     app_dir = os.path.abspath(app_dir)
@@ -159,19 +161,6 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
         )
     total = 0
     for full, rel in members:
-        # RH-11 gate on every exported page, not just the entry — any page in
-        # the file can be navigated to once the app is open.
-        if rel.lower().endswith((".html", ".htm")):
-            try:
-                with open(full, "r", encoding="utf-8", errors="replace") as f:
-                    if _AI_CALL.search(f.read()):
-                        raise AppFileError(
-                            f"page {rel!r} calls fused.ai(), which runs on the author's "
-                            "machine and is not part of an exported app (RH-11); remove "
-                            "it before exporting"
-                        )
-            except OSError as exc:
-                raise AppFileError(f"cannot read {rel}: {exc}")
         try:
             total += os.path.getsize(full)
         except OSError:

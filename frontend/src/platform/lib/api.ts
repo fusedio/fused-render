@@ -1488,7 +1488,7 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 
 // Download an app folder as a single `.fused` app file (SPEC §43, D384).
 // fetch + blob rather than a bare <a download>, same reason as the templates
-// export above: a non-2xx JSON error (not an app, fused.ai() page, over
+// export above: a non-2xx JSON error (not an app, over
 // budget) surfaces to the caller instead of saving as a corrupt file.
 export async function downloadAppFile(path: string, name: string): Promise<void> {
   const res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));

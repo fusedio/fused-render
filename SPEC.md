@@ -7402,9 +7402,13 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   contract stays home). Budgets 4000 files / 512 MB; loud `AppFileError`s.
 - **AF-2** A folder with no marker-carrying page is not exportable — a
   `.fused` must have an entry to open (the marker is the only signal, D301).
-- **AF-3** RH-11 holds file-wide: any page in the payload containing
-  `fused.ai(` blocks the export (same textual match as the hosted exporter;
-  a `fused.env` guard does not exempt it).
+- **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
+  apply — D387 reversed D384's original stance): an opened `.fused` runs
+  inside the recipient's full local runtime, where `/api/ai` exists. A
+  recipient without the claude CLI or a resident local model gets the API's
+  own graceful `ai_unavailable` rejection, which pages already handle. The
+  "no claude" contract is about the EDITING surface (embed mode strips it),
+  not the AI runtime.
 - **AF-4** The trigger is the app card menu's **Export App File**, which
   downloads via GET `/api/appfile/export?path=` (fetch + blob so a 400's JSON
   error surfaces as a toast, never saves as a corrupt file). The route builds

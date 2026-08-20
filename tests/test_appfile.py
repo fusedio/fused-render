@@ -88,11 +88,16 @@ def test_export_refuses_non_app_folder(tmp_path):
         appfile.export_app_file(str(d), str(tmp_path / "x.fused"))
 
 
-def test_export_rejects_fused_ai_pages(tmp_path):
+def test_export_allows_fused_ai_pages(tmp_path):
+    # Unlike the hosted exporter (RH-11), fused.ai() ships: an opened .fused
+    # runs in the recipient's full local runtime, where /api/ai exists (D387).
+    # A recipient without a claude CLI gets the graceful ai_unavailable state.
     app = make_app(tmp_path)
     (app / "chat.html").write_text("<html><script>fused.ai('hi')</script></html>")
-    with pytest.raises(appfile.AppFileError, match="fused.ai"):
-        appfile.export_app_file(str(app), str(tmp_path / "x.fused"))
+    out = tmp_path / "x.fused"
+    appfile.export_app_file(str(app), str(out))
+    with zipfile.ZipFile(out) as zf:
+        assert "files/chat.html" in zf.namelist()
 
 
 def test_export_refuses_existing_out_path(tmp_path):
