@@ -24,6 +24,15 @@ if
   is dropped too — we cannot promise something we cannot classify.
 * it is not `private`. There is no step an ordinary account can take to reach
   one, so a card for it could never be actioned by the person reading it.
+* its `library_name`, when it has one, is not a framework this app has no
+  runner for at all. The tag above says what a model is FOR and is blind to
+  what it is MADE OF, so a `text-to-image` repo of `.tflite` graphs passed it
+  and arrived with a Download button in front of a load that could only fail.
+  This is a NARROW test and stays narrow — see `_UNRUNNABLE_LIBRARIES`: it
+  names formats with no path through any runner under any circumstances, and
+  it is a denylist because the formats we DO read are open and
+  community-labelled (one FLUX.2 klein loads from four different values of
+  this field).
 
 **The constraint is "an engine here can run it", not "nothing further is asked
 of the user"** — that is D316's correction. Gated repos come BACK, carrying
@@ -208,6 +217,48 @@ _DTYPE_BITS = {
     "U64": 64, "I64": 64, "F64": 64,
 }
 
+# Hub `library_name` values NOTHING here can ever open, and the reason this is a
+# DENYLIST rather than an allowlist.
+#
+# The tag filter above asks "is this KIND of model runnable"; it cannot see the
+# FORMAT, so `litert-community/FLUX.2-klein-4B-LiteRT` — a `text-to-image` repo
+# of `.tflite` graphs — arrived with a Download button in front of a load that
+# could only fail. `grep -rn litert fused_render/` finds nothing, and no
+# quantization, platform or wheel would change that.
+#
+# An allowlist keyed to the libraries the runners are BUILT on (diffusers,
+# transformers, mlx) is the tempting version and it is wrong, because it is not
+# what the repos we load actually report. Read off the Hub, not guessed: the
+# FLUX.2 klein family alone loads today from `diffusers`
+# (black-forest-labs/FLUX.2-klein-4B), `ggml`
+# (unsloth/FLUX.2-klein-4B-GGUF, the recipe's quantized transformer),
+# `diffusion-single-file` (mlx-community/FLUX.2-Klein-4B-4bit, the one repo
+# `MFLUX_VARIANTS` names) and `mflux` (Runpod/FLUX.2-klein-4B-mflux-4bit) —
+# four values for one model — while Whisper adds `ctranslate2` and `mlx`. A
+# three-name allowlist would hide most of what works. The set of formats we
+# read is open and community-labelled; the set we provably cannot is small and
+# nameable, so the small one is the one written down.
+#
+# **What this claims and what it does not.** It claims only that the named
+# framework has no runner in this app AT ALL — not that a repo passing it will
+# load. It deliberately does NOT try to predict quantization, file layout or
+# anything host-specific: that is D316's line, and a diffusers-tagged repo with
+# a bespoke quantization still gets through and still fails, which is a
+# different and harder problem. When in doubt a value is LEFT OUT: a card that
+# should not be there is the status quo, and hiding a repo that would have
+# loaded is a regression this filter must not introduce.
+_UNRUNNABLE_LIBRARIES = frozenset({
+    # Graph formats for other runtimes entirely. No runner imports any of them.
+    "litert", "tflite", "coreml", "onnx", "openvino", "unity-sentis",
+    "keras", "tf-keras",
+    # Speech stacks that are not the three this app has: a `.nemo` archive is
+    # the case worth naming, since `parakeet-mlx` reads the MLX CONVERSION of
+    # one (`library_name: "mlx"`) and never the archive itself.
+    "nemo", "espnet", "speechbrain", "k2",
+    # Classical NLP toolkits, which publish under supported pipeline tags.
+    "spacy", "fasttext", "flair", "stanza", "allennlp", "sklearn", "paddlenlp",
+})
+
 _cache: dict[tuple, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
 
@@ -370,7 +421,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
-    **Three ways to be dropped, and they are the search's whole contract**
+    **Four ways to be dropped, and they are the search's whole contract**
     (D313, narrowed by D316). A row that reaches the page comes with a Download
     button or with the one sentence that says what to do first, so every one of
     these is the difference between an actionable card and one that apologises:
@@ -383,6 +434,14 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
       that can see it. There is no step an ordinary account can take to reach
       one: no licence to accept, no queue to join, so a card for it could never
       be actioned by the person reading it.
+    * a `library_name` in `_UNRUNNABLE_LIBRARIES` — the right KIND of model in
+      a format nothing here reads. The tag says what a repo is FOR and cannot
+      see what it is MADE OF, which is how a `.tflite` FLUX got a Download
+      button; see that set for why it is a denylist and, importantly, for the
+      much smaller thing it claims. A MISSING or non-string `library_name` is
+      not a drop: the Hub often does not set it, and silence about the format
+      is not evidence against it — only an explicit unrunnable value counts,
+      the same way `_gate` reads only what the Hub actually said.
 
     **`gated` is NOT a drop, and the distinction is the point** (D316). It was
     one, on the rule that every card must be downloadable — a rule drawn one
@@ -406,6 +465,9 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     capability = capability_for_task(task)
     if capability is None:
         return None
+    library = raw.get("library_name") if isinstance(raw.get("library_name"), str) else None
+    if library and library.lower() in _UNRUNNABLE_LIBRARIES:
+        return None
     safetensors = raw.get("safetensors")
     return {
         "id": model_id,
@@ -422,7 +484,9 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         # tests one field for "is there a gate and what kind". A missing key
         # would make "no gate" and "the Hub did not say" the same answer.
         "gated": _gate(raw.get("gated")),
-        "library": raw.get("library_name") if isinstance(raw.get("library_name"), str) else None,
+        # Whatever the Hub said, minus the values dropped above — so the badge
+        # on a card and the reason a card exists read off the same field.
+        "library": library,
         "downloads": raw.get("downloads") if isinstance(raw.get("downloads"), int) else None,
         "likes": raw.get("likes") if isinstance(raw.get("likes"), int) else None,
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,

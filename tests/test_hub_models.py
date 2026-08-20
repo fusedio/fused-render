@@ -502,6 +502,62 @@ def test_an_ungated_result_says_so_rather_than_saying_nothing(client, hub_cache,
     assert [r["gated"] for r in _search(client).json()["models"]] == [None, None]
 
 
+def test_a_result_in_a_format_no_runner_reads_is_dropped(client, hub_cache, monkeypatch):
+    """The tag is right and the format is unreadable — the case the tag filter
+    cannot see.
+
+    `litert-community/FLUX.2-klein-4B-LiteRT` is the repo from the complaint: a
+    `text-to-image` model, so `capability_for_task` passes it, published as
+    `.tflite` graphs, which nothing in `runners/` imports under any
+    circumstances. The card offered a Download button and the load that followed
+    could only fail.
+    """
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "litert-community/FLUX.2-klein-4B-LiteRT",
+         "pipeline_tag": "text-to-image", "library_name": "litert"},
+        # A raw NeMo archive is the same shape of mistake in the audio column:
+        # `parakeet-mlx` reads the MLX CONVERSION of one, never the `.nemo`.
+        {"id": "nvidia/parakeet-tdt-0.6b-v3",
+         "pipeline_tag": "automatic-speech-recognition", "library_name": "nemo"},
+        _hit("org/known"),
+    ]))
+    assert [m["id"] for m in _search(client).json()["models"]] == ["org/known"]
+
+
+def test_a_result_with_no_library_name_is_kept(client, hub_cache, monkeypatch):
+    """An ABSENT library says nothing about the format, so it cannot be read as
+    "unsupported" — only a value naming a framework we have no runner for is."""
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/unsaid"), _hit("org/null", library_name=None),
+        # Not a string, so not a value either: this must be as harmless as a
+        # missing key rather than a 500 in a `.lower()`.
+        _hit("org/weird", library_name=17),
+    ]))
+    assert [m["id"] for m in _search(client).json()["models"]] == [
+        "org/unsaid", "org/null", "org/weird"]
+
+
+@pytest.mark.parametrize("library", [
+    # Every one of these is a value a repo something here loads TODAY reports,
+    # read off the Hub rather than guessed — which is why this filter is a
+    # denylist. An allowlist of the libraries our runners are built on
+    # (diffusers, transformers, mlx) would have hidden five of these eight.
+    "diffusers",            # black-forest-labs/FLUX.2-klein-4B
+    "transformers",         # most text models
+    "mlx",                  # mlx-community/whisper-large-v3-turbo, …/Qwen3-8B-4bit
+    "mflux",                # Runpod/FLUX.2-klein-4B-mflux-4bit
+    "ggml",                 # unsloth/FLUX.2-klein-4B-GGUF, the recipe's transformer
+    "gguf",                 # the same repos' other spelling of it
+    "ctranslate2",          # Systran/faster-whisper-large-v3
+    "diffusion-single-file",  # mlx-community/FLUX.2-Klein-4B-4bit
+])
+def test_a_library_something_here_loads_is_not_dropped(client, hub_cache, monkeypatch, library):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/fine", library_name=library)]))
+    models = _search(client).json()["models"]
+    assert [m["id"] for m in models] == ["org/fine"]
+    assert models[0]["library"] == library
+
+
 def test_asking_for_a_task_nothing_here_runs_is_refused(client, hub_cache, monkeypatch):
     # Not an empty grid: that reads as "the Hub has no summarization models"
     # rather than "this app does not run them", and the Hub is not the one being
