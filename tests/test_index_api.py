@@ -46,6 +46,20 @@ def _tree(tmp_path):
     return src
 
 
+def _point_home_at(monkeypatch, path):
+    """Make `os.path.expanduser("~")` answer `path`, on every platform.
+
+    `monkeypatch.setenv("HOME", ...)` alone only works on POSIX: Windows'
+    `ntpath.expanduser` reads `USERPROFILE` (falling back to
+    `HOMEDRIVE`+`HOMEPATH`) and never consults `HOME` at all, so a test that
+    only sets `HOME` silently keeps pointing `warm_root()`/`config.home` at
+    the real machine's profile instead of the tree it built."""
+    real_expanduser = os.path.expanduser
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: str(path) if p == "~" else real_expanduser(p))
+
+
 # -- guards --------------------------------------------------------------------
 
 @pytest.mark.parametrize("path,body", [
@@ -821,7 +835,7 @@ def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypat
     FilesHome searches `config.home` (routers/config.py — `expanduser("~")`),
     not the folder the app was opened on, so a warm aimed anywhere else fills
     a pool the first keystroke never reads."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _point_home_at(monkeypatch, tmp_path)
     seen = []
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: seen.append(("search", root))
@@ -835,8 +849,10 @@ def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypat
     index_router.run_startup_warm()
     # Same pair of calls the route makes, and pooled under the same index root:
     # a warm that filtered under a different key would fill a second pool.
+    # `filter_corpus`'s `index_root` comes from `enclosing_root(scan_roots(...))`
+    # — canonical_root form, not the caller's raw spelling.
     assert seen == [("search", index_router.runner.canonical_root("~")),
-                    ("filter", str(tmp_path))]
+                    ("filter", index_router.runner.canonical_root(str(tmp_path)))]
 
 
 def test_startup_warm_never_raises(home, tmp_path, monkeypatch):
