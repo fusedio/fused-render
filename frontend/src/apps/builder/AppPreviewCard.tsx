@@ -211,7 +211,10 @@ export function AppPreviewCard({
           still taking tab focus. Positioned over the thumb via the card's own
           positioning context. A <button> inside the card's <a>: it must both
           preventDefault (or the card link opens the app) and stopPropagation
-          (or the click ALSO bubbles to onAppCardClick). */}
+          (or the click ALSO bubbles to onAppCardClick). Not rendered on an
+          exported .fused card (kind "appfile", D392): its path is the file
+          itself and the export route only takes app folders. */}
+      {app.kind !== "appfile" && (
       <button
         type="button"
         className="app-pcard-export"
@@ -230,6 +233,7 @@ export function AppPreviewCard({
       >
         {MenuIcons.compress}
       </button>
+      )}
     </a>
   );
 }

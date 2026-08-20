@@ -87,6 +87,15 @@ def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(defaul
         result = appfile.open_app_file(file)
     except appfile.AppFileError as exc:
         return _error(str(exc))
-    # No explicit hub registration: rendering the marker-carrying entry
-    # records the open (D301), which outside the workspace IS registration.
+    # The open IS the recency signal for the .fused file itself (D392): this
+    # is the one moment the SOURCE path is known (rendering the extracted
+    # entry only knows the cache dir, which registered_apps now refuses).
+    # Best-effort — a failed write must not fail the open. The fusedapp
+    # template skips this POST under `_preview=1`, so thumbnails never record.
+    try:
+        from fused_render import exported_apps
+
+        exported_apps.record_open(file)
+    except Exception:  # noqa: BLE001 - recency is telemetry, not the answer
+        pass
     return {**result, "view": embed_url_path(result["entry"])}

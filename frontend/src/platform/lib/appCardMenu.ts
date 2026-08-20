@@ -22,15 +22,29 @@ import { pushToast } from "./toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 
+// An exported `.fused` card's path is the FILE, not a folder (kind
+// "appfile", D392): "Open in Explorer" lands on its CONTAINING folder — the
+// files around it, same promise as the folder case — and "Export App File"
+// is not offered (the card already IS the export). Canonical paths are
+// forward-slashed on every platform (server's canonical_fs_path), so string
+// dirname is exact here.
+function containingDir(path: string): string {
+  const cut = path.lastIndexOf("/");
+  return cut > 0 ? path.slice(0, cut) : "/";
+}
+
 export function appCardMenu(app: AppInfo): MenuEntry[] {
+  const isAppFile = app.kind === "appfile";
   return [
     { label: "Open", icon: MenuIcons.open, onClick: () => openApp(app) },
     {
       label: "Open in Explorer",
       icon: MenuIcons.folder,
       // isDir is the nav hint the explorer uses to paint a listing scaffold
-      // before the stat resolves — an app card always knows it has a folder.
-      onClick: () => navigate(app.path, { isDir: true }),
+      // before the stat resolves — the folder is known either way: the app's
+      // own for a folder-shaped app, the .fused file's parent for an export.
+      onClick: () =>
+        navigate(isAppFile ? containingDir(app.path) : app.path, { isDir: true }),
     },
     "separator",
     // Same label and glyph as the explorer's own row menu (listing/useFileOps),
@@ -44,18 +58,26 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
         );
       },
     },
-    {
-      // The whole app as one double-clickable `.fused` file (SPEC §43, D385).
-      // Errors (not an app, over budget) come back
-      // as a toast rather than a corrupt download — downloadAppFile throws.
-      label: "Export App File",
-      icon: MenuIcons.compress,
-      onClick: () => {
-        downloadAppFile(app.path, app.name).catch((e: Error) =>
-          pushToast({ msg: "Could not export " + app.name + ": " + e.message, tone: "error" }),
-        );
-      },
-    },
+    // The whole app as one double-clickable `.fused` file (SPEC §43, D385).
+    // Errors (not an app, over budget) come back as a toast rather than a
+    // corrupt download — downloadAppFile throws. Not offered on a card that
+    // already IS a .fused file (the export route would 400 on a non-folder).
+    ...(isAppFile
+      ? []
+      : ([
+          {
+            label: "Export App File",
+            icon: MenuIcons.compress,
+            onClick: () => {
+              downloadAppFile(app.path, app.name).catch((e: Error) =>
+                pushToast({
+                  msg: "Could not export " + app.name + ": " + e.message,
+                  tone: "error",
+                }),
+              );
+            },
+          },
+        ] satisfies MenuEntry[])),
     {
       label: "Copy Path",
       icon: MenuIcons.copyPath,

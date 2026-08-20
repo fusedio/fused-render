@@ -1667,6 +1667,11 @@ export interface AppInfo {
   // (~/.fused-render/app_recents.json). Null for an app never opened, and
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
+  // "appfile" for an exported `.fused` FILE discovered via the file index
+  // (tag "exported", D392) — `path`/`entry` are the file itself, so surfaces
+  // must not offer folder actions (open-folder, export) on it. Undefined for
+  // every folder-shaped app and on older backends.
+  kind?: "appfile";
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {

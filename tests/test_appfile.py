@@ -246,6 +246,10 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     from fused_render.server.app import create_app
 
     monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    # Isolated home: the open below records into appfile_recents.json (D392),
+    # and a write into the session-shared home would leak an "exported" row
+    # into every later /api/apps assertion.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     client = TestClient(create_app(start_dir=str(tmp_path)))
     app_dir = make_app(tmp_path)
 
@@ -288,13 +292,19 @@ def test_routes_export_and_gateless_open(tmp_path, monkeypatch):
     modes = [t["mode"] for t in r.json().get("templates") or []]
     assert "fusedapp" in modes
 
-    # AF-8: rendering the extracted entry records the open (D301), which for a
-    # folder outside the workspace IS hub registration.
+    # AF-8 (revised by D392): the hub identity of an opened app file is the
+    # .fused FILE — POST /api/appfile/open recorded it into appfile_recents —
+    # and the extract dir is refused by the registered-apps store, so
+    # rendering the extracted entry does NOT register the cache dir.
     r = client.get("/render", params={"path": extracted["entry"]})
     assert r.status_code == 200
-    from fused_render import registered_apps
+    from fused_render import exported_apps, registered_apps
 
-    assert any(
+    assert not any(
         os.path.abspath(e["path"]) == extracted["dir"]
         for e in registered_apps.read_entries()
+    )
+    assert any(
+        os.path.abspath(e["path"]) == str(fused_path)
+        for e in exported_apps.read_recents()
     )
