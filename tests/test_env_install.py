@@ -393,7 +393,9 @@ def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     (fake_app / "Resources" / "bin").mkdir(parents=True)
     interp = fake_app / "MacOS" / "python"
     interp.write_text("")
-    uv = fake_app / "Resources" / "bin" / "uv"
+    # uv_bin() looks for "uv.exe" on win32 (see uv_bin's own `name` line) —
+    # match that filename, same as the sibling test just below.
+    uv = fake_app / "Resources" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
     uv.write_text("")
     monkeypatch.setattr(sys, "executable", str(interp))
     monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
@@ -508,6 +510,7 @@ def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
     assert envinstall.script_python_ready() is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_server_on_the_WRONG_version_resolves_a_uv_managed_312(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -574,6 +577,7 @@ def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
     assert envinstall.script_python_ready() is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_an_explicit_script_python_override_wins_but_is_still_probed(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -591,6 +595,7 @@ def test_an_explicit_script_python_override_wins_but_is_still_probed(
     assert envinstall.script_python_ready() is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_the_interpreter_is_resolved_ONCE_per_process(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -651,6 +656,7 @@ def test_the_interpreter_is_never_ANOTHER_VENVS_python(
     assert "--managed-python" in find and "--no-project" in find, repr(find)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
     """"Nothing here yet" is a fact about this instant, not about the machine.
 

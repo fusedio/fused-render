@@ -111,7 +111,7 @@ def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     assert m == ["canvas", "code", "claude", "reader"]
     assert error is None
     entries, _ = _server_templates._templates_for(str(p), False)
-    assert entries[0]["path"].endswith("canvas/template.html")
+    assert entries[0]["path"].endswith(os.path.join("canvas", "template.html"))
     assert entries[0]["icon"] is not None
     # stat only MARKS the gate (deferred CT-12) …
     by_mode = {e["mode"]: e for e in entries}

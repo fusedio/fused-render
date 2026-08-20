@@ -621,7 +621,7 @@ def test_startup_schedules_one_scan_per_root(home, tmp_path, monkeypatch):
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == [str(src)]
+    assert started == [runner.canonical_root(str(src))]
 
 
 def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
@@ -632,7 +632,12 @@ def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
-    runner._record_scan(cfg, str(src))  # a scan just ran
+    # `_record_scan` does not canonicalize its own `root` (only `last_scan`'s
+    # read side does — see test_index_freshness's floor test for the same
+    # asymmetry), so seeding the debounce record directly like this has to
+    # canonicalize first or `run_startup_scan`'s debounce check never finds
+    # it and starts a scan anyway.
+    runner._record_scan(cfg, runner.canonical_root(str(src)))  # a scan just ran
     index_router.run_startup_scan(start_dir=str(tmp_path))
     assert started == []
 
@@ -648,7 +653,7 @@ def test_startup_scan_rescans_once_the_debounce_has_elapsed(home, tmp_path, monk
     runner._record_scan(cfg, str(src))
     monkeypatch.setattr(index_router, "SCAN_DEBOUNCE_S", 0)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == [str(src)]
+    assert started == [runner.canonical_root(str(src))]
 
 
 def test_startup_scan_never_raises(home, tmp_path, monkeypatch):
@@ -683,7 +688,7 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     cfg.roots = [str(tmp_path / "deleted"), str(ok)]
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == [str(ok)]
+    assert started == [runner.canonical_root(str(ok))]
 
 
 # -- the compact corpus --------------------------------------------------------
