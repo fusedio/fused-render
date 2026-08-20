@@ -1490,8 +1490,33 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 // fetch + blob rather than a bare <a download>, same reason as the templates
 // export above: a non-2xx JSON error (not an app, over
 // budget) surfaces to the caller instead of saving as a corrupt file.
-export async function downloadAppFile(path: string, name: string): Promise<void> {
-  const res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+// The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
+// served as bytes by a single-member zip read (never an extraction). 404s when
+// the file ships without one — the card's onError fallback owns that case.
+export function appfilePreviewUrl(path: string): string {
+  return "/api/appfile/preview?path=" + encodeURIComponent(path);
+}
+
+export async function downloadAppFile(
+  path: string,
+  name: string,
+  // Optional capture of the app to bake into the .fused as its preview.png
+  // (D396). The server only uses it when the folder has no authored one.
+  preview?: Blob,
+): Promise<void> {
+  let res: Response;
+  if (preview) {
+    const form = new FormData();
+    form.set("path", path);
+    form.set("preview", preview, "preview.png");
+    res = await fetch("/api/appfile/export", {
+      method: "POST",
+      headers: { "X-Fused": "1" },
+      body: form,
+    });
+  } else {
+    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+  }
   if (!res.ok) {
     let message = `export failed (${res.status})`;
     try {
@@ -1514,6 +1539,32 @@ export async function downloadAppFile(path: string, name: string): Promise<void>
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
+}
+
+// Where a `.fused` would clone to in the workspace, and whether it already has
+// (D397). `cloned` is decided by the destination folder EXISTING — there is no
+// records file — so it survives a restart, a moved .fused and a re-export, at
+// the named cost that an unrelated `local/<slug>` folder reads as this app's
+// clone. The GET touches nothing; the POST does the copy and answers the same
+// shape, with `cloned: true` meaning "was already there, nothing copied".
+export interface AppFileCloneTarget {
+  /** The app's manifest name, or the file's stem when it has none. */
+  name: string;
+  /** That name reduced to one path-safe segment — the folder under local/. */
+  slug: string;
+  /** Absolute destination, forward-slashed. */
+  path: string;
+  cloned: boolean;
+}
+
+export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
+  return getJson<AppFileCloneTarget>(
+    "/api/appfile/clone?path=" + encodeURIComponent(path),
+  );
+}
+
+export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
+  return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
@@ -1667,6 +1718,12 @@ export interface AppInfo {
   // (~/.fused-render/app_recents.json). Null for an app never opened, and
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
+  // "appfile" for an exported `.fused` FILE discovered via the file index
+  // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
+  // must not offer folder actions (open-folder, export) on it, and it
+  // contributes no Folders chip (repoChips). Undefined for every folder-shaped
+  // app and on older backends.
+  kind?: "appfile";
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {

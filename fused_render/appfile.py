@@ -75,6 +75,12 @@ MAX_OPEN_TOTAL_BYTES = 1024 * 1024 * 1024
 # runs). A real manifest is a few hundred bytes; 256 KiB is generous.
 _MANIFEST_CAP_BYTES = 256 * 1024
 
+# Cap on the payload's preview.png, both directions (a capture injected at
+# export time and the member `read_preview` streams to a card). A card
+# thumbnail is ~1280x800; 8 MiB is generous for any real screenshot.
+MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
 # Directory/file names never exported. Dotted names (`.git`, `.claude`,
 # `.venv`, `.DS_Store`, `.env` — which may hold secrets) are dropped by the
 # hidden-name rule; these are the non-dotted machinery dirs on top of it.
@@ -136,13 +142,24 @@ def default_file_name(app_dir: str) -> str:
     return os.path.basename(os.path.abspath(app_dir)) + ".fused"
 
 
-def export_app_file(app_dir: str, out_path: str) -> dict:
+def export_app_file(app_dir: str, out_path: str,
+                    preview_bytes: bytes | None = None) -> dict:
     """Write the app folder at ``app_dir`` as a ``.fused`` file at ``out_path``.
 
     Returns the manifest written into the zip. Raises :class:`AppFileError`
     on anything user-correctable: not an app folder (no page carries the
     marker), or a folder over budget.
     Non-destructive: refuses an existing ``out_path``.
+
+    ``preview_bytes`` is an optional caller-captured card screenshot (D396):
+    it becomes the payload's ``preview.png`` ONLY when the folder has no
+    authored one — an author's chosen still always wins over a capture. It
+    must be a real PNG under the preview cap; anything else raises rather
+    than baking a broken thumbnail into the artifact forever. That strictness
+    is for a caller that MEANT to supply a still: the export ROUTE, whose
+    bytes come off a best-effort screen grab, drops an over-cap capture before
+    it gets here, because a failed grab must cost the thumbnail and not the
+    export (routers/appfile.api_appfile_export_with_preview).
     """
     app_dir = os.path.abspath(app_dir)
     if not os.path.isdir(app_dir):
@@ -176,6 +193,16 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
             f"app folder is too large to export ({total} bytes > {MAX_EXPORT_TOTAL_BYTES})"
         )
 
+    if preview_bytes is not None:
+        if len(preview_bytes) > MAX_PREVIEW_BYTES:
+            raise AppFileError(
+                f"preview image is too large ({len(preview_bytes)} bytes > "
+                f"{MAX_PREVIEW_BYTES})")
+        if not preview_bytes.startswith(_PNG_MAGIC):
+            raise AppFileError("preview image is not a PNG")
+        if any(rel == app_listing.PREVIEW_IMAGE_NAME for _, rel in members):
+            preview_bytes = None  # the authored still wins
+
     manifest = {
         "fused_app_file": 1,
         "root": PAYLOAD_DIR,
@@ -191,6 +218,9 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            if preview_bytes is not None:
+                zf.writestr(
+                    f"{PAYLOAD_DIR}/{app_listing.PREVIEW_IMAGE_NAME}", preview_bytes)
             for full, rel in members:
                 zf.write(full, arcname=f"{PAYLOAD_DIR}/{rel}")
         os.replace(tmp, out_path)
@@ -238,6 +268,47 @@ def read_manifest(fused_path: str) -> dict:
     return manifest
 
 
+def read_preview(fused_path: str) -> bytes | None:
+    """The payload's ``preview.png`` bytes, or None when the file ships
+    without one — read-only, single member, nothing extracted (the same
+    posture as :func:`read_manifest`; a card thumbnail must never trigger
+    extraction). Raises :class:`AppFileError` for an unreadable/invalid
+    ``.fused``; a member that is over the cap or not a PNG answers None —
+    for a THUMBNAIL, "broken still" and "no still" earn the same fallback."""
+    manifest = read_manifest(fused_path)
+    root = manifest.get("root") or PAYLOAD_DIR
+    if not isinstance(root, str) or "\\" in root or ".." in root.split("/"):
+        raise AppFileError(f"invalid root path in manifest: {root!r}")
+    member = f"{root}/{app_listing.PREVIEW_IMAGE_NAME}"
+    try:
+        with zipfile.ZipFile(fused_path) as zf:
+            try:
+                with zf.open(member) as f:
+                    # Bounded read, like the manifest's: declared sizes in an
+                    # archive are attacker-controlled.
+                    raw = f.read(MAX_PREVIEW_BYTES + 1)
+            except KeyError:
+                return None
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise AppFileError(f"not a readable .fused file: {exc}")
+    if len(raw) > MAX_PREVIEW_BYTES or not raw.startswith(_PNG_MAGIC):
+        return None
+    return raw
+
+
+def _slug(name: str, fallback: str = "app") -> str:
+    """A manifest ``name`` reduced to one path-safe segment.
+
+    The name comes out of an attacker-controlled zip, so this is the ONLY thing
+    that may turn it into a filesystem path: the character class admits no
+    separator, no dot and no drive letter, which is what makes ``"../evil"``
+    and ``"C:\\evil"`` collapse to ordinary segments instead of escaping the
+    directory they are joined to. Shared by the extract cache key and the clone
+    destination so the two cannot drift on what an app is called.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or fallback
+
+
 def _file_key(fused_path: str, name: str) -> str:
     """Cache dir name: slug of the app name + content hash. Content-addressed
     so re-opening the same bytes re-uses the extract and an edited/re-exported
@@ -246,8 +317,7 @@ def _file_key(fused_path: str, name: str) -> str:
     with open(fused_path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "app"
-    return f"{slug}-{h.hexdigest()[:16]}"
+    return f"{_slug(name)}-{h.hexdigest()[:16]}"
 
 
 def _make_read_only(root: str) -> None:
@@ -263,7 +333,7 @@ def _make_read_only(root: str) -> None:
                 continue
 
 
-def open_app_file(fused_path: str) -> dict:
+def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     """Extract the ``.fused`` file into the content-addressed cache (re-using
     a prior extract of the same bytes) and return
     ``{"dir", "entry", "name", "reused"}`` with absolute paths.
@@ -272,6 +342,11 @@ def open_app_file(fused_path: str) -> dict:
     manifest names the entry, but the marker is what the /apps hub and the
     render-time open-recording key on (D301), so a payload whose page lost it
     is refused rather than opened as a non-app.
+
+    ``reuse_only`` is the PREVIEW contract (D396): answer an existing extract
+    of these exact bytes or raise — never extract, never rebuild, never touch
+    the cache. A card thumbnail or listing peek must not turn a file the user
+    never opened into a populated cache dir and a first run of its pages.
     """
     fused_path = os.path.abspath(fused_path)
     if not os.path.isfile(fused_path):
@@ -295,6 +370,8 @@ def open_app_file(fused_path: str) -> dict:
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
             return {"dir": dest, "entry": entry_abs, "name": name, "reused": True}
+        if reuse_only:
+            raise AppFileError("this app file has not been opened yet")
         # A half-extracted or manually-damaged cache dir: rebuild it. Files
         # are 0o444, so lift the bit before removing.
         shutil.rmtree(dest, ignore_errors=True)
@@ -302,6 +379,8 @@ def open_app_file(fused_path: str) -> dict:
             _lift_read_only(dest)
             shutil.rmtree(dest, ignore_errors=True)
 
+    if reuse_only:
+        raise AppFileError("this app file has not been opened yet")
     staging = tempfile.mkdtemp(prefix="open-", dir=staging_root)
     try:
         try:
@@ -346,3 +425,99 @@ def _lift_read_only(root: str) -> None:
                 os.chmod(os.path.join(dirpath, fname), 0o644)
             except OSError:
                 continue
+
+
+def clone_dir() -> str:
+    """The workspace tag dir a clone lands in: ``<workspace>/local``. The same
+    dir the showcase Clone installs into (community.COMMUNITY_TAG_DIR), and for
+    the same reason — ``local`` is where a copy you own for editing belongs, as
+    against the read-only artifact it came from."""
+    from fused_render.shell.seed import fused_dir
+
+    return os.path.join(fused_dir(), "local")
+
+
+def clone_target(fused_path: str) -> dict:
+    """Where the ``.fused`` at ``fused_path`` would clone to, and whether that
+    is already there: ``{"name", "slug", "path", "cloned"}``.
+
+    A read-only probe — one bounded manifest read plus one ``isdir`` — so the
+    header button can pick its label without extracting anything.
+
+    **Presence at the destination IS the "already cloned" signal** (owner's
+    call): there is no records file to consult, so the answer survives a
+    restart, a moved ``.fused`` and a re-export of the same app, none of which
+    a stored record keyed on path or content hash survives together. The named
+    cost is the converse — an UNRELATED folder the user happens to keep at
+    ``local/<slug>`` reads as this app's clone, and the button then offers to
+    open it. Accepted deliberately over a suffixed ``-2`` folder (which the
+    owner rejected: it invents a path nobody asked for) and over a state store
+    (which would go stale against the folder it describes).
+    """
+    fused_path = os.path.abspath(fused_path)
+    if not os.path.isfile(fused_path):
+        raise AppFileError(f"no such file: {fused_path}")
+    manifest = read_manifest(fused_path)
+    name = manifest.get("name") if isinstance(manifest.get("name"), str) else ""
+    # The FILE STEM is the fallback, not a shared literal: two differently
+    # named app files with no manifest name would otherwise collide on one
+    # `local/app` folder and the second would read as the first's clone.
+    stem = os.path.splitext(os.path.basename(fused_path))[0]
+    slug = _slug(name, fallback=_slug(stem))
+    dest = os.path.join(clone_dir(), slug)
+    return {
+        "name": name or stem,
+        "slug": slug,
+        "path": dest.replace(os.sep, "/"),
+        "cloned": os.path.isdir(dest),
+    }
+
+
+def clone_app_file(fused_path: str) -> dict:
+    """Copy the ``.fused`` at ``fused_path`` into ``<workspace>/local/<slug>``
+    as an ordinary, editable app folder. Answers ``clone_target``'s shape, with
+    ``cloned`` True when the destination was ALREADY there and nothing was
+    copied — a re-clone is a no-op that reports where the copy lives, never a
+    second folder and never an overwrite of the user's edits.
+
+    The payload comes from ``open_app_file``'s extract, not from a second unzip
+    of our own: one hardened extractor for every archive this app accepts
+    (D386), and a file never opened before simply extracts on the way through.
+
+    Plain files, no ``git init`` (owner's call) — unlike the showcase Clone,
+    which inits a repo to diff against upstream. There is no upstream here: a
+    ``.fused`` is a snapshot, so the baseline a repo would provide is the copy
+    itself, and the app-git machinery will pick the folder up on its own once
+    it is edited.
+    """
+    target = clone_target(fused_path)
+    if target["cloned"]:
+        return target
+    src = open_app_file(fused_path)["dir"]
+    local = clone_dir()
+    os.makedirs(local, exist_ok=True)
+    # Staged INSIDE the destination tag dir so the claim is a same-filesystem
+    # rename (community._install's reason: a home-dir staging area can sit on
+    # another volume, where os.rename fails outright).
+    staging = tempfile.mkdtemp(dir=local, prefix=f".clone-{target['slug']}-")
+    try:
+        staged_app = os.path.join(staging, target["slug"])
+        shutil.copytree(src, staged_app)
+        # copytree carries the extract's 0o444 across, which would ship an
+        # UNEDITABLE "development copy" — the whole point of cloning. Lifted in
+        # staging, before the rename, so a clone is never briefly visible in
+        # the workspace as read-only.
+        _lift_read_only(staged_app)
+        dest = os.path.join(local, target["slug"])
+        try:
+            os.rename(staged_app, dest)
+        except OSError:
+            # Lost a race with a concurrent clone of the same app (or the user
+            # created the folder meanwhile). Same answer as finding it there to
+            # begin with: taken means cloned.
+            if not os.path.isdir(dest):
+                raise AppFileError(f"could not place the cloned app at {dest}")
+            return {**target, "cloned": True}
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return {**target, "cloned": False}
