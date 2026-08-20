@@ -2557,7 +2557,10 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    assert captured["outPreview"] == started["previewPath"]
+    # `captured` is the RAW request the worker gets (a native path,
+    # backslashed on Windows); `previewPath` is the reply's canonical
+    # (forward-slash) form of the same path — see `ai_runtime.canonical_fs_path`.
+    assert ai_runtime.canonical_fs_path(captured["outPreview"]) == started["previewPath"]
     _wait_job(started["jobId"])
 
 
@@ -2873,11 +2876,16 @@ def test_the_transcribe_reply_settles_the_request_before_anything_runs(
     """Everything the caller needs comes back from the POST: which model, which
     file, and where the transcript will land. Nothing waits on the work."""
     reply = _post_transcribe(client, path=recording, task="translate").json()
-    assert reply["path"] == os.path.abspath(recording)
+    # Canonical (forward-slash), like every path this API hands back — see
+    # `ai_runtime.canonical_fs_path` — so it is `os.path.abspath` run through
+    # the SAME transform, not the raw (backslashed, on Windows) form.
+    assert reply["path"] == ai_runtime.canonical_fs_path(os.path.abspath(recording))
     assert reply["model"] == catalog.default_for(registry.SPEECH_TO_TEXT)
     assert reply["task"] == "translate"
     assert reply["output"].endswith(".json")
-    assert os.path.dirname(reply["output"]).endswith(os.path.join("ai", "transcripts"))
+    # A literal forward slash rather than `os.path.join`: `output` is already
+    # canonical, so the suffix it ends with is too, on every platform.
+    assert os.path.dirname(reply["output"]).endswith("ai/transcripts")
     _wait_job(reply["jobId"])
 
 
@@ -2909,7 +2917,10 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     reply = _post_transcribe(client, path=recording).json()
     _wait_job(reply["jobId"])
 
-    assert seen["outPartial"] == reply["outputPartial"]
+    # `seen` is the RAW request the worker gets (a native path, backslashed on
+    # Windows); `outputPartial` is the reply's canonical (forward-slash) form
+    # of the same path — see `ai_runtime.canonical_fs_path`.
+    assert ai_runtime.canonical_fs_path(seen["outPartial"]) == reply["outputPartial"]
     # A SIBLING of the two the request already named, not a third location:
     # `_transcripts_dir()` is where the server decided user files go.
     assert (os.path.dirname(seen["outPartial"])
@@ -3155,7 +3166,10 @@ def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
                                                    "page.html")},
                         headers={"X-Fused": "1"})
     assert reply.status_code == 200, reply.json()
-    assert reply.json()["path"] == recording
+    # Canonical (forward-slash), like every path this API hands back — see
+    # `ai_runtime.canonical_fs_path` — not the raw (backslashed, on Windows)
+    # form `recording` is built in.
+    assert reply.json()["path"] == ai_runtime.canonical_fs_path(recording)
     _wait_job(reply.json()["jobId"])
 
 
@@ -3891,8 +3905,13 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
            EXTRA})),
       );
     """.replace("OPTS", opts).replace("EXTRA", extra or '"_": null')
+    # Node writes UTF-8 to stdout regardless of platform; without an explicit
+    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
+    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # text some of these harnesses drive through (see e.g.
+    # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -3982,8 +4001,13 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
           {ok: false, message: err.message, type: err.type, progress, rows})),
       );
     """
+    # Node writes UTF-8 to stdout regardless of platform; without an explicit
+    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
+    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # text some of these harnesses drive through (see e.g.
+    # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -4345,8 +4369,13 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
         # for the caller under test. Without one, `watch(null)` would never
         # reach the branch that decides whether to tail.
         else "{onProgress: () => {}}")
+    # Node writes UTF-8 to stdout regardless of platform; without an explicit
+    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
+    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # text some of these harnesses drive through (see e.g.
+    # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

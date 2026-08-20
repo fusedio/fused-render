@@ -562,13 +562,16 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # worker's field name for the same thing `path` is, so it is not repeated.
     return {
         "jobId": job,
-        "path": path,
-        # Canonical, because this goes back to a page that will put it in a
-        # `/api/fs/raw` URL — a Windows path that reached it backslashed would
-        # not match what the shell stored for the same file. It is a promise
-        # about a PATH, not about a file: a model with no fitted projection
-        # writes nothing there, and `fused.ai.image` treats a missing preview
-        # as the ordinary case rather than as an error.
+        # Canonical, like every other path this API hands back (`previewPath`
+        # below, and `/api/ai/transcribe`'s own `path`) — this goes back to a
+        # page that will put it in a `/api/fs/raw` URL, and a Windows path that
+        # reached it backslashed would not match what the shell stored for the
+        # same file.
+        "path": canonical_fs_path(path),
+        # Canonical for the same reason. It is a promise about a PATH, not
+        # about a file: a model with no fitted projection writes nothing there,
+        # and `fused.ai.image` treats a missing preview as the ordinary case
+        # rather than as an error.
         "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
         "prompt": request["prompt"],

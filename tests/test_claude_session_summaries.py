@@ -17,6 +17,7 @@ import pytest
 from tests import _machinery_records as records
 from fastapi.testclient import TestClient
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as claude_sessions_mod
 
@@ -111,7 +112,8 @@ def test_lists_sessions_named_by_first_prompt_newest_activity_first(
     sessions = _get(client)
     assert [s["session_id"] for s in sessions] == ["newer", "older"]
     assert [s["name"] for s in sessions] == ["Ship the release", "Fix the login bug"]
-    assert [s["cwd"] for s in sessions] == [str(proj), str(proj)]
+    # cwd comes back canonicalized (forward slashes) like /api/claude-sessions.
+    assert [s["cwd"] for s in sessions] == [canonical_fs_path(str(proj))] * 2
 
     newer, older = sessions
     assert newer["started_at"] == "2026-08-16T09:00:00+00:00"
