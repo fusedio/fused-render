@@ -415,6 +415,95 @@ console.log(JSON.stringify({intro: intro,
     assert out["b"] == "this chart too"
 
 
+def test_a_click_mid_sentence_splits_that_sentence_by_word_timings(html):
+    """The reason word timings were asked for (D392/D393): a whisper segment is
+    a sentence or several, so a segment-grained match hands the WHOLE sentence
+    to whichever click its first word started nearest — and clicking mid-thought
+    ("this button is wrong" click "and this chart too") is the ordinary way a
+    walkthrough is spoken. With `words` on the segment, the sentence splits at
+    the click that interrupted it."""
+    out = _node(["function annRecAssign("], """
+var annotations = [{id: "a", t: 1.0}, {id: "b", t: 3.0}];
+function annSave() {}
+const intro = annRecAssign(["a", "b"], [
+  {start: 1.1, text: "this button is wrong and this chart too", words: [
+    {start: 1.1, end: 1.4, word: " this"},
+    {start: 1.4, end: 1.8, word: " button"},
+    {start: 1.8, end: 2.0, word: " is"},
+    {start: 2.0, end: 2.4, word: " wrong"},
+    {start: 3.1, end: 3.3, word: " and"},
+    {start: 3.3, end: 3.5, word: " this"},
+    {start: 3.5, end: 3.9, word: " chart"},
+    {start: 3.9, end: 4.2, word: " too"},
+  ]},
+]);
+console.log(JSON.stringify({intro: intro,
+  a: annotations[0].content, b: annotations[1].content}));
+""", html)
+    assert out["a"] == "this button is wrong"
+    assert out["b"] == "and this chart too"
+    assert out["intro"] == ""
+
+
+def test_words_before_the_first_click_are_the_intro_at_word_grain(html):
+    """The intro rule is unchanged by word timings — it just cuts where the
+    speaking actually crossed the first click, so framing said in the same
+    breath as the first comment no longer drags the comment's words with it."""
+    out = _node(["function annRecAssign("], """
+var annotations = [{id: "a", t: 2.0}];
+function annSave() {}
+const intro = annRecAssign(["a"], [
+  {start: 0.0, text: "make this cleaner this button is wrong", words: [
+    {start: 0.0, end: 0.4, word: " make"},
+    {start: 0.4, end: 0.7, word: " this"},
+    {start: 0.7, end: 1.2, word: " cleaner"},
+    {start: 2.1, end: 2.3, word: " this"},
+    {start: 2.3, end: 2.7, word: " button"},
+    {start: 2.7, end: 2.9, word: " is"},
+    {start: 2.9, end: 3.3, word: " wrong"},
+  ]},
+]);
+console.log(JSON.stringify({intro: intro, a: annotations[0].content}));
+""", html)
+    assert out["intro"] == "make this cleaner"
+    assert out["a"] == "this button is wrong"
+
+
+def test_a_reply_with_no_word_timings_still_matches_by_segment(html):
+    """`words: true` is answered best-effort and never refused (D392): an engine
+    that has none leaves the key OFF, and a MIXED reply is possible too. Each
+    segment is matched at whatever grain it arrived with — and a segment whose
+    words are not all timed falls back whole rather than dropping words."""
+    out = _node(["function annRecAssign("], """
+var annotations = [{id: "a", t: 1.0}, {id: "b", t: 3.0}];
+function annSave() {}
+const intro = annRecAssign(["a", "b"], [
+  {start: 1.1, text: "worded segment splits here", words: [
+    {start: 1.1, end: 1.5, word: " worded"},
+    {start: 1.5, end: 1.9, word: " segment"},
+    {start: 3.1, end: 3.4, word: " splits"},
+    {start: 3.4, end: 3.6, word: " here"},
+  ]},
+  {start: 1.2, text: "no words at all", words: []},
+  {start: 1.3, text: "words with no times",
+   words: [{word: " words"}, {word: " with"}]},
+]);
+console.log(JSON.stringify({intro: intro,
+  a: annotations[0].content, b: annotations[1].content}));
+""", html)
+    # segment 1 split by its words; segments 2 and 3 landed WHOLE on click a
+    assert out["a"] == "worded segment no words at all words with no times"
+    assert out["b"] == "splits here"
+    assert out["intro"] == ""
+
+
+def test_the_walkthrough_asks_for_word_timings(html):
+    """The one transcribe call on the page sends `words: true` — the matcher
+    above is only finer-grained when the reply carries them."""
+    body = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "fused.ai.transcribe({ path, words: true })" in body
+
+
 def test_the_intro_joins_a_typed_draft_and_no_canned_prefill_exists(html):
     """An annotation-only send needs no prompt — the comments are the content,
     so the old "apply the comments" prefill is gone. What the user adds rides
