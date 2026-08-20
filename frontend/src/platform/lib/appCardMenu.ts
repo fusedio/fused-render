@@ -49,7 +49,7 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
       // Errors (not an app, over budget) come back
       // as a toast rather than a corrupt download — downloadAppFile throws.
       label: "Export App File",
-      icon: MenuIcons.compress,
+      icon: MenuIcons.download,
       onClick: () => {
         downloadAppFile(app.path, app.name).catch((e: Error) =>
           pushToast({ msg: "Could not export " + app.name + ": " + e.message, tone: "error" }),
