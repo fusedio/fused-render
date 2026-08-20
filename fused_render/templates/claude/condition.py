@@ -14,12 +14,15 @@ folders into "app folder → split chat" and "ordinary folder → the other chat
 asks a single question of both kinds:
 
 * **A FILE** (every key in the registry's authored-file set — source, config,
-  prose, data, image assets) → allowed. This is the file-scoped chat: the left
-  pane renders the file in its OWN default template and the annotation tools
-  work over that, which is the whole reason this chat replaced the plain
-  chat mode on file keys (D235). Nothing more is asked of a file: the
-  registry already decided which extensions offer the mode, and a file needs
-  neither a workspace nor a repository to be worth talking about.
+  prose, data, image assets — and, since D400 widened the binding, EVERY other
+  registered key too: media, archives, 3D, databases) → allowed. This is the
+  file-scoped chat: the left pane renders the file in its OWN default template
+  and the annotation tools work over that, which is the whole reason this chat
+  replaced the plain chat mode on file keys (D235). Nothing more is asked of a
+  file: the registry no longer filters by extension at all, and a file needs
+  neither a workspace nor a repository to be worth talking about. D400 leans on
+  that — it moved the "is this worth a chat" question OUT of the registry and
+  into this gate, so what the gate refuses below is now the whole filter.
 * **A DIRECTORY** (the universal "/" key) → allowed for ANY directory. The old
   rule here was `<workspace>/<tag>/<project>` or a registered linked app, on the
   reasoning that an ordinary folder's left pane "would have no app entry to
