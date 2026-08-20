@@ -311,6 +311,14 @@ function encodeFsPathSegments(fsPath: string): string {
 }
 
 export function urlForFsPath(fsPath: string, search?: string): string {
+  // A .fused app file is never previewed directly (mirrors the Python codec,
+  // _view_url_codec.view_url_path, same posture as .bookmark's sentinel): it
+  // routes to the server-served /openfused confirm page, which extracts and
+  // opens the app only on the explicit confirm click (SPEC §43, D385).
+  if (/\.fused$/i.test(fsPath)) {
+    const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+    return "/openfused?file=" + encodeURIComponent(norm);
+  }
   // Windows callers (server stat/list results, bookmarks) may carry
   // backslashes; the URL codec speaks forward slashes only.
   return PREFIX + encodeFsPathSegments(fsPath) + (search || "");

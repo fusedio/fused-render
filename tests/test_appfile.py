@@ -170,6 +170,31 @@ def test_open_rejects_non_fused_zip(tmp_path):
         appfile.read_manifest(str(plain))
 
 
+def test_sweep_never_evicts_live_extracts(tmp_path, monkeypatch):
+    # The staging sweep runs on every open against dirs whose mtime never
+    # advances — it must only ever see .staging/, or a day-old extracted app
+    # would be rmtree'd out from under its hub card and open tabs.
+    monkeypatch.setattr(appfile, "appfiles_root", lambda: str(tmp_path / "cache"))
+    app = make_app(tmp_path)
+    out = tmp_path / "demo.fused"
+    appfile.export_app_file(str(app), str(out))
+    first = appfile.open_app_file(str(out))
+    # Age the extract (and a leftover staging dir) past the TTL.
+    old = 1_000_000_000
+    os.utime(first["dir"], (old, old))
+    stale = os.path.join(str(tmp_path / "cache"), ".staging", "open-stale")
+    os.makedirs(stale)
+    os.utime(stale, (old, old))
+
+    other = make_app(tmp_path, name="other")
+    out2 = tmp_path / "other.fused"
+    appfile.export_app_file(str(other), str(out2))
+    appfile.open_app_file(str(out2))
+
+    assert os.path.isfile(first["entry"])  # the live extract survived
+    assert not os.path.isdir(stale)  # the stale staging dir did not
+
+
 def test_codec_routes_fused_files_to_confirm_page():
     assert view_url_path("/tmp/My App.fused") == (
         "/openfused?file=" + "%2Ftmp%2FMy%20App.fused"
@@ -220,3 +245,13 @@ def test_routes_export_info_open(tmp_path, monkeypatch):
     r = client.get("/api/appfile/export", params={"path": str(tmp_path / "nope")})
     assert r.status_code == 400
     assert "error" in r.json()
+
+    # AF-8: rendering the extracted entry records the open (D301), which for a
+    # folder outside the workspace IS hub registration.
+    r = client.get("/render", params={"path": body["entry"]})
+    assert r.status_code == 200
+    from fused_render import registered_apps
+
+    assert any(
+        os.path.abspath(e["path"]) == body["dir"] for e in registered_apps.read_entries()
+    )

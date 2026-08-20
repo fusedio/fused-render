@@ -266,8 +266,15 @@ def open_app_file(fused_path: str) -> dict:
     manifest = read_manifest(fused_path)
     name = manifest.get("name") if isinstance(manifest.get("name"), str) else "app"
     root = appfiles_root()
-    os.makedirs(root, exist_ok=True)
-    sweep_stale_staging(root, _STAGING_TTL_SECONDS)
+    # Staging lives in its OWN subdir, and only that subdir is swept: the root
+    # holds the long-lived content-addressed extracts, whose mtime is their
+    # extract time and never advances — sweeping the root would rmtree a
+    # perfectly live app 24h after it was opened (hub card gone, open tab's
+    # calls failing mid-session). Extracts are evicted only by a re-open of
+    # changed bytes rebuilding its own key, never by age.
+    staging_root = os.path.join(root, ".staging")
+    os.makedirs(staging_root, exist_ok=True)
+    sweep_stale_staging(staging_root, _STAGING_TTL_SECONDS)
 
     dest = os.path.join(root, _file_key(fused_path, name))
     entry_rel = manifest["entry"]
@@ -282,7 +289,7 @@ def open_app_file(fused_path: str) -> dict:
             _lift_read_only(dest)
             shutil.rmtree(dest, ignore_errors=True)
 
-    staging = tempfile.mkdtemp(prefix=".fused-appfile-open-", dir=root)
+    staging = tempfile.mkdtemp(prefix="open-", dir=staging_root)
     try:
         try:
             with zipfile.ZipFile(fused_path) as zf:
