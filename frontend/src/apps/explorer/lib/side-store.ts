@@ -43,11 +43,38 @@
 // choice the user did not make, so widening the window back re-reads this number
 // rather than the clamped one.
 let chosen: number | null = null;
+const listeners = new Set<() => void>();
 
 export function getSideWidth(): number | null {
   return chosen;
 }
 
 export function setSideWidth(px: number | null): void {
+  if (chosen === px) return;
   chosen = px;
+  listeners.forEach((fn) => fn());
+}
+
+// WHY THIS STORE NOW NOTIFIES, when for its whole life it was a bare variable
+// read once at mount. The REOPEN drag is the reason, and it is the one gesture
+// where the thing being resized is not the thing holding the pointer.
+//
+// Pulling a shut column open (SideReopenEdge) starts on a strip that exists only
+// while the column is shut, so the instant the pull crosses its threshold the
+// column mounts and the strip is unmounted out from under the still-running
+// drag. The gesture itself survives that — capture is taken on
+// documentElement, the same trick a row drag uses for the same reason
+// (listing/row-drag.ts) — but the widths it goes on producing have nowhere to
+// land: PreviewSidebar seeds from `getSideWidth()` once and never looks again.
+// So the second half of the drag would be silent, the cursor walking away from
+// an edge that had stopped following it.
+//
+// Making the store the channel is what closes that gap: the strip writes every
+// move here, and the column subscribes. It costs the same set-of-callbacks the
+// sidebar's own store already uses (platform/lib/sidebarstate), and it keeps the
+// handoff to ONE fact — the width — rather than a second live-drag protocol
+// between two components that never render together.
+export function subscribeSideWidth(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
 }

@@ -297,6 +297,63 @@
   pointer-events: none;
 }
 
+/* ---- the seam a SHUT sidebar leaves behind (SideChrome's SideReopenEdge) ----
+   Drag the split's right edge and the column comes back. Zero-width in the flex
+   row — it must cost the layout nothing, since it is present on every file that
+   merely COULD have a companion — with the hit strip hung off its right edge as
+   a ::before. Hit-testing a pseudo-element dispatches to its host, so the host's
+   onPointerDown is what catches it. */
+.preview-side-reopen {
+  flex: 0 0 0;
+  align-self: stretch;
+  position: relative;
+  z-index: 3;
+}
+
+.preview-side-reopen::before {
+  content: "";
+  position: absolute;
+  /* Starts BELOW the crumb bar: the bar's own trailing controls (the mode
+     switcher, and this column's opener) end at this same right edge, and a strip
+     over them would eat the outer pixels of their hit area for a gesture nobody
+     has begun yet. The seam belongs beside the content it resizes. */
+  top: var(--topbar-h);
+  bottom: 0;
+  right: 0;
+  /* The 6px of .sidebar-resize-handle rather than the divider's 5px: an edge with
+     no column behind it has only its own width to be found by. */
+  width: 6px;
+  cursor: col-resize;
+  /* Capture is taken on documentElement, but the browser still claims a touch
+     drag as a pan before the first pointermove without this. */
+  touch-action: none;
+}
+
+/* The same accent wash every other draggable seam wears on hover
+   (.sidebar-resize-handle, .listing-divider, .preview-side-divider) — which is
+   the only announcement this one makes. */
+.preview-side-reopen:hover::before {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* WHILE A REOPEN DRAG RUNS. On the root element and not on the strip, because
+   the strip is unmounted the instant the column opens and the drag continues
+   past that (SideChrome's SideReopenEdge) — a `:has()` rule keyed to the strip
+   would switch off halfway through the gesture, taking the stable cursor and the
+   iframe guard with it. */
+html.side-reopening {
+  cursor: col-resize;
+}
+
+html.side-reopening body {
+  user-select: none;
+}
+
+html.side-reopening iframe {
+  pointer-events: none;
+}
+
 /* The column, full height of the window. Its flex-basis is set inline in pixels
    (PreviewSidebar): a sidebar's job is to hold a chat composer and a message
    column legibly, which is a width, not a share of the window — hence px here
@@ -488,9 +545,17 @@
 
 /* Embed mode (/embed/<path>): content only — all shell chrome hidden.
    Views still render breadcrumb/header into the DOM; hiding here keeps
-   view modules embed-unaware. */
+   view modules embed-unaware.
+
+   The two SEAMS are named alongside the chrome they belong to, and neither is
+   reachable through its panel's own selector: the sidebar's handle is a sibling
+   of #sidebar (SidebarFrame), and the companion column's reopen strip is all
+   that is left of a column that is shut. Both would otherwise survive as bare
+   col-resize strips down the edges of an embed that has no shell to resize. */
 body.embed #sidebar,
+body.embed .sidebar-resize-handle,
 body.embed #breadcrumb,
+body.embed .preview-side-reopen,
 body.embed .preview-header {
   display: none;
 }
