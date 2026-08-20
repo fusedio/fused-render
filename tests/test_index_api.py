@@ -903,9 +903,10 @@ def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypat
     index_gitignore._cache.clear()
     # HOME is what the warm aims at; point it at the scanned tree so the warm
     # answers `covered` and actually sweeps.
-    monkeypatch.setenv("HOME", str(src))
+    _point_home_at(monkeypatch, src)
     index_router.run_startup_warm()
-    pool = index_gitignore._cache.get(str(src))
+    # the pool is keyed by canonical_root(src), not the raw literal.
+    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
     assert pool is not None
     assert "noise.log" in pool.ignored
     assert "alpha.txt" in pool.decider
@@ -944,7 +945,7 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     index_router.save_config(cfg)
     index_gitignore._cache.clear()
     # HOME is what the warm aims at, and what the scheduler scans.
-    monkeypatch.setenv("HOME", str(src))
+    _point_home_at(monkeypatch, src)
     index_router.run_startup_scan(start_dir=str(tmp_path))
 
     # Force the uncovered branch rather than racing the worker: the first
@@ -964,7 +965,8 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     index_router.run_startup_warm()
 
     assert len(calls) == 2, "the warm did not search again after the scan"
-    pool = index_gitignore._cache.get(str(src))
+    # the pool is keyed by canonical_root(src), not the raw literal.
+    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
     assert pool is not None
     assert "noise.log" in pool.ignored
     assert "alpha.txt" in pool.decider
@@ -1107,7 +1109,9 @@ def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
     the empty string and silently drops the root."""
     body = _client(tmp_path).post("/api/index/config", json={"roots": ["/"]},
                                   headers={"X-Fused": "1"}).json()
-    assert body["roots"] == ["/"]
+    # canonical_root("/") is "/" on POSIX but the drive root ("D:/") on
+    # Windows — still a bare root either way, just not the literal "/".
+    assert body["roots"] == [runner.canonical_root("/")]
 
 
 def test_scanning_reflects_every_run_not_just_the_newest(home, tmp_path):

@@ -74,7 +74,13 @@ def test_branch_nests_under_branches_dir(ts, monkeypatch):
     _export(monkeypatch, branch="fix/template-kernel-listing")
     # sanitize (lowercase, collapse non-[a-z0-9] to '-', trim, truncate to 12)
     # happens ONCE, app-side, and arrives already applied.
-    assert ts.appenv.home_dir() == "/tmp/fr/branches/fix-template"
+    #
+    # branch_dir() nests with a plain os.path.join, never normalized before
+    # FUSED_RENDER_HOME_DIR is exported — on Windows that mixes the "/tmp/fr"
+    # literal's forward slashes with the newly-joined segments' backslashes,
+    # so the expected value has to go through the very same join rather than
+    # assume it stays all-forward-slash.
+    assert ts.appenv.home_dir() == os.path.join("/tmp/fr", "branches", "fix-template")
 
 
 def test_default_branch_names_are_baseline(ts, monkeypatch):
@@ -99,8 +105,12 @@ def test_branch_mount_path_is_under_mounts_root(ts, monkeypatch):
     _export(monkeypatch, branch="fix/template-kernel-listing",
             home=os.path.expanduser("~/.fused-render"))
     mroot = ts.appenv.mounts_dir() + os.sep
-    wsf = os.path.expanduser(
-        "~/.fused-render/branches/fix-template/mounts/source.coop/x.zarr")
+    # normpath, matching mounts_dir()'s own: expanduser("~/...") only expands
+    # the "~" segment and concatenates the rest of this forward-slash literal
+    # verbatim, so on Windows the result is userhome (backslashed) + a
+    # forward-slashed tail — a mixed string mroot (normpath'd) never prefixes.
+    wsf = os.path.normpath(os.path.expanduser(
+        "~/.fused-render/branches/fix-template/mounts/source.coop/x.zarr"))
     assert wsf.startswith(mroot)
 
 
