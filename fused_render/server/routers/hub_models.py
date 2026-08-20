@@ -1,5 +1,5 @@
-"""POST /api/ai-models/hub/search — models on the Hugging Face Hub that this
-machine can actually run, told apart from the ones already on this disk.
+"""/api/ai-models/hub/* — models on the Hugging Face Hub that this machine can
+actually run, told apart from the ones already on this disk.
 
 The AI Models page (§37) answers "what did I already download". This answers the
 other half — "what is there" — and the two are only useful *together*: the Hub
@@ -24,6 +24,15 @@ if
   is dropped too — we cannot promise something we cannot classify.
 * it is not `private`. There is no step an ordinary account can take to reach
   one, so a card for it could never be actioned by the person reading it.
+* its `library_name`, when it has one, is not a framework this app has no
+  runner for at all. The tag above says what a model is FOR and is blind to
+  what it is MADE OF, so a `text-to-image` repo of `.tflite` graphs passed it
+  and arrived with a Download button in front of a load that could only fail.
+  This is a NARROW test and stays narrow — see `_UNRUNNABLE_LIBRARIES`: it
+  names formats with no path through any runner under any circumstances, and
+  it is a denylist because the formats we DO read are open and
+  community-labelled (one FLUX.2 klein loads from four different values of
+  this field).
 
 **The constraint is "an engine here can run it", not "nothing further is asked
 of the user"** — that is D316's correction. Gated repos come BACK, carrying
@@ -66,7 +75,7 @@ Three rules the outbound call follows:
 * **The token is hf's, not ours.** `hf_auth.token()` is `get_token()`, so this
   request carries whatever a `hf auth login` or the Preferences login button put
   in hf's own store — and nothing this app persists, because it persists none
-  (D385).
+  (D394).
 * **The query is ENCODED, never concatenated.** `urlencode` builds it, so a
   search for `a&b=c` is a search, not a second parameter.
 * **Every field is optional.** The Hub's list endpoint returns what it returns,
@@ -79,6 +88,22 @@ count map, so the bytes are recovered by summing `count * bits / 8` — the same
 arithmetic the model card does locally (HF-17), and the same `≈`. A repo
 without safetensors metadata reports no size rather than a guessed one.
 
+**And when there is no safetensors metadata, `hub/size` is the second ask —
+one repo at a time, on purpose.** A GGUF, mflux or LoRA-only repo carries no
+dtype map, so the arithmetic above has nothing to work from and the card shows
+a dash, even though huggingface.co shows a real total on the model's own page.
+That total is `usedStorage`, and it exists ONLY on the per-repo detail endpoint:
+the list endpoint refuses `expand[]=usedStorage` with a 400 naming the fields it
+does accept, so there is no way to fold it into the search. Getting it for a
+page of results would therefore be one HTTP round trip PER ROW, on every
+debounced keystroke — exactly the traffic the cache above exists to avoid. So it
+is a separate route, and the page calls it lazily: only for a row that has no
+estimate, and only once that card has actually scrolled into view. It is also a
+DIFFERENT NUMBER and the page says so — the total of everything in the repo,
+not the weights — because a tooltip claiming "computed from parameter counts"
+over a figure that includes the tokenizer and three quantised copies would be a
+sentence about work that never happened.
+
 The TTL cache exists to be a good citizen: search-as-you-type would otherwise
 put one request per keystroke on a public API. Identical queries inside the
 window are answered from memory.
@@ -89,7 +114,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastapi import APIRouter, Body, Header
@@ -137,6 +162,10 @@ _SORTS = {
 }
 
 _MAX_LIMIT = 60
+
+# Longer than any real `org/name` and short enough that nothing hand-written
+# turns into a long URL this server goes and fetches.
+_MAX_ID_LEN = 200
 
 # An unfiltered query is filtered HERE, so the Hub has to be asked for more rows
 # than the page will show or a search for a common word would come back nearly
@@ -192,6 +221,48 @@ _DTYPE_BITS = {
     "U64": 64, "I64": 64, "F64": 64,
 }
 
+# Hub `library_name` values NOTHING here can ever open, and the reason this is a
+# DENYLIST rather than an allowlist.
+#
+# The tag filter above asks "is this KIND of model runnable"; it cannot see the
+# FORMAT, so `litert-community/FLUX.2-klein-4B-LiteRT` — a `text-to-image` repo
+# of `.tflite` graphs — arrived with a Download button in front of a load that
+# could only fail. `grep -rn litert fused_render/` finds nothing, and no
+# quantization, platform or wheel would change that.
+#
+# An allowlist keyed to the libraries the runners are BUILT on (diffusers,
+# transformers, mlx) is the tempting version and it is wrong, because it is not
+# what the repos we load actually report. Read off the Hub, not guessed: the
+# FLUX.2 klein family alone loads today from `diffusers`
+# (black-forest-labs/FLUX.2-klein-4B), `ggml`
+# (unsloth/FLUX.2-klein-4B-GGUF, the recipe's quantized transformer),
+# `diffusion-single-file` (mlx-community/FLUX.2-Klein-4B-4bit, the one repo
+# `MFLUX_VARIANTS` names) and `mflux` (Runpod/FLUX.2-klein-4B-mflux-4bit) —
+# four values for one model — while Whisper adds `ctranslate2` and `mlx`. A
+# three-name allowlist would hide most of what works. The set of formats we
+# read is open and community-labelled; the set we provably cannot is small and
+# nameable, so the small one is the one written down.
+#
+# **What this claims and what it does not.** It claims only that the named
+# framework has no runner in this app AT ALL — not that a repo passing it will
+# load. It deliberately does NOT try to predict quantization, file layout or
+# anything host-specific: that is D316's line, and a diffusers-tagged repo with
+# a bespoke quantization still gets through and still fails, which is a
+# different and harder problem. When in doubt a value is LEFT OUT: a card that
+# should not be there is the status quo, and hiding a repo that would have
+# loaded is a regression this filter must not introduce.
+_UNRUNNABLE_LIBRARIES = frozenset({
+    # Graph formats for other runtimes entirely. No runner imports any of them.
+    "litert", "tflite", "coreml", "onnx", "openvino", "unity-sentis",
+    "keras", "tf-keras",
+    # Speech stacks that are not the three this app has: a `.nemo` archive is
+    # the case worth naming, since `parakeet-mlx` reads the MLX CONVERSION of
+    # one (`library_name: "mlx"`) and never the archive itself.
+    "nemo", "espnet", "speechbrain", "k2",
+    # Classical NLP toolkits, which publish under supported pipeline tags.
+    "spacy", "fasttext", "flair", "stanza", "allennlp", "sklearn", "paddlenlp",
+})
+
 _cache: dict[tuple, tuple[float, dict]] = {}
 _cache_lock = threading.Lock()
 
@@ -214,7 +285,7 @@ def _token() -> str | None:
     limit. NEVER returned to the client, and never logged.
 
     `hf_auth.token()` — i.e. `huggingface_hub.get_token()` — rather than a
-    resolution of its own (D385). The same credential decides this search and
+    resolution of its own (D394). The same credential decides this search and
     every model download, and a download resolves it by calling hf inside the
     worker; a second copy of the order here is how a page comes to report itself
     authenticated while the download beside it goes out anonymous. Read per
@@ -353,7 +424,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
-    **Three ways to be dropped, and they are the search's whole contract**
+    **Four ways to be dropped, and they are the search's whole contract**
     (D313, narrowed by D316). A row that reaches the page comes with a Download
     button or with the one sentence that says what to do first, so every one of
     these is the difference between an actionable card and one that apologises:
@@ -366,6 +437,14 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
       that can see it. There is no step an ordinary account can take to reach
       one: no licence to accept, no queue to join, so a card for it could never
       be actioned by the person reading it.
+    * a `library_name` in `_UNRUNNABLE_LIBRARIES` — the right KIND of model in
+      a format nothing here reads. The tag says what a repo is FOR and cannot
+      see what it is MADE OF, which is how a `.tflite` FLUX got a Download
+      button; see that set for why it is a denylist and, importantly, for the
+      much smaller thing it claims. A MISSING or non-string `library_name` is
+      not a drop: the Hub often does not set it, and silence about the format
+      is not evidence against it — only an explicit unrunnable value counts,
+      the same way `_gate` reads only what the Hub actually said.
 
     **`gated` is NOT a drop, and the distinction is the point** (D316). It was
     one, on the rule that every card must be downloadable — a rule drawn one
@@ -389,6 +468,9 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     capability = capability_for_task(task)
     if capability is None:
         return None
+    library = raw.get("library_name") if isinstance(raw.get("library_name"), str) else None
+    if library and library.lower() in _UNRUNNABLE_LIBRARIES:
+        return None
     safetensors = raw.get("safetensors")
     return {
         "id": model_id,
@@ -405,7 +487,9 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         # tests one field for "is there a gate and what kind". A missing key
         # would make "no gate" and "the Hub did not say" the same answer.
         "gated": _gate(raw.get("gated")),
-        "library": raw.get("library_name") if isinstance(raw.get("library_name"), str) else None,
+        # Whatever the Hub said, minus the values dropped above — so the badge
+        # on a card and the reason a card exists read off the same field.
+        "library": library,
         "downloads": raw.get("downloads") if isinstance(raw.get("downloads"), int) else None,
         "likes": raw.get("likes") if isinstance(raw.get("likes"), int) else None,
         "updated": raw.get("lastModified") if isinstance(raw.get("lastModified"), str) else None,
@@ -416,10 +500,14 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     }
 
 
-def _fetch(params: dict) -> tuple[list, str | None]:
-    """The Hub's model list for one query: (rows, error). Never raises — an
-    unreachable Hub is a sentence on the page, not a 500 from this server."""
-    url = f"{hub_endpoint()}/api/models?{urlencode(params, doseq=True)}"
+def _get(url: str) -> tuple[httpx.Response | None, str | None]:
+    """One authenticated GET at the Hub: (response, error). Never raises — an
+    unreachable Hub is a sentence on the page, not a 500 from this server.
+
+    Shared by the two outbound calls this module makes, so a rate limit or a
+    refused token reads the same whether the page was searching or asking one
+    repo how big it is.
+    """
     headers = {"Accept": "application/json"}
     token = _token()
     if token:
@@ -430,14 +518,22 @@ def _fetch(params: dict) -> tuple[list, str | None]:
     except httpx.HTTPError as e:
         # Offline, DNS, TLS, timeout — all the same to the person looking at the
         # page, and all worth naming rather than spinning forever.
-        return [], f"Could not reach {urlsplit(hub_endpoint()).netloc}: {e.__class__.__name__}"
+        return None, f"Could not reach {urlsplit(hub_endpoint()).netloc}: {e.__class__.__name__}"
     if response.status_code == 401 or response.status_code == 403:
-        return [], ("The Hub refused this request. A private or gated search needs a token — "
-                    "sign in to Hugging Face in Preferences, or set HF_TOKEN.")
+        return None, ("The Hub refused this request. A private or gated repo needs a token — "
+                      "sign in to Hugging Face in Preferences, or set HF_TOKEN.")
     if response.status_code == 429:
-        return [], "The Hub is rate-limiting this machine. Try again in a minute."
+        return None, "The Hub is rate-limiting this machine. Try again in a minute."
     if response.status_code >= 400:
-        return [], f"The Hub answered {response.status_code}."
+        return None, f"The Hub answered {response.status_code}."
+    return response, None
+
+
+def _fetch(params: dict) -> tuple[list, str | None]:
+    """The Hub's model list for one query: (rows, error)."""
+    response, error = _get(f"{hub_endpoint()}/api/models?{urlencode(params, doseq=True)}")
+    if error or response is None:
+        return [], error
     try:
         payload = response.json()
     except ValueError:
@@ -445,6 +541,37 @@ def _fetch(params: dict) -> tuple[list, str | None]:
     if not isinstance(payload, list):
         return [], "The Hub sent an unexpected reply."
     return payload, None
+
+
+def _fetch_used_storage(model_id: str) -> tuple[int | None, str | None]:
+    """One repo's total bytes on the Hub: (usedStorage, error).
+
+    The DETAIL endpoint, which answers with an object rather than the list
+    `_fetch` reads — and it is the only endpoint that will expand this field at
+    all (see the module docstring). The id is quoted into the PATH with its
+    slash intact and nothing else surviving, so a repo name carrying a `?`
+    cannot become a second query parameter.
+
+    Anything that is not a plain non-negative int is no answer: a string of
+    digits, a float, a `True`. This route's only job is the total, so a repo the
+    Hub does not measure reports None rather than falling back to the dtype map
+    the search already tried.
+    """
+    url = (f"{hub_endpoint()}/api/models/{quote(model_id, safe='/')}"
+           f"?{urlencode({'expand[]': 'usedStorage'})}")
+    response, error = _get(url)
+    if error or response is None:
+        return None, error
+    try:
+        payload = response.json()
+    except ValueError:
+        return None, "The Hub sent something that is not JSON."
+    if not isinstance(payload, dict):
+        return None, "The Hub sent an unexpected reply."
+    used = payload.get("usedStorage")
+    if isinstance(used, bool) or not isinstance(used, int) or used < 0:
+        return None, None
+    return used, None
 
 
 def _cached(key: tuple):
@@ -563,6 +690,55 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
         "endpoint": hub_endpoint(),
         "authenticated": bool(_token()),
     }
+
+
+@router.post("/api/ai-models/hub/size")
+def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
+    """One repo's TOTAL size on the Hub, for a card the dtype map could not
+    measure.
+
+    **Guarded POST for exactly the reason search is** — see `api_hub_search`:
+    the cost of this request is in the REQUEST, not the reply, because it leaves
+    the machine carrying the user's Hub token. Nothing about it being a "read"
+    changes that, so it takes the same shape rather than the rule acquiring a
+    second exception.
+
+    **One repo per call, and the page asks lazily.** The Hub only expands
+    `usedStorage` on the per-repo detail endpoint, so a page of two dozen
+    results is two dozen round trips — which is why this is not folded into
+    search and why the frontend calls it only for a row with no estimate whose
+    card has actually scrolled into view (see the module docstring).
+
+    The number is NOT the search's `estimatedSize` and must not be presented as
+    one: it is everything in the repo — tokenizer, configs, every quantised copy
+    the author published — rather than the weights a load would read.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    model_id = body.get("id")
+    if not isinstance(model_id, str):
+        return _error("id must be a string", status=400)
+    model_id = model_id.strip()
+    # `org/name`, and nothing else becomes a request. The Hub's own shape, so a
+    # malformed id is a client bug rather than a URL this server goes and fetches.
+    parts = model_id.split("/")
+    if len(parts) != 2 or not all(parts) or len(model_id) > _MAX_ID_LEN:
+        # Echoed back so a caller can see WHICH id was refused, truncated so a
+        # megabyte of junk in the body is not a megabyte of error message.
+        return _error(f"{model_id[:80]!r} is not a repo id of the form org/name", status=400)
+
+    key = ("size", hub_endpoint(), model_id, bool(_token()))
+    payload = _cached(key)
+    if payload is None:
+        used, error = _fetch_used_storage(model_id)
+        if error:
+            # Not a 5xx, and not cached: the request was fine, the far side was
+            # not, and the next card into view should find out for itself.
+            return {"id": model_id, "usedStorage": None, "error": error}
+        payload = {"usedStorage": used}
+        _store(key, payload)
+    return {"id": model_id, "usedStorage": payload["usedStorage"], "error": None}
 
 
 @router.get("/api/ai-models/hub/tasks")

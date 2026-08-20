@@ -256,16 +256,16 @@ empty grid.
 fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
 `urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
 token is sent and never returned. That token is `huggingface_hub.get_token()`,
-reached through `hf_auth.token()` and derived nowhere else in this app (D385):
+reached through `hf_auth.token()` and derived nowhere else in this app (D394):
 hf's own resolution — the environment variables first, then its own store —
 which is also the resolution a worker gets by calling hf inside its own
 interpreter. So this search and the download it leads to cannot disagree about
 which credential the machine holds, and no second copy of a precedence rule
 exists to drift. Nothing is cached, because hf refreshes an OAuth token in
-place as it nears expiry. An unfiltered query **over-fetches 4x (capped at 200) and truncates
-after the supported-tag pass**, so `limit` means rows shown rather than rows
-requested; a filtered one asks for exactly what it shows, since the Hub has
-already constrained it. Answers are memoised for a short TTL — search-as-you-type
+place as it nears expiry. An unfiltered query **over-fetches 4x (capped at 200)
+and truncates after the supported-tag pass**, so `limit` means rows shown rather
+than rows requested; a filtered one asks for exactly what it shows, since the Hub
+has already constrained it. Answers are memoised for a short TTL — search-as-you-type
 would otherwise be one request per keystroke — but **errors are not cached** and
 the **local join runs on every request**, outside the cache, so a model deleted a
 second ago stops claiming to be downloaded. That join is scoped to the rows
@@ -345,7 +345,7 @@ declarations are **wheels only** (SPEC AI-2a, D266): a source build runs a build
 backend in an interpreter uv creates, and `_env_install_worker._uv_env` scrubs
 `PYTHON*`/`VIRTUAL_ENV` off every uv call so that interpreter cannot inherit the
 macOS bundle's `PYTHONHOME`. A test enforces both halves. **No Hub token is
-placed in that environment** (D385): a worker imports `huggingface_hub` and so
+placed in that environment** (D394): a worker imports `huggingface_hub` and so
 finds the machine's token where every other hf caller finds it — hf's own store,
 written by the Preferences login button (`server/routers/hf_auth.py`) — while an
 `HF_TOKEN` this process inherited is passed through untouched. An earlier version

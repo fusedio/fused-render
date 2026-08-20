@@ -10,7 +10,7 @@ through `get_token()`, which is what they would do for a `hf auth login` the
 user ran in a terminal. There is no app-side credential: nothing to store,
 nothing to mask, nothing to hand a subprocess, and nothing to leak.
 
-**Storing a token here instead was considered and rejected** (D385): it makes the
+**Storing a token here instead was considered and rejected** (D394): it makes the
 app a credential store — a masked hint to describe the token without leaking it,
 validation because the string reaches an `Authorization` header and a child's
 environment, a precedence rule of our own, and an injection into every worker —

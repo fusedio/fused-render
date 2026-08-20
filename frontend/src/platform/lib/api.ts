@@ -841,7 +841,7 @@ export interface CallsPrefs {
   retention_forced_by: string | null;
 }
 
-// -- Hugging Face sign-in (server/routers/hf_auth.py; D385) -------------------
+// -- Hugging Face sign-in (server/routers/hf_auth.py; D394) -------------------
 
 // No token ever crosses this boundary in either direction. The button starts
 // huggingface_hub's own device-code login, hf stores what comes back, and this
@@ -1528,6 +1528,36 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
     a.remove();
   } finally {
     // Give the click a tick to start the download before releasing the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
+// Download an app folder as a single `.fused` app file (SPEC §43, D385).
+// fetch + blob rather than a bare <a download>, same reason as the templates
+// export above: a non-2xx JSON error (not an app, over
+// budget) surfaces to the caller instead of saving as a corrupt file.
+export async function downloadAppFile(path: string, name: string): Promise<void> {
+  const res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name + ".fused";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
 }
@@ -2322,6 +2352,25 @@ export function searchHubModels(opts: {
     sort: opts.sort,
     limit: opts.limit,
   });
+}
+
+/** One repo's TOTAL size on the Hub — everything in it, not just the weights.
+ *
+ *  The fallback for a row whose `estimatedSize` is null (GGUF, mflux, a
+ *  LoRA): no dtype map means nothing for the search to measure, and the Hub
+ *  will only expand this field one repo at a time. `usedStorage` is null when
+ *  the Hub does not measure the repo either. */
+export interface HubModelSizeResult {
+  id: string;
+  usedStorage: number | null;
+  error?: string;
+}
+
+/** One repo's total size. ONE round trip per call — the Hub's list endpoint
+ *  refuses this field, so callers ask lazily (a card that has scrolled into
+ *  view) and never for a whole page of results at once. */
+export function getHubModelSize(id: string): Promise<HubModelSizeResult> {
+  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", { id });
 }
 
 export interface HubTask {

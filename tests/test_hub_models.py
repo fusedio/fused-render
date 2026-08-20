@@ -46,7 +46,7 @@ def _clear_cache():
 def _no_token(monkeypatch, tmp_path):
     """A developer's real token must not decide what these tests assert.
 
-    The search reads whatever `huggingface_hub.get_token()` finds (D385), so the
+    The search reads whatever `huggingface_hub.get_token()` finds (D394), so the
     STORE has to be redirected and not just the environment: hf resolves
     `HF_TOKEN_PATH` once at import, so setting `HF_HOME` here does nothing to an
     hf that another test already imported — it would leave these tests reading
@@ -301,7 +301,7 @@ def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
 
 
 def test_the_token_hf_holds_is_the_one_sent(client, hub_cache, monkeypatch):
-    """D385: the search sends whatever `get_token()` finds — a login made from
+    """D394: the search sends whatever `get_token()` finds — a login made from
     Preferences, or a `hf auth login` in a terminal, indistinguishable here by
     design. This app stores no token of its own, so there is no second
     resolution that could disagree with the download beside it."""
@@ -548,6 +548,62 @@ def test_an_ungated_result_says_so_rather_than_saying_nothing(client, hub_cache,
     assert [r["gated"] for r in _search(client).json()["models"]] == [None, None]
 
 
+def test_a_result_in_a_format_no_runner_reads_is_dropped(client, hub_cache, monkeypatch):
+    """The tag is right and the format is unreadable — the case the tag filter
+    cannot see.
+
+    `litert-community/FLUX.2-klein-4B-LiteRT` is the repo from the complaint: a
+    `text-to-image` model, so `capability_for_task` passes it, published as
+    `.tflite` graphs, which nothing in `runners/` imports under any
+    circumstances. The card offered a Download button and the load that followed
+    could only fail.
+    """
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "litert-community/FLUX.2-klein-4B-LiteRT",
+         "pipeline_tag": "text-to-image", "library_name": "litert"},
+        # A raw NeMo archive is the same shape of mistake in the audio column:
+        # `parakeet-mlx` reads the MLX CONVERSION of one, never the `.nemo`.
+        {"id": "nvidia/parakeet-tdt-0.6b-v3",
+         "pipeline_tag": "automatic-speech-recognition", "library_name": "nemo"},
+        _hit("org/known"),
+    ]))
+    assert [m["id"] for m in _search(client).json()["models"]] == ["org/known"]
+
+
+def test_a_result_with_no_library_name_is_kept(client, hub_cache, monkeypatch):
+    """An ABSENT library says nothing about the format, so it cannot be read as
+    "unsupported" — only a value naming a framework we have no runner for is."""
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/unsaid"), _hit("org/null", library_name=None),
+        # Not a string, so not a value either: this must be as harmless as a
+        # missing key rather than a 500 in a `.lower()`.
+        _hit("org/weird", library_name=17),
+    ]))
+    assert [m["id"] for m in _search(client).json()["models"]] == [
+        "org/unsaid", "org/null", "org/weird"]
+
+
+@pytest.mark.parametrize("library", [
+    # Every one of these is a value a repo something here loads TODAY reports,
+    # read off the Hub rather than guessed — which is why this filter is a
+    # denylist. An allowlist of the libraries our runners are built on
+    # (diffusers, transformers, mlx) would have hidden five of these eight.
+    "diffusers",            # black-forest-labs/FLUX.2-klein-4B
+    "transformers",         # most text models
+    "mlx",                  # mlx-community/whisper-large-v3-turbo, …/Qwen3-8B-4bit
+    "mflux",                # Runpod/FLUX.2-klein-4B-mflux-4bit
+    "ggml",                 # unsloth/FLUX.2-klein-4B-GGUF, the recipe's transformer
+    "gguf",                 # the same repos' other spelling of it
+    "ctranslate2",          # Systran/faster-whisper-large-v3
+    "diffusion-single-file",  # mlx-community/FLUX.2-Klein-4B-4bit
+])
+def test_a_library_something_here_loads_is_not_dropped(client, hub_cache, monkeypatch, library):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/fine", library_name=library)]))
+    models = _search(client).json()["models"]
+    assert [m["id"] for m in models] == ["org/fine"]
+    assert models[0]["library"] == library
+
+
 def test_asking_for_a_task_nothing_here_runs_is_refused(client, hub_cache, monkeypatch):
     # Not an empty grid: that reads as "the Hub has no summarization models"
     # rather than "this app does not run them", and the Hub is not the one being
@@ -650,3 +706,157 @@ def test_the_task_glossary_stays_an_ordinary_read(client):
     so it keeps the unguarded GET every other read has (WF-5). The asymmetry is
     the point: what earns the guard is the outbound call, not the router."""
     assert client.get("/api/ai-models/hub/tasks").status_code == 200
+
+
+# -- the total-size fallback (hub/size) --------------------------------------
+#
+# A repo with no safetensors metadata — GGUF, mflux, a LoRA — has no size to
+# recover from a dtype map, and the search endpoint cannot ask for one: the
+# Hub's LIST endpoint refuses `expand[]=usedStorage` outright. The real total
+# comes from the per-repo DETAIL endpoint, one round trip each, which is why it
+# is its own route the page calls only for the cards it is actually showing.
+
+
+def _size(client, body=None):
+    """One size lookup. Guarded POST for the same reason search is: it leaves
+    the machine carrying the user's token."""
+    return client.post("/api/ai-models/hub/size", json=body or {},
+                       headers={"X-Fused": "1"})
+
+
+def _detail(payload, status=200, body=None):
+    """A stand-in `httpx.get` returning one canned per-repo detail answer — an
+    OBJECT, not the list the search endpoint gets."""
+    def fake(url, **kwargs):
+        fake.calls.append((url, kwargs))
+        content = json.dumps(payload).encode() if body is None else body
+        return httpx.Response(status, content=content,
+                              request=httpx.Request("GET", url))
+    fake.calls = []
+    return fake
+
+
+def test_the_total_size_comes_from_the_detail_endpoint(client, monkeypatch):
+    # The number the Hub's own model page shows for a repo with no safetensors:
+    # everything in it, not just the weights.
+    fake = _detail({"id": "Runpod/FLUX.2-klein-4B-mflux-4bit", "usedStorage": 4_619_599_193})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "Runpod/FLUX.2-klein-4B-mflux-4bit"}).json()
+    assert body == {"id": "Runpod/FLUX.2-klein-4B-mflux-4bit",
+                    "usedStorage": 4_619_599_193, "error": None}
+    url = fake.calls[0][0]
+    assert url == ("https://huggingface.co/api/models/"
+                   "Runpod/FLUX.2-klein-4B-mflux-4bit?expand%5B%5D=usedStorage")
+
+
+def test_a_repo_the_hub_has_no_total_for_reports_none(client, monkeypatch):
+    # No guess and no fallback to the dtype map: this route's only job is the
+    # total, and a repo the Hub does not measure has none.
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m"}))
+    assert _size(client, {"id": "org/m"}).json() == {
+        "id": "org/m", "usedStorage": None, "error": None}
+
+
+@pytest.mark.parametrize("value", ["4619599193", -1, 1.5, True, {}, None])
+def test_a_total_that_is_not_a_count_of_bytes_is_no_total(client, monkeypatch, value):
+    # A string of digits is not an int, and a negative is not a size. Either
+    # would reach the card as a number someone plans a download around.
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": value}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] is None
+
+
+def test_the_id_is_quoted_into_the_path_not_concatenated(client, monkeypatch):
+    # `org/name` keeps its slash — it is the path — but nothing else does, so an
+    # id carrying a `?` cannot become a second query parameter.
+    fake = _detail({})
+    monkeypatch.setattr(httpx, "get", fake)
+    _size(client, {"id": "org/a b?expand[]=evil"})
+    url = fake.calls[0][0]
+    assert "/api/models/org/a%20b%3Fexpand%5B%5D%3Devil?" in url
+
+
+@pytest.mark.parametrize("bad", [
+    None, "", "   ", 7, ["org/m"], "nameonly", "org/name/extra", "/name", "org/",
+    "org/" + "n" * 300,
+])
+def test_a_malformed_id_is_refused_before_the_hub_is_asked(client, monkeypatch, bad):
+    fake = _detail({})
+    monkeypatch.setattr(httpx, "get", fake)
+    reply = _size(client, {"id": bad})
+    assert reply.status_code == 400 and reply.json()["error"]
+    assert not fake.calls, "a malformed id still cost an outbound request"
+
+
+def test_an_unreachable_hub_is_a_sentence_not_a_500_for_sizes(client, monkeypatch):
+    def boom(url, **kwargs):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(httpx, "get", boom)
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] is None and "huggingface.co" in body["error"]
+
+
+@pytest.mark.parametrize("status,needle", [
+    (403, "token"), (429, "rate-limiting"), (500, "500")])
+def test_an_unhappy_hub_explains_itself_for_sizes(client, monkeypatch, status, needle):
+    monkeypatch.setattr(httpx, "get", _detail(None, status=status))
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] is None and needle in body["error"]
+
+
+@pytest.mark.parametrize("raw", [b"<html>nope</html>", b'[{"not": "an object"}]'])
+def test_an_unexpected_detail_reply_does_not_reach_the_page(client, monkeypatch, raw):
+    # The detail endpoint answers with an object. A list is the LIST endpoint's
+    # shape, and reading one as a repo would be indexing blindly.
+    monkeypatch.setattr(httpx, "get", _detail(None, body=raw))
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] is None and body["error"]
+
+
+def test_the_same_repo_inside_the_window_is_asked_once(client, monkeypatch):
+    # One round trip per repo is the cost this route exists to bound; a card
+    # that scrolls back into view must not pay it again.
+    fake = _detail({"id": "org/m", "usedStorage": 123})
+    monkeypatch.setattr(httpx, "get", fake)
+    for _ in range(3):
+        assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 123
+    assert len(fake.calls) == 1
+    _size(client, {"id": "org/other"})
+    assert len(fake.calls) == 2  # …a different repo is a different question
+
+
+def test_a_size_error_is_not_cached(client, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _detail(None, status=500))
+    assert _size(client, {"id": "org/m"}).json()["error"]
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": 9}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 9
+
+
+def test_the_size_lookup_does_not_collide_with_a_search_answer(client, hub_cache, monkeypatch):
+    # Both caches are the same dict, so the keys have to be told apart or a
+    # search would be answered with a size.
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/m")]))
+    assert _search(client).json()["models"][0]["id"] == "org/m"
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": 5}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 5
+
+
+def test_the_size_lookup_sends_the_token_but_never_returns_it(client, monkeypatch):
+    fake = _detail({"id": "org/m", "usedStorage": 5})
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "org/m"}).json()
+    assert fake.calls[0][1]["headers"]["Authorization"] == "Bearer hf_secret"
+    assert "hf_secret" not in json.dumps(body)
+
+
+def test_the_size_lookup_is_a_guarded_post(client, monkeypatch):
+    # Same reasoning as search: the cost is in the REQUEST, which spends
+    # someone's credential and their rate limit on a third party.
+    fake = _detail({"id": "org/m", "usedStorage": 5})
+    monkeypatch.setattr(httpx, "get", fake)
+    blind = client.post("/api/ai-models/hub/size", json={"id": "org/m"})
+    assert blind.status_code == 403
+    assert not fake.calls, "a guarded size lookup still reached the Hub"
+    assert client.get("/api/ai-models/hub/size").status_code == 405
+    assert _size(client, {"id": "org/m"}).status_code == 200

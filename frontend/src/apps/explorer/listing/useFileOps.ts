@@ -14,6 +14,7 @@ import {
   renameEntry,
   copyEntry,
   compressEntry,
+  downloadAppFile,
   gitRepoInfo,
   statPath,
   revealPath,
@@ -663,6 +664,21 @@ export function useFileOps({
       // Not on the multi-select or background menus: one archive per folder.
       ...(row.isDir
         ? [{ label: "Compress", icon: MenuIcons.compress, submenu: loadCompress(row) } as MenuEntry]
+        : []),
+      // Folders only, like Compress: the whole folder as one .fused app file
+      // (SPEC §43 AF-4). Offered on every folder rather than probing the app
+      // entry up front — the export route validates server-side and its
+      // "not a fused app" reason surfaces as the toast.
+      ...(row.isDir
+        ? [{
+            label: "Export App File",
+            icon: MenuIcons.compress,
+            onClick: () => {
+              downloadAppFile(row.path, row.name).catch((e: Error) =>
+                pushToast({ msg: "Could not export " + row.name + ": " + e.message, tone: "error" }),
+              );
+            },
+          } as MenuEntry]
         : []),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },

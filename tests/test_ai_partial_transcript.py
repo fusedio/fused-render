@@ -134,6 +134,51 @@ def test_the_line_carries_the_SAME_keys_the_final_json_will(partial, tmp_path):
         assert sorted(_lines(out)[0]) == ["end", "start", "text"]
 
 
+def test_a_line_carries_WORDS_when_the_segment_has_them(partial, tmp_path):
+    """The same "one shape, not two" rule as the test above, for word timings
+    (D392) — and the case that rule actually failed on.
+
+    `add` rebuilds its line KEY BY KEY rather than copying the segment, which is
+    what keeps an engine's logprobs and temperatures out of a file a page reads.
+    The cost is that a genuinely public field is dropped unless it is named, and
+    `words` was: `onSegment` handed pages timing-less segments while the final
+    `.json` had them, and since the reader counts delivered lines those segments
+    were never re-sent. Anything a caller is meant to see has to be named here.
+    """
+    out = str(tmp_path / "t.partial.jsonl")
+    words = [{"start": 0.0, "end": 0.4, "word": " hi"},
+             {"start": 0.4, "end": 1.0, "word": " there"}]
+    with partial.sink(out) as sink:
+        sink.add({"start": 0.0, "end": 1.0, "text": "hi there", "words": words})
+        line = _lines(out)[0]
+        assert sorted(line) == ["end", "start", "text", "words"]
+        assert line["words"] == words
+
+
+def test_a_line_gains_NO_words_key_when_the_segment_has_none(partial, tmp_path):
+    """Additive, so a run on an engine without word timings — or one that did not
+    ask — writes exactly the line it wrote before the feature existed. An empty
+    list would read as "this segment has no words in it", which is a different
+    claim from "nobody timed them"."""
+    out = str(tmp_path / "t.partial.jsonl")
+    with partial.sink(out) as sink:
+        sink.add({"start": 0.0, "end": 1.0, "text": "hi"})
+        assert sorted(_lines(out)[0]) == ["end", "start", "text"]
+
+
+def test_the_line_still_DROPS_what_a_page_must_not_see(partial, tmp_path):
+    """The other half of naming keys explicitly: carrying `words` must not turn
+    the rebuild into a copy. An engine's logprobs, temperatures and raw tokens
+    stay out, or a page comes to depend on numbers only one engine produces."""
+    out = str(tmp_path / "t.partial.jsonl")
+    with partial.sink(out) as sink:
+        sink.add({"start": 0.0, "end": 1.0, "text": "hi",
+                  "words": [{"start": 0.0, "end": 1.0, "word": " hi"}],
+                  "tokens": [1, 2], "avg_logprob": -0.2, "temperature": 0.0,
+                  "no_speech_prob": 0.01, "seek": 0, "compression_ratio": 1.2})
+        assert sorted(_lines(out)[0]) == ["end", "start", "text", "words"]
+
+
 def test_non_ascii_text_is_written_UNESCAPED_like_the_final_dump(partial, tmp_path):
     """`json.dump(..., ensure_ascii=False)` is what both workers write, and a
     partial line that escaped instead would still parse — but the byte offsets

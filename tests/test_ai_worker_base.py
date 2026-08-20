@@ -1759,7 +1759,7 @@ def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
 def test_worker_base_imports_nothing_but_the_stdlib():
     """`worker_base` is stdlib-only at module scope, and this is what enforces it.
 
-    Absence does not enforce it: `huggingface_hub` ships with the app (D385), so
+    Absence does not enforce it: `huggingface_hub` ships with the app (D394), so
     an accidental module-scope import of it would resolve here and in CI and the
     rule would rot silently. And the rule has not changed — every runner's
     interpreter imports this module, so anything imported here becomes a

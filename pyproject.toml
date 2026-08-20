@@ -39,7 +39,7 @@ dependencies = [
     # (TASK F) — and fastapi.testclient needs it too — so a plain
     # `pip install fused-render` is broken without it. Core, not an extra.
     "httpx",
-    # The Hugging Face token is hf's to store, not ours (D385): the Preferences
+    # The Hugging Face token is hf's to store, not ours (D394): the Preferences
     # button drives hf's own device-code browser login and hf persists the
     # result, so this app holds no credential and hands no subprocess one.
     # Core rather than an extra because the alternative is a settings control

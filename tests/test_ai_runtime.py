@@ -503,6 +503,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "tonera/FLUX.2-klein-4B-int8-diffusers",
         "black-forest-labs/FLUX.2-klein-4B"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
@@ -1954,7 +1955,7 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
-# -- a worker's environment carries no Hub token of our making (D385) ------------
+# -- a worker's environment carries no Hub token of our making (D394) ------------
 
 
 def test_an_inherited_hub_token_is_passed_through_untouched(monkeypatch, tmp_path):
@@ -3083,6 +3084,54 @@ def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
             # sees an argument for a run that did not ask for one.
             assert "speakers" not in seen, sent
         _wait_job(started["jobId"])
+
+
+def test_words_reaches_the_worker_and_defaults_to_OFF(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """`diarize`'s contract for `words` (D392): off unless asked, and a JSON
+    null means the same as an absent key — the inversion `vad` once shipped,
+    where a page spreading an options object with an unset key got the
+    opposite of the documented default."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent, expected in (({}, False), ({"words": False}, False),
+                           ({"words": None}, False), ({"words": True}, True)):
+        seen.clear()
+        started = _post_transcribe(client, path=recording, **sent).json()
+        assert seen["words"] is expected, sent
+        _wait_job(started["jobId"])
+
+
+def test_words_on_an_engine_without_them_is_NOT_a_refusal(
+        client, fake_transcribe_runner, recording):
+    """The one option answered best-effort rather than refused. A page that asks
+    for word timings on a machine whose engine has none must get its transcript,
+    with the `words` key simply absent from the segments — not a `bad_request`
+    that forces it to ask what hardware it is on before it asks for anything.
+
+    This is the endpoint's half; `test_ai_engine_options.py` pins the rule and
+    `test_ai_mlx_whisper_worker.py` the runner that does carry them.
+    """
+    started = _post_transcribe(client, path=recording, words=True)
+
+    assert started.status_code == 200, started.text
+    _wait_job(started.json()["jobId"])
+
+
+def test_words_with_TRANSLATE_is_not_a_refusal_either(
+        client, fake_transcribe_runner, recording):
+    """A translation carries no words on any engine — there is nothing in the
+    audio to align English ones to — but it is DECLINED, not refused, so the
+    combination reads exactly like an engine that has none. Refusing here would
+    make `words: true` unusable in a page that also offers translation."""
+    started = _post_transcribe(client, path=recording, words=True,
+                               task="translate")
+
+    assert started.status_code == 200, started.text
+    _wait_job(started.json()["jobId"])
 
 
 def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
