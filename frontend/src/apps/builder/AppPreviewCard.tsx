@@ -34,11 +34,12 @@
 // live preview (D365).
 import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { downloadAppFile, rawUrl } from "@platform/lib/api";
+import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
-import { withPreviewFlag } from "@platform/lib/router";
+import { embedUrlForFsPath, withPreviewFlag } from "@platform/lib/router";
 import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
@@ -86,6 +87,17 @@ export function AppPreviewCard({
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);
+  // The still's source. An exported .fused card (kind "appfile", D396) has no
+  // folder to hold a preview.png — its still is the payload's, streamed by a
+  // single-member zip read; the endpoint 404s when the file ships without one
+  // and this <img>'s ordinary onError drops the card to the live branch
+  // (an opened file's fusedapp preview — see liveSrc) or the empty thumb.
+  const shotSrc =
+    app.kind === "appfile"
+      ? appfilePreviewUrl(app.path)
+      : app.preview_image
+        ? rawUrl(app.preview_image)
+        : null;
   // Gates the live-iframe branch only — preview.png costs nothing to keep
   // mounted and the empty thumb costs nothing at all, so neither needs this.
   const [thumbRef, nearViewport] = useNearViewport<HTMLSpanElement>();
@@ -95,13 +107,37 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
+  // The card BODY's live iframe has loaded — i.e. the thumb is a picture of the
+  // app and not an empty box. Separate state from `liveReady`, which is the
+  // hover crossfade's and is deliberately reset on every enter AND leave: the
+  // export chip is only reachable while hovering, so gating a capture on
+  // `liveReady` would gate it on a flag the hover just cleared. One-way for the
+  // life of the mount, which is exact — the body iframe is never torn down and
+  // re-created for the same card, and cards are keyed by path, so a different
+  // app is a different mount. It CAN stay true after the iframe unmounts by
+  // scrolling far out of `nearViewport`, and that is harmless: appShot's
+  // cropRect refuses an off-viewport element anyway.
+  const [bodyLive, setBodyLive] = useState(false);
+  // What the live branch renders. An ordinary app live-renders its entry
+  // page. An exported .fused card (kind "appfile") has no page to point
+  // /render at — its live look is its own fusedapp view under `_preview=1`,
+  // which re-uses the existing extract (never extracts, never records — the
+  // server's reuse_only preview contract, D396) — offered only for a file the
+  // user has OPENED before (`opened_at`): one they never ran stays the empty
+  // thumb rather than a placeholder-in-a-frame, and a peek must not be the
+  // first run of a stranger's pages anyway.
+  const liveSrc = app.entry_html
+    ? thumbSrc(app.entry_html)
+    : app.kind === "appfile" && app.opened_at != null
+      ? withNoFocus(withPreviewFlag(embedUrlForFsPath(app.path)))
+      : null;
   const wantsLive = Boolean(
-    app.entry_html && nearViewport && ((!app.preview_image || shotFailed) || hovered),
+    liveSrc && nearViewport && ((!shotSrc || shotFailed) || hovered),
   );
-  // Priority is only the authored-still hover path. A card whose normal body
-  // is already live must not tear down and restart its iframe merely because
+  // Priority is only the still's hover path. A card whose normal body is
+  // already live must not tear down and restart its iframe merely because
   // the pointer crossed it.
-  const livePriority = Boolean(app.preview_image && !shotFailed && hovered);
+  const livePriority = Boolean(shotSrc && !shotFailed && hovered);
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     livePriority,
@@ -139,14 +175,27 @@ export function AppPreviewCard({
           {ago && <span className="app-pcard-ago">{ago}</span>}
         </span>
       </span>
-      <span className="app-pcard-thumb" aria-hidden="true" ref={thumbRef}>
-        {app.preview_image && !shotFailed ? (
+      {/* `data-capture-ready` marks the thumb as a picture of the APP — the
+          export capture's crop-source contract (appShot.exportAppFile). The
+          card's own chip below reads `bodyLive` directly; the context menu is
+          opened by Apps.tsx, which has no access to this component's state and
+          finds the element by this attribute instead. Same posture as the
+          preview pane's `data-fused-annotate-target`: one attribute naming the
+          element that is showing what the reader is looking at. Absent, not
+          "0", so the selector is a plain presence test. */}
+      <span
+        className="app-pcard-thumb"
+        aria-hidden="true"
+        ref={thumbRef}
+        data-capture-ready={bodyLive ? "" : undefined}
+      >
+        {shotSrc && !shotFailed ? (
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
                 order so the still stays on top until the app has painted. */}
-            {hovered && app.entry_html && nearViewport && liveStarted && (
+            {hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
-                src={thumbSrc(app.entry_html)}
+                src={liveSrc}
                 style={{
                   width: `${100 / PREVIEW_SCALE}%`,
                   height: `${100 / PREVIEW_SCALE}%`,
@@ -164,7 +213,7 @@ export function AppPreviewCard({
             )}
             <img
               className="app-pcard-shot"
-              src={rawUrl(app.preview_image)}
+              src={shotSrc}
               alt=""
               loading="lazy"
               onError={() => setShotFailed(true)}
@@ -181,10 +230,10 @@ export function AppPreviewCard({
                 that opens it. */}
             <span className="app-pcard-shield" />
           </>
-        ) : app.entry_html && nearViewport && liveStarted ? (
+        ) : liveSrc && nearViewport && liveStarted ? (
           <>
             <iframe
-              src={thumbSrc(app.entry_html)}
+              src={liveSrc}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
@@ -193,7 +242,13 @@ export function AppPreviewCard({
               tabIndex={-1}
               scrolling="no"
               title=""
-              onLoad={liveSettled}
+              // `bodyLive` as well as the queue's release: settling frees the
+              // NEXT card's start slot, which says nothing about whether this
+              // frame painted, and the export capture needs the latter.
+              onLoad={() => {
+                liveSettled();
+                setBodyLive(true);
+              }}
               onError={liveSettled}
             />
             {/* Shield: the preview is display-only — every pointer event lands
@@ -211,7 +266,10 @@ export function AppPreviewCard({
           still taking tab focus. Positioned over the thumb via the card's own
           positioning context. A <button> inside the card's <a>: it must both
           preventDefault (or the card link opens the app) and stopPropagation
-          (or the click ALSO bubbles to onAppCardClick). */}
+          (or the click ALSO bubbles to onAppCardClick). Not rendered on an
+          exported .fused card (kind "appfile", D396): its path is the file
+          itself and the export route only takes app folders. */}
+      {app.kind !== "appfile" && (
       <button
         type="button"
         className="app-pcard-export"
@@ -220,7 +278,16 @@ export function AppPreviewCard({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          downloadAppFile(app.path, app.name).catch((err: Error) =>
+          // Also captures a tab screenshot into the file's preview.png when
+          // the folder has no authored one (appShot, D396). The thumb element
+          // rides along as the crop source: a card without a preview.png is
+          // already showing the live app there, so nothing has to flash —
+          // but ONLY once that frame has loaded (`bodyLive`). Two card
+          // previews start at a time, so an unstarted card's thumb is an
+          // empty box, and cropping it would bake the empty box in as the
+          // artifact's permanent thumbnail. Offer nothing instead and
+          // appShot stages the app full-screen for the shot.
+          exportAppFile(app, bodyLive ? thumbRef.current : null).catch((err: Error) =>
             pushToast({
               msg: "Could not export " + app.name + ": " + err.message,
               tone: "error",
@@ -228,8 +295,9 @@ export function AppPreviewCard({
           );
         }}
       >
-        {MenuIcons.compress}
+        {MenuIcons.download}
       </button>
+      )}
     </a>
   );
 }

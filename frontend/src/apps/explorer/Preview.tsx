@@ -6,9 +6,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  downloadAppFile,
   getAppEntry,
+  getAppFileCloneTarget,
+  cloneAppFile,
   rawUrl,
+  statPath,
   resolveConditions,
   renameEntry,
   copyEntry,
@@ -19,6 +21,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
+import { exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -33,7 +36,7 @@ import {
   friendlyFsError,
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
-import { fileBarMenu } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, fileBarMenu } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -66,7 +69,6 @@ import {
   activeRev,
   revFromHook,
   revSrc,
-  shortSha,
   type RevSelection,
 } from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
@@ -177,6 +179,69 @@ function CloneCommunityButton({ slug }: { slug: string }) {
   );
 }
 
+// "Clone" in the preview header of a `.fused` app file: copy the payload into
+// the workspace (Fused/local/<slug>) as an ordinary editable app and open it —
+// the way OUT of an artifact whose own files are 0444 by construction (D397).
+// Once a copy is there the same button reads "Go to local version" and only
+// navigates, so the artifact never becomes a way to overwrite your own edits.
+//
+// Whether a copy exists is the destination folder EXISTING — no records file —
+// which is why this probes on mount and re-probes per file rather than trusting
+// anything cached.
+//
+// Header-only, like ExportAppButton beside it, and with the same consequence
+// worth knowing: embed mode hides the whole topbar, so a `.fused` opened by
+// double-click shows no Clone. Reaching it means opening the file in the
+// explorer (owner's call — the embed stays chrome-free, D386/D390).
+function CloneAppFileButton({ fsPath }: { fsPath: string }) {
+  const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setTarget(null);
+    getAppFileCloneTarget(fsPath)
+      .then((r) => alive && setTarget({ path: r.path, cloned: r.cloned }))
+      .catch(() => {
+        /* unreadable file / not a .fused — no button rather than a broken one */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  if (!target) return null;
+  const go = async () => {
+    if (busy) return;
+    // Already cloned: this is pure navigation, so it never needs the spinner
+    // or the write route.
+    if (target.cloned) return navigate(target.path, { isDir: true });
+    setBusy(true);
+    try {
+      const r = await cloneAppFile(fsPath);
+      navigate(r.path, { isDir: true });
+    } catch (e) {
+      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
+      setBusy(false);
+    }
+    // Success navigates away and unmounts this button; no busy reset needed.
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={
+        target.cloned
+          ? "Open your editable copy at " + target.path
+          : "Copy this app into " + target.path + " and open it for editing"
+      }
+      onClick={go}
+      disabled={busy}
+    >
+      {busy && <span className="mode-icon-spinner" />}
+      {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
+    </button>
+  );
+}
+
 // Export the containing app as a .fused file (SPEC §43 AF-4), shown only when
 // the previewed page IS its folder's app entry — asked of the server (the one
 // shared entry rule, /api/apps/entry) rather than guessed from the filename.
@@ -211,7 +276,30 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     if (busy) return;
     setBusy(true);
     try {
-      await downloadAppFile(dir, name);
+      // Same capture-on-export as the /apps card (appShot, D396): the shown
+      // preview frame IS the app rendering, so it is the crop source — no
+      // navigation, no flash. exportAppFile itself skips capture when the
+      // folder carries an authored preview.png; the probe below is only so a
+      // pointless share prompt isn't raised for a capture the server would
+      // discard anyway (stat failure reads as "no authored still" — worst
+      // case is that redundant prompt, never a lost export).
+      //
+      // ONE cheap local probe, and it must stay that: appShot raises the share
+      // prompt on this click's transient user activation, which Chrome expires
+      // a few seconds out, so anything slow awaited here spends the activation
+      // and loses the prompt. `.is-shown` satisfies appShot's crop-source
+      // contract (pixels that ARE the app, not a box it may fill): the class
+      // rides `shown`, which the frame swap only sets once that frame paints —
+      // the same guarantee `data-fused-annotate-target` below relies on.
+      const authored = await statPath(dir + "/preview.png").then(
+        (s) => !s.is_dir,
+        () => false,
+      );
+      await exportAppFile(
+        { path: dir, name, entry_html: fsPath,
+          preview_image: authored ? dir + "/preview.png" : null },
+        document.querySelector(".preview-frame.is-shown"),
+      );
     } catch (e) {
       pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
     } finally {
@@ -431,6 +519,7 @@ function usePreviewFileMenu(
       onOpenInClaude: doOpenInClaude,
       onCopyPath: doCopyPath,
       onReveal: doReveal,
+      onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       onSplit:
         !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
     });
@@ -441,12 +530,33 @@ function usePreviewFileMenu(
   // would churn the registry (topbar-menu.ts). A DIRECTORY opened here renders an
   // embedded <Listing> that claims the bar and publishes its own folder menu —
   // this one stands down rather than racing it.
-  const openBarMenuRef = useRef<(x: number, y: number) => void>(() => {});
-  openBarMenuRef.current = (x, y) => setMenu({ x, y, items: barMenuItems() });
+  //
+  // A right-click on an ANCESTOR crumb names that folder (Breadcrumb's
+  // onBarContextMenu) and gets the ancestor pair, not this file's menu: the
+  // crumb the pointer is on is a directory two levels up, and Rename/Copy Path
+  // about the open file is not what it asked.
+  const openBarMenuRef = useRef<(x: number, y: number, crumb?: string) => void>(() => {});
+  openBarMenuRef.current = (x, y, crumb) =>
+    setMenu({
+      x,
+      y,
+      items: crumb
+        ? crumbMenu({
+            onReveal: () =>
+              revealPath(crumb).catch((e) =>
+                pushToast({
+                  msg: friendlyFsError(e, { verb: "reveal", name: basename(crumb) }),
+                  tone: "error",
+                })
+              ),
+            onOpenInNewTab: () => window.open(urlForFsPath(crumb), "_blank", "noopener"),
+          })
+        : barMenuItems(),
+    });
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   useEffect(() => {
     if (!ownsBar) return;
-    return publishTopbarMenu((x, y) => openBarMenuRef.current(x, y));
+    return publishTopbarMenu((x, y, crumb) => openBarMenuRef.current(x, y, crumb));
   }, [ownsBar]);
 
   const overlays = (
@@ -553,64 +663,12 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 // same 7-character form the sidebar's rows and `git log --oneline` use, and one
 // obvious way back.
 //
-// Chrome, not a new visual language: a `.bar-ctl`-sized pill in the same bar the
-// mode control and the sidebar toggle sit in (preview.css), reading as a state
-// badge rather than as an action, with the way out being an ordinary bar button.
-//
-// THE HONEST BIT, and the reason the caveat is in the title rather than nowhere:
-// `fused.runPython` readers and the "_render" mode still read the LIVE file
-// (static/runtime.js, above runPython — phase 2b), so a parquet/xlsx pane, or an
-// .html file previewed as a page, can show current content under this badge. The
-// alternative — declining the revision for those modes — would need the shell to
-// know which modes get their bytes from Python, which it cannot know for a
-// user-registered template, and would leave the user with a Git commit list whose
-// clicks silently did nothing on some files.
-function RevisionPill({ sha, onLive }: { sha: string; onLive: () => void }) {
-  const short = shortSha(sha);
-  return (
-    <span
-      className="preview-rev"
-      title={
-        `Showing this file as of commit ${short} — read-only. ` +
-        "Views that read the file through a Python reader (or run it as a page) " +
-        "may still show its current content."
-      }
-    >
-      <span className="preview-rev-label" aria-hidden="true">
-        {/* An eye — "you are looking at an old version", not a rewind/clock,
-            which would read as "restore to here" for a badge that changes
-            nothing on disk. Same paths as the git view's row toggle
-            (templates/git/template.html PREVIEW_GLYPH); drawn in the same 16px
-            currentColor stroke every glyph in these bars uses (SideChrome). */}
-        <svg
-          viewBox="0 0 24 24"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M3 12c2.4-3.6 5.4-5.4 9-5.4s6.6 1.8 9 5.4" />
-          <path d="M21 12c-2.4 3.6-5.4 5.4-9 5.4s-6.6-1.8-9-5.4" />
-          <path d="M12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6" />
-        </svg>
-      </span>
-      {/* Both facts VISIBLE, not tooltipped: which commit, and that the pane
-          cannot be edited. A badge saying only `abc1234` leaves "why did my save
-          refuse?" to a hover nobody performs. */}
-      <code className="preview-rev-sha">{short}</code>
-      <span className="preview-rev-note">read-only</span>
-      <button type="button" className="bar-ctl" onClick={onLive}>
-        {/* "Live", not "Close": the pane is not being dismissed, it is being
-            returned to the file as it is now. */}
-        Live
-      </button>
-    </span>
-  );
-}
-
+// The revision badge that used to sit here is GONE (owner: the state now
+// lives where it is controlled — the git sidebar's commit list wears a dot and
+// a `previewing` pill on the previewed row, and its banner carries the way
+// back). The MECHANISM is untouched: `rev` still swaps the pane's bytes, and
+// the honest caveat about runPython readers now lives on the sidebar's eye
+// toggle tooltip (templates/git/template.html).
 function TemplatePreview({
   fsPath,
   stat,
@@ -1215,20 +1273,20 @@ function TemplatePreview({
 
   const headerActions = (
     <>
-      {/* FIRST in the bar, left of the mode control: it describes what the pane is
-          SHOWING, and the controls that follow act on it. Rendered only while a
-          revision actually resolves (lib/preview-rev's `activeRev`), so it cannot
-          outlive the pane it describes — and "Live" clears the same state the
-          sidebar sets, which is why it does not touch the URL either.
-          The sidebar is not touched by it: its own pane still shows the commit's
-          DIFF, which is a true statement about that column and the subject its row
-          highlight names. The one cost is that re-selecting the SAME row then
-          toggles it off first (the template treats a click on the selected row as
-          "deselect"), so getting the revision back takes a second click. */}
-      {rev && <RevisionPill sha={rev} onLive={() => setRevSel(null)} />}
+      {/* The revision badge that sat FIRST in this bar is gone: which commit the
+          pane shows (and the way back to Live) is stated in the git sidebar's
+          own commit list — the dot, the `previewing` pill, and its banner's
+          "Back to now". One surface owns the state it controls. */}
       {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
           never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
+      {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
+          app, or opens the copy that is already there (D397). Keyed off the
+          extension, which is what routes this file to the fusedapp template in
+          the first place. */}
+      {!stat.is_dir && fsPath.toLowerCase().endsWith(".fused") && (
+        <CloneAppFileButton fsPath={fsPath} />
+      )}
       {/* The containing app as one .fused file (SPEC §43 AF-4) — rendered only
           when this page is its folder's app entry (the component asks the
           server). Embed mode hides the whole header/topbar, so an opened

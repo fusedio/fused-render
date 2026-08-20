@@ -18,6 +18,7 @@ import {
   PANE_DEFAULT_FRAC,
   clampPaneWidth,
   dragPaneFrac,
+  paneDragCloses,
 } from "./pane-math";
 // The whole module, to assert what it no longer offers.
 import * as paneMath from "./pane-math";
@@ -111,5 +112,32 @@ describe("dragPaneFrac", () => {
     // The caller keeps the fraction it had rather than dividing by zero.
     expect(dragPaneFrac(0, 300)).toBeNull();
     expect(dragPaneFrac(Number.NaN, 300)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------- drag close
+// The listing pane's version of the sidebars' drag-to-close (#680): between
+// the 220px floor and half of it the clamp renders the resistance band, and
+// only a pull clean through — the cursor within 110px of the right edge —
+// reads as "shut it".
+describe("paneDragCloses", () => {
+  test("a drag through the resistance band closes", () => {
+    expect(paneDragCloses(1000, 109)).toBe(true);
+    expect(paneDragCloses(1000, 0)).toBe(true);
+    expect(paneDragCloses(1000, -50)).toBe(true);
+  });
+
+  test("holding inside the band, or above the floor, does not", () => {
+    expect(paneDragCloses(1000, 110)).toBe(false); // the band's own edge sticks
+    expect(paneDragCloses(1000, 219)).toBe(false);
+    expect(paneDragCloses(1000, 500)).toBe(false);
+  });
+
+  test("a container too narrow to express a split never closes by drag", () => {
+    // dragPaneFrac is null there — the pane holds its floor whatever the
+    // cursor does, so there is no band whose crossing could mean anything.
+    expect(paneDragCloses(279, 0)).toBe(false);
+    expect(paneDragCloses(0, 0)).toBe(false);
+    expect(paneDragCloses(Number.NaN, 0)).toBe(false);
   });
 });

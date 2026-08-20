@@ -27,6 +27,7 @@ import {
   dropAction,
   dropLanes,
   filterTasks,
+  filtersForView,
   firstLine,
   groupByColumn,
   heldMessages,
@@ -4699,6 +4700,52 @@ describe("filters", () => {
   });
 });
 
+describe("filtersForView — the calendar's Archive facet (2026-08-20)", () => {
+  // The calendar draws nothing for an archived task, so Archive is a dead
+  // Status option there: picking it always empties the grid, with nothing on
+  // screen to explain why. filtersForView is what Scheduled.tsx asks before
+  // running the query FOR A GIVEN VIEW — it never touches the stored
+  // TaskFilters value itself, only the effective one a view's `filterTasks`
+  // call receives.
+  const tasks = [
+    task({ key: "a", task_id: "TASK-001", title: "Upcoming thing", status: "upcoming" }),
+    task({ key: "b", task_id: "TASK-002", title: "Archived thing", status: "archived" }),
+  ];
+
+  it("drops Archive from the calendar's effective statuses", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    expect(filtersForView(f, "calendar").statuses).toEqual([]);
+  });
+
+  it("keeps Archive alongside other statuses, on the calendar, minus itself", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const, "archived" as const] };
+    expect(filtersForView(f, "calendar").statuses).toEqual(["done"]);
+  });
+
+  it("leaves List and Board untouched", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    expect(filtersForView(f, "list")).toBe(f);
+    expect(filtersForView(f, "board")).toBe(f);
+  });
+
+  it("is a no-op when Archive was never selected — same reference back", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    expect(filtersForView(f, "calendar")).toBe(f);
+  });
+
+  it("never empties the calendar just because Archive alone was picked", () => {
+    // The whole point: a hidden facet must not silently filter the view to
+    // nothing. Archive-only on the calendar reads as "no status filter" —
+    // filterTasks applies no status test at all once the list is empty — so
+    // the query stays a pass-through rather than the always-empty result the
+    // dead facet used to produce. (Whether an archived task itself DRAWS
+    // anything is ScheduleCalendar's own separate rule, not this one's.)
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    const out = filterTasks(tasks, filtersForView(f, "calendar"));
+    expect(out.map((t) => t.key)).toEqual(["a", "b"]);
+  });
+});
+
 describe("groupByColumn", () => {
   it("gives every lane a list and keeps the server's order on a tie", () => {
     const map = groupByColumn([
@@ -6029,9 +6076,22 @@ describe("the tasks toolbar", () => {
     // doing nothing — worse than hidden.
     const cal = PAGE.slice(PAGE.indexOf("<ScheduleCalendar"));
     expect(cal.slice(0, cal.indexOf("/>"))).toContain("tasks={shown}");
-    // `shown` is the same derivation the other two views read, not a second one.
-    expect(PAGE).toContain("const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);");
+    // `shown` is the same derivation the other two views read, not a second
+    // one — it now routes the stored filters through `filtersForView` first
+    // (2026-08-20), which is a no-op for List and Board and drops the dead
+    // Archive facet only when the calendar is the active view. See the
+    // "the calendar's Archive facet" describe block below for the semantics.
+    expect(PAGE).toContain("filterTasks(tasks, filtersForView(filters, view))");
     expect(PAGE).toContain("<TaskBoard tasks={shown}");
+  });
+
+  it("hides the dead Archive option from Status only on the calendar", () => {
+    // The calendar draws nothing for an archived task (ScheduleCalendar's own
+    // "AN ARCHIVED TASK DRAWS NOTHING" rule) — Archive in this same Status
+    // popover is a live, renderable lane on List and Board, so the row and
+    // its count survive there unmodified and it is the calendar alone that
+    // hides it.
+    expect(PAGE).toContain('hideArchiveStatus={view === "calendar"}');
   });
 
   it("centres the page on one measure wide enough for the widest view", () => {
