@@ -5,6 +5,7 @@ selection) with no Linux kernel dependency, so they run on macOS too. The
 dialogs themselves are gate-tested manually (docs/LINUX_DESKTOP_SPEC.md).
 """
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,7 @@ def test_state_is_the_flat_dotdir_shared_with_cli(monkeypatch, tmp_path):
     # XDG_CACHE_HOME (disposable, out of backup scope) and runtime stays on
     # XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     p = paths_mod.DesktopPaths.discover_linux()
@@ -80,6 +82,7 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
     # The move off ~/.local/share means XDG_DATA_HOME must NOT steer the state
     # root anymore — it only ever governed the old XDG-data layout.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     p = paths_mod.DesktopPaths.discover_linux()
     root = tmp_path / ".fused-render"
@@ -91,6 +94,7 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
 def test_cache_and_runtime_fallbacks_when_xdg_unset(monkeypatch, tmp_path):
     _clear_xdg(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home()'s expanduser on Windows
     p = paths_mod.DesktopPaths.discover_linux()
     root = tmp_path / ".fused-render"
     assert p.root == root
@@ -186,7 +190,12 @@ def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
     tools = tmp_path / "tools"
     env = paths_mod.DesktopPaths.discover_linux().child_environment("i", "t", tools)
     assert env["FUSED_RENDER_DUCKDB_EXTENSION_DIR"] == str(tools / "duckdb_extensions")
-    assert env["FUSED_RENDER_RCLONE_BIN"] == str(tools / "rclone")
+    # child_environment names the binary "rclone.exe" on win32 (it's bundled
+    # that way), "rclone" everywhere else — match that rather than assume the
+    # POSIX name, since this test's whole point is the shared tools_dir, not
+    # the platform-specific filename.
+    rclone_name = "rclone.exe" if sys.platform == "win32" else "rclone"
+    assert env["FUSED_RENDER_RCLONE_BIN"] == str(tools / rclone_name)
     assert env["PATH"].split(os.pathsep)[0] == str(tools)
 
 

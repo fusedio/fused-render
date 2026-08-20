@@ -40,15 +40,30 @@ def _autostart_exec(monkeypatch, tmp_path, appimage):
 def test_autostart_entry_double_quotes_spaced_launcher(monkeypatch, tmp_path):
     appimage = tmp_path / "Fused Render.AppImage"
     appimage.write_text("#!/bin/sh\n")
+    # The exact escaping algorithm (space -> double-quoted, no other reserved
+    # chars) is already pinned with a literal input by test_exec_quote_* above;
+    # what this test adds is that set_enabled() actually feeds the REAL
+    # resolved launcher through that same _exec_quote, so the expectation is
+    # built the same way rather than assumed. That distinction matters on
+    # Windows: tmp_path is a native WindowsPath there, and its backslash
+    # separators are themselves an _EXEC_RESERVED character, so a hardcoded
+    # "just double-quoted, nothing escaped inside" literal would be wrong for
+    # a real Windows path even though this Linux-only module never runs there.
     assert _autostart_exec(monkeypatch, tmp_path, appimage) == (
-        f'Exec="{appimage}" --startup'
+        f"Exec={startup._exec_quote(str(appimage))} --startup"
     )
 
 
 def test_autostart_entry_plain_launcher_unquoted(monkeypatch, tmp_path):
     appimage = tmp_path / "FusedRender.AppImage"
     appimage.write_text("#!/bin/sh\n")
-    assert _autostart_exec(monkeypatch, tmp_path, appimage) == f"Exec={appimage} --startup"
+    # See the comment above: same reasoning, "unquoted" only actually holds
+    # when the real launcher path has no reserved character, which every
+    # POSIX tmp_path satisfies but no Windows one can (it always contains
+    # backslash separators).
+    assert _autostart_exec(monkeypatch, tmp_path, appimage) == (
+        f"Exec={startup._exec_quote(str(appimage))} --startup"
+    )
 
 
 # ---- refresh_autostart: self-heal the autostart Exec= after an AppImage move --
@@ -69,7 +84,11 @@ def test_refresh_autostart_rewrites_stale_exec_path(monkeypatch, tmp_path):
     old = tmp_path / "FusedRender.AppImage"
     old.write_text("#!/bin/sh\n")
     desktop = _enable_autostart(monkeypatch, tmp_path, old)
-    assert f"Exec={old} --startup" in desktop.read_text()
+    # Built via _exec_quote rather than assumed unquoted, same reasoning as
+    # the two tests above: a real tmp_path is a native path, and on Windows
+    # that's never free of _EXEC_RESERVED characters (the backslash
+    # separator), even though this Linux-only module never runs there for real.
+    assert f"Exec={startup._exec_quote(str(old))} --startup" in desktop.read_text()
 
     # The AppImage moved: $APPIMAGE now points at the new location.
     moved = tmp_path / "moved" / "FusedRender.AppImage"
@@ -79,7 +98,7 @@ def test_refresh_autostart_rewrites_stale_exec_path(monkeypatch, tmp_path):
 
     startup.refresh_autostart()
 
-    assert f"Exec={moved} --startup" in desktop.read_text()
+    assert f"Exec={startup._exec_quote(str(moved))} --startup" in desktop.read_text()
 
 
 def test_refresh_autostart_is_noop_when_entry_already_matches(monkeypatch, tmp_path):

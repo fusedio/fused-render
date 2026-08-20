@@ -68,7 +68,16 @@ def main(dir: str = "~", exts: str = ".nc", show_all: bool = False,
          src: str = ""):
     import os
 
-    dir = os.path.abspath(os.path.expanduser(dir or "~"))
+    # Canonicalized to forward slashes right away: os.path.abspath backslashes
+    # EVERY separator on Windows, even a path that was already forward-slashed
+    # (ntpath.normpath doesn't leave "/" alone), and every step after this one
+    # — the remote stat/list query, the "/"-only breadcrumb split below, and
+    # each entry's joined path — has to agree on one separator or the
+    # breadcrumbs collapse into a single garbled segment. Forward slash is the
+    # form used everywhere else in the app (_view_url_codec.canonical_fs_path)
+    # and Windows accepts it in every real filesystem call, so there is no
+    # reason for this helper to be the one place still native-separator.
+    dir = os.path.abspath(os.path.expanduser(dir or "~")).replace(os.sep, "/")
 
     allow = tuple(e.strip().lower() for e in exts.split(",") if e.strip())
 
@@ -120,7 +129,9 @@ def main(dir: str = "~", exts: str = ".nc", show_all: bool = False,
 
     dirs, files = [], []
     for name, is_dir, size in triples:
-        full = os.path.join(dir, name)
+        # os.path.join re-inserts a native (backslash) separator on Windows
+        # even though `dir` is already forward-slash — re-canonicalize.
+        full = os.path.join(dir, name).replace(os.sep, "/")
         if is_dir:
             dirs.append({"name": name, "path": full, "is_dir": True})
         else:
@@ -133,10 +144,15 @@ def main(dir: str = "~", exts: str = ".nc", show_all: bool = False,
     dirs.sort(key=lambda e: e["name"].lower())
     files.sort(key=lambda e: e["name"].lower())
 
-    # breadcrumb segments: [(label, path), ...] from root to here
+    # breadcrumb segments: [(label, path), ...] from root to here. `dir` is
+    # forward-slash canonical (above), so this is a plain split — EXCEPT a
+    # drive letter ("C:") IS the root segment on Windows and must not get a
+    # POSIX-style leading "/" prepended, or "C:/Users" would crumb as
+    # "/C:", "/C:/Users" — neither a valid drive path nor a valid POSIX one.
+    segments = [s for s in dir.split("/") if s]
     parts, acc = [], ""
-    for seg in dir.strip("/").split("/"):
-        acc += "/" + seg
+    for i, seg in enumerate(segments):
+        acc = seg if i == 0 and seg.endswith(":") else acc + "/" + seg
         parts.append({"label": seg, "path": acc})
 
     return {

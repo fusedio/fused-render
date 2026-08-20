@@ -123,6 +123,19 @@ def _entry(name, is_dir=False, size=None):
             "ignored": False}
 
 
+def _abs(posix_literal):
+    """The canonical (forward-slash) absolute form browse.py computes from a
+    POSIX-shaped literal like "/mnt/gone/d" — a stand-in for "somewhere that
+    isn't there", never a real directory. os.path.abspath is a no-op on
+    POSIX, so this equals the literal unchanged; on Windows it prepends the
+    checkout's current drive letter and backslashes every separator, which
+    browse.py's own `dir = ...abspath(...).replace(os.sep, "/")` immediately
+    re-canonicalizes back to forward slashes — mirror that exact transform
+    here instead of assuming the bare POSIX literal already is the app's
+    real output."""
+    return os.path.abspath(posix_literal).replace(os.sep, "/")
+
+
 @pytest.fixture
 def no_kernel_list(monkeypatch):
     """Make ANY kernel directory listing / probe explode, so a silent fallback
@@ -155,16 +168,17 @@ def test_remote_dir_lists_via_http_no_kernel(fs, no_kernel_list):
     res = br.main(dir="/mnt/gone/d", exts=".tif,.tiff", src=s.src)
     assert "error" not in res
     assert [d["name"] for d in res["dirs"]] == ["sub"]
-    assert res["dirs"][0]["path"] == "/mnt/gone/d/sub"
+    assert res["dirs"][0]["path"] == _abs("/mnt/gone/d") + "/sub"
     assert res["dirs"][0]["is_dir"] is True
     # only the loadable .tif survives the ext filter; dotfile hidden
     assert [f["name"] for f in res["files"]] == ["a.tif"]
     f = res["files"][0]
-    assert f["path"] == "/mnt/gone/d/a.tif"
+    assert f["path"] == _abs("/mnt/gone/d") + "/a.tif"
     assert f["size"] == 10 and f["ext"] == ".tif" and f["loadable"] is True
-    # breadcrumbs are pure string ops off `dir`
-    assert res["crumbs"][-1] == {"label": "d", "path": "/mnt/gone/d"}
-    assert res["dir"] == "/mnt/gone/d"
+    # breadcrumbs are pure string ops off `dir` — the last crumb's path is
+    # always the full dir by construction, on every platform.
+    assert res["crumbs"][-1] == {"label": "d", "path": res["dir"]}
+    assert res["dir"] == _abs("/mnt/gone/d")
 
 
 def test_remote_show_all_includes_nonloadable(fs, no_kernel_list):
@@ -177,8 +191,8 @@ def test_remote_show_all_includes_nonloadable(fs, no_kernel_list):
 def test_remote_missing_returns_error_shape(fs, no_kernel_list):
     s = fs(exists=False)
     res = br.main(dir="/mnt/gone/d", exts=".tif", src=s.src)
-    assert res["error"].startswith("cannot list /mnt/gone/d")
-    assert res["parent"] == "/mnt/gone"
+    assert res["error"].startswith(f"cannot list {_abs('/mnt/gone/d')}")
+    assert res["parent"] == _abs("/mnt/gone")
 
 
 def test_remote_list_failure_no_kernel_fallback(fs, no_kernel_list):
@@ -186,7 +200,7 @@ def test_remote_list_failure_no_kernel_fallback(fs, no_kernel_list):
     # listdir (that is the mount-killer); return the error shape instead.
     s = fs(remote=True, list_status=503)
     res = br.main(dir="/mnt/gone/d", exts=".tif", src=s.src)
-    assert res["error"].startswith("cannot list /mnt/gone/d")
+    assert res["error"].startswith(f"cannot list {_abs('/mnt/gone/d')}")
 
 
 def test_remote_file_path_descends_to_parent(fs, no_kernel_list):
@@ -194,7 +208,7 @@ def test_remote_file_path_descends_to_parent(fs, no_kernel_list):
     # parent via a pure string op (no kernel) and list that.
     s = fs(remote=True, is_dir=False, entries=[_entry("a.tif", size=1)])
     res = br.main(dir="/mnt/gone/f.tif", exts=".tif", src=s.src)
-    assert res["dir"] == "/mnt/gone"
+    assert res["dir"] == _abs("/mnt/gone")
     assert [f["name"] for f in res["files"]] == ["a.tif"]
 
 
