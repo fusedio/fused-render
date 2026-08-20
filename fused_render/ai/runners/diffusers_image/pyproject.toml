@@ -73,6 +73,33 @@
 #   sentencepiece  the tokenizer format those text encoders use
 #   protobuf       sentencepiece's model format needs it at load time
 #   gguf           reads the quantized single-file transformer (see torch_image.py)
+#   torchao        reads the OTHER quantized transformer in `catalog.py` — the
+#                  int8 diffusers repo, which is not a GGUF swap but an ordinary
+#                  `from_pretrained` over a component whose `config.json`
+#                  carries `"quant_method": "torchao"`. diffusers turns that into
+#                  a `TorchAoConfig` itself; what it cannot do is import the
+#                  package, and `quantizers/torchao/torchao_quantizer.py` raises
+#                  `ImportError` without it. `>=0.15` is DIFFUSERS' OWN floor —
+#                  that same file refuses an older torchao by version number —
+#                  and it is also the first release whose
+#                  `Int8WeightOnlyConfig` carries the `granularity` field the
+#                  repo's config was serialized with, so the floor is the
+#                  library's requirement rather than a guess. `<1` rather than a
+#                  pre-1.0 minor ceiling, unlike `diffusers` above, because
+#                  nothing in `torch_image.py` calls torchao: diffusers does,
+#                  and it version-gates the calls it makes.
+#                  **It installs on every platform this app ships to** — PyPI
+#                  carries a manylinux x86_64 wheel and a `py3-none-any` wheel
+#                  beside it, which is what macOS and Windows resolve to — so
+#                  the wheels-only rule above holds in all three folders, and
+#                  torchao is named in all three because the repo it reads is
+#                  suggested to all three (one `catalog.py` list, aliased).
+#                  What is NOT claimed is speed. PyPI's is torchao's GENERIC
+#                  build; the CUDA and XPU builds live on its own indexes, which
+#                  none of these manifests uses, and no benchmark here says what
+#                  an int8 weight-only transformer costs per step on CUDA, ROCm,
+#                  MPS or CPU. So the `catalog.py` note promises a smaller
+#                  download and nothing about the clock.
 #   pillow         writes the PNG
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
@@ -88,6 +115,7 @@ dependencies = [
     "sentencepiece",
     "protobuf",
     "gguf",
+    "torchao>=0.15,<1",
     "pillow",
     "huggingface_hub",
     "psutil",
