@@ -424,6 +424,54 @@ def test_the_two_ENDS_of_one_segment_are_mapped_INDEPENDENTLY(vad):
         4.0, 31.0)
 
 
+def test_a_WORD_is_never_stretched_across_a_join_the_way_a_segment_may_be(vad):
+    """The one asymmetry between the two callers, and the invariant behind it:
+    packing only REMOVES time, so the inverse must never hand back an interval
+    LONGER than the packed one it was given. A segment is exempt (the test above
+    — real speech on both sides of the join, so both numbers are true); a word
+    is not, because one token cannot be spoken across silence that was cut out.
+    Mapped endpoint by endpoint a 0.2s word containing the join came back as
+    `4.9-30.1`, 25 seconds of highlight for one word."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    # Strictly containing the join: placed in the region holding its MIDPOINT,
+    # and 5.0 is that midpoint — the tie goes to the region that BEGINS there.
+    assert vad.original_word_span(pack, 4.9, 5.1) == (30.0, 30.1)
+    # Most of it before the join, so it stays in the first region and gives up
+    # the tail it was timed on the far side of the pause.
+    assert vad.original_word_span(pack, 4.5, 5.4) == (4.5, 5.0)
+    # Never longer than it was timed, whichever side it lands on.
+    for at, until in ((4.9, 5.1), (4.5, 5.4), (4.99, 5.01), (0.1, 9.9)):
+        start, end = vad.original_word_span(pack, at, until)
+        assert end - start <= (until - at) + 1e-9
+
+
+def test_a_word_that_only_TOUCHES_a_join_maps_like_the_endpoints_do(vad):
+    """What the straddle rule must leave alone, or it would trade one wrong
+    answer for another. A word ending exactly on a join belongs to the region
+    that ends there and one beginning on it to the region that begins there —
+    the same asymmetry `original_start`/`original_end` carry — and a word inside
+    a single region is simply an offset into it."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert vad.original_word_span(pack, 4.5, 5.0) == (4.5, 5.0)
+    assert vad.original_word_span(pack, 5.0, 5.5) == (30.0, 30.5)
+    assert vad.original_word_span(pack, 1.0, 1.4) == (1.0, 1.4)
+    assert vad.original_word_span(pack, 7.5, 8.0) == (32.5, 33.0)
+
+
+def test_a_WORD_past_the_speech_collapses_at_the_bound_like_a_segment_does(vad):
+    """Same padding hallucination, same answer. A word the library timed past
+    the packed clip has no region to hold its midpoint, so it resolves to the
+    last one and clamps there — an instant the caller can see is unusable,
+    rather than a span reaching into silence that was removed."""
+    pack = [(0.0, 5.0), (30.0, 35.0)]
+
+    assert vad.original_word_span(pack, 12.0, 29.0) == (35.0, 35.0)
+    # And below zero, for `slice_samples`' reason.
+    assert vad.original_word_span(pack, -1.0, 0.5) == (0.0, 0.5)
+
+
 def test_a_time_PAST_the_speech_lands_on_the_clip_s_last_moment(vad):
     """Whisper times against a padded 30-second window, so a two-second clip
     can report a segment ending at 29 — and a hallucination in the padding can

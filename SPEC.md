@@ -6555,6 +6555,56 @@ an AI Models page that could say what was on disk but not what was *running*.
   model as a chat model. **Nothing here has transcribed real audio under test**;
   AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
   API.
+- **AI-10h** **`words: true` times each WORD inside a segment — on MLX Whisper
+  only, and DECLINED rather than refused where an engine has none** (D392). A
+  segment is a sentence or several, so `{start, end, text}` cannot drive a
+  karaoke highlight or a click-a-word-to-seek player; `words` adds
+  `{start, end, word}` per word, in order, with the library's leading space kept
+  so a segment's text is its words concatenated. The capability is the model's
+  already: `mlx-whisper` ports OpenAI's cross-attention DTW aligner whole, and
+  the `mlx-community` conversions carry the CURATED `alignment_heads` inside
+  `weights.npz` — ten head indices for `small`, byte-identical to the blob
+  OpenAI ships — which is what makes the timings worth publishing rather than
+  the all-heads average the library would otherwise fall back to. **This is the
+  one option answered BEST-EFFORT instead of refused**, and the deliberate
+  exception to AI-10g. That rule exists because an ignored option is
+  undetectable — a page that asked for English and got French has nothing to
+  check — and `words` is not that: honouring it puts a list on the segment and
+  declining leaves the key off, so `segment.words || []` is the whole contract
+  and one page runs unchanged on every machine. Refusing would do the opposite of
+  what AI-10c is for, making a page work on a Mac and 400 on a CTranslate2 box.
+  The other two engines could carry it — faster-whisper for a mapping, since it
+  returns the same DTW-aligned words; Parakeet for more, its native times being
+  per SUBWORD on an 80ms grid. **`task:
+  "translate"` carries no words on any engine**: word timings are positions in
+  the audio and a translation's words were never spoken in it, so there is
+  nothing to align them to, and the library's warn-and-return-anyway reaches a
+  page as a list indistinguishable from a usable one. **Timings are
+  original-recording positions like a segment's** (AI-10a), which is the real
+  work rather than the flag: each word travels the same packing inverse its
+  segment does, but as a SPAN (`vad.original_word_span`) rather than as two
+  independent endpoints. Packing only removes time, so a word's recording span
+  must never be LONGER than its packed one: a segment may straddle a join (real
+  speech on both sides of the removed silence), a word may not, and a word
+  mapped endpoint by endpoint across one came back stretched over the whole
+  dropped pause. A word is therefore placed in the single region holding its
+  packed midpoint and clamped into it, so a straddling word is SHORTER than it
+  was timed rather than a highlight parked in silence; a word merely touching a
+  join is unaffected. A word that inverts after mapping is CLAMPED into its
+  segment rather than dropped — the opposite of a segment, because a dropped
+  word breaks the words-are-the-text invariant a caller builds on. **Opt-in because it is not free**, unlike `diarize`: an extra forward pass
+  per decoded window, and it changes the decode itself — the library gates its
+  hallucination pruning on `word_timestamps`, so the same file can return a
+  different number of segments with the flag on. No per-word confidence is
+  published, though DTW has one, for AI-10c's reason. **`words` rides the
+  PROGRESSIVE transcript too**, and that took a second edit: `partial.Sink.add`
+  rebuilds each line key by key rather than copying the segment — deliberately,
+  so an engine's logprobs and temperatures never reach a file a page reads — so a
+  public field is dropped unless it is named there. It was, and the symptom was
+  `onSegment` handing pages timing-less segments while the final `.json` had
+  them, permanently: the reader counts DELIVERED LINES, so a segment sent live
+  without its words is never re-sent with them. Anything added to a segment that
+  a caller is meant to see has to be named in `partial.py` as well.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).

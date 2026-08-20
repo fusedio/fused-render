@@ -898,6 +898,12 @@ def generate(body):
     # instantly rather than after a multi-gigabyte download and a load. This
     # copy is here because neither the bridge nor the endpoint is the only door
     # into this process — the same reason `speakers_or_raise` is called twice.
+    # `words` (D392) is not among them ON PURPOSE: it is the one option answered
+    # best-effort rather than refused, so this engine simply emits no `words` key
+    # and a caller reads that off the segment. Parakeet's own per-token times
+    # could supply it — see `_sentences`, which already drops them — but a token
+    # here is a SUBWORD, so words would have to be rebuilt by grouping on a
+    # leading space, and the times sit on an 80ms grid against whisper's 10ms.
     engine_options.unsupported_or_raise(
         RUNNER_CODE, task=task, language=str(body.get("language") or ""),
         initial_prompt=str(body.get("initialPrompt") or ""))
