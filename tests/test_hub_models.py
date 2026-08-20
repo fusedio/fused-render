@@ -46,7 +46,7 @@ def _clear_cache():
 def _no_token(monkeypatch, tmp_path):
     """A developer's real token must not decide what these tests assert.
 
-    The search reads whatever `huggingface_hub.get_token()` finds (D400), so the
+    The search reads whatever `huggingface_hub.get_token()` finds (D401), so the
     STORE has to be redirected and not just the environment: hf resolves
     `HF_TOKEN_PATH` once at import, so setting `HF_HOME` here does nothing to an
     hf that another test already imported — it would leave these tests reading
@@ -301,7 +301,7 @@ def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
 
 
 def test_the_token_hf_holds_is_the_one_sent(client, hub_cache, monkeypatch):
-    """D400: the search sends whatever `get_token()` finds — a login made from
+    """D401: the search sends whatever `get_token()` finds — a login made from
     Preferences, or a `hf auth login` in a terminal, indistinguishable here by
     design. This app stores no token of its own, so there is no second
     resolution that could disagree with the download beside it."""

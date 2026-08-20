@@ -598,7 +598,9 @@ def test_the_registry_binds_dot_bundle_to_this_template():
 
     with open(_repo_path("fused_render", "templates", "registry.json"), encoding="utf-8") as fh:
         registry = json.load(fh)
-    assert registry[".bundle"] == ["bundle"]
+    # `bundle` is the only VIEWER for a .bundle; `claude` trails it because every
+    # registered key carries the chat now (tests/test_templates.py).
+    assert registry[".bundle"] == ["bundle", "claude"]
 
 
 @pytest.mark.parametrize("name", ["reader.py", "template.html", "icon.svg"])

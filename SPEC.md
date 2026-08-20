@@ -1167,7 +1167,7 @@ never imports server).
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
 - **PF-1c** **The Hugging Face section is on this page and is NOT a preference**
-  (D400). It is a **Log in to Hugging Face** button, it talks to `/api/hf/*`
+  (D401). It is a **Log in to Hugging Face** button, it talks to `/api/hf/*`
   rather than `/api/prefs`, and **this app stores no Hub token at all**: the
   button drives `huggingface_hub`'s own device-code browser login and hf persists
   what comes back, in hf's files, with hf's modes, alongside the refresh token hf
@@ -5345,7 +5345,7 @@ three weeks ago, and would cost nothing to open.
   words because somebody told to "accept the terms" on an approval-gated repo
   goes looking for a button that is not there; an unrecognised truthy gate is
   read as `manual`, the stricter of the two. **There is no credentials UI and
-  this does not add one** — *narrowed by D400*: Preferences has a **Log in to
+  this does not add one** — *narrowed by D401*: Preferences has a **Log in to
   Hugging Face** button (§20/PF-1c), and the search token is
   `huggingface_hub.get_token()` — hf's own store, hf's own resolution. Read
   literally the clause still holds: there is **no box to paste a secret into**,
@@ -5796,7 +5796,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   by a token-holding user fail over to the slow path (the token is whatever
   `huggingface_hub.get_token()` finds in the worker — hf's own store, written by
   the Preferences login button or by a `hf auth login`; nothing is injected into
-  the worker's environment, §20/PF-1f, D400) — up to
+  the worker's environment, §20/PF-1f, D401) — up to
   **4 `Range` segments per file** with **segments across all files** as
   the units of work in one pool capped at **8 connections** — the single number
   that bounds how many sockets a download opens, which a pool per file would
