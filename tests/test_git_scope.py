@@ -201,20 +201,30 @@ def test_the_commits_heading_carries_no_count(source):
     # pill; `String(commits.length)` is the number that must not come back.
     assert '"Commits", null, null,' in source
     assert '"Commits", String(commits.length)' not in source
-    # The real totals above it are untouched.
-    for section in ("Staged changes", "Changes", "Untracked", "Stashes"):
+    # The real totals above it are untouched. ONE Changes section now — the
+    # staged/unstaged/untracked triple collapsed into it (v2 design) — plus
+    # Stashes; both still carry true totals.
+    for section in ("Changes", "Stashes"):
         assert f'"{section}", String(' in source
+    for gone in ("Staged changes", "Untracked"):
+        assert f'"{gone}", String(' not in source
 
 
 def test_a_commit_row_is_a_subject_and_a_time(source):
     # The row is what you SKIM: the subject, and how long ago. Drawing the sha
-    # and the author on it too turned the list into a table — an id to cross
+    # and the author on EVERY row turned the list into a table — an id to cross
     # before the sentence, and a column repeating the same name on every row.
+    # The SELECTED row is the one exception, and only for the id: once a commit
+    # is picked, the row and the pane must say the same identity, so "which one
+    # is open?" is answered in the list itself. The gate is the `selected ?`
+    # conditional asserted below — an unconditional sha is the table coming back.
     row = source[source.index("function commitLine("):]
     row = row[:row.index("\nfunction ")]
     assert 'className: "subject"' in row
     assert 'className: "when"' in row
-    assert 'className: "sha"' not in row, "the id belongs to the selected state"
+    assert 'selected ? el("span", { className: "sha"' in row, \
+        "the id is shown on the selected row only"
+    assert row.count('className: "sha"') == 1, "no unconditional sha column"
     assert 'className: "who"' not in row, "the author belongs to the selected state"
     # Not lost, though: the row's tooltip still answers "which commit is this?"
     assert "entry.short" in row and "entry.author" in row
@@ -248,7 +258,7 @@ def test_the_pane_has_exactly_one_master(source):
     assert 'selection.kind === "rev"' in source
     assert 'selection.kind === "wt"' in source
     # The four writers, all through the one setter.
-    assert 'select("wt", change.path)' in source
+    assert 'select("wt", selected ? null : change.path)' in source
     assert 'select("rev", selected ? null : entry.sha)' in source
     assert "select(null, null)" in source
     # And the old pair is gone from the file entirely — a leftover writer would
@@ -344,13 +354,16 @@ def test_the_preview_control_needs_a_pane_to_drive(source):
     assert "if (!host || host === window) return null;" in marked
     assert "catch (err)" in marked
     assert marked.count("return null") == 2 and "? el : null" in marked
-    # ABSENCE is what gates the control: the row builds it inside `if (canPreview)`
-    # and nothing else offers one.
-    row = source[source.index("function commitLine(entry, selected)"):]
+    # ABSENCE is what gates the control: the row builds its inline marker only
+    # under `canPreview` — the eye when idle, the previewing badge when active —
+    # and nothing else offers one. (It is a span-with-role inside the row button
+    # now, because buttons cannot nest; both states still speak only through
+    # `preview()`.)
+    row = source[source.index("function commitLine(entry, selected, isLatest)"):]
     row = row[:row.index("\nfunction ")]
-    assert "if (canPreview) {" in row
-    assert 'onClick: () => preview(on ? null : entry.sha)' in row
-    assert source.count("preview:") == 1, "one preview affordance, on the commit row"
+    assert "if (canPreview && previewingHere) {" in row
+    assert "} else if (canPreview) {" in row
+    assert "preview(entry.sha);" in row and "preview(null);" in row
     # ...and `preview()` refuses even if something called it anyway.
     setter = source[source.index("function preview(sha)"):]
     setter = setter[:setter.index("\n}")]
