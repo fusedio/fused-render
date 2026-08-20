@@ -150,6 +150,29 @@ def test_the_panel_no_longer_stringifies_a_pin_anywhere():
     assert "String(item.pinned" not in panel
 
 
+# --------------------------------------------------------------- the AI call
+
+
+def test_the_curation_call_names_its_model_and_its_effort():
+    """The proposal is the panel's one hard reasoning task, so it names sonnet.
+
+    Omitting `model` resolves to the user's default-model preference — Haiku
+    where they have none — and a weaker model answers this prompt with one tool
+    per function and nothing pinned, which is the curation the user would then
+    have to redo by hand. `effort: "low"` is deliberate and, on the Claude path
+    with a model that honours it, now actually applies.
+    """
+    call = _fn_body(_read(TEMPLATE), "async function curate()")
+    options = call[call.index("{ systemPrompt: CURATION_SYSTEM"):]
+    options = options[:options.index("}")]
+    assert 'model: "sonnet"' in options
+    assert 'effort: "low"' in options
+    # Local-model-only options must not appear here: the Claude path answers a
+    # 400 for them rather than ignoring them (the AI bridge's contract).
+    for local_only in ("history", "raw", "temperature", "topP", "maxTokens"):
+        assert local_only not in options, local_only
+
+
 # ------------------------------------------------------ registration errors
 
 

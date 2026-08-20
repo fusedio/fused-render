@@ -610,7 +610,16 @@ async function curate() {
       res = await fused.ai(
         "App surface (JSON):\n" + surfaceForModel()
           + "\n\nPropose the MCP tools for this app.",
-        { systemPrompt: CURATION_SYSTEM, effort: "low" });
+        // `sonnet` NAMED, not left to resolve. Omitting `model` lands on the
+        // user's default-model preference, or Haiku where they have none — and
+        // this is the panel's one hard reasoning task: read a folder's
+        // signatures and its page's call sites and decide which entrypoints
+        // deserve to be tools and which of their parameters are already fixed.
+        // A weaker model answers with one tool per function and nothing pinned,
+        // which is the curation the user would then have to do by hand anyway.
+        // `effort` stays low and now actually applies — it is honoured on the
+        // Claude path, and this is a bounded read rather than a long think.
+        { systemPrompt: CURATION_SYSTEM, model: "sonnet", effort: "low" });
     } catch (err) {
       // Every one of these is a state, not a crash: the panel's manual path
       // (Add tool) is fully capable on its own, so an unavailable model costs a

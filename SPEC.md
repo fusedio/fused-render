@@ -7661,8 +7661,18 @@ manifest is the entire contract between them.
   approval.** Every curated tool is callable, because the person who curated it is
   the person the host will ask. A second confirmation here would only be a false
   sense of one.
-- **MC-7** **AI curation is a PROPOSAL and an optional one.** The model is handed
-  the reduced surface (names, signatures, docstrings, page call arguments — never
+- **MC-7** **AI curation is a PROPOSAL and an optional one, and it names
+  `sonnet`.** The model choice is deliberate rather than inherited: omitting
+  `model` resolves to the user's default-model preference (Haiku where they have
+  none), and this is the panel's one hard reasoning task — read a folder's
+  signatures and its page's call sites, then decide which entrypoints deserve to
+  be tools and which of their parameters the page has already fixed. A weaker
+  model answers with one tool per function and nothing pinned, i.e. the curation
+  the user would have to redo by hand. `effort` stays `low` (a bounded read, not
+  a long think) and on a model that honours it now actually applies.
+
+  The model is handed the reduced surface (names, signatures, docstrings, page
+  call arguments — never
   file contents) and answers with a tool array; every field lands in the editor
   and nothing reaches the folder until Save. A pin the model invents for a
   parameter that does not exist is dropped rather than written, since the runner
