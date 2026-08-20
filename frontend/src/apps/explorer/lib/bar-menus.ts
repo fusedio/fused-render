@@ -75,6 +75,7 @@ export interface FileBarActions {
   onOpenInClaude: () => void;
   onCopyPath: () => void;
   onReveal: () => void;
+  onOpenInNewTab: () => void;
   // Omitted where the surface cannot split (an embedded pane already IS a
   // split, and a directory's preview has no file to split on) — the separator
   // goes with it, so the menu never ends in a divider.
@@ -100,6 +101,7 @@ export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
     { label: "Rename…", icon: MenuIcons.rename, onClick: actions.onRename },
     "separator",
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: actions.onReveal },
+    { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: actions.onOpenInNewTab },
     { label: "Copy Path", icon: MenuIcons.copyPath, onClick: actions.onCopyPath },
     {
       label: "Copy Claude session command",

@@ -78,25 +78,33 @@ test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
     onOpenInClaude: () => called.push("claude"),
     onCopyPath: () => called.push("copy"),
     onReveal: () => called.push("reveal"),
+    onOpenInNewTab: () => called.push("newtab"),
     onSplit: (dir) => called.push("split:" + dir),
   });
   // The shared trio sits in the FOLDER menu's order (backgroundMenu):
-  // Reveal → Copy Path → Claude Code. Two bars, one surface.
+  // Reveal → Open in New Tab → Copy Path → Claude Code. Two bars, one surface.
   expect(labels(items)).toEqual([
     "Rename…",
     "—",
     "Reveal in Finder",
+    "Open in New Tab",
     "Copy Path",
     "Copy Claude session command",
     "—",
     "Split right",
     "Split down",
   ]);
-  for (const label of ["Rename…", "Reveal in Finder", "Copy Path", "Copy Claude session command"]) {
+  for (const label of [
+    "Rename…",
+    "Reveal in Finder",
+    "Open in New Tab",
+    "Copy Path",
+    "Copy Claude session command",
+  ]) {
     item(items, label).onClick?.();
   }
   item(items, "Split down").onClick?.();
-  expect(called).toEqual(["rename", "reveal", "copy", "claude", "split:col"]);
+  expect(called).toEqual(["rename", "reveal", "newtab", "copy", "claude", "split:col"]);
 });
 
 test("fileBarMenu drops the splits AND their separator when it can't split", () => {
@@ -105,11 +113,13 @@ test("fileBarMenu drops the splits AND their separator when it can't split", () 
     onOpenInClaude: () => {},
     onCopyPath: () => {},
     onReveal: () => {},
+    onOpenInNewTab: () => {},
   });
   expect(labels(items)).toEqual([
     "Rename…",
     "—",
     "Reveal in Finder",
+    "Open in New Tab",
     "Copy Path",
     "Copy Claude session command",
   ]);

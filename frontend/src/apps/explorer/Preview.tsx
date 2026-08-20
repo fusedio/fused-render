@@ -431,6 +431,7 @@ function usePreviewFileMenu(
       onOpenInClaude: doOpenInClaude,
       onCopyPath: doCopyPath,
       onReveal: doReveal,
+      onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       onSplit:
         !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
     });
