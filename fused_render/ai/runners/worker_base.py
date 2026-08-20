@@ -405,12 +405,35 @@ def resident_bytes():
 #: Below this a file is fetched whole: splitting a 200KB config across four
 #: sockets costs four round trips to save nothing.
 SEGMENT_MIN_BYTES = 32 * 1024 * 1024
-#: Per file. Past a handful the Hub's per-connection throughput is the limit
-#: rather than the connection count, and each one is another socket to retry.
-MAX_SEGMENTS_PER_FILE = 4
+#: The size of one unit of work once a file IS being split. A separate
+#: constant from `SEGMENT_MIN_BYTES` on purpose, even though the two start out
+#: equal: one decides whether to split a file at all, the other decides how
+#: big each piece is once splitting happens, and nothing says a future tuning
+#: pass changes them together.
+#:
+#: **Fixed size, not `size / N` — this is the fix for the download's tail.**
+#: A big shard used to become a handful of EQUAL shares (see the retired
+#: `MAX_SEGMENTS_PER_FILE` below): four connections at four different real
+#: speeds finish at four different times, and once the fast three are done
+#: there is nothing left to hand them — the slowest share runs out the clock
+#: alone, which measured as a 4.6GB model crawling from ~90% to 100% for over
+#: a minute. Fixed-size chunks make a big file into MANY units of work in one
+#: shared queue: a worker that finishes early pulls the next chunk rather than
+#: finding nothing assigned to it, so a slow connection only ever delays its
+#: own current 32MB, never the tail of the whole download.
+CHUNK_BYTES = 32 * 1024 * 1024
 #: Across everything — the ONE number that bounds how many sockets a download
 #: opens. A pool per file would multiply the caps together.
 MAX_CONNECTIONS = 8
+#: RETIRED, deliberately left named rather than silently deleted: this used to
+#: cap a single file at 4 equal shares, back when segments were `size / N`.
+#: With fixed-size `CHUNK_BYTES` chunks pulled from one GLOBAL queue, a big
+#: file simply produces more chunks — that is the whole fix above — and
+#: `MAX_CONNECTIONS` is what already bounds how many run at once, so a second,
+#: per-file cap would only recreate the tail this redesign removes: capping a
+#: 4.6GB shard at 4 chunks again puts it back on 4 static shares. Nothing
+#: reads this constant; it stays as a marker for why the number is gone.
+_RETIRED_MAX_SEGMENTS_PER_FILE = 4
 #: Deliberately NOT hf's `.incomplete`. hf resumes one of those by seeking to
 #: its current length; our segments write out of order, so a partial file of
 #: length N does not mean the first N bytes are there, and handing hf one of
@@ -429,6 +452,21 @@ FLUSH_EVERY_S = 1.0
 #: `snapshot_download` default, which is what keeps the fast path and the
 #: fallback on one revision of a model.
 DEFAULT_REVISION = "main"
+
+#: The sidecar's own format number. Bumped whenever what a sidecar MEANS
+#: changes shape — the chunk queue is exactly such a change: a segment used to
+#: be one of `size / N` equal shares, and is now one of many fixed-size
+#: `CHUNK_BYTES` pieces, so a sidecar an older build left behind describes
+#: boundaries this build would derive differently for the same file. Identity
+#: (etag, size) still matches such a sidecar, and the layout even often looks
+#: internally consistent — which is exactly the shape of input that turns a
+#: resume into a silently wrong blob rather than an obviously failed one, so
+#: it cannot be left to the layout check to notice. Anything read back with a
+#: different number, MISSING included — every sidecar written before this
+#: field existed reads as missing — is treated exactly like no sidecar at all:
+#: the safe reading, since a fresh download from a clean chunk plan is always
+#: correct, merely slower than a resume would have been.
+SIDECAR_VERSION = 2
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
 _RANGE_START = re.compile(r"^bytes\s+(\d+)-")
@@ -740,19 +778,35 @@ def _sparse_ok(folder):
     return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
 
 
-def _segment_count(size):
+def _chunks(size):
+    """Split [0, size) into fixed `CHUNK_BYTES` pieces. `done` is the cursor.
+
+    Below `SEGMENT_MIN_BYTES` the file is one piece covering the whole thing —
+    unchanged from before the chunk queue, and still the right answer: there
+    is nothing to gain from splitting a file too small to matter.
+
+    At or above it, every piece but the last is exactly `CHUNK_BYTES` — fixed
+    size, not `size / N`. A fixed size is what turns a big file into MANY
+    units of work rather than a HANDFUL: the whole point, since a queue with
+    only as many items as connections gives a slow one nothing to hand off
+    once its faster siblings finish (see `CHUNK_BYTES`'s own comment). A
+    30-shard repo and a single 4.6GB shard both resolve to plans a worker can
+    keep pulling from until the file is actually done.
+
+    Deterministic in `size` alone — no `count` argument, unlike the equal-share
+    split this replaced — which is what lets a resume regenerate the exact
+    same boundaries a previous run planned without having to persist the
+    piece count anywhere but the sidecar's own `segments` list.
+    """
     if size < SEGMENT_MIN_BYTES:
-        return 1
-    return min(MAX_SEGMENTS_PER_FILE, -(-size // SEGMENT_MIN_BYTES))
-
-
-def _segments(size, count):
-    """Split [0, size) into `count` contiguous ranges. `done` is the cursor."""
-    span = size // count
-    return [{"start": i * span,
-             "end": size - 1 if i == count - 1 else (i + 1) * span - 1,
-             "done": 0}
-            for i in range(count)]
+        return [{"start": 0, "end": size - 1, "done": 0}]
+    pieces = []
+    start = 0
+    while start < size:
+        end = min(start + CHUNK_BYTES, size) - 1
+        pieces.append({"start": start, "end": end, "done": 0})
+        start = end + 1
+    return pieces
 
 
 def _seg_complete(seg):
@@ -827,7 +881,12 @@ class _FileFetch:
             # refuses, and the refusal takes down the whole repo — the fallback
             # then deleting this file's sidecar along with every OTHER file's
             # progress. Restarting this one file whole is strictly cheaper.
-            self.segments = _segments(self.size, len(saved))
+            #
+            # `_chunks` is deterministic in `size` alone, so the layout it
+            # derives here is the SAME plan a fresh download would make —
+            # `_restore` below is what checks that the saved offsets actually
+            # fit onto it.
+            self.segments = _chunks(self.size)
             if not self._restore(saved):
                 saved = None
             elif len(saved) > 1 and _probe_host(self.meta["location"],
@@ -836,15 +895,19 @@ class _FileFetch:
                 saved = None
         if saved is None:
             # …and once the sidecar is out, its layout goes with it. Kept, it
-            # would split a download that starts from zero by a number that
+            # would split a download that starts from zero by a plan that
             # described a file we just deleted: one connection for a 4.6GB
             # shard, or dozens for a small one.
-            count = _segment_count(self.size)
-            if count > 1 and _probe_host(self.meta["location"],
-                                         self._cdn_token(),
-                                         self.probes) is not True:
-                count = 1
-            self.segments = _segments(self.size, count)
+            self.segments = _chunks(self.size)
+            if len(self.segments) > 1 and _probe_host(self.meta["location"],
+                                                       self._cdn_token(),
+                                                       self.probes) is not True:
+                # No confirmed range support: one connection for the whole
+                # file rather than the chunk plan `_chunks` would otherwise
+                # hand out, for the same reason `_whole_body` refuses a 200 at
+                # a non-zero offset — every chunk past the first would be
+                # handed byte 0.
+                self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
         self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
@@ -874,7 +937,18 @@ class _FileFetch:
     def _saved(self):
         """The segments a previous run recorded for THIS file, or None.
 
-        Identity first — etag, size, and a part file still as long as it was —
+        **Version first, before identity even gets a look-in.** The chunk
+        queue changed what a segment list MEANS — fixed `CHUNK_BYTES` pieces
+        rather than `size / N` equal shares — so a sidecar an older build
+        wrote can have the right etag, the right size, and a layout that still
+        passes the shape check in `_restore`, while every offset in it means a
+        different byte than this build would derive for the same file. Etag
+        and size agreeing says nothing about that; only the version does. A
+        missing `version` — every sidecar written before this field existed —
+        reads as a mismatch by construction, since `state.get` returns `None`
+        and `None != SIDECAR_VERSION`.
+
+        Identity next — etag, size, and a part file still as long as it was —
         because a sidecar belonging to a different revision of the file would
         have us skip bytes that were never fetched, and the result is a blob of
         exactly the right length that is silently wrong. The layout itself is
@@ -883,6 +957,8 @@ class _FileFetch:
         try:
             with open(self.sidecar) as handle:
                 state = json.load(handle)
+            if state.get("version") != SIDECAR_VERSION:
+                return None
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:
                 return None
             saved = state["segments"]
@@ -931,7 +1007,8 @@ class _FileFetch:
             if not force and now - self.flushed < FLUSH_EVERY_S:
                 return
             self.flushed = now
-            state = {"etag": self.meta["etag"], "size": self.size,
+            state = {"version": SIDECAR_VERSION, "etag": self.meta["etag"],
+                     "size": self.size,
                      "segments": [dict(seg) for seg in self.segments]}
         with self.flush_lock:
             if self.fd is not None:
