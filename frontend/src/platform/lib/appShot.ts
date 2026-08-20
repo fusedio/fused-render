@@ -28,9 +28,19 @@
 // app failing to load, a zero-pixel frame — resolves to undefined, never a
 // throw: the caller exports WITHOUT a preview, which is exactly what the
 // export did before this existed.
-import { downloadAppFile, type AppInfo } from "./api";
+import { downloadAppFile } from "./api";
 import { withNoFocus } from "./frame-focus";
 import { withPreviewFlag } from "./router";
+
+// The slice of AppInfo the export path reads — structural, so the preview
+// header (which has a folder + entry page but no listing row) can call
+// exportAppFile without inventing a fake AppInfo.
+export interface ExportableApp {
+  path: string;
+  name: string;
+  entry_html?: string | null;
+  preview_image?: string | null;
+}
 
 // How long the stage's app gets to paint something worth photographing after
 // its frame's load event: boot scripts, first fetch, first map tiles. A
@@ -58,7 +68,7 @@ function shotUrl(entryHtml: string): string {
 // `captureEl` is the card's thumb element, when the caller has one: the
 // no-flash crop source above.
 export async function exportAppFile(
-  app: AppInfo,
+  app: ExportableApp,
   captureEl?: Element | null,
 ): Promise<void> {
   const preview =

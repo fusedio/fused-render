@@ -6,9 +6,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  downloadAppFile,
   getAppEntry,
   rawUrl,
+  statPath,
   resolveConditions,
   renameEntry,
   copyEntry,
@@ -19,6 +19,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
+import { exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -211,7 +212,22 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     if (busy) return;
     setBusy(true);
     try {
-      await downloadAppFile(dir, name);
+      // Same capture-on-export as the /apps card (appShot, D392): the shown
+      // preview frame IS the app rendering, so it is the crop source — no
+      // navigation, no flash. exportAppFile itself skips capture when the
+      // folder carries an authored preview.png; the probe below is only so a
+      // pointless share prompt isn't raised for a capture the server would
+      // discard anyway (stat failure reads as "no authored still" — worst
+      // case is that redundant prompt, never a lost export).
+      const authored = await statPath(dir + "/preview.png").then(
+        (s) => !s.is_dir,
+        () => false,
+      );
+      await exportAppFile(
+        { path: dir, name, entry_html: fsPath,
+          preview_image: authored ? dir + "/preview.png" : null },
+        document.querySelector(".preview-frame.is-shown"),
+      );
     } catch (e) {
       pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
     } finally {
