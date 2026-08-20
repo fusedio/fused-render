@@ -2974,6 +2974,12 @@ export default function NewJobModal({
                     {ICON_FOLDER} <span className="schedule-recents-path" title={p}>{p}</span>
                   </button>
                 ))}
+                {/* A separator ELEMENT, not a border-top on Browse: the border
+                    version sat flush against the row's hover wash and read as
+                    part of the button rather than as the line between the
+                    found paths and the verbs (Akshil, 2026-08-20). Full-bleed
+                    across the panel, the way every menu draws this line. */}
+                <div className="schedule-recents-sep" role="separator" />
                 <button
                   type="button"
                   className="schedule-picker-row schedule-recents-browse"

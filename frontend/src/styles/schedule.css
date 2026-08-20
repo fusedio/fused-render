@@ -1382,27 +1382,24 @@
   white-space: nowrap;
 }
 
-/* Browse closes the list of nouns with the one verb, set off by a hairline.
-   The doubled selector outranks the base row rule's border:none. Padding is
-   the recents rows' own (6px 8px, NOT a fattened 8px top): the verb is one
-   more row, so it has to be the same height as the nouns above it — the
-   4px margin is what sets it apart, and it carries the same icon gutter so
-   every label in the list starts on one edge (audit 2026-08-16). */
-.schedule-form .schedule-picker-row.schedule-recents-browse {
-  border-top: 1px solid var(--border);
-  margin-top: 4px;
-  /* Plain text, not accent (Akshil, 2026-08-16): the hairline and the
-     position already say it is the odd row out, and the accent read as a
-     link into somewhere else rather than one more choice in the list. */
-  font-weight: 500;
+/* The line between the found paths and the verbs. Its OWN element, not a
+   border-top on Browse: a border rode inside the button, sat flush against its
+   hover wash, and could be repainted by the ambient button:hover skins — three
+   problems a plain div has none of (Akshil, 2026-08-20: "a proper separator").
+   Full-bleed across the panel (the negative inline margins cancel the panel's
+   4px padding), the way every menu draws this line. */
+.schedule-recents-sep {
+  height: 1px;
+  flex: none;
+  background: var(--border);
+  margin: 4px -4px;
 }
 
-/* `.deploy-body button:hover` repaints border-color wholesale — including the
-   top hairline this row IS — so a hover turned the separator accent-green
-   (audit 2026-08-16). Restated, armored past that skin. */
-.deploy-body .schedule-form .schedule-picker-row.schedule-recents-browse:hover:not(:disabled),
-.prefs-section .schedule-form .schedule-picker-row.schedule-recents-browse:hover:not(:disabled) {
-  border-top-color: var(--border);
+/* Plain text, not accent (Akshil, 2026-08-16): the separator and the position
+   already say Browse is the odd row out, and the accent read as a link into
+   somewhere else rather than one more choice in the list. */
+.schedule-form .schedule-picker-row.schedule-recents-browse {
+  font-weight: 500;
 }
 
 /* "+ New folder" sits directly under Browse and belongs to the same verb group,
