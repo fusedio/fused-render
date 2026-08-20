@@ -2224,6 +2224,17 @@
      does not take in the same engine (an inline `row-gap` loses to the `gap`
      shorthand above), and 12px between "what the run is" and "what to do with
      the draft" reads as the grouping it is. Every gap WITHIN a line is still 6. */
+  /* Stage 3, and the one that keeps the ROW WHOLE: everything stays on one line
+     and the chrome gets denser instead — gaps to 3px, pill insets trimmed, the
+     select carets pulled in. Folding was tried as stage 3 and rejected on sight
+     (Akshil, 2026-08-20: "the chat icons and dropdown are not in single line") —
+     a fold moves controls to a place they never sit at any other width, and a
+     denser line keeps every control exactly where the reader's hand knows it.
+     fitComposerRow re-runs fitSelect after stamping this, because the fitted
+     widths bake the paddings in. */
+  .composer-row.tight { gap: 3px; }
+  .composer-row.tight .pill { padding-left: 5px; padding-right: 5px; }
+  .composer-row.tight select.pill { padding-right: 17px; background-position: right 5px center; }
   .composer-row.stack .spacer { flex: 0 0 auto; width: 100%; height: 0; }
   /* Line two stays flush RIGHT, where these controls sit in the wide layout, so
      folding the row never teleports Send across the composer. `.lead2` is written
@@ -9795,12 +9806,16 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 //                                 The other two pills are already one word, and the
 //                                 menu still spells all four modes out, so this
 //                                 costs a label and no vocabulary.
-//   3. `.stack`                   the row folds ONCE, at the spacer: the three
-//                                 selects that describe the run on one line, the
-//                                 things you DO with the draft on the next, flush
-//                                 right. Two tidy lines with the row's own 6px
-//                                 gaps — never the ragged wrap, and never a control
-//                                 orphaned on a line of its own.
+//   3. `.tight`                   the line gets DENSER instead of longer: 3px
+//                                 gaps, trimmed pill insets, carets pulled in —
+//                                 every control stays on the one line, exactly
+//                                 where it sits at every other width (Akshil,
+//                                 2026-08-20: the fold read as controls "not in
+//                                 single line").
+//   4. `.stack`                   last resort, at widths below even the dense
+//                                 line: the row folds ONCE, at the spacer —
+//                                 selects on one line, draft controls on the
+//                                 next, flush right. Never the ragged wrap.
 // Reachable in that order and no further: below ~300px (the listing preview pane
 // floors at 220, see #anntools) even three pills exceed the line and the browser's
 // own wrap takes over, which is the honest end of the ladder rather than a fourth
@@ -9884,11 +9899,23 @@ function permPopupGuard(sel, row) {
 function fitComposerRow(row) {
   const box = row.clientWidth;
   if (!box) return;   // the other view's composer: no box, nothing to decide yet
+  const refit = () => {
+    for (const sel of row.querySelectorAll(".model-sel, .effort-sel, .perm-sel")) fitSelect(sel);
+  };
   row.classList.remove("stack");
+  const wasTight = row.classList.contains("tight");
+  row.classList.remove("tight");
   setRowCompact(row, false);
+  // setRowCompact refits only the approvals pill; leaving .tight refits ALL the
+  // selects, whose fitted widths baked the tight paddings in.
+  if (wasTight) refit();
   if (composerRowNeed(row) > box) {
     setRowCompact(row, true);
-    if (composerRowNeed(row) > box) row.classList.add("stack");
+    if (composerRowNeed(row) > box) {
+      row.classList.add("tight");
+      refit();
+      if (composerRowNeed(row) > box) row.classList.add("stack");
+    }
   }
   // Line two's right-hand anchor, decided here because the stylesheet cannot name
   // it: the first control after the spacer is Send when there is no pane (the
