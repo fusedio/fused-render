@@ -244,6 +244,72 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
 
+  # Broader Windows coverage than windows-desktop below, which only runs the
+  # five supervisor-specific files gated on windows_desktop paths. This job
+  # runs the WHOLE suite on real Windows across the same python-version
+  # matrix as test-python, to find portability bugs outside the supervisor
+  # (path handling, process spawn, file locking, sockets, …) that the Linux
+  # matrix can only ever simulate. No test here has ever been run on Windows
+  # before, so continue-on-error until a pass shows which failures are real —
+  # remove it once the suite is green (or the real failures are triaged into
+  # skips) so this becomes a required check like every other platform job.
+  test-python-windows:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install fused-render (dev extra)
+        run: python -m pip install -e ".[dev]"
+
+      # Same pinned version + published SHA256 as the Windows installer bundles
+      # (scripts/build_windows_installer.ps1) and the same discipline as the
+      # Linux job's rclone install above — a bad download fails in seconds, not
+      # silently. Added to GITHUB_PATH (not FUSED_RENDER_RCLONE_BIN) so
+      # shutil.which("rclone") finds it exactly the way a dev machine's PATH
+      # would.
+      - name: Install rclone
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $RcloneVersion = "1.74.4"
+          $RcloneSha256 = "ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
+          $rcloneZip = Join-Path $env:RUNNER_TEMP "rclone.zip"
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/v$RcloneVersion/rclone-v$RcloneVersion-windows-amd64.zip" -OutFile $rcloneZip
+          $actualSha = (Get-FileHash -LiteralPath $rcloneZip -Algorithm SHA256).Hash.ToLower()
+          if ($actualSha -ne $RcloneSha256) {
+            throw "rclone zip SHA256 mismatch: expected $RcloneSha256, got $actualSha"
+          }
+          $rcloneDir = Join-Path $env:RUNNER_TEMP "rclone-bin"
+          Expand-Archive -Path $rcloneZip -DestinationPath $rcloneDir -Force
+          $rcloneExe = Get-ChildItem -Path $rcloneDir -Recurse -Filter "rclone.exe" | Select-Object -First 1
+          if (-not $rcloneExe) {
+            throw "rclone.exe not found in the downloaded zip"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $rcloneExe.DirectoryName
+          & $rcloneExe.FullName version
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
   # The optional fused execution engine (D69) — the engine the migration plan
   # promotes to default, after which the built-in executor goes away. Until this
   # job, CI had never run it: no job installed the `[fused]` extra, so every
