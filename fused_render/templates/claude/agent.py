@@ -1073,7 +1073,20 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
             "args": args,
-            "env": {"FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT)},
+            "env": {
+                "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
+                # UTF-8 stdio for the server, whatever the machine's locale is.
+                # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
+                # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
+                # encoding — the ANSI code page on Windows, where a curly quote
+                # in a `Write` payload used to kill the server before it parked
+                # the request (no card, dead permission bridge, a turn that
+                # simply stopped; see permission_server._utf8_stdio). It has to
+                # be named HERE to reach the child at all: the MCP client passes
+                # an allowlist of env vars plus exactly this dict, so an ambient
+                # PYTHONUTF8 would not survive the spawn.
+                "PYTHONUTF8": "1",
+            },
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
