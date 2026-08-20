@@ -3090,22 +3090,47 @@ def _make_mount(home, rcd, name="data", remote="remote:bucket", served=True):
 # test in this file ever runs the real predicate; these must, or the swallowed
 # OSError (the whole bug) stays invisible.
 def _wedge(monkeypatch, mp, *, also_mounted=None):
-    """Make `mp` stat like a mount whose backend process is gone. Restores the
-    genuine os.path.ismount (optionally OR'd with the stub rcd's mount table, so
-    a remount later in the same test can still be seen) and fails lstat/stat on
-    `mp` alone. Returns a {"v": True} flag a test flips to un-wedge the path
-    once its umount has "succeeded"."""
-    # Bound before patching: os.path IS posixpath, so a lambda that referenced
-    # posixpath.ismount by attribute would call the patched name — itself.
-    real_ismount = posixpath.ismount
+    """Make `mp` stat like a mount whose backend process is gone: ismount
+    answers deterministically, and lstat/stat on `mp` alone raise ENOTCONN.
+    Returns a {"v": True} flag a test flips to un-wedge the path once its
+    umount has "succeeded".
+
+    ismount is ANSWERED HERE rather than delegated to the real
+    posixpath.ismount, which is what this used to do. That delegation made the
+    fixture depend on the host filesystem, and it misfires on a Windows runner:
+    posixpath decides "mountpoint" by comparing a path's (st_dev, st_ino)
+    against its parent's and returning True when the inodes match, and Windows
+    reports st_ino as 0 for these paths — 0 == 0, so an ORDINARY TEMP DIRECTORY
+    came back True. That single wrong answer is the whole of both Windows
+    failures this file had: the healthy-path assertion in
+    test_mount_wedged_false_for_missing_and_healthy_paths, and the
+    post-umount "still mounted" check in
+    test_reconnect_force_unmounts_enotconn_mount_that_ismount_cannot_see.
+    (Verifiable off-Windows: force st_ino to 0 for a dir and its parent, and
+    posixpath.ismount calls it a mountpoint.)
+
+    The three answers below are the scenario's own definition, so they are
+    stated instead of derived:
+      * the wedged path is NOT a mountpoint to ismount — that is the very
+        thing being modeled, "a mount ismount cannot see", and
+        test_mount_wedged_detects_enotconn asserts it directly;
+      * a path in `also_mounted` IS one, so a remount later in the same test
+        is visible (that is what the stub rcd's table is passed in for);
+      * nothing else is — these tests only ever hand it tmp_path dirs.
+    On POSIX this is the same set of answers the real predicate already gave,
+    so the Linux suite is unaffected; it just no longer asks the host.
+    """
     # The wedge being modeled is the POSIX FUSE one (ENOTCONN stats); pin the
     # platform so _mount_wedged's win32 branch never bypasses these mocks.
     monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
-    monkeypatch.setattr(
-        mounts_mod.os.path, "ismount",
-        real_ismount if also_mounted is None
-        else lambda p: real_ismount(p) or p in also_mounted)
     wedged = {"v": True}
+
+    def fake_ismount(p):
+        if wedged["v"] and p == mp:
+            return False
+        return also_mounted is not None and p in also_mounted
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", fake_ismount)
 
     def stub(real):
         def probe(path, *a, **kw):
@@ -3120,6 +3145,50 @@ def _wedge(monkeypatch, mp, *, also_mounted=None):
     monkeypatch.setattr(mounts_mod.os, "lstat", stub(_os.lstat))
     monkeypatch.setattr(mounts_mod.os, "stat", stub(_os.stat))
     return wedged
+
+
+def test_the_wedge_fixture_never_asks_the_host_what_a_mountpoint_is(
+        tmp_path, monkeypatch):
+    """Regression guard for both Windows failures this file used to have.
+
+    `_wedge` used to delegate to the real posixpath.ismount, which decides
+    "mountpoint" by comparing a path's (st_dev, st_ino) with its parent's and
+    saying yes when the inodes match. Windows reports st_ino as 0 for these
+    paths, so 0 == 0 made an ORDINARY TEMP DIR answer True — which is the
+    entire cause of the two failures (the healthy-path assertion below, and
+    reconnect's post-umount "still mounted" check).
+
+    Reproduced off-Windows by forcing st_ino to 0, since that zero is the whole
+    of the platform difference: under the old fixture these assertions fail
+    here exactly as they did on the runner, and under the current one they hold
+    because ismount is answered from the scenario instead of the filesystem.
+    """
+    healthy = str(tmp_path / "plain")
+    _os.makedirs(healthy)
+    wedged_path = str(tmp_path / "mnt")
+    _os.makedirs(wedged_path, exist_ok=True)
+
+    real_lstat = _os.lstat
+
+    class _ZeroIno:
+        """A stat_result whose st_ino is 0, as Windows reports it here."""
+
+        def __init__(self, s):
+            self._s = s
+
+        st_ino = 0
+
+        def __getattr__(self, name):
+            return getattr(self._s, name)
+
+    monkeypatch.setattr(_os, "lstat", lambda p, *a, **k: _ZeroIno(real_lstat(p)))
+
+    _wedge(monkeypatch, wedged_path)
+    # A plain directory is not a mount, whatever the host's inodes say.
+    assert mounts_mod.os.path.ismount(healthy) is False
+    assert mounts_mod._is_mounted(healthy) is False
+    # And the wedged path stays invisible to ismount — the modeled scenario.
+    assert mounts_mod.os.path.ismount(wedged_path) is False
 
 
 def test_mount_wedged_detects_enotconn(tmp_path, monkeypatch):

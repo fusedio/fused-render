@@ -257,13 +257,14 @@ jobs:
   # there via `uv python install 3.12`. Testing 3.10/3.11/3.13 here would be
   # covering interpreters no Windows user's install ever runs.
   #
-  # continue-on-error until a pass shows which failures are real — remove it
-  # once the suite is green (or the real failures are triaged into skips) so
-  # this becomes a required check like every other platform job.
+  # A required check like every other platform job: continue-on-error is gone
+  # now that the suite is green here. It was only ever scaffolding — a job that
+  # cannot fail reports nothing, and the point of this one is to catch the
+  # Windows-only bugs the Linux matrix can only simulate, which it cannot do
+  # from behind a flag that swallows the result.
   test-python-windows:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
-    continue-on-error: true
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -677,7 +678,7 @@ jobs:
     name: Test Status
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, frontend, test-python, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, test-python-windows, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -697,9 +698,12 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
-          # app fired ⇒ these five always run (they gate on app only), so
-          # anything other than success is a failure.
-          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
+          # app fired ⇒ these six always run (they gate on app only), so
+          # anything other than success is a failure. test-python-windows is
+          # among them: it gates on `app` exactly like test-python, and it is
+          # listed here rather than with the filter-gated desktop jobs below
+          # because "skipped" is NOT a legitimate outcome for it.
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.test-python-windows.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
               exit 1
