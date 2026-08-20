@@ -2204,7 +2204,17 @@ def test_a_TRANSLATION_gets_no_words_and_does_not_pay_for_them(loaded, tmp_path)
 def test_words_ride_the_PROGRESSIVE_transcript_too(loaded, tmp_path):
     """`onSegment` promises the same shape as `segments`, so a page has ONE
     rendering path. A `words` list that only appeared in the final file would
-    make the live view a second shape to write code for."""
+    make the live view a second shape to write code for.
+
+    **Asserted on the SERIALIZED LINE, not on the dict handed to `sink.add`**,
+    and that distinction is the whole value of this test. `partial.Sink.add`
+    rebuilds its line key by key rather than copying the segment — on purpose,
+    to keep logprobs and temperatures out of a file a page reads — so a spy on
+    its argument passes while the bytes on disk carry no `words` at all. That is
+    exactly the bug this test was written and failed to catch: `onSegment` fed a
+    page timing-less segments, and since the reader counts delivered lines they
+    were never re-sent once the final file had them.
+    """
     worker, _ = loaded(
         windows=(100,),
         segments=[_worded(0.0, 2.0, "hello there",
@@ -2212,15 +2222,23 @@ def test_words_ride_the_PROGRESSIVE_transcript_too(loaded, tmp_path):
     request = _request(tmp_path, words=True,
                        outPartial=str(tmp_path / "out.partial.jsonl"))
     # The file is REMOVED on a successful run — `out` is the answer — so the
-    # lines are captured as they are appended rather than read afterwards.
-    seen = []
+    # written lines are captured at the moment they land.
+    lines = []
     real_sink = worker.partial.sink
 
     def spy(path, **kwargs):
         sink = real_sink(path, **kwargs)
         add = sink.add
-        sink.add = lambda segment: (seen.append(copy.deepcopy(segment)),
-                                    add(segment))[1]
+
+        def watched(segment):
+            result = add(segment)
+            # Re-read the file rather than trust the argument: this is the shape
+            # `runtime.js` will parse.
+            with open(request["outPartial"], encoding="utf-8") as handle:
+                lines[:] = [json.loads(l) for l in handle if l.strip()]
+            return result
+
+        sink.add = watched
         return sink
 
     worker.partial.sink = spy
@@ -2229,7 +2247,42 @@ def test_words_ride_the_PROGRESSIVE_transcript_too(loaded, tmp_path):
     finally:
         worker.partial.sink = real_sink
 
-    assert seen and seen[0]["words"] == [
+    assert lines, "nothing was written to the partial transcript"
+    assert lines[0]["words"] == [
         {"start": 0.0, "end": 0.6, "word": " hello"},
         {"start": 0.6, "end": 2.0, "word": " there"},
     ]
+    # …and the line is still only what a page may see: no logprobs, no
+    # temperatures, no `tokens`.
+    assert set(lines[0]) == {"start", "end", "text", "words"}
+
+
+def test_the_progressive_transcript_gains_NO_words_key_when_none_were_asked_for(
+        loaded, tmp_path):
+    """The additive half, on the file rather than the dict: a run without the
+    flag must write exactly the lines it wrote before word timings existed."""
+    worker, _ = loaded(windows=(100,), segments=[_segment(0.0, 2.0, "hello")])
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+    lines = []
+    real_sink = worker.partial.sink
+
+    def spy(path, **kwargs):
+        sink = real_sink(path, **kwargs)
+        add = sink.add
+
+        def watched(segment):
+            result = add(segment)
+            with open(request["outPartial"], encoding="utf-8") as handle:
+                lines[:] = [json.loads(l) for l in handle if l.strip()]
+            return result
+
+        sink.add = watched
+        return sink
+
+    worker.partial.sink = spy
+    try:
+        worker.generate(request)
+    finally:
+        worker.partial.sink = real_sink
+
+    assert lines and set(lines[0]) == {"start", "end", "text"}

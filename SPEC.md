@@ -6593,7 +6593,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   per decoded window, and it changes the decode itself — the library gates its
   hallucination pruning on `word_timestamps`, so the same file can return a
   different number of segments with the flag on. No per-word confidence is
-  published, though DTW has one, for AI-10c's reason.
+  published, though DTW has one, for AI-10c's reason. **`words` rides the
+  PROGRESSIVE transcript too**, and that took a second edit: `partial.Sink.add`
+  rebuilds each line key by key rather than copying the segment — deliberately,
+  so an engine's logprobs and temperatures never reach a file a page reads — so a
+  public field is dropped unless it is named there. It was, and the symptom was
+  `onSegment` handing pages timing-less segments while the final `.json` had
+  them, permanently: the reader counts DELIVERED LINES, so a segment sent live
+  without its words is never re-sent with them. Anything added to a segment that
+  a caller is meant to see has to be named in `partial.py` as well.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).
