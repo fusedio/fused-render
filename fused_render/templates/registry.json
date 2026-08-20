@@ -389,13 +389,16 @@
     "map"
   ],
   ".nc": [
-    "netcdf"
+    "netcdf",
+    "claude"
   ],
   ".nc4": [
-    "netcdf"
+    "netcdf",
+    "claude"
   ],
   ".cdf": [
-    "netcdf"
+    "netcdf",
+    "claude"
   ],
   "/": [
     "claude",
