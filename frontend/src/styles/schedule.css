@@ -1416,23 +1416,23 @@
 }
 
 /* The verdict row: what the typed path IS, in the row shape of the folders
-   below it — but never a hover surface or a pointer, because it is the list
-   answering rather than one more thing to click. The hairline under it is the
-   mirror of Browse's: found-things above, existing things below. */
+   below it — and clickable like them: picking it keeps the path the field
+   already holds and closes the list (it began as an inert status row and a
+   dead click next to five live siblings read as broken — Akshil, 2026-08-20).
+   The base row rule supplies the cursor and the hover wash. The hairline under
+   it is the mirror of Browse's: found-things above, existing things below. */
 .schedule-form .schedule-recents-new {
   align-items: flex-start;
-  cursor: default;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 4px;
 }
 
-/* No hover wash: it borrows the row shape, not the row's promise that clicking
-   does something. */
-.schedule-form .schedule-recents-new:hover,
-.deploy-body .schedule-form .schedule-recents-new:hover,
-.prefs-section .schedule-form .schedule-recents-new:hover {
-  background: transparent;
+/* Same armor as Browse's hairline: the ambient button:hover skins repaint
+   border-color wholesale, and this row's bottom border IS the separator. */
+.deploy-body .schedule-form .schedule-recents-new:hover:not(:disabled),
+.prefs-section .schedule-form .schedule-recents-new:hover:not(:disabled) {
+  border-bottom-color: var(--border);
 }
 
 .schedule-form .schedule-recents-new svg {

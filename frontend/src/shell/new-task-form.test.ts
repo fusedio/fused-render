@@ -1674,6 +1674,25 @@ describe("the + New folder button below Browse", () => {
     expect(s).toContain('className="schedule-picker-row schedule-recents-mk"');
   });
 
+  test("its plus is the row's icon, not label text", () => {
+    const s = src();
+    // "+ New folder" as label text put the word on a different edge from every
+    // other label in the list (Akshil, 2026-08-20) — the plus rides the icon
+    // column like the folders' glyphs, and the label is just "New folder".
+    expect(s).toContain("{ICON_PLUS}");
+    expect(s).not.toContain(">\n                  + New folder");
+  });
+
+  test("clicking the verdict row keeps the path and closes the list", () => {
+    const s = src();
+    // It began as an inert role="status" div; a dead click beside five live
+    // rows read as broken (Akshil, 2026-08-20). The path is already in the
+    // field, so the click's whole job is the close.
+    expect(s).toContain('className="schedule-picker-row schedule-recents-new"');
+    const row = s.indexOf("schedule-recents-new\"");
+    expect(s.indexOf("onClick={() => setRecentsOpen(false)}", row)).toBeGreaterThan(row);
+  });
+
   test("it opens the picker already naming — one flow, not a second one", () => {
     const s = src();
     expect(s).toContain("openPicker(true)");

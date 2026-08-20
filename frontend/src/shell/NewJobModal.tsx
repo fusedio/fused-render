@@ -24,7 +24,7 @@ import type { Config, RecurrenceRule, ScheduledMessage } from "@platform/lib/api
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
-import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -2930,15 +2930,23 @@ export default function NewJobModal({
               >
                 {/* What the typed path IS, answered where the other answers
                     about folders are — first row, above the folders that
-                    already exist, in the same row shape as them. Not a button:
-                    the path is already in the field, so there is nothing left
-                    to pick; it is the list telling you what it found. The badge
-                    carries the fact and the line under it says when it becomes
-                    true, because a badge alone reads as a label on a folder
-                    that is already there. */}
+                    already exist, in the same row shape as them. A BUTTON like
+                    every row around it: it started as an inert status and a
+                    click on it did nothing, which read as broken next to five
+                    siblings that all accept the click (Akshil, 2026-08-20).
+                    Picking it picks the path the field already holds, so the
+                    click's whole job is to close the list — same ending as
+                    picking any folder above. The badge carries the fact and
+                    the line under it says when it becomes true, because a
+                    badge alone reads as a label on a folder that is already
+                    there. */}
                 {!pathError && newFolder && (
-                  <div id={newFolderId} className="schedule-picker-row schedule-recents-new"
-                       role="status">
+                  <button
+                    type="button"
+                    id={newFolderId}
+                    className="schedule-picker-row schedule-recents-new"
+                    onClick={() => setRecentsOpen(false)}
+                  >
                     {ICON_FOLDER}
                     <span className="schedule-recents-new-text">
                       <span className="schedule-recents-new-top">
@@ -2951,7 +2959,7 @@ export default function NewJobModal({
                         Created when the task is saved
                       </span>
                     </span>
-                  </div>
+                  </button>
                 )}
                 {recents.slice(0, RECENTS_SHOWN).map((p) => (
                   <button
@@ -2993,8 +3001,12 @@ export default function NewJobModal({
                     openPicker(true);
                   }}
                 >
-                  <span className="schedule-picker-gutter" aria-hidden="true" />
-                  + New folder
+                  {/* The plus lives in the icon column, where every folder
+                      above carries its glyph — "+ New folder" as label text put
+                      the word on a different edge from every other label in
+                      the list (Akshil, 2026-08-20). */}
+                  {ICON_PLUS}
+                  New folder
                 </button>
               </div>
             )}
