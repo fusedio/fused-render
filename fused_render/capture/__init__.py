@@ -272,11 +272,17 @@ def start(mode: str, body: dict) -> dict:
         spec["device"] = body.get("device")
         out = _resolve_out(body.get("path"), body.get("base"), ".mov")
     else:
-        spec["audio"] = _audio_mode(body.get("source", "mic"), required=True)
-        if spec["audio"] != "mic":
+        # ONE check with ONE message. The first cut of this ran the shared
+        # `_audio_mode` (which names 'mic', 'system' and 'both' as valid) and
+        # then refused two of the three a line later — two sentences
+        # contradicting each other about the same argument.
+        source = body.get("source", "mic")
+        if source not in (None, "", "mic", True):
             raise CaptureError(
-                "fused.capture.audio records the microphone; for system audio "
-                "record the screen with audio: 'system'")
+                "fused.capture.audio records the microphone, so 'source' can "
+                f"only be 'mic', not {source!r} — for system audio record the "
+                "screen with audio: 'system'")
+        spec["audio"] = "mic"
         # REFUSED, not ignored (the AI-10/D319 posture). Audio-only records
         # through `AVAudioRecorder`, which has no device selection — the API
         # that did deadlocked on a run loop this app cannot provide (see
@@ -318,6 +324,22 @@ def _report(session: _Session, **fields) -> None:
         pass
 
 
+def _failure(session: _Session) -> str | None:
+    """Has the backend already lost this recording? Best-effort by design.
+
+    A backend without the hook simply never reports one — the watchdog's other
+    two endings are unchanged, so a second platform is not obliged to implement
+    this to be correct.
+    """
+    hook = getattr(_backend(), "failure", None)
+    if hook is None:
+        return None
+    try:
+        return hook(session.handle)
+    except Exception:                            # noqa: BLE001 - a probe
+        return None
+
+
 def _cancel_requested(session: _Session) -> bool:
     for record in jobs.list_jobs():
         if record["id"] == session.job:
@@ -338,6 +360,20 @@ def _watch(session: _Session) -> None:
             if _sessions.get(session.id) is not session:
                 return          # stopped by its owner; that path reports.
         elapsed = time.time() - session.started_at
+        # A recording that has already failed must not tick "Recording" for the
+        # rest of its cap: the user would narrate into a file nothing is
+        # writing. Asked before the endings, because it IS one.
+        died = _failure(session)
+        if died:
+            with _lock:
+                _sessions.pop(session.id, None)
+            session.state = "error"
+            _report(session, state="error", message=died)
+            try:
+                _backend().stop(session.handle)
+            except Exception:                    # noqa: BLE001 - already failed
+                pass
+            return
         if _cancel_requested(session):
             try:
                 stop(session.id, discard=True)
@@ -434,16 +470,21 @@ def screenshot(body: dict) -> dict:
     onto one permission model.
     """
     backend = _backend()
-    fmt = body.get("format") or "png"
-    if fmt not in ("png", "jpg"):
-        raise CaptureError("'format' must be 'png' or 'jpg'")
+    out = _resolve_out(body.get("path"), body.get("base"), ".png")
+    ext = os.path.splitext(out)[1].lower()
+    if ext not in (".png", ".jpg", ".jpeg"):
+        # There is no `format` option: the extension of the file being written
+        # decides the container. A `format` beside a `path` is two ways to say
+        # one thing, and they can disagree — "shot.jpg" holding PNG bytes is a
+        # file every other tool misreads.
+        raise CaptureError(
+            f"a screenshot is written as .png, .jpg or .jpeg — not {ext or out!r}")
     spec = {
         "display": body.get("display"),
         "rect": _rect(body.get("rect")),
         "cursor": bool(body.get("cursor", False)),
-        "format": fmt,
+        "jpeg": ext in (".jpg", ".jpeg"),
     }
-    out = _resolve_out(body.get("path"), body.get("base"), "." + fmt)
     shot = backend.screenshot(out, spec)
     result = _describe(out)
     result.update(shot)
@@ -456,9 +497,13 @@ def screenshot(body: dict) -> dict:
 def stop_all() -> None:
     """Finalise every live recording — a truncated .mov has no moov atom.
 
-    Registered with `atexit` because the file is the whole product: a server
-    that exits mid-recording without this leaves an unplayable file where the
-    user has a job row saying they recorded something.
+    Called from THREE places, and the `atexit` registration below is the least
+    important of them: the packaged app never reaches it. Every quit surface
+    there ends in `os._exit` (SPEC DM-9 — reaching `__cxa_finalize` aborts on a
+    native extension's destructor), which runs no `atexit` handler, so this is a
+    rung in `app.quit_teardown`'s explicit ladder and an ASGI shutdown handler
+    for the plain `fused-render` server. `atexit` stays as the backstop for an
+    embedded interpreter that exits normally.
     """
     for cid in list(_sessions):
         try:

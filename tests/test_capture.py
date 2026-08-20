@@ -29,6 +29,7 @@ class FakeHandle:
     def __init__(self, path):
         self.path = path
         self.stopped = False
+        self.error = None
 
 
 class FakeBackend:
@@ -59,6 +60,9 @@ class FakeBackend:
 
     def stop(self, handle):
         handle.stopped = True
+
+    def failure(self, handle):
+        return handle.error
 
     def screenshot(self, out, spec):
         with open(out, "wb") as fh:
@@ -124,7 +128,7 @@ def test_starting_on_an_unsupported_platform_is_a_409_not_a_500(monkeypatch,
     ({"mode": "screen", "rect": [0, 0, 10]}, "'rect' must be"),
     ({"mode": "screen", "maxSeconds": 0}, "must be between"),
     ({"mode": "screen", "maxSeconds": "soon"}, "whole number"),
-    ({"mode": "audio", "source": False}, "'source' must be"),
+    ({"mode": "audio", "source": "loud"}, "can only be 'mic'"),
     ({"mode": "audio", "source": "system"}, "record the screen"),
     ({"mode": "audio", "device": "mic0"}, "cannot be chosen here"),
     ({"mode": "screen", "path": "clip.mov"}, "must be absolute"),
@@ -297,6 +301,50 @@ def test_hitting_max_seconds_stops_and_keeps_the_file(backend, client, home,
     assert row["state"] == "done"
 
 
+def test_a_recording_that_dies_mid_flight_ends_its_row_then(backend, client,
+                                                            home, monkeypatch):
+    """Otherwise the row ticks "Recording" to the cap while nothing is written,
+    and the user narrates half an hour into a dead file."""
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    backend.handles[0].error = "the display went away"
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert capture.active() == []
+    row = next(j for j in client.get("/api/jobs").json()["jobs"]
+               if j["id"] == started["jobId"])
+    assert row["state"] == "error"
+    assert "display went away" in row["message"]
+    assert backend.handles[0].stopped is True
+
+
+def test_stop_all_is_wired_into_the_paths_that_actually_run_on_exit():
+    """`atexit` is the BACKSTOP, not the mechanism: the packaged app quits via
+    `os._exit` (SPEC DM-9), which runs no atexit handler at all. So the two real
+    exits have to name it — the quit ladder and the ASGI shutdown — or a quit
+    mid-recording leaves an unplayable .mov behind a row that said "recording"."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ladder = open(os.path.join(root, "fused_render", "app.py"),
+                  encoding="utf-8").read()
+    assert '("capture", stop_captures)' in ladder
+    assert "capture.stop_all()" in ladder
+    server = open(os.path.join(root, "fused_render", "server", "app.py"),
+                  encoding="utf-8").read()
+    assert "capture.stop_all()" in server
+
+
+def test_the_quit_ladder_runs_the_capture_rung_before_the_unmounts(monkeypatch):
+    """Order matters: a recording writing under a mount holds it busy."""
+    from fused_render import app as desktop_app
+
+    steps = desktop_app.quit_teardown(
+        None, stop_captures=lambda: None, close_duckdb=lambda: None,
+        unmount_mounts=lambda: None, stop_rcd=lambda: None)
+    assert steps.index("capture") < steps.index("unmount")
+
+
 def test_stop_all_finalises_everything_on_the_way_out(backend, client, home):
     """A truncated .mov has no moov atom — an exiting server must not leave one."""
     started = client.post("/api/capture/start", json={"mode": "screen"},
@@ -311,17 +359,24 @@ def test_stop_all_finalises_everything_on_the_way_out(backend, client, home):
 
 
 def test_a_screenshot_is_a_file_and_no_job_row(backend, client, home):
-    shot = client.post("/api/capture/screenshot", json={"format": "png"},
-                       headers=H).json()
+    shot = client.post("/api/capture/screenshot", json={}, headers=H).json()
     assert shot["path"].endswith(".png") and shot["mime"] == "image/png"
     assert shot["width"] == 4 and shot["height"] == 2
     assert jobs.list_jobs() == []            # milliseconds need no row
 
 
-def test_screenshot_refuses_a_format_it_cannot_write(backend, client):
-    res = client.post("/api/capture/screenshot", json={"format": "gif"},
-                      headers=H)
-    assert res.status_code == 400 and "'png' or 'jpg'" in res.json()["error"]
+def test_the_screenshots_container_follows_its_filename(backend, client,
+                                                        tmp_path):
+    """There is no `format` option: a `path` and a `format` could disagree, and
+    "shot.jpg" holding PNG bytes is a file every other tool misreads."""
+    shot = client.post("/api/capture/screenshot",
+                       json={"path": str(tmp_path / "shot.jpg")},
+                       headers=H).json()
+    assert shot["mime"] == "image/jpeg"
+    res = client.post("/api/capture/screenshot",
+                      json={"path": str(tmp_path / "shot.gif")}, headers=H)
+    assert res.status_code == 400
+    assert ".png, .jpg or .jpeg" in res.json()["error"]
 
 
 # ------------------------------------------------------------- the bridge doc
@@ -336,6 +391,13 @@ def test_the_runtime_bridge_exposes_capture():
     for method in ("screen:", "audio:", "screenshot:", "sources:", "list:",
                    "attach:"):
         assert method in source, method
+    # Cut in review, and the cut is the contract: no private `onTick` (the job
+    # row + `fused.watchJob` already say elapsed) and no `format` (the output
+    # filename decides png vs jpeg).
+    block = source[source.index("// ----------------------------------------------------------- fused.capture"):]
+    block = block[:block.index("window.fused = {")]
+    assert "opts.onTick" not in block
+    assert '"format"' not in block
     # The header block is the documented public bridge (EXPORT.md) — a method
     # that is not described there is not a contract anybody can rely on.
     assert "fused.capture.* -> record the screen, record the mic, grab a still" \

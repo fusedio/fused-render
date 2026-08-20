@@ -118,9 +118,9 @@
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
  *   fused.capture.* -> record the screen, record the mic, grab a still
- *     screen({display, rect, audio, device, cursor, path, maxSeconds, title,
- *             onTick}) -> Promise<handle> and audio({source, path,
- *     maxSeconds, title, onTick}) -> Promise<handle> both RESOLVE WHEN THE
+ *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
+ *     -> Promise<handle> and audio({source, path, maxSeconds, title})
+ *     -> Promise<handle> both RESOLVE WHEN THE
  *     RECORDING IS RUNNING, not when it ends — a recording is a session of
  *     unknown length, so what comes back is a handle: {id, path, url, mode,
  *     jobId, state, stop(), cancel()}. `stop()` resolves with the finished file
@@ -136,14 +136,17 @@
  *     it refuses a `device` rather than ignoring one.
  *     A recording is a JOB ROW, so it survives the page that started it:
  *     `list()` finds live ones (including another page's) and `attach(id)`
- *     hands the handle back. `onTick` rides that same row — no extra polling.
+ *     hands the handle back. For elapsed seconds read that row —
+ *     `fused.watchJob(rec.jobId)` — rather than looking for a callback here.
  *     Nothing ends by itself except `maxSeconds` (default 30 min), and hitting
  *     it is a STOP, not a cancel: the file is kept. That matters because a page
  *     can be closed mid-recording, and then the ✕ is the only control left.
- *     screenshot({display, rect, cursor, format, path}) -> Promise<{path, url,
+ *     screenshot({display, rect, cursor, path}) -> Promise<{path, url,
  *     width, height, bytes, mime}> is the one call with no handle and no job
- *     row: it is milliseconds. Native, so it needs no readable document and
- *     raises no share prompt — a cross-origin pane is shootable.
+ *     row: it is milliseconds. The FILE'S EXTENSION picks png or jpeg (there is
+ *     no `format`, so a path and a format cannot disagree). Native, so it needs
+ *     no readable document and raises no share prompt — a cross-origin pane is
+ *     shootable.
  *     sources() -> what this machine can capture and what it is waiting for
  *     ({video, audio, systemAudio, screenshot} each {available, granted,
  *     reason}, plus `displays` and `microphones`). It NEVER prompts — the TCC
@@ -3405,39 +3408,41 @@
   // of unknown length under the user's control, so the same shape trackJob and
   // watchJob use. `state` and `seconds` are GETTERS — a page polling them in a
   // rAF loop must not read a copy that went stale.
-  function captureHandle(started, onTick) {
+  // There is deliberately NO `onTick` here. Elapsed seconds are on the job row
+  // this recording already publishes, and `fused.watchJob(rec.jobId)` is the
+  // documented way to read a row — a second, private spelling of it would be a
+  // forever contract that only wrapped a public one.
+  function captureHandle(started) {
     let state = "recording";
     let result = null;
-    const watcher = watchJob(started.jobId);
-    if (typeof onTick === "function") {
-      // Rides the job row the download manager is already polling, so a ticking
-      // recorder UI costs no endpoint of its own. Errors are swallowed: a
-      // display is decoration and must not be able to break the recording.
-      watcher
-        .watch((record) => {
-          onTick({
-            seconds: typeof record.done === "number" ? record.done : 0,
-            state: record.state === "running" ? "recording" : record.state,
-            job: record,
-          });
+    // The PROMISE is memoized, not the settled value: a double-clicked stop
+    // button fired the request twice and the second one 404s (the registry
+    // entry is already gone) as an unhandled rejection. Both callers now await
+    // the same in-flight request. Cleared on failure, so a stop that really
+    // failed — a dropped connection — can be retried.
+    let ending = null;
+    function end(action) {
+      if (ending) return ending;
+      ending = captureFetch(
+        "/api/capture/" + encodeURIComponent(started.id) + "/" + action)
+        .then((done) => {
+          state = done.state
+            || (action === "cancel" ? "cancelled" : "stopped");
+          // A stop whose file failed to write reports the failure rather than
+          // handing back a path to something unplayable.
+          if (done.error) {
+            const err = new Error(done.error);
+            err.type = "capture_error";
+            throw err;
+          }
+          result = done;
+          return done;
         })
-        .catch(() => {});
-    }
-    async function end(action) {
-      if (result) return result;
-      watcher.stop();
-      const done = await captureFetch(
-        "/api/capture/" + encodeURIComponent(started.id) + "/" + action);
-      state = done.state || (action === "cancel" ? "cancelled" : "stopped");
-      // A `stop()` whose file failed to write reports the failure rather than
-      // handing back a path to something unplayable.
-      if (done.error) {
-        const err = new Error(done.error);
-        err.type = "capture_error";
-        throw err;
-      }
-      result = done;
-      return done;
+        .catch((err) => {
+          ending = null;
+          throw err;
+        });
+      return ending;
     }
     const handle = {
       id: started.id,
@@ -3459,7 +3464,7 @@
   }
 
   // fused.capture.screen({display, rect, audio, device, cursor, path,
-  //                       maxSeconds, title, onTick}) -> Promise<handle>
+  //                       maxSeconds, title}) -> Promise<handle>
   //
   // `audio` is false (silent), "mic", "system" or "both" — NAMED, and refused
   // rather than coerced: "microphone" would otherwise record silence and read as
@@ -3474,10 +3479,10 @@
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     return captureFetch("/api/capture/start", captureBase(body))
-      .then((started) => captureHandle(started, opts.onTick));
+      .then(captureHandle);
   }
 
-  // fused.capture.audio({source, path, maxSeconds, title, onTick})
+  // fused.capture.audio({source, path, maxSeconds, title})
   //
   // The microphone to an .m4a. `source` is "mic" — system audio is a property of
   // a SCREEN recording (it is captured off the display stream), so asking for it
@@ -3494,10 +3499,10 @@
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     return captureFetch("/api/capture/start", captureBase(body))
-      .then((started) => captureHandle(started, opts.onTick));
+      .then(captureHandle);
   }
 
-  // fused.capture.screenshot({display, rect, cursor, format, path})
+  // fused.capture.screenshot({display, rect, cursor, path})
   //   -> Promise<{path, url, width, height, bytes, mime}>
   //
   // The one call here with no handle and no job row: it is milliseconds, so a
@@ -3507,7 +3512,9 @@
   function captureScreenshot(opts) {
     opts = opts || {};
     const body = {};
-    for (const key of ["display", "rect", "cursor", "format", "path"]) {
+    // No `format`: the file's own extension decides png vs jpeg, so a `path`
+    // and a `format` can never disagree about what was written.
+    for (const key of ["display", "rect", "cursor", "path"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     return captureFetch("/api/capture/screenshot", captureBase(body));
@@ -3539,7 +3546,7 @@
         err.type = "bad_request";
         throw err;
       }
-      return captureHandle(found, null);
+      return captureHandle(found);
     });
   }
 

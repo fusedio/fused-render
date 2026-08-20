@@ -7543,6 +7543,13 @@ a single still, natively — the app's own process does the capture, so the resu
 is a FILE on this machine rather than a `MediaRecorder` blob. macOS only today,
 and it says so through `sources()` rather than by being absent.
 
+- **CP-0** The surface is deliberately small, because a bridge method is a
+  forever contract. Cut in review before shipping: `onTick` (a recording
+  publishes a job row and `fused.watchJob(jobId)` is the documented way to read
+  one — a private second spelling of it buys nothing), `format` on the still
+  (above), and a `get(id)` with no caller. `list()`/`attach(id)` stayed: after a
+  reload they are the only way back to a live recording's `stop()`, and ✕
+  discards, so without them a reload can only destroy what it finds.
 - **CP-1** Three verbs behind one namespace: `capture.screen(opts)` and
   `capture.audio(opts)` resolve WHEN THE RECORDING IS RUNNING with a handle
   (`{id, path, url, mode, jobId, state, stop(), cancel()}`), and
@@ -7565,13 +7572,22 @@ and it says so through `sources()` rather than by being absent.
   `maxSeconds` (default 30 min, hard ceiling 4 h) is a STOP. The cap has to
   keep, because a page can be closed mid-recording and then the ✕ is the only
   control left — a cap that discarded would leave no ending that kept the file.
-  `stop_all()` runs at `atexit` for the same reason: a half-written .mov has no
-  `moov` atom and does not play.
+  A recording the backend has already LOST is a fourth ending the watchdog
+  reports the moment it sees it, rather than ticking "Recording" to the cap over
+  a file nothing is writing.
+  **Finalising on the way out is wired into the paths that really run**: the
+  `"capture"` rung of `app.quit_teardown` (the packaged app quits via `os._exit`
+  — DM-9 — so an `atexit` handler there is dead code) and the server's ASGI
+  shutdown for the plain `fused-render` process. Both exist because a
+  half-written .mov has no `moov` atom and does not play.
 - **CP-5** Output lands in `<home>/recordings` (beside `<home>/ai/transcripts`),
   or at a caller `path` — relative to the CALLING PAGE, the rule
   `readFile`/`rawUrl`/`transcribe` follow (RH-1). Screen → `.mov` (h264 + aac),
-  audio → `.m4a` (aac), still → `.png`/`.jpg`. Recordings are captured at the
-  display's real pixel scale, so a Retina recording is not half-size.
+  audio → `.m4a` (aac), still → png or jpeg **as the output filename says** —
+  there is no `format` option, because a `path` and a `format` can disagree and
+  "shot.jpg" holding PNG bytes is a file every other tool misreads. Recordings
+  are captured at the display's real pixel scale, so a Retina recording is not
+  half-size.
 - **CP-6** `audio` on a screen recording is `false`, `"mic"`, `"system"` or
   `"both"` — named, and refused rather than coerced, the posture AI-10 takes on
   `task`. **System audio is what a browser cannot do on macOS at all**, and it

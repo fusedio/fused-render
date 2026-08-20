@@ -449,7 +449,8 @@ QUIT_HARD_DEADLINE_S = (
 
 
 def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
-                  close_duckdb=None, unmount_mounts=None, stop_rcd=None) -> list[str]:
+                  close_duckdb=None, unmount_mounts=None, stop_rcd=None,
+                  stop_captures=None) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
     The order is the point, and each rung is a precondition of the next:
@@ -458,12 +459,19 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
          `drain_s`. A live /api/fs/raw read holds files open under a mount, which
          is a measured cause of a busy-mount unmount failure (see
          detach_mount/_quit_tile_daemons), so this comes before the unmounts.
-      2. "duckdb" — close the reader's cached DuckDB connection while Python is
+      2. "capture" — finalise every live native recording (SPEC §44). Here and
+         not in an `atexit` handler because THIS FUNCTION IS THE ONLY THING THAT
+         RUNS: quit ends in `os._exit` (see the DM-9 note above), which skips
+         `atexit` entirely — so a recording left to it would be a .mov with no
+         `moov` atom, i.e. an unplayable file behind a row that said "done".
+         Before the unmounts for the same reason the drain is: a recording
+         writing under a mount holds it busy.
+      3. "duckdb" — close the reader's cached DuckDB connection while Python is
          healthy and the GIL is held. Anything still alive at
          `NSApplication.terminate:` destructs without the GIL and aborts.
-      3. "unmount" — detach every mount through the rc-unmount -> force-unmount
+      4. "unmount" — detach every mount through the rc-unmount -> force-unmount
          ladder, BEFORE its NFS server is signalled.
-      4. "rcd" — reap the daemon. Only now is it safe: nothing is mounted on it.
+      5. "rcd" — reap the daemon. Only now is it safe: nothing is mounted on it.
 
     Every step is best-effort and independently guarded — a failure in one must
     not skip the ones after it (a mount store we cannot read must still let the
@@ -482,6 +490,11 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
             from fused_render.shell.mounts import stop_local_rcd
 
             stop_local_rcd()
+    if stop_captures is None:
+        def stop_captures():
+            from fused_render import capture
+
+            capture.stop_all()
 
     started = time.monotonic()
     if server is not None:
@@ -497,8 +510,8 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
                                    "continuing teardown", drain_s)
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
-    for name, step in (("duckdb", close_duckdb), ("unmount", unmount_mounts),
-                       ("rcd", stop_rcd)):
+    for name, step in (("capture", stop_captures), ("duckdb", close_duckdb),
+                       ("unmount", unmount_mounts), ("rcd", stop_rcd)):
         steps.append(name)
         try:
             step()

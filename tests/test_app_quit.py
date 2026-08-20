@@ -577,7 +577,7 @@ def quit_ctx(ladder, monkeypatch):
     return ladder
 
 
-def test_teardown_order_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx):
+def test_teardown_order_capture_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx):
     server = _FakeServer()
 
     steps = app_mod.quit_teardown(server)
@@ -585,7 +585,7 @@ def test_teardown_order_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx):
     calls = quit_ctx["calls"]
     kinds = [c[0] for c in calls]
     assert server.should_exit is True          # step 1: stop serving requests
-    assert kinds[0] == "duckdb"                # step 2: while the GIL is held
+    assert kinds[0] == "duckdb"                # step 3: while the GIL is held
     first_kill = kinds.index("kill")
     unmounts = [i for i, c in enumerate(calls) if c[0] in ("rc", "force")]
     assert unmounts, "the mounts must actually be torn down"
@@ -593,7 +593,11 @@ def test_teardown_order_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx):
     # NFS server gets a signal.
     assert max(unmounts) < first_kill
     assert calls[first_kill] == ("kill", _RCD_PID)
-    assert steps == ["server", "duckdb", "unmount", "rcd"]
+    # "capture" (SPEC §44) sits between the drain and the unmounts: a live
+    # recording writing under a mount holds it busy, and this ladder is the ONLY
+    # thing that finalises one — quit ends in os._exit, which runs no atexit
+    # handler (see the DM-9 note in app.py).
+    assert steps == ["server", "capture", "duckdb", "unmount", "rcd"]
 
 
 def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):

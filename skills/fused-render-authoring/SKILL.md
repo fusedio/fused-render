@@ -458,8 +458,9 @@ const rec = await fused.capture.screen({
   rect: [0, 0, 1200, 800],    // optional crop, in points on the display
   path: "walkthrough.mov",    // optional; relative = beside THIS page
   maxSeconds: 600,            // default 30 min; hitting it STOPS (keeps the file)
-  onTick: ({ seconds }) => (label.textContent = seconds.toFixed(0) + "s"),
 });
+// elapsed seconds come off the recording's job row — there is no onTick:
+fused.watchJob(rec.jobId).watch((row) => (label.textContent = row.done + "s"));
 // rec.path / rec.url are already usable here — the file is being written to them
 const out = await rec.stop();          // {path, url, mime, seconds, bytes}
 const words = await fused.ai.transcribe({ path: out.path, words: true });
@@ -474,8 +475,10 @@ const words = await fused.ai.transcribe({ path: out.path, words: true });
 - `fused.capture.list()` finds live recordings — including one your page started
   before a reload — and `attach(id)` gives the handle back. Check it on load
   instead of starting a second recording.
-- `screenshot({rect, format, cursor})` has no handle and no job row. Native, so
-  it needs no readable document and raises no share prompt.
+- `screenshot({rect, cursor, path})` has no handle and no job row. The output
+  **filename** picks png or jpeg — there is no `format`, so a path and a format
+  cannot disagree about what was written. Native, so it needs no readable
+  document and raises no share prompt.
 - Rejections carry `.type`: `"unavailable"` (this machine cannot — show
   `.message`, it names the reason), `"bad_request"` (your arguments).
 

@@ -277,6 +277,18 @@ def create_app(start_dir: str) -> FastAPI:
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.
+    # Live native recordings are finalised on the way out (SPEC §44/CP-4): a
+    # .mov whose `moov` atom was never written does not play, so a server that
+    # stops while one is running must not just vanish. This covers the plain
+    # `fused-render` server (Ctrl-C, uvicorn's own shutdown); the packaged app
+    # never gets here — it exits via `os._exit` — so `app.quit_teardown` has a
+    # "capture" rung of its own.
+    @app.on_event("shutdown")
+    async def _shutdown_captures():
+        from fused_render import capture
+
+        capture.stop_all()
+
     @app.on_event("shutdown")
     async def _shutdown_ai_workers():
         from fused_render.ai import supervisor

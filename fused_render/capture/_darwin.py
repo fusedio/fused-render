@@ -167,7 +167,7 @@ class _Wait:
             raise RuntimeError(f"{self.what} failed: {self.error}")
 
 
-def _settle(path: str, timeout: float = FINISH_S) -> None:
+def _settle(path: str, timeout: float = FINISH_S) -> bool:
     """Wait until `path` stops growing — the "it is written" signal of last resort.
 
     Only the SCREEN path uses this, and only when the recording delegate did not
@@ -175,7 +175,10 @@ def _settle(path: str, timeout: float = FINISH_S) -> None:
     however quiet its delegate was, and what is observable without it is the
     write itself: the last thing a QuickTime writer does is append the `moov`
     atom, which shows up here as one final jump in size followed by silence.
-    Three quiet reads is the atom having landed.
+    Three quiet reads is the atom having landed. **Answers whether that
+    happened**: a file still growing when the deadline passes is not a finished
+    recording, and returning the same `None` for both would hand the caller a
+    path to a possibly-unfinalised movie labelled done.
     """
     deadline = time.monotonic() + timeout
     last = -1
@@ -188,11 +191,12 @@ def _settle(path: str, timeout: float = FINISH_S) -> None:
         if size > 0 and size == last:
             quiet += 1
             if quiet >= 3:
-                return
+                return True
         else:
             quiet = 0
         last = size
         time.sleep(0.1)
+    return False
 
 
 def _require_record() -> None:
@@ -407,6 +411,21 @@ def start_audio(out: str, spec: dict) -> _AudioHandle:
     return _AudioHandle(recorder, out)
 
 
+def failure(handle) -> str | None:
+    """The error a recording has ALREADY died of, or None — asked every tick.
+
+    Without this a stream that dies at minute two (disk full, a display that
+    went away) keeps its job row ticking "Recording" until `maxSeconds`, and the
+    user narrates twenty-eight minutes into a file nothing is writing.
+    `SCRecordingOutput` tells its delegate immediately; this is the read side of
+    that, and it is why the delegate stores the error instead of only unblocking
+    `stop`.
+    """
+    if isinstance(handle, _ScreenHandle):
+        return handle.finished.error or None
+    return None
+
+
 def stop(handle) -> None:
     """End a capture and return only once the file on disk is playable.
 
@@ -422,7 +441,10 @@ def stop(handle) -> None:
         handle.stream.stopCaptureWithCompletionHandler_(wait.done)
         wait.result()
         if not handle.finished.event.wait(FINISH_S):
-            _settle(handle.path)
+            if not _settle(handle.path):
+                raise RuntimeError(
+                    "the recording did not finish writing — the file may be "
+                    "incomplete: " + handle.path)
         elif handle.finished.error:
             raise RuntimeError("the recording failed: " + handle.finished.error)
         return
@@ -466,8 +488,11 @@ def screenshot(out: str, spec: dict) -> dict:
     if image is None:
         raise RuntimeError("the screenshot came back empty")
 
-    utype = ("public.png" if spec.get("format", "png") == "png"
-             else "public.jpeg")
+    # The container follows the OUTPUT NAME rather than a `format` option: a
+    # caller who asked for "shot.jpg" and got PNG bytes under that name has a
+    # file every other tool will misread, and two ways to say one thing is one
+    # too many on a forever surface.
+    utype = "public.jpeg" if spec.get("jpeg") else "public.png"
     url = Foundation.NSURL.fileURLWithPath_(out)
     dest = Quartz.CGImageDestinationCreateWithURL(url, utype, 1, None)
     if dest is None:
