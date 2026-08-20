@@ -280,6 +280,30 @@ def test_the_templates_stripper_and_the_servers_agree_exactly(agent, text):
     assert agent._strip_machinery(text) == tasks_store.strip_machinery(text)
 
 
+@pytest.mark.parametrize("text", [
+    records.ANNOTATION_NOTED,
+    records.APP_STATE + "\n\n" + records.ANNOTATION_NOTED,
+    records.APP_STATE + "\n\n" + records.PANE_SHOT + "\n\n"
+    + records.ANNOTATION_NOTED,
+    records.ANNOTATION_NOTED + "\n\n" + records.ANNOTATED_ASK,
+    records.ANNOTATION,
+    records.APP_STATE,
+    records.PROSE,
+    "The user annotated 1 element…\n```json\nnot json at all\n```",
+    "The user annotated 1 element…\n```json\n{\"content\": \"an object\"}\n```",
+    "The user annotated 1 element…\n```json\n[\"a bare string\"]\n```",
+    "",
+])
+def test_the_two_annotation_readers_agree_exactly(agent, text):
+    """The THIRD copy of an annotation rule, pinned like the second: a template
+    may not import fused_render (D166), so `agent._ann_notes` and
+    `tasks_store.ann_notes` are hand-duplicated, and the family of functions
+    they belong to exists because four readers had stopped agreeing about
+    machinery. The malformed payloads are in the corpus because a title is not
+    worth an exception on either side."""
+    assert agent._ann_notes(text) == tasks_store.ann_notes(text)
+
+
 def test_the_two_copies_carry_the_same_tag_lists(agent):
     """And the lists themselves, so a tag added to one side is caught even if no
     fixture above happens to exercise it."""
