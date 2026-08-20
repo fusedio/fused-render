@@ -169,6 +169,16 @@ def test_a_new_folder_is_not_created_for_a_request_that_is_refused_later(client,
     assert res.status_code == 400
     assert not (target / "ABC1").exists()
 
+    # And the same holds for the checks INSIDE `schedule.create`, which run
+    # after the target is resolved: an unparseable cron line 400s, and the leaf
+    # must not survive it. This is the one the mkdir used to run ahead of.
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "ABC1"), "message": "hi",
+                            "repeats": "every morning"})
+    assert res.status_code == 400
+    assert not (target / "ABC1").exists()
+    assert schedule.list_entries() == []
+
 
 def test_a_mount_backed_target_is_refused(client, target, monkeypatch):
     """The refusal the claude template's own gate exists for: the bytes under a

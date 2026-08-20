@@ -141,6 +141,28 @@ def test_create_target_makes_one_folder_and_only_one(target):
     assert not (target / "ABC2").exists()
 
 
+def test_a_refused_create_leaves_no_new_folder_behind(target):
+    """The folder is made LAST, after every other validation has had its chance
+    to refuse. A request that 400s on its cron line, its due date or its
+    permission mode used to leave the leaf directory on disk anyway — an empty
+    folder the user never got a task for, and never asked for."""
+    for kwargs, match in (
+        ({"repeats": "not a cron line"}, "cron|field|repeats"),
+        ({"due": "next tuesday"}, "ISO 8601"),
+        ({"permission_mode": "bypassPermissions"}, "permission_mode"),
+        ({"rule": {"freq": "day"}, "due": None}, "due"),
+    ):
+        due = kwargs.pop("due", _in(600))
+        leaf = target / "leaf"
+        with pytest.raises(ValueError, match=match):
+            schedule.create(str(leaf), "hi", due, create_target=True, **kwargs)
+        assert not leaf.exists(), f"{kwargs} left {leaf} behind"
+
+    # And the happy path still makes it, so the reorder did not just drop it.
+    schedule.create(str(target / "leaf"), "hi", _in(600), create_target=True)
+    assert (target / "leaf").is_dir()
+
+
 def test_create_target_leaves_an_existing_target_alone(target):
     """The flag is permission to create, not an instruction to. Something that is
     already there is used as-is — including a FILE target, which stays legal

@@ -625,6 +625,12 @@ def create(target: str, message: str, due=None, session_id: str = "",
     naming a new folder in a place they know, they are typing into a tree that
     is not there, and inventing both is how a typo becomes a real directory.
 
+    The folder is CHECKED where the target is resolved and MADE at the very
+    bottom, immediately before the entry is stored — so a request refused by a
+    later validation (a cron line, a due date, a permission mode) leaves nothing
+    on disk. Ordering rather than a rollback: an unlink after the fact could
+    remove a directory something else had already raced into.
+
     Raises ValueError for everything a caller can get wrong (the router maps it
     to a 400). The one validation deliberately NOT here is "is this path
     mount-backed" — that needs the mounts registry, which lives above this
@@ -635,6 +641,14 @@ def create(target: str, message: str, due=None, session_id: str = "",
     if not isinstance(target, str) or not target.strip():
         raise ValueError("target: required")
     target = os.path.abspath(os.path.expanduser(target))
+    # The new folder is only CHECKED here; it is made at the very bottom, right
+    # before the entry is stored. Everything between this point and there can
+    # still refuse the request (a cron line that will not parse, an unreadable
+    # due date, an unknown permission mode), and a directory made up here would
+    # outlive that refusal — the user gets a 400 and an empty folder they never
+    # asked for. Deciding now and acting last keeps the create path all-or-
+    # nothing without a rollback that could delete someone else's work.
+    make_target = False
     if not os.path.exists(target):
         if not create_target:
             raise ValueError(f"target: no such file or directory: {target}")
@@ -647,20 +661,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
             raise ValueError(
                 f"target: only one new folder can be created, and {parent} "
                 "does not exist either")
-        try:
-            # mkdir, not makedirs: the one-level rule is enforced by the call
-            # itself, so a parent that vanishes between the check above and here
-            # raises rather than being invented.
-            os.mkdir(target)
-        except FileExistsError:
-            # Someone else made it in the meantime, which is the outcome asked
-            # for. Only a non-directory is a problem, and os.path.exists above
-            # would not have missed one that was already there.
-            if not os.path.isdir(target):
-                raise ValueError(
-                    f"target: {target} exists and is not a folder") from None
-        except OSError as exc:
-            raise ValueError(f"target: could not create {target}: {exc}") from exc
+        make_target = True
 
     repeats = (repeats or "").strip()
     if rule is not None and repeats:
@@ -787,6 +788,24 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # scheduled. Counting only the ones that fired would quietly extend the
         # series every time the app was closed at the wrong moment.
         entry["made"] = 0
+    if make_target:
+        # LAST, after every validation above has had its chance to refuse: from
+        # here on the only thing left is writing the entry, so the folder and
+        # the task appear together or neither does.
+        try:
+            # mkdir, not makedirs: the one-level rule is enforced by the call
+            # itself, so a parent that vanished since the check above raises
+            # rather than being invented.
+            os.mkdir(target)
+        except FileExistsError:
+            # Someone else made it in the meantime, which is the outcome asked
+            # for. Only a non-directory is a problem, and os.path.exists above
+            # would not have missed one that was already there.
+            if not os.path.isdir(target):
+                raise ValueError(
+                    f"target: {target} exists and is not a folder") from None
+        except OSError as exc:
+            raise ValueError(f"target: could not create {target}: {exc}") from exc
     with _lock:
         entries = _read()
         entries.append(entry)
