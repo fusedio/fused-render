@@ -63,10 +63,15 @@ export function hubSizeTitle(model: HubModel, total: number | null): string | un
   return "This repo publishes no safetensors metadata on the Hub, so there is no size to show yet.";
 }
 
-/** Totals already resolved, for the page's lifetime. Null is an ANSWER — the
+/** Totals already ANSWERED, for the page's lifetime. Null is an answer — the
  *  Hub does not measure every repo — so `has` is the question to ask, not
  *  truthiness. Re-sorting or re-filtering brings the same cards back into view,
- *  which must not cost a second round trip. */
+ *  which must not cost a second round trip.
+ *
+ *  A failed lookup is NOT an answer and never lands here: the server returns
+ *  200 with an `error` field on a Hub-side failure and deliberately does not
+ *  cache it, so caching it on this side would turn one 429 into a permanent
+ *  dash for that repo. */
 const resolved = new Map<string, number | null>();
 
 /** Lookups in flight. React 18 runs an effect twice in strict mode, and an
@@ -74,9 +79,11 @@ const resolved = new Map<string, number | null>();
  *  either would be a duplicate request to a third party. */
 const inFlight = new Map<string, Promise<number | null>>();
 
-/** The total already known for this repo, or `undefined` if nobody has asked.
- *  Lets a card render the right number on its very first paint rather than
- *  flashing a dash for a repo the page measured a scroll ago. */
+/** The total already known for this repo, or `undefined` if nobody has asked —
+ *  or if the asking failed, which is not something known. Lets a card render
+ *  the right number on its very first paint rather than flashing a dash for a
+ *  repo the page measured a scroll ago, and lets it tell "the Hub said no
+ *  number" (cached null) from "the ask did not get through" (undefined). */
 export function knownTotalSize(id: string): number | null | undefined {
   return resolved.has(id) ? (resolved.get(id) ?? null) : undefined;
 }
@@ -84,26 +91,38 @@ export function knownTotalSize(id: string): number | null | undefined {
 /** This repo's total bytes, asked once however many cards want it.
  *
  *  A failure resolves to null rather than rejecting: the card keeps its dash,
- *  and a size nobody asked out loud for is not worth a banner. Cached either
- *  way — a Hub that has no number for this repo will not have one a scroll
- *  later, and the server does not cache its own errors, so a genuine outage
- *  costs one attempt per card rather than one per scroll.
+ *  and a size nobody asked out loud for is not worth a banner. But it is NOT
+ *  remembered — an answer is remembered, a failure is only reported. The server
+ *  goes out of its way not to cache its own Hub errors so that the next card
+ *  can find out for itself; caching them here would undo exactly that, and a
+ *  transient 429 would read as "this repo has no size" until the tab closed.
+ *  Whether anything asks again is the caller's business (see `HubCard`); this
+ *  only promises not to stand in the way.
  */
 export function lookupTotalSize(
   id: string,
-  fetchSize: (id: string) => Promise<{ usedStorage: number | null }> = getHubModelSize,
+  fetchSize: (
+    id: string,
+  ) => Promise<{ usedStorage: number | null; error?: string }> = getHubModelSize,
 ): Promise<number | null> {
-  const known = resolved.get(id);
-  if (resolved.has(id)) return Promise.resolve(known ?? null);
+  if (resolved.has(id)) return Promise.resolve(resolved.get(id) ?? null);
   const running = inFlight.get(id);
   if (running) return running;
   const lookup = fetchSize(id)
-    .then((r) => (typeof r.usedStorage === "number" ? r.usedStorage : null))
-    .catch(() => null)
-    .then((bytes) => {
+    .then((r) => {
+      // 200 with an `error` is how the server reports a Hub-side failure — a
+      // rate limit, an unreachable Hub, a reply it could not read. It looks
+      // like "no number for this repo" and means something else entirely.
+      if (r.error) return null;
+      const bytes = typeof r.usedStorage === "number" ? r.usedStorage : null;
       resolved.set(id, bytes);
-      inFlight.delete(id);
       return bytes;
+    })
+    .catch(() => null)
+    // Whichever way it went, the id stops being in flight — a rejected lookup
+    // that stayed here would wedge the repo as forever pending.
+    .finally(() => {
+      inFlight.delete(id);
     });
   inFlight.set(id, lookup);
   return lookup;

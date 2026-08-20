@@ -215,13 +215,27 @@ function HubCard({
     const el = card.current;
     if (!el) return;
     let alive = true;
+    // Asked, or asking: one request per visit to the viewport, so a card that
+    // sits on screen while the answer arrives is not asked about twice. Cleared
+    // when the card leaves view, which is what lets a FAILED ask be retried —
+    // scroll away and back and the card tries again, rather than a single 429
+    // costing this repo its size for the rest of the page's life. A card whose
+    // ask succeeded stops observing entirely.
+    let asking = false;
     const io = new IntersectionObserver((entries) => {
-      if (!entries.some((e) => e.isIntersecting)) return;
-      // Fire once: the number cannot change while this page is open, and a
-      // card scrolled past twice must not be asked about twice.
-      io.disconnect();
+      if (!entries.some((e) => e.isIntersecting)) {
+        asking = false;
+        return;
+      }
+      if (asking) return;
+      asking = true;
       lookupTotalSize(model.id).then((bytes) => {
-        if (alive) setTotal(bytes);
+        if (!alive) return;
+        setTotal(bytes);
+        // An answer — a number, or the Hub having none — is now cached and
+        // cannot change while this page is open. Anything else was a failure
+        // that nobody remembered, so keep watching for another chance.
+        if (knownTotalSize(model.id) !== undefined) io.disconnect();
       });
     });
     io.observe(el);

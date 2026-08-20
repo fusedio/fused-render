@@ -142,6 +142,41 @@ describe("lookupTotalSize", () => {
     expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
   });
 
+  it("does not remember a Hub-side failure as 'no number'", async () => {
+    // The server answers 200 with an `error` when the Hub call itself failed —
+    // a rate limit, an unreachable Hub — and deliberately does NOT cache that,
+    // so the next card can find out for itself. Caching it here would undo
+    // exactly that: one 429 and the repo shows a dash until the tab closes.
+    let calls = 0;
+    const fetchSize = async () => {
+      calls += 1;
+      return calls === 1
+        ? { usedStorage: null, error: "429 Too Many Requests" }
+        : { usedStorage: 4_619_599_193 };
+    };
+    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
+    // Nothing was learned, so a card mounting later must not paint the failure
+    // as an answer — `undefined` is what tells the two apart.
+    expect(knownTotalSize("org/m")).toBeUndefined();
+    expect(await lookupTotalSize("org/m", fetchSize)).toBe(4_619_599_193);
+    expect(calls).toBe(2);
+    expect(knownTotalSize("org/m")).toBe(4_619_599_193);
+  });
+
+  it("does not leave a rejected lookup wedged as forever-pending", async () => {
+    // The in-flight map is what collapses concurrent asks. An id left in it
+    // after a rejection would hand every later caller the same dead promise.
+    let calls = 0;
+    const fetchSize = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("offline");
+      return { usedStorage: 7 };
+    };
+    expect(await lookupTotalSize("org/m", fetchSize)).toBeNull();
+    expect(await lookupTotalSize("org/m", fetchSize)).toBe(7);
+    expect(calls).toBe(2);
+  });
+
   it("tells one repo from another", async () => {
     const fetchSize = async (id: string) => ({ usedStorage: id === "org/a" ? 1 : 2 });
     expect(await lookupTotalSize("org/a", fetchSize)).toBe(1);
