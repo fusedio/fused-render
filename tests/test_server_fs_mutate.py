@@ -860,6 +860,24 @@ def test_trash_move_refuses_to_touch_an_info_file_for_an_outside_path(tmp_path, 
 
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the attack this pins only exists on a POSIX kernel. A POSIX "
+           "open()/rename() resolves 'link/..' component-by-component, so it "
+           "genuinely lands at the SYMLINK TARGET's parent — the kernel-vs-"
+           "lexical divergence _xdg_trash_entry_info's docstring is defending "
+           "against. Windows canonicalises a '..' component in an ordinary "
+           "(non \\\\?\\) path purely lexically, in the Win32 path layer, "
+           "before a reparse point is ever opened to see where it points — so "
+           "'…/files/link/../y.txt' collapses to '…/files/y.txt' there no "
+           "matter what 'link' names, and the kernel never takes the wrong "
+           "turn this test needs to exist to prove refused. The victim this "
+           "test plants at the POSIX-resolved location (tmp_path/y.txt) is "
+           "then simply not where Windows' own path resolution looks: the "
+           "rename 404s (the response has no 'path', hence the bare KeyError "
+           "on a real Windows run) before _xdg_trash_entry_info's boundary "
+           "check is ever exercised. Not a fused_render bug, and not an "
+           "attack Windows path resolution can construct this way at all.")
 def test_trash_move_boundary_rejects_a_symlinked_parent(tmp_path, monkeypatch):
     # The docstring's second claim, now actually tested. A path whose parent is a
     # SYMLINK out of files/ used to pass the boundary because the check normalised

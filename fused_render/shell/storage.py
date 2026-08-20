@@ -58,11 +58,26 @@ def write_json(path: str, data) -> None:
         raise
 
 
-# A handful of quick retries, not a real backoff schedule: the sharing
-# violation this chases clears as soon as the OTHER writer's own os.replace
-# finishes, which is microseconds, not seconds.
-_REPLACE_RETRIES = 8
-_REPLACE_RETRY_DELAY_S = 0.02
+# Not a real backoff schedule: the sharing violation this chases clears as
+# soon as the OTHER writer's own os.replace finishes (or a reader's brief
+# open() closes), which is normally microseconds, not seconds — so a fixed,
+# short interval between tries is enough, and the budget is just "keep trying
+# for a while" rather than anything that needs to grow.
+#
+# The budget itself has to be generous, not merely "a handful": measured
+# against tests/test_mounts_rcd_auth.py's
+# test_concurrent_state_writes_never_pin_a_stale_secret (a background thread
+# doing nothing BUT open()/close() rcd.json in a tight loop while the main
+# thread writes it ~40 times), a real Windows CI runner's disk latency
+# (antivirus real-time scanning is the usual culprit) can stretch what is
+# "microseconds" on a dev machine into tens of milliseconds per contended
+# open — long enough that the original 8-try/20ms (160ms total) budget ran
+# out mid-test and os.replace's PermissionError escaped write_rcd_state
+# uncaught. The cost of a bigger budget is paid only on the rare path that
+# actually contends — an ordinary write still succeeds on its first try — so
+# there is no reason not to make it generous.
+_REPLACE_RETRIES = 50
+_REPLACE_RETRY_DELAY_S = 0.05
 
 
 def _replace_atomic(tmp: str, path: str) -> None:
