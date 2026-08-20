@@ -66,7 +66,7 @@ Three rules the outbound call follows:
 * **The token is hf's, not ours.** `hf_auth.token()` is `get_token()`, so this
   request carries whatever a `hf auth login` or the Preferences login button put
   in hf's own store — and nothing this app persists, because it persists none
-  (D384).
+  (D385).
 * **The query is ENCODED, never concatenated.** `urlencode` builds it, so a
   search for `a&b=c` is a search, not a second parameter.
 * **Every field is optional.** The Hub's list endpoint returns what it returns,
@@ -214,7 +214,7 @@ def _token() -> str | None:
     limit. NEVER returned to the client, and never logged.
 
     `hf_auth.token()` — i.e. `huggingface_hub.get_token()` — rather than a
-    resolution of its own (D384). The same credential decides this search and
+    resolution of its own (D385). The same credential decides this search and
     every model download, and a download resolves it by calling hf inside the
     worker; a second copy of the order here is how a page comes to report itself
     authenticated while the download beside it goes out anonymous. Read per

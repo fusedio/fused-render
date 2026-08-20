@@ -154,7 +154,7 @@ _IMPORT_TO_DIST = {
     # interpreter already meets a script's header (and so whether a venv is needed
     # at all). Import name and distribution name coincide.
     "packaging": "packaging",
-    # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D384): hf
+    # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D385): hf
     # owns the token store, so the app imports hf rather than keeping a
     # credential of its own. Underscore in the import name, hyphen in the
     # distribution — which is exactly the drift this map exists to record.

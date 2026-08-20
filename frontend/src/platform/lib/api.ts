@@ -841,7 +841,7 @@ export interface CallsPrefs {
   retention_forced_by: string | null;
 }
 
-// -- Hugging Face sign-in (server/routers/hf_auth.py; D384) -------------------
+// -- Hugging Face sign-in (server/routers/hf_auth.py; D385) -------------------
 
 // No token ever crosses this boundary in either direction. The button starts
 // huggingface_hub's own device-code login, hf stores what comes back, and this

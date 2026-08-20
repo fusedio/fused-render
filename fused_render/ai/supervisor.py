@@ -446,7 +446,7 @@ def _child_env(token: str) -> dict:
     "Failed to import encodings module" before running a line. The origin is
     passed through so the worker can report its own download progress.
 
-    **No Hub token is placed here, deliberately** (D384). A worker imports
+    **No Hub token is placed here, deliberately** (D385). A worker imports
     `huggingface_hub` and therefore finds the machine's token exactly where every
     other hf caller finds it — hf's own store, written by the Preferences login
     button (routers/hf_auth.py) — or an `HF_TOKEN` this process already inherited
