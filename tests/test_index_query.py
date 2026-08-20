@@ -14,6 +14,7 @@ import pytest
 
 from fused_render.index import query as index_query
 from fused_render.index.config import IndexConfig
+from fused_render.index.ignore import norm
 from fused_render.index.query import lookup, pattern_for, prune, stats
 from fused_render.index.store import Sink, compact
 
@@ -62,9 +63,15 @@ def test_pattern_escapes_like_metacharacters():
 
 
 def test_pattern_expands_and_anchors_a_tilde():
+    # `pattern_for` re-normalizes after expanding `~` (platform.md §1), so on
+    # Windows the prefix comes back forward-slashed even though
+    # `os.path.expanduser` itself hands back `C:\Users\...`. The expected
+    # value has to go through the same `norm` to stay honest on every
+    # platform instead of assuming POSIX's `expanduser` is already canonical.
     like, prefix = pattern_for("~/Doc")
-    assert prefix == os.path.expanduser("~/Doc")
-    assert like.startswith(os.path.expanduser("~/Doc"))
+    expected = norm(os.path.expanduser("~/Doc"))
+    assert prefix == expected
+    assert like.startswith(expected)
 
 
 # -- partition pruning ---------------------------------------------------------
