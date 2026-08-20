@@ -7,6 +7,13 @@
 // (templates/git/condition.py writes both halves down). A FILE's own
 // `stat.templates` therefore never mentions git, and yet "what has changed in
 // here" is exactly as useful while reading one file as while browsing its folder.
+//
+// `mcp` needs it for the same shape of reason and is borrowed the same way: the
+// `mcp.toml` manifest it curates covers the app FOLDER, so it too is bound to "/"
+// alone (templates/mcp/condition.py) and a file's sidebar takes the entry from its
+// parent app folder. Nothing here is git-specific — `useDirMode(dir, mode)` takes
+// the mode as a parameter, which is why a second folder-bound companion needed a
+// new CALLER and not a new module.
 // Both companion sidebars borrow it: the file preview's from the file's PARENT
 // (apps/explorer/Preview.tsx), the listing pane's from the folder it is BROWSING
 // (apps/explorer/Listing.tsx). The listing pane borrows `claude` the same way —
