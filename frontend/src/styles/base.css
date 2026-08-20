@@ -72,8 +72,9 @@ html, body {
      scrolls. Any wheel delta an inner pane doesn't consume chains up to here,
      and macOS answers with the elastic bounce: the whole app lurches and snaps
      back, loudest when a pane hits its end mid-scroll (Akshil, 2026-08-20, the
-     Tasks list). Nothing real is lost by refusing it at the root. */
-  overscroll-behavior: none;
+     Tasks list). The Y axis ONLY: the shorthand would also eat the horizontal
+     swipe-back/forward gesture, which is real navigation here (bugbot, #678). */
+  overscroll-behavior-y: none;
 }
 
 body {
