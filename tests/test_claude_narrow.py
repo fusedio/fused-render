@@ -235,3 +235,102 @@ def test_auto_submit_is_still_unconditional(html):
     start = html.index("function annAutoSubmit()")
     body = html[start:html.index("\n}\n", start)]
     assert "paneview" not in body and "NARROW_MQ" not in body
+
+
+# --------------------- 4. the composer's chrome degrades on purpose, by measuring
+
+def _fn(html, head):
+    start = html.index(head)
+    return html[start:html.index("\n}\n", start)]
+
+
+def test_the_control_row_compacts_and_folds_but_never_at_a_width(html):
+    """A 380px column (the sidebar's MIN_W) could not hold the control row —
+    three selects, the screenshot and calendar buttons, Send — and `flex-wrap`
+    answered with a stack of nearly-empty lines, one control on each. Akshil,
+    2026-08-20, on a 440px column: "I don't see the change in size. Nor do I see
+    the change in UI to show or hide things."
+
+    So the row spends its width in a chosen ORDER — shorten the one long label
+    (`.compact`), then fold once at the spacer (`.stack`) — and the verdict is
+    MEASURED, the same discipline annFitStrip uses for the annotate strip: a
+    breakpoint would have to guess at three select labels the user can change.
+    The sum is by hand because a wrapping flex row reports no overflow at all —
+    it just gets taller — which is exactly why this was invisible to CSS."""
+    fit = _fn(html, "function fitComposerRow(row)")
+    assert "row.clientWidth" in fit, "the box is the thing compared against"
+    assert "composerRowNeed(row) > box" in fit
+    # the ladder, in order: nothing, then compact, then compact + stack
+    assert fit.index('classList.remove("stack")') < fit.index("setRowCompact(row, true)")
+    assert fit.index("setRowCompact(row, true)") < fit.index('classList.add("stack")')
+    need = _fn(html, "function composerRowNeed(row)")
+    assert "scrollWidth" not in need, \
+        "a flex row's scrollWidth floors at clientWidth — the need is summed by hand"
+    assert "columnGap" in need and "spacer" in need, \
+        "the gaps count, and the elastic spacer is slack rather than content"
+    # and no media query anywhere near this row
+    assert ".composer-row" not in _narrow_block(html), \
+        "the row adapts by measuring, never inside a breakpoint"
+
+
+def test_the_approvals_pill_shortens_and_the_menu_does_not(html):
+    """Approvals is the row's only long label ("ask every time" beside "fable" and
+    "medium"), so it is the only one with a short form — and the short forms are
+    the DISTINGUISHING word of each mode, never a truncation. The menu is where
+    the sentences stay: it reads `dataset.full`, which fillSelect writes for every
+    option, so shortening the pill can never take the vocabulary away."""
+    modes = re.search(r"const PERMISSION_MODES = \[(.*?)\];", html, re.S).group(1)
+    short = re.search(r"const PERMISSION_SHORT = \{(.*?)\};", html, re.S).group(1)
+    for key in re.findall(r'"(\w+)"', modes):
+        assert re.search(r"\b%s:" % key, short), "every mode needs a short form"
+    fill = _fn(html, "function fillSelect(el, values, groupLabel, labels)")
+    assert "o.dataset.full = o.textContent;" in fill
+    pop = _fn(html, "function openSelPop(sel)")
+    assert "opt.dataset.full" in pop, "the menu always spells the full label"
+
+
+def test_the_folded_row_pins_its_second_line_to_a_measured_control(html):
+    """Folding must not teleport Send across the composer, so line two stays flush
+    right — and the control it hangs off cannot be named in the stylesheet:
+    `.viewshot` is [hidden] in the narrow layout and whenever there is no pane.
+    fitComposerRow stamps `.lead2` on whichever control actually lands there
+    first, and clears it on every pass so an anchor cannot outlive its control."""
+    css = _style_block(html)
+    assert ".composer-row.stack .send { margin-left: 0; }" in css
+    assert css.index(".composer-row.stack .send") < css.index(".composer-row.stack .lead2"), \
+        "the .lead2 rule has to win on source order for the case where Send is first"
+    # `width: 100%` and not a percentage flex-basis: measured in WKWebView, the
+    # basis was ignored and the row went on wrapping wherever it liked.
+    assert ".composer-row.stack .spacer { flex: 0 0 auto; width: 100%; height: 0; }" in css
+    fit = _fn(html, "function fitComposerRow(row)")
+    assert 'c.classList.toggle("lead2", c === lead)' in fit
+
+
+def test_the_landing_title_takes_a_step_from_the_stylesheet(html):
+    """A folder name is arbitrarily long and 26px bold in a 380px column turned one
+    into a two-line headline louder than the composer it introduces. The size is
+    picked by measuring the NAME (canvas, like fitSelect — scrollWidth reads
+    clientWidth back on a block with no scroller), and the sizes themselves are
+    declared in the stylesheet: a step is a class, never a computed pixel value
+    written inline, which is this file's rule for every other verdict (D146)."""
+    css = _style_block(html)
+    assert ".home-title.t-mid { font-size: 21px; }" in css
+    assert ".home-title.t-min { font-size: 17px; }" in css
+    fit = _fn(html, "function fitHomeTitle()")
+    assert "style.fontSize" not in fit, "the step is a class, not an inline size"
+    assert "_fitCtx.measureText" in fit and "scrollWidth" not in fit
+
+
+def test_the_footnote_drops_a_whole_sentence_rather_than_half_of_one(html):
+    """Two lines is the footnote's budget; in a 380px column the sentence pair ran
+    to three. The second sentence is its own node — in the markup so the first
+    paint is measurable, and in setTargetNoun's rewrite — so a narrow column drops
+    it whole instead of ellipsising the pair. Which one survives is not arbitrary:
+    the reach is what a reader needs before they type, and approvals are named by
+    the pill two rows up."""
+    assert '<span class="fn-more"> Approvals control what runs without asking.</span>' in html
+    assert '#footnote.tight .fn-more { display: none; }' in _style_block(html)
+    setter = _fn(html, "const setTargetNoun = (noun) => {")
+    assert "footnoteTail()" in setter
+    fit = _fn(html, "function fitFootnote()")
+    assert "lh * 2" in fit, "the budget is two LINES, measured, not a width"
