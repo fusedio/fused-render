@@ -111,7 +111,15 @@ def main():
         for rel, content in files.items():
             full = os.path.join(out, rel)
             os.makedirs(os.path.dirname(full) or out, exist_ok=True)
-            with open(full, "w") as f:
+            # newline="": the manager hashes this file's bytes exactly
+            # (_take_file_hashes opens "rb") against a base hash seed_base()
+            # computes straight from this same `content` string — text
+            # mode's universal-newline translation would silently inflate
+            # every "\n" here to "\r\n" on Windows, making an untouched
+            # file's on-disk hash never equal the base hash the merge
+            # compares it to, so every per-file decision falls through to
+            # "locally edited" and no remote change is ever applied.
+            with open(full, "w", newline="") as f:
                 f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
@@ -1141,7 +1149,19 @@ class SyncShims:
         for rel, content in files.items():
             path = self.remote_dir / rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            # newline="": _ZIP_SHIM zips these files' raw bytes, and
+            # _merge_remote hashes them exactly against seed_base()'s
+            # string-derived hash and the clone's own on-disk (also
+            # newline=""-written, see the STUB's canvas-pull loop) bytes.
+            # Path.write_text's default text mode would inflate every
+            # "\n" here to "\r\n" on Windows, making a remote file that is
+            # actually byte-identical to the base/local copy hash as
+            # "changed" (or, combined with the base-hash mismatch, an
+            # untouched file hash as "locally edited") — either way the
+            # three-way merge's per-file equality tests stop meaning what
+            # they say.
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(content)
 
     def seed_base(
         self,
