@@ -32,6 +32,23 @@ logger = logging.getLogger(__name__)
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
 
+# A bare drive letter ("C:") is what rstrip("/") leaves a Windows drive root
+# ("C:/") reduced to — the same way rstrip("/") leaves a POSIX root ("/")
+# reduced to "". Every root normalization below restores the trailing "/" for
+# the POSIX case (the existing `or "/"`); this is the matching restoration for
+# the Windows one, without which a scan root that IS a whole drive would
+# resolve here to "C:" while canonical_root() (index/runner.py) — what every
+# stored dirs.parquet row is actually keyed under — resolves the identical
+# input to "C:/", and the two would never compare equal.
+_BARE_DRIVE = re.compile(r"^[A-Za-z]:$")
+
+
+def _root_or_bare(stripped: str) -> str:
+    """`stripped` (already rstripped of "/") restored to its canonical bare-
+    root spelling if it collapsed to one — "" -> "/", "C:" -> "C:/" — else
+    unchanged."""
+    return stripped + "/" if not stripped or _BARE_DRIVE.match(stripped) else stripped
+
 SORTS = {
     "path": "path ASC", "size": "size DESC", "mtime": "mtime DESC",
     "name": "name ASC",
@@ -203,8 +220,12 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
 
     con = duckdb.connect()
     root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
-    root = (root or m.get("last_root") or "").rstrip("/") or "/"
-    pfx = (like_literal(root) + "/") if root != "/" else "/"
+    root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
+    # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
+    # drive root "C:/" via _root_or_bare above) — appending another "/"
+    # unconditionally, as a plain `root != "/"` check used to, would double
+    # it on the drive-root case and match nothing.
+    pfx = like_literal(root if root.endswith("/") else root + "/")
     inside = (f"(dir = '{_q(root)}' "
               f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
     n_rows, total_size, n_dirs = 0, 0, 0
@@ -294,7 +315,8 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # string, which the guard below then reads as "no root given" — so a
     # search of "/" answered `covered: false` every time. Everything past
     # here already special-cases "/" (see `prefix`); only this line did not.
-    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
+    root = _root_or_bare(
+        norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
     m = read_manifest(cfg)
     empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
              "root": root, "entries": [], "truncated": False, "total": 0,
@@ -313,8 +335,10 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     covered = _root_is_covered(con, cfg, root)
     if not covered:
         return {**empty, "updated": updated, "age_s": age}
-    prefix = (root + "/") if root != "/" else "/"
-    prefix_like = (like_literal(root) + "/") if root != "/" else "/"
+    # See stats()'s identical fix above: root already ends in "/" for
+    # any bare root (POSIX or a Windows drive), not only "/" itself.
+    prefix = root if root.endswith("/") else root + "/"
+    prefix_like = like_literal(prefix)
     limit = max(0, min(int(limit), MAX_CORPUS))
     hit = prune(m["partitions"], prefix)
     qlit = like_literal(q.strip()) if q and q.strip() else ""
@@ -540,7 +564,8 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     — never an error, because "no index yet", "not covered" and "a scan is
     running" are one condition to a search box.
     """
-    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
+    root = _root_or_bare(
+        norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
     m = read_manifest(cfg)
     # `reason` is the miss's cause, and it is what the in-folder search box
     # switches on: a package or a mount-backed folder goes to the live walk, an
@@ -566,8 +591,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     miss = _coverage_reason(con, cfg, root)
     if miss:
         return {**empty, "reason": miss, "updated": updated, "age_s": age}
-    prefix = (root + "/") if root != "/" else "/"
-    prefix_like = (like_literal(root) + "/") if root != "/" else "/"
+    # See stats()'s identical fix above: root already ends in "/" for
+    # any bare root (POSIX or a Windows drive), not only "/" itself.
+    prefix = root if root.endswith("/") else root + "/"
+    prefix_like = like_literal(prefix)
     limit = max(0, min(int(limit), MAX_RANK_LIMIT))
     cap = max(1, int(cap))
     hit = prune(m["partitions"], prefix)
