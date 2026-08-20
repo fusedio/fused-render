@@ -213,7 +213,19 @@ bundled = [
     # The requirement string must stay byte-identical to `[fused]`'s — see the
     # comment there and
     # tests/test_bundle_contents.py::test_the_bundled_and_fused_extras_pin_the_same_wheel.
-    'fused==2.9.3b4 ; python_version >= "3.11"',
+    'fused==2.9.3b7 ; python_version >= "3.11"',
+    # The engine's own `mcp[cli]>=1.0.0` floor admits mcp 2.x, where
+    # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
+    # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
+    # `app serve` / `project serve --mcp` die at import with
+    # ModuleNotFoundError. That matters here because the MCP panel registers
+    # `<this venv's fused> app serve <folder>` as a GLOBAL Claude MCP server
+    # (SPEC MC-5), so the server a user registers is only as good as this
+    # environment's resolve. Upstream is the real fix (fusedio/fused: constrain
+    # the floor); until a release carries it, this keeps the registered command
+    # startable. Marked like the pin above: on 3.10 there is no engine, so there
+    # is nothing pulling mcp in either.
+    'mcp<2 ; python_version >= "3.11"',
 ]
 # Private-cloud credential chains (optional). botocore buys the AWS provider
 # chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
@@ -248,7 +260,19 @@ app = [
 # (README, docs/usage.md) and CI's `fused-engine` job (`.[dev,fused]`), both of
 # which want the engine WITHOUT the ~650 MB scientific stack.
 fused = [
-    'fused==2.9.3b4 ; python_version >= "3.11"',
+    'fused==2.9.3b7 ; python_version >= "3.11"',
+    # The engine's own `mcp[cli]>=1.0.0` floor admits mcp 2.x, where
+    # `mcp.server.fastmcp` no longer exists (FastMCP moved to the standalone
+    # `fastmcp` distribution) — so a fresh resolve gets a `fused` whose
+    # `app serve` / `project serve --mcp` die at import with
+    # ModuleNotFoundError. That matters here because the MCP panel registers
+    # `<this venv's fused> app serve <folder>` as a GLOBAL Claude MCP server
+    # (SPEC MC-5), so the server a user registers is only as good as this
+    # environment's resolve. Upstream is the real fix (fusedio/fused: constrain
+    # the floor); until a release carries it, this keeps the registered command
+    # startable. Marked like the pin above: on 3.10 there is no engine, so there
+    # is nothing pulling mcp in either.
+    'mcp<2 ; python_version >= "3.11"',
 ]
 # Windows desktop supervisor backend (fused_render/supervisor/_win32,
 # docs/DESKTOP_SUPERVISOR.md). Windows-only; not a core dependency so

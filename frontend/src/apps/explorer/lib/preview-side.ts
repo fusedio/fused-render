@@ -105,11 +105,18 @@ export interface SideSplitInput {
   // The file's own modes, already partitioned (lib/mode-visibility).
   content: TemplateEntry[];
   own: TemplateEntry[];
-  // The parent folder's `git` entry — a placeholder while `borrowedPending`,
-  // null when the parent does not offer one (or there is nothing to borrow
-  // because the file has a `git` of its own).
-  borrowed: TemplateEntry | null;
-  borrowedPending: boolean;
+  // The parent folder's FOLDER-BOUND companion entries (`git`, `mcp`) — the ones
+  // no file's own template list can contain, so a file sidebar has them only by
+  // borrowing (see the header and lib/dir-mode). Empty when the parent offers
+  // none, and a mode is absent here when the file has one of its own.
+  //
+  // A LIST rather than the single slot this had while `git` was the only
+  // folder-bound companion: the probes are independent `useDirMode` calls, so
+  // "which of them is still out" is per mode, which is why `borrowedPending`
+  // names modes instead of being a flag.
+  borrowed: TemplateEntry[];
+  // The borrowed modes whose PARENT probe has not answered yet.
+  borrowedPending: readonly string[];
   // THIS FILE's condition.py verdicts are still in flight (`conditions === null`,
   // lib/mode-visibility's `isModePending`). Read for ONE thing — `defaultSide`
   // below — because an OWN gated companion is `settled` for every other purpose
@@ -124,7 +131,7 @@ export interface SideSplitInput {
   conditionsPending?: boolean;
   // Every companion that EXISTS AS A BINDING, whether or not it may be shown: the
   // file's own sidebar templates BEFORE the visibility filter, plus the parent's
-  // `git` however its gate voted (lib/dir-mode's `bound`). Order and duplicates
+  // borrowed modes however their gates voted (lib/dir-mode's `bound`). Order and duplicates
   // are irrelevant — exactly one field is ever read off these.
   //
   // That field is the ICON, and it is the whole reason the input exists. A
@@ -251,8 +258,15 @@ function sidebarMenu(all: TemplateEntry[], bound: TemplateEntry[]): SideEntry[] 
 }
 
 export function sideSplit(i: SideSplitInput): SideSplit {
-  const all = orderSidebarModes(i.borrowed ? [...i.own, i.borrowed] : i.own);
-  const settled = i.borrowedPending ? all.filter((e) => e !== i.borrowed) : all;
+  const all = orderSidebarModes([...i.own, ...i.borrowed]);
+  // A borrowed entry whose own probe is still out is a PLACEHOLDER: it is in `all`
+  // (a `_side` may name it, and the menu draws it as a spinner) and out of
+  // `settled` (there is no template path to frame yet). Identity, not mode, decides
+  // whether an entry is borrowed — a file with a companion of its OWN answers to
+  // this file's gates, not to the parent's probe.
+  const borrowedPending = (e: TemplateEntry) =>
+    i.borrowed.includes(e) && i.borrowedPending.includes(e.mode);
+  const settled = all.filter((e) => !borrowedPending(e));
   // ...and only while there is something to put on BOTH sides. A file whose only
   // companion is `claude` has no content pane to sit a sidebar next to, so it
   // renders as it did before the split existed: chat, full width, content mode.
@@ -261,7 +275,9 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // entry answers to its own probe, everything else to this file's gates. Only
   // `defaultSide` reads it; see the field's comment for why nothing else does.
   const unresolved = (e: TemplateEntry) =>
-    e === i.borrowed ? i.borrowedPending : !!e.conditional && !!i.conditionsPending;
+    i.borrowed.includes(e)
+      ? borrowedPending(e)
+      : !!e.conditional && !!i.conditionsPending;
   // THE LEADING COMPANION DECIDES, AND ONLY IT. `all` is already in ranking order
   // (orderSidebarModes), so `all[0]` is what an absent `_side` would open — and
   // while THAT entry is unresolved the answer is "not yet", whatever else has

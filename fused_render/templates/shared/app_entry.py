@@ -39,13 +39,25 @@ _FUSED_META_RE = re.compile(
     rb"<meta\s[^>]*name\s*=\s*[\"']?fused-app[\"']?", re.IGNORECASE)
 
 
-def _has_fused_meta(html_path: str) -> bool:
+def has_fused_meta(html_path: str) -> bool:
+    """Whether this `.html` carries the `<meta name="fused-app">` marker (D301).
+
+    Public because the marker is the WHOLE rule and a second copy of it is the
+    thing D301 exists to prevent — a caller that has already listed the folder
+    (the `mcp` gate, which lists once and needs a bounded number of head reads)
+    asks this instead of re-implementing the regex. `entry_html` below is this
+    plus the listing and the name order.
+    """
     try:
         with open(html_path, "rb") as fh:
             head = fh.read(4096)
     except OSError:
         return False
     return _FUSED_META_RE.search(head) is not None
+
+
+# The private spelling every existing caller in this module used.
+_has_fused_meta = has_fused_meta
 
 
 def entry_html(dir: str) -> str | None:

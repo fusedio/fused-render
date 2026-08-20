@@ -165,7 +165,7 @@ def test_the_pane_reads_exactly_the_param_the_inbox_writes(source):
     reader = _read(_PANE_SIDE)
     for param in ('_side=claude', 'session_id'):
         assert param in link, f"the inbox link no longer writes {param}"
-    assert 'PANE_SIDE_COMPANIONS = ["claude", "git"]' in reader, (
+    assert 'PANE_SIDE_COMPANIONS = ["claude", "git", "mcp"]' in reader, (
         "the inbox writes _side=claude; parsePaneSide keeps only companions")
     assert 'isPaneSideChoice(raw)' in reader
 
@@ -202,5 +202,5 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     assert "selectionClaimed" not in listing
     # and with nothing selected, the chat is aimed at the folder
     reader = _read(_PANE_SIDE)
-    assert 'return side === "git" ? folder : (rowPath ?? folder);' in reader, (
+    assert 'return isFolderBoundSide(side) ? folder : (rowPath ?? folder);' in reader, (
         "paneSideTarget no longer falls back to the folder without a row")

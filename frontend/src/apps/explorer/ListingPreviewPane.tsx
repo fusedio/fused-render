@@ -120,7 +120,7 @@ export default function ListingPreviewPane({
   // folder offers (pane-side's activePaneSide, in Listing), so it is always a
   // mode `sideEntries` can actually back.
   side: PaneSide;
-  // The FOLDER's `claude` / `git` template entries, or null where the folder does
+  // The FOLDER's `claude` / `git` / `mcp` template entries, or null where the folder does
   // not offer the mode (lib/dir-mode). Resolved by Listing, which does not remount
   // per selection — see the module comment.
   sideEntries: PaneSideEntries;
@@ -358,24 +358,24 @@ export default function ListingPreviewPane({
     );
   }
 
-  // --- Claude and Git: the companions ----------------------------------------
-  // Both render straight from the FOLDER's entry, with no question asked about
-  // the selected row, so they come BEFORE every one of the row-driven branches
-  // below (the loading skeleton, the placeholders, the self target). Git in
-  // particular has to: its subject is the folder, so a folder with nothing
-  // selected still has a working tree to show.
+  // --- Claude, Git and MCP: the companions -----------------------------------
+  // All of them render straight from the FOLDER's entry, with no question asked
+  // about the selected row, so they come BEFORE every one of the row-driven
+  // branches below (the loading skeleton, the placeholders, the self target). The
+  // folder-bound two have to: their subject IS the folder, so a folder with
+  // nothing selected still has a working tree and a manifest to show.
   //
-  // `_file` is where the two differ, and it is the whole of the difference —
-  // both templates are used exactly as they ship. paneSideTarget says which:
-  // the folder for Git, the selected row for Claude (the folder again when the
+  // `_file` is where they differ, and it is the whole of the difference — every
+  // template is used exactly as it ships. paneSideTarget says which: the folder
+  // for Git and MCP, the selected row for Claude (the folder again when the
   // selection names no single row, so the chat has something to be about).
-  const sideEntry = side === "claude" ? sideEntries.claude : side === "git" ? sideEntries.git : null;
+  const sideEntry = side === "preview" ? null : sideEntries[side];
   if (sideEntry && sideEntry.path !== null) {
     const target = paneSideTarget(side, folder, row && !row.self ? row.path : null);
     // `chat_only=1` takes away the chat template's OWN left preview pane — the
     // rule and its two reasons are on paneChatOnly. `_remote` is deliberately
-    // absent from both: Claude reads through the server either way, and the git
-    // gate refuses a mount-backed directory outright.
+    // absent from all of them: Claude reads through the server either way, and the
+    // git and mcp gates refuse a mount-backed directory outright.
     const chatOnly = paneChatOnly(side) ? CHAT_ONLY_PARAM : "";
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>

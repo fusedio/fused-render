@@ -1,4 +1,4 @@
-// The listing preview pane's TWO COMPANIONS and the `_side` param that records
+// The listing preview pane's THREE COMPANIONS and the `_side` param that records
 // which one is showing — plus a `preview` FALLBACK that is not on offer. Pure and
 // DOM-free, like the pane's other decision modules (pane-math, pane-modes), so the
 // semantics below can be pinned by a test with no router and no React.
@@ -15,7 +15,8 @@
 //
 // **This makes the pane agree with the full-screen file sidebar, which was
 // companions-only from the start** (`lib/preview-side.ts` over
-// `mode-visibility.SIDEBAR_MODES` = `["claude", "git"]` — no `preview` side, ever).
+// `mode-visibility.SIDEBAR_MODES` = `["claude", "git", "mcp"]` — no `preview`
+// side, ever).
 // The listing pane was the odd one out, and the four decisions above are it
 // converging on the shape the other half of the app already had.
 //
@@ -24,6 +25,9 @@
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
 //            a working tree belongs to the folder, so `git` is bound to the
 //            universal "/" key alone and the pane borrows the folder's entry.
+//   mcp      the OPEN FOLDER's MCP tools — the curation panel over the app's
+//            Python entrypoints. Folder-bound for the same shape of reason: the
+//            `mcp.toml` manifest it writes covers the folder, not a row in it.
 //
 //   preview  **NOT SELECTABLE, and not in the switcher.** It survives as the
 //            pane's internal FALLBACK for one state: neither companion offered (a
@@ -36,10 +40,12 @@
 //            while `paneSideMenu` never draws a row for it and `paneSideList`
 //            yields it only as that last resort.
 //
-// Closed at two, and a per-ROW companion is deliberately not a third: over a
-// folder the thing you are looking at is a LIST, so a column that talks about one
-// row is a pill for a view nobody browses into. Anything of that shape stays one
-// click away — open the row, and the file sidebar has it.
+// Closed at these three, and a per-ROW companion is deliberately not a fourth:
+// over a folder the thing you are looking at is a LIST, so a column that talks
+// about one row is a pill for a view nobody browses into. Anything of that shape
+// stays one click away — open the row, and the file sidebar has it. (Two of the
+// three ARE folder-bound rather than per-row, which is why `paneKey` and
+// `paneSideTarget` ask `isFolderBoundSide` instead of naming `git`.)
 //
 // This also RETIRES the pane's old per-template switcher (`_panelMode`), which
 // offered every mode the selected row resolved — image/photos/pano for a .png,
@@ -52,9 +58,9 @@
 import type { TemplateEntry } from "@platform/lib/api";
 import { unavailableReason } from "@platform/lib/mode-visibility";
 
-// All three states the pane can BE IN. `preview` is here because the fallback needs
+// Every state the pane can BE IN. `preview` is here because the fallback needs
 // the type, not because anything offers it (see the header).
-export const PANE_SIDE_MODES = ["preview", "claude", "git"] as const;
+export const PANE_SIDE_MODES = ["preview", "claude", "git", "mcp"] as const;
 
 export type PaneSide = (typeof PANE_SIDE_MODES)[number];
 
@@ -62,7 +68,7 @@ export type PaneSide = (typeof PANE_SIDE_MODES)[number];
 // else. Splitting this out of `PaneSide` is what makes "the pane fell back to
 // preview" un-writable and un-requestable at the type level rather than by
 // convention — a `_side=preview` cannot round-trip because it cannot be held.
-export const PANE_SIDE_COMPANIONS = ["claude", "git"] as const;
+export const PANE_SIDE_COMPANIONS = ["claude", "git", "mcp"] as const;
 
 export type PaneSideChoice = (typeof PANE_SIDE_COMPANIONS)[number];
 
@@ -167,11 +173,12 @@ export function paneSideParam(state: PaneSideState): string | null {
 //
 // Order is by construction, not by sorting: this list IS the switcher's order.
 export interface PaneSideEntries {
-  // The OPEN FOLDER's `claude` / `git` template entries, or null when the folder
-  // does not offer the mode. `preview` needs no entry — it is the selected row's
-  // own default template, resolved from the row's stat by pane-modes.ts.
+  // The OPEN FOLDER's `claude` / `git` / `mcp` template entries, or null when the
+  // folder does not offer the mode. `preview` needs no entry — it is the selected
+  // row's own default template, resolved from the row's stat by pane-modes.ts.
   claude: TemplateEntry | null;
   git: TemplateEntry | null;
+  mcp: TemplateEntry | null;
   // The dir-mode probe behind that null has not answered yet (Listing passes the
   // flag alongside; the entry stays null because a placeholder has no template
   // path to frame). Only the MENU reads these — an undecided mode is neither
@@ -179,12 +186,24 @@ export interface PaneSideEntries {
   // disabled one asserting a reason nobody has established.
   claudePending?: boolean;
   gitPending?: boolean;
+  mcpPending?: boolean;
   // The folder's entry for a mode it will not SHOW: the binding as the stat
   // reported it, gate verdict or not (lib/dir-mode's `bound`). Read for one thing
   // only — see `paneSideIconEntry` — and never as an offer: a mode is on offer
   // when `claude`/`git` above is non-null, and nowhere else.
   claudeBound?: TemplateEntry | null;
   gitBound?: TemplateEntry | null;
+  mcpBound?: TemplateEntry | null;
+}
+
+// The companions whose SUBJECT is the open folder rather than the selected row —
+// `paneKey` and `paneSideTarget` both turn on this, and asking a predicate keeps
+// the two from drifting as the set grows (it went from one member to two when
+// `mcp` landed, and each site had `side === "git"` written into it).
+const FOLDER_BOUND_SIDES: ReadonlySet<string> = new Set(["git", "mcp"]);
+
+export function isFolderBoundSide(side: PaneSide): boolean {
+  return FOLDER_BOUND_SIDES.has(side);
 }
 
 // **`preview` IS NOT ON OFFER — it is the last resort** (D285, the end of the arc
@@ -245,8 +264,13 @@ export function paneSideList(entries: PaneSideEntries): PaneSide[] {
   const companions: PaneSide[] = [];
   if (entries.claude) companions.push("claude");
   if (entries.git) companions.push("git");
+  if (entries.mcp) companions.push("mcp");
   if (companions.length > 0) return companions;
-  if (entries.gitPending) return [];
+  // Nothing offered yet AND a follower still out is still undecided: falling
+  // through to the fallback here would put the pane on `preview` and then move it
+  // the moment the verdict landed, which is the jump the leader wait above exists
+  // to prevent.
+  if (entries.gitPending || entries.mcpPending) return [];
   return [PANE_SIDE_FALLBACK];
 }
 
@@ -282,17 +306,23 @@ export interface PaneSideMenuEntry {
 // owed. `preview` carries no reason (it is the pane's identity), so a disabled
 // Preview row would be a dead control with nothing to say.
 export function paneSideMenu(entries: PaneSideEntries): PaneSideMenuEntry[] {
-  const companion = (mode: "claude" | "git"): PaneSideMenuEntry => {
-    if (entries[mode]) return { mode };
-    const pending = mode === "claude" ? entries.claudePending : entries.gitPending;
-    return pending ? { mode, pending: true } : { mode, disabledReason: unavailableReason(mode) };
+  const pendingOf: Record<PaneSideChoice, boolean | undefined> = {
+    claude: entries.claudePending,
+    git: entries.gitPending,
+    mcp: entries.mcpPending,
   };
-  // The COMPANIONS, always both, and NEVER a `preview` row: it is not a mode a user
-  // can pick (D285), so drawing it would be a control that cannot be honoured. In the
-  // fallback state the pane IS on `preview` and this menu shows two disabled
-  // companions with their reasons — which is the honest account of why the pane is
+  const companion = (mode: PaneSideChoice): PaneSideMenuEntry => {
+    if (entries[mode]) return { mode };
+    return pendingOf[mode]
+      ? { mode, pending: true }
+      : { mode, disabledReason: unavailableReason(mode) };
+  };
+  // The COMPANIONS, always all of them, and NEVER a `preview` row: it is not a mode
+  // a user can pick (D285), so drawing it would be a control that cannot be honoured.
+  // In the fallback state the pane IS on `preview` and this menu shows the companions
+  // disabled with their reasons — which is the honest account of why the pane is
   // showing what it is showing.
-  return [companion("claude"), companion("git")];
+  return PANE_SIDE_COMPANIONS.map(companion);
 }
 
 // WHICH TEMPLATE A ROW TAKES ITS ICON FROM — the offered entry, and failing that
@@ -313,9 +343,12 @@ export function paneSideIconEntry(
   side: Exclude<PaneSide, "preview">,
   entries: PaneSideEntries
 ): TemplateEntry | null {
-  return side === "claude"
-    ? (entries.claude ?? entries.claudeBound ?? null)
-    : (entries.git ?? entries.gitBound ?? null);
+  const bound: Record<PaneSideChoice, TemplateEntry | null | undefined> = {
+    claude: entries.claudeBound,
+    git: entries.gitBound,
+    mcp: entries.mcpBound,
+  };
+  return entries[side] ?? bound[side] ?? null;
 }
 
 // The mode the pane SHOWS for a requested one: the request while it is still on
@@ -349,11 +382,14 @@ export function activePaneSide(offered: PaneSide[], want: PaneSideChoice | null)
 // WHAT THE PANE IS ABOUT, as a React key — and it is not always the selected row,
 // which is the whole reason this is a function and not `row.path`.
 //
-// In `git` the subject is the FOLDER. The pane is keyed so that switching rows
-// remounts it (a stale iframe must not linger while the new row resolves), and
+// In `git` and `mcp` the subject is the FOLDER. The pane is keyed so that switching
+// rows remounts it (a stale iframe must not linger while the new row resolves), and
 // with the row in the key, arrow-keying down a listing would tear down and reload
 // the git view — a `git status` and a `git log` fork — on every keystroke, for a
-// view whose content did not change. So the selection is left out of it.
+// view whose content did not change. The MCP panel is the same shape of waste (a
+// folder-wide AST read and a manifest parse per keystroke), and worse: a remount
+// would also discard whatever curation the user had typed. So the selection is left
+// out of both.
 //
 // `claude` and `preview` are both about the ROW, and drop to the folder itself
 // when the selection names no single one: the folder-scoped chat for `claude`, the
@@ -365,7 +401,7 @@ export function paneKey(
   rowPath: string | null,
   selCount: number
 ): string {
-  if (side === "git") return "git:" + folder;
+  if (isFolderBoundSide(side)) return side + ":" + folder;
   if (side === "claude") return "claude:" + (rowPath ?? folder);
   if (rowPath) return "preview:" + rowPath;
   // `preview` with nothing selected is now REACHED ONLY as the neither-companion
@@ -377,13 +413,14 @@ export function paneKey(
   return selCount === 0 ? "preview:self:" + folder : "preview:none";
 }
 
-// The path a mode's iframe is aimed at (`_file`). Three modes, two subjects: the
-// folder for `git`, the selected row for the other two — falling back to the
-// folder when there is no single row, so the chat has something to be about.
+// The path a mode's iframe is aimed at (`_file`). Two subjects: the folder for the
+// folder-bound companions (`git`, `mcp`), the selected row for the rest — falling
+// back to the folder when there is no single row, so the chat has something to be
+// about.
 export function paneSideTarget(
   side: PaneSide,
   folder: string,
   rowPath: string | null
 ): string {
-  return side === "git" ? folder : (rowPath ?? folder);
+  return isFolderBoundSide(side) ? folder : (rowPath ?? folder);
 }
