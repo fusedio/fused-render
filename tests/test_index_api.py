@@ -1151,13 +1151,19 @@ def test_a_rules_edit_rescans_every_stale_root_not_just_the_first(home, tmp_path
     cfg = load_config()
     cfg.roots = [str(a), str(b)]
     index_router.save_config(cfg)
-    index_router.save_applied_ignore(cfg, str(a))
-    index_router.save_applied_ignore(cfg, str(b))
+    # `save_applied_ignore` trusts its `root` verbatim (only `runner.start`
+    # canonicalizes before calling it in production) — a raw native-separator
+    # literal here would file the fingerprint under a key the route's
+    # `scan_roots`-keyed staleness check can never find, reading as "already
+    # reconciled" instead of stale.
+    ca, cb = runner.canonical_root(str(a)), runner.canonical_root(str(b))
+    index_router.save_applied_ignore(cfg, ca)
+    index_router.save_applied_ignore(cfg, cb)
     body = _client(tmp_path).post(
         "/api/index/config", json={"ignore": ["node_modules", "target"]},
         headers={"X-Fused": "1"}).json()
     assert body["needs_rescan"] is True
-    assert started == [str(a), str(b)]
+    assert started == [ca, cb]
     assert body["rescan_run_ids"] == ["r1", "r2"]
 
 
@@ -1224,8 +1230,10 @@ def test_the_freshness_check_defers_before_it_stamps_the_check_clock(
     index_router._run_freshness_check(str(src))
     assert events == [("waited", index_router.FRESHNESS_DELAY_S, {}),
                       ("checked", str(src))]
-    # ...and the stamp did land, on the far side of the wait.
-    assert str(src) in index_router._freshness_checked
+    # ...and the stamp did land, on the far side of the wait. Stamped under
+    # `enclosing_root`'s canonical match, not the raw `path` the check was
+    # called with (that raw form is what `note_folder_opened` sees above).
+    assert runner.canonical_root(str(src)) in index_router._freshness_checked
 
 
 def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
@@ -1248,13 +1256,17 @@ def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
     # Under no configured root at all.
     index_router._run_freshness_check(str(tmp_path.parent))
     assert waits == []
-    # Under a root that was checked moments ago.
-    index_router._freshness_checked[str(src)] = time.time()
+    # Under a root that was checked moments ago. `_freshness_checked` is
+    # keyed on `enclosing_root`'s canonical match, not the raw path the check
+    # is called with — seeding it under the raw literal would always miss and
+    # every check would read as newly-due.
+    canon_src = runner.canonical_root(str(src))
+    index_router._freshness_checked[canon_src] = time.time()
     index_router._run_freshness_check(str(src))
     assert waits == []
     # ...and the wait IS paid once the root is genuinely due, so the two
     # assertions above are about due-ness and not about a wait that never runs.
-    index_router._freshness_checked[str(src)] -= index_router.FRESHNESS_CHECK_S + 1
+    index_router._freshness_checked[canon_src] -= index_router.FRESHNESS_CHECK_S + 1
     index_router._run_freshness_check(str(src))
     assert waits == [index_router.FRESHNESS_DELAY_S]
 
