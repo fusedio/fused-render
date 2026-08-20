@@ -43,6 +43,15 @@ TRANSCRIBE = "transcribe"
 #: because the page is usually correct and simply resolved to a runner it was
 #: not written for — which since D302 is a choice its user made on the Engines
 #: tab, and one they can unmake there.
+#:
+#: **Keyed by CODE, so a HARDWARE VARIANT is a separate key.** The per-hardware
+#: torch rows (`transformers-text-cuda`, `diffusers-image-rocm`, …) need no entry
+#: and have none: they answer exactly what their CPU sibling answers, which for
+#: the torch runners is every option here, and the CPU rows are absent too. But
+#: the day a runner that DOES refuse something gains a CUDA or ROCm variant, the
+#: variant needs its own entry — an unknown code refuses nothing (see
+#: `unsupported_or_raise`), so the failure would be an accepted-and-ignored
+#: option, which is the outcome this module exists to make impossible.
 UNSUPPORTED = {
     "parakeet-mlx": {
         "task": (

@@ -210,8 +210,9 @@ class Worker:
     resident_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
-    #: whether the runner's torch was built to use it, and on Windows those
-    #: differ by default (the PyPI wheel is CPU-only). Same argument AI-8 makes
+    #: whether the runner's torch was built to use it, and since D381 those
+    #: differ BY DEFAULT everywhere: the default torch rows pin the `whl/cpu`
+    #: build and the accelerated ones are opt-in. Same argument AI-8 makes
     #: about resident bytes: only the process holding the weights knows.
     device: str = ""
     loaded_at: float | None = None
@@ -445,7 +446,7 @@ def _child_env(token: str) -> dict:
     "Failed to import encodings module" before running a line. The origin is
     passed through so the worker can report its own download progress.
 
-    **No Hub token is placed here, deliberately** (D381). A worker imports
+    **No Hub token is placed here, deliberately** (D384). A worker imports
     `huggingface_hub` and therefore finds the machine's token exactly where every
     other hf caller finds it — hf's own store, written by the Preferences login
     button (routers/hf_auth.py) — or an `HF_TOKEN` this process already inherited

@@ -841,7 +841,7 @@ export interface CallsPrefs {
   retention_forced_by: string | null;
 }
 
-// -- Hugging Face sign-in (server/routers/hf_auth.py; D381) -------------------
+// -- Hugging Face sign-in (server/routers/hf_auth.py; D384) -------------------
 
 // No token ever crosses this boundary in either direction. The button starts
 // huggingface_hub's own device-code login, hf stores what comes back, and this
@@ -2442,7 +2442,7 @@ export interface AiCatalogModel {
 export interface AiCatalogCapability {
   capability: string;
   runner: string | null;
-  /** The backend in words — "MLX LM (Apple Silicon)", "Transformers (PyTorch)".
+  /** The backend in words — "MLX LM (Apple Silicon)", "Transformers (CUDA)".
    *  One capability can have more than one runner (text generation has two
    *  since D293), so which one this machine resolved is worth naming. */
   runnerLabel: string | null;
@@ -2451,7 +2451,7 @@ export interface AiCatalogCapability {
    *  suggestions belong to, not which backend to pick. */
   runnerShortLabel: string | null;
   /** What using that backend is LIKE, when there is something worth saying —
-   *  the CPU-speed warning for PyTorch. A standing fact about the runner, not a
+   *  the CPU-speed warning on the CPU torch rows. A standing fact about the runner, not a
    *  claim about this machine: the device a model actually got is on the loaded
    *  card, and is not knowable until one has run. */
   runnerNote: string | null;

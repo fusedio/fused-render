@@ -421,7 +421,7 @@ def create_app(start_dir: str) -> FastAPI:
     # my disk" and "what is on the network" fail differently and share nothing
     # but the join.
     app.include_router(hub_models_router)
-    # Signing this machine in to the Hub (routers/hf_auth.py, D381). The app
+    # Signing this machine in to the Hub (routers/hf_auth.py, D384). The app
     # stores no token: the button drives huggingface_hub's own browser login and
     # hf persists what comes back, so this router holds a device flow and
     # nothing else. The read is unguarded and carries no credential — not even

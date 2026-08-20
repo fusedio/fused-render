@@ -111,9 +111,11 @@ Any `.html` file can call it and bind the result to the URL:
   Hugging Face repo id as `model` (`"Qwen/Qwen3-4B-Instruct-2507"`) and the same
   call runs a model **locally** instead — the slash is what tells them apart.
   Local chat works on every supported desktop platform: MLX is preferred on
-  Apple Silicon with PyTorch as its fallback, while Windows and Linux use
-  PyTorch directly. The AI Models page suggests models that suit whichever
-  backend your machine got.
+  Apple Silicon, and everywhere else the default is a small CPU-only PyTorch
+  build that runs on any machine — CUDA and ROCm builds exist and are one radio
+  away on the AI Models page's Engines tab, offered only where the app can see a
+  matching GPU. The AI Models page suggests models that suit whichever backend
+  is serving you.
   Local calls also take `history` (prior `{role, content}` turns, for a
   conversation rather than one question) and can be stopped mid-answer with
   `fused.ai.cancel()`.

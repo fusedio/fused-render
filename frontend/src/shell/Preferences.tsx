@@ -207,7 +207,7 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
-// Signing in to Hugging Face (server/routers/hf_auth.py, D381).
+// Signing in to Hugging Face (server/routers/hf_auth.py, D384).
 //
 // **No token passes through this component in either direction.** The button
 // starts huggingface_hub's own device-code login; the user authorizes on
