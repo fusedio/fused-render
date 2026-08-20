@@ -305,6 +305,25 @@ def test_the_session_picker_is_named_with_words_not_with_machinery(
     assert _get(client)[0]["name"] == records.PROSE
 
 
+def test_a_session_whose_only_message_was_annotations_is_named_by_them(
+        client, projects_dir, state_dir, tmp_path):
+    """Annotations have needed no message since the "apply the comments"
+    prefill was deleted, so the strip legitimately leaves nothing and this row
+    went nameless — while the words the user wrote sat in the pins' `content`.
+    Same fallback as the Tasks list (`tasks_store.ann_notes`), for the same
+    reason the stripper is shared: the two surfaces may not disagree about what
+    a session is called."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write(projects_dir, "proj", "s1", [
+        {"cwd": str(proj),
+         **_user(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                                  records.ANNOTATION_NOTED),
+                 "2026-08-16T08:00:00Z")},
+    ], mtime=STALE)
+    assert _get(client)[0]["name"] == records.ANNOTATION_NOTE
+
+
 def test_the_picker_reads_past_machinery_and_past_a_subagents_brief(
         client, projects_dir, state_dir, tmp_path):
     """Its sibling in tasks_store skips `isMeta`; this one skipped neither that

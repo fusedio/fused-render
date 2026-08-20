@@ -357,9 +357,14 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         # Stripped, and an empty remainder keeps the scan going
                         # to the next user record rather than settling for a
-                        # nameless row — see tasks_store.strip_machinery.
-                        prompt = tasks_store.strip_machinery(
-                            _first_text(msg.get("content")))
+                        # nameless row — see tasks_store.strip_machinery. The
+                        # notes on the annotations are the fallback (and the
+                        # same one the Tasks list takes): since an annotation
+                        # send needs no message, they can be the only words in
+                        # the record a human wrote.
+                        raw = _first_text(msg.get("content"))
+                        prompt = (tasks_store.strip_machinery(raw)
+                                  or tasks_store.ann_notes(raw))
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:

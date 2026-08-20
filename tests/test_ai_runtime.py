@@ -1955,7 +1955,7 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
-# -- a worker's environment carries no Hub token of our making (D394) ------------
+# -- a worker's environment carries no Hub token of our making (D396) ------------
 
 
 def test_an_inherited_hub_token_is_passed_through_untouched(monkeypatch, tmp_path):

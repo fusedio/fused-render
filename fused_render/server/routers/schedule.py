@@ -188,7 +188,13 @@ def api_schedule_create(body: dict = Body(...),
             repeats=repeats, rule=rule,
             title=body.get("title"), description=body.get("description"),
             new_task_each_run=body.get("new_task_each_run"),
-            session_learned=body.get("session_learned"))
+            session_learned=body.get("session_learned"),
+            # THE ONE ENDPOINT ALLOWED TO MAKE A FOLDER. The New task form lets
+            # you name a folder that does not exist yet — it shows the path as a
+            # new folder while you type it — and this is where that promise is
+            # kept: one missing leaf under an existing parent is created, two
+            # missing levels are still a 400. See `schedule.create`.
+            create_target=True)
     except ValueError as exc:
         return _error(str(exc), status=400)
 

@@ -1,4 +1,4 @@
-"""Signing this machine in to the Hugging Face Hub (/api/hf/*, D394).
+"""Signing this machine in to the Hugging Face Hub (/api/hf/*, D396).
 
 **The Hub is never called.** `request_device_code` and `poll_device_token` are
 replaced per test, because what is under test is what this app DOES with a
@@ -505,7 +505,7 @@ def test_no_token_is_stored_by_this_app_or_returned_to_the_page(client, monkeypa
     for route in ("/api/hf/auth", "/api/prefs"):
         assert "hf_super_secret" not in client.get(route).text
     # ...and not in this app's own state, which is the claim that matters: the
-    # token pref this replaced (D394) lived exactly there.
+    # token pref this replaced (D396) lived exactly there.
     render_home = tmp_path / "render-home"
     for path in render_home.rglob("*") if render_home.exists() else []:
         if path.is_file():

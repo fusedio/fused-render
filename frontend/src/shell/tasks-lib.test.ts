@@ -67,6 +67,7 @@ import {
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  dayPill,
   popoverPill,
   parseLaneChoices,
   parseListMemory,
@@ -6375,12 +6376,113 @@ describe("isRunningIn", () => {
 });
 
 // ---- the popover header's pill --------------------------------------------------
-// Akshil, 2026-08-19: a one-off's pill is its task; a REPEATING task's pill is
-// the clicked OCCURRENCE — In Progress while it works, Upcoming for a future or
-// projected day, a past day's own outcome otherwise. And never dashed: solid in
+// Akshil, 2026-08-19 / 2026-08-20: a one-off's pill is its task; a REPEATING
+// task's pill is the clicked DAY, rolled up — In Progress while that day works,
+// Upcoming while it is ahead or still owes runs, and its own outcome (any
+// failure -> Failed, else Done) once it is finished. And never dashed: solid in
 // every state, because the pill is a word about status, not a drawing of a day.
+describe("dayPill", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const day = new Date("2026-08-15T00:00:00");
+  const ran = (iso: string, over: Partial<TaskMessage> = {}) =>
+    msg({
+      message_id: `MSG-${iso}`, at: at(iso), ran_at: at(iso),
+      state: "sent", turn: "done", ...over,
+    });
+  const promise = (iso: string) =>
+    msg({ message_id: `GHOST-${iso}`, at: at(iso), ran_at: 0, state: "pending" });
+
+  it("a day that is OVER and went clean is Done", () => {
+    const out = dayPill(
+      [ran("2026-08-15T09:00:00"), ran("2026-08-15T23:00:00")],
+      day,
+      new Date("2026-08-17T08:00:00"),
+      false,
+    );
+    expect(out).toMatchObject({ label: "Done", column: "done", failed: false });
+  });
+
+  it("one broken run makes the whole past day Failed, wherever it sits", () => {
+    // Buried under clean runs on either side: a failure is the thing you have
+    // to see, and green siblings must not hide it.
+    const rows = [
+      ran("2026-08-15T09:00:00"),
+      ran("2026-08-15T14:00:00", { state: "error" }),
+      ran("2026-08-15T20:00:00"),
+    ];
+    const now = new Date("2026-08-17T08:00:00");
+    expect(dayPill(rows, day, now, false).label).toBe("Failed");
+    // Order of the hand-over must not matter — this is a rollup, not a "newest".
+    expect(dayPill([...rows].reverse(), day, now, false).label).toBe("Failed");
+  });
+
+  it("a day still AHEAD is Upcoming, whatever it holds", () => {
+    const now = new Date("2026-08-13T12:00:00");
+    expect(dayPill([promise("2026-08-15T09:00:00")], day, now, false).label).toBe("Upcoming");
+    expect(dayPill([], day, now, false).label).toBe("Upcoming");
+  });
+
+  it("a run in flight beats every rollup", () => {
+    const now = new Date("2026-08-15T10:30:00");
+    const rows = [ran("2026-08-15T09:00:00", { state: "error" })];
+    // via the caller's isRunningIn reading of THIS day...
+    expect(dayPill(rows, day, now, true).label).toBe("In Progress");
+    // ...and via a row that is mid-send on its own account.
+    const sending = msg({
+      message_id: "M9", at: at("2026-08-15T10:00:00"), state: "sending",
+    });
+    expect(dayPill([...rows, sending], day, now, false).label).toBe("In Progress");
+  });
+
+  it("TODAY mid-day is Upcoming — some runs done, more still owed", () => {
+    // THE BUG, from the other side (Akshil, 2026-08-20): this used to read the
+    // NEWEST row, which on today is tonight's promise, so a day whose runs had
+    // already happened still said Upcoming. It says Upcoming here for the right
+    // reason — the day is not finished — and stops the moment the last slot is
+    // behind us (the case below).
+    const rows = [
+      ran("2026-08-15T09:00:00"),
+      ran("2026-08-15T10:00:00"),
+      promise("2026-08-15T11:00:00"),
+      promise("2026-08-15T23:00:00"),
+    ];
+    expect(dayPill(rows, day, new Date("2026-08-15T10:30:00"), false).label).toBe("Upcoming");
+  });
+
+  it("TODAY after its last slot settles into the day's outcome", () => {
+    const clean = [ran("2026-08-15T09:00:00"), ran("2026-08-15T23:00:00")];
+    expect(dayPill(clean, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Done");
+    const broke = [ran("2026-08-15T09:00:00", { state: "error" }), ran("2026-08-15T23:00:00")];
+    expect(dayPill(broke, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Failed");
+  });
+
+  it("a past day whose slots never ran is Archive, never Upcoming", () => {
+    // Past ghosts (`missed` + template_id) are the rows a closed app leaves
+    // behind. They are not outcomes, so neither rollup arm claims them — and
+    // calling the day Upcoming afterwards is the original bug in a new hat.
+    const skipped = msg({
+      message_id: "GHOST-2026-08-15T09:00:00", at: at("2026-08-15T09:00:00"),
+      ran_at: 0, state: "missed", template_id: "ENT-1",
+    });
+    expect(dayPill([skipped], day, new Date("2026-08-17T08:00:00"), false).label).toBe("Archive");
+  });
+
+  it("is solid in every state — a status is a word, not a drawing of a day", () => {
+    const now = new Date("2026-08-17T08:00:00");
+    for (const p of [
+      dayPill([promise("2026-08-15T09:00:00")], day, new Date("2026-08-13T00:00:00"), false),
+      dayPill([ran("2026-08-15T09:00:00", { state: "error" })], day, now, false),
+      dayPill([ran("2026-08-15T09:00:00")], day, now, true),
+    ]) {
+      expect(p.projected).toBe(false);
+    }
+  });
+});
+
 describe("popoverPill", () => {
   const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const day = new Date("2026-08-15T00:00:00");
+  const later = new Date("2026-08-17T08:00:00");
   const done = msg({
     message_id: "MSG-001", at: at("2026-08-15T09:00:00"),
     ran_at: at("2026-08-15T09:00:00"), state: "sent", turn: "done",
@@ -6389,50 +6491,28 @@ describe("popoverPill", () => {
     message_id: "MSG-002", at: at("2026-08-15T14:00:00"),
     ran_at: at("2026-08-15T14:00:00"), state: "error", turn: "done",
   });
-  const ghost = msg({
-    message_id: "GHOST-2026-08-20T09:00:00",
-    at: at("2026-08-20T09:00:00"), ran_at: 0, state: "pending",
-  });
 
   it("a ONE-OFF keeps saying what the List's row and the Board's card say", () => {
     const t = task({ status: "done", failed: false });
-    expect(popoverPill(t, false, false, false, t.messages)).toMatchObject({
+    expect(popoverPill(t, false, false, t.messages, day, later)).toMatchObject({
       label: "Done", column: "done",
     });
     // failed folds into the column, exactly as StatusIcon reads it...
     const f = task({ status: "done", failed: true });
-    expect(popoverPill(f, false, false, false, f.messages).label).toBe("Failed");
+    expect(popoverPill(f, false, false, f.messages, day, later).label).toBe("Failed");
     // ...and the day's contents cannot move a one-off's word: it IS its task.
-    expect(popoverPill(t, false, false, false, [broke]).label).toBe("Done");
+    expect(popoverPill(t, false, false, [broke], day, later).label).toBe("Done");
   });
 
-  it("a REPEATING task answers for the clicked day, not for the rule", () => {
+  it("a REPEATING task hands the whole question to dayPill", () => {
     // The rule's task-level column is upcoming — the next run always is — which
     // is exactly why the task-level word was useless on a grid about days.
     const rule = task({ status: "upcoming", messages: [done, broke] });
-    // A past day whose NEWEST real run broke: Failed, matching the top row
-    // below — order of the hand-over must not matter.
-    expect(popoverPill(rule, true, false, false, [done, broke]).label).toBe("Failed");
-    expect(popoverPill(rule, true, false, false, [broke, done]).label).toBe("Failed");
-    // A day that ended clean: Done.
-    expect(popoverPill(rule, true, false, false, [done]).label).toBe("Done");
-    // A projected day is cron arithmetic: Upcoming — and so is a day holding
-    // nothing but ghosts, whichever of the two flags arrives first.
-    expect(popoverPill(rule, true, true, false, [ghost]).label).toBe("Upcoming");
-    expect(popoverPill(rule, true, false, false, [ghost]).label).toBe("Upcoming");
-    // Working right now beats everything: the pill is the shimmer's seat.
-    expect(popoverPill(rule, true, false, true, [done, broke]).label).toBe("In Progress");
-  });
-
-  it("is solid in every state — projected never reaches the pill", () => {
-    const rule = task({ status: "upcoming", messages: [done] });
-    for (const p of [
-      popoverPill(rule, true, true, false, [ghost]),
-      popoverPill(rule, true, false, false, [done, broke]),
-      popoverPill(task({ status: "upcoming" }), false, true, false, []),
-    ]) {
-      expect(p.projected).toBe(false);
-    }
+    expect(popoverPill(rule, true, false, [done, broke], day, later)).toEqual(
+      dayPill([done, broke], day, later, false),
+    );
+    expect(popoverPill(rule, true, false, [done, broke], day, later).label).toBe("Failed");
+    expect(popoverPill(rule, true, true, [done], day, later).label).toBe("In Progress");
   });
 
   it("is what the popover actually renders, shimmer seat and all", () => {
@@ -6443,11 +6523,16 @@ describe("popoverPill", () => {
     // whose run was live somewhere else. One-offs keep the task-level fact.
     expect(CAL).toContain("const liveToday = isRunningIn(task, chip.messages);");
     expect(CAL).toContain("const pillLive = recurring ? liveToday : liveNow;");
-    // The pill comes from this function, over the day's own rows...
-    expect(CAL).toContain("popoverPill(task, recurring, chip.projected, pillLive, today)");
+    // The pill comes from this function, over the day's own rows, and it is
+    // told WHICH day was clicked and WHEN now is — the two facts the day
+    // rollup turns on, and the two the newest-row reading did without.
+    expect(CAL).toContain(
+      "popoverPill(task, recurring, pillLive, today, chip.time, new Date(nowSec * 1000))",
+    );
     // ...the running day's pill carries the shimmer class...
     expect(CAL).toContain('pillLive ? " is-running" : ""');
-    // ...and the dashes can no longer reach it.
+    // ...and neither the dashes nor the chip's projected flag can reach it.
     expect(CAL).not.toContain('pill.projected ? " is-projected"');
+    expect(CAL).not.toContain("popoverPill(task, recurring, chip.projected");
   });
 });

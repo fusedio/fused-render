@@ -363,7 +363,7 @@ html.side-reopening iframe {
    `position: relative` anchors the seam below. */
 .preview-side {
   flex: 0 0 auto;
-  min-width: 280px;
+  min-width: 380px;
   min-height: 0;
   display: flex;
   flex-direction: column;
