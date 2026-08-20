@@ -28,6 +28,19 @@
 // app failing to load, a zero-pixel frame — resolves to undefined, never a
 // throw: the caller exports WITHOUT a preview, which is exactly what the
 // export did before this existed.
+//
+// ORDER IS LOAD-BEARING: the prompt goes up FIRST, before the stage is mounted
+// and before anything is awaited. `getDisplayMedia` requires transient user
+// activation, which the click that reached here is the only source of and which
+// Chrome expires ~5s later — so waiting for a stage iframe to load (up to 10s)
+// and then settle (1.5s) before asking would spend the activation on the wait
+// and lose the prompt for every app slower than a beat. Same lesson the
+// annotation shots already carry: "the click that armed the mode is the user
+// activation getDisplayMedia requires, where a later capture may have none"
+// (templates/claude/template.html, annXOStreamGet's caller). A tab-capture
+// stream is CONTINUOUS, so grabbing a frame long after the stream opened costs
+// nothing — the stage is mounted and settled against a stream already running,
+// and the frame we photograph is the one on screen at grab time.
 import { downloadAppFile } from "./api";
 import { withNoFocus } from "./frame-focus";
 import { withPreviewFlag } from "./router";
@@ -65,8 +78,18 @@ function shotUrl(entryHtml: string): string {
 // context menu): capture only when there is something to gain — a renderable
 // page and no authored preview.png — then the ordinary download. A capture
 // that comes back undefined (unsupported, dismissed, blank) exports plain.
-// `captureEl` is the card's thumb element, when the caller has one: the
-// no-flash crop source above.
+//
+// `captureEl` is the no-flash crop source above, and the CALLER'S CONTRACT on
+// it is narrow: an element whose pixels ARE the app *right now*. Not "the box
+// the app will render in" — a card thumb whose live iframe has not loaded is an
+// empty grey box, and cropping that bakes the empty box into the artifact as
+// its permanent thumbnail (a valid PNG, so nothing downstream can catch it).
+// The /apps grid admits only two preview iframes at a time
+// (preview-start.createPreviewStartQueue(2)), so "mounted but not painted" is
+// the COMMON state of a card, not a rare one. A caller that cannot promise
+// painted pixels passes nothing and gets the stage, which is the whole reason
+// the stage exists. `cropRect` can only check geometry, so it cannot enforce
+// this — the promise is made where the state lives.
 export async function exportAppFile(
   app: ExportableApp,
   captureEl?: Element | null,
@@ -79,7 +102,9 @@ export async function exportAppFile(
 }
 
 // Whether `el`'s box is fully inside the viewport and big enough that a crop
-// of it is a picture of the app rather than a sliver of one.
+// of it is a picture of the app rather than a sliver of one. GEOMETRY ONLY —
+// whether the element has actually painted the app is the caller's promise
+// (see exportAppFile), because nothing in a bounding rect can answer it.
 function cropRect(el: Element | null | undefined): DOMRect | null {
   if (!el) return null;
   const r = el.getBoundingClientRect();
@@ -98,8 +123,27 @@ export async function captureAppPreview(
   let stage: HTMLDivElement | undefined;
   let stream: MediaStream | undefined;
   try {
-    let rectOf: () => DOMRect;
+    // Which source we photograph is decided BEFORE the prompt and with nothing
+    // awaited in between — see the ordering note in the module comment. Inside
+    // the try like everything else, so this function keeps its one promise to
+    // the export path: resolve to undefined, never throw.
     const thumb = cropRect(captureEl);
+    // The prompt, on the click's own activation. Same current-tab hints as the
+    // annotation shots: preselect this tab, no switching, no monitors (ignored,
+    // not fatal, elsewhere).
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { displaySurface: "browser" },
+      audio: false,
+      // Chromium-only hints, absent from the lib.dom types — same cast the
+      // claude template's capture relies on.
+      ...({
+        preferCurrentTab: true,
+        selfBrowserSurface: "include",
+        surfaceSwitching: "exclude",
+        monitorTypeSurfaces: "exclude",
+      } as object),
+    });
+    let rectOf: () => DOMRect;
     if (thumb) {
       // Re-read at grab time: the share prompt scrolls nothing, but cheap
       // insurance against layout shifting while it was up.
@@ -107,6 +151,8 @@ export async function captureAppPreview(
     } else {
       // No usable thumb on screen — the full-viewport stage: scrim + the
       // app's own page, visible because tab capture photographs the tab.
+      // Mounted only now, AFTER the prompt resolved: a dismissed prompt then
+      // costs no flash at all, and the scrim never sits under browser UI.
       stage = document.createElement("div");
       stage.style.cssText =
         "position:fixed;inset:0;z-index:2147483000;background:#fff;";
@@ -127,20 +173,6 @@ export async function captureAppPreview(
       const s = stage;
       rectOf = () => s.getBoundingClientRect();
     }
-    // The prompt. Same current-tab hints as the annotation shots: preselect
-    // this tab, no switching, no monitors (ignored, not fatal, elsewhere).
-    stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { displaySurface: "browser" },
-      audio: false,
-      // Chromium-only hints, absent from the lib.dom types — same cast the
-      // claude template's capture relies on.
-      ...({
-        preferCurrentTab: true,
-        selfBrowserSurface: "include",
-        surfaceSwitching: "exclude",
-        monitorTypeSurfaces: "exclude",
-      } as object),
-    });
     const video = document.createElement("video");
     video.muted = true;
     video.srcObject = stream;

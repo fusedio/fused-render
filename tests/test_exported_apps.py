@@ -293,6 +293,43 @@ def test_post_export_carries_the_capture_into_the_download(client, tmp_path):
                        data={"path": str(a)}).status_code == 403
 
 
+def test_an_over_cap_capture_is_dropped_and_the_export_still_ships(
+        client, tmp_path, monkeypatch):
+    """The browser side promises that EVERY capture failure exports plain
+    (appShot.ts), and a screenshot that came out too big is a capture failure —
+    so the route drops it. Raising here instead (which `export_app_file` does,
+    correctly, for a caller that meant to supply a still) would spend a failed
+    screen grab on the whole download."""
+    monkeypatch.setattr(appfile, "MAX_PREVIEW_BYTES", len(PNG))
+    a = _app_folder(tmp_path, "big")
+    r = client.post("/api/appfile/export", data={"path": str(a)},
+                    files={"preview": ("preview.png", PNG + b"over", "image/png")},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200
+    out = tmp_path / "big.fused"
+    out.write_bytes(r.content)
+    assert appfile.read_preview(str(out)) is None
+    # Exactly AT the cap still ships — the route reads one byte past it.
+    r = client.post("/api/appfile/export", data={"path": str(a)},
+                    files={"preview": ("preview.png", PNG, "image/png")},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200
+    out2 = tmp_path / "atcap.fused"
+    out2.write_bytes(r.content)
+    assert appfile.read_preview(str(out2)) == PNG
+
+
+def test_a_non_png_capture_is_still_an_error_not_a_silent_drop(client, tmp_path):
+    """The other half of the split: `canvas.toBlob(…, "image/png")` cannot
+    produce a non-PNG, so those bytes are a client bug worth reporting rather
+    than a failed grab to swallow."""
+    a = _app_folder(tmp_path, "gif")
+    r = client.post("/api/appfile/export", data={"path": str(a)},
+                    files={"preview": ("preview.png", b"GIF89a nope", "image/png")},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 400 and "PNG" in r.json()["error"]
+
+
 def test_preview_open_reuses_but_never_extracts_or_records(client, tmp_path,
                                                            monkeypatch):
     monkeypatch.setattr(appfile, "appfiles_root",

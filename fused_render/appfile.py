@@ -155,7 +155,11 @@ def export_app_file(app_dir: str, out_path: str,
     it becomes the payload's ``preview.png`` ONLY when the folder has no
     authored one — an author's chosen still always wins over a capture. It
     must be a real PNG under the preview cap; anything else raises rather
-    than baking a broken thumbnail into the artifact forever.
+    than baking a broken thumbnail into the artifact forever. That strictness
+    is for a caller that MEANT to supply a still: the export ROUTE, whose
+    bytes come off a best-effort screen grab, drops an over-cap capture before
+    it gets here, because a failed grab must cost the thumbnail and not the
+    export (routers/appfile.api_appfile_export_with_preview).
     """
     app_dir = os.path.abspath(app_dir)
     if not os.path.isdir(app_dir):

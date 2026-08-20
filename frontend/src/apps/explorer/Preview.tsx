@@ -284,6 +284,14 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // pointless share prompt isn't raised for a capture the server would
       // discard anyway (stat failure reads as "no authored still" — worst
       // case is that redundant prompt, never a lost export).
+      //
+      // ONE cheap local probe, and it must stay that: appShot raises the share
+      // prompt on this click's transient user activation, which Chrome expires
+      // a few seconds out, so anything slow awaited here spends the activation
+      // and loses the prompt. `.is-shown` satisfies appShot's crop-source
+      // contract (pixels that ARE the app, not a box it may fill): the class
+      // rides `shown`, which the frame swap only sets once that frame paints —
+      // the same guarantee `data-fused-annotate-target` below relies on.
       const authored = await statPath(dir + "/preview.png").then(
         (s) => !s.is_dir,
         () => false,

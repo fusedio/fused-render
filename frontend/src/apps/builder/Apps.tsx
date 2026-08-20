@@ -137,7 +137,14 @@ export default function Apps({ config }: { config: Config }) {
     e.preventDefault();
     // The card's thumb rides along as the export entry's capture crop source
     // (appShot, D396) — currentTarget is the card anchor the thumb sits in.
-    const thumb = (e.currentTarget as Element).querySelector(".app-pcard-thumb");
+    // `[data-capture-ready]` is the card's own statement that the thumb has
+    // PAINTED the app (AppPreviewCard sets it on the body iframe's load): only
+    // two previews start at a time, so an unpainted thumb is the common case,
+    // and cropping one would bake an empty box into the .fused as its permanent
+    // thumbnail. No match → no crop source → appShot stages the app instead.
+    const thumb = (e.currentTarget as Element).querySelector(
+      ".app-pcard-thumb[data-capture-ready]",
+    );
     setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app, thumb) });
   };
 

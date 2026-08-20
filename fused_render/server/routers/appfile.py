@@ -87,7 +87,18 @@ async def api_appfile_export_with_preview(
     optional caller-captured screenshot that becomes the payload's
     ``preview.png`` when the folder has no authored one. A POST because it
     carries a body; X-Fused-guarded because — unlike the GET — its caller is
-    always our own fetch, never bare browser navigation."""
+    always our own fetch, never bare browser navigation.
+
+    An OVER-CAP capture is DROPPED here rather than raised: the browser-side
+    contract is that every capture failure exports plain (appShot.ts), and a
+    screenshot that came out too big is a capture failure — losing the
+    thumbnail is the cost, losing the export is not. `export_app_file` keeps
+    its strict answer for a caller that passes a preview deliberately; this
+    route, which knows its bytes came off a best-effort screen grab, screens
+    the size first. Read one byte past the cap so "exactly at the cap" ships.
+    A non-PNG still raises: `canvas.toBlob(…, "image/png")` cannot produce one,
+    so those bytes are a client bug worth reporting, not a failed grab.
+    """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -96,7 +107,7 @@ async def api_appfile_export_with_preview(
     preview_bytes: bytes | None = None
     if preview is not None:
         preview_bytes = await preview.read(appfile.MAX_PREVIEW_BYTES + 1)
-        if not preview_bytes:
+        if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
             preview_bytes = None
     tmp_dir = tempfile.mkdtemp(prefix="fused-appfile-export-")
     file_name = appfile.default_file_name(path)

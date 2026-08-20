@@ -107,6 +107,17 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
+  // The card BODY's live iframe has loaded — i.e. the thumb is a picture of the
+  // app and not an empty box. Separate state from `liveReady`, which is the
+  // hover crossfade's and is deliberately reset on every enter AND leave: the
+  // export chip is only reachable while hovering, so gating a capture on
+  // `liveReady` would gate it on a flag the hover just cleared. One-way for the
+  // life of the mount, which is exact — the body iframe is never torn down and
+  // re-created for the same card, and cards are keyed by path, so a different
+  // app is a different mount. It CAN stay true after the iframe unmounts by
+  // scrolling far out of `nearViewport`, and that is harmless: appShot's
+  // cropRect refuses an off-viewport element anyway.
+  const [bodyLive, setBodyLive] = useState(false);
   // What the live branch renders. An ordinary app live-renders its entry
   // page. An exported .fused card (kind "appfile") has no page to point
   // /render at — its live look is its own fusedapp view under `_preview=1`,
@@ -164,7 +175,20 @@ export function AppPreviewCard({
           {ago && <span className="app-pcard-ago">{ago}</span>}
         </span>
       </span>
-      <span className="app-pcard-thumb" aria-hidden="true" ref={thumbRef}>
+      {/* `data-capture-ready` marks the thumb as a picture of the APP — the
+          export capture's crop-source contract (appShot.exportAppFile). The
+          card's own chip below reads `bodyLive` directly; the context menu is
+          opened by Apps.tsx, which has no access to this component's state and
+          finds the element by this attribute instead. Same posture as the
+          preview pane's `data-fused-annotate-target`: one attribute naming the
+          element that is showing what the reader is looking at. Absent, not
+          "0", so the selector is a plain presence test. */}
+      <span
+        className="app-pcard-thumb"
+        aria-hidden="true"
+        ref={thumbRef}
+        data-capture-ready={bodyLive ? "" : undefined}
+      >
         {shotSrc && !shotFailed ? (
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
@@ -218,7 +242,13 @@ export function AppPreviewCard({
               tabIndex={-1}
               scrolling="no"
               title=""
-              onLoad={liveSettled}
+              // `bodyLive` as well as the queue's release: settling frees the
+              // NEXT card's start slot, which says nothing about whether this
+              // frame painted, and the export capture needs the latter.
+              onLoad={() => {
+                liveSettled();
+                setBodyLive(true);
+              }}
               onError={liveSettled}
             />
             {/* Shield: the preview is display-only — every pointer event lands
@@ -251,8 +281,13 @@ export function AppPreviewCard({
           // Also captures a tab screenshot into the file's preview.png when
           // the folder has no authored one (appShot, D396). The thumb element
           // rides along as the crop source: a card without a preview.png is
-          // already showing the live app there, so nothing has to flash.
-          exportAppFile(app, thumbRef.current).catch((err: Error) =>
+          // already showing the live app there, so nothing has to flash —
+          // but ONLY once that frame has loaded (`bodyLive`). Two card
+          // previews start at a time, so an unstarted card's thumb is an
+          // empty box, and cropping it would bake the empty box in as the
+          // artifact's permanent thumbnail. Offer nothing instead and
+          // appShot stages the app full-screen for the shot.
+          exportAppFile(app, bodyLive ? thumbRef.current : null).catch((err: Error) =>
             pushToast({
               msg: "Could not export " + app.name + ": " + err.message,
               tone: "error",

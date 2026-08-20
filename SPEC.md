@@ -7559,16 +7559,30 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
   chosen over DOM serialization because canvas/WebGL apps rasterize blank)
   when and only when the folder has no authored `preview.png`. The crop
-  source is the card's own thumbnail when it is on screen — a card without
-  a preview.png is already rendering the live app there, so nothing
-  navigates or flashes; the full-viewport stage is the fallback for a
-  missing/off-screen thumb. The share prompt itself cannot be silenced —
-  that is getDisplayMedia's contract. The
+  source is the card's own thumbnail when it is on screen AND HAS PAINTED
+  the app — a card without a preview.png renders the live app there, so
+  nothing navigates or flashes, but only two card previews start at a time
+  (`createPreviewStartQueue(2)`), so an unpainted thumb is the ordinary
+  state of a card and cropping one would bake an empty box in as the
+  artifact's permanent thumbnail. The card states paintedness on the thumb
+  (`data-capture-ready`, set on the body iframe's load) because the surface
+  that opens the context menu is not the one holding that state; the
+  full-viewport stage is the fallback for a missing, off-screen or unpainted
+  thumb. **The share prompt goes up FIRST**, before the stage is mounted and
+  before anything is awaited: `getDisplayMedia` spends the click's transient
+  user activation, which expires seconds later, so asking after a stage
+  iframe's load-and-settle wait would lose the prompt for every app slower
+  than a beat — and lose it indistinguishably from a dismissal. A tab-capture
+  stream is continuous, so the stage mounts and settles against a stream
+  already running. The prompt itself cannot be silenced — that is
+  getDisplayMedia's contract. The
   X-Fused `POST /api/appfile/export` variant writes it as
   `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
-  wins; every capture failure — unsupported, prompt dismissed, blank —
-  exports plain). An injected preview extracts as a real file in the app's
-  read-only extract dir like any other member.
+  wins; every capture failure — unsupported, prompt dismissed, blank,
+  over-cap — exports plain: the route drops a too-big screenshot rather than
+  failing the download, where `export_app_file` itself still raises for a
+  caller that meant to supply a still). An injected preview extracts as a
+  real file in the app's read-only extract dir like any other member.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
