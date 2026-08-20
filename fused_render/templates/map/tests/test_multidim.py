@@ -577,3 +577,37 @@ def test_bare_degree_units_still_read_as_geographic(eng, tmp_path):
         },
     ).to_netcdf(path, engine="h5netcdf")
     assert _describe(eng, path)["status"] == "ok"
+
+
+def test_signed_metadata_locators_keep_their_query(eng):
+    # Trimming the object name off the END of the whole locator ate the
+    # signature instead: every signed spelling has to be rebuilt around a
+    # shortened PATH, not string-sliced.
+    paths = _load("geo_paths", "geo_paths.py")
+    assert paths.zarr_store(
+        "/vsicurl/https://h/s.zarr/zarr.json?sig=abc"
+    ) == "/vsicurl/https://h/s.zarr?sig=abc"
+    assert paths.zarr_store("s3://b/s.zarr/.zmetadata?v=2") == "s3://b/s.zarr?v=2"
+    assert paths.zarr_store(
+        "https://h/s.zarr/zarr.json?sig=a#f"
+    ) == "https://h/s.zarr?sig=a#f"
+    assert paths.zarr_store("/vsicurl/https://h/s.zarr/zarr.json") == (
+        "/vsicurl/https://h/s.zarr"
+    )
+
+
+def test_a_grid_overhanging_180_is_not_rolled(eng, tmp_path):
+    # Only a 0-360 grid gets rolled. A -180..180 grid whose last cell
+    # overhangs the meridian also has max > 180, and rolling it scrambled the
+    # columns, which then read as a seam crossing.
+    path = tmp_path / "overhang.nc"
+    lon = np.linspace(-180, 180, 145)
+    lat = np.linspace(20, -20, 8)
+    xr.Dataset(
+        {"v": (("lat", "lon"), np.zeros((lat.size, lon.size), dtype="float32"))},
+        coords={"lat": lat, "lon": lon},
+    ).to_netcdf(path, engine="h5netcdf")
+    descriptor = _describe(eng, path)
+    assert descriptor["status"] == "ok", descriptor.get("message")
+    # Rolled, it would have started at -180 and stopped short of 180.
+    assert descriptor["bounds"][2] > 180 - 2.6

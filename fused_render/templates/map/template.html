@@ -668,10 +668,12 @@ const sourceArgs = target => ({
 // The one map_render argument block every describe path shares. A sel step
 // only takes the user's own contrast window along (touchedOnlyRescale) so an
 // untouched style picks up each slice's own 2–98% stretch from the new
-// descriptor.
+// descriptor. The test is `_rescaleTouched`, not `_touched`: the broad flag
+// is set by any style edit at all, so picking a new colormap once would have
+// pinned every later timestep to the window of the slice showing at the time.
 function renderArgs(L, { touchedOnlyRescale } = {}) {
   const s = L.style || {};
-  const sendRescale = s.rescale && (!touchedOnlyRescale || s._touched);
+  const sendRescale = s.rescale && (!touchedOnlyRescale || s._rescaleTouched);
   return {
     target: L.target,
     colormap: s.colormap || "viridis",
@@ -2055,7 +2057,10 @@ function rasterControls(body, L) {
       // Emptying one field restores that end of the automatic window; emptying
       // both drops back to fully automatic.
       s.rescale = (min == null && max == null) ? null : [min, max];
-      s._touched = true; restyleCog(L); renderStyleDock();
+      s._touched = true;
+      // The contrast window specifically, which a dim change must preserve.
+      s._rescaleTouched = s.rescale != null;
+      restyleCog(L); renderStyleDock();
     }));
     const note = document.createElement("div"); note.className = "stat";
     note.textContent = (single ? `${d.stats.bands || 1}-band source` : "RGB composite (bands 1, 2, 3)")

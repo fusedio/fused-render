@@ -617,7 +617,16 @@ class MultidimEngine:
                     "sidecar."
                 )
             da = da.rio.write_crs("EPSG:4326")
-        if da.rio.crs.is_geographic and float(da.x.max()) > 180:
+        # A 0-360 grid starts at or above zero. Testing only `max > 180`
+        # also caught a -180..180 grid whose last cell overhangs the meridian
+        # by half a step: rolling that one scrambles its columns, and the
+        # spacing check below then reports a seam crossing on a file that has
+        # none.
+        if (
+            da.rio.crs.is_geographic
+            and float(da.x.max()) > 180
+            and float(da.x.min()) >= 0
+        ):
             # In float64 whatever the axis dtype: rolling a float32 longitude
             # in its own precision leaves ~6e-5 of jitter, which the spacing
             # check below reads as a seam gap on any grid finer than 0.1deg.

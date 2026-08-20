@@ -153,21 +153,25 @@ def _is_zarr_metadata(target: str) -> bool:
 def zarr_store(source: str) -> str:
     """The store a metadata-object locator points at: its parent directory.
 
-    Trimming the tail off the whole locator would eat into a query string —
-    a signed URL ends in its signature, not in the object name — so a URL is
-    taken apart and put back together around the shortened path.
+    Trimming the name off the END of the whole locator eats into a query
+    string — a signed URL finishes with its signature, not with the object
+    name — so the locator is taken apart and rebuilt around the shortened
+    path. That applies to every signed spelling, not just ``https://``:
+    ``/vsicurl/`` and ``s3://`` carry the same tokens.
     """
     if is_http_url(source):
         parts = urlsplit(source)
         name = Path(parts.path).name.lower()
         if name not in {".zmetadata", "zarr.json"}:
             return source
-        parent = parts.path[: -(len(name) + 1)] or "/"
-        return urlunsplit(parts._replace(path=parent))
-    name = locator_name(source).lower()
-    if name in {".zmetadata", "zarr.json"}:
-        return source[: -(len(name) + 1)]
-    return source
+        return urlunsplit(
+            parts._replace(path=parts.path[: -(len(name) + 1)] or "/")
+        )
+    head, separator, query = source.partition("?")
+    name = Path(head.replace("\\", "/")).name.lower()
+    if name not in {".zmetadata", "zarr.json"}:
+        return source
+    return head[: -(len(name) + 1)] + separator + query
 
 
 def _base_home() -> Path:
