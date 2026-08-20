@@ -4667,6 +4667,13 @@ wanting "what has this file been through" wants §33.
       count, that id being the one handle that separates two unnamed chains. The
       full id stays on the heading's `title`, and on each row's, so a row read out
       of context can still say which "v2" it is.
+      - **A miss being ordinary is not licence to stop asking WHY one missed.**
+        The first two chains this panel ever showed for a real canvas both fell
+        back to "chat", and neither was from another folder: their sessions were
+        ANNOTATION-ONLY sends, whose preview stripped to "" — and `_cli_sessions`
+        drops a session with no preview, so the same "" had already taken both
+        chats out of "Recent chats" above. The fallback did its job and hid a
+        different bug behind a legitimate empty state (D395).
   - **The read declines BOTH of the reader's costs.** Enrichment reads session
     transcripts (5 MB+), so the panel takes the unenriched timeline — which is why
     it never claims a chain is complete (FH-3). The exact deltas are `difflib` per
@@ -4696,6 +4703,31 @@ wanting "what has this file been through" wants §33.
     files a checkpoint belongs to.
     The reader still returns its empty states as data rather than raising, which
     is what makes a sentence available to print.
+  - **The run ASKS for the checkpoints the panel reads, or there are none of
+    its own to read.** Claude Code's `fileHistoryEnabled` takes a separate
+    branch when `isInteractive()` is false, and every run this template spawns
+    is `-p` — so the store held only versions written by a TERMINAL claude in
+    that folder, and a file this chat had just edited four times printed "Claude
+    has no recorded versions of this file". A panel whose whole promise is
+    undoing what the agent just did could answer only for edits it did not make.
+    `_start`'s `spawn_env` therefore carries
+    `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING` (D394).
+    - **An env var, not a setting, and not a hook.** That non-interactive branch
+      consults only the two env vars — the `fileCheckpointingEnabled` config
+      governing the interactive case is never read — so `--settings` cannot
+      reach it. The CLI then writes the same `<session>/<key>@vN` layout the
+      reader already enumerates, which is what makes this a one-line spawn
+      change with no reader change, no numbering rule of our own, and none of
+      the write-into-the-user's-store questions a `PreToolUse` checkpointing
+      hook would have raised.
+    - **`setdefault`, so an explicit opt-out survives.** The value is coerced
+      (`1/true/yes/on`, everything else false), so a user's `=0` means off and
+      this template does not get to re-enable a store they turned off; their
+      `CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING` is ANDed into the same branch and
+      wins either way.
+    - **Still not a complete chain, and FH-3 is why that is stated rather than
+      fixed.** Only the edit TOOLS checkpoint: a `sed -i` from Bash moves the
+      file with nothing recorded, before this change and after it.
   - **A row expands to its diff and carries one action: "Go back to this
     snapshot".** A list that can only be looked at answers no question the user
     actually has. Clicking a row fetches `action="snapshot_plan"` (never cached
@@ -6555,6 +6587,56 @@ an AI Models page that could say what was on disk but not what was *running*.
   model as a chat model. **Nothing here has transcribed real audio under test**;
   AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
   API.
+- **AI-10h** **`words: true` times each WORD inside a segment — on MLX Whisper
+  only, and DECLINED rather than refused where an engine has none** (D392). A
+  segment is a sentence or several, so `{start, end, text}` cannot drive a
+  karaoke highlight or a click-a-word-to-seek player; `words` adds
+  `{start, end, word}` per word, in order, with the library's leading space kept
+  so a segment's text is its words concatenated. The capability is the model's
+  already: `mlx-whisper` ports OpenAI's cross-attention DTW aligner whole, and
+  the `mlx-community` conversions carry the CURATED `alignment_heads` inside
+  `weights.npz` — ten head indices for `small`, byte-identical to the blob
+  OpenAI ships — which is what makes the timings worth publishing rather than
+  the all-heads average the library would otherwise fall back to. **This is the
+  one option answered BEST-EFFORT instead of refused**, and the deliberate
+  exception to AI-10g. That rule exists because an ignored option is
+  undetectable — a page that asked for English and got French has nothing to
+  check — and `words` is not that: honouring it puts a list on the segment and
+  declining leaves the key off, so `segment.words || []` is the whole contract
+  and one page runs unchanged on every machine. Refusing would do the opposite of
+  what AI-10c is for, making a page work on a Mac and 400 on a CTranslate2 box.
+  The other two engines could carry it — faster-whisper for a mapping, since it
+  returns the same DTW-aligned words; Parakeet for more, its native times being
+  per SUBWORD on an 80ms grid. **`task:
+  "translate"` carries no words on any engine**: word timings are positions in
+  the audio and a translation's words were never spoken in it, so there is
+  nothing to align them to, and the library's warn-and-return-anyway reaches a
+  page as a list indistinguishable from a usable one. **Timings are
+  original-recording positions like a segment's** (AI-10a), which is the real
+  work rather than the flag: each word travels the same packing inverse its
+  segment does, but as a SPAN (`vad.original_word_span`) rather than as two
+  independent endpoints. Packing only removes time, so a word's recording span
+  must never be LONGER than its packed one: a segment may straddle a join (real
+  speech on both sides of the removed silence), a word may not, and a word
+  mapped endpoint by endpoint across one came back stretched over the whole
+  dropped pause. A word is therefore placed in the single region holding its
+  packed midpoint and clamped into it, so a straddling word is SHORTER than it
+  was timed rather than a highlight parked in silence; a word merely touching a
+  join is unaffected. A word that inverts after mapping is CLAMPED into its
+  segment rather than dropped — the opposite of a segment, because a dropped
+  word breaks the words-are-the-text invariant a caller builds on. **Opt-in because it is not free**, unlike `diarize`: an extra forward pass
+  per decoded window, and it changes the decode itself — the library gates its
+  hallucination pruning on `word_timestamps`, so the same file can return a
+  different number of segments with the flag on. No per-word confidence is
+  published, though DTW has one, for AI-10c's reason. **`words` rides the
+  PROGRESSIVE transcript too**, and that took a second edit: `partial.Sink.add`
+  rebuilds each line key by key rather than copying the segment — deliberately,
+  so an engine's logprobs and temperatures never reach a file a page reads — so a
+  public field is dropped unless it is named there. It was, and the symptom was
+  `onSegment` handing pages timing-less segments while the final `.json` had
+  them, permanently: the reader counts DELIVERED LINES, so a segment sent live
+  without its words is never re-sent with them. Anything added to a segment that
+  a caller is meant to see has to be named in `partial.py` as well.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).

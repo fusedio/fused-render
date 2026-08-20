@@ -189,6 +189,60 @@ def test_an_annotation_send_is_named_with_the_note_the_user_wrote(agent, target)
     assert agent._sessions(file)["sessions"][0]["preview"] == records.ANNOTATED_ASK
 
 
+def test_an_annotation_only_send_is_named_by_the_note_on_the_pin(agent, target):
+    """A send needs no prompt to carry annotations — `annPrefillComposer`'s own
+    comment says "the comments ARE the content, so an annotation-only send goes
+    out with an EMPTY message" — and every reader here was still built on the
+    assumption that words arrive as free text.
+
+    So a chat whose only message was a pin lost more than its title: a preview
+    of "" makes `_cli_sessions` DROP the session, so the chat disappeared from
+    "Recent chats" altogether, and its snapshot runbox could only call it "chat"
+    plus a short session id. Both from the same "". The words were in the record
+    the whole time, in the pin's `content`."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_NOTED), workdir),
+    ])
+    sessions = agent._sessions(file)["sessions"]
+    assert [s["id"] for s in sessions] == ["cli-1"]
+    assert sessions[0]["preview"] == records.ANNOTATION_NOTE
+
+
+def test_free_text_still_wins_over_the_notes_on_the_pins(agent, target):
+    """The pins are a FALLBACK. When the user both pinned and typed, the typed
+    words are the title — they are the thing they wrote to be read."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.ANNOTATION_NOTED,
+                               records.ANNOTATED_ASK), workdir),
+    ])
+    assert agent._sessions(file)["sessions"][0]["preview"] == \
+        records.ANNOTATED_ASK
+
+
+def test_several_pins_read_in_the_order_the_walkthrough_was_given(agent):
+    """`t` order is the order the user clicked, which is the order the notes
+    are meant to be read in — so they are joined, not sampled."""
+    preamble = records.ANNOTATION_NOTED.split("\n```json\n")[0]
+    two = preamble + "\n```json\n" + json.dumps(
+        [{"content": "first note"}, {"content": "then this one"}]) + "\n```"
+    assert agent._ann_notes(two) == "first note · then this one"
+
+
+def test_a_pin_with_no_note_names_nothing_and_the_scan_carries_on(agent, target):
+    """The empty answer still has its original job: a pin the user placed and
+    wrote nothing on is not a title, and neither is a bare screenshot."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.ANNOTATION), workdir),
+        _said("and now make it green", workdir),
+    ])
+    assert agent._sessions(file)["sessions"][0]["preview"] == \
+        "and now make it green"
+
+
 def test_a_wordless_send_is_skipped_like_any_other_nameless_record(agent, target):
     """The other direction: strip everything and nothing is left, so this row has
     no name and the scan carries on to the record that does."""
@@ -211,6 +265,7 @@ def test_a_wordless_send_is_skipped_like_any_other_nameless_record(agent, target
     records.LOCAL_COMMAND_STDOUT,
     records.BASH_ENVELOPE,
     records.ANNOTATION,
+    records.ANNOTATION_NOTED,
     "now ship it <system-reminder>be careful</system-reminder>",
     "<div class=\"card\">Order now</div> why does this render twice?",
     "",
@@ -223,6 +278,30 @@ def test_the_templates_stripper_and_the_servers_agree_exactly(agent, text):
     D253/D301 pin their other unavoidable duplicates: if one copy learns a tag,
     this fails until the other does."""
     assert agent._strip_machinery(text) == tasks_store.strip_machinery(text)
+
+
+@pytest.mark.parametrize("text", [
+    records.ANNOTATION_NOTED,
+    records.APP_STATE + "\n\n" + records.ANNOTATION_NOTED,
+    records.APP_STATE + "\n\n" + records.PANE_SHOT + "\n\n"
+    + records.ANNOTATION_NOTED,
+    records.ANNOTATION_NOTED + "\n\n" + records.ANNOTATED_ASK,
+    records.ANNOTATION,
+    records.APP_STATE,
+    records.PROSE,
+    "The user annotated 1 element…\n```json\nnot json at all\n```",
+    "The user annotated 1 element…\n```json\n{\"content\": \"an object\"}\n```",
+    "The user annotated 1 element…\n```json\n[\"a bare string\"]\n```",
+    "",
+])
+def test_the_two_annotation_readers_agree_exactly(agent, text):
+    """The THIRD copy of an annotation rule, pinned like the second: a template
+    may not import fused_render (D166), so `agent._ann_notes` and
+    `tasks_store.ann_notes` are hand-duplicated, and the family of functions
+    they belong to exists because four readers had stopped agreeing about
+    machinery. The malformed payloads are in the corpus because a title is not
+    worth an exception on either side."""
+    assert agent._ann_notes(text) == tasks_store.ann_notes(text)
 
 
 def test_the_two_copies_carry_the_same_tag_lists(agent):

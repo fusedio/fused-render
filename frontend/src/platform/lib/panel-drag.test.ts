@@ -8,7 +8,7 @@ import {
 } from "@platform/lib/panel-drag";
 
 // The two seams that read this module use different floors (the global sidebar's
-// 180, the preview column's 280) and sit on opposite edges of the window, so
+// 180, the preview column's 380) and sit on opposite edges of the window, so
 // every case below names its own numbers rather than importing either surface's
 // constants. What is being tested is the RULE, not one panel's arithmetic.
 const MIN = 180;
@@ -50,7 +50,7 @@ describe("resizeWidth — the seam of an OPEN panel", () => {
 describe("closeOverdrag", () => {
   it("is half the floor, so a wider panel resists further", () => {
     expect(closeOverdrag(180)).toBe(90); // the global sidebar
-    expect(closeOverdrag(280)).toBe(140); // the preview's companion column
+    expect(closeOverdrag(380)).toBe(190); // the preview's companion column
   });
 
   it("stays an integer on an odd floor", () => {

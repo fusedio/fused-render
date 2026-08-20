@@ -264,7 +264,7 @@ out.textContent = rec.text;
 for (const s of rec.segments) addCue(s.start, s.end, s.text);   // {start, end, text}
 ```
 
-Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `onProgress`, `onSegment`.
+Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `words`, `onProgress`, `onSegment`.
 
 Resolves with `{jobId, path, output, outputText, outputPartial, model, task, url, text, segments, language, duration, speakers, estimatedSpeakers}`.
 
@@ -297,7 +297,7 @@ const rec = await fused.ai.transcribe({
 ```
 
 - **Every segment, in order, exactly once** — including ones decoded before your first callback, and the last ones. Append on each call and you have the transcript; never de-duplicate or re-sort.
-- **Same shape as `rec.segments`** — `{start, end, text}`, plus `speaker` when diarizing. One rendering path for both.
+- **Same shape as `rec.segments`** — `{start, end, text}`, plus `speaker` when diarizing and `words` when asked for and available. One rendering path for both.
 - **It costs one extra request per poll, and only if you pass it** — the tail rides the tick `onProgress` was already paying for.
 - **Resolution is the engine's, not the callback's.** faster-whisper emits a segment at a time; the MLX runner finishes a whole decoded window (up to 30s) and emits its segments together — so callbacks arrive in the same bursts `job.done` jumps in.
 - `onSegment` is a live view, not the delivery mechanism: the file is. It stops when the promise does, and the last reads in flight are delivered *before* the rejection, so a `catch` that clears the transcript pane keeps it clear.
@@ -337,6 +337,28 @@ rec.estimatedSpeakers;              // 3 — only on a run that had to work it o
 - **Default `false` and additive**: a call without it is unchanged, and a transcript written without it has no `speaker` and no `speakers` at all. All three transcription engines run the same two models, so labels don't depend on which served you.
 - **It does not change what progress means.** `job.done`/`job.total` stay seconds of audio; diarization is a fast pre-pass with its own line on the row ("Finding speakers…") and an indeterminate bar.
 - **First use on a machine downloads ~33MB** (a speaker segmenter and a voice-embedding model), once, then works offline. Unlike the VAD these are *not* pre-fetched by a model Download.
+
+### Word timings: `words: true`
+
+A segment is a whole sentence or several, so `{start, end, text}` is too coarse for a karaoke highlight or a click-a-word-to-seek player. `words: true` times each word inside it.
+
+```js
+const rec = await fused.ai.transcribe({ path: "meeting.m4a", words: true });
+for (const s of rec.segments) {
+  for (const w of s.words || []) hi(w.start, w.end, w.word);   // {start, end, word}
+}
+```
+
+- **BEST-EFFORT, and the only option here that is.** Asking never fails. An engine that has no word timings just leaves `words` off its segments — so write **`s.words || []`** and one page works on every machine, instead of asking which engine it landed on before it asks for anything. This is deliberately unlike `task`/`language`/`initialPrompt`, which are **refused** when an engine cannot do them: an ignored `task` is undetectable, whereas a missing `words` key is right there on the segment.
+- **Only the MLX Whisper engine (Apple Silicon) produces them today.** CTranslate2 and Parakeet both *could* — neither is wired — so treat "no `words`" as normal, not as an error to report.
+- **How good are the timings?** Whisper infers them by dynamic time warping its cross-attention, which it was not trained to do. The [WhisperX paper](https://arxiv.org/abs/2303.00747) (Table 2, 200ms collar) scores that mechanism at 78.9 precision / 52.1 recall on AMI-IHM against 84.1/60.3 for external forced alignment — so roughly *half* the words land more than 200ms off on hard conversational audio. Fine for a highlight that follows along; do not build phonetic or clip-cutting work on it.
+- **`word` keeps its leading space**, so `s.words.map(w => w.word).join("")` reconstructs `s.text`. Timings are positions in the **original file**, like a segment's, and always inside their own segment.
+- **With `vad` on (the default) a word that spanned a removed pause comes back SHORTER than it was spoken.** Silence is cut out before decoding, so a word the model timed across the cut is placed on the side most of it was heard on and keeps only that part — a highlight lets go of it early rather than sitting on it for the whole pause. It never *stretches*: no word is longer than the audio it came from.
+- **`task: "translate"` returns no words on any engine.** Word timings are positions in the audio and a translation's words were never spoken in it, so there is nothing to align them to. (The library only *warns* and returns numbers anyway; this app declines instead, because a karaoke UI built on them highlights the wrong word for the whole file.)
+- **Not free, unlike `diarize`.** An extra pass per decoded window — measured at 0.16s → 0.22s on a 7.4s recording (+40%) — plus a **one-time ~1.3s** on the first worded transcription in a worker process while Metal compiles the extra graph. And it **changes the decode**: the library's hallucination pruning only runs with word timings on, so the *same file* can come back with a different number of segments than a call without it. Ask for it when a page needs it.
+- **No per-word confidence, deliberately** — it is a number only some engines have, and the reply must not come to depend on which one ran.
+- Default `false` and additive: a transcript written without it has no `words` key anywhere.
+- `onSegment` segments carry `words` too, same shape — one rendering path for the live view and the final list.
 
 ### Three engines, one of them not Whisper
 

@@ -9,6 +9,12 @@ quietly doing something else is the failure this app rates worst, because a
 page that asked for English and got French has nothing on the row telling it
 which engine decided.
 
+**`words` (D392) does NOT belong in this table**, and it is the one option that
+does not: an ignored option is refused here because it is undetectable, and word
+timings are detectable — honouring them puts a `words` list on the segment and
+declining leaves the key off, so a caller reads which happened off the reply.
+It is answered best-effort in `mlx_whisper/worker.py`, where the decline lives.
+
 **This module is where that rule lives, once**, for exactly the reason
 `diarize.speakers_or_raise` sits where it does: the refusal has to happen in
 TWO places and must be one sentence. The endpoint refuses first, before a job
