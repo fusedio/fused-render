@@ -431,6 +431,15 @@ export function useFileOps({
     });
   };
 
+  // Open in New Tab — the SAME url the row's ordinary click navigates to
+  // (urlForFsPath, which is what `navigate` pushes), handed to the browser
+  // instead of to history. No search string: `navigate` starts a destination on
+  // a fresh query string too, so the new tab lands where a click would.
+  // `noopener` because the opened tab has no business reaching back at us.
+  const doOpenInNewTab = (path: string) => {
+    window.open(urlForFsPath(path), "_blank", "noopener");
+  };
+
   const startNewFile = (dir: string) =>
     setDialog({
       kind: "prompt",
@@ -622,8 +631,9 @@ export function useFileOps({
   // `rows` is what the menu ACTS on: just the right-clicked row normally, or the
   // whole selection when the right-click landed inside a multi-row selection
   // (see openRowMenu in Listing.tsx). With several rows the entries that only
-  // make sense for one — Open / Open With / Rename / Reveal / Open in Claude
-  // Code — are dropped, and the batch entries count what they'll affect.
+  // make sense for one — Open / Open in New Tab / Open With / Rename / Reveal /
+  // Copy Claude session command — are dropped, and the batch entries count what
+  // they'll affect. A single FOLDER gets a deliberately minimal list; see below.
   const rowMenu = (row: RowCtx, rows: RowCtx[]): MenuEntry[] => {
     const dir = targetDirOf(row);
     const n = rows.length;
@@ -652,14 +662,36 @@ export function useFileOps({
         },
       ];
     }
+    // A FOLDER gets two items and nothing else: walk into it (here or in a new
+    // tab) or hand it to the OS file manager. Everything the full list offers a
+    // folder either duplicates the double-click (Open), is destructive on a
+    // whole tree from a single mis-click (Delete/Rename/Cut/Paste), or is a
+    // niche it was never worth carrying in the common menu — so the folder menu
+    // stops being a wall of items the reader has to scan past. Files keep the
+    // full list; so do the multi-row and background menus below.
+    if (row.isDir) {
+      return [
+        { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
+        { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(row.path) },
+      ];
+    }
     return [
       { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
+      { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(row.path) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Delete", icon: MenuIcons.trash, onClick: () => doTrash([row]) },
       "separator",
       { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
       { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate([row]) },
+      // The two folder-only entries below are UNREACHABLE while the folder menu
+      // is the two-item list above — kept, not deleted, because the actions
+      // themselves (doCompress/loadCompress, downloadAppFile) are wanted and
+      // still need a home; Export App File also lives on the app card menu
+      // (lib/appCardMenu) and the preview header, so only Compress is currently
+      // without a surface. Deleting the machinery to chase the dead branch is
+      // the bigger loss, and re-adding a folder entry here is a one-line change.
+      //
       // Folders only, in Finder's position (after Duplicate, before Cut/Copy).
       // Not on the multi-select or background menus: one archive per folder.
       ...(row.isDir
@@ -688,7 +720,7 @@ export function useFileOps({
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
       {
-        label: "Open in Claude Code",
+        label: "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
       },
@@ -707,7 +739,7 @@ export function useFileOps({
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
     { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(normDir(base)) },
     {
-      label: "Open in Claude Code",
+      label: "Copy Claude session command",
       icon: MenuIcons.openWith,
       onClick: () => doOpenInClaude(normDir(base), true, normDir(base)),
     },

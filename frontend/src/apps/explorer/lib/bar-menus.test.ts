@@ -72,12 +72,12 @@ test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
     "—",
     "Reveal in Finder",
     "Copy Path",
-    "Open in Claude Code",
+    "Copy Claude session command",
     "—",
     "Split right",
     "Split down",
   ]);
-  for (const label of ["Rename…", "Reveal in Finder", "Copy Path", "Open in Claude Code"]) {
+  for (const label of ["Rename…", "Reveal in Finder", "Copy Path", "Copy Claude session command"]) {
     item(items, label).onClick?.();
   }
   item(items, "Split down").onClick?.();
@@ -96,7 +96,7 @@ test("fileBarMenu drops the splits AND their separator when it can't split", () 
     "—",
     "Reveal in Finder",
     "Copy Path",
-    "Open in Claude Code",
+    "Copy Claude session command",
   ]);
   // No trailing divider: a menu that ends in a separator reads as a menu with
   // something missing.

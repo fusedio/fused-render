@@ -62,14 +62,16 @@ export interface FileBarActions {
 // Right-click on the bar over a single open FILE. A short list on purpose: it
 // replaces the path `⋮` (whose two items are the middle pair here) and adds the
 // three things the bar was otherwise silent about — renaming the file you are
-// looking at, handing it to Claude Code, and the splits that used to be naked
+// looking at, copying the command that starts a Claude session there, and the
+// splits that used to be naked
 // glyphs at the far right of the window.
 //
 // Deliberately NOT the preview header's full file menu (Preview's buildMenu):
 // no Open With (the mode control is two inches away in this same bar), no
 // Bin/Duplicate/Cut/Copy — a top bar is not where a file gets destroyed.
 export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
-  // Reveal → Copy Path → Open in Claude Code, in exactly the folder menu's
+  // Reveal → Copy Path → Copy Claude session command, in exactly the folder
+  // menu's
   // order (useFileOps.backgroundMenu) — the two bars are one surface to the
   // user, and the shared trio must not swap places between them.
   return [
@@ -77,7 +79,11 @@ export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
     "separator",
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: actions.onReveal },
     { label: "Copy Path", icon: MenuIcons.copyPath, onClick: actions.onCopyPath },
-    { label: "Open in Claude Code", icon: MenuIcons.openWith, onClick: actions.onOpenInClaude },
+    {
+      label: "Copy Claude session command",
+      icon: MenuIcons.openWith,
+      onClick: actions.onOpenInClaude,
+    },
     ...(actions.onSplit ? (["separator", ...splitItems(actions.onSplit)] as MenuEntry[]) : []),
   ];
 }
