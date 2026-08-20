@@ -1238,16 +1238,33 @@ def _original_end(pack, at):
     return vad_module.original_end(pack, at)
 
 
+def _word_span(pack, at, until):
+    """A word's packed `(start, end)` → RECORDING time, in ONE region.
+
+    `vad.original_word_span` rather than the segment's two endpoint functions,
+    and the difference is the one thing a word does not share with a segment: a
+    segment may straddle a join (real speech on both sides of the silence this
+    runner cut out), a word may not, so mapping a word's two ends independently
+    stretches any token that strictly contains a join across the whole dropped
+    pause. `vad.py` carries that reasoning and the arithmetic, for AI-10f's
+    reason — the packing and its inverse are one decision."""
+    import vad as vad_module
+
+    return vad_module.original_word_span(pack, at, until)
+
+
 def _words_in_original_time(pack, segment, at, until):
     """One segment's `words`, remapped into RECORDING time and clamped into it.
 
-    Each word travels the SAME two functions its segment did — `_original_start`
-    for a start, `_original_end` for an end — because a word carries exactly the
-    same problem: the library timed it against a packed clip whose silence this
-    runner removed, and a page seeking a player off a clip-relative timestamp
-    lands in the wrong minute. Reusing the segment's mapping rather than a
-    second one of its own is the point; there is one inverse of the packing
-    (AI-10f) and this is it.
+    Each word travels the same inverse its segment did, because a word carries
+    the same problem: the library timed it against a packed clip whose silence
+    this runner removed, and a page seeking a player off a clip-relative
+    timestamp lands in the wrong minute. Reusing the packing's one inverse
+    rather than a second of its own is the point (AI-10f). It travels that
+    inverse through `_word_span`, NOT through the segment's endpoint pair: a
+    word that strictly contains a join is a 0.2s token mapped to a 25s span
+    otherwise, and the clamp below cannot catch it because the segment is
+    allowed to straddle that same join.
 
     **Clamped into the segment, never dropped**, which is the opposite of what
     `_transcribe_regions` does to a segment that inverts — and the asymmetry is
@@ -1276,8 +1293,9 @@ def _words_in_original_time(pack, segment, at, until):
             # No text to place. Nothing downstream can render it and it would
             # only add a phantom interval to the list.
             continue
-        start = _original_start(pack, float(word.get("start") or 0.0))
-        end = _original_end(pack, float(word.get("end") or 0.0))
+        start, end = _word_span(pack,
+                                float(word.get("start") or 0.0),
+                                float(word.get("end") or 0.0))
         # Into the SEGMENT's bounds, not the pack's: the segment was already
         # clamped to the pack, and a word outside its own segment is a span a
         # caller cannot use — it would highlight text belonging to a

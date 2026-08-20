@@ -2138,6 +2138,70 @@ def test_words_are_remapped_into_ORIGINAL_time_across_a_dropped_PAUSE(
         (30.0, 30.5), (30.5, 31.0)]
 
 
+def test_a_word_STRADDLING_a_join_is_not_stretched_across_the_dropped_pause(
+        monkeypatch, loaded, tmp_path):
+    """Packing only REMOVES time, so its inverse must never STRETCH a word: a
+    recording span longer than the packed one is a claim that the word was
+    spoken across silence this runner cut out. A segment is exempt (Whisper
+    hears continuous speech across a join, and both sides carry real words) and
+    a word is not — one token cannot span a pause. Mapped endpoint by endpoint,
+    a 0.2s word strictly containing the join at 5.0 came back as `4.9-30.1`,
+    freezing a karaoke highlight for the whole 25-second gap; clamping into the
+    segment could not catch it, because the segment straddles that join too.
+    Placed in the region holding its MIDPOINT instead, and 5.0 is the tie the
+    join sits on: it takes the region that BEGINS there.
+    """
+    worker, _ = loaded(
+        windows=(100,), audio_seconds=40.0,
+        segments=[_worded(4.0, 6.0, "before across after",
+                          [(4.0, 4.6, " before"),
+                           (4.9, 5.1, " across"),
+                           (5.4, 6.0, " after")])])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    segment = json.load(open(request["out"], encoding="utf-8"))["segments"][0]
+    # The segment straddles the join and is mapped endpoint by endpoint, which
+    # is what makes the word's own span the only thing standing between a
+    # caller and a 25-second token.
+    assert (segment["start"], segment["end"]) == (4.0, 31.0)
+    assert [(w["start"], w["end"]) for w in segment["words"]] == [
+        (4.0, 4.6),      # wholly before the join: untouched
+        (30.0, 30.1),    # straddling it: the half inside the chosen region
+        (30.4, 31.0),    # wholly after it: untouched
+    ]
+    # The invariant, stated as the assertion it is: no word is LONGER than the
+    # packed interval it came from.
+    packed = [0.6, 0.2, 0.6]
+    for word, was in zip(segment["words"], packed):
+        assert word["end"] - word["start"] <= was + 1e-9
+
+
+def test_a_word_TOUCHING_a_join_keeps_the_endpoint_mapping(
+        monkeypatch, loaded, tmp_path):
+    """The case the straddle rule must NOT disturb, and the reason the fix is a
+    midpoint rather than a blanket "map both ends through the start's region".
+    A word ENDING exactly on a join belongs to the region that ends there and a
+    word BEGINNING on it to the region that begins there — the asymmetry
+    `original_start`/`original_end` exist for. Both words below are 0.5s and
+    neither contains the join, so both come back exactly where the endpoint
+    mapping put them before there was a straddle rule at all."""
+    worker, _ = loaded(
+        windows=(100,), audio_seconds=40.0,
+        segments=[_worded(4.5, 5.5, "up to and after",
+                          [(4.5, 5.0, " up to"), (5.0, 5.5, " and after")])])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    segment = json.load(open(request["out"], encoding="utf-8"))["segments"][0]
+    assert [(w["start"], w["end"]) for w in segment["words"]] == [
+        (4.5, 5.0), (30.0, 30.5)]
+
+
 def test_a_word_past_its_segment_is_CLAMPED_never_DROPPED(
         monkeypatch, loaded, tmp_path):
     """The deliberate asymmetry with `_transcribe_regions`, which DROPS a segment

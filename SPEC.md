@@ -6581,11 +6581,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   nothing to align them to, and the library's warn-and-return-anyway reaches a
   page as a list indistinguishable from a usable one. **Timings are
   original-recording positions like a segment's** (AI-10a), which is the real
-  work rather than the flag: each word travels the same `vad.original_start`/
-  `original_end` inverse its segment does, and a word that inverts after mapping
-  is CLAMPED into its segment rather than dropped — the opposite of a segment,
-  because a dropped word breaks the words-are-the-text invariant a caller builds
-  on. **Opt-in because it is not free**, unlike `diarize`: an extra forward pass
+  work rather than the flag: each word travels the same packing inverse its
+  segment does, but as a SPAN (`vad.original_word_span`) rather than as two
+  independent endpoints. Packing only removes time, so a word's recording span
+  must never be LONGER than its packed one: a segment may straddle a join (real
+  speech on both sides of the removed silence), a word may not, and a word
+  mapped endpoint by endpoint across one came back stretched over the whole
+  dropped pause. A word is therefore placed in the single region holding its
+  packed midpoint and clamped into it, so a straddling word is SHORTER than it
+  was timed rather than a highlight parked in silence; a word merely touching a
+  join is unaffected. A word that inverts after mapping is CLAMPED into its
+  segment rather than dropped — the opposite of a segment, because a dropped
+  word breaks the words-are-the-text invariant a caller builds on. **Opt-in because it is not free**, unlike `diarize`: an extra forward pass
   per decoded window, and it changes the decode itself — the library gates its
   hallucination pruning on `word_timestamps`, so the same file can return a
   different number of segments with the flag on. No per-word confidence is
