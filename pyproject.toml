@@ -213,7 +213,7 @@ bundled = [
     # The requirement string must stay byte-identical to `[fused]`'s — see the
     # comment there and
     # tests/test_bundle_contents.py::test_the_bundled_and_fused_extras_pin_the_same_wheel.
-    'fused==2.9.3b4 ; python_version >= "3.11"',
+    'fused==2.9.3b5 ; python_version >= "3.11"',
 ]
 # Private-cloud credential chains (optional). botocore buys the AWS provider
 # chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
@@ -248,7 +248,7 @@ app = [
 # (README, docs/usage.md) and CI's `fused-engine` job (`.[dev,fused]`), both of
 # which want the engine WITHOUT the ~650 MB scientific stack.
 fused = [
-    'fused==2.9.3b4 ; python_version >= "3.11"',
+    'fused==2.9.3b5 ; python_version >= "3.11"',
 ]
 # Windows desktop supervisor backend (fused_render/supervisor/_win32,
 # docs/DESKTOP_SUPERVISOR.md). Windows-only; not a core dependency so

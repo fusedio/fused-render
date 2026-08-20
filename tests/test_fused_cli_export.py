@@ -269,8 +269,8 @@ def test_a_matching_install_is_silent(monkeypatch):
     from fused_render import fusedcli
 
     monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
-    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b4")
-    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b5")
+    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b5")
     assert fusedcli.log_cli_provenance() is None
 
 
@@ -280,10 +280,10 @@ def test_version_drift_is_reported(monkeypatch):
     from fused_render import fusedcli
 
     monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
-    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b3")
-    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b5")
     message = fusedcli.log_cli_provenance()
-    assert message and "2.9.3b3" in message and "2.9.3b4" in message
+    assert message and "2.9.3b4" in message and "2.9.3b5" in message
 
 
 def test_no_fused_at_all_adds_nothing(monkeypatch):
