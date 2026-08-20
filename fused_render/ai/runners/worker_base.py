@@ -1425,15 +1425,137 @@ def _fallback(model_id, error):
     _clear_parts(repo_folder(model_id))
 
 
+class _HubByteTicker:
+    """A `tqdm_class` for hf's OWN downloaders, and the counter it writes into.
+
+    The fallback path's bar used to be driven only by the disk walk, and
+    `hf_xet` (installed in every runner venv; every mlx-community repo is
+    Xet-backed) delivers bytes in BURSTS rather than a steady trickle:
+    measured on a 481MB repo, `bytes_on_disk` sat on one number for 6 seconds,
+    then jumped ~90MB, then landed the final ~45% all at once on completion.
+    Scaled to a 4.6GB model that is a bar parked on one number for a MINUTE
+    while the download is perfectly healthy — the "stuck at 98%" report. hf
+    knows the true count the whole time; this reads it through the one seam
+    hf exposes for exactly that, and the disk walk stays as the heartbeat and
+    the fallback for whatever this cannot read.
+
+    **The outer bar is a file counter, and reporting it as bytes is the
+    original AI-5b trap one level further in.** `snapshot_download` hands its
+    `tqdm_class` to THREE distinct bars: one wrapping `hf_thread_map` over the
+    file list — `desc="Fetching N files"`, no `unit` at all, one `.update(1)`
+    per file — and two created directly for BYTES, `unit="B"`, one per
+    conceptual stream (`_create_progress_bar` in hf's own `_snapshot_download`
+    and `_xet_progress_reporting`). `unit == "B"` is what tells them apart:
+    when `unit` is absent it is the file counter, which is exactly how "10 /
+    11 B" happened before — the same bug this feature exists to fix,
+    reappearing one seam further in.
+
+    **Two byte streams, not one, and they must not be SUMMED.** hf's Xet path
+    reports network TRANSFER (`desc` containing "downloading bytes") and disk
+    RECONSTRUCTION (`desc` containing "reconstruct") separately — both cover
+    close to the same total under dedup/compression, so adding them can read
+    past 100% of a file that is not yet done. `bytes_on_disk` means "landed on
+    disk", which is what the reconstruction stream already means, so ticks
+    into the "reconstruct" bucket and the "transfer" bucket are kept apart and
+    the counter reports whichever is FURTHER ALONG — never their sum. A plain
+    `http_get` download (no Xet) hands back exactly one bar, whose `desc` is a
+    filename and matches neither keyword; it lands in the transfer bucket,
+    which is exactly the bytes it wrote, so the two-bucket split costs nothing
+    on that path.
+
+    `seen` is False until some byte bar reports ANYTHING, which is what lets
+    the caller tell "no usable counter" (an hf version that reports
+    differently, or ignores `tqdm_class` altogether, or a fetch that never
+    goes near hf's downloaders at all) from "the counter says zero because
+    nothing has landed yet" — the two must not be confused, or a slow start
+    would look like this feature having failed rather than a download that is
+    merely early.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._transfer = 0
+        self._reconstruct = 0
+        self.seen = False
+
+    @property
+    def value(self):
+        with self._lock:
+            return max(self._transfer, self._reconstruct)
+
+    def bar(self):
+        """A tqdm-COMPATIBLE class bound to this ticker — not a `tqdm`
+        subclass, deliberately: hf's own `_create_progress_bar` hands a
+        non-tqdm `cls` straight through as `cls(**kwargs)`, with none of
+        tqdm's `disable`/`name` machinery grafted on, which this needs
+        exactly as little of. The only things read back off an instance are
+        `.n` and `.total` (hf's own aggregation helpers check both with
+        `getattr`/`hasattr`); the only thing called on it is `.update`.
+        """
+        ticker = self
+
+        class _Bar:
+            def __init__(self, *_args, **kwargs):
+                self.n = kwargs.get("initial") or 0
+                self.total = kwargs.get("total")
+                self._is_bytes = kwargs.get("unit") == "B"
+                self._reconstruct = "reconstruct" in (kwargs.get("desc") or "").lower()
+
+            def update(self, n=1):
+                if not self._is_bytes or not n:
+                    return
+                self.n += n
+                with ticker._lock:
+                    if self._reconstruct:
+                        ticker._reconstruct += int(n)
+                    else:
+                        ticker._transfer += int(n)
+                    ticker.seen = True
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return False
+
+            def close(self):
+                pass
+
+            def refresh(self):
+                pass
+
+            def set_postfix_str(self, *_args, **_kwargs):
+                pass
+
+            def set_description(self, *_args, **_kwargs):
+                pass
+
+        return _Bar
+
+
 def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…",
-                        job=None, row=None):
-    """Run `call()` on a thread, reporting bytes-on-disk once a second.
+                        job=None, row=None, counter=None):
+    """Run `call()` on a thread, reporting progress once a second.
 
     `call` is whatever huggingface_hub function actually fetches — a whole
     snapshot for one runner, a single GGUF file for another — and this is the
     part neither of them should write twice: the poll is the progress AND the
     heartbeat, without which a long single-file download reports nothing for
-    minutes and the manager calls the row abandoned.
+    minutes and the manager calls the row abandoned. The ONE-SECOND TICK is
+    unconditional regardless of what drives `done` below it — the tick itself
+    is the heartbeat (AI-5h), and a fetch that happens to have a live byte
+    counter must keep beating exactly as often as one that does not.
+
+    `counter`, when given, is a `_HubByteTicker` whose `tqdm_class` `call` was
+    built to pass to hf's own downloader. Once it has `seen` anything, `done`
+    is `max(counter.value, bytes_on_disk(folder))` rather than the disk walk
+    alone — never less than either, so a counter that stalls while the disk
+    still advances (or the reverse) cannot make the bar go backwards. Before
+    it has seen anything — no counter at all, an hf version that reports
+    differently, a `tqdm_class` silently ignored — this degrades to exactly
+    the disk-walk-only behaviour from before it existed. See `_HubByteTicker`
+    for why a byte counter existing at all used to be exactly the AI-5b trap
+    ("10 / 11 B") one level further in.
 
     **`job`/`row` exist because not every fetch belongs to a download job.** A
     runner that pulls a component model DURING a request — the speech detector,
@@ -1478,13 +1600,28 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
         total = repo_total_bytes(model_id)
     identity = {**(row or {}), "kind": "download", "unit": "bytes"}
 
+    def measured():
+        """Bytes done right now, from whichever source is actually moving.
+
+        `bytes_on_disk` always runs — it is the heartbeat's OWN measurement
+        too, and the fallback the moment `counter` cannot answer. `counter`,
+        once it has `seen` anything, can only raise the reported number: a
+        burst that lands on disk between two of hf's own ticks is still real
+        progress, and `max` is what keeps either source's silence from
+        hiding the other's advance.
+        """
+        disk = bytes_on_disk(folder)
+        if counter is not None and counter.seen:
+            return counter.value if disk is None else max(disk, counter.value)
+        return disk
+
     def tick(**fields):
         """One progress report that can carry a ✕ back. See the docstring."""
         report_or_cancel(job=job, **identity, state="running", **fields)
         if job is not None and CANCEL.is_set():
             raise Cancelled()
 
-    tick(detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
+    tick(detail=detail, done=_capped(measured(), total), total=total)
 
     result = {}
 
@@ -1502,15 +1639,14 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
             # Finished during the join. Ticking now would be the late-cancel
             # the docstring refuses — the bytes are already on the disk.
             break
-        tick(done=_capped(bytes_on_disk(folder), total), total=total,
-             detail=detail)
+        tick(done=_capped(measured(), total), total=total, detail=detail)
     if "error" in result:
         raise result["error"]
-    # Land on the total rather than on the last walk: the snapshot symlinks are
-    # not counted, so a finished repo measures slightly under its own size and a
-    # bar that stopped at 98% reads as a download that gave up.
+    # Land on the total rather than on the last measurement: the snapshot
+    # symlinks are not counted, so a finished repo measures slightly under its
+    # own size and a bar that stopped at 98% reads as a download that gave up.
     report(job=job, **identity, state="running",
-           done=total or bytes_on_disk(folder), total=total)
+           done=total or measured(), total=total)
     return result["value"]
 
 
@@ -2045,9 +2181,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
                    "ignore_patterns": ignore_patterns}
         if revision:
             options["revision"] = revision
+        # Ours unless `kwargs` already names one — a caller that passed its
+        # own `tqdm_class` gets it back unmolested, and `counter` simply never
+        # sees anything (`measured` in `fetch_with_progress` degrades to the
+        # disk walk on its own; see `_HubByteTicker`).
+        ticker = _HubByteTicker()
+        options.setdefault("tqdm_class", ticker.bar())
         options.update(kwargs)
         return fetch_with_progress(
-            model_id, lambda: snapshot_download(model_id, **options), total=total)
+            model_id, lambda: snapshot_download(model_id, **options), total=total,
+            counter=ticker)
 
     if kwargs or files is None or not sha:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
@@ -2127,10 +2270,12 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     def hub():
         from huggingface_hub import hf_hub_download
 
+        ticker = _HubByteTicker()
         return fetch_with_progress(
             repo_id,
-            lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-            total=total, detail=detail, job=job, row=row)
+            lambda: hf_hub_download(repo_id=repo_id, filename=filename,
+                                    tqdm_class=ticker.bar()),
+            total=total, detail=detail, job=job, row=row, counter=ticker)
 
     if not sha:
         return hub()

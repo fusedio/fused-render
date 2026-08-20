@@ -1279,6 +1279,33 @@ def test_download_file_falls_back_like_the_snapshot_does(base, monkeypatch, tmp_
     assert base.download_file("org/m", "q4.gguf") == "/cache/blobs/gguf"
 
 
+def test_download_files_fallback_wires_a_byte_counter_through(base, monkeypatch,
+                                                               tmp_path, payload):
+    """`download_file`'s own `hub()`, not just `download_snapshot`'s: each call
+    site builds its own `_HubByteTicker` and has to hand hf's downloader the
+    matching `tqdm_class`, or the fallback bar is back to disk-walk-only."""
+    _wire(base, monkeypatch, tmp_path, "http://unused/weights", len(payload))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    seen_bars = []
+
+    def hf_hub_download(repo_id=None, filename=None, tqdm_class=None, **kwargs):
+        if tqdm_class is not None:
+            bar = tqdm_class(desc=f"{filename}: reconstructing file",
+                             total=len(payload), unit="B")
+            bar.update(len(payload))
+            seen_bars.append(bar)
+        return "/cache/blobs/gguf"
+
+    _fake_hub(monkeypatch, hf_hub_download=hf_hub_download,
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **k: (
+        _ for _ in ()).throw(RuntimeError("no listing")))
+
+    assert base.download_file("org/m", "q4.gguf") == "/cache/blobs/gguf"
+    assert len(seen_bars) == 1, "download_file's fallback did not pass tqdm_class"
+
+
 @pytest.mark.parametrize("call", ["snapshot", "file"])
 def test_a_cancel_is_never_swallowed_into_a_fallback(base, monkeypatch, tmp_path,
                                                      call):
