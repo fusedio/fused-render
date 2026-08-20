@@ -7660,6 +7660,24 @@ manifest is the entire contract between them.
   later with no `FUSED_ENV` and to fail where nobody is looking. The registration
   target is a global, durable, unattended command; deriving it from ambient PATH
   is the one place that matters most and the one place it was done.
+- **MC-5b** **A registered server computes its tools on the interpreter PAGE
+  runs use** — the wrapper D334 writes exports `OPENFUSED_APP_SERVE_PYTHON`
+  (`fusedcli._app_serve_python`), and `fused app serve` (>= 2.9.3b7) makes it its
+  compute backend's `python_executable`. The value is
+  `envinstall.script_python()` — the SAME call `engine.get_backend()` passes for
+  page runs, resolved to `sys.executable` when it answers None (D214: "ours",
+  which is what the backend falls back to), never a hardcoded path and never a
+  `realpath` of a venv python, since that names the base interpreter and so keys
+  a different environment. Interpreter identity is half the venv cache key, so
+  equal inputs mean a tool RESOLVES the environment the page already built
+  instead of filling a parallel one nothing else reads — and a tool whose folder
+  declares no dependencies runs on the app's interpreter rather than in a bare
+  stdlib venv. It rides the wrapper rather than the registration entry's `env`
+  because the wrapper is rewritten on every server start (so a 3.12 that only
+  appears later takes effect on the next one) while a `~/.claude.json` entry is
+  written once and lives forever; it is a default (`[ -n … ] || …`), so an
+  explicitly set value still wins. An older engine ignores it silently, which is
+  why the pin carries a floor (test_the_fused_pin_reads_the_app_serve_python_seam).
 - **MC-6** **There is no gating layer beyond the MCP host's own per-call
   approval.** Every curated tool is callable, because the person who curated it is
   the person the host will ask. A second confirmation here would only be a false
