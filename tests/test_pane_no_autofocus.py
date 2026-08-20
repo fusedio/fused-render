@@ -136,9 +136,15 @@ def test_every_app_card_thumbnail_url_goes_through_the_stamp():
     branch cannot quietly ship an unstamped frame."""
     src = open(CARD, encoding="utf-8").read()
     assert "withNoFocus(withPreviewFlag(" in src
-    # Every iframe in the file takes its src from the helper — nothing hand-rolls
-    # a /render URL beside it.
-    assert src.count("src={thumbSrc(app.entry_html)}") == 2
+    # Both iframes read the SAME bound name (D396 added an exported .fused card
+    # whose live look is its own embed URL, not /render), so the stamp is applied
+    # once where `liveSrc` is built and cannot be forgotten at a use site.
+    assert src.count("src={liveSrc}") == 2
+    assert "<iframe" in src and src.count("<iframe") == 2
+    # `liveSrc`'s two arms — an ordinary app's entry page through `thumbSrc`, and
+    # an opened app file's embed URL — are each stamped where they are formed.
+    assert "thumbSrc(app.entry_html)" in src
+    assert "withNoFocus(withPreviewFlag(embedUrlForFsPath(app.path)))" in src
     assert "src={`/render" not in src
 
 
