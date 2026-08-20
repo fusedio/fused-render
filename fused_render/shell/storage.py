@@ -12,6 +12,7 @@ the reverse (no server <-> shell import cycle).
 import json
 import os
 import tempfile
+import time
 
 
 def home_dir() -> str:
@@ -48,12 +49,49 @@ def write_json(path: str, data) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp, path)  # atomic on the same filesystem
+        _replace_atomic(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+# A handful of quick retries, not a real backoff schedule: the sharing
+# violation this chases clears as soon as the OTHER writer's own os.replace
+# finishes, which is microseconds, not seconds.
+_REPLACE_RETRIES = 8
+_REPLACE_RETRY_DELAY_S = 0.02
+
+
+def _replace_atomic(tmp: str, path: str) -> None:
+    """os.replace(tmp, path), with a brief retry on Windows only.
+
+    POSIX rename is atomic and never raises for a concurrent replace — that is
+    what lets write_json promise "last write wins" with no locking above. The
+    identical call on Windows is backed by MoveFileExW, which CAN raise
+    PermissionError ([WinError 5] "Access is denied") for a few milliseconds
+    while another writer's os.replace (or a reader's plain open(), which grants
+    no FILE_SHARE_DELETE by default) still holds the destination — a transient
+    sharing violation, not a real permissions problem. Two concurrent
+    write_json calls to the SAME path (rcd.json under racing threads is the
+    known case) can hit this on every real Windows run.
+
+    Retrying rides that out and gives Windows the same "last write wins,
+    the call itself always succeeds" contract POSIX gets for free — a dropped
+    write here is not "last write wins", it is data loss. Gated on os.name so
+    POSIX keeps the exact single-call behavior it always had."""
+    if os.name != "nt":
+        os.replace(tmp, path)
+        return
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_RETRIES - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAY_S)
 
 
