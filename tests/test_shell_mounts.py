@@ -5003,7 +5003,12 @@ def test_no_session_token_remote_keeps_default_link_ttl(home, rcd, fresh_upstrea
     before = time.monotonic()
     mounts_mod.upstream_url_for(f)
     _url, expiry = mounts_mod._upstream_links[("remote:bucket", "a.parquet")]
-    assert expiry - before > mounts_mod._SESSION_TOKEN_LINK_TTL_S
+    # >=, not >: probe.py computes expiry as its OWN time.monotonic() call
+    # plus the TTL, and that call can land on the same coarse tick as
+    # `before` above (Windows' time.monotonic() is GetTickCount64-backed,
+    # ~15.6ms resolution) — the real guarantee is "at least the TTL", not
+    # "strictly more than it".
+    assert expiry - before >= mounts_mod._SESSION_TOKEN_LINK_TTL_S
 
 
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
