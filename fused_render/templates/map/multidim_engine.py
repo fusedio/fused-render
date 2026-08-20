@@ -506,8 +506,12 @@ class MultidimEngine:
                 if keep is not None and not keep():
                     # The build raced a change that made it stale (the file
                     # was rewritten under a pending open). The caller still
-                    # gets its handle; the cache must not resurrect it.
-                    cache.pop(key, None)
+                    # gets its handle; the cache must not resurrect it — but
+                    # an eviction may already have dropped this marker and a
+                    # second builder installed its own, and that one is still
+                    # live work no one else should have to repeat.
+                    if cache.get(key) == ("pending", pending):
+                        cache.pop(key, None)
                     return built
                 cache[key] = ("ready", built)
                 cache.move_to_end(key)
@@ -607,15 +611,6 @@ class MultidimEngine:
             da = da.rename(renames)
         da = da.transpose("y", "x")
         if da.rio.crs is None:
-            if not geographic:
-                # Assuming degrees here would render a projected grid at a
-                # nonsense location; erroring instead sends the file to the
-                # GDAL fallback, which reports not_georeferenced honestly.
-                raise Ungeoreferenced(
-                    "The grid has no CRS and its coordinates do not look like "
-                    "degrees; the file needs CF grid_mapping metadata or a "
-                    "sidecar."
-                )
             da = da.rio.write_crs("EPSG:4326")
         # A 0-360 grid starts at or above zero. Testing only `max > 180`
         # also caught a -180..180 grid whose last cell overhangs the meridian
@@ -803,18 +798,20 @@ class MultidimEngine:
                 self.sources.move_to_end(fingerprint)
             else:
                 self.sources[fingerprint] = record
-                while len(self.sources) > MAX_SOURCES:
+                while len(self.sources) > max(MAX_SOURCES, 1):
                     # A scrub through a long series is the usual overflow, so
                     # it replaces its own history — the oldest step of the
                     # same layer — before touching a quieter layer's source.
+                    # Never itself: evicting the record this descriptor names
+                    # leaves the page holding a tile URL that only 404s.
+                    others = [key for key in self.sources if key != fingerprint]
                     victim = next(
                         (
-                            key for key, other in self.sources.items()
-                            if key != fingerprint
-                            and other.store == record.store
-                            and other.variable == record.variable
+                            key for key in others
+                            if self.sources[key].store == record.store
+                            and self.sources[key].variable == record.variable
                         ),
-                        next(iter(self.sources)),
+                        others[0],
                     )
                     self.sources.pop(victim)
 
