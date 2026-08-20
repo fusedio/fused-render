@@ -113,6 +113,19 @@ dev = [
     # install `[bundled,...]`), and the macOS force-list is derived by walking
     # `[bundled]`'s own requirements, so nothing here can reach the bundle.
     "matplotlib",
+    # A TEST dependency for the same reason matplotlib is one above, and a
+    # narrower case of it: `runners/llamacpp_text.py` renders a GGUF's own
+    # chat template with real Jinja2 (SPEC AI-11), and unlike torch or mlx —
+    # which every runner test FAKES, because fused-render's own venv must
+    # never grow one (`registry.py`'s first architectural claim) — Jinja2 is a
+    # small, pure-Python templating library with no build step and no
+    # accelerator concerns, so faking its control-flow engine to test real
+    # template logic would validate the fake rather than the renderer. Never
+    # shipped: `llamacpp_text/pyproject.toml` declares its own copy for the
+    # runner's actual venv, and this one exists only so
+    # `tests/test_ai_llamacpp_worker.py` can exercise real `{% for %}`/`{{ }}`
+    # rendering rather than a hand-rolled stand-in.
+    "jinja2",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.

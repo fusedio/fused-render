@@ -90,6 +90,9 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
         config={"quantization": {"group_size": 64, "bits": 4}}, torch_weights=True))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={"model.gguf"}, dirnames=set(), config={},
+        torch_weights=False))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -110,8 +113,10 @@ def test_every_registered_runner_appears_in_loaders():
     (set(), set(), {"quantization": {"group_size": 64, "bits": 4}}, True, {"mlx-text"}),
     # A quantization this build ships no package for is nobody's.
     (set(), set(), {"quantization_config": {"quant_method": "awq"}}, True, set()),
+    # A root-level GGUF is llama.cpp's format and nothing else's (SPEC AI-11).
+    ({"model.Q4_K_M.gguf"}, set(), {}, False, {"llamacpp-text"}),
     # Nothing readable at all — the answer the page most needs to be able to give.
-    ({"model.Q4_K_M.gguf"}, set(), {}, False, set()),
+    ({"README.md"}, set(), {}, False, set()),
 ])
 def test_loaders_reads_the_format_and_nothing_else(names, dirnames, config, torch, expected):
     assert set(formats.loaders(repo_id="org/m", names=names, dirnames=dirnames,
@@ -235,6 +240,38 @@ def test_mflux_needs_the_variant_table_as_well_as_the_layout():
     assert "mflux-image" not in formats.loaders(
         repo_id="someone/else-mlx", names=set(), dirnames=components, config={},
         torch_weights=False)
+
+
+def test_a_root_level_gguf_is_llamacpp_texts_and_nothing_elses():
+    """A `.gguf` at the snapshot root is llama.cpp's format (SPEC AI-11) —
+    checked case-insensitively, and decisive against a stray safetensors file
+    that would otherwise also make this a text-runner repo."""
+    assert formats.has_gguf_weights({"Qwen3.5-9B-Q4_K_M.GGUF"})
+    assert not formats.has_gguf_weights({"config.json", "README.md"})
+    codes = formats.loaders(
+        repo_id="unsloth/Qwen3.5-9B-GGUF",
+        names={"Qwen3.5-9B-Q4_K_M.gguf", "model.safetensors"}, dirnames=set(),
+        config={}, torch_weights=True)
+    assert codes == ("llamacpp-text",)
+
+
+def test_a_gguf_inside_a_subfolder_is_not_a_root_level_snapshot():
+    """`names` is the snapshot's TOP-LEVEL listing only (`ai_models.py` builds
+    it with `os.listdir`, never a recursive walk) — a GGUF one directory down,
+    the shape the diffusers FLUX recipe's component repo uses
+    (`COMPONENT_REPOS`), must not make an unrelated snapshot read as this
+    engine's. Simulated here by simply leaving the file out of `names`, since
+    the function has no path information beyond that set."""
+    assert formats.loaders(
+        repo_id="org/m", names={"model_index.json"}, dirnames={"transformer"},
+        config={}, torch_weights=False) == tuple(formats.DIFFUSERS_RUNNERS)
+
+
+def test_a_gguf_repo_SETTLES_what_the_model_is():
+    """`DECISIVE` is the list of formats whose evidence also names the
+    modality — a `.gguf` is llama.cpp's and nothing else in this app reads one
+    for text, so the page's tag does not have to hedge."""
+    assert "llamacpp-text" in formats.DECISIVE
 
 
 def test_a_ct2_whisper_repo_needs_more_than_the_filename():

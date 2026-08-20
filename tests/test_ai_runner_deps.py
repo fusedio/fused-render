@@ -140,10 +140,54 @@ def _declared(folder):
     return names
 
 
+def _declared_indexes(folder):
+    """Every `[[tool.uv.index]]` table a runner declares, as raw dicts."""
+    with open(os.path.join(folder, "pyproject.toml"), "rb") as handle:
+        data = tomllib.load(handle)
+    return data.get("tool", {}).get("uv", {}).get("index", [])
+
+
 def test_there_are_runner_folders_to_check():
     """The tests below iterate a directory listing, and an empty one would make
     every parametrized case vacuously pass."""
     assert len(_runner_folders()) >= 2, RUNNERS_DIR
+
+
+@pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)
+def test_a_non_pypi_index_is_explicit(folder):
+    """AI-2a's wheels-only rule, amended (D402): a non-PyPI index is
+    admissible ONLY confined to the one distribution it exists for.
+
+    `uv sync` runs bare, with no `--index`/`--extra` a caller could supply
+    (PY-18), so everything about where a dependency comes from has to be
+    expressible in the manifest sitting beside it — which is exactly why
+    `explicit = true` matters. Without it, ANY extra index becomes a
+    candidate for EVERY requirement in the graph: `transformers_text`'s own
+    header measured this directly (of 45 locked packages, 42 come from PyPI
+    and only `torch` from the PyTorch mirror) specifically because the index
+    is `explicit`. An index missing that flag is not a smaller version of the
+    same risk — it is the mirror silently answering for packages nobody
+    pointed it at, which is indistinguishable from a supply-chain substitution
+    until something breaks. This is the general form of the rule
+    `llamacpp_text/pyproject.toml`'s own index relies on, so the NEXT runner
+    that reaches for a non-PyPI source is caught by the same check rather
+    than needing a new one written for it.
+
+    Silent on a PyPI-only runner (most of them): this asserts something about
+    every DECLARED index, and a runner with none declares nothing to check —
+    the same "absent rather than an empty entry" shape `engine_options.py`'s
+    table uses.
+    """
+    for index in _declared_indexes(folder):
+        url = str(index.get("url", ""))
+        if "pypi.org" in url:
+            continue
+        assert index.get("explicit") is True, (
+            f"{os.path.basename(folder)} declares the non-PyPI index {url!r} "
+            f"without explicit = true — without it this index becomes a "
+            f"candidate for every dependency in the graph, not only the one "
+            f"it exists for."
+        )
 
 
 @pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)

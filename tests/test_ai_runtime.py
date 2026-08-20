@@ -1721,6 +1721,75 @@ def test_the_registry_describes_the_transcription_runner():
     assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
 
 
+def test_llamacpp_text_is_registered_below_every_transformers_row(monkeypatch):
+    """AI-11's precedent, restated for the fourth text runner: it sits BELOW
+    all three `transformers-text` rows, so `auto` resolution never reaches it
+    on ANY platform — reaching it is always a choice made on the Engines tab.
+
+    Position is checked directly, rather than only inferred from behaviour,
+    because the ordering is invisible in a diff of the table (the same
+    argument `test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR`'s
+    docstring makes about the CPU/CUDA/ROCm split) and nothing else fails when
+    a row moves one line up.
+    """
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert codes.index("llamacpp-text") > codes.index("transformers-text")
+    assert codes.index("llamacpp-text") > codes.index("transformers-text-cuda")
+    assert codes.index("llamacpp-text") > codes.index("transformers-text-rocm")
+
+    # AUTO on every platform this app ships reaches MLX or a transformers row,
+    # never this one — `_always` makes it AVAILABLE everywhere, which is
+    # exactly why the ORDER is what keeps `auto` off it.
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
+
+
+def test_llamacpp_text_is_reachable_only_by_an_explicit_preference(monkeypatch):
+    """The other half of "opt-in": `_always` means it CAN run everywhere, and a
+    preference naming it is honoured exactly like any other runner's — the
+    registered position only keeps AUTO off it, never a deliberate choice."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text" and resolution.honoured
+
+
+def test_llamacpp_text_suggestions_are_smallest_first_and_curated_by_filename():
+    """Every id here is the GGUF's own filename, not a Hub repo id — see
+    `runners/llamacpp_text.py`'s module docstring for why there is no
+    `repo:quant` grammar. `test_every_suggestion_list_is_ordered_smallest_first`
+    already pins the ordering rule generically; this pins the SHAPE that is
+    specific to this runner's list."""
+    entries = catalog.SUGGESTIONS["llamacpp-text"]
+    assert len(entries) >= 3
+    for entry in entries:
+        assert entry["id"].endswith(".gguf"), entry["id"]
+        assert "/" not in entry["id"], (
+            f"{entry['id']} looks like a Hub repo id — this list's ids are "
+            f"curated filenames, never repo ids")
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert "llamacpp-text" in codes
+
+
+def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
+    """`default_for` follows the RESOLVED runner (`catalog._runner_for`), so it
+    only reaches this list once a preference actually selects the engine —
+    the same mechanism `test_the_default_is_the_smallest_model_the_active_runner_offers`
+    exercises for the other runners."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+    entries = catalog.SUGGESTIONS["llamacpp-text"]
+    assert catalog.default_for(registry.TEXT_GENERATION) == entries[0]["id"]
+
+
 def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
     """Wheels only — a VCS or URL dependency is a source build, and a source
     build is a build backend running in an interpreter uv creates for it.
@@ -5025,16 +5094,34 @@ def test_an_uncached_unknown_repo_still_defaults_to_text_generation(
 
 def test_a_cached_repo_no_engine_reads_is_refused_by_name(client, hub, dispatched):
     """Not a FileNotFoundError from inside a library, and not a bare "unknown
-    capability": the repo, what it looks like, and what to pass."""
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
-    response = _load(client, {"model": "org/gguf-only"})
+    capability": the repo, what it looks like, and what to pass.
+
+    A `.ckpt`-only repo, not a `.gguf` one: since SPEC AI-11 a root-level GGUF
+    IS decisively loadable, by `llamacpp-text` — see
+    `test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp` below. `.ckpt` is
+    a raw pickle checkpoint no format check here recognises (it is not in
+    `formats.TORCH_WEIGHTS`), so it remains a case nothing reads.
+    """
+    _cached_repo(hub, "org/ckpt-only", files=("model.ckpt", "README.md"))
+    response = _load(client, {"model": "org/ckpt-only"})
     assert response.status_code == 400
     message = response.json()["error"]
-    assert "org/gguf-only" in message
-    assert "gguf" in message
+    assert "org/ckpt-only" in message
     assert "capability" in message
     assert registry.IMAGE_GENERATION in message and registry.SPEECH_TO_TEXT in message
     assert dispatched == []
+
+
+def test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp(client, hub, dispatched):
+    """The other half of the story the test above used to tell alone: since
+    SPEC AI-11 a root-level `.gguf` IS decisively `llamacpp-text`'s
+    (`formats.DECISIVE`), so `cached_capability`'s `meta.loaders` fallback
+    resolves it to text generation with no task label needed — the same
+    mechanism `test_a_cached_repo_with_no_task_but_readable_weights_is_text`
+    exercises for a bare directory of safetensors."""
+    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    assert _load(client, {"model": "org/gguf-only"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
 
 
 def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
@@ -5061,11 +5148,14 @@ def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
 
 
 def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched):
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf",))
-    response = client.post("/api/ai/runtime/download", json={"model": "org/gguf-only"},
+    """`.ckpt`-only, not `.gguf` — see the docstring on
+    `test_a_cached_repo_no_engine_reads_is_refused_by_name` for why a GGUF is
+    no longer this test's example (SPEC AI-11)."""
+    _cached_repo(hub, "org/ckpt-only", files=("model.ckpt",))
+    response = client.post("/api/ai/runtime/download", json={"model": "org/ckpt-only"},
                            headers={"X-Fused": "1"})
     assert response.status_code == 400
-    assert "org/gguf-only" in response.json()["error"]
+    assert "org/ckpt-only" in response.json()["error"]
     assert dispatched == []
 
 
