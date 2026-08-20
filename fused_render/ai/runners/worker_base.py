@@ -1504,9 +1504,17 @@ class _HubByteTicker:
         subclass, deliberately: hf's own `_create_progress_bar` hands a
         non-tqdm `cls` straight through as `cls(**kwargs)`, with none of
         tqdm's `disable`/`name` machinery grafted on, which this needs
-        exactly as little of. The only things read back off an instance are
-        `.n` and `.total` (hf's own aggregation helpers check both with
-        `getattr`/`hasattr`); the only thing called on it is `.update`.
+        exactly as little of. Read back off an instance: `.n`, `.total` (hf's
+        own aggregation helpers check both with `getattr`/`hasattr`) and
+        `.format_dict` — verified against the real huggingface_hub installed
+        in the runner venvs (1.27.0, 1.28.0): `_AggregatedTqdm.set_postfix_str`
+        forwards to `_set_aggregate_rate_postfix`, which does
+        `bar.format_dict.get("rate")` on OUR bar, called by
+        `XetDownloadProgressReporter.update_progress` on the first non-zero
+        byte increment. Missing it is not a cosmetic gap: it is an
+        `AttributeError` raised from inside the download, on every
+        Xet-backed repo — which is every mlx-community one — the moment the
+        first byte lands. Called: `.update`, `.set_postfix_str`.
         """
         ticker = self
 
@@ -1517,11 +1525,26 @@ class _HubByteTicker:
                 self._is_bytes = kwargs.get("unit") == "B"
                 self._reconstruct = "reconstruct" in (kwargs.get("desc") or "").lower()
 
+            @property
+            def format_dict(self):
+                # hf reads only `rate` off this (see the docstring above); `n`
+                # and `total` are included too since real tqdm's own
+                # `format_dict` carries them and a future caller reading
+                # either would otherwise hit the same missing-attribute crash
+                # this property exists to stop. `rate` is genuinely unknown —
+                # this class does no timing of its own — and `None` is what
+                # `_format_speed_postfix` already renders as "???B/s".
+                return {"rate": None, "n": self.n, "total": self.total}
+
             def update(self, n=1):
                 if not self._is_bytes or not n:
                     return
-                self.n += n
                 with ticker._lock:
+                    # `self.n` too, not just the ticker's own counters: it is
+                    # what `format_dict` above reports back to hf, and a
+                    # bar's own count has to agree with what it told the
+                    # ticker it saw.
+                    self.n += n
                     if self._reconstruct:
                         ticker._reconstruct += int(n)
                     else:

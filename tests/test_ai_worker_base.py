@@ -726,6 +726,59 @@ def test_transfer_and_reconstruct_bars_are_not_summed(base, monkeypatch):
     assert ticker.value == 700
 
 
+def _set_aggregate_rate_postfix(bar):
+    """The exact call shape hf's `_xet_progress_reporting._set_aggregate_rate_postfix`
+    makes against a bar it was handed — verified against the real
+    huggingface_hub installed in the runner venvs (1.27.0, 1.28.0). Not a
+    stand-in for that function: this IS what it does, reduced to the one
+    line that crashed, so a future signature drift on hf's side is caught
+    here rather than by a user's first Xet-backed download."""
+    bar.set_postfix_str(str(bar.format_dict.get("rate")), refresh=False)
+
+
+def test_a_bar_survives_the_rate_postfix_call_hf_makes_on_it(base, monkeypatch):
+    """The HIGH finding: `XetDownloadProgressReporter.update_progress` calls
+    `_AggregatedTqdm.set_postfix_str`, which forwards to
+    `_set_aggregate_rate_postfix(transfer_progress_or_reconstruct_progress)`
+    — and those bars are OUR `_Bar` instances, made through
+    `_create_progress_bar(cls=tqdm_class)`. That function does
+    `bar.format_dict.get("rate")`, which raised `AttributeError` on the
+    first non-zero byte of every Xet-backed download (every mlx-community
+    repo) before `_Bar` grew a `format_dict`. The existing tests never
+    caught it because they only ever call `.update()` on a fake bar, never
+    one of hf's own helper functions — this one does, deliberately.
+    """
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1000)
+    bar.update(100)
+
+    _set_aggregate_rate_postfix(bar)  # must not raise AttributeError
+
+    assert bar.format_dict["rate"] is None
+    assert bar.format_dict["n"] == 100
+    assert bar.format_dict["total"] == 1000
+
+
+def test_a_bars_own_n_is_updated_under_the_same_lock_as_the_ticker(base):
+    """`self.n += n` used to run OUTSIDE `ticker._lock`, racing the read
+    `format_dict` (and hf's own `_update_transfer_bar`/`_finish_transfer_bar`,
+    which read `.n` back to size hf's display) does on the same attribute.
+    Concurrent per-file threads funnel into ONE shared bar via
+    `_AggregatedTqdm`, exactly like `ticker._transfer`/`ticker._reconstruct`
+    do — so `.n` needs the same protection those already have, not a
+    separate unlocked increment beside them."""
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=100_000)
+    threads = [threading.Thread(target=bar.update, args=(1,)) for _ in range(500)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert bar.n == 500, "a concurrent update to .n was lost outside the lock"
+    assert ticker.value == 500
+
+
 def test_a_missing_or_ignored_counter_falls_back_to_the_disk_walk(base, monkeypatch):
     """An hf version that reports differently, or ignores `tqdm_class`
     outright, must degrade SILENTLY to exactly today's behaviour — a progress
