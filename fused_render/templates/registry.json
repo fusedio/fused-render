@@ -22,14 +22,14 @@
   ".xlsx": [
     "xlsx",
     "excel",
-    "reader",
-    "claude"
+    "claude",
+    "reader"
   ],
   ".xlsm": [
     "xlsx",
     "excel",
-    "reader",
-    "claude"
+    "claude",
+    "reader"
   ],
   ".pptx": [
     "slides",
@@ -64,13 +64,13 @@
   ],
   ".docx": [
     "docs",
-    "reader",
-    "claude"
+    "claude",
+    "reader"
   ],
   ".odt": [
     "docs",
-    "reader",
-    "claude"
+    "claude",
+    "reader"
   ],
   ".ndjson": [
     "code",
@@ -223,8 +223,8 @@
   ".pdf": [
     "pdf",
     "pdf_studio",
-    "reader",
-    "claude"
+    "claude",
+    "reader"
   ],
   ".mp4": [
     "media",

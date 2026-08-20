@@ -106,11 +106,13 @@ def test_builtin_parquet_default_is_duckdb():
 
 def test_reader_is_the_last_mode_on_text_keys():
     # Reader trails every real view on representative text formats, and is never
-    # the default (first entry stays the content view).
+    # the default (first entry stays the content view). `claude` now rides along
+    # on every key, and it takes the slot AHEAD of reader rather than after it —
+    # reader keeps the last seat wherever it is offered.
     cases = {
         "/x/notes.md": ["markdown", "code", "claude", "reader"],
         "/x/data.csv": ["duckdb", "excel", "code", "claude", "reader"],
-        "/x/paper.pdf": ["pdf", "pdf_studio", "reader"],
+        "/x/paper.pdf": ["pdf", "pdf_studio", "claude", "reader"],
         "/x/log.txt": ["code", "claude", "reader"],
     }
     for path, expected in cases.items():
@@ -119,6 +121,20 @@ def test_reader_is_the_last_mode_on_text_keys():
         assert got == expected, path
         assert got[0] != "reader", path       # never the default
         assert got[-1] == "reader", path      # and last
+
+
+def test_reader_keeps_the_last_seat_on_every_key_that_offers_it():
+    # The rule above, derived from the registry rather than sampled, so a key
+    # added later — or a `claude` appended to one by hand — cannot quietly push
+    # reader out of the trailing seat.
+    with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
+              encoding="utf-8") as f:
+        registry = json.load(f)
+    offenders = [
+        key for key, value in registry.items()
+        if isinstance(value, list) and "reader" in value and value[-1] != "reader"
+    ]
+    assert offenders == []
 
 
 def test_no_builtin_key_binds_text():
@@ -183,8 +199,11 @@ def test_git_is_offered_on_directories_and_on_no_file_key():
 
 def test_the_chat_is_offered_on_every_authored_file_key():
     # The other half of the same split: `git` stopped offering itself on a file,
-    # and the chat did not — it is bound on every key where a human authors or
-    # analyses the bytes, and is never the default.
+    # and the chat did not. These authored formats were the chat's ORIGINAL
+    # constituency, back when the binding was hand-picked; it now rides along on
+    # every registered key (see below), so they are a sample of a wider rule
+    # rather than the whole of it. What is still specific to them is the order:
+    # the chat is never the default here either.
     for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
                  "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
                  "/x/main.tf", "/x/notes.md", "/x/paper.tex",
@@ -240,17 +259,46 @@ def test_the_file_side_pair_sits_before_the_trailing_meta_mode():
         assert got[-1] == "reader", path
 
 
-def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
-    # The chat is offered where a human authors or analyses the bytes.
-    # A spreadsheet, a 3D model, a video, an archive or a PDF is none of those,
-    # so those lists are left alone rather than churned.
+def test_the_chat_rides_along_on_media_and_binary_keys_too():
+    # This used to pin the opposite. The chat was hand-picked onto the keys where
+    # a human authors or analyses the bytes, and a spreadsheet, a 3D model, a
+    # video, an archive or a PDF was ruled none of those — so those lists were
+    # left alone. The rule is reversed (owner, 2026-08-20): the chat rides along
+    # on EVERY registered key, because "is there something to say about this
+    # file" is not a question an extension can answer, and asking Claude about a
+    # video or a warehouse is as ordinary as asking about a .py. Availability is
+    # still decided per FILE, one layer down, by claude's own condition.py: a
+    # path that does not exist, or one under a remote mount, is refused there.
+    # Which is the better filter anyway — it asks about the target in front of it
+    # rather than guessing from a curated extension list.
+    #
+    # `git` did NOT come along for the reversal: it stays folder-only, sourced
+    # from the "/" directory key alone (see above), so its absence here is the
+    # half of the old split that still holds.
     for path in ["/x/book.xlsx", "/x/scene.glb", "/x/clip.mp4",
                  "/x/bundle.tar.gz", "/x/paper.pdf", "/x/tiles.pmtiles",
                  "/x/warehouse.duckdb"]:
         got, error = modes(path)
         assert error is None, path
         assert "git" not in got, path
-        assert "claude" not in got, path
+        assert "claude" in got, path
+        assert got[0] != "claude", path  # still never the default
+
+
+def test_every_registered_key_offers_the_chat():
+    # The reversal above, stated over the registry itself rather than sampled, so
+    # a key added later inherits the rule instead of quietly opting out of it.
+    # The universal "/" directory key is in scope too — it LEADS with the chat
+    # (D280). Keys bound to null or [] (previews disabled outright) have no list
+    # to carry a mode at all, so they are not offenders.
+    with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
+              encoding="utf-8") as f:
+        registry = json.load(f)
+    offenders = [
+        key for key, value in registry.items()
+        if isinstance(value, list) and value and "claude" not in value
+    ]
+    assert offenders == []
 
 
 def test_claude_leads_the_universal_directory_key():
@@ -290,23 +338,34 @@ def test_compressed_tabular_routes_to_duckdb():
     assert modes("/x/data.tsv.zst")[0][0] == "duckdb"
     assert modes("/x/data.json.gz")[0][0] == "duckdb"
     assert modes("/x/data.ndjson.gz")[0][0] == "duckdb"
-    # A real archive (or a bare .gz) still opens in the tar viewer, untouched.
-    assert modes("/x/bundle.tar.gz") == (["tar"], None)
-    assert modes("/x/blob.gz") == (["tar"], None)
+    # A real archive (or a bare .gz) still opens in the tar viewer, untouched
+    # apart from the chat every key now trails (see the chat tests above).
+    assert modes("/x/bundle.tar.gz") == (["tar", "claude"], None)
+    assert modes("/x/blob.gz") == (["tar", "claude"], None)
 
 
 def test_duckdb_database_files_route_to_duckdb():
     # .duckdb/.ddb open in the tabular grid; .db stays with the sqlite viewer.
-    assert modes("/x/warehouse.duckdb") == (["duckdb"], None)
-    assert modes("/x/warehouse.ddb") == (["duckdb"], None)
-    assert modes("/x/legacy.db") == (["sqlite"], None)
+    # Each trails the chat, as every key does.
+    assert modes("/x/warehouse.duckdb") == (["duckdb", "claude"], None)
+    assert modes("/x/warehouse.ddb") == (["duckdb", "claude"], None)
+    assert modes("/x/legacy.db") == (["sqlite", "claude"], None)
 
 
 def test_builtin_zarr_directory_key():
     # a `.zarr`-named dir carries the AOI streamer and the raw member listing as
     # peer modes (the legacy `zarr` template is gone; folder-level detection for
-    # non-`.zarr` dirs is handled by the gate on the "/" key instead).
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "_listing"], None)
+    # non-`.zarr` dirs is handled by the gate on the "/" key instead), and then
+    # the chat like every other key.
+    #
+    # The chat has to be spelled out in THIS key rather than inherited: matching
+    # picks exactly one winning key and uses its list whole (`_match_registry`
+    # returns a single best entry — lists are never merged), and `.zarr/` has a
+    # segment where "/" has none, so it outranks the universal directory key and
+    # REPLACES it. Leave `claude` out of `.zarr/` and a Zarr store becomes the one
+    # directory on the machine with no chat.
+    assert modes("/x/store.zarr", is_dir=True) == (
+        ["zarr_aoi", "_listing", "claude"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -774,7 +833,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     # ...and its folder is deleted, so the name no longer resolves at all
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
-    assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
+    assert registry[".zarr/"] == ["zarr_aoi", "_listing", "claude"]
     assert registry["/"] == ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
 
 
@@ -783,12 +842,14 @@ def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
     # returns True with ZERO marker files present (and zero filesystem calls).
     store = tmp_path / "store.zarr"
     store.mkdir()
-    assert modes(str(store), is_dir=True) == (["zarr_aoi", "_listing"], None)
+    assert modes(str(store), is_dir=True) == (
+        ["zarr_aoi", "_listing", "claude"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    # The `.zarr/` key is its own mode list and never offers `graph`, so
-    # zarr_aoi is the only gate to evaluate here.
-    assert cond == {"zarr_aoi": True} and err is None
+    # The `.zarr/` key is its own mode list and never offers `graph`, so the only
+    # gates to evaluate here are zarr_aoi and the chat that every key now carries
+    # — and the chat says yes for any existing directory (see the note below).
+    assert cond == {"zarr_aoi": True, "claude": True} and err is None
 
 
 # `claude: True` in the condition dicts below is not incidental to Zarr: it
