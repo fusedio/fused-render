@@ -1646,12 +1646,18 @@ describe("where the new-folder answer is shown", () => {
     expect(src()).toContain("newFolder && recentsOpen");
   });
 
-  test("a verdict that lands on a shut dropdown reopens it", () => {
+  test("a verdict that lands on a shut dropdown reopens it — once", () => {
     const s = src();
     // Armed by a keystroke or by naming a folder in the picker — never by the
     // prefill an Edit opens with, which would pop a list nobody asked for.
     expect(s).toContain("revealNew.current = true;");
-    expect(s).toContain("if (!newFolder || pathError || recentsOpen || !revealNew.current) return;");
+    // The flag is consumed the moment the verdict is VISIBLE, even when the
+    // list was already open — an unconsumed flag would fire on the next
+    // recentsOpen flip and reopen a list the user just dismissed (bugbot,
+    // #679: Escape could never stick while newFolder was set).
+    expect(s).toContain("if (!newFolder || pathError || !revealNew.current) return;");
+    expect(s).toContain("if (!recentsOpen) openRecents();");
+    expect(s).not.toContain("recentsOpen || !revealNew.current");
   });
 });
 

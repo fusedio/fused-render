@@ -2310,9 +2310,13 @@ export default function NewJobModal({
   // scare, not an answer.
   const revealNew = useRef(false);
   useEffect(() => {
-    if (!newFolder || pathError || recentsOpen || !revealNew.current) return;
+    if (!newFolder || pathError || !revealNew.current) return;
+    // Consumed the moment the verdict is on screen, not only when this effect
+    // is the one that put it there: a verdict landing in an already-open list
+    // is revealed too, and a flag left set past that point would reopen the
+    // list on Escape — a dropdown that cannot stay dismissed (bugbot, #679).
     revealNew.current = false;
-    openRecents();
+    if (!recentsOpen) openRecents();
   }, [newFolder, pathError, recentsOpen, openRecents]);
 
   // The ask shares Title's borderless surface but not its face, and it grows
