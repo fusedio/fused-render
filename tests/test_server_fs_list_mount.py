@@ -204,7 +204,16 @@ def test_walk_mount_skips_failing_subdir_and_continues(home, tmp_path, monkeypat
             _entry("ok", is_dir=True)]
 
     def fake_list(path, timeout=None):
-        tail = path.rstrip("/").rsplit("/", 1)[-1]
+        # os.path.basename, not a "/"-only rsplit: the real walker enqueues
+        # child dirs via os.path.join(current, name) (walk.py), which is
+        # backslash-joined on Windows — rsplit("/", 1) then finds no "/" at
+        # all and returns the WHOLE path as `tail`, so it never matches "big"
+        # or "ok" and every call falls through to `root`, silently descending
+        # into "big" instead of skipping it. The real rc_list_dir (bypassed by
+        # this monkeypatch) only ever sees the forward-slash remote-relative
+        # key _mount_for computes; os.path.basename is what's separator-
+        # agnostic on both platforms without needing that translation here.
+        tail = os.path.basename(path.rstrip("/\\"))
         if tail == "big":
             raise mounts_mod.RcListTimeout("too many entries")
         if tail == "ok":
@@ -403,7 +412,12 @@ def test_walk_s3_capable_uses_pages(home, rcd, tmp_path, monkeypatch, fresh_cfg_
 
     def fake(path, *, max_keys, continuation=None, timeout=None):
         calls.append(path)
-        tail = path.rstrip("/").rsplit("/", 1)[-1]
+        # os.path.basename — see test_walk_mount_skips_failing_subdir_and_
+        # continues above: the walker's enqueued child path is os.path.join'd
+        # (backslash on Windows), so a "/"-only rsplit never isolates "sub"
+        # there and every call falls through to the root listing instead of
+        # recursing into it correctly.
+        tail = os.path.basename(path.rstrip("/\\"))
         if tail == "sub":
             return ([_entry("b.txt", size=2)], None)
         return ([_entry("a.txt", size=1), _entry("sub", is_dir=True)], None)
@@ -540,7 +554,22 @@ def test_list_s3_budget_never_passes_nonpositive_timeout(home, rcd, tmp_path, mo
                  for i in range(10)], "NEXT")
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    monkeypatch.setattr(_server_walk, "S3_LIST_OVERALL_TIMEOUT_S", 1e-9)
+    # 0.0, not 1e-9: pathops._accumulate_direct_pages computes
+    # `deadline = time.monotonic() + overall_timeout`, and time.monotonic()
+    # on Windows is GetTickCount64-backed (~15.6ms resolution) rather than the
+    # sub-microsecond POSIX clock_gettime(CLOCK_MONOTONIC) — adding 1e-9
+    # produces a deadline a hair AFTER "now" that survives float rounding, and
+    # while the tick stays frozen (routinely tens of iterations' worth on
+    # Windows, since each iteration here is a few microseconds of pure Python)
+    # every check reads that same tiny positive gap and never breaks, so the
+    # loop way overshoots page 1 (460 entries, not 10) before the tick finally
+    # advances. 0.0 makes the deadline EXACTLY equal to "now", so `left` reads
+    # back <= 0 on the very first post-page check even with a frozen tick —
+    # this is exactly test_list_s3_overall_budget_returns_resumable_page's
+    # already-passing "budget bites after page 1" value, and (verified above)
+    # produces the identical single-page outcome this test already asserts on
+    # every platform where the clock ever advances between checks.
+    monkeypatch.setattr(_server_walk, "S3_LIST_OVERALL_TIMEOUT_S", 0.0)
     resp = _client(tmp_path).get(
         "/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 200

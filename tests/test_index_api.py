@@ -96,7 +96,9 @@ def test_scan_status_and_stats_over_a_real_tree(home, tmp_path):
         time.sleep(0.2)
     assert state is not None and state["running"] is False, state
     assert state["error"] is None, state["error"]
-    assert state["root"] == str(src)
+    # the real `runner.start` records `canonical_root(root)`, not the
+    # caller's raw spelling (platform.md §1) — a no-op of that on POSIX.
+    assert state["root"] == runner.canonical_root(str(src))
 
     stats = client.get("/api/index/stats", params={"root": str(src)}).json()
     assert stats["rows"] == 2
@@ -219,10 +221,13 @@ def test_config_round_trips_roots_and_ignore(home, tmp_path):
                        json={"roots": [str(tmp_path)], "ignore": ["node_modules", ""]},
                        headers={"X-Fused": "1"})
     assert resp.status_code == 200
-    assert resp.json()["roots"] == [str(tmp_path)]
+    # "roots" answers with `scan_roots(cfg)` — canonical_root form, not the
+    # caller's raw spelling (platform.md §1; routers/index.scan_roots).
+    canon = [runner.canonical_root(str(tmp_path))]
+    assert resp.json()["roots"] == canon
     assert resp.json()["ignore"] == ["node_modules", ""]  # verbatim
     body = client.get("/api/index/config").json()
-    assert body["roots"] == [str(tmp_path)]
+    assert body["roots"] == canon
     assert body["defaults"]  # the starting list is reported for a Reset button
 
 
@@ -306,7 +311,11 @@ def test_a_search_is_filtered_against_its_enclosing_index_root(home, tmp_path,
     # Both requests pool under the configured root, whichever folder was asked
     # for. A folder outside every root has no pool to share and gets None.
     client.get(f"/api/index/search?root={tmp_path.parent}")
-    assert seen == [str(tmp_path), str(tmp_path), None]
+    # The route hands `filter_corpus` the matched entry from `scan_roots`,
+    # which is already in `runner.canonical_root` form — not the caller's
+    # raw spelling (platform.md §1) — so the expectation has to be too.
+    canon = runner.canonical_root(str(tmp_path))
+    assert seen == [canon, canon, None]
 
 
 def test_saving_the_ignore_list_preserves_comments_and_blank_lines(home, tmp_path):
@@ -358,7 +367,17 @@ def test_saving_rules_mid_scan_supersedes_the_running_scan(home, tmp_path, monke
     index_router.save_config(cfg)
     # A scan is running under rules A, and rules A are what the index claims.
     live = index_router.runner.start(load_config(), str(root))
-    index_router.save_applied_ignore(load_config(), str(root))
+    # `save_applied_ignore` (unlike `runner.start`) does NOT canonicalize its
+    # own `root` — it trusts the caller, because its real caller (`scan.
+    # run_scan`) only ever gets there with the already-canonical spelling
+    # `runner.start` wrote into spec.json. Passing the raw `str(root)` here
+    # instead would file the fingerprint under a key `applied_ignore_sig`
+    # (looked up via the canonical `scan_roots(cfg)` entries) can never find,
+    # reading as "unknown" — which the route's `(sig or current) != current`
+    # check treats as "already reconciled", so `needs_rescan` comes back
+    # False instead of True.
+    index_router.save_applied_ignore(load_config(),
+                                     index_router.runner.canonical_root(str(root)))
 
     body = _client(tmp_path).post(
         "/api/index/config", json={"ignore": ["node_modules", "target"]},
@@ -385,15 +404,17 @@ def test_default_scan_roots_are_the_users_home(home, tmp_path, monkeypatch):
     real_expanduser = os.path.expanduser
     monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / "userhome")
                         if p == "~" else real_expanduser(p))
+    # `scan_roots` answers in `runner.canonical_root` form (platform.md §1),
+    # not the raw native-separator string `expanduser`/`str(Path)` hand back.
     assert index_router.scan_roots(load_config(), start_dir=str(tmp_path)) == [
-        str(tmp_path / "userhome")]
+        runner.canonical_root(str(tmp_path / "userhome"))]
 
 
 def test_configured_roots_win_over_the_default(home, tmp_path):
     cfg = load_config()
     cfg.roots = [str(tmp_path / "proj")]
     assert index_router.scan_roots(cfg, start_dir=str(tmp_path)) == [
-        str(tmp_path / "proj")]
+        runner.canonical_root(str(tmp_path / "proj"))]
 
 
 def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypatch):
@@ -424,8 +445,12 @@ def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypat
     cfg.roots = ["~/proj", str(tmp_path / "other") + "/"]
     assert index_router.scan_roots(cfg) == [
         runner.canonical_root(r) for r in cfg.roots]
-    # ~ really was expanded, so this is not a tautology over two no-ops
-    assert index_router.scan_roots(cfg)[0] == str(tmp_path / "userhome" / "proj")
+    # ~ really was expanded, so this is not a tautology over two no-ops. Still
+    # wrapped in canonical_root: the concatenation above (`fake_home + p[1:]`)
+    # is native-separator on Windows, and canonical_root is what scan_roots
+    # itself would produce from that same expansion.
+    assert index_router.scan_roots(cfg)[0] == runner.canonical_root(
+        str(tmp_path / "userhome" / "proj"))
     # and the default root gets the same treatment
     cfg.roots = []
     assert index_router.scan_roots(cfg) == [runner.canonical_root("~")]
@@ -453,7 +478,9 @@ def test_scan_with_no_root_uses_the_configured_one(home, tmp_path, monkeypatch):
     cfg.roots = [str(tmp_path)]
     index_router.save_config(cfg)
     _client(tmp_path).post("/api/index/scan", json={}, headers={"X-Fused": "1"})
-    assert seen == [str(tmp_path)]
+    # the route resolves the missing root through `scan_roots`, which answers
+    # in canonical_root form, not the configured raw spelling.
+    assert seen == [runner.canonical_root(str(tmp_path))]
 
 
 def test_scan_with_no_root_covers_EVERY_root(home, tmp_path, monkeypatch):
@@ -473,11 +500,14 @@ def test_scan_with_no_root_covers_EVERY_root(home, tmp_path, monkeypatch):
     index_router.save_config(cfg)
     body = _client(tmp_path).post("/api/index/scan", json={"full": True},
                                   headers={"X-Fused": "1"}).json()
-    assert seen == [(str(a), True), (str(b), True)]
-    assert [r["root"] for r in body["runs"]] == [str(a), str(b)]
+    # every root the route hands to `start` came out of `scan_roots`, in
+    # canonical_root form.
+    ca, cb = runner.canonical_root(str(a)), runner.canonical_root(str(b))
+    assert seen == [(ca, True), (cb, True)]
+    assert [r["root"] for r in body["runs"]] == [ca, cb]
     # the single-run fields stay, for a caller that only knows about one
     assert body["run_id"] == "run-a"
-    assert body["root"] == str(a)
+    assert body["root"] == ca
 
 
 def test_scan_with_no_root_skips_roots_that_no_longer_exist(home, tmp_path, monkeypatch):
@@ -497,7 +527,8 @@ def test_scan_with_no_root_skips_roots_that_no_longer_exist(home, tmp_path, monk
     resp = _client(tmp_path).post("/api/index/scan", json={},
                                   headers={"X-Fused": "1"})
     assert resp.status_code == 200
-    assert [r["root"] for r in resp.json()["runs"]] == [str(live)]
+    assert [r["root"] for r in resp.json()["runs"]] == [
+        runner.canonical_root(str(live))]
 
 
 def test_scan_with_no_root_and_nothing_startable_is_an_error(home, tmp_path, monkeypatch):

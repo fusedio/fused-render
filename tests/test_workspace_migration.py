@@ -133,12 +133,16 @@ def test_rewrites_bookmark_urls_including_nested_folders(machine):
     legacy, new, home = machine
     legacy.mkdir(parents=True)
     bookmarks = os.path.join(str(home), "bookmarks.json")
+    # A view url's path is always canonical_fs_path form (forward slashes,
+    # per _remap's own docstring) — never the raw, backslashed-on-Windows
+    # str(Path) that a filesystem `target`/`path` field would hold.
     storage.write_json(bookmarks, [
         {"id": "1", "name": "app", "url": "/explorer/view"
-         + str(legacy / "my app" / "index.html").replace(" ", "%20")
+         + wm.canonical_fs_path(str(legacy / "my app" / "index.html")).replace(" ", "%20")
          + "?sort=name"},
         {"id": "2", "type": "folder", "name": "f", "children": [
-            {"id": "3", "name": "deep", "url": "/explorer/view" + str(legacy / "d")},
+            {"id": "3", "name": "deep",
+             "url": "/explorer/view" + wm.canonical_fs_path(str(legacy / "d"))},
         ]},
         {"id": "4", "name": "outside", "url": "/explorer/view/Users/x/notes"},
         {"id": "5", "name": "sentinel", "url": "/explorer/view/_prefs"},
@@ -148,9 +152,10 @@ def test_rewrites_bookmark_urls_including_nested_folders(machine):
 
     items = storage.read_json(bookmarks)
     assert items[0]["url"] == ("/explorer/view"
-                               + str(new / "my app" / "index.html").replace(" ", "%20")
+                               + wm.canonical_fs_path(str(new / "my app" / "index.html")).replace(" ", "%20")
                                + "?sort=name")
-    assert items[1]["children"][0]["url"] == "/explorer/view" + str(new / "d")
+    assert items[1]["children"][0]["url"] == (
+        "/explorer/view" + wm.canonical_fs_path(str(new / "d")))
     assert items[2]["url"] == "/explorer/view/Users/x/notes"
     assert items[3]["url"] == "/explorer/view/_prefs"
 
@@ -177,7 +182,8 @@ def test_rewrites_recent_urls_and_keeps_their_params(machine):
     legacy.mkdir(parents=True)
     recents = os.path.join(str(home), "recents.json")
     storage.write_json(recents, {"collapsed": False, "entries": [
-        {"url": "/explorer/view" + str(legacy / "a.html") + "?_side=claude&run=",
+        {"url": "/explorer/view" + wm.canonical_fs_path(str(legacy / "a.html"))
+         + "?_side=claude&run=",
          "openedAt": "2026-01-01T00:00:00+00:00", "title": "A"},
         {"url": "/explorer/view/Users/x/b.html", "openedAt": "x"},
     ]})
@@ -185,7 +191,7 @@ def test_rewrites_recent_urls_and_keeps_their_params(machine):
     wm.run()
 
     entries = storage.read_json(recents)["entries"]
-    assert entries[0]["url"] == ("/explorer/view" + str(new / "a.html")
+    assert entries[0]["url"] == ("/explorer/view" + wm.canonical_fs_path(str(new / "a.html"))
                                  + "?_side=claude&run=")
     assert entries[0]["title"] == "A"
     assert entries[1]["url"] == "/explorer/view/Users/x/b.html"
@@ -215,13 +221,14 @@ def test_state_rewrites_run_even_when_an_earlier_run_moved_the_folder(machine):
     new.mkdir(parents=True)
     recents = os.path.join(str(home), "recents.json")
     storage.write_json(recents, {"collapsed": False, "entries": [
-        {"url": "/explorer/view" + str(legacy / "a.html"), "openedAt": "x"},
+        {"url": "/explorer/view" + wm.canonical_fs_path(str(legacy / "a.html")),
+         "openedAt": "x"},
     ]})
 
     wm.run()
 
     entries = storage.read_json(recents)["entries"]
-    assert entries[0]["url"] == "/explorer/view" + str(new / "a.html")
+    assert entries[0]["url"] == "/explorer/view" + wm.canonical_fs_path(str(new / "a.html"))
 
 
 def test_missing_state_files_are_a_no_op(machine):
@@ -472,15 +479,19 @@ def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
         "good": {"path": str(legacy / "app")},
     }})
     bookmarks = os.path.join(str(home), "bookmarks.json")
+    # url fields are canonical_fs_path form (see the two tests above); the
+    # installs/scheduled-message paths below stay raw str(Path) — an
+    # OS-native record, per _remap's own docstring.
     storage.write_json(bookmarks, [
         {"id": "1", "name": "bad", "url": None},
         {"id": "2", "name": "worse", "url": {"nested": 1}},
-        {"id": "3", "name": "good", "url": "/explorer/view" + str(legacy / "a.html")},
+        {"id": "3", "name": "good",
+         "url": "/explorer/view" + wm.canonical_fs_path(str(legacy / "a.html"))},
     ])
     recents = os.path.join(str(home), "recents.json")
     storage.write_json(recents, {"entries": [
         {"url": 42},
-        {"url": "/explorer/view" + str(legacy / "b.html")},
+        {"url": "/explorer/view" + wm.canonical_fs_path(str(legacy / "b.html"))},
     ]})
     store = os.path.join(str(home), "scheduled_messages.json")
     storage.write_json(store, {"entries": [
@@ -494,9 +505,9 @@ def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
     assert storage.read_json(str(installs))["installs"]["good"]["path"] \
         == str(new / "app")
     assert storage.read_json(bookmarks)[2]["url"] \
-        == "/explorer/view" + str(new / "a.html")
+        == "/explorer/view" + wm.canonical_fs_path(str(new / "a.html"))
     assert storage.read_json(recents)["entries"][1]["url"] \
-        == "/explorer/view" + str(new / "b.html")
+        == "/explorer/view" + wm.canonical_fs_path(str(new / "b.html"))
     assert storage.read_json(store)["entries"][1]["target"] == str(new / "proj")
     # ...and the corrupt ones are left exactly as they were.
     assert storage.read_json(str(installs))["installs"]["bad"]["path"] is None
