@@ -5693,6 +5693,29 @@ an AI Models page that could say what was on disk but not what was *running*.
   segments write out of order, so the file is created at its final size and
   filled sparsely, and `st_size` would report a 4.6GB download as complete before
   a byte had arrived.
+
+  **On the FALLBACK path — `snapshot_download`/`hf_hub_download`, not our own
+  segmented fetch — the disk walk alone is not enough either (D405).** `hf_xet`
+  ships in every runner venv and every mlx-community repo is Xet-backed, and Xet
+  delivers bytes in BURSTS: measured on a 481MB repo, `bytes_on_disk` sat on one
+  number for 6 seconds, then jumped ~90MB, then landed the last ~45% all at once
+  on completion. Scaled to a 4.6GB model that reads as "stuck at 98%" for a
+  minute of a perfectly healthy download. `_HubByteTicker` is a `tqdm_class`
+  passed to hf's own downloader that reads its BYTE bars directly — but the
+  outer "Fetching N files" bar hf also hands a `tqdm_class` is the same trap
+  one level further in, since it has no `unit` at all and reporting its
+  per-file `.update(1)` as bytes reproduces the "10 / 11 B" bug this section
+  already fixed once; `unit == "B"` is what tells the two apart. Xet also hands
+  back TWO byte bars — network TRANSFER and disk RECONSTRUCTION — covering
+  close to the same total, so they are tracked separately and the counter
+  reports whichever is FURTHER ALONG rather than their sum, which can read past
+  100%. The tick reports `max(hub counter, disk walk)`, never less than either,
+  and keeps ticking once a second regardless of which is moving — the tick
+  itself is the heartbeat (AI-5h), not whichever number happens to be live. An
+  hf version that reports differently, or ignores `tqdm_class` outright, is
+  silently indistinguishable from a counter that has not started yet: either
+  way the tick falls back to exactly the disk-walk-only number, because a
+  progress refinement must never be able to fail or freeze a download.
 - **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
   Two workers for one capability really do overlap — an eviction's replacement
   starts while the old one is still being killed, a Download runs beside a Load —
@@ -5807,16 +5830,34 @@ an AI Models page that could say what was on disk but not what was *running*.
   by a token-holding user fail over to the slow path (the token is whatever
   `huggingface_hub.get_token()` finds in the worker — hf's own store, written by
   the Preferences login button or by a `hf auth login`; nothing is injected into
-  the worker's environment, §20/PF-1f, D402) — up to
-  **4 `Range` segments per file** with **segments across all files** as
-  the units of work in one pool capped at **8 connections** — the single number
-  that bounds how many sockets a download opens, which a pool per file would
-  multiply out. Segments share one fd and write with `os.pwrite`, and per-segment
-  offsets go to a sidecar in the order that makes them true: snapshot the
-  cursors, **fsync the data, then write the sidecar** — a recorded byte is always
-  a durable byte, so a resume never skips one that was still in flight. The
-  partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
-  resumes one of those by seeking to its length, ours are written out of order,
+  the worker's environment, §20/PF-1f, D402) — a file at or above the
+  segment floor is split into **fixed `CHUNK_BYTES` (32MB) pieces**, with
+  **chunks across all files** as the units of work in one pool capped at **8
+  connections** (D404) — the single number that bounds how many sockets a
+  download opens, which a pool per file would multiply out. Fixed size rather
+  than the earlier `size / N` equal shares (capped at 4 per file) is what
+  fixed the download's TAIL: four equal shares finish at four different real
+  speeds, and once the fast three are done there is nothing left to hand the
+  slow one, which measured as a 481MB model's last quarter running 80% longer
+  than its first and a 4.6GB model crawling from ~90% to 100% for over a
+  minute. Fixed-size chunks turn a big file into MANY units of work in the
+  shared queue, so an idle worker pulls the NEXT chunk instead of finding
+  nothing assigned to it — a slow connection then delays only its own current
+  32MB, never the tail of the whole download. Chunks share one fd per file and
+  write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
+  that makes them true: snapshot the cursors, **fsync the data, then write the
+  sidecar** — a recorded byte is always a durable byte, so a resume never
+  skips one that was still in flight. **The sidecar carries its own version
+  number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
+  list MEANS — fixed pieces rather than equal shares — so a sidecar written
+  before this existed can have the right etag and size and a self-consistent
+  layout while describing boundaries this build derives differently for the
+  same file, which is exactly the input shape that turns a resume into a
+  silently wrong blob rather than a loudly failed one. Any sidecar whose
+  version does not match, missing included, is discarded exactly like no
+  sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
+  hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
+  are written out of order,
   and handing it one would produce a silently corrupt blob. Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
