@@ -78,7 +78,15 @@ def test_branch_ref_foo(monkeypatch):
     base = os.environ["FUSED_RENDER_HOME"]
     assert storage.home_dir() == os.path.join(base, "branches", "foo")
     assert _server_templates.USER_TEMPLATES_DIR == os.path.join(base, "branches", "foo", "templates")
-    assert app.APP_SUPPORT_DIR.endswith("Application Support/fused-render/branches/foo")
+    # `_APP_SUPPORT_BASE` is a hardcoded macOS-flavored literal (forward
+    # slashes baked into the string, untouched by any join call) with
+    # "branches/foo" appended on top via branch_dir()'s os.path.join — which
+    # uses the NATIVE separator. app.py only ever ships as part of the macOS
+    # bundle, but it is plain-importable (and imported here) on any platform,
+    # so the expected suffix has to be built the same mixed way rather than
+    # assuming forward slashes throughout.
+    assert app.APP_SUPPORT_DIR.endswith(
+        os.path.join("Application Support/fused-render", "branches", "foo"))
     assert app.DEFAULT_PORT == _branch.branch_port("foo")
     assert app.MAX_PORT == app.DEFAULT_PORT + 10
     assert cli.DEFAULT_PORT == app.DEFAULT_PORT
