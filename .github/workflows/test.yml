@@ -246,21 +246,24 @@ jobs:
 
   # Broader Windows coverage than windows-desktop below, which only runs the
   # five supervisor-specific files gated on windows_desktop paths. This job
-  # runs the WHOLE suite on real Windows across the same python-version
-  # matrix as test-python, to find portability bugs outside the supervisor
-  # (path handling, process spawn, file locking, sockets, …) that the Linux
-  # matrix can only ever simulate. No test here has ever been run on Windows
-  # before, so continue-on-error until a pass shows which failures are real —
-  # remove it once the suite is green (or the real failures are triaged into
-  # skips) so this becomes a required check like every other platform job.
+  # runs the WHOLE suite on real Windows to find portability bugs outside the
+  # supervisor (path handling, process spawn, file locking, sockets, …) that
+  # the Linux matrix can only ever simulate.
+  #
+  # One version, not a matrix: unlike test-python below (a source install,
+  # which genuinely has to work across every Python this package supports),
+  # the only Python that ever runs fused-render on a real Windows machine is
+  # the one build_windows_installer.ps1 bundles into the installer — pinned
+  # there via `uv python install 3.12`. Testing 3.10/3.11/3.13 here would be
+  # covering interpreters no Windows user's install ever runs.
+  #
+  # continue-on-error until a pass shows which failures are real — remove it
+  # once the suite is green (or the real failures are triaged into skips) so
+  # this becomes a required check like every other platform job.
   test-python-windows:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -273,7 +276,8 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          # Same version the bundled installer's `uv python install 3.12` pins.
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
 
