@@ -173,6 +173,57 @@ def test_a_second_click_joins_the_login_already_running(client, monkeypatch):
     client.post("/api/hf/login/cancel", headers=FUSED)
 
 
+def test_two_overlapping_logins_ask_the_hub_for_ONE_code(client, monkeypatch):
+    """The join gate has to be atomic with the create, not a read taken before it.
+
+    Reported by Bugbot on #676: `live` was read under the lock, the lock was
+    dropped for the Hub round-trip, and `_flow` was swapped afterwards — so two
+    overlapping requests both passed the gate. The Hub then issued two device
+    codes with two threads polling them while the page could only ever show the
+    second, which left the first free to persist a token for a code the user
+    never saw. Reachable with one user: a browser tab and the desktop window are
+    two surfaces onto the same server.
+
+    Driven with a SLOW `request_device_code`, because a fast one hides the bug —
+    the interleaving only exists while that call is in flight.
+    """
+    calls = []
+
+    def slow_request():
+        calls.append(1)
+        time.sleep(0.3)  # the Hub round-trip the old gate left unguarded
+        return _device(user_code=f"CODE-{len(calls)}")
+
+    from huggingface_hub.utils import _oauth_device
+
+    monkeypatch.setattr(_oauth_device, "request_device_code", slow_request)
+    monkeypatch.setattr(_oauth_device, "poll_device_token",
+                        lambda info, on_pending=None: _park(on_pending))
+
+    replies = []
+    threads = [threading.Thread(target=lambda: replies.append(
+        client.post("/api/hf/login", headers=FUSED).json())) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+
+    assert len(calls) == 1, "the Hub was asked for a second device code"
+    assert sorted(r["joined"] for r in replies) == [False, True]
+    # Both surfaces are looking at the SAME code — the one being polled.
+    assert {r["pending"]["userCode"] for r in replies} == {"CODE-1"}
+    client.post("/api/hf/login/cancel", headers=FUSED)
+
+
+def _park(on_pending):
+    """Stand in for a login nobody has authorized yet: hf's poll, blocking until
+    the flag its `on_pending` hook watches is set."""
+    while True:
+        if on_pending is not None:
+            on_pending()
+        time.sleep(0.01)
+
+
 def test_cancel_unwinds_a_thread_parked_inside_hfs_poll(client, monkeypatch):
     """`poll_device_token` blocks for the code's whole lifetime and takes no
     cancel argument; raising from its `on_pending` hook is the only way out, and

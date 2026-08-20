@@ -34,7 +34,11 @@ parts and the middle one is a human being:
 **One flow at a time, and a second POST joins the first** rather than starting
 another. Two device codes for one user is two codes to choose between on the
 Hub's page, only one of which will ever be polled — the same "join, don't
-restart" rule the model supervisor applies to a load already in flight.
+restart" rule the model supervisor applies to a load already in flight. That
+takes TWO locks and the reason is in `_start_lock`: checking for a live flow and
+creating one have to be atomic with each other across a Hub round-trip, and the
+page polls status once a second throughout, so the pointer and the decision
+cannot be guarded by the same thing.
 
 **hf's private seams, deliberately.** `_save_oauth_token` is what persists a
 device-code response *with* its refresh metadata, and `_logout_from_token`
@@ -95,6 +99,14 @@ class _Flow:
 
 
 _lock = threading.Lock()
+#: Serializes STARTING a login, which `_lock` cannot: the check for a flow
+#: already in flight and the creation of a new one have to be atomic with each
+#: other, and between them sits `request_device_code()` — a Hub round-trip.
+#: Widening `_lock` over that call would block every `GET /api/hf/auth` for its
+#: duration (the page polls that once a second), so the two locks divide the
+#: work: `_lock` guards the pointer, this one guards the decision. Never held
+#: while `_lock` is, and `_state()` never takes it, so the pair cannot deadlock.
+_start_lock = threading.Lock()
 _flow: _Flow | None = None
 #: The account the last successful login was for, kept for the life of the
 #: process. Not authority — `_state()` re-reads the token on every request — but
@@ -308,38 +320,49 @@ def api_hf_login(x_fused: str | None = Header(default=None)):
             f"use. Unset it to sign in from here.",
             status=409,
         )
-    with _lock:
-        live = _flow is not None and not _flow.done and not _flow.cancelled
-    # Answered OUTSIDE the lock, deliberately: `_state()` takes `_lock` itself,
-    # and `threading.Lock` is not reentrant — building the reply in here
-    # deadlocked the second click, which is exactly the request this branch
-    # exists to serve. The lock guards the POINTER swap, nothing wider; every
-    # field of a `_Flow` is written by one thread and read by another as a
-    # plain attribute, which is why nothing else needs it.
-    if live:
-        # Joined, not restarted: a second device code is a second code on the
-        # Hub's page, only one of which is being polled.
-        return {"joined": True, **_state()}
-    try:
-        from huggingface_hub.utils._oauth_device import request_device_code
-    except Exception as e:  # noqa: BLE001
-        return _error(f"huggingface_hub is not available here ({e.__class__.__name__})",
-                      status=503)
-    try:
-        device_info = request_device_code()
-    except Exception as e:  # noqa: BLE001 - offline, DNS, TLS, a Hub that is down
-        return _error(f"Could not start the Hugging Face login: {e}", status=502)
-    flow = _Flow(
-        user_code=device_info["user_code"],
-        url=device_info["verification_uri_complete"],
-        expires_at=time.time() + float(device_info.get("expires_in") or 900),
-    )
-    thread = threading.Thread(target=_poll, args=(flow, device_info),
-                              name="hf-device-login", daemon=True)
-    with _lock:
-        _flow = flow
-    thread.start()
-    return {"joined": False, **_state()}
+    # Held across the whole check-then-create, which is what makes "one flow at
+    # a time" true rather than likely: reading `live` and then swapping `_flow`
+    # as two separate steps let two overlapping requests both pass the gate,
+    # and the Hub then issued two device codes with two threads polling them —
+    # while the page could only ever show the second, leaving the first free to
+    # persist a token for a code the user never saw. A concurrent login waits
+    # here for one Hub round-trip and then takes the join branch, which is the
+    # answer it wanted anyway.
+    with _start_lock:
+        with _lock:
+            live = _flow is not None and not _flow.done and not _flow.cancelled
+        # Answered outside `_lock` (though still inside `_start_lock`):
+        # `_state()` takes `_lock` itself and `threading.Lock` is not reentrant,
+        # so building the reply in there deadlocked the second click — exactly
+        # the request this branch exists to serve. `_lock` guards the POINTER;
+        # every field of a `_Flow` is written by one thread and read by another
+        # as a plain attribute, which is why nothing else needs it.
+        if live:
+            # Joined, not restarted: a second device code is a second code on
+            # the Hub's page, only one of which is being polled.
+            return {"joined": True, **_state()}
+        try:
+            from huggingface_hub.utils._oauth_device import request_device_code
+        except Exception as e:  # noqa: BLE001
+            return _error(f"huggingface_hub is not available here ({e.__class__.__name__})",
+                          status=503)
+        try:
+            device_info = request_device_code()
+        except Exception as e:  # noqa: BLE001 - offline, DNS, TLS, a Hub that is down
+            # Nothing was reserved, so nothing has to be released: the next
+            # attempt finds the same state this one did.
+            return _error(f"Could not start the Hugging Face login: {e}", status=502)
+        flow = _Flow(
+            user_code=device_info["user_code"],
+            url=device_info["verification_uri_complete"],
+            expires_at=time.time() + float(device_info.get("expires_in") or 900),
+        )
+        thread = threading.Thread(target=_poll, args=(flow, device_info),
+                                  name="hf-device-login", daemon=True)
+        with _lock:
+            _flow = flow
+        thread.start()
+        return {"joined": False, **_state()}
 
 
 @router.post("/api/hf/login/cancel")
