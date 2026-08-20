@@ -24,7 +24,7 @@ import type { Config, RecurrenceRule, ScheduledMessage } from "@platform/lib/api
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
-import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -110,6 +110,64 @@ const SESSION_FOLDERS_SHOWN = 5;
 // server accepts either separator; the PICKER's own string surgery (up(),
 // joins) only understands one.
 const normPath = (p: string) => p.replace(/\\/g, "/");
+
+// A path split into the folder it lives in and its last segment. Drive roots
+// keep their slash — bare "C:" reads as cwd-relative elsewhere in the shell,
+// not as the root (the same trap the picker's climb fixed in PR #548).
+export function splitTargetPath(path: string): { parent: string; base: string } {
+  const norm = normPath(path).trim().replace(/\/+$/, "");
+  const cut = norm.lastIndexOf("/");
+  const parent = cut > 0 ? norm.slice(0, cut) : "/";
+  return {
+    parent: /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent,
+    base: norm.slice(cut + 1),
+  };
+}
+
+// ---- What the typed path IS ---------------------------------------------------
+// Three answers, not two (Akshil, 2026-08-20): a path can also be a folder that
+// does not exist YET. Standing in `.../fused/` and typing `ABC1` is how a person
+// says "run this in a new folder called ABC1", and the form used to answer that
+// with a red line refusing to save.
+//
+// ONE new segment, and only one. Its parent has to be somewhere the user can
+// point at, because "make the folder I named" and "build me a tree I typed" are
+// different asks and only the first is one a typo cannot cause. `/a/new1/new2`
+// with no `new1` is the second, and it is refused with the reason.
+//
+// Pure so the decision can be asserted without a DOM (new-task-form.test.ts);
+// the effect below only feeds it what the two listDir calls came back with.
+export type TargetVerdict =
+  | { kind: "ok" }
+  // `name` is the segment that will be created; `parent` is where.
+  | { kind: "new-folder"; name: string; parent: string }
+  | { kind: "bad"; text: string };
+
+export const PATH_MISSING = "This folder or file doesn't exist";
+
+export function twoLevelsMissing(parent: string): string {
+  return `Only one new folder can be created — ${parent} doesn't exist either`;
+}
+
+// `parentNames` is the parent folder's entry names, or null when the PARENT
+// itself could not be listed — which is the two-missing-levels case.
+export function targetVerdict(
+  path: string,
+  parentNames: string[] | null,
+): TargetVerdict {
+  const { parent, base } = splitTargetPath(path);
+  // "." and ".." name a folder that already exists by definition, so reaching
+  // here with one of them means the path was junk rather than a new name.
+  if (!base || base === "." || base === "..") {
+    return { kind: "bad", text: PATH_MISSING };
+  }
+  if (parentNames === null) return { kind: "bad", text: twoLevelsMissing(parent) };
+  // The parent lists and already holds this name: a FILE target, which is legal
+  // — a task can run against a file. (A folder would never have got this far;
+  // listing it directly is what the caller tries first.)
+  if (parentNames.includes(base)) return { kind: "ok" };
+  return { kind: "new-folder", name: base, parent };
+}
 
 
 interface Crumb {
@@ -261,13 +319,23 @@ function ExplorerPanel({
   onPick,
   onClose,
   closing,
+  startNaming,
+  onName,
 }: {
   start: string;
   onPick: (path: string) => void;
   onClose: () => void;
+  // Fired alongside onPick when the picked path is a folder the user just
+  // NAMED here rather than one they clicked — the caller answers it by showing
+  // that the folder is about to be created.
+  onName?: () => void;
   // Mounted-but-leaving: paints the exit animation while the parent waits to
   // unmount, so the way out mirrors the way in.
   closing?: boolean;
+  // Opened BY "+ New folder" rather than by Browse: the panel comes up with the
+  // naming row already typing, so the button below Browse and the button inside
+  // the panel are one flow and not two (Akshil, 2026-08-20).
+  startNaming?: boolean;
 }) {
   // A file target starts the panel in its PARENT — listing a file's "children"
   // is a guaranteed error banner.
@@ -340,9 +408,37 @@ function ExplorerPanel({
   // the querySelector; recomputed while open because a resize moves both.
   const box = useDialogBox();
 
+  // "New folder" here NAMES one; it does not make one. The folder is created by
+  // the save, exactly as it is for a name typed straight into the path field —
+  // so backing out of the card leaves nothing behind on disk, and the picker
+  // needs no write endpoint to offer the affordance.
+  const [naming, setNaming] = useState(!!startNaming);
+  const [newName, setNewName] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (naming) nameRef.current?.focus();
+  }, [naming]);
+
   const go = (p: string) => {
     setPath(p);
     setFilter("");
+    // A half-typed name belongs to the folder it was being typed in.
+    setNaming(false);
+    setNewName("");
+  };
+
+  const typedName = newName.trim();
+  // Checked against the listing already on screen — the one place that knows
+  // what is in this folder. A name that is taken is not an error to shout
+  // about, it is a folder the user can just click.
+  const nameTaken = rows?.some((r) => r.name === typedName) ?? false;
+  const nameBad = typedName.includes("/") || typedName === "." || typedName === "..";
+  const canCreate = typedName !== "" && !nameTaken && !nameBad;
+  const confirmName = () => {
+    if (!canCreate) return;
+    onPick(path.replace(/\/+$/, "") + "/" + typedName);
+    onName?.();
+    onClose();
   };
   const crumbs = collapseCrumbs(crumbsOf(path));
   const shown = rows?.filter((r) =>
@@ -350,11 +446,21 @@ function ExplorerPanel({
   );
 
   // Escape dismisses the PANEL, not the modal behind it — captured before the
-  // modal chassis' own document-level Escape listener can see it.
+  // modal chassis' own document-level Escape listener can see it. Which is also
+  // why the naming row cannot handle its own Escape: this listener sees the key
+  // first, so it has to know there is an inner thing to back out of and undo
+  // that instead. Read through a ref because the listener is bound once.
+  const namingOpen = useRef(false);
+  namingOpen.current = naming;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopImmediatePropagation();
+        if (namingOpen.current) {
+          setNaming(false);
+          setNewName("");
+          return;
+        }
         onClose();
       }
     };
@@ -399,6 +505,39 @@ function ExplorerPanel({
         onChange={(e) => setFilter(e.target.value)}
       />
       <div className={"schedule-picker-list" + (loading ? " is-loading" : "")}>
+        {/* At the TOP of the listing, where the folder it is about to join
+            would sort — a row being typed, not a dialog over the panel. */}
+        {naming && (
+          <div className="schedule-picker-new">
+            {ICON_FOLDER}
+            <input
+              ref={nameRef}
+              type="text"
+              className="field-control schedule-picker-new-name"
+              placeholder="New folder name"
+              aria-label="New folder name"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  confirmName();
+                }
+              }}
+            />
+            <button type="button" className="btn btn-primary schedule-picker-new-ok"
+                    disabled={!canCreate} onClick={confirmName}>
+              Use
+            </button>
+          </div>
+        )}
+        {naming && typedName !== "" && !canCreate && (
+          <p className="schedule-card-why schedule-form-bad">
+            {nameTaken
+              ? `“${typedName}” is already in this folder`
+              : "A folder name can't contain a slash"}
+          </p>
+        )}
         {error && <p className="schedule-card-why">{error}</p>}
         {!error && shown?.length === 0 && !loading && (
           <p className="schedule-card-why">
@@ -426,6 +565,15 @@ function ExplorerPanel({
         ))}
       </div>
       <div className="schedule-picker-foot">
+        {/* Left of the pair, because it acts on the folder you are IN rather
+            than on the errand — same side as the crumbs it reads off. Hidden
+            while a name is being typed: the row above is the control then. */}
+        {!error && !naming && (
+          <button type="button" className="btn btn-secondary schedule-picker-newbtn"
+                  onClick={() => setNaming(true)}>
+            + New folder
+          </button>
+        )}
         <button type="button" className="btn btn-secondary" onClick={onClose}>
           Cancel
         </button>
@@ -1994,7 +2142,11 @@ export default function NewJobModal({
       setPickingOut(false);
     }, 180);
   };
-  const openPicker = () => {
+  // Which of the two dropdown verbs opened the panel: Browse lands on the
+  // listing, "+ New folder" lands on the listing WITH the naming row typing.
+  const [pickerNaming, setPickerNaming] = useState(false);
+  const openPicker = (naming = false) => {
+    setPickerNaming(naming);
     if (pickerTimer.current !== null) window.clearTimeout(pickerTimer.current);
     pickerTimer.current = null;
     setPickingOut(false);
@@ -2099,46 +2251,47 @@ export default function NewJobModal({
       return true;
     });
   }, [recentTargets, sessionFolders]);
-  const openRecents = () => {
+  const openRecents = useCallback(() => {
     setRecents(readRecentList());
     setRecentsOpen(true);
-  };
+  }, [readRecentList]);
 
   // Early path validation (Akshil, 2026-08-16 — "detect it before me
   // scanning the input"): a beat after typing stops, ask the server whether
   // the path exists. A folder answers listDir directly; a FILE fails it, so
-  // the parent is listed and the basename looked up — a file target is legal.
-  // null = fine (or still checking); a string is the red line under the row.
+  // the parent is listed and the basename looked up — a file target is legal,
+  // and so, since 2026-08-20, is ONE folder that isn't there yet (targetVerdict).
+  // `pathError` null = fine (or still checking); a string is the red line under
+  // the row. `newFolder` is the name being created, and is NOT a refusal — it
+  // is shown as a ROW IN THE DROPDOWN (Akshil, 2026-08-20: "this UI should be in
+  // dropdown"), beside the folders that already exist, rather than as an inline
+  // note under the field that pushed the rest of the form down as you typed.
   const [pathError, setPathError] = useState<string | null>(null);
+  const [newFolder, setNewFolder] = useState<string | null>(null);
   useEffect(() => {
     const p = target.trim();
     if (!p) {
       setPathError(null);
+      setNewFolder(null);
       return;
     }
     let stale = false;
+    // Neither piece of state is cleared up front: the last verdict stays on
+    // screen until the next one resolves, so the note does not blink off and
+    // back on between keystrokes.
+    const settle = (v: TargetVerdict) => {
+      if (stale) return;
+      setPathError(v.kind === "bad" ? v.text : null);
+      setNewFolder(v.kind === "new-folder" ? v.name : null);
+    };
     const timer = window.setTimeout(() => {
       listDir(p).then(
+        () => settle({ kind: "ok" }),
         () => {
-          if (!stale) setPathError(null);
-        },
-        () => {
-          const norm = normPath(p).replace(/\/+$/, "");
-          const cut = norm.lastIndexOf("/");
-          const parent = cut > 0 ? norm.slice(0, cut) : "/";
-          const base = norm.slice(cut + 1);
+          const { parent } = splitTargetPath(p);
           listDir(parent).then(
-            (r) => {
-              if (stale) return;
-              setPathError(
-                r.entries.some((e) => e.name === base)
-                  ? null
-                  : "This folder or file doesn't exist",
-              );
-            },
-            () => {
-              if (!stale) setPathError("This folder or file doesn't exist");
-            },
+            (r) => settle(targetVerdict(p, r.entries.map((e) => e.name))),
+            () => settle(targetVerdict(p, null)),
           );
         },
       );
@@ -2148,6 +2301,15 @@ export default function NewJobModal({
       window.clearTimeout(timer);
     };
   }, [target]);
+
+  // The verdict row rides the dropdown and NEVER forces it open. The reveal
+  // flag this replaced looked helpful — bring the list back so a late verdict
+  // is seen — but the verdict is debounced 400ms behind the keystroke that
+  // armed it, so "type, then click away" had the list popping back OVER
+  // whatever the user had moved on to, and there was no gesture that made it
+  // stay shut (Akshil, 2026-08-20). Typing holds focus and focus holds the
+  // list open, so in practice the verdict is seen exactly when it should be:
+  // while the path is still the thing being worked on.
 
   // The ask shares Title's borderless surface but not its face, and it grows
   // like a note: with the text, from the CSS floor (`.new-task-ask`'s
@@ -2247,6 +2409,11 @@ export default function NewJobModal({
   // consequence and never blocks Save.
   const pastHintId = useId();
   const pathErrorId = useId();
+  // The new-folder note is described-by too — a screen reader must hear "this
+  // folder is about to be created" from the field, not only from the line under
+  // it. Only ever one of the two is on screen (a refusal and a promise about the
+  // same path cannot both be true), so they share the one slot.
+  const newFolderId = useId();
   // …and the third: what the repeat does to this task's thread, attached to
   // the checkbox that decides it.
   const threadHintId = useId();
@@ -2727,7 +2894,16 @@ export default function NewJobModal({
               type="text"
               className={"field-control" + (pathError ? " is-invalid" : "")}
               aria-invalid={pathError !== null}
-              aria-describedby={pathError ? pathErrorId : undefined}
+              // The new-folder row only exists while the list is open, so it is
+              // only pointed at while it is there — a describedby aimed at a
+              // node that is not in the document says nothing at all.
+              aria-describedby={
+                pathError
+                  ? pathErrorId
+                  : newFolder && recentsOpen
+                    ? newFolderId
+                    : undefined
+              }
               placeholder="Add folder or file"
               role="combobox"
               aria-expanded={recentsOpen}
@@ -2752,6 +2928,39 @@ export default function NewJobModal({
                 style={popStyle(pathRef.current, 240, true)}
                 onMouseDown={(e) => e.preventDefault()}
               >
+                {/* What the typed path IS, answered where the other answers
+                    about folders are — first row, above the folders that
+                    already exist, in the same row shape as them. A BUTTON like
+                    every row around it: it started as an inert status and a
+                    click on it did nothing, which read as broken next to five
+                    siblings that all accept the click (Akshil, 2026-08-20).
+                    Picking it picks the path the field already holds, so the
+                    click's whole job is to close the list — same ending as
+                    picking any folder above. The badge carries the fact and
+                    the line under it says when it becomes true, because a
+                    badge alone reads as a label on a folder that is already
+                    there. */}
+                {!pathError && newFolder && (
+                  <button
+                    type="button"
+                    id={newFolderId}
+                    className="schedule-picker-row schedule-recents-new"
+                    onClick={() => setRecentsOpen(false)}
+                  >
+                    {ICON_FOLDER}
+                    <span className="schedule-recents-new-text">
+                      <span className="schedule-recents-new-top">
+                        <span className="schedule-picker-name" title={newFolder}>
+                          {newFolder}
+                        </span>
+                        <span className="schedule-new-badge">New folder</span>
+                      </span>
+                      <span className="schedule-recents-new-why">
+                        Created when the task is saved
+                      </span>
+                    </span>
+                  </button>
+                )}
                 {recents.slice(0, RECENTS_SHOWN).map((p) => (
                   <button
                     key={p}
@@ -2765,6 +2974,12 @@ export default function NewJobModal({
                     {ICON_FOLDER} <span className="schedule-recents-path" title={p}>{p}</span>
                   </button>
                 ))}
+                {/* A separator ELEMENT, not a border-top on Browse: the border
+                    version sat flush against the row's hover wash and read as
+                    part of the button rather than as the line between the
+                    found paths and the verbs (Akshil, 2026-08-20). Full-bleed
+                    across the panel, the way every menu draws this line. */}
+                <div className="schedule-recents-sep" role="separator" />
                 <button
                   type="button"
                   className="schedule-picker-row schedule-recents-browse"
@@ -2777,6 +2992,27 @@ export default function NewJobModal({
                       same edge as every folder above it (audit 2026-08-16). */}
                   <span className="schedule-picker-gutter" aria-hidden="true" />
                   Browse…
+                </button>
+                {/* The second verb, under Browse (Akshil, 2026-08-20). Typing a
+                    name into the field is the fast way to a new folder and
+                    needs no button; this is the way in for someone who does not
+                    yet know it is allowed. It opens the SAME panel Browse does,
+                    already naming — one flow with the picker's own affordance,
+                    not a second one. */}
+                <button
+                  type="button"
+                  className="schedule-picker-row schedule-recents-mk"
+                  onClick={() => {
+                    setRecentsOpen(false);
+                    openPicker(true);
+                  }}
+                >
+                  {/* The plus lives in the icon column, where every folder
+                      above carries its glyph — "+ New folder" as label text put
+                      the word on a different edge from every other label in
+                      the list (Akshil, 2026-08-20). */}
+                  {ICON_PLUS}
+                  New folder
                 </button>
               </div>
             )}
@@ -2793,11 +3029,24 @@ export default function NewJobModal({
           // via the :has() rule in schedule.css) — inside the card it was
           // "too small to see anything" (Akshil, 2026-08-16).
           <ExplorerPanel
+            // Keyed by which verb opened it, so "+ New folder" always arrives
+            // naming even when it displaces a Browse panel still animating out.
+            key={pickerNaming ? "naming" : "browse"}
+            startNaming={pickerNaming}
             start={target.trim() || home || "/"}
             onPick={(p) => {
               pickedFromBrowser.current = true;
               setTarget(p);
               rememberRecent(p);
+            }}
+            // A folder NAMED in the picker hands focus back to the field —
+            // WITHOUT popping the list over the form (Akshil, 2026-08-20: the
+            // dropdown kept coming back after "+ New folder"). The picker was
+            // the confirmation; the field now shows the path, and the list is
+            // one click away if anyone wants the verdict row too.
+            onName={() => {
+              suppressOpen.current = true;
+              window.setTimeout(() => pathRef.current?.focus(), 0);
             }}
             onClose={() => {
               closePicker();
