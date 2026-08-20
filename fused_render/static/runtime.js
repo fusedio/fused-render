@@ -119,7 +119,7 @@
  *     engines have, and a page must not come to depend on which one ran.
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title,
- *             onTick}) -> Promise<handle> and audio({source, device, path,
+ *             onTick}) -> Promise<handle> and audio({source, path,
  *     maxSeconds, title, onTick}) -> Promise<handle> both RESOLVE WHEN THE
  *     RECORDING IS RUNNING, not when it ends — a recording is a session of
  *     unknown length, so what comes back is a handle: {id, path, url, mode,
@@ -130,8 +130,10 @@
  *     — which is what makes `fused.ai.transcribe({path})` the next line rather
  *     than a blob round-trip through JS.
  *     `audio` on a screen recording is false, "mic", "system" or "both", named
- *     rather than boolean and refused rather than coerced. System audio is a
- *     property of a screen stream, so `audio()` records the microphone only.
+ *     rather than boolean and refused rather than coerced. `device` picks a
+ *     microphone THERE; system audio is a property of a screen stream, so
+ *     `audio()` records the microphone only, from the system's current input —
+ *     it refuses a `device` rather than ignoring one.
  *     A recording is a JOB ROW, so it survives the page that started it:
  *     `list()` finds live ones (including another page's) and `attach(id)`
  *     hands the handle back. `onTick` rides that same row — no extra polling.
@@ -3475,11 +3477,16 @@
       .then((started) => captureHandle(started, opts.onTick));
   }
 
-  // fused.capture.audio({source, device, path, maxSeconds, title, onTick})
+  // fused.capture.audio({source, path, maxSeconds, title, onTick})
   //
   // The microphone to an .m4a. `source` is "mic" — system audio is a property of
   // a SCREEN recording (it is captured off the display stream), so asking for it
   // here is refused with the sentence that says where to ask instead.
+  //
+  // NO `device` here: audio-only records the system's current input, and a
+  // `device` is REFUSED rather than ignored (the server's error names the way
+  // to pick one — a screen recording's `audio: "mic"`). It is still forwarded,
+  // so that refusal is the server's one good sentence rather than two.
   function captureAudio(opts) {
     opts = opts || {};
     const body = { mode: "audio" };
