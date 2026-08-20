@@ -278,8 +278,17 @@ def test_a_user_who_set_it_themselves_keeps_their_value(
 
 
 def _target(tmp_path, content, name="notes.md"):
+    # `newline=""` disables universal-newline translation — same fix, same
+    # reason, as _claude_history.write_version's own comment: file_history.py
+    # compares this file's on-disk bytes against a checkpoint's bytes exactly
+    # (`differs` is a byte comparison, by design — see file_history._locate),
+    # and `Path.write_text`'s default text mode would silently inflate every
+    # "\n" here to "\r\n" on Windows, making a target deliberately written to
+    # equal a checkpoint's content ("disk\n" == "disk\n") no longer equal it
+    # on disk, and derailing the positional walk that test is asserting about.
     f = tmp_path / name
-    f.write_text(content)
+    with open(f, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
     return str(f)
 
 
