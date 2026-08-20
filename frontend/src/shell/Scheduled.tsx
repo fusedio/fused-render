@@ -76,6 +76,7 @@ import {
   TaskFilterControls,
   TaskList,
   filterTasks,
+  filtersForView,
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
@@ -314,7 +315,15 @@ export default function Scheduled() {
   // tasks themselves rather than from a separate call: the set of projects IS
   // "the folders these tasks are in", and any other source could disagree.
   const projects = useMemo(() => projectOptions(tasks), [tasks]);
-  const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);
+  // The Archive facet does not apply on the Calendar (see
+  // tasks-lib.filtersForView): a hidden selection must never silently filter
+  // that view's grid to nothing, so the query it runs drops "archived" from
+  // the status list while the STORED `filters` — and therefore the popover's
+  // tick and the badge on List/Board — stay exactly as the user left them.
+  const shown = useMemo(
+    () => filterTasks(tasks, filtersForView(filters, view)),
+    [tasks, filters, view],
+  );
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -428,6 +437,7 @@ export default function Scheduled() {
               projects={projects}
               home={home}
               onChange={setFilters}
+              hideArchiveStatus={view === "calendar"}
             />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>

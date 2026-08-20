@@ -2028,6 +2028,32 @@ export function hasActiveFilters(f: TaskFilters): boolean {
   return f.statuses.length > 0 || f.projects.length > 0 || f.search.trim() !== "";
 }
 
+// THE ARCHIVE FACET, SCOPED TO THE VIEW (Akshil, 2026-08-20). The calendar
+// draws nothing for an archived task (ScheduleCalendar's header comment: "AN
+// ARCHIVED TASK DRAWS NOTHING") — so the Status filter's Archive option, which
+// the List and the Board both honour, is a dead control there: picking it
+// alone always redraws an empty grid, and it is not obvious WHY a grid a
+// person just filtered stopped answering their calendar question.
+//
+// The filter's VALUE is still one shared `TaskFilters` (Scheduled.tsx keeps
+// one control for all three views — a person filtering List to one project
+// and switching to Calendar means to keep looking at that project), so this
+// does not touch the value the popover reads or writes. It only asks: for the
+// query this VIEW is about to run, does "archived" belong in the status list
+// it hands to `filterTasks`? On the calendar the answer is always no — a
+// hidden facet must never silently filter the grid to nothing — and on List
+// or Board (where Archive is a real, renderable lane) the value passes
+// through unchanged.
+//
+// Because this touches only the EFFECTIVE query and not the stored filters, a
+// person who ticks Archive on Calendar and then switches to List sees Archive
+// still ticked and the archived tasks it was always going to show — the
+// facet was ignored, never cleared.
+export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
+  if (view !== "calendar" || !f.statuses.includes("archived")) return f;
+  return { ...f, statuses: f.statuses.filter((s) => s !== "archived") };
+}
+
 /**
  * Does the list a view is DRAWING span more than one project?
  *
