@@ -16,6 +16,18 @@ from fused_render._view_url_codec import embed_url_path, view_url_path
 MARKER = '<meta charset="utf-8" />\n<meta name="fused-app" />'
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """Per-test shell home, the same way test_registered_apps.py does it.
+
+    conftest allocates ONE FUSED_RENDER_HOME per process, so without this the
+    AF-8 route test's `/render` of an extracted app writes a `linked` entry for
+    `<tmp>/cache/demo-<hash>` into a registered_apps.json shared with every
+    later test on the same xdist worker — where it surfaced as a phantom
+    `demo-<hash>` card in other modules' /api/apps listing assertions."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
 def make_app(tmp_path, name="demo"):
     d = tmp_path / name
     d.mkdir()
