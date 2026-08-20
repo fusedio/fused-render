@@ -7386,7 +7386,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
 
-## 43. Single-File App Export — the `.fused` App File (D385, D386, D387)
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D392)
 
 One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
@@ -7443,9 +7443,36 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   read-only machinery of §13.5, not a new mode.
 - **AF-8** The open answers the entry's **embed** URL
   (`/explorer/embed/<entry>`): chrome-free by page-load mode — the app as it
-  is. Rendering the entry records the open (D301), which for a folder outside
-  the workspace is hub registration (`registered_apps.record_open`), so the
-  opened app appears on /apps and in recents through the existing pipeline.
+  is. *(Revised by D392)* The hub identity of an opened `.fused` is the FILE,
+  not its extract dir: `POST /api/appfile/open` records the source path into
+  `~/.fused-render/appfile_recents.json` (the fusedapp template skips the POST
+  under `_preview=1`, so thumbnails never record), and `registered_apps`
+  refuses paths under the extract cache — rendering the extracted entry no
+  longer registers a `linked` card.
+- **AF-10** (D392) Exported `.fused` files are DISCOVERABLE: `/api/apps`
+  merges in every indexed `.fused` on the machine (one duckdb query over the
+  file index's files table, `ext='fused'`, TTL-cached; `git_repos.py`'s
+  screening — `junk_path`, MountGuard, per-row isfile — and its freshness
+  nudge, but NO not-ready states: an unanswerable index is zero exported rows,
+  never a failed listing), unioned with the appfile recents so a just-opened
+  export appears before any rescan. Rows carry the reserved virtual tag
+  `exported` and `kind: "appfile"`; `entry` is the `.fused` path itself
+  (a card click lands on the fusedapp view), `entry_html` null (never
+  live-iframed). Opened exports join Home's recents row
+  (`exported_apps.recent_exported_apps`, recents-only — no duckdb on the
+  Home path).
+- **AF-11** (D392) The exported card's thumbnail is the payload's
+  `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
+  single-member zip read (never an extraction; 404 → the empty thumb).
+  Export can BAKE one in: `downloadAppFile` captures a tab screenshot
+  (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
+  chosen over DOM serialization because canvas/WebGL apps rasterize blank)
+  when and only when the folder has no authored `preview.png`, and the
+  X-Fused `POST /api/appfile/export` variant writes it as
+  `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
+  wins; every capture failure — unsupported, prompt dismissed, blank —
+  exports plain). An injected preview extracts as a real file in the app's
+  read-only extract dir like any other member.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows

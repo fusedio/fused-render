@@ -34,7 +34,8 @@
 // live preview (D365).
 import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
-import { appfilePreviewUrl, downloadAppFile, rawUrl } from "@platform/lib/api";
+import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
+import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
@@ -234,7 +235,9 @@ export function AppPreviewCard({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          downloadAppFile(app.path, app.name).catch((err: Error) =>
+          // Also captures a tab screenshot into the file's preview.png when
+          // the folder has no authored one (appShot, D392).
+          exportAppFile(app).catch((err: Error) =>
             pushToast({
               msg: "Could not export " + app.name + ": " + err.message,
               tone: "error",

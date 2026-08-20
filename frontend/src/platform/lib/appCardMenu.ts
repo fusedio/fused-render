@@ -14,8 +14,9 @@
 // the app rather than use it. For one release the two landed in the same place
 // (D264's card opened the folder) and this entry was kept for the lone non-page
 // `entry` case alone; it has its own job back.
-import { downloadAppFile, revealPath, type AppInfo } from "./api";
+import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
+import { exportAppFile } from "./appShot";
 import { copyToClipboard } from "./clipboard";
 import { navigate } from "./router";
 import { pushToast } from "./toast";
@@ -69,7 +70,9 @@ export function appCardMenu(app: AppInfo): MenuEntry[] {
             label: "Export App File",
             icon: MenuIcons.compress,
             onClick: () => {
-              downloadAppFile(app.path, app.name).catch((e: Error) =>
+              // exportAppFile also captures a tab screenshot into the file's
+              // preview.png when the folder has no authored one (D392).
+              exportAppFile(app).catch((e: Error) =>
                 pushToast({
                   msg: "Could not export " + app.name + ": " + e.message,
                   tone: "error",
