@@ -45,7 +45,7 @@ from fused_render.index.ignore import MountGuard
 from fused_render.shell import storage
 
 # The reserved virtual tag external apps file under on the /apps hub — the
-# "Repo" facet chip they share. Reused from the old registry deliberately;
+# "Folders" facet chip they share. Reused from the old registry deliberately;
 # DECISIONS already calls it the reserved tag. A workspace folder literally
 # named `linked/` merges chips with it, and that is accepted.
 REGISTERED_TAG = "linked"

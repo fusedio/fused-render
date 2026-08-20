@@ -2,11 +2,13 @@
 // breadcrumb). Every detected app in the workspace (GET /api/apps) as a grid
 // of big preview cards — each thumbnail is the app itself rendered in a
 // scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
-// filter row — a Category/Repo mode selector with chips derived from the apps
-// themselves (categories from each folder's metadata.json, ordered learn-first
-// then locale-alphabetical by app-categories; repos from the top-level tag
-// dirs, plain code-unit sort) — and a search box (name/title/tag/category,
-// case-insensitive). Order is always recently-opened (modified time stands in
+// filter row — a Category/Folders mode selector with chips derived from the
+// apps themselves (categories from each folder's metadata.json, ordered
+// learn-first then locale-alphabetical by app-categories; folders from the
+// top-level tag dirs, plain code-unit sort) — and a search box
+// (name/title/tag/category, case-insensitive); the selector sits at the row's
+// left edge with the chips and search gathered at the right.
+// Order is always recently-opened (modified time stands in
 // for an app never opened — appEntry.sortApps); filtering never reorders cards
 // relative to each other.
 import { useEffect, useMemo, useState } from "react";
@@ -32,10 +34,17 @@ type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "
 // all / examples / local / showcase in a stock workspace.
 type FilterMode = "category" | "repo";
 
+// The `key`s are internal (mode is local state derived from which URL param is
+// set, never a param itself), so the labels are free to say what a user calls
+// the thing: the "repo" facet's chips are the top-level workspace FOLDERS apps
+// were scanned out of, which is what a reader of the chip row sees.
 const MODES: { key: FilterMode; label: string }[] = [
   { key: "category", label: "Category" },
-  { key: "repo", label: "Repo" },
+  { key: "repo", label: "Folders" },
 ];
+
+const modeLabel = (m: FilterMode): string =>
+  MODES.find((x) => x.key === m)?.label ?? m;
 
 type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
 
@@ -148,14 +157,14 @@ export default function Apps({ config }: { config: Config }) {
   // and the workspace scan picks it up like any other tag dir. No synthetic
   // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
-  // Repo chips, minus the exported `.fused` rows — see repoChips for why an
+  // Folders chips, minus the exported `.fused` rows — see repoChips for why an
   // app FILE contributes none.
   const tags = useMemo(() => repoChips(all), [all]);
   // Categories scanned from the apps themselves (metadata.json `category`).
   // Apps without one carry null and so only ever appear under All. Ordered by
   // orderCategories: learn-first so the tutorial and starter chips lead the
   // row, then locale-alphabetical (which also replaces the code-unit sort the
-  // repo chips still use — see app-categories). Card order in the grid is
+  // Folders chips still use — see app-categories). Card order in the grid is
   // unaffected.
   const categories = useMemo(
     () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
@@ -217,7 +226,7 @@ export default function Apps({ config }: { config: Config }) {
             ))}
           </div>
           {(chips.length > 0 || tag !== null || category !== null) && (
-            <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
+            <div className="apps-tags" role="group" aria-label={`Filter by ${modeLabel(mode)}`}>
               {/* Active only when nothing filters; clicking clears both params. */}
               <button
                 type="button"

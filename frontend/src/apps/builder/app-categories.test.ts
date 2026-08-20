@@ -55,7 +55,7 @@ describe("orderCategories", () => {
   });
 });
 
-// The Repo facet groups by SOURCE, and an exported `.fused` has none — so its
+// The Folders facet groups by SOURCE, and an exported `.fused` has none — so its
 // "Fused-App" tag must never become a chip, however many such files the index
 // turns up.
 describe("repoChips", () => {

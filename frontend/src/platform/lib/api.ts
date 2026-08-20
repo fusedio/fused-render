@@ -1695,7 +1695,7 @@ export interface AppInfo {
   // "appfile" for an exported `.fused` FILE discovered via the file index
   // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
   // must not offer folder actions (open-folder, export) on it, and it
-  // contributes no Repo chip (repoChips). Undefined for every folder-shaped
+  // contributes no Folders chip (repoChips). Undefined for every folder-shaped
   // app and on older backends.
   kind?: "appfile";
 }
