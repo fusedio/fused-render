@@ -68,7 +68,7 @@
 # `qwen35`/`qwen35moe` — confirmed both in `src/llama-arch.cpp` at that commit
 # and by `strings` on the installed `libllama.dylib`, which is what lets this
 # engine serve the current Qwen3.5 GGUF family at all (SPEC AI-11, the
-# `_GGUF_RECIPES` table in `runners/llamacpp_text.py`).
+# `GGUF_RECIPES` table in `runners/formats.py`, aliased by `runners/llama_text.py`).
 #
 # CPU only, deliberately — no CUDA/ROCm/Metal variant of this runner in this
 # change. `jinja2` renders the chat template the GGUF carries in its own

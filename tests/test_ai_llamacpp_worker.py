@@ -25,7 +25,7 @@ import pytest
 
 WORKER_PATH = str(
     Path(__file__).resolve().parents[1]
-    / "fused_render" / "ai" / "runners" / "llamacpp_text.py"
+    / "fused_render" / "ai" / "runners" / "llama_text.py"
 )
 
 

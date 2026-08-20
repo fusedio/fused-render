@@ -201,7 +201,7 @@ def component(repo_id: str) -> dict | None:
 #: cheap header, which is why the page counts parameters only from safetensors.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 
-#: llama.cpp's single-file weights format (SPEC AI-11, `runners/llamacpp_text.py`).
+#: llama.cpp's single-file weights format (SPEC AI-11, `runners/llama_text.py`).
 #: Unlike every other format in this module a `.gguf` needs no companion
 #: config to identify — the vocabulary, the architecture and the model's own
 #: chat template all live inside the one file's key-value metadata, which is
@@ -362,7 +362,7 @@ def is_text_gguf(path: str) -> bool:
     return gguf_architecture(path) in GGUF_TEXT_ARCHITECTURES
 
 
-#: Curated `(repo, file)` pairs `runners/llamacpp_text.py` actually
+#: Curated `(repo, file)` pairs `runners/llama_text.py` actually
 #: downloads, keyed by an OPAQUE id — the GGUF's own filename, never parsed
 #: for structure. See that module's docstring for why there is no
 #: `repo:quant` id grammar: a GGUF repo commonly publishes two dozen
@@ -376,7 +376,7 @@ def is_text_gguf(path: str) -> bool:
 #: "downloaded", by REPO id, since that is how the local Hub cache is keyed;
 #: and refusing to also show it as an undifferentiated second "cached" row)
 #: and the worker itself (resolving a bare repo id BACK to the recipe that
-#: fetched it, `llamacpp_text._resolve_model_id`, for the id shape the page's
+#: fetched it, `llama_text._resolve_model_id`, for the id shape the page's
 #: cache scan hands back). `test_ai_formats.py` asserts every id here also
 #: appears in `catalog.SUGGESTIONS["llamacpp-text"]`, so the two cannot drift.
 GGUF_RECIPES = {

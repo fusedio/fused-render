@@ -914,7 +914,16 @@ def test_text_generation_resolves_to_a_runner_on_every_supported_platform(monkey
 
 
 def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch):
-    """Availability controls the catalog and Load button, so it is a support claim."""
+    """Availability controls the catalog and Load button, so it is a support claim.
+
+    Both text runners that would otherwise be reachable on Darwin have to
+    say no here: `transformers-text` because Intel macOS is not a
+    distribution target, and `llamacpp-text` because the maintainer's wheel
+    index publishes no macOS x86_64 build at all — checked directly in
+    `test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags`
+    below, since "for_capability returns None" alone would also pass if
+    EITHER reason regressed while the other still covered for it.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
 
@@ -922,6 +931,31 @@ def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch)
     status = registry.by_code("transformers-text").available()
     assert status.ok is False
     assert "Apple Silicon macOS" in status.reason
+    llamacpp_status = registry.by_code("llamacpp-text").available()
+    assert llamacpp_status.ok is False
+    assert "Apple Silicon" in llamacpp_status.reason
+
+
+def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypatch):
+    """`_llamacpp_platform`, pinned directly rather than only through
+    `for_capability` — the maintainer's CPU index publishes wheels for
+    Windows (any arch it runs on), Linux (any arch), and macOS arm64 ONLY;
+    there is no macOS x86_64 tag (verified against the index listing, D402).
+    """
+    for system, machine in (
+        ("Windows", "AMD64"), ("Linux", "x86_64"), ("Linux", "aarch64"),
+        ("Darwin", "arm64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text").available()
+        assert status.ok is True, (system, machine, status.reason)
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    status = registry.by_code("llamacpp-text").available()
+    assert status.ok is False
+    assert "macOS x86_64" in status.reason
 
 
 def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
@@ -1763,7 +1797,7 @@ def test_llamacpp_text_is_reachable_only_by_an_explicit_preference(monkeypatch):
 
 def test_llamacpp_text_suggestions_are_smallest_first_and_curated_by_filename():
     """Every id here is the GGUF's own filename, not a Hub repo id — see
-    `runners/llamacpp_text.py`'s module docstring for why there is no
+    `runners/llama_text.py`'s module docstring for why there is no
     `repo:quant` grammar. `test_every_suggestion_list_is_ordered_smallest_first`
     already pins the ordering rule generically; this pins the SHAPE that is
     specific to this runner's list."""
@@ -2443,7 +2477,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
         "mlx-text", "transformers-text", "transformers-text-cuda",
-        "transformers-text-rocm", "diffusers-image", "diffusers-image-cuda",
+        "transformers-text-rocm", "llamacpp-text",
+        "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper", "parakeet-mlx"}
     assert body["loaded"] == []

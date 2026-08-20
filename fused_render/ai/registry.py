@@ -235,6 +235,40 @@ def _transformers_platform() -> Availability:
     )
 
 
+def _llamacpp_platform() -> Availability:
+    """`llamacpp-text`'s supported platforms — a HARD exclusion, not the same
+    shape as `_transformers_platform`'s Intel-macOS business decision.
+
+    The maintainer's CPU wheel index (`llamacpp_text/pyproject.toml`, D402)
+    publishes `py3-none` wheels for a specific, checked tag set:
+    `macosx_11_0_arm64`, `manylinux2014_{x86_64,aarch64}.manylinux_2_17_*`,
+    `musllinux_1_2_{x86_64,aarch64}`, `win_amd64`, `linux_riscv64`, and a wasm
+    target. **There is no macOS x86_64 tag at all.** Where
+    `_transformers_platform` excludes Intel macOS because torch's wheel there
+    is not a platform this app chooses to distribute to, this excludes it
+    because `uv sync` has NOTHING to install — an immediate, total failure
+    the moment a machine reaches this row, not a slow or a degraded one. Kept
+    to the same `(Windows or Linux) or (Darwin and arm64)` shape
+    `_transformers_platform` already uses — a real check against the tags
+    above, not a new mechanism — so the next person widening one accidentally
+    widens both, or neither, but has to look at both to widen just one.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system in ("Windows", "Linux") or (system == "Darwin" and machine == "arm64"):
+        return Availability(True)
+    if system == "Darwin":
+        return Availability(
+            False,
+            "needs Apple Silicon — the llama.cpp wheel index publishes no "
+            f"macOS x86_64 build (this is {system.lower()}/{machine})",
+        )
+    return Availability(
+        False,
+        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
+    )
+
+
 # -- the accelerator probes ------------------------------------------------------
 #
 # CUDA and ROCm are OPT-IN rows (the CPU torch runners sit above them and remain
@@ -740,10 +774,10 @@ _RUNNERS: tuple[Runner, ...] = (
     # (roughly 4 of 16 sampled releases pass an integrity check), so a
     # capability whose INSTALL can silently fail must never be what a machine
     # gets without asking for it, however sound the pinned version itself is
-    # once verified. `_always` because the pin this runner declares is CPU
-    # wheels on every platform it ships (no CUDA/ROCm/Metal variant in this
-    # change) — the same shape `_always` already states for Diffusers CPU and
-    # Faster Whisper.
+    # once verified. `_llamacpp_platform`, not `_always`: the pin this runner
+    # declares is CPU wheels, but NOT on every platform Diffusers CPU and
+    # Faster Whisper reach — the maintainer's index publishes no macOS x86_64
+    # tag at all, so Intel macOS is a hard exclusion (see that function).
     Runner(
         code="llamacpp-text",
         capability=TEXT_GENERATION,
@@ -754,12 +788,12 @@ _RUNNERS: tuple[Runner, ...] = (
         # reason to pick it (current-generation Qwen at a fraction of the bf16
         # download) and folds the packaging caveat into the same sentence,
         # since that is the fact this row's `_available` cannot express —
-        # `_always` answers "does the wheel exist for this platform", not
-        # "was THIS release's wheel intact when it was built".
+        # `_llamacpp_platform` answers "does the wheel exist for this
+        # platform", not "was THIS release's wheel intact when it was built".
         note="Runs current Qwen GGUF quantizations at a fraction of the "
              "unquantized download — opt-in because its wheels come from the "
              "maintainer's own index rather than PyPI.",
-        _available=_always,
+        _available=_llamacpp_platform,
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch

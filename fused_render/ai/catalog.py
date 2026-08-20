@@ -313,7 +313,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # whose ids are NOT Hub repo ids: a GGUF repo publishes two dozen
     # quantizations of one model (`unsloth/Qwen3.5-9B-GGUF` alone sums to
     # 147.81GB across every file it holds), so the id is the curated key
-    # `runners/llamacpp_text.py`'s `_GGUF_RECIPES` maps to one `(repo, file)`
+    # `runners/llama_text.py`'s `_GGUF_RECIPES` maps to one `(repo, file)`
     # pair — see that module's docstring for why this is not a `repo:quant`
     # grammar. **That is also why Hub search cannot populate this list**: the
     # Discover tab's search hands back a bare repo id, this runner has no rule
@@ -334,7 +334,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # summing ONLY the one GGUF file `download_file` fetches (never the whole
     # repo) plus nothing else — these unsloth repos ship no external
     # tokenizer/config files at their root, so there is no second download to
-    # add in (see `runners/llamacpp_text.py`). Every file checked is a single
+    # add in (see `runners/llama_text.py`). Every file checked is a single
     # root-level `.gguf`, not a `-00001-of-0000N` shard — `download_file` takes
     # one filename, so a sharded tier would have been silently unloadable and
     # was excluded before it could ship (the 27B repo's own BF16 tier IS
