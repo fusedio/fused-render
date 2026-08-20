@@ -73,7 +73,7 @@ export function appCardMenu(
       : ([
           {
             label: "Export App File",
-            icon: MenuIcons.compress,
+            icon: MenuIcons.download,
             onClick: () => {
               // exportAppFile also captures a tab screenshot into the file's
               // preview.png when the folder has no authored one (D396).

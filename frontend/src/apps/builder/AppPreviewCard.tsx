@@ -260,7 +260,7 @@ export function AppPreviewCard({
           );
         }}
       >
-        {MenuIcons.compress}
+        {MenuIcons.download}
       </button>
       )}
     </a>
