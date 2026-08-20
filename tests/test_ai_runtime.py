@@ -30,6 +30,10 @@ from fused_render.server import create_app
 from fused_render.server.routers import ai_models, ai_runtime
 from fused_render.server.routers.ai_models import CachedModel
 
+# os.geteuid is POSIX-only; a bare call below would crash collection of this
+# whole module on Windows, before any skipif could act on it.
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
 #: The runner fixtures stub it (nothing is ever built in these tests), so a test
 #: about what it DOES has no other way back to it.
@@ -1166,7 +1170,7 @@ def test_a_machine_with_no_amd_gpu_at_all_says_so(monkeypatch, tmp_path):
     assert "modprobe" not in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 def test_a_kfd_this_user_cannot_open_asks_for_permission(monkeypatch, tmp_path):
     """PERMISSION IS ASKED OF THE KERNEL, never modelled — `os.access`.
 
@@ -1205,7 +1209,7 @@ def test_a_render_node_that_is_ABSENT_is_not_a_permission_problem(
     assert "render` group" not in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 def test_a_render_node_that_is_CLOSED_asks_for_permission(monkeypatch, tmp_path):
     """…and the other state IS the group case, which keeps that advice.
 
@@ -1221,7 +1225,7 @@ def test_a_render_node_that_is_CLOSED_asks_for_permission(monkeypatch, tmp_path)
     assert "render` group" in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 def test_an_open_INTEL_render_node_does_not_admit_rocm(monkeypatch, tmp_path):
     """The render node has to belong to the AMD CARD, not merely to open.
 
@@ -1354,7 +1358,7 @@ def test_wsl2_can_pick_cuda_with_none_of_the_linux_device_nodes(
     assert "needs an NVIDIA GPU" in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 @pytest.mark.parametrize("device", ["nvidiactl", "nvidia0", "nvidia-uvm"])
 def test_nvidia_nodes_this_user_cannot_open_ask_for_permission(
         monkeypatch, tmp_path, device):

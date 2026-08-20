@@ -12,6 +12,7 @@ module boundary (the same discipline as test_server_ai.py).
 """
 import json
 import os
+import sys
 import time
 
 import pytest
@@ -50,9 +51,20 @@ def _isolated_home(tmp_path, monkeypatch):
 
 
 def _fake_cli(tmp_path, name="claude", executable=True):
-    """An executable stand-in for the CLI, in its own dir. Returns the path."""
+    """An executable stand-in for the CLI, in its own dir. Returns the path.
+
+    Never actually spawned by anything below (every test here patches
+    `probe_version`/`subprocess.run` rather than running it) — it only has to
+    be a file `resolve()`'s real `shutil.which` can find on PATH. That is a
+    file with an exec bit on POSIX and a file with a PATHEXT extension on
+    Windows, which is why the name gets `.exe` there: a bare `claude` with a
+    shebang is invisible to Windows' extension-based PATH lookup no matter
+    what `chmod` says about it.
+    """
     d = tmp_path / "fake-bin"
     d.mkdir(exist_ok=True)
+    if os.name == "nt" and not name.lower().endswith((".exe", ".cmd", ".bat")):
+        name += ".exe"
     p = d / name
     p.write_text("#!/bin/sh\necho 2.1.220\n")
     p.chmod(0o755 if executable else 0o644)
@@ -135,6 +147,15 @@ def test_path_beats_the_candidate_list(tmp_path, monkeypatch):
     assert claude_health.resolve() == (bin_path, "path")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fakes os.name='posix' on a real filesystem — executable()'s "
+           "os.access(X_OK) branch that gates on it is then a REAL syscall, "
+           "and on real Windows os.access(X_OK) is true for any existing "
+           "file regardless of chmod (see executable()'s own docstring), so "
+           "the POSIX candidate-list behaviour this exercises can only be "
+           "tested where os.name='posix' is also true.",
+)
 def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     """A Finder/Dock-launched .app inherits the supervisor's PATH, not a
     shell's, so the known install dirs are all that is left."""
@@ -151,6 +172,12 @@ def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     assert claude_health.resolve() == (str(cli), "candidate")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fakes os.name='posix' on a real filesystem — see the skip on "
+           "test_candidate_dirs_are_probed_when_path_is_stripped just above "
+           "for why that's unsafe on real Windows.",
+)
 def test_a_non_executable_file_does_not_shadow_a_real_install(tmp_path, monkeypatch):
     """isfile alone was not enough: a non-executable file in an earlier
     candidate dir would win and then fail to spawn."""

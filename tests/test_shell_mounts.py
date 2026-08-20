@@ -36,6 +36,21 @@ def _warm_https_opener():
         _u._opener = _u.build_opener()
 
 
+@pytest.fixture(autouse=True)
+def _winfsp_present_by_default(monkeypatch):
+    """Assume WinFsp is installed unless a test says otherwise.
+
+    `_winfsp_available()` is vacuously True off win32 — which is what let every
+    generic (not-about-WinFsp) test in this file run unpatched as long as CI
+    was Linux/macOS only. Running for real on win32 makes that vacuous default
+    into a real filesystem probe against a driver DLL this CI runner does not
+    have installed, so it has to be stated explicitly instead of inherited for
+    free. The handful of tests that exercise the missing-driver path set their
+    own `monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)`
+    afterwards, which wins over this one."""
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+
+
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
