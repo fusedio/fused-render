@@ -171,12 +171,15 @@ def test_the_shots_dir_is_created_private_and_adopted_on_a_second_call(
     monkeypatch.setattr(agent, "RUNS", str(root))
     shots = tmp_path / "fr" / "shots"
     monkeypatch.setattr(agent, "SHOTS", str(shots))
-    assert agent.main(action="shots_dir") == {"dir": str(shots)}
+    # The dir comes back through _wire_path (forward slashes on every
+    # platform, so the page's crop paths match the Read(//…/**) rule) — not
+    # the raw join, which is backslashed on Windows.
+    assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
     assert os.path.isdir(shots)
     if hasattr(os, "geteuid"):
         assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
     # second message, same directory
-    assert agent.main(action="shots_dir") == {"dir": str(shots)}
+    assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
@@ -285,7 +288,10 @@ def test_the_page_asks_for_the_directory_by_the_action_the_agent_serves(
     """D146, the two-sided wire: the page names the action, agent.py routes it."""
     assert 'action: "shots_dir"' in html
     monkeypatch.setattr(agent, "SHOTS", str(tmp_path / "shots"))
-    assert agent.main(action="shots_dir").get("dir") == str(tmp_path / "shots")
+    # See the note in the "created private" test above: _wire_path forward-
+    # slashes this, on every platform.
+    assert agent.main(action="shots_dir").get("dir") == agent._wire_path(
+        str(tmp_path / "shots"))
 
 
 # ---------------------------------------------- the page's own JS, under node

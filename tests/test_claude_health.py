@@ -144,7 +144,15 @@ def test_a_stale_override_is_reported_not_silently_replaced(tmp_path, monkeypatc
 def test_path_beats_the_candidate_list(tmp_path, monkeypatch):
     bin_path = _fake_cli(tmp_path)
     monkeypatch.setenv("PATH", os.path.dirname(bin_path))
-    assert claude_health.resolve() == (bin_path, "path")
+    resolved, source = claude_health.resolve()
+    # normcase, not a bare ==: shutil.which() on Windows matches "claude"
+    # against PATHEXT (.COM;.EXE;...) and returns it with THAT extension's
+    # case, e.g. "claude.EXE", regardless of the actual on-disk filename's
+    # case ("claude.exe" here) — a case difference on a filesystem where it is
+    # not a different file. Same idiom as templates/claude/agent.py's
+    # containment check.
+    assert os.path.normcase(resolved) == os.path.normcase(bin_path)
+    assert source == "path"
 
 
 @pytest.mark.skipif(
@@ -351,7 +359,17 @@ def test_augmented_path_appends_install_dirs_without_duplicating(monkeypatch):
     parts = claude_health.augmented_path().split(os.pathsep)
     assert parts[0] == "/usr/bin"
     assert len(parts) == len(set(parts))
-    assert "/opt/homebrew/bin" in parts
+    # candidates() (and so the dirs augmented_path() appends) is platform-
+    # specific — WINDOWS_CANDIDATES on os.name == "nt", POSIX_CANDIDATES
+    # elsewhere — so "/opt/homebrew/bin" is only ever a real member of that
+    # list on the POSIX branch; asserting it unconditionally is a POSIX-only
+    # literal masquerading as a platform-independent one. Deriving the
+    # expectation from candidates() itself is what makes this check the same
+    # guarantee on both platforms.
+    for candidate in claude_health.candidates():
+        expected_dir = os.path.dirname(
+            os.path.expanduser(os.path.expandvars(candidate)))
+        assert expected_dir in parts
 
 
 # -- the version probe --------------------------------------------------------
