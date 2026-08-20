@@ -16,6 +16,7 @@ mlx-whisper 0.4.3 — an `av` decode of a real recording feeding an ndarray
 straight into `mlx_whisper.transcribe`, whose internal frame counter reported
 seven windows over a 198-second file.
 """
+import copy
 import importlib.util
 import json
 import os
@@ -2037,3 +2038,198 @@ def test_memory_answers_None_rather_than_raising(monkeypatch, base):
     mlx_core = types.SimpleNamespace(get_active_memory=lambda: 0)
     worker = load_worker(monkeypatch, base, mlx_core=mlx_core)
     assert worker.memory() is None
+
+
+# -- word timings (D391) -------------------------------------------------------
+#
+# The flag is opt-in, its output is ADDITIVE, and its timings travel the same
+# inverse of the VAD packing every segment endpoint does. What is driven here is
+# that wiring: what reaches the library, what lands in the file, and where a word
+# ends up once the silence it was timed against has been removed.
+
+
+def _worded(start, end, text, words):
+    """A segment as mlx-whisper returns one WITH `word_timestamps=True` — the
+    `words` list carries a `probability` the runner must drop, for the reason it
+    drops the logprobs beside it: it is an engine-tell (AI-10c)."""
+    segment = _segment(start, end, text)
+    segment["words"] = [{"word": w, "start": s, "end": e, "probability": 0.9}
+                        for s, e, w in words]
+    return segment
+
+
+def test_words_are_NOT_asked_for_unless_the_caller_asks(loaded, tmp_path):
+    """The default has to reach the LIBRARY, not just the output: word timings
+    cost an extra forward pass per window and turn on a different decode path, so
+    a caller who did not ask must not pay for either."""
+    worker, transcribe = loaded(windows=(100,), segments=[_segment(0.0, 1.0, "hi")])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    assert transcribe.calls[0]["word_timestamps"] is False
+    written = json.load(open(request["out"], encoding="utf-8"))
+    # ADDITIVE means absent, not empty: a transcript written without the flag is
+    # byte-identical to one written before the flag existed.
+    assert "words" not in written["segments"][0]
+
+
+def test_words_true_reaches_the_library_and_lands_on_every_segment(
+        loaded, tmp_path):
+    """`{start, end, word}` and nothing else — `probability` is dropped with the
+    logprobs and temperatures beside it, so a page cannot come to depend on a
+    number only some engines have."""
+    worker, transcribe = loaded(
+        windows=(100,),
+        segments=[_worded(0.0, 2.0, "hello there",
+                          [(0.0, 0.6, " hello"), (0.6, 2.0, " there")])])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    assert transcribe.calls[0]["word_timestamps"] is True
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert written["segments"][0]["words"] == [
+        {"start": 0.0, "end": 0.6, "word": " hello"},
+        {"start": 0.6, "end": 2.0, "word": " there"},
+    ]
+
+
+def test_a_words_LIST_reconstructs_its_segment_text(loaded, tmp_path):
+    """The one invariant a caller will build on: the words of a segment are that
+    segment's text, in order, complete. `word` keeps the library's LEADING SPACE
+    precisely so that concatenation is the reconstruction — strip it and a page
+    has to guess where the spaces went."""
+    worker, _ = loaded(
+        windows=(100,),
+        segments=[_worded(0.0, 2.0, "hello there",
+                          [(0.0, 0.6, " hello"), (0.6, 2.0, " there")])])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    segment = json.load(open(request["out"], encoding="utf-8"))["segments"][0]
+    assert "".join(w["word"] for w in segment["words"]).strip() == segment["text"]
+
+
+def test_words_are_remapped_into_ORIGINAL_time_across_a_dropped_PAUSE(
+        monkeypatch, loaded, tmp_path):
+    """The whole reason this is not a flag flip. With `vad: true` the library
+    times a word against a PACKED clip whose silence this runner removed, so a
+    word reported at 5.5s of a clip made of `0-5` and `30-35` was really spoken
+    at 30.5s. Published unmapped, a karaoke highlight sits 25 seconds out and a
+    click-to-seek player lands in the wrong minute — the same failure the segment
+    endpoints are mapped to avoid, one level down.
+    """
+    worker, _ = loaded(
+        windows=(100,), audio_seconds=40.0,
+        segments=[_worded(5.0, 6.0, "after the pause",
+                          [(5.0, 5.5, " after"), (5.5, 6.0, " pause")])])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    segment = json.load(open(request["out"], encoding="utf-8"))["segments"][0]
+    # The segment itself landed in the second region; its words must land in the
+    # same place by the same arithmetic, not at their clip offsets.
+    assert (segment["start"], segment["end"]) == (30.0, 31.0)
+    assert [(w["start"], w["end"]) for w in segment["words"]] == [
+        (30.0, 30.5), (30.5, 31.0)]
+
+
+def test_a_word_past_its_segment_is_CLAMPED_never_DROPPED(
+        monkeypatch, loaded, tmp_path):
+    """The deliberate asymmetry with `_transcribe_regions`, which DROPS a segment
+    that inverts. A dropped segment loses text that was never spoken in the
+    recording's timeline; a dropped WORD loses text that IS in the transcript,
+    breaking the reconstruct-the-text invariant. So a word the library timed into
+    the 30-second padding collapses to an instant at the bound instead of
+    vanishing — a word that cannot be highlighted, rather than a hole in the
+    sentence."""
+    worker, _ = loaded(
+        windows=(100,), audio_seconds=40.0,
+        segments=[_worded(0.0, 1.0, "hello there",
+                          [(0.0, 0.5, " hello"), (0.5, 29.0, " there")])])
+    _regions(monkeypatch, worker, [(10.0, 12.0)])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    segment = json.load(open(request["out"], encoding="utf-8"))["segments"][0]
+    assert [w["word"] for w in segment["words"]] == [" hello", " there"]
+    # Inside the segment, and never running backwards.
+    for word in segment["words"]:
+        assert segment["start"] <= word["start"] <= word["end"] <= segment["end"]
+
+
+def test_words_are_MONOTONIC_and_inside_their_segment(monkeypatch, loaded, tmp_path):
+    """What a caption track or a highlight loop actually relies on. The packing's
+    inverse is monotonic, so neither the mapping nor the clamp may reorder
+    anything."""
+    worker, _ = loaded(
+        windows=(100,), audio_seconds=60.0,
+        segments=[_worded(1.0, 4.0, "one two three",
+                          [(0.0, 1.5, " one"), (1.5, 3.0, " two"),
+                           (3.0, 29.0, " three")])])
+    _regions(monkeypatch, worker, [(0.0, 3.0), (40.0, 45.0)])
+    request = _request(tmp_path, words=True)
+
+    worker.generate(request)
+
+    segment = json.load(open(request["out"], encoding="utf-8"))["segments"][0]
+    times = [t for w in segment["words"] for t in (w["start"], w["end"])]
+    assert times == sorted(times)
+    assert segment["start"] <= times[0] and times[-1] <= segment["end"]
+
+
+def test_a_TRANSLATION_gets_no_words_and_does_not_pay_for_them(loaded, tmp_path):
+    """Declined rather than refused, and declined rather than delivered. Word
+    timings are positions in the AUDIO; a translation's words are English ones
+    the recording does not contain, so there is nothing to align them to. The
+    library warns and returns numbers anyway — which reach a page as a list
+    indistinguishable from a usable one — so this runner does not ask for them,
+    and the absent key reads exactly like an engine that has none."""
+    worker, transcribe = loaded(windows=(100,),
+                                segments=[_segment(0.0, 1.0, "bonjour")])
+    request = _request(tmp_path, words=True, task="translate")
+
+    worker.generate(request)
+
+    assert transcribe.calls[0]["word_timestamps"] is False
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert "words" not in written["segments"][0]
+
+
+def test_words_ride_the_PROGRESSIVE_transcript_too(loaded, tmp_path):
+    """`onSegment` promises the same shape as `segments`, so a page has ONE
+    rendering path. A `words` list that only appeared in the final file would
+    make the live view a second shape to write code for."""
+    worker, _ = loaded(
+        windows=(100,),
+        segments=[_worded(0.0, 2.0, "hello there",
+                          [(0.0, 0.6, " hello"), (0.6, 2.0, " there")])])
+    request = _request(tmp_path, words=True,
+                       outPartial=str(tmp_path / "out.partial.jsonl"))
+    # The file is REMOVED on a successful run — `out` is the answer — so the
+    # lines are captured as they are appended rather than read afterwards.
+    seen = []
+    real_sink = worker.partial.sink
+
+    def spy(path, **kwargs):
+        sink = real_sink(path, **kwargs)
+        add = sink.add
+        sink.add = lambda segment: (seen.append(copy.deepcopy(segment)),
+                                    add(segment))[1]
+        return sink
+
+    worker.partial.sink = spy
+    try:
+        worker.generate(request)
+    finally:
+        worker.partial.sink = real_sink
+
+    assert seen and seen[0]["words"] == [
+        {"start": 0.0, "end": 0.6, "word": " hello"},
+        {"start": 0.6, "end": 2.0, "word": " there"},
+    ]

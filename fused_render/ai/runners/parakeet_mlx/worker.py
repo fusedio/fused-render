@@ -898,6 +898,11 @@ def generate(body):
     # instantly rather than after a multi-gigabyte download and a load. This
     # copy is here because neither the bridge nor the endpoint is the only door
     # into this process — the same reason `speakers_or_raise` is called twice.
+    # `words` is absent from this call ON PURPOSE: it is the one option answered
+    # best-effort rather than refused (see `engine_options.words_available`).
+    # This engine emits no `words` key, a caller reads that from the segment, and
+    # nothing here has to know the flag exists. Parakeet's own per-token times
+    # could supply it — see `_sentences`, which already drops them.
     engine_options.unsupported_or_raise(
         RUNNER_CODE, task=task, language=str(body.get("language") or ""),
         initial_prompt=str(body.get("initialPrompt") or ""))

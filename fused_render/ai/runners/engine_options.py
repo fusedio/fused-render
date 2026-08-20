@@ -9,6 +9,11 @@ quietly doing something else is the failure this app rates worst, because a
 page that asked for English and got French has nothing on the row telling it
 which engine decided.
 
+`words` (D391) is the ONE option this module treats differently — answered
+best-effort rather than refused, because whether it was honoured is visible in
+the reply. `words_available` and the long comment above it carry that reasoning;
+it is a deliberate exception to the paragraph above, not a gap in it.
+
 **This module is where that rule lives, once**, for exactly the reason
 `diarize.speakers_or_raise` sits where it does: the refusal has to happen in
 TWO places and must be one sentence. The endpoint refuses first, before a job
@@ -91,6 +96,10 @@ def unsupported_or_raise(runner_code, *, task=None, language=None,
     carries `task: "transcribe"` explicitly, while `language` and
     `initialPrompt` arrive as None or an empty string unless somebody asked for
     them.
+
+    **`words` is deliberately NOT here** — see `words_available`. It is the one
+    option this app answers best-effort rather than refusing, because a caller
+    can tell from the reply whether it was honoured.
     """
     rules = UNSUPPORTED.get(runner_code)
     if not rules:
@@ -102,3 +111,61 @@ def unsupported_or_raise(runner_code, *, task=None, language=None,
     if initial_prompt and "initialPrompt" in rules:
         raise ValueError(rules["initialPrompt"])
     return None
+
+
+# ------------------------------------------------------------- word timings
+#
+# `words: true` is the one option in this app that is answered BEST-EFFORT
+# instead of refused, and the difference from everything above is deliberate
+# rather than an inconsistency to tidy up.
+#
+# The rule the rest of this module enforces — refuse, never ignore — exists
+# because an ignored option is UNDETECTABLE: a page that asked for English and
+# got French has nothing to check. `words` is not like that. Honouring it puts a
+# `words` list on every segment and declining it leaves the key off, so a caller
+# reads `segment.words` and knows which happened, on the segment itself, without
+# asking anything about engines. That makes the failure mode a page has to
+# handle — "I did not get word timings" — the same one it has to handle anyway
+# on a segment the aligner produced nothing for.
+#
+# So a page opts in once and takes words where they exist, instead of branching
+# on hardware before it asks. `segment.words || []` is the whole contract.
+
+#: Runner codes that produce per-word timings. Only MLX Whisper today (D391).
+#:
+#: The other two CAN, and this set is a record of what is BUILT rather than of
+#: what is possible: faster-whisper's `transcribe()` takes `word_timestamps` and
+#: returns `segment.words` from the same DTW alignment, and Parakeet is a
+#: transducer that emits per-token times natively — `_sentences` already
+#: receives them and drops them. Wiring either one means adding its code here
+#: and emitting the same `{start, end, word}` shape; nothing else changes, and no
+#: page needs editing, because a page that reads `words` when it is there
+#: already handles both answers.
+#:
+#: **Codes, so a hardware variant is a separate entry**, for `UNSUPPORTED`'s
+#: reason: a CUDA sibling that gains word timings is its own code and must be
+#: named here, or it would silently decline them.
+WORDS_RUNNERS = frozenset({"mlx-whisper"})
+
+
+def words_available(runner_code, *, task=None):
+    """Will `words: true` actually produce word timings on this engine and task?
+
+    Answered from a runner CODE rather than from a loaded model, so the endpoint
+    can tell a page what to expect before a job opens and the worker can reach
+    the same answer on its own interpreter.
+
+    **`task: "translate"` gets no words on any engine**, and that is a real
+    limit rather than missing wiring. Word timings are positions in the AUDIO,
+    found by aligning the tokens that were decoded against it; on a translation
+    those tokens are English words the recording does not contain, so there is
+    nothing to align them to. `mlx_whisper.transcribe` warns "may not be
+    reliable" and returns them anyway — which reaches a page as a list
+    indistinguishable from a usable one, and a karaoke UI built on it highlights
+    the wrong word for the whole file. Declining is the honest answer, and it
+    reads to a caller exactly like an engine that has no word timings: the key
+    is absent.
+    """
+    if task and task != TRANSCRIBE:
+        return False
+    return runner_code in WORDS_RUNNERS
