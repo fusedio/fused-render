@@ -1,5 +1,5 @@
-"""POST /api/ai-models/hub/search — models on the Hugging Face Hub that this
-machine can actually run, told apart from the ones already on this disk.
+"""/api/ai-models/hub/* — models on the Hugging Face Hub that this machine can
+actually run, told apart from the ones already on this disk.
 
 The AI Models page (§37) answers "what did I already download". This answers the
 other half — "what is there" — and the two are only useful *together*: the Hub
@@ -433,7 +433,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     }
 
 
-def _get(url: str):
+def _get(url: str) -> tuple[httpx.Response | None, str | None]:
     """One authenticated GET at the Hub: (response, error). Never raises — an
     unreachable Hub is a sentence on the page, not a 500 from this server.
 
@@ -657,7 +657,9 @@ def api_hub_size(body: dict = Body(default={}), x_fused: str | None = Header(def
     # malformed id is a client bug rather than a URL this server goes and fetches.
     parts = model_id.split("/")
     if len(parts) != 2 or not all(parts) or len(model_id) > _MAX_ID_LEN:
-        return _error(f"{body.get('id')!r} is not a repo id of the form org/name", status=400)
+        # Echoed back so a caller can see WHICH id was refused, truncated so a
+        # megabyte of junk in the body is not a megabyte of error message.
+        return _error(f"{model_id[:80]!r} is not a repo id of the form org/name", status=400)
 
     key = ("size", hub_endpoint(), model_id, bool(_token()))
     payload = _cached(key)
