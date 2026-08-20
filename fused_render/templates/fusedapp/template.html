@@ -39,6 +39,13 @@
 <script>
   const state = document.getElementById("state");
   const file = fused.params.get("_file");
+  // A listing-pane peek / card thumbnail renders this template with
+  // `_preview=1` (a reserved shell param, read off the URL — it is not a
+  // page param). A preview must not OPEN the app: opening extracts into the
+  // permanent cache and runs the app's pages, and `_preview` exists exactly
+  // to keep a peek from counting as an open (D301 / D389).
+  const isPreview =
+    new URLSearchParams(location.search).get("_preview") === "1";
 
   function fail(msg) {
     state.innerHTML = "";
@@ -52,6 +59,16 @@
 
   async function open() {
     if (!file) return fail("No .fused file selected.");
+    if (isPreview) {
+      state.innerHTML = "";
+      const h = document.createElement("h1");
+      h.textContent = "Fused app";
+      const p = document.createElement("div");
+      p.className = "muted";
+      p.textContent = "Open this file to unpack and run the app.";
+      state.append(h, p);
+      return;
+    }
     let resp, data;
     try {
       resp = await fetch("/api/appfile/open", {

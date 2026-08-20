@@ -71,6 +71,10 @@ MAX_OPEN_ENTRIES = 5000
 MAX_OPEN_ENTRY_BYTES = 512 * 1024 * 1024
 MAX_OPEN_TOTAL_BYTES = 1024 * 1024 * 1024
 
+# Cap on manifest.json's decompressed size (read before the capped extractor
+# runs). A real manifest is a few hundred bytes; 256 KiB is generous.
+_MANIFEST_CAP_BYTES = 256 * 1024
+
 # Directory/file names never exported. Dotted names (`.git`, `.claude`,
 # `.venv`, `.DS_Store`, `.env` — which may hold secrets) are dropped by the
 # hidden-name rule; these are the non-dotted machinery dirs on top of it.
@@ -198,12 +202,20 @@ def export_app_file(app_dir: str, out_path: str) -> dict:
 
 def read_manifest(fused_path: str) -> dict:
     """The validated manifest of the ``.fused`` file at ``fused_path`` —
-    read-only (the confirm page's preview), nothing extracted."""
+    read-only, nothing extracted."""
     try:
         with zipfile.ZipFile(fused_path) as zf:
-            raw = zf.read(MANIFEST_NAME)
+            # Bounded read, never ZipFile.read(): this runs BEFORE the capped
+            # extractor, and a zip's declared sizes are attacker-controlled —
+            # an unbounded read of a crafted manifest member is a memory bomb.
+            with zf.open(MANIFEST_NAME) as f:
+                raw = f.read(_MANIFEST_CAP_BYTES + 1)
     except (OSError, KeyError, zipfile.BadZipFile) as exc:
         raise AppFileError(f"not a readable .fused file: {exc}")
+    if len(raw) > _MANIFEST_CAP_BYTES:
+        raise AppFileError(
+            f"manifest.json is too large (> {_MANIFEST_CAP_BYTES} bytes) — not a fused app file"
+        )
     try:
         manifest = json.loads(raw)
     except ValueError as exc:
@@ -211,7 +223,17 @@ def read_manifest(fused_path: str) -> dict:
     if not isinstance(manifest, dict) or manifest.get("fused_app_file") != 1:
         raise AppFileError("not a fused app file (manifest carries no fused_app_file: 1)")
     entry = manifest.get("entry")
-    if not isinstance(entry, str) or not entry or os.path.isabs(entry) or ".." in entry.split("/"):
+    # `\\` is rejected outright rather than normalized: the exporter always
+    # writes forward slashes, and on Windows a backslash inside a "component"
+    # would act as a separator after os.path.join — `..\\..\\x` style entries
+    # would escape the extract dir while passing a `/`-split ".." check.
+    if (
+        not isinstance(entry, str)
+        or not entry
+        or "\\" in entry
+        or os.path.isabs(entry)
+        or ".." in entry.split("/")
+    ):
         raise AppFileError(f"invalid entry path in manifest: {entry!r}")
     return manifest
 

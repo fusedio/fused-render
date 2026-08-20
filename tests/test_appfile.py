@@ -168,6 +168,35 @@ def test_open_rejects_markerless_entry(tmp_path, monkeypatch):
         appfile.open_app_file(str(bad))
 
 
+def test_open_rejects_backslash_entry(tmp_path):
+    # `..\..\x.html` passes a `/`-split ".." check but joins as traversal on
+    # Windows; backslashes are rejected outright (the exporter never writes them).
+    bad = tmp_path / "evil.fused"
+    bad.write_bytes(
+        _zip_bytes(
+            {
+                "manifest.json": json.dumps(
+                    {"fused_app_file": 1, "root": "files", "name": "e",
+                     "entry": "..\\..\\x.html"}
+                )
+            }
+        )
+    )
+    with pytest.raises(appfile.AppFileError, match="invalid entry"):
+        appfile.read_manifest(str(bad))
+
+
+def test_manifest_read_is_size_capped(tmp_path):
+    # read_manifest runs before the capped extractor; a crafted zip declaring
+    # a huge manifest must not be decompressed unbounded into memory.
+    bomb = tmp_path / "bomb.fused"
+    bomb.write_bytes(
+        _zip_bytes({"manifest.json": " " * (appfile._MANIFEST_CAP_BYTES + 100)})
+    )
+    with pytest.raises(appfile.AppFileError, match="too large"):
+        appfile.read_manifest(str(bomb))
+
+
 def test_open_rejects_non_fused_zip(tmp_path):
     plain = tmp_path / "plain.fused"
     plain.write_bytes(_zip_bytes({"readme.txt": "hello"}))
