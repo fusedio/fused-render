@@ -61,8 +61,11 @@ RASTER_SUFFIXES = {
     ".hgt",
     ".grd",
     ".nc",
+    ".nc4",
     ".hdf",
     ".h5",
+    ".hdf5",
+    ".he5",
 }
 RASTER_RUNTIME = {
     "numpy": "numpy",

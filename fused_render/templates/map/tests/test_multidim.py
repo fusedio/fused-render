@@ -226,8 +226,10 @@ def test_tiles_are_png_and_outside_bounds_is_transparent(eng, tmp_path):
 
 def test_backend_files_cover_the_multidim_engine():
     mr = _load("map_render", "map_render.py")
+    raster = _load("raster_engine", "raster_engine.py")
     stems = {os.path.basename(str(path)) for path in mr.BACKEND_FILES}
     assert "multidim_engine.py" in stems
+    assert {".nc4", ".hdf5", ".he5"} <= raster.RASTER_SUFFIXES
     for target in ("air.nc4", "scene.hdf5", "swath.he5", r"C:\data\era5.zarr"):
         assert mr._looks_like_raster(target), target
 

@@ -411,7 +411,24 @@ def test_a_mount_backed_dest_is_refused(reader, bundle, tmp_path, monkeypatch):
     assert not (mnt / "remote").exists()
 
 
-def test_the_mount_check_reaches_shared_appenv_at_all(reader, bundle, tmp_path):
+@pytest.fixture
+def fresh_appenv():
+    saved_module = sys.modules.pop("appenv", None)
+    saved_path = list(sys.path)
+    sys.path[:] = [path for path in sys.path if ".core-templates" not in path]
+    try:
+        yield
+    finally:
+        sys.path[:] = saved_path
+        if saved_module is None:
+            sys.modules.pop("appenv", None)
+        else:
+            sys.modules["appenv"] = saved_module
+
+
+def test_the_mount_check_reaches_shared_appenv_at_all(
+    reader, bundle, tmp_path, fresh_appenv
+):
     # `from appenv import is_mount_backed` (reader.py's _is_mount_backed) resolves
     # through a sys.path hop to `../shared`, not through a normal import, so a
     # type checker cannot see it and neither can a reader of the file. It is not

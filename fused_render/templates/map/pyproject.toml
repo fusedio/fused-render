@@ -78,6 +78,7 @@ dependencies = [
     "h5py",
     "fsspec",
     "aiohttp",
+    "cftime",
     "scipy",
 ]
 

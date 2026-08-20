@@ -174,7 +174,7 @@ def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
     that message opens with the exact phrase this enrichment matches on. Which
     one the user sees depends on whether `x` is something map DECLARES:
 
-      * **not declared** (`xarray`, `torch`, anything of the user's own) —
+      * **not declared** (`user_owned_module`, `torch`, anything of the user's own) —
         worker's message survives, because the gate is the declaration and a
         module map never asked for is not this function's business;
       * **declared and absent here** (`duckdb` on a packaged app running the
@@ -199,7 +199,7 @@ def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
     # Not declared by map -> worker keeps the floor.
     assert executor.explain_missing_module(
         worker, {"type": "ModuleNotFoundError",
-                 "message": worker_message.format("xarray")},
+                 "message": worker_message.format("user_owned_module")},
     ) is None
     # Declared by map and absent here -> the engine explanation takes over.
     taken_over = executor.explain_missing_module(
