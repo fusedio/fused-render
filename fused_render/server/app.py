@@ -45,6 +45,7 @@ from fused_render.server.routers.claude_health import router as claude_health_ro
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.clipboard import router as clipboard_router
+from fused_render.server.routers.capture import router as capture_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -372,6 +373,10 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Native screen / microphone / still capture (routers/capture.py, SPEC §44):
+    # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
+    # than by the routes being absent — a page must be able to ask.
+    app.include_router(capture_router)
     # Self-update triggers (routers/update.py) — POSTs that kick a manifest
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.

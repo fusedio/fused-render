@@ -1033,6 +1033,11 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   <!-- app.py points the bundled interpreter/worker at its own runtime via
        PYTHONHOME etc. -->
   <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+  <!-- fused.capture.audio records the microphone (SPEC §44). Under the
+       hardened runtime this entitlement is what makes the TCC prompt possible
+       at all: without it the mic is refused outright, prompt or no prompt.
+       Screen recording needs no entitlement — only the System Settings grant. -->
+  <key>com.apple.security.device.audio-input</key><true/>
 </dict>
 </plist>
 PLIST

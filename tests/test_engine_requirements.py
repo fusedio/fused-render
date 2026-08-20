@@ -163,6 +163,14 @@ _IMPORT_TO_DIST = {
     "AppKit": "pyobjc-framework-cocoa",
     "Foundation": "pyobjc-framework-cocoa",
     "Cocoa": "pyobjc-framework-cocoa",
+    # Native capture (SPEC §44). Same split, two more distributions: the
+    # ScreenCaptureKit wheel carries only `ScreenCaptureKit`, and the
+    # AVFoundation one brings `Quartz`, `CoreMedia` and `CoreAudio` with it.
+    "ScreenCaptureKit": "pyobjc-framework-screencapturekit",
+    "AVFoundation": "pyobjc-framework-avfoundation",
+    "Quartz": "pyobjc-framework-avfoundation",
+    "CoreMedia": "pyobjc-framework-avfoundation",
+    "CoreAudio": "pyobjc-framework-avfoundation",
     # The engine itself (a `[bundled]` requirement so the macOS force-list
     # derives it — see pyproject and setup_py2app.py). Mapped, so
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but

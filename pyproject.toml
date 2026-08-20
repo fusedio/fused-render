@@ -75,6 +75,19 @@ dependencies = [
     # Windows it resolves to nothing and those backends use their own tools
     # (xclip/wl-clipboard, ctypes) with no new requirement.
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+    # Native capture (SPEC §44): `fused.capture` records the screen through
+    # ScreenCaptureKit and the microphone through AVFoundation. Core with a
+    # darwin marker, for the same reason as the pasteboard bridge above rather
+    # than in `[app]`: a source install on a Mac runs the same shell and the same
+    # pages, and a capability that silently only exists in the DMG is the shape
+    # of mistake that comment describes. `[app]` is macOS-only too but is
+    # installed by the packaged build alone.
+    #
+    # Measured against D276's size budget before being added: 3 MB installed for
+    # both, transitives (Quartz, CoreMedia, CoreAudio) included — pyobjc
+    # framework wheels are bindings, and pyobjc-core is already here.
+    "pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'",
+    "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

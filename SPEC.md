@@ -7535,3 +7535,67 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   previewable extension — `.fused` IS a registry key now (D390 made it the
   `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.
+
+## 44. Native Capture — Recording the Screen, the Mic and a Still (D398)
+
+`fused.capture` lets a page record the screen, record the microphone, and grab
+a single still, natively — the app's own process does the capture, so the result
+is a FILE on this machine rather than a `MediaRecorder` blob. macOS only today,
+and it says so through `sources()` rather than by being absent.
+
+- **CP-1** Three verbs behind one namespace: `capture.screen(opts)` and
+  `capture.audio(opts)` resolve WHEN THE RECORDING IS RUNNING with a handle
+  (`{id, path, url, mode, jobId, state, stop(), cancel()}`), and
+  `capture.screenshot(opts)` resolves with the file. `sources()` reports what
+  the machine can do, `list()` the live recordings, `attach(id)` the handle for
+  one of them. Named `capture` and not `record` because a still is an instant,
+  not a session — and because all three share one TCC grant, one display list
+  and one output-path rule, so a root-level `fused.screenshot()` would be a
+  second door onto one permission model.
+- **CP-2** **The path is decided before the first frame exists** and is on the
+  start reply — the same contract `/api/ai/transcribe` has, and the reason this
+  is worth having at all: `fused.ai.transcribe({path: rec.path})` is the next
+  line, with no bytes through JS. A recording therefore also outlives its page.
+- **CP-3** A recording is a server-owned job row (`sys:capture:<id>`,
+  SPEC §36): visible in the download manager after the page that started it is
+  navigated away from, `unit: "s"`, `total` = `maxSeconds`. Its ✕ **discards**,
+  like every other row, and the row's `detail` says so in words.
+- **CP-4** **Three endings, and only one of them destroys the file.**
+  `stop()` keeps it; `cancel()` and the manager's ✕ delete it; hitting
+  `maxSeconds` (default 30 min, hard ceiling 4 h) is a STOP. The cap has to
+  keep, because a page can be closed mid-recording and then the ✕ is the only
+  control left — a cap that discarded would leave no ending that kept the file.
+  `stop_all()` runs at `atexit` for the same reason: a half-written .mov has no
+  `moov` atom and does not play.
+- **CP-5** Output lands in `<home>/recordings` (beside `<home>/ai/transcripts`),
+  or at a caller `path` — relative to the CALLING PAGE, the rule
+  `readFile`/`rawUrl`/`transcribe` follow (RH-1). Screen → `.mov` (h264 + aac),
+  audio → `.m4a` (aac), still → `.png`/`.jpg`. Recordings are captured at the
+  display's real pixel scale, so a Retina recording is not half-size.
+- **CP-6** `audio` on a screen recording is `false`, `"mic"`, `"system"` or
+  `"both"` — named, and refused rather than coerced, the posture AI-10 takes on
+  `task`. **System audio is what a browser cannot do on macOS at all**, and it
+  is the capability that justifies the native path over `getDisplayMedia`.
+  Audio-only records the system's current input and **refuses** `device` rather
+  than ignoring it, naming where a specific microphone can be chosen (a screen
+  recording's `audio: "mic"`) — see D398 for why the API that could do both
+  deadlocked.
+- **CP-7** **The probe never prompts.** `sources()` answers permission from
+  `CGPreflightScreenCaptureAccess` and `AVCaptureDevice.authorizationStatus`,
+  and lists displays from `CGGetActiveDisplayList` — never
+  `SCShareableContent`, which raises the TCC dialog. The dialog rides the first
+  real capture, where the user has just asked for one. Same rule the GPU probe
+  follows (SPEC §40): a page asking "can I?" must not change anything.
+- **CP-8** **The floor is macOS 15, not the app's floor.** `SCRecordingOutput`
+  is 15+ and `SCScreenshotManager` 14+, against `LSMinimumSystemVersion` 11.0,
+  so a 12–14 Mac gets `available: false, reason: "needs macOS 15"` and a start
+  rejects `"unavailable"` with the same sentence. Windows and Linux get the same
+  shape with their own reason. No `via` field anywhere: there is one
+  implementation, so a page must never branch on which one served it.
+  Local only — a hosted/exported page has no capture (docs/EXPORT.md).
+- **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
+  that touches the mic without it is killed, not prompted) and
+  `com.apple.security.device.audio-input` in the hardened-runtime entitlements
+  (without it the mic is refused whatever TCC says). Screen recording needs
+  neither — only the System Settings grant, which macOS 15+ re-confirms after
+  ~30 idle days.

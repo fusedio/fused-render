@@ -436,6 +436,15 @@ OPTIONS = {
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
         # Pinned view (SPEC §25, D97): WKWebView for the status-item popover.
         "WebKit",
+        # Native capture (SPEC §44): fused_render/capture/_darwin.py imports
+        # these directly. Named rather than derived because they are core deps
+        # with a platform marker, not `[bundled]` ones — the same reason AppKit
+        # is listed above. Quartz carries the non-prompting permission probe
+        # (CGPreflightScreenCaptureAccess) and the still's ImageIO writer;
+        # CoreMedia/CoreAudio arrive as their dependencies and are named so a
+        # dropped transitive is a build error rather than an ImportError on a
+        # user's first recording.
+        "ScreenCaptureKit", "AVFoundation", "Quartz", "CoreMedia", "CoreAudio",
         # The execution engine and deploy CLI (D69, D79, SPEC §19 DP-3), run
         # in-bundle via fused_render/_fused_cli.py. `fused` ITSELF is no longer
         # named here: it is a `[bundled]` requirement, so BUNDLED_PACKAGES below
@@ -554,6 +563,15 @@ OPTIONS = {
         ),
         "NSNetworkVolumesUsageDescription": (
             "FusedRender previews files you open from network volumes."
+        ),
+        # `fused.capture.audio` / a screen recording with `audio: "mic"`
+        # (SPEC §44). REQUIRED, not decorative: an app that touches the
+        # microphone with no NSMicrophoneUsageDescription is killed by the OS
+        # rather than prompted. Screen recording has no matching key — that
+        # grant lives only in System Settings.
+        "NSMicrophoneUsageDescription": (
+            "FusedRender records the microphone when a page you opened asks it "
+            "to — a voice note, or narration over a screen recording."
         ),
     },
 }
