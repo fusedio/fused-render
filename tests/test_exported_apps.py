@@ -291,6 +291,31 @@ def test_post_export_carries_the_capture_into_the_download(client, tmp_path):
                        data={"path": str(a)}).status_code == 403
 
 
+def test_preview_open_reuses_but_never_extracts_or_records(client, tmp_path,
+                                                           monkeypatch):
+    monkeypatch.setattr(appfile, "appfiles_root",
+                        lambda: str(tmp_path / "cache"))
+    app_dir = _app_folder(tmp_path, "live")
+    out = tmp_path / "live.fused"
+    appfile.export_app_file(str(app_dir), str(out))
+    hdrs = {"X-Fused": "1"}
+    # Never opened: a preview must not be the first extraction.
+    r = client.post("/api/appfile/open", json={"file": str(out), "preview": True},
+                    headers=hdrs)
+    assert r.status_code == 400
+    assert exported_apps.read_recents() == []
+    # A real open extracts and records…
+    assert client.post("/api/appfile/open", json={"file": str(out)},
+                       headers=hdrs).status_code == 200
+    stamp = exported_apps.read_recents()[0]["openedAt"]
+    # …after which the preview re-uses the extract and records nothing.
+    r = client.post("/api/appfile/open", json={"file": str(out), "preview": True},
+                    headers=hdrs)
+    assert r.status_code == 200
+    assert r.json()["reused"] is True
+    assert exported_apps.read_recents()[0]["openedAt"] == stamp
+
+
 # ------------------------------------- extract-dir double-listing suppression
 
 

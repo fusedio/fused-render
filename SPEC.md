@@ -7463,7 +7463,13 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   Home path).
 - **AF-11** (D392) The exported card's thumbnail is the payload's
   `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
-  single-member zip read (never an extraction; 404 → the empty thumb).
+  single-member zip read (never an extraction). Without one, a file the user
+  has OPENED before live-renders instead: the card iframes its own fusedapp
+  view under `_preview=1`, whose preview contract is `preview: true` on
+  `POST /api/appfile/open` — reuse an existing extract only (`reuse_only`:
+  never extract fresh, never rebuild, never record recency; the entry iframe
+  carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
+  thumb — a peek must not be the first run of a stranger's pages.
   Export can BAKE one in: `exportAppFile` captures a tab screenshot
   (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
   chosen over DOM serialization because canvas/WebGL apps rasterize blank)

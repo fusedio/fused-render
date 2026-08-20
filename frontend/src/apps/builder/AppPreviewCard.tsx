@@ -39,7 +39,7 @@ import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
-import { withPreviewFlag } from "@platform/lib/router";
+import { embedUrlForFsPath, withPreviewFlag } from "@platform/lib/router";
 import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
@@ -90,8 +90,8 @@ export function AppPreviewCard({
   // The still's source. An exported .fused card (kind "appfile", D392) has no
   // folder to hold a preview.png — its still is the payload's, streamed by a
   // single-member zip read; the endpoint 404s when the file ships without one
-  // and this <img>'s ordinary onError drops the card to the empty thumb
-  // (entry_html is null for these, so there is no live branch to fall to).
+  // and this <img>'s ordinary onError drops the card to the live branch
+  // (an opened file's fusedapp preview — see liveSrc) or the empty thumb.
   const shotSrc =
     app.kind === "appfile"
       ? appfilePreviewUrl(app.path)
@@ -107,13 +107,26 @@ export function AppPreviewCard({
   // mid-boot. Mouseleave unmounts the iframe and the png is back instantly.
   const [hovered, setHovered] = useState(false);
   const [liveReady, setLiveReady] = useState(false);
+  // What the live branch renders. An ordinary app live-renders its entry
+  // page. An exported .fused card (kind "appfile") has no page to point
+  // /render at — its live look is its own fusedapp view under `_preview=1`,
+  // which re-uses the existing extract (never extracts, never records — the
+  // server's reuse_only preview contract, D392) — offered only for a file the
+  // user has OPENED before (`opened_at`): one they never ran stays the empty
+  // thumb rather than a placeholder-in-a-frame, and a peek must not be the
+  // first run of a stranger's pages anyway.
+  const liveSrc = app.entry_html
+    ? thumbSrc(app.entry_html)
+    : app.kind === "appfile" && app.opened_at != null
+      ? withNoFocus(withPreviewFlag(embedUrlForFsPath(app.path)))
+      : null;
   const wantsLive = Boolean(
-    app.entry_html && nearViewport && ((!app.preview_image || shotFailed) || hovered),
+    liveSrc && nearViewport && ((!shotSrc || shotFailed) || hovered),
   );
-  // Priority is only the authored-still hover path. A card whose normal body
-  // is already live must not tear down and restart its iframe merely because
+  // Priority is only the still's hover path. A card whose normal body is
+  // already live must not tear down and restart its iframe merely because
   // the pointer crossed it.
-  const livePriority = Boolean(app.preview_image && !shotFailed && hovered);
+  const livePriority = Boolean(shotSrc && !shotFailed && hovered);
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     livePriority,
@@ -156,9 +169,9 @@ export function AppPreviewCard({
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
                 order so the still stays on top until the app has painted. */}
-            {hovered && app.entry_html && nearViewport && liveStarted && (
+            {hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
-                src={thumbSrc(app.entry_html)}
+                src={liveSrc}
                 style={{
                   width: `${100 / PREVIEW_SCALE}%`,
                   height: `${100 / PREVIEW_SCALE}%`,
@@ -193,10 +206,10 @@ export function AppPreviewCard({
                 that opens it. */}
             <span className="app-pcard-shield" />
           </>
-        ) : app.entry_html && nearViewport && liveStarted ? (
+        ) : liveSrc && nearViewport && liveStarted ? (
           <>
             <iframe
-              src={thumbSrc(app.entry_html)}
+              src={liveSrc}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,

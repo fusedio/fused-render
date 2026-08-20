@@ -317,7 +317,7 @@ def _make_read_only(root: str) -> None:
                 continue
 
 
-def open_app_file(fused_path: str) -> dict:
+def open_app_file(fused_path: str, reuse_only: bool = False) -> dict:
     """Extract the ``.fused`` file into the content-addressed cache (re-using
     a prior extract of the same bytes) and return
     ``{"dir", "entry", "name", "reused"}`` with absolute paths.
@@ -326,6 +326,11 @@ def open_app_file(fused_path: str) -> dict:
     manifest names the entry, but the marker is what the /apps hub and the
     render-time open-recording key on (D301), so a payload whose page lost it
     is refused rather than opened as a non-app.
+
+    ``reuse_only`` is the PREVIEW contract (D392): answer an existing extract
+    of these exact bytes or raise — never extract, never rebuild, never touch
+    the cache. A card thumbnail or listing peek must not turn a file the user
+    never opened into a populated cache dir and a first run of its pages.
     """
     fused_path = os.path.abspath(fused_path)
     if not os.path.isfile(fused_path):
@@ -349,6 +354,8 @@ def open_app_file(fused_path: str) -> dict:
     if os.path.isdir(dest):
         if os.path.isfile(entry_abs) and app_listing.has_fused_meta(entry_abs):
             return {"dir": dest, "entry": entry_abs, "name": name, "reused": True}
+        if reuse_only:
+            raise AppFileError("this app file has not been opened yet")
         # A half-extracted or manually-damaged cache dir: rebuild it. Files
         # are 0o444, so lift the bit before removing.
         shutil.rmtree(dest, ignore_errors=True)
@@ -356,6 +363,8 @@ def open_app_file(fused_path: str) -> dict:
             _lift_read_only(dest)
             shutil.rmtree(dest, ignore_errors=True)
 
+    if reuse_only:
+        raise AppFileError("this app file has not been opened yet")
     staging = tempfile.mkdtemp(prefix="open-", dir=staging_root)
     try:
         try:

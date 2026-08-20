@@ -141,19 +141,26 @@ def api_appfile_open(body: dict = Body(...), x_fused: str | None = Header(defaul
     file = str(body.get("file") or "")
     if not file or not os.path.isabs(file):
         return _error("file must be an absolute .fused file path")
+    # Preview contract (D392): a card thumbnail / listing peek may RE-USE an
+    # existing extract to live-render the app, but must never extract fresh
+    # (reuse_only) and must never count as an open (no recency below).
+    preview = body.get("preview") is True
     try:
-        result = appfile.open_app_file(file)
+        result = appfile.open_app_file(file, reuse_only=preview)
     except appfile.AppFileError as exc:
         return _error(str(exc))
     # The open IS the recency signal for the .fused file itself (D392): this
     # is the one moment the SOURCE path is known (rendering the extracted
     # entry only knows the cache dir, which registered_apps now refuses).
-    # Best-effort — a failed write must not fail the open. The fusedapp
-    # template skips this POST under `_preview=1`, so thumbnails never record.
-    try:
-        from fused_render import exported_apps
+    # Best-effort — a failed write must not fail the open. Previews never
+    # record: a card thumbnail counting as an open would reshuffle the very
+    # recency order the grid is sorted by (the D301 rule, held server-side
+    # because the flag is what the template's preview branch sends).
+    if not preview:
+        try:
+            from fused_render import exported_apps
 
-        exported_apps.record_open(file)
-    except Exception:  # noqa: BLE001 - recency is telemetry, not the answer
-        pass
+            exported_apps.record_open(file)
+        except Exception:  # noqa: BLE001 - recency is telemetry, not the answer
+            pass
     return {**result, "view": embed_url_path(result["entry"])}

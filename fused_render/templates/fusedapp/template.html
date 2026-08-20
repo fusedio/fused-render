@@ -41,11 +41,25 @@
   const file = fused.params.get("_file");
   // A listing-pane peek / card thumbnail renders this template with
   // `_preview=1` (a reserved shell param, read off the URL — it is not a
-  // page param). A preview must not OPEN the app: opening extracts into the
-  // permanent cache and runs the app's pages, and `_preview` exists exactly
-  // to keep a peek from counting as an open (D301 / D390).
+  // page param). A preview must not COUNT as an open and must not extract:
+  // it asks the server for an existing extract only (`preview: true` →
+  // reuse_only + no recency, D392). A file the user HAS opened before
+  // live-renders from that cache — the same look the /apps card shows —
+  // and one they never opened gets the inert placeholder (extracting and
+  // running a never-opened file's pages from a peek is exactly what
+  // `_preview` exists to prevent, D301 / D390).
   const isPreview =
     new URLSearchParams(location.search).get("_preview") === "1";
+
+  function placeholder() {
+    state.innerHTML = "";
+    const h = document.createElement("h1");
+    h.textContent = "Fused app";
+    const p = document.createElement("div");
+    p.className = "muted";
+    p.textContent = "Open this file to unpack and run the app.";
+    state.append(h, p);
+  }
 
   function fail(msg) {
     state.innerHTML = "";
@@ -59,30 +73,29 @@
 
   async function open() {
     if (!file) return fail("No .fused file selected.");
-    if (isPreview) {
-      state.innerHTML = "";
-      const h = document.createElement("h1");
-      h.textContent = "Fused app";
-      const p = document.createElement("div");
-      p.className = "muted";
-      p.textContent = "Open this file to unpack and run the app.";
-      state.append(h, p);
-      return;
-    }
     let resp, data;
     try {
       resp = await fetch("/api/appfile/open", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Fused": "1" },
-        body: JSON.stringify({ file }),
+        body: JSON.stringify(isPreview ? { file, preview: true } : { file }),
       });
       data = await resp.json();
     } catch (e) {
-      return fail("Open request failed: " + e);
+      return isPreview ? placeholder() : fail("Open request failed: " + e);
     }
-    if (!resp.ok) return fail(data.error || "Not a valid .fused file.");
+    if (!resp.ok) {
+      // A preview 400 is the normal "never opened" answer — inert card, not
+      // an error surface.
+      if (isPreview) return placeholder();
+      return fail(data.error || "Not a valid .fused file.");
+    }
     const frame = document.createElement("iframe");
-    frame.src = data.view; // the entry page's chrome-free embed URL
+    // The entry page's chrome-free embed URL. A preview forwards the two
+    // picture-not-use stamps to the inner page: `_preview=1` (no open
+    // recorded by anything downstream, D301) and `_nofocus=1` (a thumbnail
+    // must not take the keyboard, D348).
+    frame.src = data.view + (isPreview ? "?_preview=1&_nofocus=1" : "");
     frame.allow = "clipboard-read; clipboard-write; fullscreen";
     state.remove();
     document.body.appendChild(frame);
