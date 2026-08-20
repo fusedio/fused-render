@@ -9846,7 +9846,39 @@ function setRowCompact(row, on) {
       o.textContent = on ? (PERMISSION_SHORT[o.value] || o.dataset.full) : o.dataset.full;
     }
     fitSelect(sel);
+    permPopupGuard(sel, row);
   }
+}
+
+// The one reader of the OPTIONS the rewrite above cannot fool: the NATIVE
+// popup. Pointer opens the custom menu, which spells everything out from
+// `dataset.full` — but keyboard (Space, Enter, the arrows) opens the select's
+// own list, and that list paints the options' live textContent, so a compact
+// row offered `ask / edits / decides` as the actual choices (bugbot, #685).
+// The full spellings are restored on the keydown that is about to open the
+// popup — synchronously, before the default action — and the short forms come
+// back on change/blur, the two ways a popup ends. fitSelect is deliberately
+// NOT re-run: the pill's box keeps its fitted width, so nothing in the row
+// moves; the longer selected text can clip inside that box only while the
+// popup is open, which is exactly when nobody is looking at the pill.
+// mousedown is guarded too, for any path where the custom menu does not
+// intercept the pointer.
+function permPopupGuard(sel, row) {
+  if (sel.dataset.popguard) return;
+  sel.dataset.popguard = "1";
+  const full = () => {
+    for (const o of sel.options) o.textContent = o.dataset.full;
+  };
+  const short = () => {
+    if (!row.classList.contains("compact")) return;
+    for (const o of sel.options) o.textContent = PERMISSION_SHORT[o.value] || o.dataset.full;
+  };
+  sel.addEventListener("keydown", (e) => {
+    if (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") full();
+  });
+  sel.addEventListener("mousedown", full);
+  sel.addEventListener("change", short);
+  sel.addEventListener("blur", short);
 }
 
 function fitComposerRow(row) {
