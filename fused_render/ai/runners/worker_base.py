@@ -464,7 +464,11 @@ _RETIRED_MAX_SEGMENTS_PER_FILE = 4
 #: its current length; our segments write out of order, so a partial file of
 #: length N does not mean the first N bytes are there, and handing hf one of
 #: ours would produce a silently corrupt blob. A suffix of our own also keeps
-#: the fallback clean — hf never sees our state at all.
+#: the fallback clean — hf never sees our state at all. On the append-only path
+#: (`_appends_only`) length N *does* mean the first N bytes, but the suffix
+#: stays ours on both: which of the two wrote a given part file is not something
+#: hf could tell, and `_clear_parts` deletes them before the fallback runs
+#: rather than offering hf a file whose meaning depends on the platform.
 PART_SUFFIX = ".fusedpart"
 READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
@@ -512,9 +516,13 @@ _TRANSIENT = (OSError, urllib.error.URLError, http.client.HTTPException, ValueEr
 class _Unsegmentable(Exception):
     """This repo cannot be fetched our way, so hf's downloader gets it back.
 
-    Not an error in itself — no range support, a platform without `os.pwrite`,
-    a Hub that reported no size — which is why it reads as a fallback rather
-    than as a failed download.
+    Not an error in itself — no range support, a Hub that reported no size, a
+    cache filesystem that cannot hold a sparse file — which is why it reads as a
+    fallback rather than as a failed download.
+
+    A platform without `os.pwrite` was one of these and is NOT one any more: it
+    fetches on a single append-only stream instead (`_appends_only`), which is
+    the same guarantee by a different route rather than a weakened one.
     """
 
 
@@ -550,7 +558,12 @@ def bytes_on_disk(folder):
     the first second, and reporting that would put the bar at 100% before a
     byte had arrived. `st_blocks` is what the download has actually put on the
     disk. Where the platform has no such notion (Windows), `st_blocks` is
-    absent and the length is the honest answer anyway — nothing is sparse there.
+    absent and the length is the honest answer anyway — nothing is sparse
+    there, and doubly so since `_appends_only`: a part file written by a single
+    append-only stream is never pre-sized, so its length is exactly what has
+    landed. That is also why the POSIX branch takes the MIN of the two rather
+    than the blocks alone — an appended part file on a platform that HAS
+    `st_blocks` can report more allocated blocks than it holds bytes.
     """
     if not folder:
         return None
@@ -808,6 +821,54 @@ def _sparse_ok(folder):
     return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
 
 
+def _appends_only():
+    """Whether this platform must fetch each file on ONE sequential stream.
+
+    True where there is no `os.pwrite`, which means Windows and nothing else.
+
+    Segments write OUT OF ORDER into a file that was pre-sized before a byte
+    arrived, and only an unbuffered positional write makes AI-5i's guarantee
+    hold there — that a counted byte is a written byte. `seek` + `write` on a
+    buffered handle does not: the count runs ahead of the disk, and a resume
+    then skips bytes that were never durable.
+
+    So this used to be a flat refusal, and the refusal cost the model mirror its
+    entire purpose on that platform: the mirror's only transport is
+    `_segmented_fetch`, so a Windows client declined every time, every
+    acquisition went to the Hub, and none of them appeared in the access logs
+    the feature exists to produce (AI-5l).
+
+    **A single append-only stream keeps the same guarantee by a different route
+    rather than giving it up.** With one segment and an `O_APPEND` fd there is
+    no out-of-order write left to make: every `os.write` is a syscall landing at
+    the END of the file, so the file's LENGTH is the progress and a resume is a
+    `Range` from that length. Nothing is buffered and nothing is seeked — the
+    two things the pre-sized layout needed `pwrite` to avoid. What that also
+    removes is the pre-sized file itself, and with it the sparse-filesystem
+    requirement (`_segmented_fetch`) and the reason the bar counts blocks rather
+    than length (`bytes_on_disk`).
+
+    What is given up is parallelism WITHIN one file, and only that: chunks of
+    DIFFERENT files still run on `MAX_CONNECTIONS` streams, because two files
+    are two fds and nothing between them is out of order. A repo of thirty
+    shards is as parallel here as anywhere; a single 4.6GB shard is not.
+
+    Asked at call time rather than cached at import: it is one `hasattr`, and
+    the tests answer it by taking the attribute away from a module they have
+    already imported (`test_ai_hub_fetch_no_pwrite.py`), which is what lets the
+    win32 path be exercised on POSIX at all.
+    """
+    return not hasattr(os, "pwrite")
+
+
+def _file_size(path):
+    """The file's length, or 0 where there is no file. Never raises."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
 def _chunks(size):
     """Split [0, size) into fixed `CHUNK_BYTES` pieces. `done` is the cursor.
 
@@ -896,6 +957,11 @@ class _FileFetch:
         self.part = self.blob + PART_SUFFIX
         self.sidecar = self.part + ".json"
         self.snapshot = os.path.join(folder, "snapshots", meta["commit"])
+        #: One append-only stream instead of segments — see `_appends_only`.
+        #: Snapshotted per fetch rather than asked again at every write: the
+        #: answer cannot change under a running download, and a plan made one
+        #: way must not be written the other.
+        self.append = _appends_only()
         self.lock = threading.Lock()      # guards the segment cursors
         self.flush_lock = threading.Lock()  # one writer of the sidecar at a time
         self.fd = None
@@ -922,6 +988,8 @@ class _FileFetch:
             _remove(self.sidecar)
             return []
         os.makedirs(os.path.dirname(self.blob), exist_ok=True)
+        if self.append:
+            return self._plan_append()
         saved = self._saved()
         if saved is not None:
             # The layout to resume with is the layout the bytes were fetched
@@ -973,6 +1041,59 @@ class _FileFetch:
         self.pending = len(pending)
         return pending
 
+    def _plan_append(self):
+        """The same plan on a platform with no `os.pwrite`: one stream, appended.
+
+        ONE segment covering the whole file, an fd opened `O_APPEND`, and no
+        `ftruncate` to the final size. Those are the only three differences from
+        `plan()` above and they are all one difference: **here the part file's
+        LENGTH is the progress**, where on the segmented path the length is
+        final from the first second and the cursors are the progress.
+
+        That is how AI-5i's invariant is kept rather than traded away. A counted
+        byte must be a byte the kernel already has, which is why out-of-order
+        segments need an unbuffered positional write; a single sequential stream
+        gets the same promise from `O_APPEND` itself, since every `os.write`
+        lands at the end of the file and the end of the file is the only cursor
+        there is. A `SIGKILL` therefore leaves a PREFIX — never a file with a
+        hole in the middle that a length would misdescribe.
+
+        The sidecar still licenses the resume, exactly as above: without one this
+        part file is bytes of unknown provenance. And the one segment derived
+        here is also what refuses a sidecar the SEGMENTED path wrote — four
+        recorded segments against one derived, so `_restore` says no and the file
+        restarts whole. It has to: that part file is pre-sized and full of holes,
+        and appending onto it would publish a blob of exactly the right length
+        and partly wrong content. The refusal holds in the other direction too,
+        in `_saved`.
+
+        Then the recorded cursor and the file are made to AGREE before a byte
+        moves, by truncating the file back to the cursor. `flush` fsyncs the data
+        before it writes the sidecar, so a recorded offset is always durable
+        while the last second of writes may not be — a distinction the segmented
+        path keeps by resuming from the recorded offset and overwriting anything
+        past it positionally. Appending cannot overwrite, so the un-vouched-for
+        tail goes instead: at most one flush interval of bytes re-fetched,
+        against a resume that would otherwise append at a length no sidecar ever
+        recorded.
+        """
+        self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
+        saved = self._saved()
+        if saved is not None and self._restore(saved):
+            self.segments[0]["done"] = min(self.segments[0]["done"],
+                                           _file_size(self.part))
+        else:
+            self.segments[0]["done"] = 0
+            _remove(self.part)
+            _remove(self.sidecar)
+        self.fd = os.open(self.part,
+                          os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.ftruncate(self.fd, self.segments[0]["done"])
+        self.flush(force=True)
+        pending = [seg for seg in self.segments if not _seg_complete(seg)]
+        self.pending = len(pending)
+        return pending
+
     def _cdn_token(self):
         """The credential to send with the BLOB request — usually none.
 
@@ -1010,6 +1131,17 @@ class _FileFetch:
         exactly the right length that is silently wrong. The layout itself is
         checked in `_restore`, against the segments derived from this answer.
 
+        **The part-file LENGTH check belongs to the pre-sized layout, so it is
+        skipped on the append-only path** (`_appends_only`), where a part file
+        shorter than the file it describes is the ordinary case — its length is
+        the progress. Skipping it is not a hole: the two layouts still refuse to
+        resume each other's part files, in both directions. A segmented run
+        handed an APPENDED part file sees a short file where a pre-sized one is
+        required and starts clean; an appending run handed a SEGMENTED one gets
+        past this check and is refused by `_restore`, which derives one segment
+        against the sidecar's many. Either way the answer is "no sidecar", which
+        is only ever slower.
+
         **`isinstance(state, dict)` is checked explicitly, not left to fall out
         of a `KeyError`.** A sidecar whose JSON parses but is not an object — a
         truncated write that still happens to be valid JSON on its own, like a
@@ -1034,7 +1166,10 @@ class _FileFetch:
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:
                 return None
             saved = state["segments"]
-            if not saved or os.path.getsize(self.part) < self.size:
+            if not saved:
+                return None
+            landed = os.path.getsize(self.part)  # raises: no part file, no resume
+            if not self.append and landed < self.size:
                 return None
             return saved
         except (OSError, ValueError, KeyError, TypeError):
@@ -1238,6 +1373,17 @@ class _FileFetch:
                 f"starting at byte {seg['start']}")
         with self.lock:
             seg["done"] = 0
+            if self.append and self.fd is not None:
+                # Rewinding the CURSOR is not enough where the cursor is the
+                # file's length. An `O_APPEND` fd would write this body after
+                # the bytes already there; the cursor would then reach `size`
+                # over a file half again too long, `finish` would believe it,
+                # and the blob published under a real etag would be exactly the
+                # permanent failure this function exists to prevent. The
+                # segmented path needs nothing here — its writes are
+                # positional, so byte 0 of this body goes to offset 0 whatever
+                # the part file already holds.
+                os.ftruncate(self.fd, 0)
         return 0
 
     def _drain(self, response, seg, start):
@@ -1270,7 +1416,17 @@ class _FileFetch:
             chunk = chunk[:room]
             written = 0
             while written < len(chunk):
-                written += os.pwrite(self.fd, chunk[written:], offset + written)
+                if self.append:
+                    # `O_APPEND`, so the write lands at the end of the file —
+                    # which is this segment's cursor by construction, there
+                    # being exactly one segment and nothing that seeks.
+                    # `offset` is deliberately not consulted: see
+                    # `_plan_append`. Still one syscall per write and no
+                    # userspace buffer, which is the property that matters.
+                    written += os.write(self.fd, chunk[written:])
+                else:
+                    written += os.pwrite(self.fd, chunk[written:],
+                                         offset + written)
             offset += len(chunk)
             with self.lock:
                 seg["done"] += len(chunk)
@@ -1288,6 +1444,12 @@ class _FileFetch:
         etag into the hub cache, where hf serves it from cache forever. The
         cursors are the same durable-byte accounting the sidecar records, and
         they are the only evidence there is that the file is whole.
+
+        On the append-only path (`_appends_only`) the length happens to agree
+        with the cursors, and the gate is still the cursors: ONE rule rather
+        than a per-platform one, and the cursors are the stricter of the two
+        anyway — `_whole_body` can rewind them, and a length that had not been
+        rewound with them is exactly the state this must not publish.
 
         No hash on the HUB path, like huggingface_hub itself, which relies on TLS
         and `Content-Length`: re-reading every gigabyte off the disk would give
@@ -1472,6 +1634,14 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
     would multiply the two caps together and open thirty sockets on a repo of
     thirty shards.
 
+    **A platform with no `os.pwrite` fetches each file on one append-only
+    stream instead of splitting it** (`_appends_only`), and that is the only
+    thing it changes: the queue, the cap and this pool are untouched, so the
+    serialization is per FILE and a repo of shards still moves on
+    `MAX_CONNECTIONS` connections. It used to be an `_Unsegmentable` refusal
+    here, which quietly meant the model mirror never fetched on Windows and no
+    Windows acquisition ever reached our access logs (AI-5l).
+
     **No cache lock, unlike `snapshot_download`, and deliberately.** Two app
     instances fetching one repo would write the SAME bytes at the SAME offsets:
     the etag names the content, so there is no version of this race that puts
@@ -1482,16 +1652,16 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
     the supervisor's deterministic job id joins a second Download of a model
     onto the first (AI-5a).
     """
-    if not hasattr(os, "pwrite"):
-        # Windows. Buffered seek-and-write would break the guarantee the whole
-        # design rests on — that a counted byte is a written byte.
-        raise _Unsegmentable("os.pwrite is unavailable on this platform")
     folder = repo_folder(model_id)
     if not folder:
         raise _Unsegmentable("the hub cache layout is unavailable")
     if not filenames:
         raise _Unsegmentable("the Hub listed no files for this repo")
-    if not _sparse_ok(folder):
+    if not _appends_only() and not _sparse_ok(folder):
+        # The sparse requirement belongs to the PRE-SIZED part file, which the
+        # append-only path never creates. Refusing here anyway would take this
+        # whole fetch — and with it the model mirror — off the one platform
+        # `_appends_only` exists to keep it on.
         raise _Unsegmentable(f"{folder} cannot hold a sparse file")
 
     if token is _ASK_HF:

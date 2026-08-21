@@ -42,15 +42,18 @@ import types
 
 import pytest
 
-# worker_base.py:_segmented_fetch itself refuses to run without os.pwrite (see
-# its own comment there) and every test in this file drives _segmented_fetch
-# directly — there is no fallback path to fall back to here, only the
-# platform this module's whole subject does not run on. The fallback IS
-# tested, just not in this file.
+# Every test in this file drives _segmented_fetch directly and asserts the
+# SEGMENTED layout — four bodies at four offsets, a sidecar of many pieces, a
+# one-byte range probe. A platform without os.pwrite cannot produce one: it
+# fetches each file on a single append-only stream instead (_appends_only), so
+# these assertions would be red there for a reason that is not a defect. That
+# path is not untested — tests/test_ai_hub_fetch_no_pwrite.py drives it, on
+# every OS, and runs against the real platform condition on win32.
 pytestmark = pytest.mark.skipif(
     not hasattr(os, "pwrite"),
-    reason="_segmented_fetch requires os.pwrite (POSIX); Windows always takes "
-           "the plain snapshot_download fallback instead.",
+    reason="this module asserts the multi-segment layout, which needs os.pwrite "
+           "(POSIX). The single-stream path a platform without it takes is "
+           "tested in test_ai_hub_fetch_no_pwrite.py, which runs everywhere.",
 )
 
 #: The only addresses these tests may talk to. Everything here drives a local
@@ -64,12 +67,15 @@ def no_egress(monkeypatch):
 
     **By construction, not by remembering.** Every one of these tests stubs the
     Hub — and the claim that they therefore reach no network was FALSE, proven by
-    Windows CI: the mirror path cannot run without `os.pwrite`, so on win32 the
-    branch degraded to the Hub listing, which is real `huggingface_hub`, which
-    made a real HTTPS request and failed on a 401 from huggingface.co. On a
-    machine with a valid `HF_TOKEN` that test would have PASSED by downloading a
-    repo called `org/m`; on an air-gapped runner it would fail for a third
-    unrelated reason. Neither is a test.
+    Windows CI: the mirror path could not run without `os.pwrite` at the time, so
+    on win32 the branch degraded to the Hub listing, which is real
+    `huggingface_hub`, which made a real HTTPS request and failed on a 401 from
+    huggingface.co. On a machine with a valid `HF_TOKEN` that test would have
+    PASSED by downloading a repo called `org/m`; on an air-gapped runner it would
+    fail for a third unrelated reason. Neither is a test. (The mirror does run
+    without `os.pwrite` now — one append-only stream — but the escape this guards
+    against is any test whose mirror path degrades unexpectedly, which no
+    transport change retires.)
 
     The fix cannot be "stub the Hub in every test", because the escape appears
     exactly where a test did not anticipate falling back. So this refuses the
@@ -2334,31 +2340,15 @@ def test_these_tests_cannot_reach_the_network():
         socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("1.1.1.1", 80))
 
 
-# -- Windows has no `os.pwrite`, so it has no mirror either ----------------------
-
-
-def test_without_pwrite_the_mirror_declines_and_the_hub_serves_the_repo(
-        base, monkeypatch, tmp_path, payload):
-    """What win32 really does, exercised on a platform that has `os.pwrite` by
-    taking it away.
-
-    `_segmented_fetch` is the mirror's only transport and it refuses outright
-    without `os.pwrite` (AI-5i: buffered seek-and-write would break the
-    guarantee that a counted byte is a written byte). So on Windows the mirror
-    NEVER fetches — every download goes to the Hub, mirrored model or not. That
-    is inherited behaviour rather than a defect of this feature, but it has to be
-    a test rather than a deduction, and it is why the round-trip test in
-    `test_build_model_mirror.py` needs the same platform guard this module
-    carries at its top.
-    """
-    state = _mirror_server(payload)
-    _mirror_wire(base, monkeypatch, tmp_path, state)
-    monkeypatch.delattr(os, "pwrite", raising=False)
-    fell_back = _hub_answers(base, monkeypatch, payload)
-
-    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
-    assert fell_back == ["org/m"]
-    # The manifest was still fetched — the decline happens after it, in the
-    # transport — so a Windows box does make the one manifest request and then
-    # takes the Hub path. Worth knowing for what the access logs mean.
-    assert [r["path"] for r in state["requests"]] == [MANIFEST_PATH]
+# -- Windows has no `os.pwrite`, and now has a mirror anyway ---------------------
+#
+# `test_without_pwrite_the_mirror_declines_and_the_hub_serves_the_repo` used to
+# live here and asserted the opposite: the mirror declined on win32 because
+# `_segmented_fetch` refused without `os.pwrite`, so every Windows acquisition
+# went to the Hub and none of them reached our access logs. The transport now
+# falls back to a single append-only stream instead of refusing, so that test is
+# replaced by its inverse — the mirror SERVES the repo — in
+# `tests/test_ai_hub_fetch_no_pwrite.py`, along with the rest of the no-pwrite
+# path. It is a file of its own so that those tests escape the module-level skip
+# above and run natively on Windows CI, which is the only place the real platform
+# condition exists.

@@ -262,13 +262,16 @@ def _served(script, mirror, tmp_path, monkeypatch):
 
 def test_the_client_accepts_what_the_script_wrote_field_for_field(
         script, mirror_and_base, tmp_path, monkeypatch):
-    """Half one of the round trip, and the half that runs EVERYWHERE.
+    """Half one of the round trip: the agreement between generator and parser.
 
-    Split out from the download below because the two have different platform
-    requirements: this is the agreement between a generator and a parser, which
-    is true on every OS, while fetching needs `os.pwrite`. Keeping them in one
-    test meant Windows either skipped the agreement check too, or — as it did —
-    ran the fetch half on a platform that cannot fetch.
+    Split out from the download below because the two had different platform
+    requirements — this one is true on every OS, while fetching needed
+    `os.pwrite`, and keeping them in one test meant Windows either skipped the
+    agreement check too or ran a fetch half on a platform that could not fetch.
+    Both halves run everywhere now that the fetch has an append-only route, and
+    the split is kept because a manifest that parses and a manifest that
+    downloads are still two different claims: one can fail while the other
+    holds, and a single test would not say which.
     """
     mirror, _base = mirror_and_base
     _source, manifest, state = _served(script, mirror, tmp_path, monkeypatch)
@@ -286,13 +289,6 @@ def test_the_client_accepts_what_the_script_wrote_field_for_field(
         "/models/org/m/manifest.json"]
 
 
-@pytest.mark.skipif(
-    not hasattr(os, "pwrite"),
-    reason="the mirror's only transport is _segmented_fetch, which requires "
-           "os.pwrite (POSIX) — see AI-5i. On Windows a mirrored download takes "
-           "the plain snapshot_download path, which is tested in "
-           "test_ai_hub_fetch.py without leaving the machine.",
-)
 def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
         script, mirror_and_base, tmp_path, monkeypatch):
     """Half two: download it and compare the two cache directories.
@@ -301,6 +297,12 @@ def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
     bytes. Each on its own can be self-consistently wrong: a script that reports
     the symlink's size and a client that trusts it would agree perfectly and
     produce a truncated blob under a real etag.
+
+    **No longer gated on `os.pwrite`.** It was, because the mirror's only
+    transport refused without it and this half really did fetch; the transport
+    now takes a single append-only stream instead (`worker_base._appends_only`),
+    so the round trip runs on win32 too — and it is the one test in this feature
+    that proves a real Windows download end to end.
     """
     mirror, base = mirror_and_base
     source, _manifest, _state = _served(script, mirror, tmp_path, monkeypatch)
