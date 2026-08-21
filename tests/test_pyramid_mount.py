@@ -334,7 +334,15 @@ def test_main_remote_analyze_passes_raw_url_to_worker(fs, monkeypatch):
     # The worker's raw_url opts into the server's pooled proxy (&pooled=1) so a
     # cold COG range-read streams through one keep-alive pool instead of a fresh
     # TLS handshake per block.
-    assert opts["raw_url"].endswith("/api/fs/raw?path=/mnt/x.tif&pooled=1")
+    #
+    # main() itself runs `file` through os.path.abspath(os.path.expanduser(...))
+    # before quoting it into the url — on Windows that is NOT a no-op for a bare
+    # POSIX-style literal like "/mnt/x.tif" (it gains the runner's current drive
+    # letter and backslashes), so the expected suffix has to go through the same
+    # transform rather than assume the literal survives unchanged.
+    canonical_file = os.path.abspath(os.path.expanduser("/mnt/x.tif"))
+    assert opts["raw_url"].endswith(
+        "/api/fs/raw?path=" + op._urlparse.quote(canonical_file) + "&pooled=1")
     assert "/api/fs/raw" in opts["raw_url"]
 
 

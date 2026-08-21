@@ -24,6 +24,10 @@
     --accent: #E5FF44;
     --accent-dim: #b8cc36;
     --on-accent: #131417;
+    --sel-bg: #353a25;
+    --row-hover: #26282c;
+    --shadow: rgba(0, 0, 0, 0.45);
+    --scrim: rgba(0, 0, 0, 0.5);
     --grid-dot: #1e2126;
     --skel-shine: #2f333c;
     /* status letters: added / modified / deleted / renamed / untracked */
@@ -75,6 +79,10 @@
     --accent: #5f7300;
     --accent-dim: #4e5f00;
     --on-accent: #ffffff;
+    --sel-bg: #e1e4d7;
+    --row-hover: #e5e6e8;
+    --shadow: rgba(31, 32, 35, 0.18);
+    --scrim: rgba(31, 32, 35, 0.32);
     --grid-dot: #e8eaed;
     --skel-shine: #dfe2e7;
     --st-add: #2f7d32;
@@ -106,13 +114,14 @@
   html, body { height: 100%; }
   body {
     margin: 0;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
+    /* The shell's own stack (base.css) — this view now reads as a sibling of
+       the Tasks list, not as a terminal. Mono survives where it earns its
+       place: paths, shas, branch names, the diff. */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
     line-height: 1.5;
     color: var(--ink);
     background: var(--bg);
-    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
-    background-size: 28px 28px;
     /* The page body NEVER scrolls horizontally — wide content (diffs) scrolls
        inside its own container instead. */
     overflow-x: hidden;
@@ -125,40 +134,47 @@
   }
   a { color: var(--accent-dim); }
 
-  /* ================= panes ================= */
-  .cols {
-    display: grid;
-    grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
-    gap: 20px;
-    margin-top: 18px;
-    align-items: start;
-  }
-  .cols.no-diff { grid-template-columns: minmax(0, 1fr); }
-  @media (max-width: 900px) {
-    .cols, .cols.no-diff { grid-template-columns: minmax(0, 1fr); }
-    /* Stacked, the diff goes ABOVE the lists. Otherwise clicking a commit
-       appends a pane thirty rows below the fold and reads as "nothing
-       happened" — the response to a click has to be where the eye already is. */
-    .cols > .col:last-child:not(:first-child) { order: -1; }
-    .pane { position: static; }
-    .diff { max-height: 50vh; }
-  }
+  /* ================= layout ================= */
+  /* ONE column, always. The diff no longer has a pane of its own — it expands
+     INLINE under the row that was clicked (see `.inline-diff`), so nothing
+     above the click ever moves. The old two-column/stacked-pane layout moved
+     the very row the user clicked, which is the layout-shift rule breaking at
+     the exact moment of interaction. */
+  .cols { margin-top: 18px; }
   .col { min-width: 0; }
 
   section { margin: 0 0 18px; }
   section > h2 {
     display: flex;
+    /* The action cluster (`.sect-acts`) WRAPS under the title as one unit when
+       the pane cannot fit both — the alternative was what shipped: "Set aside"
+       clipped to a stray "S" past the edge of a box that cannot scroll. */
+    flex-wrap: wrap;
     align-items: baseline;
-    gap: 8px;
+    gap: 6px 8px;
     margin: 0 0 8px;
-    font-size: 11px;
+    /* 12px and --ink-2, not 11px and --ink-3: these five words are the novice's
+       whole mental model of the screen, and they were simultaneously the
+       smallest, most letter-spaced and dimmest text on it. */
+    font-size: 12px;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--ink-3);
+    color: var(--ink-2);
   }
   section > h2 .n { color: var(--ink-2); font-weight: 400; letter-spacing: 0; }
   section > h2 .spacer { flex: 1; }
+  /* One flex ITEM holding every header control, so the cluster wraps whole:
+     loose buttons wrapped one at a time, stranding "Discard all" alone on a
+     line between its neighbours. */
+  section > h2 .sect-acts {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-left: auto;
+    min-width: 0;
+  }
   /* An unborn/detached HEAD rides the section label rather than a header band:
      it is DATA, and normal case, letter-spacing reset because it is not a label. */
   section > h2 .state {
@@ -172,6 +188,111 @@
     white-space: nowrap;
   }
   section > h2 .sep { color: var(--ink-3); font-weight: 400; }
+  /* The header IS the accordion toggle: one button holding chevron + title +
+     count, so the whole reading surface folds the section. The action cluster
+     stays OUTSIDE the button — folding and acting are different gestures. */
+  .fold-toggle {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .fold-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .fold-toggle .chev { align-self: center; color: var(--ink-3); }
+  .fold-toggle[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+
+  /* Icon buttons grow words when there is room: below this width the label
+     hides and the glyph + tooltip + aria-label carry the meaning. The
+     breakpoint is the pane's own viewport (this document IS the iframe), so
+     unlike the old toolbar query it measures the right box. */
+  @media (max-width: 480px) {
+    .sect-acts .btn .btn-label,
+    .line .acts .btn .btn-label { display: none; }
+  }
+
+  /* ================= toast ================= */
+  /* The result of the last mutation, pinned to the BOTTOM of the pane. Fixed,
+     so it never shifts the layout — the old top-of-page flash shoved the
+     toolbar and every list down 46px on the first op of a session. */
+  .toast-host {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 40;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .toast-host .flash {
+    margin: 0;
+    max-width: 560px;
+    flex: 1;
+    pointer-events: auto;
+    box-shadow: 0 4px 24px var(--shadow);
+    animation: toast-in 160ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(6px); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .toast-host .flash { animation: none; }
+  }
+
+  /* ================= branch popover ================= */
+  .bar-wrap { position: relative; }
+  .pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: min(420px, 100%);
+    z-index: 30;
+    box-shadow: 0 8px 28px var(--shadow);
+  }
+  .pop .panel { margin-top: 0; }
+
+  /* ================= stash dialog ================= */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 45;
+    background: var(--scrim);
+  }
+  .modal {
+    position: fixed;
+    z-index: 50;
+    left: 50%;
+    top: 18%;
+    transform: translateX(-50%);
+    width: min(460px, calc(100vw - 32px));
+    box-shadow: 0 12px 40px var(--shadow);
+  }
+  .modal .panel { margin-top: 0; }
+  .modal .rows { max-height: 40vh; overflow-y: auto; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; }
+  .modal .panel-form { border-top: 0; }
+
+  /* ================= end of history ================= */
+  .eoh {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0 0;
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+  .eoh::before, .eoh::after {
+    content: "";
+    flex: 1;
+    border-top: 1px solid var(--line);
+  }
 
   /* ================= toolbar ================= */
   /* ONE line, always. A wrapped toolbar reads as two toolbars — the chip alone
@@ -222,6 +343,10 @@
   .bar > .btn {
     flex: 0 1 auto;
     min-width: 0;
+    /* The chip's own box is what clips. Without this the button SHRANK but its
+       children kept painting at full width — "main" stamped across the fetch
+       button in a very narrow pane. */
+    overflow: hidden;
   }
 
   /* One button shape for every action in the view; the variants only change
@@ -233,16 +358,20 @@
     flex: none;
     padding: 4px 9px;
     border: 1px solid var(--line-strong);
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: var(--ink-2);
     font: inherit;
     font-size: 12px;
     white-space: nowrap;
     cursor: pointer;
+    /* NO `color` in this list. A transition on a property fed by var(--token)
+       freezes the OLD value when the token itself changes (WebKit), which left
+       every button wearing dark-theme ink on a light page — a 2.6:1 contrast
+       failure across the whole toolbar. Background and border animate; ink
+       snaps, which the eye cannot see at 120ms anyway. */
     transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1),
-                border-color 120ms cubic-bezier(0.2, 0, 0, 1),
-                color 120ms cubic-bezier(0.2, 0, 0, 1);
+                border-color 120ms cubic-bezier(0.2, 0, 0, 1);
   }
   .btn:hover:not([disabled]) { color: var(--ink); border-color: var(--line-hover); background: var(--surface-2); }
   /* A press has to answer, not just a hover: the toolbar's slow ops (fetch,
@@ -280,8 +409,11 @@
   .btn svg { display: block; flex: none; }
   /* The caret marks a control that OPENS A PANEL, so it turns with the panel —
      driven off the same `aria-expanded` the button already carries, which is
-     what keeps the picture and the a11y flag from ever disagreeing. */
-  .btn .caret { color: var(--ink-3); transition: transform 120ms cubic-bezier(0.2, 0, 0, 1); }
+     what keeps the picture and the a11y flag from ever disagreeing. No
+     transition: `render()` rebuilds the button, so the caret is always a fresh
+     node inserted in its final state — a transition here never ran and only
+     implied motion that could not happen. */
+  .btn .caret { color: var(--ink-3); }
   /* A branch name has no length limit; the rest of the toolbar does. So the name
      is the one thing in the bar that is bounded at BOTH ends, in `ch` rather
      than px so both bounds track the font size and the browser's zoom instead
@@ -305,40 +437,29 @@
      `.btn svg { flex: none }` above already keeps it at full size, hard against
      the right edge of the button, however short the name in front of it gets. */
   .btn .branch-name {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
     min-width: 8ch;
     max-width: 24ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Fetch / Pull / Push go ICON-ONLY in a narrow pane. The breakpoint is not a
-     round number, it is the width at which the bar stops fitting, added up from
-     the parts (12px UI font, so `ch` ≈ 6.7px):
-
-       one button   = 18px padding + 2px border            = 20px chrome
-       Fetch  20 + 14 glyph + 6 gap + ~32 text             =  72px
-       Pull   20 + 14 + 6 + ~26 text + 6 gap + ~16 badge   =  88px
-       Push   20 + 14 + 6 + ~27 text + 6 gap + ~16 badge   =  89px
-       + two 6px gaps inside the cluster                   =  12px
-       remote cluster, labelled, both counts showing       = 261px
-       chip at floor: 20px chrome + 12px caret + 6px gap
-                      + 8ch (~54px) of name                =  92px
-       bar's own 6px padding and 1px border, both sides    =  14px
-       the 6px gap between the two clusters                =   6px
-       ------------------------------------------------------------
-       everything fits down to                             = 373px
-
-     so 372px and below is where it no longer does, and the labels come off:
-     the cluster drops to 158px and the chip gets ~40px of name back rather
-     than the ellipsis it would otherwise be reduced to. Only the LABEL hides —
-     the count badge is a sibling span, untouched, because "3 commits to push"
-     is the most informative thing on that button and the whole point of the
-     degradation is to keep the informative parts. The glyph and the badge are
-     the two survivors; `aria-label` and `title` (set in `toolbar`) carry the
-     word for a screen reader and for a hover. */
-  @media (max-width: 372px) {
-    .bar .remote .btn-label { display: none; }
+  /* In a very narrow pane the 8ch floor is what forces the chip's contents
+     past its own (clipping) box, so the floor gives way before the layout
+     does and the ellipsis engages instead. AFTER the base rule on purpose —
+     a media query adds no specificity, so order is what decides. */
+  @media (max-width: 300px) {
+    .btn .branch-name { min-width: 2ch; }
   }
+  /* No icon-only degradation any more, because there is nothing left to
+     degrade: the remote cluster is ONE morphing button (GitHub Desktop's
+     pattern — it shows the single act that makes sense right now, with its
+     count), and one labelled button plus the chip at its 8ch floor fits every
+     pane the shell can produce. The old three-button breakpoint also measured
+     the VIEWPORT while the bar lived inside #root's 48px of padding, so it
+     fired 48px too late — the band where labels showed AND the bar clipped is
+     gone with the buttons. */
   .btn[aria-expanded="true"] .caret { color: inherit; transform: rotate(180deg); }
   .btn.primary {
     border-color: var(--accent-dim);
@@ -408,12 +529,29 @@
   .btn.ai { color: var(--ink-3); }
   .btn.ai:hover:not([disabled]) { color: var(--accent); }
   .btn.ai.working { opacity: 1; color: var(--accent); animation: ai-pulse 1.2s ease-in-out infinite; }
+  /* 0.65, not 0.45: a 55% opacity swing reads as BLINKING, and the streaming
+     text in the textarea above is already the real progress signal — this only
+     has to say "still working", quietly. */
   @keyframes ai-pulse {
-    0%, 100% { opacity: 0.45; }
+    0%, 100% { opacity: 0.65; }
     50% { opacity: 1; }
   }
+  /* The op in flight, on the button that started it. `action` marks the busy
+     key's own control; the ring is drawn where the click landed, because a view
+     that merely DISABLES everything during a slow push reads as a freeze. */
+  .btn .spin {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    border-radius: 50%;
+    border: 2px solid var(--line-strong);
+    border-top-color: var(--accent);
+    animation: btn-spin 700ms linear infinite;
+  }
+  @keyframes btn-spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) {
     .btn.ai.working { animation: none; }
+    .btn .spin { animation: none; border-top-color: var(--line-strong); }
   }
 
   /* ================= notices ================= */
@@ -471,8 +609,23 @@
     background: var(--danger-bg);
     color: var(--danger);
     font-size: 12px;
+    /* The ONE entrance in this view that animates, and it earns it: the bar is
+       rare (destructive ops only) and it GROWS OUT of the row it questions —
+       150ms of reveal is what says "this came from here" that an instant
+       insertion cannot. A keyframe, not a transition: the node is inserted by
+       a full repaint, and a transition never fires on insertion. */
+    animation: confirm-in 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  @keyframes confirm-in {
+    from { opacity: 0; transform: translateY(-4px); }
   }
   .confirm .q { flex: 1; min-width: 12ch; }
+  /* In a narrow pane the question takes a FULL line and the buttons drop under
+     it. Squeezed beside them it wrapped into a six-line ~20ch column — the most
+     safety-critical text in the view set as the least readable. */
+  @media (max-width: 560px) {
+    .confirm .q { flex-basis: 100%; }
+  }
 
   /* ================= AI resolution (GT-19) =================
      The proposed resolution, before anything is written. Built out of the
@@ -606,52 +759,182 @@
   /* ================= rows ================= */
   .rows {
     border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--surface);
+    border-radius: 8px;
+    background: transparent;
     overflow: hidden;
   }
   .line {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     border-top: 1px solid var(--line);
+    transition: background-color 0.08s ease;
   }
   .line:first-child { border-top: 0; }
-  .line:hover { background: var(--surface-2); }
+  .line:hover { background: var(--row-hover); }
+  /* Selected is TINTED, not merely darker: hover and selected shared
+     --surface-2, so the selected commit vanished the moment the pointer touched
+     any other row. --sel-bg is the accent's own family at surface depth, which
+     is what keeps "the one I picked" legible while the mouse wanders. */
   .line[aria-current="true"] {
-    background: var(--surface-2);
+    background: var(--sel-bg);
     box-shadow: inset 3px 0 0 0 var(--accent);
   }
-  .line .acts { display: flex; gap: 4px; flex: none; padding-right: 8px; }
+  .line .acts { display: flex; gap: 4px; flex: none; padding-right: 10px; }
+  /* A line-level time (stash rows): the field that ends the line. */
+  .line > .when {
+    flex: none;
+    color: var(--ink-3);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    padding-right: 14px;
+    margin-left: auto;
+  }
+  /* With the time owning the line's end, the stash acts sit right after the
+     title instead of pushing off the edge. */
+  .line > .acts { margin-left: 0; }
+  /* A row followed by an action cluster hands its right padding to the
+     cluster: 14px of row padding + the line's 10px gap put ~24px of nothing
+     between the row's last field and the first button. */
+  .line > .row:not(:only-child) { padding-right: 0; }
+  /* Row actions are the Tasks list's: ghost 22px squares that appear when the
+     pointer is on the row (or focus is inside it) and stay out of the reading
+     line otherwise. Invisible means intangible — pointer-events go with the
+     ink, so a hidden control can never eat a click. The tick is NOT one of
+     these: staged-state is content, and content does not hide. Confirm bars
+     and the stash rows' stacked action line are also exempt (their row layout
+     is not the hover surface). */
+  .line .acts .btn {
+    border-color: transparent;
+    background: transparent;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+  }
+  .line:hover .acts .btn,
+  .line:focus-within .acts .btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .line .acts .btn:hover:not([disabled]) {
+    color: var(--ink);
+    background: var(--surface-2);
+    border-color: var(--line);
+  }
+  .line .acts .btn.danger:hover:not([disabled]) {
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-color: var(--danger-line);
+  }
+  /* A half-taken destructive step stays on screen: the armed "Delete?" is a
+     question, and a question that vanishes when the pointer wanders is a
+     confirmation nobody read. */
+  .line .acts .btn.armed {
+    opacity: 1;
+    pointer-events: auto;
+    border-color: var(--danger-line);
+  }
+  /* Stash rows stack their actions on a second line inside the same .line, so
+     the reveal is the row's own hover, which the rule above already covers. */
   .row {
     display: flex;
     align-items: baseline;
     gap: 10px;
     flex: 1;
     min-width: 0;
-    padding: 7px 12px;
+    padding: 10px 14px;
     border: 0;
     background: transparent;
     color: inherit;
     font: inherit;
     text-align: left;
     cursor: pointer;
+    /* The hard floor under every narrow-pane bug in this list: whatever the
+       flex arithmetic inside does, a row's children never paint past its box —
+       past which sit the action buttons they were once measured overlapping. */
+    overflow: hidden;
   }
   .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   div.row { cursor: default; }
+  /* The staged-state checkbox on a change row. It sits BESIDE the row button
+     (a checkbox inside a button is two gestures on one element), vertically
+     centred against the row's first line. */
+  .tick {
+    flex: none;
+    align-self: center;
+    margin: 0 0 0 14px;
+    accent-color: var(--accent-dim);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+  }
+  .tick:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tick:disabled { cursor: not-allowed; }
+  /* A row that follows a checkbox loses its left padding — the tick owns it. */
+  .tick + .row { padding-left: 8px; }
+  /* The select-all row: first line of the list, quiet, the master tick and its
+     words one click surface. It lives IN the list because it acts on the list —
+     parked in the header's action cluster it read as an unrelated control (and
+     wore the browser's blue, styled by nothing). */
+  .line.select-all .row { color: var(--ink-3); font-size: 12px; }
   .line[aria-current="true"] .subject, .line[aria-current="true"] .path { font-weight: 700; }
   .row .sha {
     flex: none;
     color: var(--accent-dim);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
   .row .subject, .row .path {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* The when-field is pushed to the row's end by an auto margin, so whatever
+     sits after the title (the eye, the previewing marker, the selected sha)
+     lands where the title ENDS rather than at the far edge. */
+  .row .when { margin-left: auto; }
+  /* The inline eye: revealed by the row's hover exactly like the action
+     cluster's buttons, and standing where the title ends. */
+  .row .inline-eye {
+    flex: none;
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    color: var(--ink-3);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+  }
+  .line:hover .row .inline-eye,
+  .row .inline-eye:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .row .inline-eye:hover { color: var(--ink); background: var(--surface-2); }
+  .row .inline-eye:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* The previewing marker is the eye's on-state and stays put: dot + word,
+     clickable to come back to now. */
+  .row .where.is-preview.marker {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+  }
+  /* A file path is an identifier; a commit subject and a stash message are
+     prose. Only the identifier keeps the mono voice. */
+  .row .path {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+  }
+  .row.stash .path { font-family: inherit; font-size: inherit; }
   /* Two trailing columns rather than one "author · date" string: in a 420px
      list the single string truncated from the RIGHT, which ate the date — the
      one field you actually scan a log by. So the date is `flex: none` and never
@@ -669,18 +952,25 @@
     flex: none;
     color: var(--ink-3);
     font-size: 11px;
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
+  /* The status is a WORD ("Modified", "Deleted", "Untracked"), because the
+     porcelain letter it replaces is git's own shorthand and the exact audience
+     of this view is people who have never read `git status --short`. A fixed
+     floor keeps the path column aligned across rows; the code stays in the
+     row's tooltip for anyone who wants the letter back. */
   .row .code {
     flex: none;
-    width: 2ch;
-    white-space: pre;
+    min-width: 8ch;
+    white-space: nowrap;
+    font-size: 11px;
     font-weight: 700;
     color: var(--st-new);
   }
   .row .code.is-A { color: var(--st-add); }
   .row .code.is-M, .row .code.is-T { color: var(--st-mod); }
-  .row .code.is-D { color: var(--st-del); }
+  .row .code.is-D, .row .code.is-U { color: var(--st-del); }
   .row .code.is-R, .row .code.is-C { color: var(--st-ren); }
   .row .where.is-moved { border-color: var(--st-ren); color: var(--st-ren); }
   .row .where {
@@ -693,6 +983,20 @@
     letter-spacing: 0.04em;
   }
   .row .where.is-current { border-color: var(--accent-dim); color: var(--accent-dim); }
+  .row .where.is-preview { border-color: var(--good-line); color: var(--good-fg); }
+  /* The commit list's one status mark: a green dot at the END of the subject.
+     On the newest commit it means "this is what the files show now"; when a
+     commit is previewed the dot travels there and brings the `previewing`
+     pill with it — one colour, one meaning: the commit the files on screen
+     belong to. */
+  .row .live-dot {
+    flex: none;
+    align-self: center;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--good-fg);
+  }
 
   .more {
     display: block;
@@ -713,15 +1017,39 @@
   .none { padding: 12px; color: var(--ink-3); font-size: 12px; }
   .hint { color: var(--ink-3); font-size: 11px; }
 
-  /* ================= diff pane ================= */
-  .pane {
-    position: sticky;
-    top: 0;
-    border: 1px solid var(--line);
-    border-radius: 10px;
+  /* The "files shown as of <commit>" banner. The eye toggle's state used to
+     live only on a 14px icon somewhere in the commit list; this names the
+     active commit where it cannot be missed and carries the way back. */
+  .rev-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 8px;
     background: var(--surface);
-    overflow: hidden;
+    color: var(--ink-2);
+    font-size: 12px;
   }
+  .rev-banner .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rev-banner .sha { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
+
+  /* A stash entry is ONE line again: message, time, actions. The actions
+     hover-reveal (see `.acts` above), so at rest nothing competes with the
+     message for width — the overlap that once forced a stacked card is gone
+     at the source. The message is prose, so it keeps the body face. */
+  .row.stash .path { font-family: inherit; font-size: inherit; }
+
+  /* ================= inline diff ================= */
+  /* The diff card, INSIDE the list, directly under the row it belongs to. It
+     is a section of the `.rows` box rather than a floating pane: hairline
+     above, tinted ground, and everything above the clicked row holds still. */
+  .inline-diff {
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .pane { overflow: hidden; }
   .pane-head {
     display: flex;
     align-items: baseline;
@@ -766,7 +1094,7 @@
   .diff {
     margin: 0;
     padding: 0;
-    max-height: 70vh;
+    max-height: 50vh;
     overflow: auto;
     font-size: 12px;
     line-height: 1.45;
@@ -782,6 +1110,17 @@
   .diff .ln.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
   .diff .ln.hunk { color: var(--diff-hunk-fg); }
   .diff .ln.meta { color: var(--diff-meta-fg); }
+  /* A file boundary in a multi-file patch, replacing the `diff --git`/`index`
+     plumbing those boundaries used to wear. */
+  .diff .ln.file {
+    font-weight: 700;
+    color: var(--ink);
+    background: var(--surface-2);
+    border-top: 1px solid var(--line);
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+  .diff .ln.file:first-child { border-top: 0; }
 
   /* ================= empty / error state ================= */
   .empty {
@@ -810,7 +1149,8 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .skel-bar { animation: none; }
-    .row, .more, .btn, .btn .caret { transition: none; }
+    .confirm { animation: none; }
+    .row, .more, .btn { transition: none; }
   }
   .skel-h2 { height: 11px; width: 120px; margin: 0 0 10px; }
   .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); }
@@ -1143,7 +1483,7 @@ const BRANCH_GLYPH = ["M6 6v12", "M18 9a9 9 0 0 1-9 9", "M6 6a2 2 0 1 0 0-4 2 2 
    The `↩` glyph it replaces reads as "return"/"enter" (or as a reply arrow in
    mail), which is the wrong promise for a control that destroys work; a full
    restore-history loop says "revert" without needing the tooltip. */
-const REVERT_GLYPH = ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"];
+const REVERT_GLYPH = ["M4 9h9.5a4.5 4.5 0 0 1 0 9H9", "M8 5L4 9l4 4"];
 
 /* The toolbar's remote ops used to wear `⟳`, `↓` and `↑` as text. A glyph set at
    the label's own 12px is a small character next to a word, not an icon, and the
@@ -1159,6 +1499,26 @@ const PUSH_GLYPH = ["M12 21V9", "M7 14l5-5 5 5", "M4 4h16"];
    the panel toggles carry one; an action button with a caret would be promising
    a menu it does not have. The flip is CSS off `aria-expanded` (see `.caret`). */
 const CARET_GLYPH = ["M6 9l6 6 6-6"];
+
+/* A trash can: delete, for stash rows. Not the revert loop — a stash delete
+   does not restore anything, it throws the stash away. */
+const TRASH_GLYPH = ["M3 6h18", "M8 6V4h8v2", "M19 6l-1 14H6L5 6", "M10 11v6", "M14 11v6"];
+
+/* An open tray with an arrow going in: "put this work aside". The same tray
+   with the arrow coming OUT is restore — the pair reads as opposite motions of
+   one box, which is exactly what stash/restore are. */
+const STASH_GLYPH = ["M4 5h16v4H4z", "M6 9v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9",
+                     "M10 13h4"];
+const RESTORE_GLYPH = ["M4 5h16v4H4z", "M6 9v9a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9",
+                       "M12 17v-4.5", "M9.5 15L12 12.5 14.5 15"];
+const CROSS_GLYPH = ["M6 6l12 12", "M18 6L6 18"];
+
+/* Which sections are folded shut. MEMORY, deliberately not a param: which
+   accordion is open is a reading posture, not a place — a refresh starting
+   from the defaults is fine, and a bookmark carrying someone's collapsed
+   stashes would not be. Stashes starts collapsed: parked work is background
+   by definition ("I don't generally want to see my stashes"). */
+const folded = new Set(["stashes"]);
 
 /* An eye: "look at the file as it was at this commit". Deliberately NOT a
    rewind/clock/circular arrow — this control writes nothing, it only changes
@@ -1208,6 +1568,13 @@ function action(key, label, opts) {
   if (settings.count !== undefined && settings.count !== null) {
     btn.append(el("span", { className: "count", textContent: String(settings.count) }));
   }
+  /* The in-flight op wears its spinner ON the control that was clicked — every
+     button disables during a mutation, but only one of them is WORKING, and a
+     slow push with nothing moving anywhere read as a freeze. Icon-square
+     buttons are excluded: a ring crammed beside a glyph in a 22px box is noise,
+     and their ops answer fast. */
+  const isIconBtn = ((settings.className || "").split(" ").includes("icon"));
+  if (busy === key && !isIconBtn) btn.append(el("span", { className: "spin" }));
   if (settings.expanded !== undefined) {
     btn.setAttribute("aria-expanded", String(settings.expanded));
   }
@@ -1230,10 +1597,13 @@ function confirmable(key, label, question, opts) {
   }));
 }
 
-function confirmBar(question, run) {
+/* `verb` NAMES THE ACT — "Discard changes", "Drop stash", "Delete file" — never
+ * a generic yes. The question and the button saying the same thing is the last
+ * check a fast reader gets before something irreversible. */
+function confirmBar(question, run, verb) {
   const bar = el("div", { className: "confirm", role: "alertdialog" },
     el("span", { className: "q", textContent: question }));
-  bar.append(action("confirm", "Yes, do it", {
+  bar.append(action("confirm", verb || "Confirm", {
     className: "danger", onClick: () => { setParams({ ask: null }); run(); },
   }));
   bar.append(action("cancel", "Cancel", { onClick: () => setParams({ ask: null }) }));
@@ -1252,7 +1622,10 @@ function confirmBar(question, run) {
  */
 
 function headState(repo) {
-  if (repo.detached) return "detached at " + (repo.head || "unknown commit");
+  /* Plain words, not git's: "detached HEAD" is a state the exact audience of
+     this view has no model for. What is TRUE and readable is that you are not
+     on a branch and you are looking at a specific commit. */
+  if (repo.detached) return "not on a branch — viewing " + (repo.head || "unknown commit");
   return repo.branch || "no branch";
 }
 
@@ -1268,75 +1641,113 @@ function toolbar(data) {
      the pointer's tooltip — the same sentence, because a mouse user reading a
      truncated chip needs exactly what a screen reader is already told. */
   const head = "Branch: " + headState(repo) + " — switch or create a branch";
+  /* The chip wears the branch GLYPH: a bare "summer-menu" reads as a random
+     word, and the fork symbol is the one piece of git iconography everyone
+     has seen — it is what says this chip is the branch switcher. */
   bar.append(action("panel-branch",
-                    [el("span", { className: "branch-name",
+                    [icon(BRANCH_GLYPH, 13),
+                     el("span", { className: "branch-name",
                                   textContent: headState(repo) }), caret()], {
     label: head,
     title: head,
     expanded: panel === "branch",
     onClick: () => {
       /* A filter term belongs to one visit to the panel: coming back later to
-         look for something else should not start inside the last search. */
-      if (panel !== "branch") branchQuery = "";
+         look for something else should not start inside the last search. The
+         armed delete resets for the same reason — a half-taken destructive
+         step must not survive the panel closing. */
+      if (panel !== "branch") { branchQuery = ""; armedBranchDelete = null; }
       setParams({ panel: panel === "branch" ? null : "branch" });
     },
   }));
 
   const remote = repo.remote;
   const group = el("div", { className: "remote" });
-  /* The three remote ops are ONE markup for two shapes: glyph + label + count
-     wide, glyph + count narrow, with CSS hiding `.btn-label` under the
-     breakpoint (see the 372px query). Deliberately not two builds chosen at a
-     JS-measured width — CSS re-decides for free on every resize, a measurement
-     would have to be re-taken and re-rendered, and the two would drift.
-     Because the word can be absent, each carries an explicit `label`
-     (`aria-label`) and a `title`: the name for a screen reader and the same
-     thing for a hover. The label REPEATS the count rather than leaning on the
-     badge, because setting `aria-label` at all replaces the button's contents
-     as its accessible name — the badge would otherwise go unread exactly in
-     the state where it is the only text left. */
-  group.append(action("fetch", [icon(FETCH_GLYPH, 14), btnLabel("Fetch")], {
-    label: "Fetch",
-    disabled: !remote,
-    title: remote ? "git fetch --prune " + remote
-                  : "This repository has no remote to fetch from.",
-    onClick: () => run("fetch", { op: "fetch" }),
-  }));
-  group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Pull")], {
-    label: repo.behind ? "Pull " + plural(repo.behind, "commit") : "Pull",
-    disabled: !remote,
-    count: repo.behind || null,
-    title: repo.behind
-      ? plural(repo.behind, "commit") + " to pull (fast-forward only)"
-      : "git pull --ff-only",
-    onClick: () => run("pull", { op: "pull" }),
-  }));
-  /* One word for both acts, because the label is also a WIDTH: "Publish branch"
-     made this button half again as wide as its neighbours and shifted the whole
-     toolbar whenever a branch gained an upstream. The distinction is real —
-     without one this CREATES the remote branch and records it — so it is kept
-     where it costs no geometry, in the tooltip. */
-  const ahead = repo.upstream ? (repo.ahead || null) : null;
-  group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Push")], {
-    label: ahead ? "Push " + plural(ahead, "commit") : "Push",
-    disabled: !remote || repo.detached,
-    count: ahead,
-    /* Every branch of this tooltip has to start by saying PUSH: with the word
-       gone from the face of the button, the tooltip is the only place a hover
-       learns which of the three glyphs it is on, and "Create x on origin and
-       track it" named the side effect without naming the act. */
-    title: repo.detached ? "HEAD is detached — there is no branch to push."
-      : repo.upstream ? "git push to " + repo.upstream
-      : "git push — create " + (repo.branch || "this branch") + " on "
-        + (remote || "the remote") + " and track it",
-    onClick: () => run("push", { op: "push" }),
-  }));
+  /* ONE morphing button, GitHub Desktop's pattern: the bar shows the single
+     remote act that makes sense RIGHT NOW, labelled by its consequence and
+     wearing its count, instead of three verbs the user has to rank. The order
+     is theirs too — when the branch has both directions pending, getting the
+     remote's commits comes first, because a push cannot land over unpulled
+     history anyway. The git verb each state runs stays in the tooltip; the
+     face of the button speaks the user's language. */
+  const behind = repo.behind || 0;
+  const ahead = repo.upstream ? (repo.ahead || 0) : 0;
+  const canPush = remote && !repo.detached;
+  if (!remote) {
+    group.append(action("fetch", [icon(FETCH_GLYPH, 14), btnLabel("Check for updates")], {
+      label: "Check for updates",
+      disabled: true,
+      title: "This repository has no remote to talk to.",
+      onClick: () => {},
+    }));
+  } else if (behind) {
+    group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
+      label: "Get the latest — " + plural(behind, "commit") + " to pull",
+      count: behind,
+      title: (ahead
+        ? "You also have " + plural(ahead, "commit") + " to send — get the "
+          + "latest first, then this button becomes Send. "
+        : "") + "git pull --ff-only",
+      onClick: () => run("pull", { op: "pull" }),
+    }));
+  } else if (ahead && canPush) {
+    group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Send")], {
+      label: "Send " + plural(ahead, "commit"),
+      count: ahead,
+      title: "git push to " + repo.upstream,
+      onClick: () => run("push", { op: "push" }),
+    }));
+  } else if (canPush && repo.branch && !repo.upstream && data.repo.has_commits) {
+    /* A branch the remote has never seen: the honest label is that sending it
+       PUBLISHES it. The old toolbar hid this distinction in a tooltip on a
+       button that just said Push. */
+    group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Publish branch")], {
+      label: "Publish " + repo.branch + " to " + remote,
+      title: "git push — create " + repo.branch + " on " + remote + " and track it",
+      onClick: () => run("push", { op: "push" }),
+    }));
+  } else {
+    group.append(action("fetch", [icon(FETCH_GLYPH, 14), btnLabel("Check for updates")], {
+      label: "Check for updates",
+      disabled: repo.detached && !remote,
+      title: "git fetch --prune " + remote,
+      onClick: () => run("fetch", { op: "fetch" }),
+    }));
+  }
+  /* The counts the morphing button decides by only move when someone FETCHES,
+     so whenever the primary slot is spent on pull/push, a quiet icon keeps
+     "check for updates" one click away rather than unreachable. */
+  if (remote && (behind || (ahead && canPush))) {
+    group.prepend(action("fetch", icon(FETCH_GLYPH, 14), {
+      className: "icon",
+      label: "Check for updates",
+      title: "Check for updates (git fetch --prune " + remote + ")",
+      onClick: () => run("fetch", { op: "fetch" }),
+    }));
+  }
   bar.append(group);
 
-  const wrap = el("div", null, bar);
-  if (panel === "branch") wrap.append(branchPanel(data));
+  /* The panel is a POPOVER anchored under the chip, not an inline section:
+     opening it must not shove the commit box and every list down a panel's
+     height. Same param, same Escape, plus an outside click to dismiss. */
+  const wrap = el("div", { className: "bar-wrap" }, bar);
+  if (panel === "branch") {
+    wrap.append(el("div", { className: "pop" }, branchPanel(data)));
+  }
   return wrap;
 }
+
+/* Outside-click closes the branch popover. Registered once; a click that is
+   inside the popover or on the chip is the panel's own business. */
+document.addEventListener("click", (event) => {
+  if (param("panel") !== "branch") return;
+  const path = event.composedPath ? event.composedPath() : [];
+  for (const node of path) {
+    if (!node || !node.classList) continue;
+    if (node.classList.contains("pop") || node.classList.contains("bar")) return;
+  }
+  setParams({ panel: null });
+});
 
 /* ------------------------------------------------------------ branch panel */
 
@@ -1355,6 +1766,11 @@ let branchCache = null;
    visit to this panel.) Module scope rather than a local, so the term outlives
    the repaints a `run` mutation forces. */
 let branchQuery = "";
+
+/* The branch whose delete ✕ has been clicked ONCE — the second click deletes.
+   Module scope for the same reason `branchQuery` is; cleared whenever the
+   panel opens fresh, so an armed delete never lies in wait across visits. */
+let armedBranchDelete = null;
 
 /* A cheap pre-filter, NOT a validator. ops.py asks git's own `check-ref-format`
    and that stays the authority — anything this misses still comes back as a red
@@ -1435,13 +1851,31 @@ function branchPanel(data) {
     line.append(row);
     if (!branch.current) {
       /* `branch -d` and never `-D`: it refuses a branch whose commits are
-         reachable from nowhere else, so it cannot lose work and needs no
-         confirmation — git's own refusal IS the safety step. */
-      line.append(el("div", { className: "acts" }, action("del:" + branch.name, "✕", {
-        className: "icon", label: "Delete branch " + branch.name,
-        title: "Delete " + branch.name + " (refused if it is not fully merged)",
-        onClick: () => run("del:" + branch.name, { op: "branch_delete", name: branch.name }),
-      })));
+         reachable from nowhere else, so it cannot lose commits. It still gets a
+         second click — armed in place, the ✕ becomes a labelled "Delete?" in
+         danger colours — because a one-click neutral ✕ one row from the branch
+         you are on broke the view's own promise that anything destructive-ish
+         asks first. Local state, not `ask`: the DESTRUCTIVE set mirrors ops.py
+         and `branch -d` is not in it, precisely because git itself is the
+         backstop here. */
+      const armed = armedBranchDelete === branch.name;
+      line.append(el("div", { className: "acts" },
+        action("del:" + branch.name, armed ? "Delete?" : "✕", {
+          className: armed ? "danger armed" : "icon",
+          label: armed ? "Really delete branch " + branch.name
+                       : "Delete branch " + branch.name,
+          title: armed ? "Click again to delete " + branch.name
+                       : "Delete " + branch.name + " (refused if it is not fully merged)",
+          onClick: () => {
+            if (armed) {
+              armedBranchDelete = null;
+              run("del:" + branch.name, { op: "branch_delete", name: branch.name });
+            } else {
+              armedBranchDelete = branch.name;
+              void draw(true);
+            }
+          },
+        })));
     }
     return line;
   };
@@ -1518,23 +1952,75 @@ function branchPanel(data) {
 
 /* ------------------------------------------------------------- stash panel */
 
-function stashPanel(data) {
+/* The stash DIALOG: a real modal, because the old inline form appeared "in a
+   weird place" (the user's words) — under whichever section header hosted the
+   button. A dialog says three things at once: what will be stashed (the file
+   list — review before consent, like every other destructive-adjacent surface
+   here), what to call it, and the one button that does it. */
+function stashModal(data) {
   const scope = data.repo.rel || "this repository";
+  const close = () => setParams({ panel: null });
+
+  const scrim = el("div", { className: "scrim" });
+  scrim.addEventListener("click", close);
+
   const panel = el("div", { className: "panel" },
-    el("div", { className: "panel-head", textContent: "Stash changes in " + scope }));
-  const message = el("input", { type: "text", placeholder: "message (optional)",
+    el("div", { className: "panel-head", textContent: "Stash the changes in " + scope }));
+
+  const message = el("input", { type: "text",
+                                placeholder: "what is this work? (optional)",
                                 disabled: busy !== null });
+  message.setAttribute("aria-label", "A name for this stash");
   const untracked = el("input", { type: "checkbox", disabled: busy !== null });
   const push = () => run("stash_push", {
     op: "stash_push", message: message.value, include_untracked: untracked.checked,
-  });
+  }, () => { setParams({ panel: null }, { history: "replace" }); });
   message.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); push(); }
   });
-  panel.append(el("div", { className: "panel-form" }, message,
-    el("label", null, untracked, "include untracked"),
-    action("stash_push", "Stash", { onClick: push })));
-  return panel;
+  panel.append(el("div", { className: "panel-form" }, message));
+
+  /* What a `git stash push` under this scope will take: every tracked change,
+     and the new files only when the toggle says so. Shown BEFORE the click —
+     the list is the consent. */
+  const rows = el("div", { className: "rows" });
+  const tracked = data.changes.filter((c) => !c.untracked);
+  const fresh = data.changes.filter((c) => c.untracked);
+  for (const c of tracked) {
+    rows.append(el("div", { className: "line" },
+      el("div", { className: "row" },
+        el("span", { className: "code", textContent: c.label || c.status }),
+        el("span", { className: "path", textContent: c.path }))));
+  }
+  for (const c of fresh) {
+    const line = el("div", { className: "line" },
+      el("div", { className: "row" },
+        el("span", { className: "code", textContent: "New" }),
+        el("span", { className: "path", textContent: c.path }),
+        el("span", { className: "where", textContent: "only if new files are included" })));
+    rows.append(line);
+  }
+  if (!tracked.length && !fresh.length) {
+    rows.append(el("div", { className: "none", textContent: "Nothing to stash under this path." }));
+  }
+  panel.append(rows);
+
+  const foot = el("div", { className: "panel-form" },
+    el("label", null, untracked, "include new files"),
+    el("span", { className: "spacer", style: "flex:1" }),
+    action("stash_push", "Stash", {
+      className: "primary",
+      title: "git stash push — the changes leave the working tree and appear "
+             + "under Stashes, ready to restore",
+      disabled: !tracked.length && !fresh.length,
+      onClick: push,
+    }),
+    action("stash-cancel", "Cancel", { onClick: close }));
+  panel.append(foot);
+
+  const wrap = el("div", null, scrim, el("div", { className: "modal" }, panel));
+  focusSoon(message);
+  return wrap;
 }
 
 /* ------------------------------------------------------------- commit box */
@@ -1558,7 +2044,18 @@ function commitBox(data) {
   const staged = data.changes.filter((c) => c.staged).length;
   const outside = data.staged_outside || { count: 0, paths: [] };
   const total = staged + outside.count;
-  if (!total) return null;
+  /* The box renders whenever ANYTHING is uncommitted, not only once something
+     is staged. The old gate made the 90% flow start with an invisible step: a
+     user who had just edited a file saw no save affordance anywhere, only a
+     bare `+` whose meaning had to be guessed. With changes pending but nothing
+     staged, the box appears DISABLED and its hint teaches the step. A fully
+     clean tree still shows no box — that is the state with genuinely nothing
+     to say. */
+  if (!total && !data.changes.length) return null;
+  /* A commit records the index, and an index holding a file that still has
+     conflict markers in it is a commit git itself will refuse — say so before
+     the click instead of relaying the refusal after it. */
+  const conflicted = data.changes.some((c) => c.conflicted);
   const message = param("msg");
 
   const box = el("textarea", {
@@ -1579,19 +2076,22 @@ function commitBox(data) {
     }
   });
 
+  const hint = aiBusy ? "Writing a commit message…"
+    : conflicted ? "Resolve the conflicted files before committing."
+    : total ? plural(total, "ticked change") + " will be committed"
+    : "Tick the changes you want to include first";
   const actions = el("div", { className: "commit-actions" },
-    /* No staged-count gate on `disabled`: the box does not exist unless the
-       index has something in it, so the only thing that can disable this
-       button is a call already in flight (`action` applies `busy` itself). */
     action("commit", "✓ Commit", {
       className: "primary",
-      count: total,
-      title: "Commit everything that is staged",
+      count: total || null,
+      disabled: !total || conflicted,
+      title: conflicted ? "A conflicted file cannot be committed yet."
+        : total ? "Commit everything that is ticked"
+        : "Nothing is ticked yet — tick the changes to include them.",
       onClick: () => commit(box.value),
     }),
     generateButton(),
-    el("span", { className: "hint",
-                 textContent: plural(total, "staged change") + " will be committed" }));
+    el("span", { className: "hint", textContent: hint }));
 
   const wrap = el("div", { className: "commit" }, box, actions);
 
@@ -1652,7 +2152,10 @@ const AI_SYSTEM = [
 let aiBusy = false;
 
 function generateButton() {
-  return action("ai", icon(SPARK_GLYPH, 14), {
+  /* While it writes, the sparkle IS a spinner — the pulse alone read as
+     nothing happening, and the button got clicked three times by a user who
+     never learned a generation was already running. */
+  return action("ai", aiBusy ? el("span", { className: "spin" }) : icon(SPARK_GLYPH, 14), {
     className: "icon ai" + (aiBusy ? " working" : ""),
     disabled: aiBusy,
     label: "Generate a commit message with AI",
@@ -1909,7 +2412,8 @@ function resolveConfirmBar() {
       const content = proposal.text;
       run("resolve:" + path, { op: "resolve", paths: [path], content },
           () => { proposal = null; streamed = ""; });
-    });
+    },
+    "Overwrite file");
 }
 
 function resolveFailed(message) {
@@ -2011,7 +2515,10 @@ async function resolveWithAI(path) {
       text: text,
       unresolvable: unresolvable,
       note: unresolvable
-        ? "The AI declined to resolve this one, so there is nothing to apply."
+        ? "The AI declined to resolve this one, so there is nothing to apply. "
+          + "You can still fix it by hand: open " + path + " in the editor and "
+          + "keep the side you want in each block between <<<<<<< and >>>>>>>, "
+          + "then delete those marker lines and stage the file."
         : "Nothing has been written yet. Applying replaces " + path
           + " in your working tree; it is not staged and not committed."
           + (entry.truncated
@@ -2134,16 +2641,53 @@ function writable(repo, path) {
   return repo.is_dir && rel.startsWith(repo.rel + "/");
 }
 
-function changeLine(repo, change, selected, kind) {
+/* ONE row per changed path, whatever its index state. The staged/unstaged/
+   untracked triple was git's model rendered at people who do not have it; the
+   CHECKBOX is the model everyone already has — ticked goes into the next
+   commit, unticked stays behind (GitHub Desktop's grammar). A partially staged
+   file (`MM`) renders as the indeterminate state, and ticking it stages the
+   rest. */
+function changeLine(repo, change, selected) {
   const letter = change.untracked ? "?" : (change.x !== " " ? change.x : change.y);
   const label = change.orig ? change.orig + " -> " + change.path : change.path;
+  const path = change.path;
   const line = el("div", { className: "line" });
+  const canAct = writable(repo, path);
+
+  const tick = el("input", { type: "checkbox", className: "tick" });
+  tick.checked = !!change.staged && !change.unstaged && !change.untracked;
+  tick.indeterminate = !!(change.staged && (change.unstaged || change.untracked));
+  /* A conflicted file's tick is disabled: `git add` on a file that still has
+     markers in it is the classic way half a conflict gets committed. The
+     sparkle (or hand-editing) is the way through, and a checkbox saying "not
+     yet" is part of that message. */
+  tick.disabled = busy !== null || !!change.conflicted || !canAct;
+  tick.setAttribute("aria-label",
+    (tick.checked ? "Remove " + path + " from" : "Include " + path + " in")
+    + " the next commit");
+  tick.title = change.conflicted ? "Resolve the conflict first."
+    : tick.checked ? "Ticked: goes into the next commit. Untick to leave it out."
+    : "Tick to include " + path + " in the next commit";
+  tick.addEventListener("change", () => {
+    if (busy !== null) return;
+    if (tick.checked) run("stage:" + path, { op: "stage", paths: [path] });
+    else run("unstage:" + path, { op: "unstage", paths: [path] });
+  });
+  line.append(tick);
+
+  /* The row wears the WORD ("Modified", "Deleted", "New") and the tooltip
+     keeps the porcelain code — the reader has always sent both, and the view
+     was spending the plain one on the tooltip while printing git's shorthand
+     at the exact audience that has never read `git status --short`. */
+  const word = change.untracked ? "New"
+    : change.conflicted ? "Conflict"
+    : (change.label || change.status);
   const row = el("button", {
     className: "row",
     type: "button",
-    title: (change.label || kind) + " — " + label,
+    title: (change.label || "change") + " (" + change.status + ") — " + label,
   },
-    el("span", { className: "code is-" + letter, textContent: change.status }),
+    el("span", { className: "code is-" + letter, textContent: word }),
     el("span", { className: "path", textContent: label }),
     /* A rename with only one side in the open scope is a MOVE relative to it,
        and the direction is the fact worth reading — "renamed" says nothing about
@@ -2154,49 +2698,34 @@ function changeLine(repo, change, selected, kind) {
   /* An out-of-scope row's `path` is outside the scope, but the diff is
      `-- <path>` against HEAD and git resolves it from the repo ROOT, so the row
      still opens the right diff: the pathspec is repo-relative, not
-     scope-relative. Its ACTIONS are a different matter — see `writable`. */
-  row.addEventListener("click", () => select("wt", change.path));
+     scope-relative. Its ACTIONS are a different matter — see `writable`.
+     Clicking the selected row again closes its inline diff, same as commits. */
+  row.addEventListener("click", () => select("wt", selected ? null : change.path));
   if (selected) line.setAttribute("aria-current", "true");
   line.append(row);
 
   const acts = el("div", { className: "acts" });
-  const path = change.path;
-  if (writable(repo, path)) {
-    /* A conflicted row gets the sparkle FIRST, because on a conflicted file it
-       is the action the user came for and Stage is the one that ends the
-       conflict — offering them the other way round invites a `git add` of a file
-       that still has markers in it. `change.conflicted` is the reader's answer
+  if (canAct) {
+    /* A conflicted row gets the sparkle FIRST — on a conflicted file it is the
+       action the user came for. `change.conflicted` is the reader's answer
        (git's porcelain rule), never re-derived from the status letters here. */
     if (change.conflicted) {
       acts.append(resolveButton(path, "Resolve " + path + " with AI"));
     }
-    if (kind === "staged") {
-      acts.append(action("unstage:" + path, "−", {
-        className: "icon", label: "Unstage " + path,
-        onClick: () => run("unstage:" + path, { op: "unstage", paths: [path] }),
-      }));
-      /* The section is in the KEY, not derived from the entry later. An `MM`
-         file is in both lists and both rows would otherwise build the identical
-         `discard:<path>`, so the confirmation could not tell which revert was
-         clicked — it re-derived "staged" from the entry, and the CHANGES row's
-         revert, whose question says only "discard changes in <path>", quietly
-         threw away the staged version as well. */
-      acts.append(confirmable("discard:staged:" + path, icon(REVERT_GLYPH, 14),
-        "Unstage and discard " + path + "? Both the staged version and the "
-        + "working-tree version go. This cannot be undone.",
-        { className: "icon", label: "Unstage and discard " + path }));
-    } else {
-      acts.append(action("stage:" + path, "+", {
-        className: "icon", label: "Stage " + path,
-        onClick: () => run("stage:" + path, { op: "stage", paths: [path] }),
-      }));
-      acts.append(confirmable("discard:worktree:" + path, icon(REVERT_GLYPH, 14),
-        (change.untracked ? "Delete the untracked file " + path + "?"
-                          : "Discard the unstaged changes in " + path
-                            + "? Anything staged for it is kept.")
-        + " This cannot be undone.",
-        { className: "icon", label: "Discard " + path }));
-    }
+    /* The staged-ness stays in the discard KEY: one list now, but the two
+       questions are still different acts — a row with anything staged discards
+       the lot (unstage, then discard), a purely-unstaged row touches the
+       working tree only — and the key says which question was asked. */
+    acts.append(confirmable(
+      "discard:" + (change.staged ? "staged" : "worktree") + ":" + path,
+      icon(REVERT_GLYPH, 14),
+      change.staged
+        ? "Discard " + path + " entirely? Both the ticked version and the "
+          + "working-tree version go. This cannot be undone."
+        : (change.untracked ? "Delete the new file " + path + "?"
+                            : "Discard the changes in " + path + "?")
+          + " This cannot be undone.",
+      { className: "icon", label: "Discard " + path }));
   }
   line.append(acts);
   return line;
@@ -2234,14 +2763,70 @@ function changeLine(repo, change, selected, kind) {
    there is none, and then there is no button, rather than one that does nothing.
    Hidden, not disabled, for the reason the claude template's annotate switch is:
    a control that cannot do anything is not a promise worth keeping on screen. */
-function commitLine(entry, selected) {
+function commitLine(entry, selected, isLatest) {
   const line = el("div", { className: "line" });
+  const previewingHere = previewed === entry.sha;
+
+  /* THE MARKER SLOT, right where the title ends. Three states:
+       previewing this commit -> a green dot + "previewing", clickable to go
+                                 back to now (it stands where the eye was);
+       hover (canPreview)     -> the eye, revealed by the row hover exactly
+                                 like the action cluster's buttons;
+       otherwise              -> nothing.
+     A SPAN with role=button, not a <button>: the row itself is one, and
+     buttons cannot nest — the click stops propagating so the row does not
+     also toggle its diff. */
+  let marker = null;
+  if (canPreview && previewingHere) {
+    marker = el("span", {
+      className: "where is-preview marker",
+      role: "button",
+      tabIndex: 0,
+      textContent: "previewing",
+      title: "Previewing the files as of " + entry.short + " — click to go back to now",
+    }, );
+    marker.prepend(el("span", { className: "live-dot" }));
+    const off = (ev) => { ev.stopPropagation(); ev.preventDefault(); preview(null); };
+    marker.addEventListener("click", off);
+    marker.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") off(ev);
+    });
+  } else if (canPreview) {
+    marker = el("span", {
+      className: "inline-eye",
+      role: "button",
+      tabIndex: 0,
+      title: "Show the files as of " + entry.short + " (read-only). Views that "
+             + "read the file through a Python reader may still show current content.",
+    }, icon(PREVIEW_GLYPH, 14));
+    marker.setAttribute("aria-label", "Preview the files as of " + entry.short);
+    const on = (ev) => { ev.stopPropagation(); ev.preventDefault(); preview(entry.sha); };
+    marker.addEventListener("click", on);
+    marker.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") on(ev);
+    });
+  }
+
+  /* The latest commit's own mark: what the files show NOW. Suppressed while a
+     preview is active anywhere — one green dot on screen, one meaning: the
+     commit the visible files belong to. */
+  const liveDot = (isLatest && !previewed)
+    ? el("span", { className: "live-dot",
+                   title: "The latest commit — what the files show now" })
+    : null;
+
   const row = el("button", {
     className: "row",
     type: "button",
     title: entry.short + "  " + entry.subject + "\n" + entry.author + " — " + entry.date,
   },
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
+    liveDot,
+    marker,
+    /* The short id APPEARS on the selected row (only there — on every row it
+       turned the list into a table), on the RIGHT, out of the reading line.
+       Once a commit is picked, the row and the pane say the same identity. */
+    selected ? el("span", { className: "sha", textContent: entry.short }) : null,
     el("span", { className: "when", textContent: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
   /* The FULL object name, never the abbreviation the row displays: this value is
@@ -2253,67 +2838,62 @@ function commitLine(entry, selected) {
   row.addEventListener("click",
     () => select("rev", selected ? null : entry.sha));
   line.append(row);
-
-  if (canPreview) {
-    const on = previewed === entry.sha;
-    const btn = action("preview:" + entry.sha, icon(PREVIEW_GLYPH, 14), {
-      className: "icon",
-      label: (on ? "Stop showing" : "Show") + " the open file as of " + entry.short,
-      title: on
-        ? "Showing the open file as of " + entry.short + " — click to go back to "
-          + "the current file"
-        : "Show the open file as of " + entry.short + " in the pane (read-only). "
-          + "Views that read the file through a Python reader may still show its "
-          + "current content.",
-      /* Toggle: the button that turned the pane into a revision is the way back
-         out of one, which is what keeps "Live" in the shell's own bar from being
-         the only exit. */
-      onClick: () => preview(on ? null : entry.sha),
-    });
-    /* `aria-pressed`, not `aria-expanded`: this is a two-state toggle, not a
-       disclosure — nothing here opens. (`expanded` is what the panel buttons in
-       the toolbar carry, and it drives the caret rotation, which this has not
-       got.) */
-    btn.setAttribute("aria-pressed", String(on));
-    line.append(el("div", { className: "acts" }, btn));
-  }
   return line;
 }
 
 function stashLine(stash) {
   const line = el("div", { className: "line" });
-  line.append(el("div", { className: "row" },
-    el("span", { className: "sha", textContent: stash.ref }),
-    el("span", { className: "path", textContent: stash.message }),
-    stash.branch ? el("span", { className: "where", textContent: stash.branch }) : null,
-    el("span", { className: "when", textContent: stash.relative })));
+  /* One line: the message (the field the user wrote), the time, the actions.
+     `stash@{n}` and the branch live in the tooltip — addresses, not what
+     anyone scans the list by. The actions hover-reveal like every other row's,
+     so at rest the line is just the message and its age. */
+  line.append(el("div", {
+    className: "row stash",
+    title: stash.ref + (stash.branch ? " — stashed on " + stash.branch : ""),
+  },
+    el("span", { className: "path", textContent: stash.message || "(no message)" })));
   /* Every stash call carries the entry's COMMIT ID as well as its index.
      `stash@{n}` is a position, and a `stash push` from anywhere — this view,
      another tab, a terminal — renumbers every entry, so an index alone can
      address a different, still-wanted stash by the time the call lands. That is
-     survivable for apply and unrecoverable for drop, which is why the id travels
-     with all three and ops.py verifies it before touching anything. */
+     survivable for a restore and unrecoverable for a delete, which is why the
+     id travels with both and ops.py verifies it before touching anything.
+
+     TWO verbs, not apply/pop/drop. Restore is `stash pop`: bring the work back
+     and take it off the list — what "set aside, come back to it" means — and a
+     pop that conflicts keeps the stash, so nothing is lost. Keeping a copy
+     behind (`stash apply`) stays a terminal move; three verbs for one concept
+     was expert altitude in a novice's list. */
   line.append(el("div", { className: "acts" },
-    action("apply:" + stash.index, "apply", {
-      title: "Apply " + stash.ref + " and keep it",
-      onClick: () => run("apply:" + stash.index,
-                         { op: "stash_apply", index: stash.index, sha: stash.sha }),
-    }),
-    action("pop:" + stash.index, "pop", {
-      title: "Apply " + stash.ref + " and remove it",
+    action("pop:" + stash.index, [icon(RESTORE_GLYPH, 14), btnLabel("Restore")], {
+      label: "Restore this stash",
+      title: "Bring these changes back and remove them from this list",
       onClick: () => run("pop:" + stash.index,
                          { op: "stash_pop", index: stash.index, sha: stash.sha }),
     }),
-    confirmable("stash_drop:" + stash.index + ":" + stash.sha, "drop",
-      "Drop " + stash.ref + "? The stashed changes are gone for good.",
-      { label: "Drop " + stash.ref })));
+    confirmable("stash_drop:" + stash.index + ":" + stash.sha,
+      [icon(TRASH_GLYPH, 14), btnLabel("Delete")],
+      "Delete this stash? The stashed changes are gone for good.",
+      { label: "Delete " + stash.ref })));
+  /* The age closes the line — title, then the (hover-revealed) actions, then
+     the time at the far end, which is the column the whole view keeps its
+     dates in. */
+  line.append(el("span", { className: "when", textContent: stash.relative }));
   return line;
 }
 
 /* A section with a header, an action cluster on the right of the header, rows,
    and — when this section owns the pending confirmation — the confirm bar
-   directly under the rows it is about. */
-function listSection(title, count, controls, rows, emptyText, footer, state) {
+   directly under the rows it is about.
+
+   The header is an ACCORDION toggle (`foldKey`): chevron + title + count fold
+   the body. The action cluster sits outside the toggle button — folding and
+   acting are different gestures — and disappears with the body, because a
+   "Discard all" floating beside a list you cannot see is an invitation to act
+   blind. `after` renders OUTSIDE the rows box (the end-of-history divider is
+   punctuation under the list, not a row of it). */
+function listSection(title, count, controls, rows, emptyText, footer, state, foldKey, after) {
+  const open = !foldKey || !folded.has(foldKey);
   const body = el("div", { className: "rows" });
   if (rows.length) {
     for (const row of rows) body.append(row);
@@ -2321,38 +2901,90 @@ function listSection(title, count, controls, rows, emptyText, footer, state) {
     body.append(el("div", { className: "none", textContent: emptyText }));
   }
   if (footer) body.append(footer);
+  /* Controls travel in ONE `.sect-acts` item so a narrow pane wraps the whole
+     cluster under the title instead of clipping it off the pane's edge. */
+  const acts = [controls].flat().filter(Boolean);
+
+  const heading = foldKey
+    ? el("button", {
+        className: "fold-toggle", type: "button",
+        title: (open ? "Collapse " : "Expand ") + title.toLowerCase(),
+      },
+        (() => { const c = icon(CARET_GLYPH, 12); c.setAttribute("class", "chev"); return c; })(),
+        title,
+        count !== null ? el("span", { className: "n", textContent: count }) : null,
+        state ? el("span", { className: "sep", textContent: "·" }) : null,
+        state ? el("span", { className: "state", textContent: state }) : null)
+    : null;
+  if (heading) {
+    heading.setAttribute("aria-expanded", String(open));
+    heading.addEventListener("click", () => {
+      if (folded.has(foldKey)) folded.delete(foldKey); else folded.add(foldKey);
+      void draw(true);
+    });
+  }
+
   return el("section", null,
-    el("h2", null, title,
-      count !== null ? el("span", { className: "n", textContent: count }) : null,
-      state ? el("span", { className: "sep", textContent: "·" }) : null,
-      state ? el("span", { className: "state", textContent: state }) : null,
+    el("h2", null,
+      heading || [title,
+        count !== null ? el("span", { className: "n", textContent: count }) : null,
+        state ? el("span", { className: "sep", textContent: "·" }) : null,
+        state ? el("span", { className: "state", textContent: state }) : null],
       el("span", { className: "spacer" }),
-      controls || []),
-    body);
+      open && acts.length ? el("span", { className: "sect-acts" }, acts) : null),
+    open ? body : null,
+    open ? after || null : null);
 }
 
 /* ------------------------------------------------------------------ diff pane */
 
 const LINE_CLASS = (line) => {
   if (line.startsWith("@@")) return "hunk";
-  if (line.startsWith("+++") || line.startsWith("---")) return "meta";
   if (line.startsWith("+")) return "add";
   if (line.startsWith("-")) return "del";
-  if (line.startsWith("diff ") || line.startsWith("index ")
-      || line.startsWith("similarity ") || line.startsWith("rename ")
-      || line.startsWith("new file") || line.startsWith("deleted file")
-      || line.startsWith("old mode") || line.startsWith("new mode")
-      || line.startsWith("Binary files")) return "meta";
+  if (line.startsWith("new file") || line.startsWith("deleted file")
+      || line.startsWith("rename ") || line.startsWith("Binary files")) return "meta";
   return "";
 };
+
+/* Plumbing a reader never needs: the header lines git writes for machines.
+   `+++`/`---` are dropped WITH their `diff --git` block because the filename
+   they carry is re-said by the `.file` divider below; `index`, mode and
+   similarity lines inform no one who is not scripting git. */
+const PLUMBING = (line) =>
+  line.startsWith("diff ") || line.startsWith("index ")
+  /* Anchored to git's own header shapes (`+++ b/…`, `--- a/…`, `/dev/null`):
+     a CONTENT line that happens to begin `---` (someone deleted "--flag") is a
+     real deletion and must keep rendering as one. */
+  || /^\+\+\+ (b\/|\/dev\/null)/.test(line) || /^--- (a\/|\/dev\/null)/.test(line)
+  || line.startsWith("old mode") || line.startsWith("new mode")
+  || line.startsWith("new file mode") || line.startsWith("deleted file mode")
+  || line.startsWith("similarity ") || line.startsWith("dissimilarity ");
+
+/* `diff --git a/x b/y` -> the filename the divider shows. The `b/` side, because
+   that is the file as it exists after the change; on a delete the `a/` side is
+   the one that still names anything. */
+const FILE_HEAD = /^diff --git a\/(.*) b\/(.*)$/;
 
 function diffBody(text) {
   const pre = el("pre", { className: "diff", tabIndex: 0 });
   /* One element per line rather than one big text node: a diff needs per-line
      backgrounds, and a stack of styled spans is what gives it them without a
-     syntax highlighter. */
+     syntax highlighter. File boundaries become named dividers and the raw
+     header plumbing under them is not rendered at all — `diff --git a/… b/…`,
+     `index 15eedaa..44b76d0 100644` was three lines of terminal grammar in a
+     view whose audience has never seen a terminal diff. */
   const frag = document.createDocumentFragment();
   for (const line of text.split("\n")) {
+    const head = line.match(FILE_HEAD);
+    if (head) {
+      const from = head[1];
+      const to = head[2];
+      frag.append(el("span", { className: "ln file",
+        textContent: from === to ? to : from + " -> " + to }));
+      continue;
+    }
+    if (PLUMBING(line)) continue;
     frag.append(el("span", { className: "ln " + LINE_CLASS(line), textContent: line || " " }));
   }
   pre.append(frag);
@@ -2402,14 +3034,22 @@ function commitMeta(entry, sha) {
 function diffPane(title, sub, payload, meta) {
   /* Both, always: the pane has one subject but two possible owners, and Close
      means "nothing is selected" whichever of them put it there. */
-  const close = action("close", "Close", {
+  const close = action("close", icon(CROSS_GLYPH, 14), {
+    className: "icon",
+    label: "Close this diff",
+    title: "Close",
     onClick: () => select(null, null),
   });
 
+  /* No title when the caller passes none: the diff sits INLINE under the row
+     that names it, and repeating the row's own words one line lower was the
+     screenshotted redundancy ("Add tiramisu recipe" twice). The head then
+     carries only the sub (what KIND of diff this is) and the way out. */
   const pane = el("div", { className: "pane" },
     el("div", { className: "pane-head" },
-      el("span", { className: "title", textContent: title }),
-      sub ? el("span", { className: "sub", textContent: sub }) : null,
+      title ? el("span", { className: "title", textContent: title })
+            : el("span", { className: "title sub", textContent: sub || "" }),
+      title && sub ? el("span", { className: "sub", textContent: sub }) : null,
       close));
   if (meta) pane.append(meta);
 
@@ -2440,7 +3080,7 @@ function diffPane(title, sub, payload, meta) {
     const rows = el("div", { className: "rows" });
     for (const name of payload.files) {
       const row = el("button", { className: "row", type: "button", title: name },
-        el("span", { className: "code is-?", textContent: "??" }),
+        el("span", { className: "code", textContent: "New" }),
         el("span", { className: "path", textContent: name }));
       row.addEventListener("click", () => select("wt", name));
       rows.append(el("div", { className: "line" }, row));
@@ -2553,9 +3193,11 @@ function pendingConfirm(data) {
       where: "changes",
       node: confirmBar(
         "Discard every change under " + (data.repo.rel || "this repository")
-        + "? Modified files go back to the index and untracked files are deleted. "
-        + "Ignored files are never touched. This cannot be undone.",
-        () => run("discard_all", { op: "discard_all" })),
+        + "? Edited files go back to their last staged or committed version and "
+        + "new untracked files are deleted. Ignored files are never touched. "
+        + "This cannot be undone.",
+        () => run("discard_all", { op: "discard_all" }),
+        "Discard everything"),
     };
   }
   if (op === "resolve") {
@@ -2576,9 +3218,10 @@ function pendingConfirm(data) {
     if (!Number.isFinite(index) || !sha) return null;
     return {
       where: "stashes",
-      node: confirmBar("Drop stash@{" + index + "}? The stashed changes are gone "
-                       + "for good.",
-                       () => run("stash_drop", { op: "stash_drop", index, sha })),
+      node: confirmBar("Delete this set-aside work (stash@{" + index + "})? The "
+                       + "stashed changes are gone for good.",
+                       () => run("stash_drop", { op: "stash_drop", index, sha }),
+                       "Delete stash"),
     };
   }
   const split = rest.indexOf(":");
@@ -2588,14 +3231,16 @@ function pendingConfirm(data) {
   if (which !== "staged" && which !== "worktree") return null;
   const entry = data.changes.find((c) => c.path === path);
   return {
-    where: which === "staged" ? "staged"
-      : (entry && entry.untracked ? "untracked" : "changes"),
+    /* One Changes section now — every per-path question renders under it. The
+       staged/worktree split lives on in the KEY (it decides which act runs),
+       not in where the question is shown. */
+    where: "changes",
     node: confirmBar(
       which === "staged"
         ? "Unstage and discard " + path + "? Both the staged version and the "
           + "working-tree version go. This cannot be undone."
         : (entry && entry.untracked)
-          ? "Delete the untracked file " + path + "? This cannot be undone."
+          ? "Delete the new file " + path + "? This cannot be undone."
           : "Discard the unstaged changes in " + path + "? Anything staged for "
             + "it is kept. This cannot be undone.",
       () => {
@@ -2615,7 +3260,9 @@ function pendingConfirm(data) {
         } else {
           run("discard:" + path, { op: "discard", paths: [path] });
         }
-      }),
+      },
+      (entry && entry.untracked && which !== "staged") ? "Delete file"
+                                                       : "Discard changes"),
   };
 }
 
@@ -2625,9 +3272,12 @@ function render(data, stashes, diff) {
   const pages = num("pages", 1);
   const ask = pendingConfirm(data);
 
-  const staged = data.changes.filter((c) => c.staged);
-  const unstaged = data.changes.filter((c) => c.unstaged && !c.untracked);
-  const untracked = data.changes.filter((c) => c.untracked);
+  /* A pending confirmation or an open inline diff FORCES its section open: a
+     question (or an answer) inside a folded accordion would be invisible at
+     the exact moment it matters. */
+  if (ask) folded.delete(ask.where);
+  if (wt) folded.delete("changes");
+  if (rev) folded.delete("commits");
 
   const truncNote = data.changes_truncated
     /* One flag, two causes (MAX_CHANGES or the status byte cap), so the wording
@@ -2638,18 +3288,11 @@ function render(data, stashes, diff) {
         + "than this view will read." })
     : null;
 
-  /* Each block is built only when it has something to say. An empty "Staged
-     changes / Changes / Untracked / Stashes" quartet is four headings telling
-     the reader the same nothing, and on a clean tree it pushed the one line
-     that mattered off the top. A section still renders while empty when it is
-     CARRYING something — a pending confirmation lives inside its section
-     (`ask.where`), and the truncation note hangs off Changes — because hiding
-     the block would hide the prompt with it. */
+  /* Each block is built only when it has something to say; a section still
+     renders while empty when it CARRIES something (a pending confirmation, the
+     truncation note), because hiding the block would hide the prompt. */
   const sections = [];
   const askIn = (where) => (ask && ask.where === where ? ask.node : null);
-  /* The footer slot takes one node, but two things can want it at once (a
-     pending confirmation and the open stash panel), so they go in together as a
-     fragment rather than one silently shadowing the other. */
   const footer = (...nodes) => {
     const kept = nodes.filter(Boolean);
     if (kept.length < 2) return kept[0] || null;
@@ -2658,190 +3301,185 @@ function render(data, stashes, diff) {
     return frag;
   };
 
-  const stagedAsk = askIn("staged");
-  const showStaged = staged.length || stagedAsk;
+  /* The INLINE diff: wrapped and spliced into its own section's rows, directly
+     under the selected line — the answer appears where the question was asked,
+     and nothing above the click moves. */
+  const inline = diff ? el("div", { className: "inline-diff" }, diff) : null;
+  const spliceDiff = (rows, index) => {
+    if (inline && index >= 0) rows.splice(index + 1, 0, inline);
+    return rows;
+  };
+
+  /* ONE Changes section. Staged / unstaged / untracked was git's index model
+     rendered at people who do not have it; the checkbox on each row (see
+     `changeLine`) is the model everyone has. The master checkbox stages or
+     unstages the lot; discard-all and the stash dialog ride the header as
+     icon+word buttons whose words give way in a narrow pane. */
+  const changes = data.changes;
+  const stagedCount = changes.filter((c) => c.staged).length;
   const changesAsk = askIn("changes");
-  const showChanges = unstaged.length || changesAsk || truncNote;
+  const showChanges = changes.length || changesAsk || truncNote;
 
-  /* Stash is a section control, not a toolbar one — it acts on the changes it
-     sits next to. Which section owns it cannot simply be Changes, though:
-     `git stash push` takes the STAGED work along with the unstaged, and with
-     everything staged the Changes section is not drawn at all, so the control
-     would vanish while there was still something to stash. It rides Changes
-     when Changes is drawn and falls back to Staged changes when it is not. When
-     neither is drawn there is nothing stashable and no control, which is the
-     honest answer — `git stash` on a clean tree does nothing. */
+  /* The master tick heads the LIST, not the header's action cluster: it acts
+     on the rows below it, it belongs in their column (and in the cluster it
+     sat unstyled in the browser's blue, matching nothing). One quiet
+     "Select all" row, the tick aligned over the rows' own ticks. */
+  const master = el("input", { type: "checkbox", className: "tick" });
+  const allIn = changes.length > 0
+    && changes.every((c) => c.staged && !c.unstaged && !c.untracked);
+  master.checked = allIn;
+  master.indeterminate = stagedCount > 0 && !allIn;
+  master.disabled = busy !== null || !changes.length;
+  master.setAttribute("aria-label", allIn
+    ? "Remove every change from the next commit"
+    : "Include every change in the next commit");
+  master.title = allIn ? "Untick to leave everything out of the next commit"
+                       : "Tick to include every change in the next commit";
+  master.addEventListener("change", () => {
+    if (busy !== null) return;
+    if (master.checked) run("stage_all", { op: "stage_all" });
+    else run("unstage_all", { op: "unstage_all" });
+  });
+  const selectAllRow = el("button", {
+    className: "row", type: "button",
+    disabled: busy !== null,
+    title: master.title,
+    textContent: "Select all",
+  });
+  selectAllRow.addEventListener("click", () => { if (!master.disabled) master.click(); });
+  const selectAllLine = el("div", { className: "line select-all" }, master, selectAllRow);
+
   const stashOpen = param("panel") === "stash";
-  const stashHost = showChanges ? "changes" : showStaged ? "staged" : null;
-  const stashButton = (where) => (where === stashHost
-    ? action("panel-stash", ["Stash", caret()], {
-        label: "Stash the changes under this path",
-        expanded: stashOpen,
-        onClick: () => setParams({ panel: stashOpen ? null : "stash" }),
-      })
-    : null);
-  const stashForm = (where) => (where === stashHost && stashOpen ? stashPanel(data) : null);
-
-  if (showStaged) sections.push(listSection(
-    "Staged changes", String(staged.length),
-    [staged.length ? action("unstage_all", "− Unstage all", {
-      onClick: () => run("unstage_all", { op: "unstage_all" }),
-    }) : null,
-     stashButton("staged")],
-    staged.map((c) => changeLine(data.repo, c, c.path === wt, "staged")),
-    "Nothing is staged under this path.",
-    footer(stagedAsk, stashForm("staged")),
-    headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet")));
-
+  const changeRows = spliceDiff(
+    changes.map((c) => changeLine(data.repo, c, c.path === wt)),
+    wt ? changes.findIndex((c) => c.path === wt) : -1);
+  if (changes.length > 1) changeRows.unshift(selectAllLine);
   if (showChanges) sections.push(listSection(
-    "Changes", String(unstaged.length),
-    [...(unstaged.length ? [
-      action("stage_all", "+ Stage all", {
-        onClick: () => run("stage_all", { op: "stage_all" }),
-      }),
-      confirmable("discard_all", "↩ Discard all",
-                  "Discard every change under this path?", {}),
-    ] : []),
-     stashButton("changes")],
-    unstaged.map((c) => changeLine(data.repo, c, c.path === wt, "changes")),
-    data.repo.dirty ? "No unstaged changes under this path."
-                    : "Working tree is clean.",
-    footer(changesAsk || truncNote, stashForm("changes"))));
-
-  /* This one section stages an explicit path LIST rather than the scope
-     pathspec, so it has to apply `writable` itself — one out-of-scope row in the
-     list would make ops.py refuse the whole call, taking the in-scope ones with
-     it. */
-  const stageableUntracked = untracked.filter((c) => writable(data.repo, c.path));
-  const untrackedAsk = askIn("untracked");
-  if (untracked.length || untrackedAsk) sections.push(listSection(
-    "Untracked", String(untracked.length),
-    stageableUntracked.length ? action("stage_untracked", "+ Stage all", {
-      onClick: () => run("stage_untracked", {
-        op: "stage", paths: stageableUntracked.map((c) => c.path),
-      }),
-    }) : null,
-    untracked.map((c) => changeLine(data.repo, c, c.path === wt, "untracked")),
-    "Nothing untracked under this path.",
-    untrackedAsk));
+    "Changes", String(changes.length),
+    [changes.length ? confirmable("discard_all",
+        [icon(REVERT_GLYPH, 14), btnLabel("Discard all")],
+        "Discard every change under this path?",
+        { label: "Discard every change under this path" }) : null,
+     changes.length ? action("panel-stash",
+        [icon(STASH_GLYPH, 14), btnLabel("Stash")], {
+          label: "Stash — set these changes aside for later",
+          title: "Set these changes aside for later (git stash). They come "
+                 + "back with Restore.",
+          expanded: stashOpen,
+          onClick: () => setParams({ panel: stashOpen ? null : "stash" }),
+        }) : null],
+    changeRows,
+    data.repo.dirty ? "No changes under this path." : "Working tree is clean.",
+    footer(changesAsk, truncNote),
+    headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet"),
+    "changes"));
 
   const stashAsk = askIn("stashes");
   if (stashes.length || stashAsk) sections.push(listSection(
     "Stashes", String(stashes.length), null,
     stashes.map(stashLine),
     "Nothing stashed.",
-    stashAsk));
+    stashAsk,
+    null,
+    "stashes"));
 
   /* The COMMITS section: the same scope the lists above use, on the other side
-     of `git commit`. `_pathspec(rel)` bounds it exactly as it bounds the status
-     read, so a view opened on `pkg/` lists the commits that touched `pkg/` and
-     nothing else — the section is the history OF THIS PATH, not of the
-     repository, and that is what makes it belong next to the working tree: the
-     repo-wide timeline is what `git log` in a terminal is for.
-     Recent-first, because that is the order `git log` answers in and the order
-     the question "what just happened here?" is asked in. */
+     of `git commit` — the history OF THIS PATH, recent-first. */
   const commits = data.commits || [];
 
-  /* Three terminal states, not two. The page grows its WINDOW (`limit =
-     PAGE_SIZE * pages`) rather than paging, so the reader's ceiling on that
-     window has to be visible here: `has_more` stays honestly true once the clamp
-     bites, and offering "load more" on it would refetch the identical rows
-     forever. So `capped` — not `has_more` — decides whether another click can do
-     anything, and when it has bitten the section SAYS so, in the same note the
-     Changes list uses to admit its own truncation. */
+  /* Three terminal states. `capped` — not `has_more` — decides whether another
+     click can do anything; the end of history is a quiet DIVIDER under the
+     list, not a dead button wearing a row's clothes. */
   const loadMore = (data.has_more && !data.capped)
-    /* Disabled while an op is in flight, like every other control here: a
-       mutation is about to refetch these very rows, and widening the window
-       under it would put a second read on the same channel. */
     ? el("button", { className: "more", type: "button", disabled: busy !== null,
                      textContent: "Load " + PAGE_SIZE + " more commits" })
     : (data.has_more && data.capped)
       ? el("p", { className: "note", textContent:
           "Showing the most recent " + commits.length + " commits for this path — "
           + "this view will not read further back. Use git for deeper history." })
-      : (commits.length
-          ? el("button", { className: "more", type: "button", disabled: true,
-                           textContent: "End of history for this path" })
-          : null);
+      : null;
   if (loadMore && loadMore.tagName === "BUTTON" && !loadMore.disabled) {
     loadMore.addEventListener("click", () => setParams({ pages: pages + 1 }));
   }
+  const endMark = (commits.length && !data.has_more)
+    ? el("div", { className: "eoh", textContent: "end of history for this path" })
+    : null;
 
-  /* Hidden when empty, like every list above it — an empty Commits heading on a
-     path nothing has ever committed is a heading telling the reader nothing. A
-     repository with NO commits at all is not that case and must not read as one:
-     `has_commits` is false there, the section is simply absent, and the
-     all-empty fallback below says "no commits yet" in words.
-     The empty line below it is therefore unreachable today, and is written
-     truthfully anyway: unlike the working-tree sections nothing else can carry
-     this one open (no confirmation lives here), but the day something does, the
-     sentence it shows should already be the right one. */
-  /* No count on this heading, and `null` rather than "" so `listSection` omits
-     the pill instead of drawing an empty one. Every other section's number is a
-     TOTAL — that is all the staged/changed/untracked/stashed entries there are —
-     but this list is one WINDOW of a history whose length nobody has measured
-     (`limit = PAGE_SIZE * pages`), so a number here is the window size wearing a
-     total's clothes: it reads "12 commits touched this path" and means "12 rows
-     are loaded", and it grows by 30 every time you click load more. A true count
-     is a separate `git rev-list --count` per path, which is a fork nobody asked
-     for. Better no number than a confident wrong one. */
+  /* No count on this heading (`null`): every other section's number is a
+     TOTAL, but this list is one WINDOW of a history nobody has measured, and a
+     number here would be the window size wearing a total's clothes. */
   if (commits.length) sections.push(listSection(
     "Commits", null, null,
-    commits.map((c) => commitLine(c, c.sha === rev)),
+    spliceDiff(
+      commits.map((c, i) => commitLine(c, c.sha === rev, i === 0)),
+      rev ? commits.findIndex((c) => c.sha === rev) : -1),
     "No commits have touched this path yet.",
-    loadMore));
+    loadMore,
+    null,
+    "commits",
+    endMark));
 
-  /* Every block empty is itself a state worth naming — the reader gets one
-     honest line instead of a blank column. Reaching here now also means the
-     Commits section is empty, so the sentence covers that too: a path with a
-     clean tree AND no commits is a path git has never heard of, which is a
-     different fact from "this repository is brand new". */
+  /* Every block empty is itself a state worth naming. */
   if (!sections.length) {
     sections.push(el("section", null, el("div", { className: "rows" },
       el("div", { className: "none", textContent: data.repo.has_commits
-        ? "Nothing staged, changed, untracked or stashed under this path, and no "
-          + "commit has touched it."
+        ? "Nothing changed or stashed under this path, and no commit has "
+          + "touched it."
         : "Nothing to commit — this repository has no commits yet." }))));
   }
 
-  const left = el("div", { className: "col" }, ...sections);
-
-  const cols = el("div", { className: "cols" + (diff ? "" : " no-diff") }, left);
-  if (diff) cols.append(el("div", { className: "col" }, diff));
+  const cols = el("div", { className: "cols" },
+    el("div", { className: "col" }, ...sections));
 
   const page = el("div", null);
+  /* The result of the last mutation is a TOAST pinned to the bottom of the
+     pane — fixed, so it never shifts the layout the way the old top-of-page
+     flash did. Success expires on its own (see `run`); a failure stays, and
+     carries the labelled Explain. */
   if (flash) {
     const note = el("div", { className: "flash" + (flash.ok ? "" : " bad") },
                     el("span", { textContent: flash.message }));
-    /* The secondary case (GT-19): a git operation just failed and the message is
-       all the user has. The sparkle turns it into an explanation and a next
-       command — advice only, never a run. Offered on FAILURES alone, and not
-       while a proposal is already on screen or another call is in flight, so the
-       one panel below always has one subject. */
     if (!flash.ok && resolving === null && proposal === null && !aiBusy) {
-      note.append(action("advise", icon(SPARK_GLYPH, 14), {
-        className: "icon ai",
-        label: "Ask AI what to do about this error",
-        title: "Ask AI what this error means and what to run next",
+      /* A LABELLED button, deliberately not the bare sparkle: the commit box
+         has a sparkle that writes the message, and an identical icon here sent
+         a user expecting a commit message into a panel of terminal advice. */
+      note.append(action("advise", [icon(SPARK_GLYPH, 14), "Explain"], {
+        className: "ai",
+        label: "Ask AI what this error means and what to do next",
+        title: "Ask AI what this error means and what to do next",
         onClick: () => adviseOnError(flash.message),
       }));
     }
-    page.append(note);
+    page.append(el("div", { className: "toast-host" }, note));
   }
-  /* The proposal (or the call that will become one) sits above the toolbar: it is
-     the thing the user is being asked to read, and it must not be below the lists
-     it is about. One panel for both cases, so there is never a question about
-     which Apply belongs to which answer. */
+  /* The previewed commit's banner: the eye toggle's state, said where it cannot
+     be missed, with the way back. */
+  if (previewed) {
+    const known = (data.commits || []).find((c) => c.sha === previewed);
+    page.append(el("div", { className: "rev-banner" },
+      el("span", { className: "what" },
+        "Files are shown as of ",
+        el("span", { className: "sha", textContent: known ? known.short : previewed.slice(0, 7) }),
+        known && known.subject ? " — " + known.subject : ""),
+      action("preview-off", "Back to now", {
+        label: "Stop previewing and show the current files",
+        onClick: () => preview(null),
+      })));
+  }
+  /* The proposal (or the call that will become one) sits above the toolbar: it
+     is the thing the user is being asked to read. */
   const panel = proposalPanel();
   if (panel) page.append(panel);
   page.append(toolbar(data));
-  /* Guarded, not appended blind: `commitBox` returns null when nothing is
-     staged, and `Node.append(null)` inserts the literal text "null". */
   const box = commitBox(data);
   if (box) page.append(box);
   page.append(cols);
+  /* The stash dialog rides the page root: it is a fixed overlay, not a section
+     of any list. */
+  if (param("panel") === "stash") page.append(stashModal(data));
   show(page);
 }
+
 
 /* ------------------------------------------------------------------ mutations */
 
@@ -2891,11 +3529,26 @@ async function run(key, args, then, context) {
                                 : (context ? context + ": " : "")
                                   + (payload.message || "git refused that.") };
   announce(flash.message);
+  /* A SUCCESS receipt expires: the lists below already show the truth, and a
+     "Fetched from origin." still on screen minutes later is stale furniture
+     shoving the toolbar down. Failures stay until acted on — they are the one
+     thing the lists cannot say. Identity-compared so a dismissal can never
+     take down a newer message that replaced this one. */
+  if (flash.ok) {
+    const receipt = flash;
+    setTimeout(() => {
+      if (flash === receipt) { flash = null; void draw(true); }
+    }, 4000);
+  }
   /* Bump the serial BEFORE refetching so any overview still in flight from
      before the mutation cannot repaint stale data over the fresh one. */
   seq += 1;
   snapshot = null;
   branchCache = null;
+  /* A half-taken branch delete does not survive a mutation: the list is about
+     to be refetched, and an armed name matching a FUTURE branch of the same
+     name would make its first click the deleting one. */
+  armedBranchDelete = null;
   /* The question has been answered — by acting on it. Leaving `ask` set would
      re-render the confirmation over the fresh lists, and (for a stash) leave a
      stale index/sha pair sitting in the URL for the next click to act on.
@@ -2929,11 +3582,11 @@ function pendingPane(data) {
   const wt = selectedWt();
   if (rev) {
     const known = (data && data.commits ? data.commits : []).find((c) => c.sha === rev);
-    return diffPane(known ? (known.subject || "(no subject)") : rev.slice(0, 7),
+    return diffPane(null,
                     data && data.repo.rel ? "scoped to " + data.repo.rel : null,
                     "loading", commitMeta(known, rev));
   }
-  if (wt) return diffPane(wt, null, "loading");
+  if (wt) return diffPane(null, "reading…", "loading");
   return null;
 }
 
@@ -2957,8 +3610,11 @@ async function loadDiff(data) {
        answer than a pane titled with a 40-character sha. */
     const known = (data.commits || []).find((c) => c.sha === rev);
     const meta = payload.ok ? payload.commit : known;
+    /* No title: the diff renders inline under the selected row, which already
+       says the subject. The identity line (commitMeta) still answers "which
+       commit exactly?". */
     return diffPane(
-      meta ? (meta.subject || "(no subject)") : rev,
+      null,
       data.repo.rel ? "scoped to " + data.repo.rel : null,
       payload,
       commitMeta(meta, rev));
@@ -2967,11 +3623,11 @@ async function loadDiff(data) {
     const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt },
                                           chan("worktree"))
       .catch((err) => ({ ok: false, message: err.message }));
-    const sub = !payload.ok ? null
+    const sub = !payload.ok ? "could not read this diff"
       : payload.kind === "untracked-dir" ? "untracked directory — contents"
-      : payload.untracked ? "untracked — whole file"
-      : "working tree vs HEAD";
-    return diffPane(wt, sub, payload);
+      : payload.untracked ? "new file — whole contents"
+      : "your changes vs the last commit";
+    return diffPane(null, sub, payload);
   }
   return null;
 }

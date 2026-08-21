@@ -34,6 +34,54 @@ class FusedCli:
     external: bool
 
 
+def _split_override(override: str) -> list[str]:
+    """FUSED_RENDER_FUSED_BIN as an argv list, honouring quotes.
+
+    Splitting is the point — a compound command ("uv run fused") is documented
+    and supported. But a PLAIN whitespace split cannot express the single most
+    common interpreter location on Windows: `C:\\Program Files\\...` came apart
+    into `C:\\Program` + `Files\\...`, so the override either "wasn't found" or
+    ran something else entirely, with nothing in the failure pointing at the
+    space as the cause. Quoting that component now works:
+
+        FUSED_RENDER_FUSED_BIN='"C:\\Program Files\\Python\\python.exe" -m fused'
+
+    `posix=` is chosen per platform and BOTH halves matter:
+
+      * posix=True on Windows treats `\\` as an escape and EATS it —
+        `C:\\Python\\python.exe` parses to `C:Pythonpython.exe`, which is not a
+        path at all. So Windows must use the non-posix lexer.
+      * posix=False on POSIX loses backslash escapes, so `/opt/my\\ app/py`
+        would stop working there.
+
+    Each platform therefore gets the lexer matching its own quoting rules. The
+    non-posix lexer KEEPS the quote characters inside the token it returns, so
+    they are stripped here; the posix lexer already removes them.
+
+    An unbalanced quote makes shlex raise. That is a malformed env var, not a
+    reason to take down every caller (fused_cli() is on the canvases request
+    path), so it degrades to the historical whitespace split and says so.
+
+    Still not expressible, on either platform: an UNQUOTED path containing a
+    space. That is ambiguous by construction — a shell cannot read it either —
+    and it is why the quoting above is the fix rather than some heuristic that
+    tries to guess where the path ends.
+    """
+    nt = os.name == "nt"
+    try:
+        parts = shlex.split(override, posix=not nt)
+    except ValueError:
+        logger.warning(
+            "FUSED_RENDER_FUSED_BIN is not parseable as a command line (%r) — "
+            "unbalanced quote? Falling back to a plain whitespace split, which "
+            "cannot handle a path containing spaces.", override)
+        return override.split()
+    if nt:
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
+                 for p in parts]
+    return parts
+
+
 def fused_cli() -> FusedCli | None:
     """Resolve the fused CLI, or None when there is none.
 
@@ -42,8 +90,9 @@ def fused_cli() -> FusedCli | None:
     this server didn't get from its own interpreter runs only because the
     user explicitly configured it):
 
-      1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split on whitespace so a
-         compound command works (e.g. "uv run fused"). Mirrors the flow app's
+      1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split into an argv so a
+         compound command works (e.g. "uv run fused"); quote a component that
+         contains spaces (see _split_override). Mirrors the flow app's
          OPENFUSED_BIN seam; also how tests substitute a stub CLI.
       2. the `fused` package importable in THIS interpreter — run as
          ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
@@ -55,7 +104,7 @@ def fused_cli() -> FusedCli | None:
     """
     override = os.environ.get("FUSED_RENDER_FUSED_BIN")
     if override:
-        parts = override.split()
+        parts = _split_override(override)
         return FusedCli(command=parts, external=True) if parts else None
     try:
         importable = importlib.util.find_spec("fused") is not None
@@ -172,6 +221,51 @@ CLI_DIR_ENV = "FUSED_RENDER_FUSED_CLI_DIR"
 CLI_BIN_SUBDIR = "fused-bin"
 
 
+# The env var `fused app serve` reads to pick the interpreter its compute
+# backend runs tools on (openfused #364, fused >= 2.9.3b7; OPENFUSED_ prefix,
+# not FUSED_). Unset means the CLI's legacy behaviour — a stdlib venv of its
+# own — which is why the wrapper below always names it.
+APP_SERVE_PYTHON_ENV = "OPENFUSED_APP_SERVE_PYTHON"
+
+
+def _app_serve_python() -> str:
+    """The interpreter `fused app serve` should compute tools on: OURS.
+
+    Exactly `engine.get_backend()`'s `python_executable=envinstall.script_python()`
+    — the same call, not a second resolution of the same question — because the
+    venv cache key is (interpreter identity + sorted requirements): equal inputs
+    mean a tool resolves the environment the PAGE already built instead of
+    filling a parallel one nothing else reads, and a tool with no declared
+    dependencies runs on that interpreter rather than in a bare stdlib venv.
+
+    `script_python()` returning None means "ours" (D214: a standalone 3.12 in a
+    dev checkout, None in every packaged build that already runs 3.12), and the
+    backend resolves that None to the interpreter it is running IN — so None maps
+    to `sys.executable` here. Verbatim, deliberately: `os.path.realpath` of a
+    venv's python names the BASE interpreter, which is a different identity and
+    therefore a different venv key than our own runs use.
+
+    Cheap enough for the pre-serve path that calls it: the resolution is at most
+    two bounded, `close_fds=False` spawns (`uv python find` plus a version probe)
+    and is memoized once it succeeds — the same measurement every /api/run
+    pre-flight already makes, just made one step earlier.
+
+    Never raises — a wrapper is best-effort (see `export_fused_cli_env`), and
+    importing `envinstall` drags in the app's own machinery, so an ImportError
+    here must degrade to "this interpreter" rather than take the wrapper down.
+    """
+    try:
+        from fused_render import envinstall
+
+        resolved = envinstall.script_python()
+    except Exception:  # noqa: BLE001 — best-effort: fall back to ours
+        logger.warning("could not resolve the script interpreter for %s; "
+                       "using %s", APP_SERVE_PYTHON_ENV, sys.executable,
+                       exc_info=True)
+        resolved = None
+    return resolved or sys.executable
+
+
 def _wrapper_text(cli: FusedCli) -> str:
     """The wrapper script for the resolved CLI, per platform.
 
@@ -182,15 +276,25 @@ def _wrapper_text(cli: FusedCli) -> str:
       * FUSED_ENV defaults to workbench_env(), so a bare `fused workbench
         canvas push` from a Claude session hits the same environment the
         canvases iframe shows, not the CLI's own default.
+      * OPENFUSED_APP_SERVE_PYTHON defaults to `_app_serve_python()`, so the
+        `fused app serve` the MCP panel registers globally (SPEC MC-5) computes
+        its tools on the interpreter page runs use — see that helper. Baked at
+        generation time, which is once per server start, and the wrapper is
+        rewritten on every start: an interpreter that only appears later (a 3.12
+        download landing mid-session) takes effect on the next one, exactly like
+        a changed FUSED_RENDER_FUSED_BIN.
       * an EXTERNAL cli gets PYTHONHOME/PYTHONPATH unset (same scrub as
         child_env — the packaged app's bundle-scoped interpreter vars break
         any other Python). The in-interpreter shim keeps them: they are what
         make sys.executable work in the bundle.
     """
     env_name = workbench_env()
+    serve_python = _app_serve_python()
     if os.name == "nt":
         lines = ["@echo off",
-                 f'if not defined FUSED_ENV set "FUSED_ENV={env_name}"']
+                 f'if not defined FUSED_ENV set "FUSED_ENV={env_name}"',
+                 f'if not defined {APP_SERVE_PYTHON_ENV} '
+                 f'set "{APP_SERVE_PYTHON_ENV}={serve_python}"']
         if cli.external:
             lines += ["set PYTHONHOME=", "set PYTHONPATH="]
         quoted = " ".join('"%s"' % part for part in cli.command)
@@ -200,7 +304,10 @@ def _wrapper_text(cli: FusedCli) -> str:
              "# generated by fused-render (fusedcli.export_fused_cli_env);",
              "# rewritten on every server start — do not edit.",
              f'[ -n "${{FUSED_ENV:-}}" ] || FUSED_ENV={shlex.quote(env_name)}',
-             "export FUSED_ENV"]
+             "export FUSED_ENV",
+             f'[ -n "${{{APP_SERVE_PYTHON_ENV}:-}}" ] || '
+             f"{APP_SERVE_PYTHON_ENV}={shlex.quote(serve_python)}",
+             f"export {APP_SERVE_PYTHON_ENV}"]
     if cli.external:
         lines.append("unset PYTHONHOME PYTHONPATH")
     quoted = " ".join(shlex.quote(part) for part in cli.command)
@@ -220,8 +327,8 @@ def export_fused_cli_env() -> str | None:
     CLI is still a working chat.
 
     The wrapper is regenerated on every call (a few lines — cheaper to
-    rewrite than to fingerprint) so a changed FUSED_RENDER_FUSED_BIN or
-    workbench env takes effect on restart.
+    rewrite than to fingerprint) so a changed FUSED_RENDER_FUSED_BIN, workbench
+    env or script interpreter takes effect on restart.
     """
     from fused_render.shell.storage import home_dir
 

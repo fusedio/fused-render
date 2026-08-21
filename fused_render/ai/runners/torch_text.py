@@ -86,9 +86,18 @@ _UNLOADABLE_QUANT = formats.UNLOADABLE_QUANT
 #: What to suggest instead, once we have refused. One sentence, and a repo that
 #: really does load, because a user who picked the wrong format should learn the
 #: right one from the error rather than from a web search.
+#: Named models a refusal points at, and they must be models the CATALOG
+#: actually offers — a refusal that names a repo the page no longer suggests
+#: sends the user to a Hub search, which is the thing this string exists to
+#: prevent. Both are `catalog.SUGGESTIONS["transformers-text"]` entries (the
+#: smallest, and the smallest text-only one); update this when that list moves.
+#: Qwen3.5 is safe to name here because the three folders that install this
+#: worker declare `transformers>=5.15`, which is well past the 5.2.0 that first
+#: knows `qwen3_5` — naming it under the old `>=4.51` floor would have handed
+#: someone a `KeyError` in place of a working suggestion.
 _TRY_INSTEAD = (
-    "Try an unquantized checkpoint such as Qwen/Qwen3-4B-Instruct-2507 or "
-    "microsoft/Phi-4-mini-instruct."
+    "Try an unquantized checkpoint such as Qwen/Qwen3.5-4B or "
+    "allenai/Olmo-3-7B-Instruct."
 )
 
 
@@ -197,9 +206,12 @@ def _dtype_kwargs(dtype):
     """`{"dtype": …}` or `{"torch_dtype": …}`, whichever this transformers takes.
 
     `torch_dtype` was renamed to `dtype` in 4.56 and the old spelling deprecated
-    behind a warning; it is scheduled to go in v5. All three folders that share
-    this worker declare `transformers>=4.51,<6`, so BOTH spellings are live
-    options on a machine somewhere, and the wrong one is not a loud failure:
+    behind a warning; it is scheduled to go in v5. The three folders that share
+    this worker now declare `transformers>=5.15,<6`, so a DECLARED install can
+    only ever want `dtype` and the 4.x branch below is dead for it. It is kept
+    deliberately: this worker is a plain module that also runs under whatever
+    interpreter a developer points at it, and the wrong spelling is not a loud
+    failure:
     unknown
     keyword arguments to `from_pretrained` are forwarded into the config rather
     than rejected, so a stale spelling would silently load a 4B model at float32

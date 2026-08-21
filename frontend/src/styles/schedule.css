@@ -268,6 +268,26 @@
   color: var(--fg);
 }
 
+/* THE ONE PLACE THE GENERIC FILL ABOVE IS INVISIBLE (Akshil, 2026-08-20: "4
+   days / Week" showed no selected state). Every other `.schedule-form-seg` —
+   the List / Board / Calendar switch, the New task form's Once / On a
+   schedule pair — sits on a transparent toolbar over the page's own --bg, so
+   painting the active half --bg-alt reads as a fill a shade lighter than its
+   surroundings. This ONE toggle lives inside `.schedule-cal-bar`, whose
+   ambient background (`.schedule-cal`, above) already IS --bg-alt — the same
+   fill landed on a backdrop of itself and vanished.
+
+   The fix rebuilds the main tabbar's exact relationship instead of picking a
+   different active fill (a darker active was tried first and read as the
+   INVERSE of the view switcher — Akshil, 2026-08-20, "invert the colors,
+   follow same css"): the segment CONTAINER takes --bg, the page ground every
+   other seg already sits on, and the generic --bg-alt active rule above then
+   works here unmodified — active lighter than its rail, identical to
+   List / Board / Calendar. */
+.schedule-cal-bar-end .schedule-form-seg {
+  background: var(--bg);
+}
+
 /* The view switcher's halves carry a mark as well as a word (Scheduled.tsx).
    Only that switcher: the New task form's Once / On a schedule pair shares this
    component and stays text-only, because those two are a CHOICE being made

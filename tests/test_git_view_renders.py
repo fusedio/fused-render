@@ -171,7 +171,12 @@ def test_the_probe_fails_on_a_template_that_throws(reader, tmp_path):
     # The exact failure that shipped: a second top-level `let streamed`.
     src = src.replace("let streamed = \"\";",
                       "let streamed = \"\";\nlet streamed = \"\";", 1)
-    broken.write_text(src)
+    # `encoding="utf-8"`, matching the read above: the template carries real
+    # non-ASCII text (a U+2212 MINUS SIGN, at least), and `Path.write_text`
+    # with no encoding falls back to `locale.getpreferredencoding()` — cp1252
+    # on a Windows runner, which cannot represent it and raises
+    # UnicodeEncodeError before the probe ever runs.
+    broken.write_text(src, encoding="utf-8")
 
     payloads = {"overview": reader.main(file=str(tmp_path), op="overview")}
     fixture = tmp_path / "f.json"
@@ -205,7 +210,9 @@ def test_the_probe_fails_on_a_template_that_paints_nothing(reader, tmp_path):
     assert "function render(data, stashes, diff) {" in src
     src = src.replace("function render(data, stashes, diff) {",
                       "function render(data, stashes, diff) {\n  return;", 1)
-    broken.write_text(src)
+    # See the twin fixture above: without an explicit encoding this is a
+    # UnicodeEncodeError on Windows, not a broken-template test.
+    broken.write_text(src, encoding="utf-8")
 
     fixture = tmp_path / "f2.json"
     fixture.write_text(json.dumps({

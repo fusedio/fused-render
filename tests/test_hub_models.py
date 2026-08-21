@@ -44,10 +44,23 @@ def _clear_cache():
 
 @pytest.fixture(autouse=True)
 def _no_token(monkeypatch, tmp_path):
-    # A developer's real token must not decide what these tests assert.
+    """A developer's real token must not decide what these tests assert.
+
+    The search reads whatever `huggingface_hub.get_token()` finds (D402), so the
+    STORE has to be redirected and not just the environment: hf resolves
+    `HF_TOKEN_PATH` once at import, so setting `HF_HOME` here does nothing to an
+    hf that another test already imported — it would leave these tests reading
+    the login of whoever ran them.
+    """
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home"))
+    home = tmp_path / "hf-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HF_HOME", str(home))
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_TOKEN_PATH", str(home / "token"))
+    monkeypatch.setattr(constants, "HF_STORED_TOKENS_PATH", str(home / "stored_tokens"))
 
 
 @pytest.fixture()
@@ -285,6 +298,39 @@ def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
     assert fake.calls[0][1]["headers"]["Authorization"] == "Bearer hf_secret"
     assert body["authenticated"] is True
     assert "hf_secret" not in json.dumps(body)
+
+
+def test_the_token_hf_holds_is_the_one_sent(client, hub_cache, monkeypatch):
+    """D402: the search sends whatever `get_token()` finds — a login made from
+    Preferences, or a `hf auth login` in a terminal, indistinguishable here by
+    design. This app stores no token of its own, so there is no second
+    resolution that could disagree with the download beside it."""
+    from huggingface_hub._login import _save_token, _set_active_token
+
+    _save_token(token="hf_from_hfs_own_store", token_name="fused-render")
+    _set_active_token(token_name="fused-render", add_to_git_credential=False)
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client).json()
+    assert fake.calls[0][1]["headers"]["Authorization"] == "Bearer hf_from_hfs_own_store"
+    assert body["authenticated"] is True
+    assert "hf_from_hfs_own_store" not in json.dumps(body)
+
+
+def test_an_environment_token_still_wins(client, hub_cache, monkeypatch):
+    # hf's own order, which this app no longer has any opinion about: the
+    # variable beats the store, here and inside every worker, because both ask
+    # the same library.
+    from huggingface_hub._login import _save_token, _set_active_token
+
+    _save_token(token="hf_from_hfs_own_store", token_name="fused-render")
+    _set_active_token(token_name="fused-render", add_to_git_credential=False)
+    monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client)
+    assert (fake.calls[0][1]["headers"]["Authorization"]
+            == "Bearer hf_from_the_environment")
 
 
 @pytest.mark.parametrize("endpoint,expected", [

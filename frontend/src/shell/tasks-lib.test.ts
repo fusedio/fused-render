@@ -27,6 +27,7 @@ import {
   dropAction,
   dropLanes,
   filterTasks,
+  filtersForView,
   firstLine,
   groupByColumn,
   heldMessages,
@@ -4699,6 +4700,52 @@ describe("filters", () => {
   });
 });
 
+describe("filtersForView — the calendar's Archive facet (2026-08-20)", () => {
+  // The calendar draws nothing for an archived task, so Archive is a dead
+  // Status option there: picking it always empties the grid, with nothing on
+  // screen to explain why. filtersForView is what Scheduled.tsx asks before
+  // running the query FOR A GIVEN VIEW — it never touches the stored
+  // TaskFilters value itself, only the effective one a view's `filterTasks`
+  // call receives.
+  const tasks = [
+    task({ key: "a", task_id: "TASK-001", title: "Upcoming thing", status: "upcoming" }),
+    task({ key: "b", task_id: "TASK-002", title: "Archived thing", status: "archived" }),
+  ];
+
+  it("drops Archive from the calendar's effective statuses", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    expect(filtersForView(f, "calendar").statuses).toEqual([]);
+  });
+
+  it("keeps Archive alongside other statuses, on the calendar, minus itself", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const, "archived" as const] };
+    expect(filtersForView(f, "calendar").statuses).toEqual(["done"]);
+  });
+
+  it("leaves List and Board untouched", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    expect(filtersForView(f, "list")).toBe(f);
+    expect(filtersForView(f, "board")).toBe(f);
+  });
+
+  it("is a no-op when Archive was never selected — same reference back", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    expect(filtersForView(f, "calendar")).toBe(f);
+  });
+
+  it("never empties the calendar just because Archive alone was picked", () => {
+    // The whole point: a hidden facet must not silently filter the view to
+    // nothing. Archive-only on the calendar reads as "no status filter" —
+    // filterTasks applies no status test at all once the list is empty — so
+    // the query stays a pass-through rather than the always-empty result the
+    // dead facet used to produce. (Whether an archived task itself DRAWS
+    // anything is ScheduleCalendar's own separate rule, not this one's.)
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    const out = filterTasks(tasks, filtersForView(f, "calendar"));
+    expect(out.map((t) => t.key)).toEqual(["a", "b"]);
+  });
+});
+
 describe("groupByColumn", () => {
   it("gives every lane a list and keeps the server's order on a tie", () => {
     const map = groupByColumn([
@@ -6029,9 +6076,22 @@ describe("the tasks toolbar", () => {
     // doing nothing — worse than hidden.
     const cal = PAGE.slice(PAGE.indexOf("<ScheduleCalendar"));
     expect(cal.slice(0, cal.indexOf("/>"))).toContain("tasks={shown}");
-    // `shown` is the same derivation the other two views read, not a second one.
-    expect(PAGE).toContain("const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);");
+    // `shown` is the same derivation the other two views read, not a second
+    // one — it now routes the stored filters through `filtersForView` first
+    // (2026-08-20), which is a no-op for List and Board and drops the dead
+    // Archive facet only when the calendar is the active view. See the
+    // "the calendar's Archive facet" describe block below for the semantics.
+    expect(PAGE).toContain("filterTasks(tasks, filtersForView(filters, view))");
     expect(PAGE).toContain("<TaskBoard tasks={shown}");
+  });
+
+  it("hides the dead Archive option from Status only on the calendar", () => {
+    // The calendar draws nothing for an archived task (ScheduleCalendar's own
+    // "AN ARCHIVED TASK DRAWS NOTHING" rule) — Archive in this same Status
+    // popover is a live, renderable lane on List and Board, so the row and
+    // its count survive there unmodified and it is the calendar alone that
+    // hides it.
+    expect(PAGE).toContain('hideArchiveStatus={view === "calendar"}');
   });
 
   it("centres the page on one measure wide enough for the widest view", () => {
@@ -6130,12 +6190,97 @@ describe("sortByLane", () => {
       .toEqual(["soon", "run", "fail", "done", "arch"]);
   });
 
-  it("keeps the server's order inside a rank, and never re-sorts", () => {
+  // ---- and, inside a rank, by the time the row PRINTS ------------------------
+  // The rank is only half the order. The other half used to be "whatever the
+  // server said", and on screen that read as random: the server sorts by
+  // `last_active`, a row prints its next or last run, so two adjacent Done rows
+  // could show "2h ago" above "10m ago". These pin the key the reader can see.
+
+  const S = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+  /** A settled row whose printed time is `at` — its last run (taskWhen). */
+  const ran = (key: string, at: number, over: Partial<Task> = {}) =>
+    task({
+      key,
+      status: "done",
+      messages: [msg({ ran_at: at, at })],
+      message_count: 1,
+      last_active: at,
+      ...over,
+    });
+
+  /** A row that prints no time at all: the em-dash row, `kind: "none"`. */
+  const timeless = (key: string, over: Partial<Task> = {}) =>
+    task({ key, status: "done", messages: [], message_count: 0, last_active: 0, ...over });
+
+  it("orders a settled rank most recent first", () => {
     const rows = [
-      task({ key: "first", status: "done", last_active: 1 }),
-      task({ key: "second", status: "done", last_active: 999 }),
+      ran("mid", S("2026-08-16T10:00:00")),
+      ran("old", S("2026-08-16T09:00:00")),
+      ran("new", S("2026-08-16T11:00:00")),
     ];
-    expect(sortByLane(rows).map((t) => t.key)).toEqual(["first", "second"]);
+    expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual(["new", "mid", "old"]);
+    // And it is the PRINTED time doing it, not `last_active`: give the oldest run
+    // the newest `last_active` and the order does not budge, because that number
+    // is not on the row.
+    const lying = [
+      ran("new", S("2026-08-16T11:00:00"), { last_active: 1 }),
+      ran("old", S("2026-08-16T09:00:00"), { last_active: S("2026-08-16T11:59:00") }),
+    ];
+    expect(sortByLane(lying, NOW).map((t) => t.key)).toEqual(["new", "old"]);
+  });
+
+  it("orders Upcoming soonest first, so an overdue run is the top row", () => {
+    const rows = [
+      upcoming([S("2026-08-16T18:00:00")], { key: "later" }),
+      upcoming([S("2026-08-16T11:00:00")], { key: "overdue" }), // before NOW
+      upcoming([S("2026-08-16T13:00:00")], { key: "soon" }),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["overdue", "soon", "later"]);
+  });
+
+  it("keeps the server's order when two rows print the same time", () => {
+    const at = S("2026-08-16T10:00:00");
+    const rows = [ran("first", at), ran("second", at), ran("third", at)];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["first", "second", "third"]);
+    // The tie is broken by the incoming index explicitly, not by engine
+    // stability: two runs in the same second must not trade places between polls.
+    const flipped = [ran("second", at), ran("first", at)];
+    expect(sortByLane(flipped, NOW).map((t) => t.key)).toEqual(["second", "first"]);
+  });
+
+  it("puts a row with no time at all LAST in its rank, both directions", () => {
+    // Descending: it cannot claim a place among rows sorted by a fact it lacks.
+    const settled = [
+      timeless("none"),
+      ran("old", S("2026-08-16T09:00:00")),
+      ran("new", S("2026-08-16T11:00:00")),
+    ];
+    expect(taskWhen(settled[0], NOW).kind).toBe("none");
+    expect(sortByLane(settled, NOW).map((t) => t.key)).toEqual(["new", "old", "none"]);
+    // Ascending too — a 0 sorted as a time would be 1970 and lead the rank.
+    const ahead = [
+      timeless("none", { status: "upcoming" }),
+      upcoming([S("2026-08-16T18:00:00")], { key: "later" }),
+      upcoming([S("2026-08-16T13:00:00")], { key: "soon" }),
+    ];
+    expect(sortByLane(ahead, NOW).map((t) => t.key)).toEqual(["soon", "later", "none"]);
+  });
+
+  it("sorts inside each rank without leaking a row across ranks", () => {
+    const rows = [
+      ran("done-old", S("2026-08-16T09:00:00")),
+      upcoming([S("2026-08-16T18:00:00")], { key: "up-late" }),
+      ran("fail-new", S("2026-08-16T11:00:00"), { status: FAILED }),
+      ran("done-new", S("2026-08-16T11:30:00")),
+      upcoming([S("2026-08-16T13:00:00")], { key: "up-soon" }),
+      ran("fail-old", S("2026-08-16T08:00:00"), { status: FAILED }),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual([
+      "up-soon", "up-late", "fail-new", "fail-old", "done-new", "done-old",
+    ]);
   });
 
   it("never mutates the polled list React is still holding", () => {

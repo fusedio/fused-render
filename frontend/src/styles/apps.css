@@ -14,23 +14,34 @@
   padding: 36px 28px 72px;
 }
 
+/* Facet selector at the left edge (its own `margin-right: auto`), then the
+   chips and the search box together at the right. Previously the search alone
+   sat right (`margin-left: auto` on it) with the chips stranded next to the
+   selector on the left, so the two halves of one filter row read as unrelated
+   clusters. `flex-end` here is what gathers chips + search into a single group
+   and puts every wrapped line against the same edge — an auto margin on one
+   child cannot do that. */
 .apps-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   margin-bottom: 14px;
 }
 
-/* Search sits at the row's right edge (margin-left: auto), after the filter
-   selector and chips. */
+/* Search is the last item in the toolbar's right-aligned group (see
+   .apps-toolbar). It no longer carries `margin-left: auto`: that pinned the
+   search alone to the far edge and left the facet selector and chips stranded
+   on the left with a gap between. The whole row is justified to the end
+   instead, so `flex-grow: 0` here — the box keeps its own width rather than
+   stretching to swallow the space the auto margin used to hold. */
 .apps-search {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1 1 240px;
+  flex: 0 1 240px;
   max-width: 340px;
-  margin-left: auto;
   padding: 0 12px;
   height: 34px;
   background: var(--bg-alt);
@@ -58,9 +69,13 @@
   color: var(--fg-muted);
 }
 
+/* Chips wrap within their own box, so they need the same end-justification as
+   the toolbar row: without it a second line of chips would start at this box's
+   left edge and break the right margin the row is aligned on. */
 .apps-tags {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -92,11 +107,17 @@
   color: var(--fg-muted);
 }
 
-/* Filter facet selector (Category | Repo): a small segmented control that
+/* Filter facet selector (Category | Folders): a small segmented control that
    decides which chip set shows. Neutral fill on the active segment (accent
-   stays reserved for focus/selection). */
+   stays reserved for focus/selection).
+
+   `margin-right: auto` holds it at the row's LEFT edge while the toolbar's
+   `justify-content: flex-end` keeps the chips and search at the right — the
+   selector picks WHICH filters exist, so it reads as the row's label rather
+   than as the first of the things it governs. */
 .apps-filter-mode {
   display: inline-flex;
+  margin-right: auto;
   padding: 2px;
   background: var(--bg-alt);
   border: 1px solid var(--border);

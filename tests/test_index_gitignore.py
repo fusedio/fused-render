@@ -9,6 +9,7 @@ import subprocess
 import time
 from threading import Event, Thread
 
+from fused_render.index.ignore import norm
 from fused_render.server import index_gitignore
 from fused_render.server.index_gitignore import filter_corpus
 
@@ -153,12 +154,19 @@ def test_a_folder_is_answered_out_of_its_index_root_pool(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    root = str(tmp_path)
+    # `_rel_prefix` (index_gitignore.py) checks `root.startswith(base + "/")`
+    # with a literal "/" — it is only ever handed roots that already went
+    # through `search_under`/`search_ranked`'s own canonicalization in
+    # production, so a raw native (backslash, on Windows) `str(Path)` here
+    # would make that startswith miss and silently fall back to a pool of
+    # its own, which is exactly the un-pooled behaviour this test exists to
+    # rule out.
+    root = norm(str(tmp_path))
     filter_corpus(_out(root, ["proj/.gitignore", "proj/a.log", "proj/a.py"]),
                   index_root=root)
     asked = _counting_queries(monkeypatch)
     # Now the in-folder search of proj/, whose rels are relative to proj/.
-    out = filter_corpus(_out(str(proj), [".gitignore", "a.log", "a.py"]),
+    out = filter_corpus(_out(norm(str(proj)), [".gitignore", "a.log", "a.py"]),
                         index_root=root)
     assert asked == []  # every verdict was already pooled
     assert [e["rel"] for e in out["entries"]] == [".gitignore", "a.py"]

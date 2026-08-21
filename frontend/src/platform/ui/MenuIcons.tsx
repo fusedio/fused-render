@@ -48,6 +48,16 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M4 8V6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
     </svg>
   ),
+  // Open in New Tab — browser window (tab strip across the top) with a plus in
+  // the body. Distinct from `open` (an arrow out of a box: this same page
+  // navigating) and from `folder`: the target lands in ANOTHER tab.
+  newTab: (
+    <svg {...svgProps}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M12 12v5M9.5 14.5h5" />
+    </svg>
+  ),
   // Delete — trash can with lid + two ribs.
   trash: (
     <svg {...svgProps}>
@@ -78,6 +88,16 @@ export const MenuIcons: Record<string, ReactNode> = {
       <rect x="3" y="4" width="18" height="4.5" rx="1" />
       <path d="M5 8.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5" />
       <path d="M10 12h4" />
+    </svg>
+  ),
+  // Download — arrow dropping into a tray. Distinct from `compress` (an
+  // archive box): exporting an app file is a download to the user, while
+  // Compress writes an archive beside the folder and never leaves the disk.
+  download: (
+    <svg {...svgProps}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
     </svg>
   ),
   // Cut — scissors.

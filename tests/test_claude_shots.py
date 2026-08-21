@@ -171,12 +171,15 @@ def test_the_shots_dir_is_created_private_and_adopted_on_a_second_call(
     monkeypatch.setattr(agent, "RUNS", str(root))
     shots = tmp_path / "fr" / "shots"
     monkeypatch.setattr(agent, "SHOTS", str(shots))
-    assert agent.main(action="shots_dir") == {"dir": str(shots)}
+    # The dir comes back through _wire_path (forward slashes on every
+    # platform, so the page's crop paths match the Read(//…/**) rule) — not
+    # the raw join, which is backslashed on Windows.
+    assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
     assert os.path.isdir(shots)
     if hasattr(os, "geteuid"):
         assert stat.S_IMODE(os.lstat(shots).st_mode) == 0o700
     # second message, same directory
-    assert agent.main(action="shots_dir") == {"dir": str(shots)}
+    assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
 
 
 @pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX mode bits")
@@ -285,7 +288,10 @@ def test_the_page_asks_for_the_directory_by_the_action_the_agent_serves(
     """D146, the two-sided wire: the page names the action, agent.py routes it."""
     assert 'action: "shots_dir"' in html
     monkeypatch.setattr(agent, "SHOTS", str(tmp_path / "shots"))
-    assert agent.main(action="shots_dir").get("dir") == str(tmp_path / "shots")
+    # See the note in the "created private" test above: _wire_path forward-
+    # slashes this, on every platform.
+    assert agent.main(action="shots_dir").get("dir") == agent._wire_path(
+        str(tmp_path / "shots"))
 
 
 # ---------------------------------------------- the page's own JS, under node
@@ -313,7 +319,15 @@ def _node(fn_names, call, html, prelude=""):
                 break
         chunks.append("\n".join(taken))
     script = prelude + "\n" + "\n".join(chunks) + "\n" + call
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    # `encoding="utf-8"` is not decorative: `text=True` alone decodes the
+    # child's stdout with locale.getpreferredencoding(False), and node always
+    # writes its UTF-8 source glyphs (the shot markers' 🖼/📌) as UTF-8 bytes
+    # regardless of platform. On Windows that locale default is commonly
+    # cp1252, which decodes those bytes into mojibake without ever raising —
+    # a silent corruption, not a crash, so it slipped past every POSIX run
+    # where the locale default already happens to be UTF-8.
+    out = subprocess.run(["node", "-e", script], capture_output=True,
+                          text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

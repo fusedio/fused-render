@@ -253,6 +253,51 @@ def test_a_file_that_vanishes_mid_scan_is_skipped(client, hub, monkeypatch):
     assert out["files"] == 1
 
 
+def test_a_file_that_vanishes_between_the_two_stats_is_skipped(
+        client, hub, monkeypatch):
+    """On win32 the scan takes a SECOND, uncached os.stat to get real
+    st_nlink/st_ino (DirEntry.stat reports 0 for both there, which would
+    silently disable hardlink dedup). That is another trip to the filesystem,
+    so the same mid-download deletion the test above covers can land in this
+    narrower window instead — and must be skipped like any other, not abort
+    the whole listing.
+
+    Skipped means counting for NOTHING — the timestamps too, not just
+    size/files. They are asserted here because they used to be accumulated
+    before the re-stat could rule the file out, so a vanished blob still dated
+    the repo. `lastUsed` is the one with teeth: it drives prune selection in
+    the client, so a deleted blob's atime leaking in marks a stale repo as
+    recently used and shields it from the cleanup that removed the blob.
+    """
+    repo = _repo(hub, "models--org--m", blobs={"stays": 100, "vanishes": 50})
+    gone = str(repo / "blobs" / "vanishes")
+
+    # Distinctive, far-apart stamps so a leak cannot hide inside a max()/min():
+    # the doomed blob is BOTH the newest and the most recently used AND the
+    # oldest, so if any of the three accumulators still sees it, one of the
+    # assertions below reads its number instead of the survivor's.
+    os.utime(repo / "blobs" / "stays", (5_000_000, 5_000_000))
+    os.utime(gone, (9_000_000, 1_000_000))
+    real_stat = os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        if str(path) == gone:
+            raise FileNotFoundError(2, "No such file or directory")
+        return real_stat(path, *args, **kwargs)
+
+    # The DirEntry.stat() in the loop still succeeds for both blobs — only the
+    # win32-only re-stat finds this one gone.
+    monkeypatch.setattr(ai_models_mod.sys, "platform", "win32")
+    monkeypatch.setattr(ai_models_mod.os, "stat", fake_stat)
+    (out,) = _get(client)["repos"]
+    assert out["size"] == 100
+    assert out["files"] == 1
+    # Every field describes the surviving blob alone.
+    assert out["mtime"] == 5_000_000       # not the vanished 1_000_000 mtime
+    assert out["lastUsed"] == 5_000_000    # not its 9_000_000 atime
+    assert out["added"] == 5_000_000       # not its 1_000_000 mtime as "oldest"
+
+
 # -- no cache at all -----------------------------------------------------------
 
 
@@ -1449,10 +1494,11 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
 
 @requires_symlinks
 def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch):
-    """`black-forest-labs/FLUX.2-klein-4B` is `catalog.py`'s suggestion for the
-    diffusers runner, and its card's `pipeline_tag` says image-to-image — a
-    label in NO_RUNNER_YET, so the page offered no Load for a model the app
-    recommends on the next tab. The card names the model FAMILY; the
+    """`black-forest-labs/FLUX.2-klein-4B` is the FLUX.2 base pipeline the
+    diffusers runner loads by id (it has a `_GGUF_RECIPES` row, and was
+    `catalog.py`'s second diffusers suggestion until the int8 repo made it
+    redundant), and its card's `pipeline_tag` says image-to-image — a label in
+    NO_RUNNER_YET, so the page offered no Load for a model a user can reach. The card names the model FAMILY; the
     `model_index.json` in the snapshot names the pipeline that is actually
     here, written by the library that will load it."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")

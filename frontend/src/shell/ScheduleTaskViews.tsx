@@ -59,6 +59,7 @@ import {
   dropLanes,
   filingIntent,
   filterTasks,
+  filtersForView,
   firstLine,
   groupByColumn,
   heldMessages,
@@ -113,7 +114,7 @@ import type {
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
 // module it takes the views from.
-export { EMPTY_FILTERS, filterTasks, projectOptions, tildePath, basename };
+export { EMPTY_FILTERS, filterTasks, filtersForView, projectOptions, tildePath, basename };
 export type { TaskFilters };
 
 /**
@@ -523,12 +524,27 @@ export function TaskFilterControls({
   projects,
   home = "",
   onChange,
+  hideArchiveStatus = false,
 }: {
   filters: TaskFilters;
   /** Every folder that has a task — `projectOptions(tasks)`. */
   projects: string[];
   home?: string;
   onChange: (next: TaskFilters) => void;
+  /**
+   * True while the Calendar is the active view (Akshil, 2026-08-20). The
+   * calendar draws nothing for an archived task — see tasks-lib.filtersForView
+   * for the full argument — which makes Archive a dead option in this same
+   * popover on that view alone: picking it always empties the grid, with
+   * nothing on screen to say why. List and Board keep the row.
+   *
+   * The STORED value is untouched either way (one `TaskFilters` still backs
+   * all three views); this only hides the row and the count that follow from
+   * it — a person's Archive tick made on List survives a switch to Calendar
+   * and back, it is just not counted or offered while the calendar cannot
+   * act on it.
+   */
+  hideArchiveStatus?: boolean;
 }) {
   const toggleStatus = (key: BoardColumn) =>
     onChange({
@@ -537,6 +553,16 @@ export function TaskFilterControls({
         ? filters.statuses.filter((s) => s !== key)
         : [...filters.statuses, key],
     });
+
+  const statusColumns = hideArchiveStatus
+    ? BOARD_COLUMNS.filter((c) => c.key !== "archived")
+    : BOARD_COLUMNS;
+  // Excludes Archive from the badge for the same reason the row is hidden: a
+  // count that includes a facet the popover will not even show would read as
+  // a filter this menu cannot explain.
+  const statusCount = hideArchiveStatus
+    ? filters.statuses.filter((s) => s !== "archived").length
+    : filters.statuses.length;
 
   const toggleProject = (path: string) =>
     onChange({
@@ -563,9 +589,9 @@ export function TaskFilterControls({
         />
       </div>
 
-      <FilterMenu label="Status" count={filters.statuses.length}>
+      <FilterMenu label="Status" count={statusCount}>
         {() =>
-          BOARD_COLUMNS.map((col) => {
+          statusColumns.map((col) => {
             const on = filters.statuses.includes(col.key);
             return (
               <button
@@ -907,9 +933,16 @@ export function TaskList({
   // on every keystroke of the search box.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
 
-  // The list's rows, in rank order (tasks-lib.sortByLane). Memoised for the same
-  // reason `showProject` is: this runs on every keystroke of the search box and
-  // the answer only moves when the rows do.
+  // The list's rows, in rank order and then by printed time (tasks-lib.sortByLane).
+  // Memoised for the same reason `showProject` is: this runs on every keystroke of
+  // the search box and the answer only moves when the rows do.
+  //
+  // `now` is left to the default rather than threaded through a dep, exactly as the
+  // Board does with groupByColumn: the recency order can only change when a run
+  // does, and a run that happened is a new `tasks` from the poll — so the poll that
+  // makes the order stale is the same poll that re-runs this memo with a fresh
+  // clock. A ticking `now` in the deps would re-sort the list every second to
+  // produce the identical order.
   const rows = useMemo(() => sortByLane(tasks), [tasks]);
 
   /**
@@ -1215,8 +1248,9 @@ export function TaskList({
       {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
       <div className="tasks-list" ref={listRef} onScroll={onScroll}>
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
-          In Progress, Failed, Done, Archive — rank order, server order inside
-          each rank, and no headers, dividers or counts between them.
+          In Progress, Failed, Done, Archive — rank order, and inside each rank
+          the time the rows themselves print (newest first; Upcoming soonest
+          first), with no headers, dividers or counts between them.
 
           The grouping is a SORT and nothing more (Akshil, 2026-08-18). Headers
           lived here for a round and were wrong on a list: the Board's lanes are

@@ -249,6 +249,18 @@ def _vault(tmp_path, files):
     return str(tmp_path)
 
 
+def _client(path):
+    """The forward-slash form graph.py's client-facing payload fields carry
+    (`note["root"]`, every link/backlink `path` — see graph.py's
+    `_client_path`/`_client_join`, and `test_every_path_a_payload_carries_
+    uses_forward_slashes` above). An expected value built with `os.path.join`
+    or a raw `tmp_path` string is native-separated, which is backslashed on
+    Windows and would never match those fields there — this converts it the
+    same way graph.py does, rather than the test predicting a native path a
+    forward-slash-only payload was never going to return."""
+    return path.replace("\\", "/") if path else path
+
+
 def test_scan_collects_notes_and_assets_and_skips_noise(graph, tmp_path):
     root = _vault(tmp_path, {
         "a.md": "[[b]]\n",
@@ -278,7 +290,7 @@ def test_a_large_note_is_scanned_and_fully_linkable(graph, tmp_path):
     # The link resolves to the real file rather than a ghost, and the big note
     # has working backlinks of its own.
     other = graph.main(action="note", file=os.path.join(root, "Other.md"), root=root)
-    assert other["links"][0]["path"] == os.path.join(root, "Big.md")
+    assert other["links"][0]["path"] == _client(os.path.join(root, "Big.md"))
     big_note = graph.main(action="note", file=os.path.join(root, "Big.md"), root=root)
     assert [b["rel"] for b in big_note["backlinks"]] == ["Other.md"]
     # It is a real node in the graph, not a ghost.
@@ -458,12 +470,12 @@ def test_note_reports_outbound_links_backlinks_and_ghosts(graph, tmp_path):
     out = graph.main(action="note", file=os.path.join(root, "Hub.md"), root=root)
     assert out["title"] == "Hub"
     assert [(link["target"], link["path"]) for link in out["links"]] == [
-        ("Leaf", os.path.join(root, "Leaf.md")),
+        ("Leaf", _client(os.path.join(root, "Leaf.md"))),
         ("Missing", None),
     ]
     assert [b["path"] for b in out["backlinks"]] == [
-        os.path.join(root, "Leaf.md"),
-        os.path.join(root, "Other.md"),
+        _client(os.path.join(root, "Leaf.md")),
+        _client(os.path.join(root, "Other.md")),
     ]
     assert out["backlinks"][1]["label"] == "the hub"
 
@@ -471,15 +483,17 @@ def test_note_reports_outbound_links_backlinks_and_ghosts(graph, tmp_path):
 def test_note_falls_back_to_its_own_directory_when_no_marker_is_found(graph, tmp_path):
     root = _vault(tmp_path, {"sub/A.md": "[[B]]\n", "sub/B.md": "back to [[A]]\n"})
     out = graph.main(action="note", file=os.path.join(root, "sub", "A.md"))
-    assert out["root"] == os.path.join(root, "sub")
-    assert [b["path"] for b in out["backlinks"]] == [os.path.join(root, "sub", "B.md")]
+    assert out["root"] == _client(os.path.join(root, "sub"))
+    assert [b["path"] for b in out["backlinks"]] == [
+        _client(os.path.join(root, "sub", "B.md"))
+    ]
 
 
 def test_an_embed_resolves_against_the_assets_in_the_scan(graph, tmp_path):
     root = _vault(tmp_path, {"A.md": "![[pic.png]] ![[gone.png]]\n", "img/pic.png": "x"})
     out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
     assert [(link["target"], link["path"]) for link in out["links"]] == [
-        ("pic.png", os.path.join(root, "img", "pic.png")),
+        ("pic.png", _client(os.path.join(root, "img", "pic.png"))),
         ("gone.png", None),
     ]
 
@@ -534,9 +548,9 @@ def test_the_default_root_climbs_to_the_nearest_vault_marker(graph, tmp_path, ma
     # And the point of it: the cross-folder link resolves and the inbound one
     # from a sibling folder shows up, neither of which the old default could do.
     out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"))
-    assert out["root"] == root
+    assert out["root"] == _client(root)
     assert [link["path"] for link in out["links"]] == [
-        os.path.join(root, "spec", "overview.md")]
+        _client(os.path.join(root, "spec", "overview.md"))]
     assert [b["rel"] for b in out["backlinks"]] == ["spec/overview.md"]
 
 
@@ -685,7 +699,7 @@ def test_an_explicit_root_still_wins_over_the_marker(graph, tmp_path):
     root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
     out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"),
                      root=os.path.join(root, "docs"))
-    assert out["root"] == os.path.join(root, "docs")
+    assert out["root"] == _client(os.path.join(root, "docs"))
 
 
 def test_the_chosen_root_always_contains_the_note(graph, tmp_path, monkeypatch):
@@ -696,7 +710,7 @@ def test_the_chosen_root_always_contains_the_note(graph, tmp_path, monkeypatch):
     monkeypatch.setattr(graph, "vault_root", lambda start: str(tmp_path / "elsewhere"))
     out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"))
     assert out["error"] is None
-    assert out["root"] == os.path.join(root, "docs")
+    assert out["root"] == _client(os.path.join(root, "docs"))
 
 
 def test_a_wider_root_still_reports_the_file_cap(graph, tmp_path, monkeypatch):
@@ -708,7 +722,7 @@ def test_a_wider_root_still_reports_the_file_cap(graph, tmp_path, monkeypatch):
     real = graph.scan_indexed
     monkeypatch.setattr(graph, "scan_indexed", lambda where: real(where, max_files=3))
     out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"))
-    assert out["root"] == root
+    assert out["root"] == _client(root)
     assert out["truncated"] is True
     assert out["notes"] == 3
 

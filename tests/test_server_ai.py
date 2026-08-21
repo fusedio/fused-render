@@ -996,9 +996,28 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
     assert _server_ai._claude_bin() is None  # nothing installed anywhere
     bin_path.write_text("#!/bin/sh\n")
     bin_path.chmod(0o755)
-    assert _server_ai._claude_bin() == str(bin_path)
+    # normpath: the fake expanduser above naively string-replaces "~" with
+    # str(home) and leaves the candidate's own "/" suffix untouched, so on a
+    # real Windows filesystem (str(home) backslashed, "/.local/bin/claude"
+    # forward-slashed) the resolved path is a mixed-separator string — the
+    # same file bin_path names, but not the same bytes as str(bin_path).
+    assert os.path.normpath(_server_ai._claude_bin()) == os.path.normpath(str(bin_path))
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the skip this pins is unobservable here: claude_health.executable's "
+        "own docstring says the exec bit 'is only consulted off Windows... "
+        "os.access(X_OK) is true for any existing file' there, so os.name is "
+        "forced to 'posix' below to reach that branch — but the underlying "
+        "os.access() call still runs against a REAL Windows filesystem, where "
+        "it is X_OK-true for any existing file regardless of chmod. A dud "
+        "made non-executable by chmod(0o644) is indistinguishable from a real "
+        "one to that syscall on this platform, so the dud wins here for a "
+        "reason that has nothing to do with the skip logic under test."
+    ),
+)
 def test_claude_bin_skips_a_non_executable_dud(monkeypatch, tmp_path):
     """A dud early in the list must not shadow a real install further down.
 
@@ -1121,7 +1140,12 @@ def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
     # only the %VAR% expansion is under test
     monkeypatch.setattr(_server_ai, "_CLAUDE_WINDOWS_CANDIDATES",
                         ("%APPDATA%/npm/claude.exe",))
-    assert _server_ai._claude_bin() == str(tmp_path / "npm" / "claude.exe")
+    # normpath: expandvars substitutes %APPDATA% (native-separator on real
+    # Windows) into a forward-slash template and, like expanduser, leaves the
+    # rest of the string untouched — a mixed-separator result naming the same
+    # file as the cleanly-joined RHS, but not the same string.
+    assert os.path.normpath(_server_ai._claude_bin()) == \
+        os.path.normpath(str(tmp_path / "npm" / "claude.exe"))
 
 
 def test_the_resolver_never_imports_the_chat_template():

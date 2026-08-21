@@ -285,7 +285,7 @@ def workspace_apps(root: str) -> list[dict]:
     underneath it. So a top-level folder with a page lists AND its children
     still list.
 
-    `tag` — the page's "Repo" facet — is THE FIRST PATH SEGMENT at every depth,
+    `tag` — the page's "Folders" facet — is THE FIRST PATH SEGMENT at every depth,
     so `showcase/sub/bar` files under `showcase` exactly as `showcase/bar` does.
     A depth-1 app IS that segment, so it is its own tag (an empty tag would add a
     nameless chip to the facet list and a `?tag=` that filters on "").

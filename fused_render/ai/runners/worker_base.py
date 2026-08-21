@@ -99,6 +99,15 @@ CANCEL = threading.Event()
 GENERATE_LOCK = threading.Lock()
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+
+#: Bounds on the PRE-AUTH body drain (Handler._drain). 64 KiB is far above any
+#: real request this worker takes — they are small JSON objects — and the point
+#: is only to stop an unauthenticated caller from naming a size that makes us
+#: wait on it. 2s is generous for a body already in flight on loopback, and it
+#: is the only read timeout on this connection at all (`_Server` sets none).
+DRAIN_MAX_BYTES = 64 * 1024
+DRAIN_TIMEOUT_S = 2.0
+
 JOB_ID = ""
 JOB_URL = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs"
 
@@ -396,12 +405,59 @@ def resident_bytes():
 #: Below this a file is fetched whole: splitting a 200KB config across four
 #: sockets costs four round trips to save nothing.
 SEGMENT_MIN_BYTES = 32 * 1024 * 1024
-#: Per file. Past a handful the Hub's per-connection throughput is the limit
-#: rather than the connection count, and each one is another socket to retry.
-MAX_SEGMENTS_PER_FILE = 4
+#: The size of one unit of work once a file IS being split. A separate
+#: constant from `SEGMENT_MIN_BYTES` on purpose, even though the two start out
+#: equal: one decides whether to split a file at all, the other decides how
+#: big each piece is once splitting happens, and nothing says a future tuning
+#: pass changes them together.
+#:
+#: **Fixed size, not `size / N` — this is the fix for the download's tail.**
+#: A big shard used to become a handful of EQUAL shares (see the retired
+#: `MAX_SEGMENTS_PER_FILE` below): four connections at four different real
+#: speeds finish at four different times, and once the fast three are done
+#: there is nothing left to hand them — the slowest share runs out the clock
+#: alone, which measured as a 4.6GB model crawling from ~90% to 100% for over
+#: a minute. Fixed-size chunks make a big file into MANY units of work in one
+#: shared queue: a worker that finishes early pulls the next chunk rather than
+#: finding nothing assigned to it, so a slow connection only ever delays its
+#: own current 32MB, never the tail of the whole download.
+#:
+#: **Two costs this accepts, deliberately, both raised in review and both
+#: judged worth it rather than left unexamined.**
+#:
+#: (1) A 4.6GB shard is now ~144 requests instead of 4 — 144 TCP/TLS
+#: handshakes rather than 4, since `urllib` opens a fresh connection per
+#: `_open` call. Against a 32MB transfer per chunk that overhead is a small
+#: percentage, and it buys the one property size/N could not have at any
+#: chunk count: MORE units of work than `MAX_CONNECTIONS`, which is what
+#: makes stealing possible at all. A pool with only as many items as workers
+#: — four shares on eight connections — can never exhibit the failure this
+#: fixes, no matter how the four are sized.
+#:
+#: (2) `work` is built file-by-file (`_segmented_fetch`), so with one file's
+#: chunk count at or above `MAX_CONNECTIONS`, all 8 connections work that ONE
+#: file before the next file's chunks start — files finish roughly in
+#: submission order rather than interleaved. That is a scheduling preference,
+#: not a correctness gap: the cap still holds, nothing waits on a connection
+#: sitting idle, and a multi-file repo still finishes strictly faster than
+#: before this change. Round-robining chunks ACROSS files instead would
+#: trade "finishes files one at a time" for "every file creeps up together",
+#: which is not obviously better and was not what the tail bug asked for —
+#: left as a real option for whoever next has a reason to prefer it, not
+#: implemented speculatively here.
+CHUNK_BYTES = 32 * 1024 * 1024
 #: Across everything — the ONE number that bounds how many sockets a download
 #: opens. A pool per file would multiply the caps together.
 MAX_CONNECTIONS = 8
+#: RETIRED, deliberately left named rather than silently deleted: this used to
+#: cap a single file at 4 equal shares, back when segments were `size / N`.
+#: With fixed-size `CHUNK_BYTES` chunks pulled from one GLOBAL queue, a big
+#: file simply produces more chunks — that is the whole fix above — and
+#: `MAX_CONNECTIONS` is what already bounds how many run at once, so a second,
+#: per-file cap would only recreate the tail this redesign removes: capping a
+#: 4.6GB shard at 4 chunks again puts it back on 4 static shares. Nothing
+#: reads this constant; it stays as a marker for why the number is gone.
+_RETIRED_MAX_SEGMENTS_PER_FILE = 4
 #: Deliberately NOT hf's `.incomplete`. hf resumes one of those by seeking to
 #: its current length; our segments write out of order, so a partial file of
 #: length N does not mean the first N bytes are there, and handing hf one of
@@ -420,6 +476,21 @@ FLUSH_EVERY_S = 1.0
 #: `snapshot_download` default, which is what keeps the fast path and the
 #: fallback on one revision of a model.
 DEFAULT_REVISION = "main"
+
+#: The sidecar's own format number. Bumped whenever what a sidecar MEANS
+#: changes shape — the chunk queue is exactly such a change: a segment used to
+#: be one of `size / N` equal shares, and is now one of many fixed-size
+#: `CHUNK_BYTES` pieces, so a sidecar an older build left behind describes
+#: boundaries this build would derive differently for the same file. Identity
+#: (etag, size) still matches such a sidecar, and the layout even often looks
+#: internally consistent — which is exactly the shape of input that turns a
+#: resume into a silently wrong blob rather than an obviously failed one, so
+#: it cannot be left to the layout check to notice. Anything read back with a
+#: different number, MISSING included — every sidecar written before this
+#: field existed reads as missing — is treated exactly like no sidecar at all:
+#: the safe reading, since a fresh download from a clean chunk plan is always
+#: correct, merely slower than a resume would have been.
+SIDECAR_VERSION = 2
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
 _RANGE_START = re.compile(r"^bytes\s+(\d+)-")
@@ -731,19 +802,35 @@ def _sparse_ok(folder):
     return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
 
 
-def _segment_count(size):
+def _chunks(size):
+    """Split [0, size) into fixed `CHUNK_BYTES` pieces. `done` is the cursor.
+
+    Below `SEGMENT_MIN_BYTES` the file is one piece covering the whole thing —
+    unchanged from before the chunk queue, and still the right answer: there
+    is nothing to gain from splitting a file too small to matter.
+
+    At or above it, every piece but the last is exactly `CHUNK_BYTES` — fixed
+    size, not `size / N`. A fixed size is what turns a big file into MANY
+    units of work rather than a HANDFUL: the whole point, since a queue with
+    only as many items as connections gives a slow one nothing to hand off
+    once its faster siblings finish (see `CHUNK_BYTES`'s own comment). A
+    30-shard repo and a single 4.6GB shard both resolve to plans a worker can
+    keep pulling from until the file is actually done.
+
+    Deterministic in `size` alone — no `count` argument, unlike the equal-share
+    split this replaced — which is what lets a resume regenerate the exact
+    same boundaries a previous run planned without having to persist the
+    piece count anywhere but the sidecar's own `segments` list.
+    """
     if size < SEGMENT_MIN_BYTES:
-        return 1
-    return min(MAX_SEGMENTS_PER_FILE, -(-size // SEGMENT_MIN_BYTES))
-
-
-def _segments(size, count):
-    """Split [0, size) into `count` contiguous ranges. `done` is the cursor."""
-    span = size // count
-    return [{"start": i * span,
-             "end": size - 1 if i == count - 1 else (i + 1) * span - 1,
-             "done": 0}
-            for i in range(count)]
+        return [{"start": 0, "end": size - 1, "done": 0}]
+    pieces = []
+    start = 0
+    while start < size:
+        end = min(start + CHUNK_BYTES, size) - 1
+        pieces.append({"start": start, "end": end, "done": 0})
+        start = end + 1
+    return pieces
 
 
 def _seg_complete(seg):
@@ -818,7 +905,12 @@ class _FileFetch:
             # refuses, and the refusal takes down the whole repo — the fallback
             # then deleting this file's sidecar along with every OTHER file's
             # progress. Restarting this one file whole is strictly cheaper.
-            self.segments = _segments(self.size, len(saved))
+            #
+            # `_chunks` is deterministic in `size` alone, so the layout it
+            # derives here is the SAME plan a fresh download would make —
+            # `_restore` below is what checks that the saved offsets actually
+            # fit onto it.
+            self.segments = _chunks(self.size)
             if not self._restore(saved):
                 saved = None
             elif len(saved) > 1 and _probe_host(self.meta["location"],
@@ -827,15 +919,19 @@ class _FileFetch:
                 saved = None
         if saved is None:
             # …and once the sidecar is out, its layout goes with it. Kept, it
-            # would split a download that starts from zero by a number that
+            # would split a download that starts from zero by a plan that
             # described a file we just deleted: one connection for a 4.6GB
             # shard, or dozens for a small one.
-            count = _segment_count(self.size)
-            if count > 1 and _probe_host(self.meta["location"],
-                                         self._cdn_token(),
-                                         self.probes) is not True:
-                count = 1
-            self.segments = _segments(self.size, count)
+            self.segments = _chunks(self.size)
+            if len(self.segments) > 1 and _probe_host(self.meta["location"],
+                                                       self._cdn_token(),
+                                                       self.probes) is not True:
+                # No confirmed range support: one connection for the whole
+                # file rather than the chunk plan `_chunks` would otherwise
+                # hand out, for the same reason `_whole_body` refuses a 200 at
+                # a non-zero offset — every chunk past the first would be
+                # handed byte 0.
+                self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
         self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
@@ -865,15 +961,44 @@ class _FileFetch:
     def _saved(self):
         """The segments a previous run recorded for THIS file, or None.
 
-        Identity first — etag, size, and a part file still as long as it was —
+        **Version first, before identity even gets a look-in.** The chunk
+        queue changed what a segment list MEANS — fixed `CHUNK_BYTES` pieces
+        rather than `size / N` equal shares — so a sidecar an older build
+        wrote can have the right etag, the right size, and a layout that still
+        passes the shape check in `_restore`, while every offset in it means a
+        different byte than this build would derive for the same file. Etag
+        and size agreeing says nothing about that; only the version does. A
+        missing `version` — every sidecar written before this field existed —
+        reads as a mismatch by construction, since `state.get` returns `None`
+        and `None != SIDECAR_VERSION`.
+
+        Identity next — etag, size, and a part file still as long as it was —
         because a sidecar belonging to a different revision of the file would
         have us skip bytes that were never fetched, and the result is a blob of
         exactly the right length that is silently wrong. The layout itself is
         checked in `_restore`, against the segments derived from this answer.
+
+        **`isinstance(state, dict)` is checked explicitly, not left to fall out
+        of a `KeyError`.** A sidecar whose JSON parses but is not an object — a
+        truncated write that still happens to be valid JSON on its own, like a
+        bare `2` or a list — has no `.get`, and `state["etag"]` on such a value
+        raises `TypeError`, not `KeyError`; both were already caught here, so
+        this was harmless before the version check was added. `state.get(...)`
+        on a non-dict raises `AttributeError`, which was NOT in the tuple below
+        — so a malformed sidecar stopped reading as "no sidecar" for this one
+        file and instead escaped `plan()` entirely, taking the whole repo into
+        the fallback and `_clear_parts` deleting every OTHER file's progress
+        along with it. Checking the shape up front says directly what every
+        line below it assumes, rather than relying on whichever accessor
+        happens to be first to notice.
         """
         try:
             with open(self.sidecar) as handle:
                 state = json.load(handle)
+            if not isinstance(state, dict):
+                return None
+            if state.get("version") != SIDECAR_VERSION:
+                return None
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:
                 return None
             saved = state["segments"]
@@ -922,7 +1047,8 @@ class _FileFetch:
             if not force and now - self.flushed < FLUSH_EVERY_S:
                 return
             self.flushed = now
-            state = {"etag": self.meta["etag"], "size": self.size,
+            state = {"version": SIDECAR_VERSION, "etag": self.meta["etag"],
+                     "size": self.size,
                      "segments": [dict(seg) for seg in self.segments]}
         with self.flush_lock:
             if self.fd is not None:
@@ -1173,7 +1299,26 @@ def _resolve(repo_id, filenames, revision):
 
 def _run_segment(fetch, seg):
     """One unit of work in the pool: fill a segment, and finalise if it was the
-    last one its file was waiting on."""
+    last one its file was waiting on.
+
+    **`force=True` on every completion, so a 4.6GB shard now forces ~144
+    sidecar fsyncs instead of 4 — raised in review and judged not worth
+    changing yet.** The data most of that fsync flushes is already clean:
+    `_drain`'s own periodic `flush()` (no `force`) runs throughout the
+    segment on the same 1-second cadence regardless of chunk size, so a
+    completed 32MB chunk typically has little UNFLUSHED data behind it and
+    this call's real job is durably recording the LAST partial tick — the
+    bytes written since that periodic flush last fired, which on a fast link
+    can be most of the chunk. If this ever shows up in profiling on real
+    storage, the change to make is dropping `force` here entirely and
+    letting the periodic flush alone catch a finished segment: correctness
+    would not regress (a segment whose completion lands between two
+    periodic ticks just resumes as its last-recorded, slightly earlier
+    offset — a bigger but still bounded re-fetch, not a corrupt one), only
+    resume-efficiency would give up a little in exchange for far fewer
+    forced fsyncs. Not made speculatively because nothing here has measured
+    it as a real cost.
+    """
     try:
         try:
             fetch.run(seg)
@@ -1339,15 +1484,160 @@ def _fallback(model_id, error):
     _clear_parts(repo_folder(model_id))
 
 
+class _HubByteTicker:
+    """A `tqdm_class` for hf's OWN downloaders, and the counter it writes into.
+
+    The fallback path's bar used to be driven only by the disk walk, and
+    `hf_xet` (installed in every runner venv; every mlx-community repo is
+    Xet-backed) delivers bytes in BURSTS rather than a steady trickle:
+    measured on a 481MB repo, `bytes_on_disk` sat on one number for 6 seconds,
+    then jumped ~90MB, then landed the final ~45% all at once on completion.
+    Scaled to a 4.6GB model that is a bar parked on one number for a MINUTE
+    while the download is perfectly healthy — the "stuck at 98%" report. hf
+    knows the true count the whole time; this reads it through the one seam
+    hf exposes for exactly that, and the disk walk stays as the heartbeat and
+    the fallback for whatever this cannot read.
+
+    **The outer bar is a file counter, and reporting it as bytes is the
+    original AI-5b trap one level further in.** `snapshot_download` hands its
+    `tqdm_class` to THREE distinct bars: one wrapping `hf_thread_map` over the
+    file list — `desc="Fetching N files"`, no `unit` at all, one `.update(1)`
+    per file — and two created directly for BYTES, `unit="B"`, one per
+    conceptual stream (`_create_progress_bar` in hf's own `_snapshot_download`
+    and `_xet_progress_reporting`). `unit == "B"` is what tells them apart:
+    when `unit` is absent it is the file counter, which is exactly how "10 /
+    11 B" happened before — the same bug this feature exists to fix,
+    reappearing one seam further in.
+
+    **Two byte streams, not one, and they must not be SUMMED.** hf's Xet path
+    reports network TRANSFER (`desc` containing "downloading bytes") and disk
+    RECONSTRUCTION (`desc` containing "reconstruct") separately — both cover
+    close to the same total under dedup/compression, so adding them can read
+    past 100% of a file that is not yet done. `bytes_on_disk` means "landed on
+    disk", which is what the reconstruction stream already means, so ticks
+    into the "reconstruct" bucket and the "transfer" bucket are kept apart and
+    the counter reports whichever is FURTHER ALONG — never their sum. A plain
+    `http_get` download (no Xet) hands back exactly one bar, whose `desc` is a
+    filename and matches neither keyword; it lands in the transfer bucket,
+    which is exactly the bytes it wrote, so the two-bucket split costs nothing
+    on that path.
+
+    `seen` is False until some byte bar reports ANYTHING, which is what lets
+    the caller tell "no usable counter" (an hf version that reports
+    differently, or ignores `tqdm_class` altogether, or a fetch that never
+    goes near hf's downloaders at all) from "the counter says zero because
+    nothing has landed yet" — the two must not be confused, or a slow start
+    would look like this feature having failed rather than a download that is
+    merely early.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._transfer = 0
+        self._reconstruct = 0
+        self.seen = False
+
+    @property
+    def value(self):
+        with self._lock:
+            return max(self._transfer, self._reconstruct)
+
+    def bar(self):
+        """A tqdm-COMPATIBLE class bound to this ticker — not a `tqdm`
+        subclass, deliberately: hf's own `_create_progress_bar` hands a
+        non-tqdm `cls` straight through as `cls(**kwargs)`, with none of
+        tqdm's `disable`/`name` machinery grafted on, which this needs
+        exactly as little of. Read back off an instance: `.n`, `.total` (hf's
+        own aggregation helpers check both with `getattr`/`hasattr`) and
+        `.format_dict` — verified against the real huggingface_hub installed
+        in the runner venvs (1.27.0, 1.28.0): `_AggregatedTqdm.set_postfix_str`
+        forwards to `_set_aggregate_rate_postfix`, which does
+        `bar.format_dict.get("rate")` on OUR bar, called by
+        `XetDownloadProgressReporter.update_progress` on the first non-zero
+        byte increment. Missing it is not a cosmetic gap: it is an
+        `AttributeError` raised from inside the download, on every
+        Xet-backed repo — which is every mlx-community one — the moment the
+        first byte lands. Called: `.update`, `.set_postfix_str`.
+        """
+        ticker = self
+
+        class _Bar:
+            def __init__(self, *_args, **kwargs):
+                self.n = kwargs.get("initial") or 0
+                self.total = kwargs.get("total")
+                self._is_bytes = kwargs.get("unit") == "B"
+                self._reconstruct = "reconstruct" in (kwargs.get("desc") or "").lower()
+
+            @property
+            def format_dict(self):
+                # hf reads only `rate` off this (see the docstring above); `n`
+                # and `total` are included too since real tqdm's own
+                # `format_dict` carries them and a future caller reading
+                # either would otherwise hit the same missing-attribute crash
+                # this property exists to stop. `rate` is genuinely unknown —
+                # this class does no timing of its own — and `None` is what
+                # `_format_speed_postfix` already renders as "???B/s".
+                return {"rate": None, "n": self.n, "total": self.total}
+
+            def update(self, n=1):
+                if not self._is_bytes or not n:
+                    return
+                with ticker._lock:
+                    # `self.n` too, not just the ticker's own counters: it is
+                    # what `format_dict` above reports back to hf, and a
+                    # bar's own count has to agree with what it told the
+                    # ticker it saw.
+                    self.n += n
+                    if self._reconstruct:
+                        ticker._reconstruct += int(n)
+                    else:
+                        ticker._transfer += int(n)
+                    ticker.seen = True
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return False
+
+            def close(self):
+                pass
+
+            def refresh(self):
+                pass
+
+            def set_postfix_str(self, *_args, **_kwargs):
+                pass
+
+            def set_description(self, *_args, **_kwargs):
+                pass
+
+        return _Bar
+
+
 def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…",
-                        job=None, row=None):
-    """Run `call()` on a thread, reporting bytes-on-disk once a second.
+                        job=None, row=None, counter=None):
+    """Run `call()` on a thread, reporting progress once a second.
 
     `call` is whatever huggingface_hub function actually fetches — a whole
     snapshot for one runner, a single GGUF file for another — and this is the
     part neither of them should write twice: the poll is the progress AND the
     heartbeat, without which a long single-file download reports nothing for
-    minutes and the manager calls the row abandoned.
+    minutes and the manager calls the row abandoned. The ONE-SECOND TICK is
+    unconditional regardless of what drives `done` below it — the tick itself
+    is the heartbeat (AI-5h), and a fetch that happens to have a live byte
+    counter must keep beating exactly as often as one that does not.
+
+    `counter`, when given, is a `_HubByteTicker` whose `tqdm_class` `call` was
+    built to pass to hf's own downloader. Once it has `seen` anything, `done`
+    is `max(counter.value, bytes_on_disk(folder))` rather than the disk walk
+    alone — never less than either, so a counter that stalls while the disk
+    still advances (or the reverse) cannot make the bar go backwards. Before
+    it has seen anything — no counter at all, an hf version that reports
+    differently, a `tqdm_class` silently ignored — this degrades to exactly
+    the disk-walk-only behaviour from before it existed. See `_HubByteTicker`
+    for why a byte counter existing at all used to be exactly the AI-5b trap
+    ("10 / 11 B") one level further in.
 
     **`job`/`row` exist because not every fetch belongs to a download job.** A
     runner that pulls a component model DURING a request — the speech detector,
@@ -1392,13 +1682,28 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
         total = repo_total_bytes(model_id)
     identity = {**(row or {}), "kind": "download", "unit": "bytes"}
 
+    def measured():
+        """Bytes done right now, from whichever source is actually moving.
+
+        `bytes_on_disk` always runs — it is the heartbeat's OWN measurement
+        too, and the fallback the moment `counter` cannot answer. `counter`,
+        once it has `seen` anything, can only raise the reported number: a
+        burst that lands on disk between two of hf's own ticks is still real
+        progress, and `max` is what keeps either source's silence from
+        hiding the other's advance.
+        """
+        disk = bytes_on_disk(folder)
+        if counter is not None and counter.seen:
+            return counter.value if disk is None else max(disk, counter.value)
+        return disk
+
     def tick(**fields):
         """One progress report that can carry a ✕ back. See the docstring."""
         report_or_cancel(job=job, **identity, state="running", **fields)
         if job is not None and CANCEL.is_set():
             raise Cancelled()
 
-    tick(detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
+    tick(detail=detail, done=_capped(measured(), total), total=total)
 
     result = {}
 
@@ -1416,15 +1721,14 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
             # Finished during the join. Ticking now would be the late-cancel
             # the docstring refuses — the bytes are already on the disk.
             break
-        tick(done=_capped(bytes_on_disk(folder), total), total=total,
-             detail=detail)
+        tick(done=_capped(measured(), total), total=total, detail=detail)
     if "error" in result:
         raise result["error"]
-    # Land on the total rather than on the last walk: the snapshot symlinks are
-    # not counted, so a finished repo measures slightly under its own size and a
-    # bar that stopped at 98% reads as a download that gave up.
+    # Land on the total rather than on the last measurement: the snapshot
+    # symlinks are not counted, so a finished repo measures slightly under its
+    # own size and a bar that stopped at 98% reads as a download that gave up.
     report(job=job, **identity, state="running",
-           done=total or bytes_on_disk(folder), total=total)
+           done=total or measured(), total=total)
     return result["value"]
 
 
@@ -1959,9 +2263,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
                    "ignore_patterns": ignore_patterns}
         if revision:
             options["revision"] = revision
+        # Ours unless `kwargs` already names one — a caller that passed its
+        # own `tqdm_class` gets it back unmolested, and `counter` simply never
+        # sees anything (`measured` in `fetch_with_progress` degrades to the
+        # disk walk on its own; see `_HubByteTicker`).
+        ticker = _HubByteTicker()
+        options.setdefault("tqdm_class", ticker.bar())
         options.update(kwargs)
         return fetch_with_progress(
-            model_id, lambda: snapshot_download(model_id, **options), total=total)
+            model_id, lambda: snapshot_download(model_id, **options), total=total,
+            counter=ticker)
 
     if kwargs or files is None or not sha:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
@@ -2041,10 +2352,12 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     def hub():
         from huggingface_hub import hf_hub_download
 
+        ticker = _HubByteTicker()
         return fetch_with_progress(
             repo_id,
-            lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-            total=total, detail=detail, job=job, row=row)
+            lambda: hf_hub_download(repo_id=repo_id, filename=filename,
+                                    tqdm_class=ticker.bar()),
+            total=total, detail=detail, job=job, row=row, counter=ticker)
 
     if not sha:
         return hub()
@@ -2125,6 +2438,71 @@ def _handler(generate, streaming):
         def log_message(self, *args):
             pass  # the supervisor captures stderr; per-request noise is not useful
 
+        def _drain(self):
+            """Read and discard the request body. True if it was fully drained.
+
+            Draining at all is mandatory before answering a request WITHOUT
+            reading its body. This handler is HTTP/1.1, so the connection is
+            kept alive and the next request is parsed off the same socket — an
+            undrained body is still queued there and its bytes get read as that
+            request's request-line. And closing a socket that still holds
+            unread data makes Windows send an RST instead of a FIN, which
+            reaches the client as [WinError 10053] ConnectionAbortedError
+            rather than the clean 403 this path exists to deliver. (Both halves
+            are real: the desync bites on every platform, the RST is
+            Windows-specific.)
+
+            BOUNDED on both axes, because the only caller runs BEFORE
+            authentication and Content-Length is the caller's to claim.
+            Unbounded, a client with a wrong token could announce a huge body
+            and then send nothing, holding one of this ThreadingTCPServer's
+            threads for as long as it pleased — and `_Server` sets no socket
+            timeout, so "as long as it pleased" is forever. Enough of those and
+            the worker stops answering /health, which is how the supervisor
+            decides it is alive. So: a length over DRAIN_MAX_BYTES is not read
+            at all, and what is read gets DRAIN_TIMEOUT_S to arrive.
+
+            Returning False means the connection is NOT safe to keep alive —
+            an over-long, half-sent, chunked or unparseable body is still in
+            the socket, and the next request read off it would consume that as
+            its request-line. The caller closes instead.
+            """
+            # Content-Length is the only framing this can drain. A chunked body
+            # is length-prefixed per chunk, and BaseHTTPRequestHandler does not
+            # decode it — self.rfile is the raw socket, so following it means
+            # parsing the chunk framing here. Transfer-Encoding also OVERRIDES
+            # Content-Length when both are sent (RFC 9112 s6.1), so a
+            # Content-Length read alongside one would stop in the wrong place.
+            # Nothing legitimate POSTs chunked to this worker (small JSON, sent
+            # with a length), so treat any Transfer-Encoding as undrainable and
+            # end the connection rather than guess where the body stops.
+            # Presence, not truth: an empty `Transfer-Encoding:` is malformed
+            # framing either way, and `.get()` would read it as absent.
+            if "Transfer-Encoding" in self.headers:
+                return False
+            raw = self.headers.get("Content-Length")
+            try:
+                remaining = int(raw) if raw else 0
+            except ValueError:
+                return False          # unparseable: cannot know where it ends
+            if remaining < 0 or remaining > DRAIN_MAX_BYTES:
+                return False
+            if remaining == 0:
+                return True
+            previous = self.connection.gettimeout()
+            self.connection.settimeout(DRAIN_TIMEOUT_S)
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 16 * 1024))
+                    if not chunk:
+                        return False  # client stopped short of what it claimed
+                    remaining -= len(chunk)
+                return True
+            except OSError:           # includes the socket timeout
+                return False
+            finally:
+                self.connection.settimeout(previous)
+
         def _authorized(self):
             # The token is a header the supervisor generated and passed in this
             # process's environment. A foreign page that guessed the ephemeral
@@ -2132,8 +2510,20 @@ def _handler(generate, streaming):
             # log line or a Referer.
             if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
                 return True
+            # Drain BEFORE the refusal, not after: see _drain. A rejected POST
+            # still arrived with a body, and leaving it unread turns a 403 into
+            # a dropped connection. When it cannot be drained safely, the
+            # refusal still goes out — but this connection ends with it, rather
+            # than being reused with someone else's bytes queued on it.
+            drained = self._drain()
             self.send_response(403)
             self.send_header("Content-Length", "0")
+            if not drained:
+                # Announced, not just done: the client is owed the reason its
+                # connection is about to end. send_header's own side effect
+                # sets close_connection, which is what actually stops this
+                # socket being reused with those undrained bytes still on it.
+                self.send_header("Connection", "close")
             self.end_headers()
             return False
 

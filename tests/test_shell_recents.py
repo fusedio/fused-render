@@ -26,7 +26,12 @@ def _client(tmp_path, monkeypatch):
 
 def _view_url(path, search=""):
     # Encode each segment like the frontend's urlForFsPath (lib/router.ts).
-    encoded = "/".join(quote(s, safe="") for s in str(path).lstrip("/").split("/"))
+    # str(path) is OS-native (backslash-separated on Windows) — normalize to
+    # the shell's canonical forward-slash form FIRST, same as
+    # _view_url_codec.canonical_fs_path, or a Windows drive path collapses to
+    # one un-split, garbage-encoded segment instead of the real path segments.
+    posix = str(path).replace("\\", "/")
+    encoded = "/".join(quote(s, safe="") for s in posix.lstrip("/").split("/"))
     return "/view/" + encoded + search
 
 

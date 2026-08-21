@@ -1657,6 +1657,15 @@ def attacher(ladder, monkeypatch):
                         lambda m, port=None: None)
     monkeypatch.setattr(mounts_mod.lifecycle, "sync_serves", lambda: None)
     monkeypatch.setattr(mounts_mod.lifecycle, "_update_mount", lambda m: None)
+    # attach_mount's creation path gates on this BEFORE it ever reaches
+    # mount/mount (real WinFsp detection, so a genuinely missing driver on a
+    # real Windows box reports a friendly install prompt instead of an opaque
+    # rclone error) — vacuously True off win32, but on a bare Windows CI
+    # runner with no WinFsp installed it is False for real, which would make
+    # attach_mount return _winfsp_missing_error() before the fake `_rc` ever
+    # sees "mount/mount", and `mount_entered` would never be set. Not what
+    # this race is about, so it is stubbed like the other concerns above.
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
     ladder["block_mount"] = threading.Event()
     ladder["mount_entered"] = threading.Event()
     return ladder

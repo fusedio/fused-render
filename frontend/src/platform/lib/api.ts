@@ -841,6 +841,52 @@ export interface CallsPrefs {
   retention_forced_by: string | null;
 }
 
+// -- Hugging Face sign-in (server/routers/hf_auth.py; D402) -------------------
+
+// No token ever crosses this boundary in either direction. The button starts
+// huggingface_hub's own device-code login, hf stores what comes back, and this
+// payload reports who the machine is signed in as — never the credential, and
+// not even the value of an environment variable that may be overriding it.
+export interface HfAuth {
+  signedIn: boolean;
+  /** The account, when it can be named without a network call: the username
+   *  from a login this process performed, else hf's stored token name. Null
+   *  while `signedIn` is true means "signed in, and nothing here can name it". */
+  account: string | null;
+  /** What is actually answering — an environment variable (which beats hf's
+   *  store, in hf's own resolution) or hf's stored login. */
+  source: "environment" | "login" | null;
+  /** Which variable is overriding, by NAME. Never its value: that is a
+   *  credential, and the name is all the page needs to say what to unset. */
+  forcedByVar: string | null;
+  /** The login in flight: where to authorize, the short code to confirm there,
+   *  and how long the code has left. */
+  pending: { userCode: string; url: string; secondsLeft: number } | null;
+  /** Why the last attempt failed — denied, expired, or the network. */
+  error: string | null;
+}
+
+export function getHfAuth(): Promise<HfAuth> {
+  return getJson<HfAuth>("/api/hf/auth");
+}
+
+// Starts the flow, or JOINS one already running (`joined: true`) — a second
+// device code would be a second code on the Hub's page with only one of them
+// being polled.
+export function startHfLogin(): Promise<HfAuth & { joined: boolean }> {
+  return postJson<HfAuth & { joined: boolean }>("/api/hf/login", {});
+}
+
+export function cancelHfLogin(): Promise<HfAuth> {
+  return postJson<HfAuth>("/api/hf/login/cancel", {});
+}
+
+// Signs the machine out by removing the ACTIVE token's entry from hf's store —
+// not every token on the machine, which is what hf's own `logout()` would do.
+export function hfLogout(): Promise<HfAuth> {
+  return postJson<HfAuth>("/api/hf/logout", {});
+}
+
 export function getPrefs(): Promise<Prefs> {
   return getJson<Prefs>("/api/prefs");
 }
@@ -1490,8 +1536,33 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
 // fetch + blob rather than a bare <a download>, same reason as the templates
 // export above: a non-2xx JSON error (not an app, over
 // budget) surfaces to the caller instead of saving as a corrupt file.
-export async function downloadAppFile(path: string, name: string): Promise<void> {
-  const res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+// The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
+// served as bytes by a single-member zip read (never an extraction). 404s when
+// the file ships without one — the card's onError fallback owns that case.
+export function appfilePreviewUrl(path: string): string {
+  return "/api/appfile/preview?path=" + encodeURIComponent(path);
+}
+
+export async function downloadAppFile(
+  path: string,
+  name: string,
+  // Optional capture of the app to bake into the .fused as its preview.png
+  // (D396). The server only uses it when the folder has no authored one.
+  preview?: Blob,
+): Promise<void> {
+  let res: Response;
+  if (preview) {
+    const form = new FormData();
+    form.set("path", path);
+    form.set("preview", preview, "preview.png");
+    res = await fetch("/api/appfile/export", {
+      method: "POST",
+      headers: { "X-Fused": "1" },
+      body: form,
+    });
+  } else {
+    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+  }
   if (!res.ok) {
     let message = `export failed (${res.status})`;
     try {
@@ -1514,6 +1585,32 @@ export async function downloadAppFile(path: string, name: string): Promise<void>
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
+}
+
+// Where a `.fused` would clone to in the workspace, and whether it already has
+// (D397). `cloned` is decided by the destination folder EXISTING — there is no
+// records file — so it survives a restart, a moved .fused and a re-export, at
+// the named cost that an unrelated `local/<slug>` folder reads as this app's
+// clone. The GET touches nothing; the POST does the copy and answers the same
+// shape, with `cloned: true` meaning "was already there, nothing copied".
+export interface AppFileCloneTarget {
+  /** The app's manifest name, or the file's stem when it has none. */
+  name: string;
+  /** That name reduced to one path-safe segment — the folder under local/. */
+  slug: string;
+  /** Absolute destination, forward-slashed. */
+  path: string;
+  cloned: boolean;
+}
+
+export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
+  return getJson<AppFileCloneTarget>(
+    "/api/appfile/clone?path=" + encodeURIComponent(path),
+  );
+}
+
+export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
+  return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
 }
 
 // Delete one USER template folder (core templates are read-only, 404 here).
@@ -1667,6 +1764,12 @@ export interface AppInfo {
   // (~/.fused-render/app_recents.json). Null for an app never opened, and
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
+  // "appfile" for an exported `.fused` FILE discovered via the file index
+  // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
+  // must not offer folder actions (open-folder, export) on it, and it
+  // contributes no Folders chip (repoChips). Undefined for every folder-shaped
+  // app and on older backends.
+  kind?: "appfile";
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {

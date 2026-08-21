@@ -46,6 +46,20 @@ def _tree(tmp_path):
     return src
 
 
+def _point_home_at(monkeypatch, path):
+    """Make `os.path.expanduser("~")` answer `path`, on every platform.
+
+    `monkeypatch.setenv("HOME", ...)` alone only works on POSIX: Windows'
+    `ntpath.expanduser` reads `USERPROFILE` (falling back to
+    `HOMEDRIVE`+`HOMEPATH`) and never consults `HOME` at all, so a test that
+    only sets `HOME` silently keeps pointing `warm_root()`/`config.home` at
+    the real machine's profile instead of the tree it built."""
+    real_expanduser = os.path.expanduser
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setattr(os.path, "expanduser",
+                        lambda p: str(path) if p == "~" else real_expanduser(p))
+
+
 # -- guards --------------------------------------------------------------------
 
 @pytest.mark.parametrize("path,body", [
@@ -96,7 +110,9 @@ def test_scan_status_and_stats_over_a_real_tree(home, tmp_path):
         time.sleep(0.2)
     assert state is not None and state["running"] is False, state
     assert state["error"] is None, state["error"]
-    assert state["root"] == str(src)
+    # the real `runner.start` records `canonical_root(root)`, not the
+    # caller's raw spelling (platform.md §1) — a no-op of that on POSIX.
+    assert state["root"] == runner.canonical_root(str(src))
 
     stats = client.get("/api/index/stats", params={"root": str(src)}).json()
     assert stats["rows"] == 2
@@ -219,10 +235,13 @@ def test_config_round_trips_roots_and_ignore(home, tmp_path):
                        json={"roots": [str(tmp_path)], "ignore": ["node_modules", ""]},
                        headers={"X-Fused": "1"})
     assert resp.status_code == 200
-    assert resp.json()["roots"] == [str(tmp_path)]
+    # "roots" answers with `scan_roots(cfg)` — canonical_root form, not the
+    # caller's raw spelling (platform.md §1; routers/index.scan_roots).
+    canon = [runner.canonical_root(str(tmp_path))]
+    assert resp.json()["roots"] == canon
     assert resp.json()["ignore"] == ["node_modules", ""]  # verbatim
     body = client.get("/api/index/config").json()
-    assert body["roots"] == [str(tmp_path)]
+    assert body["roots"] == canon
     assert body["defaults"]  # the starting list is reported for a Reset button
 
 
@@ -306,7 +325,11 @@ def test_a_search_is_filtered_against_its_enclosing_index_root(home, tmp_path,
     # Both requests pool under the configured root, whichever folder was asked
     # for. A folder outside every root has no pool to share and gets None.
     client.get(f"/api/index/search?root={tmp_path.parent}")
-    assert seen == [str(tmp_path), str(tmp_path), None]
+    # The route hands `filter_corpus` the matched entry from `scan_roots`,
+    # which is already in `runner.canonical_root` form — not the caller's
+    # raw spelling (platform.md §1) — so the expectation has to be too.
+    canon = runner.canonical_root(str(tmp_path))
+    assert seen == [canon, canon, None]
 
 
 def test_saving_the_ignore_list_preserves_comments_and_blank_lines(home, tmp_path):
@@ -358,7 +381,17 @@ def test_saving_rules_mid_scan_supersedes_the_running_scan(home, tmp_path, monke
     index_router.save_config(cfg)
     # A scan is running under rules A, and rules A are what the index claims.
     live = index_router.runner.start(load_config(), str(root))
-    index_router.save_applied_ignore(load_config(), str(root))
+    # `save_applied_ignore` (unlike `runner.start`) does NOT canonicalize its
+    # own `root` — it trusts the caller, because its real caller (`scan.
+    # run_scan`) only ever gets there with the already-canonical spelling
+    # `runner.start` wrote into spec.json. Passing the raw `str(root)` here
+    # instead would file the fingerprint under a key `applied_ignore_sig`
+    # (looked up via the canonical `scan_roots(cfg)` entries) can never find,
+    # reading as "unknown" — which the route's `(sig or current) != current`
+    # check treats as "already reconciled", so `needs_rescan` comes back
+    # False instead of True.
+    index_router.save_applied_ignore(load_config(),
+                                     index_router.runner.canonical_root(str(root)))
 
     body = _client(tmp_path).post(
         "/api/index/config", json={"ignore": ["node_modules", "target"]},
@@ -385,15 +418,17 @@ def test_default_scan_roots_are_the_users_home(home, tmp_path, monkeypatch):
     real_expanduser = os.path.expanduser
     monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / "userhome")
                         if p == "~" else real_expanduser(p))
+    # `scan_roots` answers in `runner.canonical_root` form (platform.md §1),
+    # not the raw native-separator string `expanduser`/`str(Path)` hand back.
     assert index_router.scan_roots(load_config(), start_dir=str(tmp_path)) == [
-        str(tmp_path / "userhome")]
+        runner.canonical_root(str(tmp_path / "userhome"))]
 
 
 def test_configured_roots_win_over_the_default(home, tmp_path):
     cfg = load_config()
     cfg.roots = [str(tmp_path / "proj")]
     assert index_router.scan_roots(cfg, start_dir=str(tmp_path)) == [
-        str(tmp_path / "proj")]
+        runner.canonical_root(str(tmp_path / "proj"))]
 
 
 def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypatch):
@@ -424,8 +459,12 @@ def test_scan_roots_are_canonical_so_store_lookups_hit(home, tmp_path, monkeypat
     cfg.roots = ["~/proj", str(tmp_path / "other") + "/"]
     assert index_router.scan_roots(cfg) == [
         runner.canonical_root(r) for r in cfg.roots]
-    # ~ really was expanded, so this is not a tautology over two no-ops
-    assert index_router.scan_roots(cfg)[0] == str(tmp_path / "userhome" / "proj")
+    # ~ really was expanded, so this is not a tautology over two no-ops. Still
+    # wrapped in canonical_root: the concatenation above (`fake_home + p[1:]`)
+    # is native-separator on Windows, and canonical_root is what scan_roots
+    # itself would produce from that same expansion.
+    assert index_router.scan_roots(cfg)[0] == runner.canonical_root(
+        str(tmp_path / "userhome" / "proj"))
     # and the default root gets the same treatment
     cfg.roots = []
     assert index_router.scan_roots(cfg) == [runner.canonical_root("~")]
@@ -453,7 +492,9 @@ def test_scan_with_no_root_uses_the_configured_one(home, tmp_path, monkeypatch):
     cfg.roots = [str(tmp_path)]
     index_router.save_config(cfg)
     _client(tmp_path).post("/api/index/scan", json={}, headers={"X-Fused": "1"})
-    assert seen == [str(tmp_path)]
+    # the route resolves the missing root through `scan_roots`, which answers
+    # in canonical_root form, not the configured raw spelling.
+    assert seen == [runner.canonical_root(str(tmp_path))]
 
 
 def test_scan_with_no_root_covers_EVERY_root(home, tmp_path, monkeypatch):
@@ -473,11 +514,14 @@ def test_scan_with_no_root_covers_EVERY_root(home, tmp_path, monkeypatch):
     index_router.save_config(cfg)
     body = _client(tmp_path).post("/api/index/scan", json={"full": True},
                                   headers={"X-Fused": "1"}).json()
-    assert seen == [(str(a), True), (str(b), True)]
-    assert [r["root"] for r in body["runs"]] == [str(a), str(b)]
+    # every root the route hands to `start` came out of `scan_roots`, in
+    # canonical_root form.
+    ca, cb = runner.canonical_root(str(a)), runner.canonical_root(str(b))
+    assert seen == [(ca, True), (cb, True)]
+    assert [r["root"] for r in body["runs"]] == [ca, cb]
     # the single-run fields stay, for a caller that only knows about one
     assert body["run_id"] == "run-a"
-    assert body["root"] == str(a)
+    assert body["root"] == ca
 
 
 def test_scan_with_no_root_skips_roots_that_no_longer_exist(home, tmp_path, monkeypatch):
@@ -497,7 +541,8 @@ def test_scan_with_no_root_skips_roots_that_no_longer_exist(home, tmp_path, monk
     resp = _client(tmp_path).post("/api/index/scan", json={},
                                   headers={"X-Fused": "1"})
     assert resp.status_code == 200
-    assert [r["root"] for r in resp.json()["runs"]] == [str(live)]
+    assert [r["root"] for r in resp.json()["runs"]] == [
+        runner.canonical_root(str(live))]
 
 
 def test_scan_with_no_root_and_nothing_startable_is_an_error(home, tmp_path, monkeypatch):
@@ -590,7 +635,7 @@ def test_startup_schedules_one_scan_per_root(home, tmp_path, monkeypatch):
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == [str(src)]
+    assert started == [runner.canonical_root(str(src))]
 
 
 def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
@@ -601,7 +646,12 @@ def test_startup_scan_is_debounced(home, tmp_path, monkeypatch):
     cfg = load_config()
     cfg.roots = [str(src)]
     index_router.save_config(cfg)
-    runner._record_scan(cfg, str(src))  # a scan just ran
+    # `_record_scan` does not canonicalize its own `root` (only `last_scan`'s
+    # read side does — see test_index_freshness's floor test for the same
+    # asymmetry), so seeding the debounce record directly like this has to
+    # canonicalize first or `run_startup_scan`'s debounce check never finds
+    # it and starts a scan anyway.
+    runner._record_scan(cfg, runner.canonical_root(str(src)))  # a scan just ran
     index_router.run_startup_scan(start_dir=str(tmp_path))
     assert started == []
 
@@ -617,7 +667,7 @@ def test_startup_scan_rescans_once_the_debounce_has_elapsed(home, tmp_path, monk
     runner._record_scan(cfg, str(src))
     monkeypatch.setattr(index_router, "SCAN_DEBOUNCE_S", 0)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == [str(src)]
+    assert started == [runner.canonical_root(str(src))]
 
 
 def test_startup_scan_never_raises(home, tmp_path, monkeypatch):
@@ -652,7 +702,7 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     cfg.roots = [str(tmp_path / "deleted"), str(ok)]
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))
-    assert started == [str(ok)]
+    assert started == [runner.canonical_root(str(ok))]
 
 
 # -- the compact corpus --------------------------------------------------------
@@ -785,7 +835,7 @@ def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypat
     FilesHome searches `config.home` (routers/config.py — `expanduser("~")`),
     not the folder the app was opened on, so a warm aimed anywhere else fills
     a pool the first keystroke never reads."""
-    monkeypatch.setenv("HOME", str(tmp_path))
+    _point_home_at(monkeypatch, tmp_path)
     seen = []
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: seen.append(("search", root))
@@ -799,8 +849,10 @@ def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypat
     index_router.run_startup_warm()
     # Same pair of calls the route makes, and pooled under the same index root:
     # a warm that filtered under a different key would fill a second pool.
+    # `filter_corpus`'s `index_root` comes from `enclosing_root(scan_roots(...))`
+    # — canonical_root form, not the caller's raw spelling.
     assert seen == [("search", index_router.runner.canonical_root("~")),
-                    ("filter", str(tmp_path))]
+                    ("filter", index_router.runner.canonical_root(str(tmp_path)))]
 
 
 def test_startup_warm_never_raises(home, tmp_path, monkeypatch):
@@ -851,9 +903,10 @@ def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypat
     index_gitignore._cache.clear()
     # HOME is what the warm aims at; point it at the scanned tree so the warm
     # answers `covered` and actually sweeps.
-    monkeypatch.setenv("HOME", str(src))
+    _point_home_at(monkeypatch, src)
     index_router.run_startup_warm()
-    pool = index_gitignore._cache.get(str(src))
+    # the pool is keyed by canonical_root(src), not the raw literal.
+    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
     assert pool is not None
     assert "noise.log" in pool.ignored
     assert "alpha.txt" in pool.decider
@@ -892,7 +945,7 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     index_router.save_config(cfg)
     index_gitignore._cache.clear()
     # HOME is what the warm aims at, and what the scheduler scans.
-    monkeypatch.setenv("HOME", str(src))
+    _point_home_at(monkeypatch, src)
     index_router.run_startup_scan(start_dir=str(tmp_path))
 
     # Force the uncovered branch rather than racing the worker: the first
@@ -912,7 +965,8 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
     index_router.run_startup_warm()
 
     assert len(calls) == 2, "the warm did not search again after the scan"
-    pool = index_gitignore._cache.get(str(src))
+    # the pool is keyed by canonical_root(src), not the raw literal.
+    pool = index_gitignore._cache.get(runner.canonical_root(str(src)))
     assert pool is not None
     assert "noise.log" in pool.ignored
     assert "alpha.txt" in pool.decider
@@ -1055,7 +1109,9 @@ def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
     the empty string and silently drops the root."""
     body = _client(tmp_path).post("/api/index/config", json={"roots": ["/"]},
                                   headers={"X-Fused": "1"}).json()
-    assert body["roots"] == ["/"]
+    # canonical_root("/") is "/" on POSIX but the drive root ("D:/") on
+    # Windows — still a bare root either way, just not the literal "/".
+    assert body["roots"] == [runner.canonical_root("/")]
 
 
 def test_scanning_reflects_every_run_not_just_the_newest(home, tmp_path):
@@ -1095,13 +1151,19 @@ def test_a_rules_edit_rescans_every_stale_root_not_just_the_first(home, tmp_path
     cfg = load_config()
     cfg.roots = [str(a), str(b)]
     index_router.save_config(cfg)
-    index_router.save_applied_ignore(cfg, str(a))
-    index_router.save_applied_ignore(cfg, str(b))
+    # `save_applied_ignore` trusts its `root` verbatim (only `runner.start`
+    # canonicalizes before calling it in production) — a raw native-separator
+    # literal here would file the fingerprint under a key the route's
+    # `scan_roots`-keyed staleness check can never find, reading as "already
+    # reconciled" instead of stale.
+    ca, cb = runner.canonical_root(str(a)), runner.canonical_root(str(b))
+    index_router.save_applied_ignore(cfg, ca)
+    index_router.save_applied_ignore(cfg, cb)
     body = _client(tmp_path).post(
         "/api/index/config", json={"ignore": ["node_modules", "target"]},
         headers={"X-Fused": "1"}).json()
     assert body["needs_rescan"] is True
-    assert started == [str(a), str(b)]
+    assert started == [ca, cb]
     assert body["rescan_run_ids"] == ["r1", "r2"]
 
 
@@ -1168,8 +1230,10 @@ def test_the_freshness_check_defers_before_it_stamps_the_check_clock(
     index_router._run_freshness_check(str(src))
     assert events == [("waited", index_router.FRESHNESS_DELAY_S, {}),
                       ("checked", str(src))]
-    # ...and the stamp did land, on the far side of the wait.
-    assert str(src) in index_router._freshness_checked
+    # ...and the stamp did land, on the far side of the wait. Stamped under
+    # `enclosing_root`'s canonical match, not the raw `path` the check was
+    # called with (that raw form is what `note_folder_opened` sees above).
+    assert runner.canonical_root(str(src)) in index_router._freshness_checked
 
 
 def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
@@ -1192,13 +1256,17 @@ def test_a_check_that_will_refuse_anyway_never_waits(home, tmp_path,
     # Under no configured root at all.
     index_router._run_freshness_check(str(tmp_path.parent))
     assert waits == []
-    # Under a root that was checked moments ago.
-    index_router._freshness_checked[str(src)] = time.time()
+    # Under a root that was checked moments ago. `_freshness_checked` is
+    # keyed on `enclosing_root`'s canonical match, not the raw path the check
+    # is called with — seeding it under the raw literal would always miss and
+    # every check would read as newly-due.
+    canon_src = runner.canonical_root(str(src))
+    index_router._freshness_checked[canon_src] = time.time()
     index_router._run_freshness_check(str(src))
     assert waits == []
     # ...and the wait IS paid once the root is genuinely due, so the two
     # assertions above are about due-ness and not about a wait that never runs.
-    index_router._freshness_checked[str(src)] -= index_router.FRESHNESS_CHECK_S + 1
+    index_router._freshness_checked[canon_src] -= index_router.FRESHNESS_CHECK_S + 1
     index_router._run_freshness_check(str(src))
     assert waits == [index_router.FRESHNESS_DELAY_S]
 
@@ -1271,7 +1339,7 @@ def test_a_stale_open_folder_gets_its_configured_root_rescanned(
     _write_dirs_index(load_config(), {str(src): 1, str(sub): 1})
     monkeypatch.setattr(index_router.freshness, "QUIET_S", 0.0)
     index_router._run_freshness_check(str(sub))
-    assert started == [str(src)]
+    assert started == [runner.canonical_root(str(src))]
 
 
 def test_a_root_checked_moments_ago_is_not_checked_again(
@@ -1293,8 +1361,11 @@ def test_a_root_checked_moments_ago_is_not_checked_again(
     # root, so checking again buys nothing.
     index_router._run_freshness_check(str(src))
     assert checked == [str(src / "sub")]
-    # ...and it comes back round once the window has passed.
-    index_router._freshness_checked[str(src)] -= index_router.FRESHNESS_CHECK_S + 1
+    # ...and it comes back round once the window has passed. Keyed on
+    # `enclosing_root`'s canonical match, same as the neighbouring tests —
+    # the raw literal was never a key here to begin with.
+    index_router._freshness_checked[runner.canonical_root(str(src))] -= (
+        index_router.FRESHNESS_CHECK_S + 1)
     index_router._run_freshness_check(str(src))
     assert checked == [str(src / "sub"), str(src)]
 
@@ -1498,11 +1569,18 @@ def test_the_models_fencing_is_stripped(answer, expected):
 
 
 def _write_dirs_index(cfg, dirs):
-    """A minimal real index whose dirs.parquet holds {dir: mtime_ns}."""
+    """A minimal real index whose dirs.parquet holds {dir: mtime_ns}.
+
+    Keys go through `canonical_root`: `freshness.indexed_mtime_ns` (and
+    `enclosing_root`) look a directory up by their OWN `norm(abspath(...))`
+    of it, so a row filed under a raw `str(Path)` literal — native-separator
+    on Windows — would silently miss every such lookup."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    from fused_render.index.runner import canonical_root
     from fused_render.index.store import Sink, compact
+    dirs = {canonical_root(d): mtime_ns for d, mtime_ns in dirs.items()}
     shards = os.path.join(cfg.dir, "shards")
     os.makedirs(shards, exist_ok=True)
     sink = Sink(shards, "t", pa, pq, cfg.shard_rows)

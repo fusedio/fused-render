@@ -2752,14 +2752,14 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* ONE block for the two cross-session lists — past chats and published
-     artifacts — because they are two answers to the same question ("what has
-     happened here before?") and stacking them cost the landing page two
-     headings, two 60px gutters and an artifacts section pushed so far down it
-     was below the fold on a short pane. Where there is something in both, the
-     block wears a TAB BAR and shows one list at a time; where only one of them
-     exists it is just that list under its own heading, exactly as before, since
-     a tab bar with one tab is a label pretending to be a control. */
+  /* ONE block for the three cross-session lists — past chats, published
+     artifacts and Claude snapshots — because they are three answers to the same
+     question ("what has happened here before?") and stacking them cost the
+     landing page three headings, three 60px gutters and sections pushed so far
+     down they were below the fold on a short pane. Where two or more of them
+     have something, the block wears a TAB BAR and shows one list at a time;
+     where only one exists it is just that list under its own heading, exactly as
+     before, since a tab bar with one tab is a label pretending to be a control. */
   #lists { margin-top: 28px; }
   #listtabs {
     display: flex;
@@ -2773,7 +2773,7 @@
   /* The tabs ARE the section headings — same 11px uppercase letter-spaced
      micro-type as every other label on this page (.head below), so switching
      lists never changes the shape of the screen. The only thing that marks the
-     active one is ink plus a hairline under it; a pair of pills here would be
+     active one is ink plus a hairline under it; a row of pills here would be
      the loudest object on a landing page whose subject is the composer. */
   .list-tab {
     font: inherit;
@@ -2794,9 +2794,20 @@
   .list-tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
   .list-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .list-tab .tab-count { font-weight: 400; letter-spacing: 0; }
-  /* Tabbed: the bar names both lists, so the per-list headings would say the
-     active tab's label twice. */
+  /* A tab is drawn only for a list that has rows (syncLists), and `display: flex`
+     on the bar means the UA's `[hidden]` rule needs no help here — the buttons
+     set no display of their own. */
+  /* Tabbed: the bar names every list it shows, so the per-list headings would
+     say the active tab's label twice. Snapshots is the exception in shape only —
+     its heading is also the line the retry sits on (#snapshead), so what goes is
+     the LABEL, not the row; the empty row then costs nothing until a failed read
+     puts "try again" back on it. */
   #lists.tabbed #recent .head, #lists.tabbed #artifacts .head { display: none; }
+  #lists.tabbed #snapsheadlabel { display: none; }
+  #lists.tabbed #snaps .head { margin-bottom: 0; }
+  /* Behind a tab the panel starts where the other two do: the 28px gutter below
+     belongs to the block, not to each list inside it. */
+  #lists.tabbed #snaps { margin-top: 0; }
   #recent .head {
     color: var(--faint);
     font-size: 11px;
@@ -2811,7 +2822,12 @@
      and like those rows it is pressable: a row expands to its diff and the one
      action that goes back to it. The SECTION is not pressable: it is a quiet
      static label over that stack, exactly as #recent is, because the list is
-     painted on arrival rather than hidden behind a control. */
+     painted on arrival rather than hidden behind a control.
+     It now lives INSIDE #lists as the third tabbable panel, so the heading below
+     is the untabbed dress only: with recent chats or artifacts also present the
+     tab bar carries the name and this .head keeps just the retry (see the
+     #lists.tabbed rules above). Alone on the page it looks exactly as it always
+     has — heading, then rows. */
   #snaps { margin-top: 28px; padding-bottom: 32px; }
   #snaps .head {
     color: var(--faint);
@@ -3607,24 +3623,29 @@
             </button>
           </div>
         </form>
-        <!-- The two cross-session lists for this target, in ONE block: past
-             chats and every page published from here. Both are read as the
-             landing page mounts, so switching between them is a class change
-             and never a round trip.
-             The TAB BAR only exists when both lists have something in them
+        <!-- The THREE cross-session lists for this target, in ONE block: past
+             chats, every page published from here, and Claude Code's own file
+             checkpoints. All are read as the landing page mounts, so switching
+             between them is a class change and never a round trip.
+             The TAB BAR exists once TWO OR MORE of them have something in them
              (syncLists) — with one list it would be a single tab, which is a
              heading that can be clicked, and the plain .head below is the
-             honest version of that. -->
+             honest version of that. Each tab is drawn only for a list that has
+             rows: a bar showing two of the three is the normal case (snapshots
+             exist only for file targets Claude has actually edited). -->
         <div id="lists">
-          <div id="listtabs" hidden role="tablist" aria-label="Past chats and published pages">
+          <div id="listtabs" hidden role="tablist"
+               aria-label="Past chats, published pages and snapshots">
             <button class="list-tab" type="button" role="tab" id="tab-recent"
                     aria-selected="true" aria-controls="recent">Recent chats</button>
             <button class="list-tab" type="button" role="tab" id="tab-artifacts"
                     aria-selected="false" aria-controls="artifacts">Artifacts<span
                     class="tab-count" id="tabartcount"></span></button>
+            <button class="list-tab" type="button" role="tab" id="tab-snaps"
+                    aria-selected="false" aria-controls="snaps">Claude snapshots</button>
           </div>
-          <!-- Both ship `hidden`: which of them shows (and whether either does)
-               is not known until the two reads answer, and a section that
+          <!-- All three ship `hidden`: which of them shows (and whether any
+               does) is not known until the reads answer, and a section that
                appears and then empties is worse than one that arrives late. -->
           <div id="recent" hidden>
             <div class="head">Recent chats</div>
@@ -3640,25 +3661,31 @@
             </div>
             <div id="artifactslist"></div>
           </div>
-        </div>
-        <!-- Claude Code's own file-history checkpoints for this file (SPEC
-             §34). Ported from the superseded `annotate` template, whose reader
-             (shared/file_history.py) was written annotate-agnostic for exactly
-             this adoption. FILE targets only — the store keys on one absolute
-             file path, so a folder has no chain. LISTED on arrival: the read is
-             ~6 ms with neither enrichment nor exact deltas (see loadSnapshots),
-             so there is nothing left worth hiding behind a click. -->
-        <div id="snaps" hidden>
-          <div class="head" id="snapshead">
-            <span>Claude snapshots</span>
-            <!-- Only ever shown after a failed read: it is the retry, and a
-                 "try again" for something that has not failed is a control for
-                 nothing. -->
-            <button id="snapsretry" type="button" hidden>try again</button>
-          </div>
-          <div id="snapsbody">
-            <div id="snapslist"></div>
-            <div id="snapsnote"></div>
+          <!-- Claude Code's own file-history checkpoints for this file (SPEC
+               §34). Ported from the superseded `annotate` template, whose reader
+               (shared/file_history.py) was written annotate-agnostic for exactly
+               this adoption. FILE targets only — the store keys on one absolute
+               file path, so a folder has no chain. LISTED on arrival: the read is
+               ~6 ms with neither enrichment nor exact deltas (see loadSnapshots),
+               so there is nothing left worth hiding behind a click.
+               A SIBLING of the two lists above rather than a section below them,
+               because it answers the same question they do ("what has happened to
+               this target before?") from a third store — so when more than one of
+               the three has anything to say, they share the one tab bar instead of
+               stacking three headings down the landing page. -->
+          <div id="snaps" hidden>
+            <div class="head" id="snapshead">
+              <span id="snapsheadlabel">Claude snapshots</span>
+              <!-- Only ever shown after a failed read: it is the retry, and a
+                   "try again" for something that has not failed is a control for
+                   nothing. It stays on this line even in the tabbed case, where
+                   the label beside it is the tab's job — see the CSS. -->
+              <button id="snapsretry" type="button" hidden>try again</button>
+            </div>
+            <div id="snapsbody">
+              <div id="snapslist"></div>
+              <div id="snapsnote"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -9869,18 +9896,42 @@ const footEl = document.getElementById("footnote");
 // What the row needs on ONE line, summed by hand. NOT scrollWidth: on a flex row
 // it is floored at clientWidth, and this row also wraps, so an overflowing row
 // quietly gets taller and reports no overflow at all — the exact failure that made
-// this invisible to CSS. The spacer is skipped because it is slack and not
-// content (flex-basis 0 while the row fits, the line break once it does not).
+// this invisible to CSS.
+//
+// TWO THINGS THE SUM HAS TO GET EXACTLY RIGHT, and the first version got both
+// slightly wrong — enough to leave a ~6px band at every stage boundary where the
+// row had already wrapped (Schedule and Send fell to a second line) while this
+// function still reported that it fit (Akshil, 2026-08-20):
+//
+//   1. SEATS vs CONTENT are different questions. The spacer contributes no WIDTH
+//      (flex-basis 0 while the row fits, the line break once it does not) but it
+//      is a flex item like any other, so the browser puts a `gap` on each side of
+//      it. Skipping it from the gap count under-charged the row by exactly one
+//      gap. Every child that is laid out at all takes a seat here; only its width
+//      is conditional. `display: none` is the one thing with no seat — the
+//      screenshot button whenever there is no pane to photograph — and it is
+//      asked of the computed style rather than inferred from a zero offsetWidth,
+//      which cannot tell "not laid out" from "laid out at zero width".
+//
+//   2. SUB-PIXELS count, because the browser's own wrap decision is made in
+//      them. offsetWidth is rounded to an integer, so a row of seven controls
+//      could be under-read by several pixels at exactly the widths where a few
+//      pixels is the whole question. getBoundingClientRect is the fractional
+//      reading, and margins (which offsetWidth never included) come off the
+//      computed style so a later layout tweak cannot silently reopen this gap.
 function composerRowNeed(row) {
   const cs = getComputedStyle(row);
   let need = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
-  let kids = 0;
+  let seats = 0;
   for (const c of row.children) {
-    if (c.classList.contains("spacer") || !c.offsetWidth) continue;  // hidden child, no seat
-    need += c.offsetWidth;
-    kids += 1;
+    const s = getComputedStyle(c);
+    if (s.display === "none") continue;   // not laid out: no width, and no gap either
+    seats += 1;
+    if (c.classList.contains("spacer")) continue;   // a seat, but slack rather than content
+    need += c.getBoundingClientRect().width +
+      (parseFloat(s.marginLeft) || 0) + (parseFloat(s.marginRight) || 0);
   }
-  if (kids > 1) need += (parseFloat(cs.columnGap) || 0) * (kids - 1);
+  if (seats > 1) need += (parseFloat(cs.columnGap) || 0) * (seats - 1);
   return need;
 }
 
@@ -14611,42 +14662,82 @@ function renderRecentSkeleton(list) {
   });
 }
 
-// ── the landing page's two cross-session lists, and the tab bar over them ──
+// ── the landing page's three cross-session lists, and the tab bar over them ──
 //
-// #recent and #artifacts answer the same question about the same target — what
-// has happened here before — from two different stores, so they share one block
-// and, when both have something to say, one tab bar. Neither is the page's
-// subject (the composer is), so the whole thing is allowed to be absent.
+// #recent, #artifacts and #snaps answer the same question about the same target —
+// what has happened here before — from three different stores, so they share one
+// block and, when more than one of them has something to say, one tab bar. None
+// of them is the page's subject (the composer is), so the whole thing is allowed
+// to be absent.
 //
 // The counts are the state: `null` means the read has not answered yet, which is
 // NOT the same as zero — a skeleton is drawn into #recent while the sessions
 // read is in flight, and it has to be on screen to be a skeleton of anything.
 let recentCount = null;
 let artCount = null;
+// Snapshots start at ZERO rather than null, and that asymmetry is the point: the
+// other two are read on every landing, this one exists only for FILE targets
+// (mountSnapshots), so "no panel here" is the default a folder never leaves. The
+// read itself flips it to `null` on the way out ("mounted, in flight" — the panel
+// shows its "reading the version history…" note) and to a count on the way back.
+let snapsCount = 0;
+// A FAILED read is not an empty list: the panel is the only place the retry lives
+// (#snapsretry), so it keeps its tab and stays reachable rather than vanishing
+// with the failure still unanswered.
+let snapsFailed = false;
 // Which list is showing, and it is the BLOCK's state rather than the page's:
 // leaving for a chat and coming back keeps the tab you were on.
 let listTab = "recent";
 
+// The three panels in bar order, with the answer to "has this list anything to
+// show?" for each. Two answers per list, because "worth a tab" and "worth a
+// heading of its own" are not the same question: #recent stands alone while it is
+// still unread (it has a skeleton to stand in for the rows), and #snaps while it
+// is reading or has failed (it has a sentence, and a retry).
+const LIST_PANELS = [
+  {
+    name: "recent", tab: "tab-recent",
+    filled: () => recentCount > 0,
+    alone: () => recentCount === null || recentCount > 0,
+  },
+  {
+    name: "artifacts", tab: "tab-artifacts",
+    // Unread artifacts show nothing: there is nothing to stand in for, and the
+    // section may well never exist.
+    filled: () => artCount > 0,
+    alone: () => artCount > 0,
+  },
+  {
+    name: "snaps", tab: "tab-snaps",
+    filled: () => snapsCount > 0 || snapsFailed,
+    alone: () => snapsCount === null || snapsCount > 0 || snapsFailed,
+  },
+];
+
 function syncLists() {
-  // Tabs only when BOTH lists really have rows: one tab is a heading with a
+  // Tabs once TWO of the lists really have rows: one tab is a heading with a
   // pointer cursor, and the plain .head each section carries is the honest
-  // version of it.
-  const tabbed = recentCount > 0 && artCount > 0;
+  // version of it. `null > 0` is false, so a list still being read never counts —
+  // which is what keeps the bar from flashing in and out as the reads land.
+  const filled = LIST_PANELS.filter((p) => p.filled());
+  const tabbed = filled.length >= 2;
+  // The selected tab may be a list that has just emptied (a revert that removed
+  // the last snapshot, a re-read that found no chats). Fall back to the first one
+  // that does have rows rather than leaving the bar pointing at nothing.
+  if (tabbed && !filled.some((p) => p.name === listTab)) listTab = filled[0].name;
   document.getElementById("lists").classList.toggle("tabbed", tabbed);
   document.getElementById("listtabs").hidden = !tabbed;
-  // `null > 0` is false, which is why the loading case is spelled out: unread
-  // recent chats still show (the skeleton), unread artifacts do not (there is
-  // nothing to stand in for, and the section may well never exist).
-  document.getElementById("recent").hidden =
-    tabbed ? listTab !== "recent" : !(recentCount === null || recentCount > 0);
-  document.getElementById("artifacts").hidden =
-    tabbed ? listTab !== "artifacts" : !(artCount > 0);
-  for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts"]]) {
-    const tab = document.getElementById(id);
-    tab.setAttribute("aria-selected", listTab === name ? "true" : "false");
+  for (const p of LIST_PANELS) {
+    document.getElementById(p.name).hidden =
+      tabbed ? listTab !== p.name : !p.alone();
+    const tab = document.getElementById(p.tab);
+    // A tab for an empty list is a promise of rows that are not there — so the
+    // bar carries only the lists that have some, even when that is two of three.
+    tab.hidden = !p.filled();
+    tab.setAttribute("aria-selected", listTab === p.name ? "true" : "false");
     // Only the selected tab is in the tab order, which is what a tablist means:
     // Tab enters the bar, arrows move inside it.
-    tab.tabIndex = listTab === name ? 0 : -1;
+    tab.tabIndex = listTab === p.name ? 0 : -1;
   }
 }
 
@@ -14654,15 +14745,21 @@ function selectListTab(name) {
   listTab = name;
   syncLists();
 }
-for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts"]]) {
-  const tab = document.getElementById(id);
-  tab.onclick = () => selectListTab(name);
+for (const p of LIST_PANELS) {
+  const tab = document.getElementById(p.tab);
+  tab.onclick = () => selectListTab(p.name);
   tab.onkeydown = (e) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
     e.preventDefault();
-    const other = name === "recent" ? "artifacts" : "recent";
-    selectListTab(other);
-    document.getElementById(other === "recent" ? "tab-recent" : "tab-artifacts").focus();
+    // Arrows walk the tabs that are actually ON the bar, wrapping — a hidden tab
+    // is not a stop, and with two of three shown the pair still toggles.
+    const shown = LIST_PANELS.filter((q) => q.filled());
+    const at = shown.findIndex((q) => q.name === p.name);
+    if (at < 0 || shown.length < 2) return;
+    const step = e.key === "ArrowRight" ? 1 : shown.length - 1;
+    const next = shown[(at + step) % shown.length];
+    selectListTab(next.name);
+    document.getElementById(next.tab).focus();
   };
 }
 
@@ -14918,6 +15015,13 @@ async function pollArtifacts() {
 // once it declines enrichment and the exact deltas, which is the whole argument
 // in `mountSnapshots` / `loadSnapshots` below (with the caching rule).
 //
+// And it is one of the landing page's THREE cross-session lists rather than a
+// section under them: past chats, published artifacts and these checkpoints are
+// three stores answering "what has happened to this target before?", so the
+// panel is a tab in #listtabs whenever another of the three also has rows, and a
+// plain heading over its rows when it is the only one (syncLists). `snapsCount`
+// is this section's half of that contract — see the counts up there.
+//
 // And it is GROUPED BY SESSION, because the version numbers restart in every one
 // (semantic 4 / SPEC FH-4): five chats that edited this file give five chains
 // each beginning at v1, and a flat merged list therefore shows "v2" three times
@@ -14999,13 +15103,17 @@ function renderSnapshots(timeline) {
   if (!list) return;
   snapTimeline = timeline;
   list.textContent = "";
-  // Every absence is answered with the reader's own sentence rather than by
-  // taking the section away. The panel is now something the user OPENED, and a
-  // heading that vanishes under the click that opened it reads as a bug; the
-  // reader already distinguishes "no store on this machine" from "a store with
-  // nothing for this file" in `note`, so the honest thing is to say which.
+  // The COUNT is what decides whether this panel exists at all, exactly as it is
+  // for the other two lists in the block (syncLists): a store with nothing for
+  // this file gets no tab, no heading and no empty state — a sentence explaining
+  // that a feature the user never asked about has no data is noise on a landing
+  // page whose subject is the composer. The reader's own note is still written
+  // below for the failure path, which does keep the panel (it holds the retry).
+  snapsCount = (timeline.available && timeline.versions) ? timeline.versions.length : 0;
+  snapsFailed = false;
   if (!timeline.available) {
     note.textContent = timeline.note || "No Claude Code file history on this machine.";
+    syncLists();
     return;
   }
   // One box per RUN, so a chain is drawn as a chain. The rows inside are in the
@@ -15018,6 +15126,7 @@ function renderSnapshots(timeline) {
     list.appendChild(box);
   }
   note.textContent = timeline.note || "";
+  syncLists();
 }
 
 // One row, plus its expansion when it is the open one.
@@ -15355,12 +15464,18 @@ async function mountSnapshots() {
   // The backend refuses a folder too (agent.py `_snapshots`): the gate is the
   // UX, the module is the guarantee (MD-11).
   await paneReady;
+  // A folder leaves `snapsCount` at its 0, which is how syncLists knows this page
+  // has no snapshots panel to place — no tab, no heading, nothing to hide.
   if (targetNoun !== "file") return;
   snapMounted = true;
-  document.getElementById("snaps").hidden = false;
   // Already read once on this page: repaint what we have rather than spend the
   // round trip again. The list is on screen either way by the time this returns.
   if (snapLoaded && snapTimeline) { renderSnapshots(snapTimeline); return; }
+  // `null` is "mounted and reading": syncLists shows the panel standalone so the
+  // "reading the version history…" note has somewhere to be, and does NOT give it
+  // a tab yet — a tab that appears and then withdraws is worse than a late one.
+  snapsCount = null;
+  syncLists();
   loadSnapshots();
 }
 
@@ -15404,6 +15519,11 @@ async function loadSnapshots() {
     list.textContent = "";
     snapRetryBtn.hidden = false;
     note.textContent = "The snapshots could not be read (" + err.message + ").";
+    // The panel STAYS — a failed read is the one absence that keeps its place in
+    // the block, because the retry beside its label is the only way back from it
+    // (syncLists reads this flag, and gives the panel its tab either way).
+    snapsFailed = true;
+    syncLists();
   }
 }
 

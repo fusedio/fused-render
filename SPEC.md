@@ -1166,12 +1166,63 @@ never imports server).
   project's sessions/settings > the pref > `sonnet`; the template reads it with
   a plain `GET /api/prefs`, like its other `/api/…` reads. Read per request, so
   a change applies without a restart.
-- **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Default model**, **Call log**,
+- **PF-1c** **The Hugging Face section is on this page — the AI tab
+  (§20.5/PF-9a) — and is NOT a preference** (D402). It is a **Log in to
+  Hugging Face** button, it talks to `/api/hf/*` rather than `/api/prefs`, and
+  **this app stores no Hub token at all**: the button drives
+  `huggingface_hub`'s own device-code browser login and hf persists what comes
+  back, in hf's files, with hf's modes, alongside the refresh token hf renews
+  by itself. So there is nothing here to store, mask, validate, or hand a
+  subprocess — and `/api/prefs` carries no `hf` block, because a payload that
+  advertised one would invite a page to write a credential this app would then
+  own.
+- **PF-1d** **The flow** (`server/routers/hf_auth.py`): `POST /api/hf/login`
+  (X-Fused) asks hf for a device code and returns the URL to open and the short
+  code to confirm there, **without waiting** — the middle of a device-code login
+  is a human being. A daemon thread polls hf's token endpoint (`poll_device_token`
+  blocks for the code's lifetime, ~15 min, so it cannot live on a request) and
+  hands the result to hf to persist. `GET /api/hf/auth` is what the page watches
+  — unguarded like every read, and carrying no credential: `{signedIn, account,
+  source: environment|login|null, forcedByVar, pending: {userCode, url,
+  secondsLeft}, error}`. `POST /api/hf/login/cancel` sets a flag the poll thread
+  raises on from hf's `on_pending` hook, which is the only way out of a call
+  parked inside that loop. **A second POST /api/hf/login JOINS the flow in
+  flight** rather than starting another, since two device codes are two codes on
+  the Hub's page with only one of them being polled — the supervisor's
+  join-don't-restart rule. `POST /api/hf/logout` removes the **active token's
+  entry by name** (`_logout_from_token`), never hf's public `logout()`, which
+  deletes every token on the machine and the git credential too: a settings
+  button must not sign the user out of logins it did not create.
+- **PF-1e** **`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` still win, and the page says
+  so instead of showing a dead button.** hf reads those before its own store, so
+  a login made while one is set would save a token nothing would use — both
+  `login` and `logout` refuse with a 409 naming the **variable**, never its
+  value. Emptiness is not force (D148): an exported-but-empty value is ignored
+  by hf and must not lock the button. `account` is the username from a login this
+  process performed, else hf's stored token name with its `oauth-` filing prefix
+  stripped, else null — meaning "signed in but unnameable offline", because a
+  `whoami` per status poll would put a network round-trip behind a settings page.
+- **PF-1f** **Everything downstream reads hf, and there is exactly one reader.**
+  `hf_auth.token()` is `get_token()`; the Hub search calls it (§39/HS-0) and a
+  model download reaches the same answer by calling hf inside the worker, so the
+  two can never disagree about which credential the machine holds. Nothing is
+  cached — hf refreshes an OAuth token in place as it nears expiry, and a copy
+  held here would go stale exactly when it mattered. `supervisor._child_env`
+  writes **no** `HF_TOKEN`; an inherited one is passed through untouched.
+  Consequence worth stating: `huggingface_hub` is now a **core dependency** of
+  the app (hf + `hf_xet` + `filelock`, ~16MB). This is not SPEC AI-2 being
+  widened — that rule keeps ML *frameworks* out of a file explorer's dependency
+  set, and each runner still declares hf for its own venv — but it does end the
+  incidental guarantee that `worker_base` was stdlib-only *because hf was absent
+  from CI*, so that rule is now enforced by reading the module's own imports
+  (`test_ai_worker_base.py`).
+- **PF-1a** The **Render preferences** tab renders its sections in this order:
+  **Appearance**, **Call log**,
   **Accessibility**, and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
-  pins it where it matters). There is **no Tour button**: the tour still runs
+  pins it where it matters). **Default model** and **Hugging Face** are NOT here:
+  they are the **AI** tab (§20.5/PF-9a, D403). There is **no Tour button**: the tour still runs
   itself on a first visit (`maybeAutoStartTour`), because it is onboarding
   rather than a preference. (The spec subsection numbering below is
   organizational, not the visual order.) *(A **Deploy to Fused account**
@@ -1256,7 +1307,17 @@ in-app affordance to gate.
 
 - **PF-9** The page is split into tabs, active tab in the URL
   (default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Tour, unchanged). *(A second **Fused account** tab —
+  Logs/Execution engine/Tour, unchanged).
+- **PF-9a** (D403) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
+  and **Hugging Face** (PF-1c–PF-1f). Neither is about rendering — the same
+  reason the engine picker left this page for /ai-models — and on the Render
+  tab a reader after either one read past four sections answering a different
+  question. They share a tab rather than getting one each because they are one
+  question asked twice: which model, and with whose credentials. The tab is
+  named for that subject and not for its two controls, so a third does not
+  rename it. Render preferences stays the clean-URL default: an unknown `?tab=`
+  still falls back to it, and no redirect is owed to a `/preferences` bookmark
+  — the page it named still exists, with two fewer sections on it. *(A second **Fused account** tab —
   §27's account panel, `?tab=account`, offered only while the PF-8 Deploy
   toggle was on — used to sit alongside Render preferences here, and the
   sidebar footer's signed-in dot pointed at it (formerly AC-1). Both the tab
@@ -5295,10 +5356,18 @@ three weeks ago, and would cost nothing to open.
   words because somebody told to "accept the terms" on an approval-gated repo
   goes looking for a button that is not there; an unrecognised truthy gate is
   read as `manual`, the stricter of the two. **There is no credentials UI and
-  this does not add one**: the token is read where `huggingface_hub` reads it
-  (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `$HF_HOME/token`), the search reply
-  carries only the boolean `authenticated`, and the hover names
-  `huggingface-cli login` rather than offering a box to paste a secret into.
+  this does not add one** — *narrowed by D402*: Preferences has a **Log in to
+  Hugging Face** button (§20/PF-1c), and the search token is
+  `huggingface_hub.get_token()` — hf's own store, hf's own resolution. Read
+  literally the clause still holds: there is **no box to paste a secret into**,
+  because the credential never passes through this app at all. What it was
+  protecting holds unchanged — **the search reply carries only the boolean
+  `authenticated`**, never the token, and the token is never logged — and the
+  gate hover still names where a token comes from rather than being the place you
+  produce one; it points at the login button instead of at
+  `huggingface-cli login` alone. What changed is only that somebody with no token
+  can get one without leaving the app, which is the one step the old wording left
+  them unable to take.
 - **HS-0a** **The menu constrains what can be ASKED; the row filter constrains
   what comes BACK.** They are not the same guarantee: an unfiltered query lets
   the Hub answer with anything it likes, so the supported-tag pass runs over
@@ -5624,6 +5693,29 @@ an AI Models page that could say what was on disk but not what was *running*.
   segments write out of order, so the file is created at its final size and
   filled sparsely, and `st_size` would report a 4.6GB download as complete before
   a byte had arrived.
+
+  **On the FALLBACK path — `snapshot_download`/`hf_hub_download`, not our own
+  segmented fetch — the disk walk alone is not enough either (D405).** `hf_xet`
+  ships in every runner venv and every mlx-community repo is Xet-backed, and Xet
+  delivers bytes in BURSTS: measured on a 481MB repo, `bytes_on_disk` sat on one
+  number for 6 seconds, then jumped ~90MB, then landed the last ~45% all at once
+  on completion. Scaled to a 4.6GB model that reads as "stuck at 98%" for a
+  minute of a perfectly healthy download. `_HubByteTicker` is a `tqdm_class`
+  passed to hf's own downloader that reads its BYTE bars directly — but the
+  outer "Fetching N files" bar hf also hands a `tqdm_class` is the same trap
+  one level further in, since it has no `unit` at all and reporting its
+  per-file `.update(1)` as bytes reproduces the "10 / 11 B" bug this section
+  already fixed once; `unit == "B"` is what tells the two apart. Xet also hands
+  back TWO byte bars — network TRANSFER and disk RECONSTRUCTION — covering
+  close to the same total, so they are tracked separately and the counter
+  reports whichever is FURTHER ALONG rather than their sum, which can read past
+  100%. The tick reports `max(hub counter, disk walk)`, never less than either,
+  and keeps ticking once a second regardless of which is moving — the tick
+  itself is the heartbeat (AI-5h), not whichever number happens to be live. An
+  hf version that reports differently, or ignores `tqdm_class` outright, is
+  silently indistinguishable from a counter that has not started yet: either
+  way the tick falls back to exactly the disk-walk-only number, because a
+  progress refinement must never be able to fail or freeze a download.
 - **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
   Two workers for one capability really do overlap — an eviction's replacement
   starts while the old one is still being killed, a Download runs beside a Load —
@@ -5735,16 +5827,37 @@ an AI Models page that could say what was on disk but not what was *running*.
   then — **carrying the Hub token only when the blob is served by the Hub
   itself**, since a presigned URL already holds its credentials in the query
   string and S3 refuses a request bearing two of them, which made every download
-  by a token-holding user fail over to the slow path — up to
-  **4 `Range` segments per file** with **segments across all files** as
-  the units of work in one pool capped at **8 connections** — the single number
-  that bounds how many sockets a download opens, which a pool per file would
-  multiply out. Segments share one fd and write with `os.pwrite`, and per-segment
-  offsets go to a sidecar in the order that makes them true: snapshot the
-  cursors, **fsync the data, then write the sidecar** — a recorded byte is always
-  a durable byte, so a resume never skips one that was still in flight. The
-  partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
-  resumes one of those by seeking to its length, ours are written out of order,
+  by a token-holding user fail over to the slow path (the token is whatever
+  `huggingface_hub.get_token()` finds in the worker — hf's own store, written by
+  the Preferences login button or by a `hf auth login`; nothing is injected into
+  the worker's environment, §20/PF-1f, D402) — a file at or above the
+  segment floor is split into **fixed `CHUNK_BYTES` (32MB) pieces**, with
+  **chunks across all files** as the units of work in one pool capped at **8
+  connections** (D404) — the single number that bounds how many sockets a
+  download opens, which a pool per file would multiply out. Fixed size rather
+  than the earlier `size / N` equal shares (capped at 4 per file) is what
+  fixed the download's TAIL: four equal shares finish at four different real
+  speeds, and once the fast three are done there is nothing left to hand the
+  slow one, which measured as a 481MB model's last quarter running 80% longer
+  than its first and a 4.6GB model crawling from ~90% to 100% for over a
+  minute. Fixed-size chunks turn a big file into MANY units of work in the
+  shared queue, so an idle worker pulls the NEXT chunk instead of finding
+  nothing assigned to it — a slow connection then delays only its own current
+  32MB, never the tail of the whole download. Chunks share one fd per file and
+  write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
+  that makes them true: snapshot the cursors, **fsync the data, then write the
+  sidecar** — a recorded byte is always a durable byte, so a resume never
+  skips one that was still in flight. **The sidecar carries its own version
+  number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
+  list MEANS — fixed pieces rather than equal shares — so a sidecar written
+  before this existed can have the right etag and size and a self-consistent
+  layout while describing boundaries this build derives differently for the
+  same file, which is exactly the input shape that turns a resume into a
+  silently wrong blob rather than a loudly failed one. Any sidecar whose
+  version does not match, missing included, is discarded exactly like no
+  sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
+  hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
+  are written out of order,
   and handing it one would produce a silently corrupt blob. Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
@@ -6739,7 +6852,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   the bug being fixed.
 - **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
   path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
-  true and three of the four curated models are Qwen3, so an ordinary question
+  true and half the curated models are Qwen (Qwen3.5 since the 2026-08-21
+  refresh), so an ordinary question
   emits a `<think>` block first — hundreds of tokens the caller cannot tell
   apart from the answer, since `/generate` streams whatever the model produces.
   At a few tokens a second on the CPU this runner exists to serve, that is
@@ -6748,10 +6862,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   in the Jinja render context, so a template that never mentions it does not
   read it, and a tokenizer whose signature rejects it outright retries without —
   a model that will not take the hint should still answer, just verbosely. The
-  same class of trap as the version floor beside it: `transformers>=4.51` is
-  what knows a `qwen3` exists, and an older resolution installs perfectly and
-  then fails every Qwen3 Download with `KeyError: 'qwen3'`, which reads as a
-  broken model rather than an environment one version too old.
+  same class of trap as the version floor beside it: `transformers>=5.15` is a
+  release that knows a `qwen3_5` exists, and a 4.x resolution installs perfectly
+  and then fails every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which reads
+  as a broken model rather than an environment a major version too old.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
   knowable from outside the process: **the default torch rows pin the `whl/cpu`
@@ -7468,7 +7582,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   its own state has reason to discount the rest of the brief, so the line says
   only what holds everywhere.
 
-## 43. Single-File App Export — the `.fused` App File (D385, D386, D387)
+## 43. Single-File App Export — the `.fused` App File (D385, D386, D387, D396, D397)
 
 One app, one double-clickable file. Exporting a fused app produces
 `<app name>.fused` — a zip holding `manifest.json` (`fused_app_file: 1`, the
@@ -7525,9 +7639,64 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   read-only machinery of §13.5, not a new mode.
 - **AF-8** The open answers the entry's **embed** URL
   (`/explorer/embed/<entry>`): chrome-free by page-load mode — the app as it
-  is. Rendering the entry records the open (D301), which for a folder outside
-  the workspace is hub registration (`registered_apps.record_open`), so the
-  opened app appears on /apps and in recents through the existing pipeline.
+  is. *(Revised by D396)* The hub identity of an opened `.fused` is the FILE,
+  not its extract dir: `POST /api/appfile/open` records the source path into
+  `~/.fused-render/appfile_recents.json` (the fusedapp template skips the POST
+  under `_preview=1`, so thumbnails never record), and `registered_apps`
+  refuses paths under the extract cache — rendering the extracted entry no
+  longer registers a `linked` card.
+- **AF-10** (D396) Exported `.fused` files are DISCOVERABLE: `/api/apps`
+  merges in every indexed `.fused` on the machine (one duckdb query over the
+  file index's files table, `ext='fused'`, TTL-cached; `git_repos.py`'s
+  screening — `junk_path`, MountGuard, per-row isfile — and its freshness
+  nudge, but NO not-ready states: an unanswerable index is zero exported rows,
+  never a failed listing), unioned with the appfile recents so a just-opened
+  export appears before any rescan. Rows carry the reserved virtual tag
+  `Fused-App` and `kind: "appfile"`; `entry` is the `.fused` path itself
+  (a card click lands on the fusedapp view), `entry_html` null (never
+  live-iframed). The tag prints on the card's own tag line but is NOT a Repo
+  facet chip — that facet groups by source and an app file has none
+  (`repoChips` excludes `kind: "appfile"`; an explicit `?tag=` URL and the
+  search box still reach the rows). Opened exports join Home's recents row
+  (`exported_apps.recent_exported_apps`, recents-only — no duckdb on the
+  Home path).
+- **AF-11** (D396) The exported card's thumbnail is the payload's
+  `preview.png`, streamed by `GET /api/appfile/preview?path=` — a bounded
+  single-member zip read (never an extraction). Without one, a file the user
+  has OPENED before live-renders instead: the card iframes its own fusedapp
+  view under `_preview=1`, whose preview contract is `preview: true` on
+  `POST /api/appfile/open` — reuse an existing extract only (`reuse_only`:
+  never extract fresh, never rebuild, never record recency; the entry iframe
+  carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
+  thumb — a peek must not be the first run of a stranger's pages.
+  Export can BAKE one in: `exportAppFile` captures a tab screenshot
+  (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
+  chosen over DOM serialization because canvas/WebGL apps rasterize blank)
+  when and only when the folder has no authored `preview.png`. The crop
+  source is the card's own thumbnail when it is on screen AND HAS PAINTED
+  the app — a card without a preview.png renders the live app there, so
+  nothing navigates or flashes, but only two card previews start at a time
+  (`createPreviewStartQueue(2)`), so an unpainted thumb is the ordinary
+  state of a card and cropping one would bake an empty box in as the
+  artifact's permanent thumbnail. The card states paintedness on the thumb
+  (`data-capture-ready`, set on the body iframe's load) because the surface
+  that opens the context menu is not the one holding that state; the
+  full-viewport stage is the fallback for a missing, off-screen or unpainted
+  thumb. **The share prompt goes up FIRST**, before the stage is mounted and
+  before anything is awaited: `getDisplayMedia` spends the click's transient
+  user activation, which expires seconds later, so asking after a stage
+  iframe's load-and-settle wait would lose the prompt for every app slower
+  than a beat — and lose it indistinguishably from a dismissal. A tab-capture
+  stream is continuous, so the stage mounts and settles against a stream
+  already running. The prompt itself cannot be silenced — that is
+  getDisplayMedia's contract. The
+  X-Fused `POST /api/appfile/export` variant writes it as
+  `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
+  wins; every capture failure — unsupported, prompt dismissed, blank,
+  over-cap — exports plain: the route drops a too-big screenshot rather than
+  failing the download, where `export_app_file` itself still raises for a
+  caller that meant to supply a still). An injected preview extracts as a
+  real file in the app's read-only extract dir like any other member.
 - **AF-9** `.fused` is an owned file type on all three platforms: macOS
   Owner-rank document type + exported UTI `io.fused.render.app` (conforms to
   `public.data`, not the zip UTI, so archive tools don't claim it); Windows
@@ -7535,3 +7704,237 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   previewable extension — `.fused` IS a registry key now (D390 made it the
   `fusedapp` template's binding), so the D387-era `winopen.extensions()`
   hardcoded seed is gone.
+- **AF-12** (D397) A `.fused` CLONES into the workspace: an "Export App"-style
+  preview-header button copies the payload to `<workspace>/local/<slug>` as an
+  ordinary editable app folder and navigates to it. `GET /api/appfile/clone`
+  is the read-only probe the button reads on mount (one bounded manifest read
+  + one isdir → `{name, slug, path, cloned}`); the X-Fused
+  `POST /api/appfile/clone` does the copy. The source is `open_app_file`'s
+  extract, so the one hardened extractor runs (a never-opened file extracts on
+  the way through) and the 0444 payload bits are lifted to 0644 IN STAGING —
+  a clone that shipped them read-only would be an uneditable development copy.
+  Staged inside the destination tag dir so the claim is a same-filesystem
+  rename. **The destination folder EXISTING is what "already cloned" means** —
+  no records file — so the button reads "Go to local version" and only
+  navigates, a second Clone is a reporting no-op that never overwrites the
+  user's edits and never makes a suffixed second folder, and the answer
+  survives a restart, a moved `.fused` and a re-export. Named cost: an
+  unrelated `local/<slug>` folder reads as this app's clone. The manifest
+  `name` is attacker-controlled zip data and reaches the filesystem only
+  through `appfile._slug` (no separator, dot or drive letter survives it,
+  shared with the extract cache key); an empty name falls back to the FILE
+  STEM, not a shared `app` literal, so two unnamed app files do not collide on
+  one folder. Plain files — no `git init`, unlike the showcase Clone, which
+  has an upstream to diff against. Header-only, so an embed-opened `.fused`
+  (a Finder double-click) shows no Clone: reaching it means opening the file
+  in the explorer.
+
+## 44. MCP App Template — An App's Entrypoints as Claude Tools (D401)
+
+An app in this explorer is a page plus the Python it drives: `index.html` calling
+`fused.runPython("./mail.py", {op: "send"})`. The page is a UI over those
+entrypoints, and the entrypoints are the capability — they send the mail, file the
+ticket, query the local database, on this machine with this user's credentials. A
+Claude session on the same machine cannot reach any of it, and the gap is not the
+code, it is the absence of a **declaration** of which entrypoints are worth
+calling and how.
+
+The `mcp` mode is that declaration's editor. It reads the app folder, proposes
+tools (with `fused.ai`), lets the user edit them, writes them to `mcp.toml` in the
+folder, and registers the folder with the MCP host — after which
+`fused app serve <folder>` answers `tools/list` with the curated tools **with this
+app not running at all**. The serving half lives in the `fused` package
+(openfused `spec/serve/app-mcp.md`); this app owns the authoring half, and the
+manifest is the entire contract between them.
+
+- **MC-1** **The gate is the APP SHAPE, and it is folder-only** (CT-12,
+  `templates/mcp/condition.py`). A directory qualifies when it holds a **tagged
+  entry page** — the first non-hidden top-level `.html` (name order) carrying
+  `<meta name="fused-app">`, the marker being the only signal (**D301**) —
+  **and** at least one top-level `.py` with a top-level `def main`: the page is
+  what makes the Python an app's entrypoints rather than someone's library, and
+  an entrypoint is what there is to curate. Either half alone is a no — a page
+  with no `main()` would open a panel with nothing in it. The marker check is
+  `shared/app_entry.has_fused_meta`, the same rule the `claude` and `app`
+  templates resolve an entry with, so no two surfaces can disagree about which
+  page an app folder has. Folder-only like `git` (GT-2) and for the same shape of
+  reason: the manifest sits at the folder's root and covers the folder, so a file
+  has no separate question to ask, and the file sidebar BORROWS the parent
+  folder's entry (`apps/explorer/lib/dir-mode.ts`) exactly as it borrows Git's.
+  Mount-backed paths are refused before any read (GT-4's rule): the panel reads
+  every `.py` in the folder and writes a file into it, which is the pattern that
+  wedges a mount.
+- **MC-1a** **This gate LISTS one directory level, which no peer gate does, and
+  the listing serves both halves.** There is no constant name to probe for on
+  either side: the page is whatever the author tagged (D301 — `index.html` has no
+  special status, not even as a tiebreaker) and the entrypoint may be called
+  anything, which is the whole reason a curation panel exists. So one
+  `os.scandir` collects the top-level `.html` and `.py` names and the halves run
+  cheapest-first — a folder with neither kind in its NAMES is refused before a
+  single file is opened, and a folder with no `.py` never has a page read. The
+  reads are bounded (at most 24 files per half, first hit wins, 4 KiB for the
+  marker) and it is never a walk. A pathological folder whose only tagged page or
+  only `main` sits past the cap answers False: the gate is the UX and
+  `inspect_app.py` — which resolves the entry through `app_entry.entry_html`
+  itself, uncapped, once, on demand — is the guarantee (MD-11).
+  `tests/test_mcp_condition.py` pins the ordering and the caps.
+- **MC-1b** **An `index.html` `isfile` probe was tried first, and it was cheaper
+  and wrong.** One stat per directory is exactly what a peer gate costs, and it
+  bought two defects: a folder whose tagged entry is `mail.html` got no MCP pill
+  at all, and a folder with an untagged `index.html` beside a tagged `mail.html`
+  passed the gate while the panel drew its pin hints out of the wrong file. D301
+  deleted the name rule (`index.html`, else the first html) precisely because it
+  was a guess about intent read off a filename; a name rule kept for its I/O cost
+  is that guess sneaking back in, and this section recording it is the reason it
+  does not come back a third time.
+- **MC-2** **The panel reads the folder by AST, never by importing it**
+  (`templates/mcp/inspect_app.py`). These are the folders whose modules open token
+  files, hit a keychain, or talk to a localhost service at import time, so
+  importing one to list its parameter names would run all of it. One `main(path)`
+  returns the whole surface: per top-level `.py` its entrypoints (names,
+  signatures, annotations, defaults, docstring summaries), the page's
+  `runPython` call sites with their literal arguments, the resolved `fused`
+  executable, the current manifest, and the MC-4 drift verdict. It is a read: the
+  write half is a separate module (the `git` view's `log.py`/`ops.py` split, GT-12).
+- **MC-2a** **The page the hints come from is the TAGGED entry**, resolved by
+  `shared/app_entry.entry_html` (D301) — not `index.html`. Uncapped, unlike the
+  gate: this is one on-demand read of a folder the user has already opened.
+- **MC-2b** **The page's call arguments are a HINT, and they are what makes the
+  proposal good.** `runPython("./mail.py", {op: "send"})` is the author already
+  telling us that `mail.py` is a dispatcher and `send` is one of its operations —
+  which is exactly one curated tool with `op` pinned. Extraction is a regex plus a
+  brace scan over the page, deliberately not a JS parser: a missed call site costs
+  a suggestion the user can add by hand, and nothing here reaches the manifest
+  without passing through the editor.
+- **MC-3** **`mcp.toml` in the app folder is the contract, and the panel writes
+  exactly what the server will accept** (`templates/mcp/manifest.py`). Per
+  `[[tool]]`: `name`, `description`, `file`, `entrypoint` (default `main`),
+  `[tool.pinned]`, and a `signature` snapshot. Validation is the SERVER's own rule
+  set — identifier names, a `.py` inside the folder, an entrypoint that exists,
+  unique names, identifier pin keys — enforced here so a typo is a refusal on the
+  keystroke rather than a registration that fails inside Claude. The write
+  replaces the `[[tool]]` array and nothing else (comments and unrelated tables
+  survive), is verified by re-parsing the rendered text before it replaces the
+  original, and is atomic. Strings are encoded with `json.dumps`, whose escape
+  grammar a TOML basic string shares — never a `.replace()` chain.
+- **MC-3a** **The filename is `mcp.toml`, NOT `openfused.toml`.** `fused`'s
+  project resolution walks up from the cwd looking for that second name, so an app
+  folder carrying it would start resolving as a *project* for every command run
+  inside it. An app must stay inert to that walk-up, and a dedicated MCP-specific
+  file is also readable on its own terms.
+- **MC-4** **Drift is a SNAPSHOT COMPARISON, and it is this app's business
+  alone.** The manifest records the entrypoint's signature as it was at curation
+  time; `inspect_app.py` re-derives it and reports `ok` / `changed` / `missing`
+  (the file or the entrypoint is gone) / `unknown` (a hand-written manifest with no
+  snapshot). The server IGNORES the field — it derives each tool's schema from the
+  current source at startup, so a drifted tool keeps working as declared, which is
+  why this is a banner with a re-curate affordance and not a blocker. Saving
+  re-records the snapshots, so Save is also the fix.
+- **MC-5** **Registration goes through the existing Claude-config MCP module,
+  and pins the CLI THIS APP EXPORTED.** The panel POSTs
+  `/api/claude-config/mcp` (`action=add`, name `<folder>-mcp` — suffixed, because
+  the name is read in a list of the user's own servers where the folder is the
+  identifying half; a `fused-app-` prefix filed every app under one word and put
+  the identity past where anyone reads. Server json
+  `{command: <exported fused>, args: ["app", "serve", <abs folder>]}`) — the same
+  module the Claude Config page uses, which owns the `claude mcp` CLI, the
+  `--scope user` choice and the name guard. There is deliberately no second way to
+  write an MCP host entry. When no CLI is available, Register is DISABLED with the
+  reason stated: an entry whose `command` does not exist fails inside Claude,
+  where the user cannot see why.
+- **MC-5a** **The `fused` path comes from `appenv.fused_cli_dir()`, NEVER from a
+  PATH lookup** (**D334**). That env var is the directory the server exported
+  after vetting its own interpreter's CLI and baking `FUSED_ENV` — the same signal
+  the `claude` template uses to decide whether to promise the command at all.
+  `shutil.which("fused")` was what this did first, and it is the exact mechanism
+  D334 replaced: on a machine whose app venv lacks the `[fused]` extra but whose
+  PATH carries some other `fused` (a pipx shim, another project's venv), the panel
+  baked that unvetted binary into a **global** `~/.claude.json` entry, to be run
+  later with no `FUSED_ENV` and to fail where nobody is looking. The registration
+  target is a global, durable, unattended command; deriving it from ambient PATH
+  is the one place that matters most and the one place it was done.
+- **MC-5b** **A registered server computes its tools on the interpreter PAGE
+  runs use** — the wrapper D334 writes exports `OPENFUSED_APP_SERVE_PYTHON`
+  (`fusedcli._app_serve_python`), and `fused app serve` (>= 2.9.3b7) makes it its
+  compute backend's `python_executable`. The value is
+  `envinstall.script_python()` — the SAME call `engine.get_backend()` passes for
+  page runs, resolved to `sys.executable` when it answers None (D214: "ours",
+  which is what the backend falls back to), never a hardcoded path and never a
+  `realpath` of a venv python, since that names the base interpreter and so keys
+  a different environment. Interpreter identity is half the venv cache key, so
+  equal inputs mean a tool RESOLVES the environment the page already built
+  instead of filling a parallel one nothing else reads — and a tool whose folder
+  declares no dependencies runs on the app's interpreter rather than in a bare
+  stdlib venv. It rides the wrapper rather than the registration entry's `env`
+  because the wrapper is rewritten on every server start (so a 3.12 that only
+  appears later takes effect on the next one) while a `~/.claude.json` entry is
+  written once and lives forever; it is a default (`[ -n … ] || …`), so an
+  explicitly set value still wins. An older engine ignores it silently, which is
+  why the pin carries a floor (test_the_fused_pin_reads_the_app_serve_python_seam).
+- **MC-6** **There is no gating layer beyond the MCP host's own per-call
+  approval.** Every curated tool is callable, because the person who curated it is
+  the person the host will ask. A second confirmation here would only be a false
+  sense of one.
+- **MC-7** **AI curation is a PROPOSAL and an optional one, and it names
+  `sonnet`.** The model choice is deliberate rather than inherited: omitting
+  `model` resolves to the user's default-model preference (Haiku where they have
+  none), and this is the panel's one hard reasoning task — read a folder's
+  signatures and its page's call sites, then decide which entrypoints deserve to
+  be tools and which of their parameters the page has already fixed. A weaker
+  model answers with one tool per function and nothing pinned, i.e. the curation
+  the user would have to redo by hand. `effort` stays `low` (a bounded read, not
+  a long think) and on a model that honours it now actually applies.
+
+  The model is handed the reduced surface (names, signatures, docstrings, page
+  call arguments — never
+  file contents) and answers with a tool array; every field lands in the editor
+  and nothing reaches the folder until Save. A pin the model invents for a
+  parameter that does not exist is dropped rather than written, since the runner
+  would silently ignore it and the operator would believe it enforced. Every
+  `fused.ai` rejection (`ai_unavailable`, `model_loading`, the rest) is a status
+  line, not a broken panel: manual entry is the full-capability path, and this app
+  runs on machines with no Claude CLI at all.
+- **MC-8** **A PIN KEEPS ITS TYPE, from the panel to the entrypoint.** The
+  manifest is TOML and the server hands the pins to the entrypoint as JSON
+  (`_params.json`), so a `dry_run: bool = False` pinned "off" has to land as
+  `dry_run = false`. The panel derives the kind from the annotation first and the
+  default's literal shape second (`pinKind`), seeds the box with the parameter's
+  own default already typed (`seedPin`), and offers a boolean as two values
+  rather than as free text. The bug this fixes was not cosmetic: a pinned `False`
+  was written as the STRING `"False"`, which the server passes through verbatim
+  and Python reads as **truthy** — a pinned-off safety flag behaving as on.
+  `manifest.py` refuses a value with no JSON equivalent, `None` included: TOML has
+  no null, and a null pin used to be written as the string `"None"`.
+- **MC-9** **A registration failure reaches the user, and nothing is clickable
+  before there is a report.** `/api/claude-config/mcp` answers HTTP 200 with
+  `{ok: false}` for its own refusals, and `add`/`remove` carry the claude CLI's
+  `{stdout, stderr}` with no `error` key at all — so the panel reads
+  `error || stderr || stdout` and treats a false `ok` from `action=list` as the
+  warning it is, rather than as an empty server list. The action buttons are
+  disabled in the markup and enabled only by a successful load, so a click before
+  or after a failed one cannot dereference a report that is not there.
+- **MC-10** **THE PANEL PAINTS BEFORE THE REGISTRATION PROBE ANSWERS.** That
+  probe is `claude mcp list`, and that command health-checks every MCP server the
+  user has configured by connecting to each one: **10.9 s** wall on a machine
+  with a dozen claude.ai connectors. `load()` awaited it before the first
+  `render()`, so the panel sat on "Loading…" for eleven seconds holding an editor
+  whose contents were already in hand — and paid it again on every reload.
+  Nothing in the editor depends on the answer, so the editor renders as soon as
+  `inspect_app.py` returns and the probe fills its own line in afterwards. Only
+  the registration control waits, and it says what it is waiting for. A second
+  load can start inside that window, so the probe carries a sequence number and a
+  stale answer is dropped rather than painted over the fresh one.
+- **MC-11** **The toolbar is TWO VERBS, and everything else sits where it acts.**
+  Curate and Save operate on the whole curated set, so they are the toolbar;
+  `+ add tool` appends ONE row and therefore lives at the end of the list, where
+  that row will appear; the registration state is a line above the footer, because
+  it reports as much as it acts, and reads `◉ Registered in Claude` /
+  `○ Not registered` with the server name beside it. **There is no Reload
+  button**: Save re-reads the folder itself, and the two states that wanted a
+  manual reload now offer the retry themselves — a failed `inspect_app.py` puts a
+  `retry` affordance in the status line, and a failed registration probe makes its
+  own line re-probe on click rather than toggling a state nobody knows. Four
+  registration states, not two: registered, not registered, still checking
+  (unclickable), and could-not-tell (re-probes). A control that offered a
+  direction before the answer was in would be asserting the opposite of what
+  might be true.

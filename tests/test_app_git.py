@@ -83,6 +83,13 @@ def test_commit_records_changes_and_noops_when_clean(workspace):
     assert not app_git.commit(str(d / "index.html"), "Edit index.html")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.fork() (and os.register_at_fork with it) does not exist on "
+           "Windows — there is no fork() there at all, so a forked child "
+           "cannot hold a stale copy of parent state, which is exactly the "
+           "hazard this test simulates and the reason app_git spawns via "
+           "posix_spawnp rather than fork+exec in the first place")
 def test_commit_survives_a_fork_hostile_process(workspace):
     # The server ends up with libproj resident (the fused-engine availability
     # probe imports it), and PROJ's pthread_atfork child handler SIGSEGVs
