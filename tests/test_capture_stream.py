@@ -271,11 +271,14 @@ def test_the_socket_closing_ends_the_recording_and_keeps_the_file(backend,
         ws.send_bytes(b"some-real-video")
         ws.send_text("eos")
         ws.receive_text()
-    # No stop request was ever sent; the close was the ending.
+    # No stop request was ever sent; the close was the ending. Polled, because
+    # the endpoint's teardown runs AFTER the client's socket is gone — a busy
+    # box can put the assertions here before the server has finalised.
+    assert _settled(started["jobId"])["state"] == "done"
+    # `stop` pops the session before it reports the row, so a done row means the
+    # listing has already stopped showing a recording nothing is writing.
     assert client.get("/api/capture").json()["active"] == []
     assert os.path.getsize(started["path"]) == len(b"some-real-video")
-    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
-    assert row["state"] == "done"
     # And the page's stop, if it lands anyway, gets the same answer rather than
     # a 404 about its own recording.
     late = client.post(f"/api/capture/{started['id']}/stop", headers=H)
