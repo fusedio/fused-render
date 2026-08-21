@@ -2159,10 +2159,23 @@ def _handler(generate, streaming):
             at all, and what is read gets DRAIN_TIMEOUT_S to arrive.
 
             Returning False means the connection is NOT safe to keep alive —
-            an over-long, half-sent or unparseable body is still in the socket,
-            and the next request read off it would consume that as its
-            request-line. The caller closes instead.
+            an over-long, half-sent, chunked or unparseable body is still in
+            the socket, and the next request read off it would consume that as
+            its request-line. The caller closes instead.
             """
+            # Content-Length is the only framing this can drain. A chunked body
+            # is length-prefixed per chunk, and BaseHTTPRequestHandler does not
+            # decode it — self.rfile is the raw socket, so following it means
+            # parsing the chunk framing here. Transfer-Encoding also OVERRIDES
+            # Content-Length when both are sent (RFC 9112 s6.1), so a
+            # Content-Length read alongside one would stop in the wrong place.
+            # Nothing legitimate POSTs chunked to this worker (small JSON, sent
+            # with a length), so treat any Transfer-Encoding as undrainable and
+            # end the connection rather than guess where the body stops.
+            # Presence, not truth: an empty `Transfer-Encoding:` is malformed
+            # framing either way, and `.get()` would read it as absent.
+            if "Transfer-Encoding" in self.headers:
+                return False
             raw = self.headers.get("Content-Length")
             try:
                 remaining = int(raw) if raw else 0

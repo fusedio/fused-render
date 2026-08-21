@@ -182,6 +182,78 @@ def test_an_oversized_preauth_body_is_refused_without_reading_it(base):
     assert b"close" in data.lower(), data
 
 
+@pytest.mark.parametrize("framing", [
+    # The plain case: chunked, no Content-Length at all.
+    pytest.param(b"Transfer-Encoding: chunked\r\n", id="chunked"),
+    # Malformed-but-present, which a truthiness check on the header would read
+    # as absent and then drain zero bytes of.
+    pytest.param(b"Transfer-Encoding:\r\n", id="empty-transfer-encoding"),
+    # Both framings at once — the smuggling shape. Transfer-Encoding wins, so
+    # a Content-Length read would stop 4 bytes in and leave the rest queued.
+    pytest.param(b"Transfer-Encoding: chunked\r\nContent-Length: 4\r\n",
+                 id="transfer-encoding-and-content-length"),
+])
+def test_a_refused_body_this_cannot_frame_ends_the_connection(base, framing):
+    """A chunked body sends NO Content-Length, so "nothing to drain" is the
+    wrong reading of its absence.
+
+    BaseHTTPRequestHandler hands us the raw socket; it does not decode chunked
+    request bodies. So the chunk framing is still queued after the 403, and on
+    a kept-alive connection the next request-line read off that socket is the
+    chunk-size line — `2` — which answers the client's real request with a 400.
+    The drain cannot follow that framing, so it must not claim it did: the
+    refusal goes out with Connection: close and the client reconnects.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            # (1) refused POST. `hi` in one chunk, then the terminator.
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Type: application/json\r\n"
+                + framing +
+                b"\r\n"
+                b"2\r\nhi\r\n"
+                b"0\r\n\r\n")
+            # (2) a VALID request behind it, as a keep-alive client would send.
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"\r\n")
+            data = _read_all(s)
+
+        # ...and the worker is still serving: the close is this connection
+        # ending, not the handler thread wedged on a body it cannot read.
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"Connection: close\r\n"
+                b"\r\n")
+            again = _read_all(s)
+    finally:
+        server.shutdown()
+
+    statuses = re.findall(rb"HTTP/1\.[01] (\d{3})", data)
+    assert statuses[:1] == [b"403"], data
+    assert b"close" in data.lower(), data
+    # The bug, named: `2` read as the next request-line. That reply carries no
+    # status line of its own — a request-line this malformed leaves
+    # request_version unset, so BaseHTTPRequestHandler answers HTTP/0.9-style
+    # with the error page alone — which is why it has to be matched on text.
+    assert b"Bad request syntax" not in data, data
+    # And the request the client actually sent went unanswered: one response on
+    # this connection, not two.
+    assert len(statuses) == 1, data
+    assert b"200" in re.findall(rb"HTTP/1\.[01] (\d{3})", again), again
+
+
 def test_a_preauth_body_that_stops_early_does_not_park_the_thread(
         base, monkeypatch):
     """The other axis: a length UNDER the cap, so it is read — but the client
