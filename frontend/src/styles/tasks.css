@@ -1275,3 +1275,23 @@ button.tasks-caret,
   white-space: nowrap;
   opacity: 0.85;
 }
+
+/* ---- "and that one was stopped" --------------------------------------------
+   A run the user stopped settles in Done — the stop was asked for, so it is an
+   outcome and not a fault — and the lane's ring is then the same green ring a
+   completed run wears. This is the word that closes that gap
+   (tasks-lib.outcomeTag), on the List row and in the Board card's foot.
+
+   Deliberately the SAME register as the next-run chip above: 11px, muted, one
+   word, no border and no background. A pill would make it the loudest thing on
+   a row whose point is the title, and the three arrangements of an unread mark
+   this page has already been through all ended the same way — the card has room
+   for words, not for another badge. The upright figures are irrelevant here but
+   inherited by sitting in the same rule, which is the point: one register. */
+.tasks-row-outcome {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  opacity: 0.85;
+}

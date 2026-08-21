@@ -80,6 +80,7 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  outcomeTag,
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
@@ -1410,6 +1411,9 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
+  // ...and the one word a settled lane cannot say: that the last run was
+  // STOPPED rather than finished (tasks-lib.outcomeTag).
+  const outcome = outcomeTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -2065,6 +2069,14 @@ function TaskNode({
             one time slot and this is a different question, so it is marked
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
+        {/* The stop, in the same quiet register as the chip beside it. Before
+            the next-run chip and the time, so the row reads outcome-then-future:
+            "Stopped · next in 2h · 4m ago". */}
+        {outcome && (
+          <span className="tasks-row-outcome" title={outcome.title}>
+            {outcome.text}
+          </span>
+        )}
         {soon && (
           <span className="tasks-row-next" title={soon.title}>
             {soon.text}
@@ -2761,6 +2773,11 @@ function TaskCard({
   const run = showsRowActions(task) ? taskRunIntent(task) : null;
   // The run still to come, when this card's lane does not already order by it.
   const soon = nextRunChip(task);
+  // ...and the one word the Done lane cannot say on its own: that this card's
+  // last run was STOPPED rather than finished (tasks-lib.outcomeTag). Same
+  // function the List row asks, so the two views cannot describe one run
+  // differently.
+  const outcome = outcomeTag(task);
   // The lane this card is IN. Not passed down: `groupByColumn` files every card
   // by `taskColumn`, so asking it here is asking the same function that decided
   // which lane header the card is sitting under — a prop would be a second
@@ -2918,10 +2935,18 @@ function TaskCard({
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
             goes rather than leaving an empty row of padding. */}
-        {(showProject || soon) && (
+        {(showProject || soon || outcome) && (
           <span className="schedule-tv-card-foot">
             {showProject && (
               <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+            )}
+            {/* The stop. In the foot rather than the head, because it is a fact
+                about the run this card just did — like the folder it ran in and
+                the run ahead — and not another symbol competing with the title. */}
+            {outcome && (
+              <span className="tasks-row-outcome" title={outcome.title}>
+                {outcome.text}
+              </span>
             )}
             {/* Same fact, same function, same words as the List row's
                 (tasks-lib.nextRunChip): a settled card whose task is due again

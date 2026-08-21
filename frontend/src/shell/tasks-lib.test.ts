@@ -64,6 +64,7 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  outcomeTag,
   nextRunAt,
   openMessageHref,
   openThreadIntent,
@@ -4209,10 +4210,11 @@ describe("the folder chip on a row and a card", () => {
   });
 
   it("takes the whole chip away, not the name inside it", () => {
-    // On the card the chip is the only thing in the foot, so the foot goes with it
-    // rather than leaving a line of padding.
+    // On the card the foot holds the chip, the run ahead and the outcome word,
+    // so it is drawn when ANY of the three has something to say and goes
+    // entirely when none of them does — rather than leaving a line of padding.
     expect(CARD).toMatch(
-      /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
+      /\{\(showProject \|\| soon \|\| outcome\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
     // The path is still on the row itself, so nothing is unreachable: the row's
     // `title` is the task's own, and the chip's tooltip was never the only copy.
@@ -6322,6 +6324,58 @@ describe("sortByLane", () => {
 });
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
+
+describe("outcomeTag: the word the Done lane cannot say", () => {
+  const AT = Math.floor(Date.parse("2026-08-16T09:00:00") / 1000);
+
+  it("says Stopped for a run the user ended", () => {
+    // A stop settles in Done (it was asked for, so it is an outcome and not a
+    // fault) and wears the same green ring a completed run does — so without a
+    // word, the card cannot say the work did not finish.
+    const t = task({
+      status: "done",
+      messages: [msg({ at: AT, ran_at: AT, state: "sent", turn: "cancelled" })],
+    });
+    expect(outcomeTag(t)!.text).toBe("Stopped");
+    expect(outcomeTag(t)!.title).toContain("stopped");
+  });
+
+  it("says nothing about a run that finished, failed, or is still going", () => {
+    // Every other outcome is already carried by the lane or by the ring, and a
+    // second mark for a fact the row already states is the double-signalling
+    // this page keeps removing.
+    for (const turn of ["done", "idle", "unknown", ""]) {
+      const t = task({
+        messages: [msg({ at: AT, ran_at: AT, state: "sent", turn: turn as never })],
+      });
+      expect([turn, outcomeTag(t)]).toEqual([turn, null]);
+    }
+  });
+
+  it("reads the NEWEST started run, so an old stop is history", () => {
+    // The tag describes the run the status is about. A stopped run under a
+    // later completed one is not what the lane is reporting, and labelling the
+    // card Stopped there would put the word under a finished reply.
+    const t = task({
+      status: "done",
+      messages: [
+        msg({ message_id: "MSG-002", at: AT + 3600, ran_at: AT + 3600, turn: "done" }),
+        msg({ message_id: "MSG-001", at: AT, ran_at: AT, turn: "cancelled" }),
+      ],
+    });
+    expect(outcomeTag(t)).toBe(null);
+  });
+
+  it("says nothing on a task that has never run", () => {
+    // `pending` has not started, so there is no outcome to name — the belt to
+    // activeMessage's braces, and what keeps a projected occurrence quiet.
+    const t = task({
+      status: "upcoming",
+      messages: [msg({ state: "pending", turn: "" })],
+    });
+    expect(outcomeTag(t)).toBe(null);
+  });
+});
 
 describe("nextRunChip", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;
