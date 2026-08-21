@@ -138,7 +138,62 @@ def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.
     assert client.put("/api/prefs", json={"nope": 1}, headers=FUSED).status_code == 400
+
+
+# -- indexing_enabled -------------------------------------------------------------
+
+
+def test_indexing_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default ON (absent key => enabled) — the opposite polarity from reader.
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is True
+    body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
+    assert body["indexing"]["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "indexing_enabled"
+    ] is False
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is False
+    assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
+        "indexing"
+    ]["enabled"] is True
+
+
+def test_put_rejects_bad_indexing_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"indexing_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
     assert not (home / "prefs.json").exists()
+
+
+def test_indexing_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
+    assert body["reader"]["enabled"] is True
+    assert body["indexing"]["enabled"] is False
+
+
+def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
+    """The behavior contract: a scan running at the moment of toggle-off is
+    cancelled outright, using the same `cancel` sentinel `runner.cancel`
+    writes — not merely refused for the future."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+
+    cfg = load_config()
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    started = runner.start(cfg, root)
+    run_id = started["run_id"]
+    run_dir = os.path.join(cfg.runs_dir, run_id)
+    assert not os.path.exists(os.path.join(run_dir, "cancel"))
+
+    client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED)
+
+    assert os.path.exists(os.path.join(run_dir, "cancel"))
 
 
 def test_default_model_defaults_to_unset_and_round_trips(tmp_path, monkeypatch):

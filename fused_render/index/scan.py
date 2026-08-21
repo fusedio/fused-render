@@ -167,6 +167,17 @@ def _child_init(run_dir, no_cache):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from concurrent.futures import ThreadPoolExecutor
+
+    # Local import: `worker` imports `run_scan` from this module at module
+    # load time, so importing `worker` back at this module's top level would
+    # be a cycle. Inline it here instead, same as the pyarrow imports above.
+    from fused_render.index.worker import _set_background_io_policy
+    # The man page says a child inherits the parent's I/O policy across
+    # fork/exec, and on Windows background mode is not inherited at all, so
+    # this is cheap insurance for every mp-spawn pool child, not just the
+    # detached worker process itself.
+    _set_background_io_policy()
+
     with open(os.path.join(run_dir, "spec.json")) as f:
         spec = json.load(f)
     cfg = IndexConfig.from_dict(spec.get("config") or {})

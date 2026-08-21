@@ -913,7 +913,8 @@ def _packs_to_decode(regions, duration):
     `duration` is the NUMBER of seconds decoded, never the row's `total` — the
     two differ for a recording so short it rounds to zero, where `total` is None
     (indeterminate, which is what the row should show) and this arithmetic needs
-    0.0. The wording is `parakeet_mlx`'s because the split is: handing the None
+    0.0. The wording came from the withdrawn `parakeet_mlx` runner (D406)
+    because the split is: handing the None
     on made the only pack `[(0.0, None)]`, and the speech sum over the packs then
     raised a TypeError out of a file the loop below would have skipped in one
     line.
@@ -978,7 +979,8 @@ def _transcribe_regions(audio, packs, fetched, task, language, initial_prompt,
     each a list of regions whose speech that call is handed CONCATENATED.
 
     **`total` and `duration` are the same seconds in two currencies**, and the
-    split is `parakeet_mlx/worker.py`'s, ported rather than reinvented: `total`
+    split came from the withdrawn `parakeet_mlx/worker.py` (D406), ported
+    rather than reinvented: `total`
     is what the ROW carries and is None for a recording too short to round to a
     tenth of a second, because an indeterminate bar is the honest rendering of
     "no length worth showing"; `duration` is the arithmetic, and is 0.0 there.
@@ -1281,11 +1283,12 @@ def _words_in_original_time(pack, segment, at, until):
     is the honest rendering of "this word is here and its span is not known";
     a missing word renders as a hole in the sentence.
 
-    `probability` is dropped along with the logprobs and temperatures beside it,
-    for `parakeet_mlx/worker.py`'s reason: it is an engine-tell. Whisper's DTW
-    alignment has a per-word probability and a transducer's per-token confidence
-    is a different number measuring a different thing, so publishing it would
-    make the reply depend on which engine ran (AI-10c). `word` keeps the
+    `probability` is dropped along with the logprobs and temperatures beside it
+    — the reason the withdrawn `parakeet_mlx` runner (D406) dropped it too: it
+    is an engine-tell. Whisper's DTW alignment has a per-word probability and a
+    transducer's per-token confidence would have been a different number
+    measuring a different thing, so publishing it would make the reply depend
+    on which engine ran (AI-10c). `word` keeps the
     library's LEADING SPACE — it is how the text reconstructs by concatenation,
     and stripping it would make a caller guess where spaces went.
     """
@@ -1414,8 +1417,9 @@ def generate(body):
     # before the model sees a thing, which is what lets the very first
     # transcribing tick carry a `total`.
     #
-    # TWO names for it, ported from `parakeet_mlx/worker.py` (which fixed this
-    # first, and whose comment says the same thing) rather than solved a second
+    # TWO names for it, ported from the withdrawn `parakeet_mlx/worker.py`
+    # (D406; it fixed this first, and its comment said the same thing) rather
+    # than solved a second
     # way, because the difference is a real file: a clip of a few dozen samples
     # rounds to 0.0, and `total` is what the ROW carries — where 0 would be a bar
     # claiming a length nobody can see move, so None (indeterminate) is the

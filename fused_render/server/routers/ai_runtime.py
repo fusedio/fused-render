@@ -665,9 +665,12 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         except ValueError as e:
             return _error(str(e), status=400)
 
-    # …and what the ENGINE that will serve this cannot do at all (D319). Three
-    # engines share this capability now and one of them — Parakeet — has no
-    # translate task, no `language` argument and no text conditioning.
+    # …and what the ENGINE that will serve this cannot do at all. D319 added a
+    # third engine, Parakeet, that had no translate task, no `language`
+    # argument and no text conditioning; D406 withdrew it, so the two engines
+    # sharing this capability today (MLX Whisper, Faster Whisper) both answer
+    # everything below and `engine_options.UNSUPPORTED` is empty — but the
+    # check stays, for the next engine that needs it.
     #
     # Asked HERE, beside the other arguments a typo deserves an answer about,
     # because the answer is already available: `for_capability` is the same

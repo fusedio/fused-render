@@ -18,11 +18,12 @@ the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
 ``ai/registry.py``.
 
-Three more preferences are persisted: **reader_enabled** (whether the Reader
+Four more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
 ``reader_enabled``), **default_model** (the preferred Claude model as a short
-name, unset by default; see ``default_model``), and the **execution engine**
-for /api/run:
+name, unset by default; see ``default_model``), **indexing_enabled** (whether
+background file-index scanning may run — default ON, see ``indexing_enabled``),
+and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
     a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
@@ -221,6 +222,26 @@ def _valid_engine_choice(capability: str, code: str) -> str | None:
     return None
 
 
+def indexing_enabled() -> bool:
+    """Whether background file-index scanning may run at all (default ON).
+
+    Mirrors `calls_enabled()`'s idiom: absence and any non-`false` stored
+    value both read as enabled, so a preference file that predates this
+    setting — every existing install — keeps scanning exactly as before. No
+    env override, unlike `calls_enabled`'s `FUSED_RENDER_CALLS`: there is no
+    operational reason to force this off outside the app the way there is
+    for the call log.
+
+    Turning this off does not delete the on-disk index or stop
+    `/api/index/rank` from answering it — only new scans are refused. Every
+    trigger that can start one (the startup scheduler, the on-demand scan
+    routes, the freshness cadence, mutation-triggered rescans) reads this
+    per call, same as `reader_enabled`, so a toggle applies to the very next
+    one with no server restart.
+    """
+    return read_prefs().get("indexing_enabled") is not False
+
+
 def calls_enabled() -> bool:
     """Whether the app call log records anything (default ON — see calls.py).
 
@@ -361,6 +382,8 @@ def _prefs_response() -> dict:
         # so the Preferences page renders the options the server will accept
         # rather than a second copy of this list that can drift from it.
         "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
+        # Whether background file-index scanning may run (default ON).
+        "indexing": {"enabled": indexing_enabled()},
         # Which local-model backend serves each capability (D302). The STORED
         # choice, what is actually resolving, and — when those differ — why, in
         # the registry's own words. Same discipline as `engine` above and
@@ -535,6 +558,24 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             engines[str(capability)] = code
         prefs["engines"] = engines
         changed = True
+    if "indexing_enabled" in body:
+        value = body.get("indexing_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'indexing_enabled' must be a boolean"},
+                                status_code=400)
+        prefs["indexing_enabled"] = value
+        changed = True
+        if value is False:
+            # A scan running at the moment of toggle-off is cancelled outright
+            # rather than merely refused going forward — the behavior contract
+            # says "no scan ever starts" as soon as the pref is off, and a run
+            # already in flight is exactly the case where "starts" happened a
+            # moment too early. Imported lazily: the index router pulls this
+            # module in (via `indexing_enabled` below), so a module-scope
+            # import here would be a cycle.
+            from fused_render.server.routers.index import cancel_all_scans
+
+            cancel_all_scans()
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -572,8 +613,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', "
-                      "'default_model', 'calls_enabled', 'calls_params', "
-                      "'calls_retention_days' and/or 'ai_idle_unload_minutes')"},
+                      "'default_model', 'indexing_enabled', 'calls_enabled', "
+                      "'calls_params', 'calls_retention_days' and/or "
+                      "'ai_idle_unload_minutes')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)

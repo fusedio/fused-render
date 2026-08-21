@@ -563,9 +563,12 @@ export default function Preferences() {
             >
               AI
             </button>
-            {/* Indexing — the file index behind the explorer's search. Always
-                present: needs no opt-in, and a user looking for "why is search
-                finding/missing this" has nowhere else to go. */}
+            {/* Indexing — the file index behind the explorer's search. The TAB
+                is always present — a user looking for "why is search
+                finding/missing this" has nowhere else to go — even though
+                indexing itself now has an opt-out toggle inside it
+                (`indexing_enabled`): the panel is where that answer lives,
+                on or off. */}
             <button
               type="button"
               className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
@@ -588,7 +591,7 @@ export default function Preferences() {
                 <HuggingFaceSection />
               </>
             )}
-            {tab === "indexing" && <IndexingPanel />}
+            {tab === "indexing" && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
           </div>
         </>
       )}

@@ -123,9 +123,14 @@ it, `server-api.md §7.2`, so this cheaper check has nothing to add), and a stor
 predating the column compacts to — reading it as a real mtime would make the folder
 stale forever and fire on every open).
 
-Four gates, cheapest first, because `/api/fs/list` fires for every folder opened **and
+Five gates, cheapest first, because `/api/fs/list` fires for every folder opened **and
 again on every watch tick of a folder on screen**:
 
+0. `indexing_enabled` (`shell/prefs.py`) is on — the router's `note_folder_opened` checks
+   this before even trying to acquire the one-at-a-time slot below, so a listing burst
+   while the pref is off never contends for it, let alone reaches a scan. This is the one
+   gate that covers every caller of `note_folder_opened` (`fs_read.py`, `git_repos.py`,
+   `exported_apps.py`) in one place, rather than each of them re-checking it.
 1. The path is inside a configured root (segment-wise), else nothing. The scan started
    is always that **configured root** — a per-folder root would pollute `scans.json`
    and defeat `runner.start`'s exact-match join.

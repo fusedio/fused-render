@@ -9,32 +9,36 @@ two behaviours — which is the one thing a second runner for a capability is no
 allowed to be (SPEC AI-10c).
 
 **It sits at the runners ROOT**, beside `worker_base.py`, `formats.py`,
-`diarize.py` and `partial.py`, and it moved here the moment a SECOND engine
-needed it (D319 — the Parakeet runner). It began inside `mlx_whisper/` because
-one runner used it and the CT2 engine had faster-whisper's own copy; that was
-the right home for exactly as long as there was one caller. Two callers of one
-promise is what the root is for: a copy under `parakeet_mlx/` would be two
-implementations of "what `vad: true` means", free to drift on the threshold, the
-minimum silence and the padding, and neither copy would fail a test — each would
-pass its own. Its readers reach it through the same `sys.path` insert that
-reaches `worker_base`.
+`diarize.py` and `partial.py`, having moved here the moment a SECOND engine
+needed it (D319 — the Parakeet runner, since withdrawn by D406). It began
+inside `mlx_whisper/` because one runner used it and the CT2 engine had
+faster-whisper's own copy; that was the right home for exactly as long as
+there was one caller. Two callers of one promise is what the root is for: a
+copy under a second runner's own folder would be two implementations of "what
+`vad: true` means", free to drift on the threshold, the minimum silence and
+the padding, and neither copy would fail a test — each would pass its own.
+`mlx_whisper/worker.py` is the sole caller again since D406, and the module
+stays at the root rather than moving back — the shared location costs nothing
+with one caller and saves a second move the day another one arrives. Its
+readers reach it through the same `sys.path` insert that reaches `worker_base`.
 
-**Its readers are the two MLX engines, not all three.** `faster_whisper/`
+**Its reader is the MLX engine, not `faster_whisper`.** `faster_whisper/`
 neither imports this nor should: faster-whisper ships the same Silero inside
 itself and takes `vad_filter=True`, so asking for it there is one argument to a
-library that already has the model. This file exists because the MLX engines
-have no such library — which is the whole of AI-10f's argument, one engine
+library that already has the model. This file exists because the MLX engine
+has no such library — which is the whole of AI-10f's argument, one engine
 further on.
 
 **It owns the PACKING too, not just the detection** (`pack_regions`,
 `packed_samples` and the inverses `original_start`/`original_end`, at the foot of
 this file). Deciding what the decoder is actually HANDED — one clip per region,
 or the speech concatenated into as few clips as fit — is part of what `vad: true`
-means, and this module is the one place allowed to define that for both MLX
-engines; `mlx_whisper/worker.py` is the only caller today only because Parakeet
-has no fixed window to pack into, which is a fact about that engine rather than
-a different reading of the flag. The arithmetic is stdlib and numpy, so a
-caller that wants it does not need onnxruntime to be installed.
+means, and this module is the one place allowed to define that. `parakeet_mlx`
+never called into the packing before it was withdrawn: it had no fixed window
+to pack into, a fact about that engine rather than a different reading of the
+flag, and `mlx_whisper/worker.py` remains the only caller. The arithmetic is
+stdlib and numpy, so a caller that wants it does not need onnxruntime to be
+installed.
 
 Three constraints shaped it, and each one closed off the obvious route:
 
@@ -291,9 +295,9 @@ def pack_regions(regions, budget=BUDGET_S):
     took 8.32s for the whole file, 23.30s for the 31 raw regions and 9.31s
     packed. faster-whisper never had this defect — its own `vad_filter` calls
     `collect_chunks`, which concatenates speech to a maximum duration and remaps
-    the timestamps afterwards — and since this module exists so both MLX engines
-    mean the SAME thing by the flag (AI-10f), the two engines sitting 2.8x apart
-    on it was the parity problem, not a missed optimisation.
+    the timestamps afterwards — and since this module exists so the MLX and CT2
+    engines mean the SAME thing by the flag (AI-10f), the two engines sitting
+    2.8x apart on it was the parity problem, not a missed optimisation.
 
     **A region longer than the budget passes through ALONE and is never split.**
     Cutting mid-speech loses the words at the cut, and Whisper already chunks a

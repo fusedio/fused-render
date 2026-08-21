@@ -258,6 +258,22 @@
   opacity: 0.86;
 }
 
+/* "enable it in Preferences" — a quiet inline link-button inside the result
+   note, same pattern as .mount-link (setup-modal.css): no border/background
+   of its own, so it reads as part of the sentence rather than a control. */
+.fh-link-button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.fh-link-button:hover {
+  color: var(--fg);
+}
+
 .fh-result-note kbd {
   font: inherit;
   padding: 0 4px;
