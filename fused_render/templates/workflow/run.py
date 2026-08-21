@@ -89,6 +89,7 @@ Anything wrong is a refusal payload (`{ok: false, reason, message}`), never an
 exception.
 """
 
+import ast
 import json
 import os
 import re
@@ -352,6 +353,96 @@ def _order(nodes: list, edges: list) -> list:
     return out
 
 
+def _literal_kind(param: dict) -> str:
+    """The type a parameter wants: `bool`/`int`/`float`/`str`/`json`, or `""`.
+
+    THE ANNOTATION FIRST, THE DEFAULT'S LITERAL SHAPE SECOND — the same order
+    `mcp/template.html`'s `pinKind` uses, because this is the same problem one
+    step further along. MC-8 records what it costs to get wrong: a pinned
+    `False` written as the STRING "False" is passed through verbatim and read by
+    Python as TRUTHY, i.e. a safety flag pinned off that behaves as on.
+
+    Substring matching on the unparsed annotation, deliberately: `int`,
+    `Optional[int]` and `int | None` all want an int, and the alternative is a
+    type-expression parser for a hint whose only job is to pick a JSON shape.
+    Anything unrecognised answers `""`, which means "send it as written" — the
+    honest answer for a `Literal["a", "b"]` or a bare untyped parameter.
+    """
+    text = (param.get("annotation") or "").lower()
+    if not text:
+        # No annotation: infer from the default's own literal shape, which is
+        # the only other evidence the signature snapshot carries.
+        default = (param.get("default") or "").strip()
+        if default in ("True", "False"):
+            return "bool"
+        try:
+            value = ast.literal_eval(default) if default else None
+        except (ValueError, SyntaxError):
+            return ""
+        if isinstance(value, bool):
+            return "bool"
+        if isinstance(value, int):
+            return "int"
+        if isinstance(value, float):
+            return "float"
+        if isinstance(value, str):
+            return "str"
+        if isinstance(value, (list, dict)):
+            return "json"
+        return ""
+    # bool before int: `bool` contains no `int`, but checking it first keeps the
+    # order the same as the default branch above.
+    for needle, kind in (("bool", "bool"), ("int", "int"), ("float", "float"),
+                         ("list", "json"), ("dict", "json"), ("str", "str")):
+        if needle in text:
+            return kind
+    return ""
+
+
+def _typed_literal(raw, kind: str):
+    """`(value, ok)` — `raw` as the JSON type `kind` names.
+
+    The inspector stores every literal as TEXT (it is one `<input>`), so a node
+    exposing `limit: int = 20` records the string "20" — and `json.dumps` then
+    renders `limit = "20"`, handing a string to a tool that does arithmetic with
+    it. The failure lands mid-run inside a detached session, which is the worst
+    place for it. So the plan carries the converted value.
+
+    `ok` is False when the text does not convert, and the caller SAYS SO in the
+    prompt rather than guessing: "twenty" for an `int` is a mistake to report,
+    not one to paper over. The document itself is never rewritten — the user's
+    text is theirs, and this is a compile-time reading of it.
+    """
+    if not isinstance(raw, str):
+        # Already typed — a hand-edited document may hold a real number or bool.
+        return raw, True
+    text = raw.strip()
+    if kind == "bool":
+        if text.lower() in ("true", "1"):
+            return True, True
+        if text.lower() in ("false", "0"):
+            return False, True
+        return raw, False
+    if kind == "int":
+        try:
+            return int(text, 10), True
+        except ValueError:
+            return raw, False
+    if kind == "float":
+        try:
+            return float(text), True
+        except ValueError:
+            return raw, False
+    if kind == "json":
+        try:
+            value = json.loads(text)
+        except ValueError:
+            return raw, False
+        return (value, True) if isinstance(value, (list, dict)) else (raw, False)
+    # "str" and "" both mean send the text as written.
+    return raw, True
+
+
 def _compile(doc: dict):
     """`(plan, refusal)` — the document resolved against this machine.
 
@@ -434,7 +525,7 @@ def _compile(doc: dict):
         exposed = node.get("inputs")
         exposed = exposed if isinstance(exposed, list) else []
         literals, from_previous = [], []
-        known = {p["name"] for p in tool.get("params") or []}
+        known = {p["name"]: p for p in tool.get("params") or []}
         for item in exposed:
             if not isinstance(item, dict):
                 continue
@@ -448,7 +539,10 @@ def _compile(doc: dict):
             if item.get("source") == "previous":
                 from_previous.append(name)
             else:
-                literals.append((name, item.get("value", "")))
+                kind = _literal_kind(known[name])
+                value, ok = _typed_literal(item.get("value", ""), kind)
+                literals.append({"name": name, "value": value,
+                                 "kind": kind, "ok": ok})
         steps.append({
             "id": str(node["id"]),
             "label": str(node.get("label") or "") or tool_name,
@@ -587,9 +681,20 @@ def _prompt(plan: dict) -> str:
             lines.append("   If that is not true, skip this step and every step that "
                          "depends on it, and say so at the end.")
         if step["literals"]:
-            lines.append("   Send exactly these argument values:")
-            for name, value in step["literals"]:
-                lines.append("     %s = %s" % (name, json.dumps(value)))
+            lines.append("   Send exactly these argument values, with exactly "
+                         "these JSON types:")
+            for item in step["literals"]:
+                # The declared type is stated even when the value converted
+                # cleanly: it is what lets the model send 20 rather than "20"
+                # for a parameter whose text happened to look like both.
+                note = " (%s)" % item["kind"] if item["kind"] else ""
+                if not item["ok"]:
+                    note = (" — DECLARED %s, and the value above is not a valid "
+                            "one. Convert it if the intent is obvious; otherwise "
+                            "stop and report this step as misconfigured."
+                            % item["kind"])
+                lines.append("     %s = %s%s"
+                             % (item["name"], json.dumps(item["value"]), note))
         if step["fromPrevious"]:
             lines.append("   Derive these arguments from the OUTPUT of the step(s) "
                          "before it, reshaping as needed:")

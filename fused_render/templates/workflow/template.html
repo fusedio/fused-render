@@ -417,6 +417,10 @@ let runDone = false;
 // so a per-tick flag left the closing message silent about the one thing the
 // user then has to Save.
 let runLearned = false;
+// The selected node's run state as last DRAWN by the inspector. `renderInspector`
+// re-syncs it, so any full render (a selection change, an edit) counts as drawn
+// and the poll loop only redraws on a real change. See the poll loop.
+let inspectorRunSig = "";
 let polling = null;
 // WHICH POLL LOOP IS THE LIVE ONE. Clearing the timer is not enough to stop a
 // loop: a tick already awaiting `runPython` resumes afterwards, overwrites the
@@ -873,7 +877,20 @@ function renderWires() {
     const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
     hit.setAttribute("d", d);
     hit.setAttribute("class", "hit");
-    hit.addEventListener("click", () => { select(edge.to); renderAll(); });
+    // POINTERDOWN + stopPropagation, not `click` — the same shape a node uses,
+    // and for a reason `click` cannot survive. `click` only fires after
+    // pointerup, and this element does not live that long: the pointerdown
+    // bubbles to `stage` first, which clears the selection and calls
+    // renderAll(), whose rAF rebuilds every path from scratch. By pointerup the
+    // element the gesture started on is detached, so the browser retargets the
+    // click to `#stage`. The net effect was that clicking a wire to edit its
+    // condition cleared the selection and started a pan instead — the one
+    // gesture the edge exists for was the one that could not work.
+    hit.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+      select(edge.to);
+      renderAll();
+    });
     wires.appendChild(hit);
   }
 }
@@ -886,7 +903,16 @@ function renderWires() {
 // document order — and the canvas only ever uses it to LABEL, never to decide.
 function executionOrder() {
   const ids = doc.nodes.map((n) => n.id);
-  const incoming = {}, outgoing = {};
+  // `Object.create(null)`, NOT `{}`. These are keyed by node ids out of a
+  // hand-editable file, and on a plain object `incoming["toString"]` is
+  // Object.prototype.toString rather than undefined — so a stale edge naming
+  // `constructor`, `toString` or `__proto__` sails past the guard below and
+  // `outgoing[edge.from].push(...)` throws on a value that is not an array.
+  // That throws inside render, which leaves a BLANK CANVAS with no banner,
+  // while `run.py::_order` (real dicts, exact `in`) runs the same file
+  // perfectly — so the workflow works and only the editor is broken. A
+  // null-prototype object has no inherited keys to collide with.
+  const incoming = Object.create(null), outgoing = Object.create(null);
   ids.forEach((i) => { incoming[i] = 0; outgoing[i] = []; });
   for (const edge of doc.edges) {
     if (incoming[edge.to] === undefined || incoming[edge.from] === undefined) continue;
@@ -912,8 +938,19 @@ function executionOrder() {
 
 // -------------------------------------------------------------- inspector
 
+// The selected node's polled state, as a comparable string. `null` when
+// nothing is selected or the run has nothing to say about it yet — both of
+// which are stable values, so an idle poll redraws nothing.
+function inspectorSig() {
+  return JSON.stringify((selected && runNodes[selected]) || null);
+}
+
 function renderInspector() {
   const body = el("inspector-body");
+  // Recorded on every draw, not just the poll loop's, so a selection change or
+  // an edit leaves the two in step and the next tick does not redraw on top of
+  // a panel that is already current.
+  inspectorRunSig = inspectorSig();
   body.innerHTML = "";
   const node = selected ? nodeById(selected) : null;
   if (!node) {
@@ -1384,7 +1421,15 @@ async function poll() {
   }
   if (learned) { runLearned = true; mark(); }
   renderNodes();
-  renderInspector();
+  // THE INSPECTOR IS NOT REBUILT ON A TIMER. `renderInspector` starts with
+  // `innerHTML = ""`, so calling it unconditionally every 1.5 s destroyed focus
+  // and caret in whatever was being typed — an edge condition, a label, a
+  // literal value, the parameter filter — which made the panel untypeable for
+  // the whole length of a run. The only thing a tick can add to the inspector
+  // is the selected node's own run state, so that is the only thing that
+  // triggers a redraw. Same rule as the pointermove path, which redraws wires
+  // and nothing else for exactly this reason.
+  if (inspectorSig() !== inspectorRunSig) renderInspector();
   if (out.done) {
     runDone = true;
     const failed = (out.nodes || []).filter((n) => n.status === "error").length;
