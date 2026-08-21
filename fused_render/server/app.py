@@ -275,6 +275,18 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
 
+    # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
+    # nothing has used it for the configured window (default 10 min, 0 = off).
+    # A startup event and deliberately not the create_app body, for the same
+    # reason as `_startup_schedule` above: tests build apps with no lifespan,
+    # and this starts a thread that lives for the process — building one per
+    # test-constructed app would leak a thread per test.
+    @app.on_event("startup")
+    async def _startup_ai_idle_reaper():
+        from fused_render.ai import supervisor
+
+        supervisor.start_reaper()
+
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.

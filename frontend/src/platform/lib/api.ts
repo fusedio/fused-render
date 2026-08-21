@@ -761,11 +761,26 @@ export interface Prefs {
   // from `engine` above, however similar the word: that one is /api/run's
   // executor, this one is the inference runner behind fused.ai's local models.
   engines: EnginesPrefs;
+  // How long an idle resident local model stays loaded before the reaper
+  // unloads it (SPEC AI-13). Same stored/effective/forced_by shape as `calls`.
+  ai_idle: AiIdlePrefs;
   // Whether background file-index scanning may run at all (default ON — an
   // opt-OUT, the opposite polarity from `reader`). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
   indexing: { enabled: boolean };
+}
+
+export interface AiIdlePrefs {
+  // As STORED. 0 = never unload; the reaper is on by default at 10.
+  minutes: number;
+  // What the reaper is ACTUALLY using right now — differs from `minutes`
+  // whenever `forced_by` is not null.
+  effective_minutes: number;
+  // The raw FUSED_RENDER_AI_IDLE_MINUTES value when it is genuinely in force
+  // (never merely set — an unparsable value leaves the stored pref deciding
+  // and reports null here, same rule as the call log's retention window).
+  forced_by: string | null;
 }
 
 export interface EnginesPrefs {
@@ -935,6 +950,10 @@ export function putCallsParamsMode(mode: CallsParamsMode): Promise<Prefs> {
 
 export function putCallsRetentionDays(days: number): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { calls_retention_days: days });
+}
+
+export function putAiIdleUnloadMinutes(minutes: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ai_idle_unload_minutes: minutes });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).
@@ -2518,6 +2537,12 @@ export interface AiLoadedModel {
   startedAt: number;
   /** The download-manager row for this model's bring-up. */
   jobId: string;
+  /** Seconds since anything last used this worker (AI-13). */
+  idleSeconds: number;
+  /** Seconds until the reaper unloads it, or null when the idle window is
+   *  disabled — never a number that would draw a countdown that never
+   *  reaches zero. */
+  unloadsInSeconds: number | null;
 }
 
 /** A weights-only fetch in flight: on disk, not in memory. The BYTES live in the

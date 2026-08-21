@@ -82,6 +82,19 @@ VALID_CALLS_PARAMS = ("full", "keys", "off")
 # short→id mapping lives THERE, in one place, next to the caller that needs it.
 VALID_DEFAULT_MODELS = ("", "fable", "opus", "sonnet", "haiku")
 DEFAULT_CALLS_RETENTION_DAYS = 14
+#: How long a resident local model may sit idle before the reaper unloads it
+#: (SPEC AI-13). Minutes, not seconds — a sensible window is measured in
+#: minutes and a seconds control invites off-by-1000 mistakes. `0` disables
+#: the reaper entirely, same "0 = off" shape as `calls_retention_days`.
+DEFAULT_AI_IDLE_UNLOAD_MINUTES = 10
+#: The env var a *set, parsable* value of which overrides the stored pref —
+#: same precedence as `FUSED_RENDER_CALLS_RETENTION_DAYS`, so a machine-level
+#: policy (a shared workstation someone wants to keep more aggressive than
+#: whatever a user dials in) can win without touching prefs.json. Clamped to
+#: a non-negative integer, same as the calls one, and deliberately no UPPER
+#: clamp either: `=100000` is honoured as-is rather than silently capped at
+#: 1440, which would make the override lie about what it is forcing.
+AI_IDLE_MINUTES_ENV = "FUSED_RENDER_AI_IDLE_MINUTES"
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -263,6 +276,51 @@ def calls_retention_days() -> int:
     return DEFAULT_CALLS_RETENTION_DAYS
 
 
+def ai_idle_unload_minutes() -> int:
+    """How long a resident model may sit idle before the reaper unloads it
+    (default 10). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
+    value = read_prefs().get("ai_idle_unload_minutes")
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 1_440:
+        return value
+    return DEFAULT_AI_IDLE_UNLOAD_MINUTES
+
+
+def ai_idle_unload_minutes_override() -> int | None:
+    """The window `FUSED_RENDER_AI_IDLE_MINUTES` actually imposes, or None when
+    it imposes nothing — unset, empty, or not an integer.
+
+    Same two-questions shape as `calls.retention_days_override()`: "is the
+    variable set" and "is it in force" differ for an unparsable value, and a
+    `forced_by` derived from presence alone would disable the page's control
+    and blame a variable that decided nothing (D150).
+    """
+    raw = os.environ.get(AI_IDLE_MINUTES_ENV)
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return None
+
+
+def effective_ai_idle_unload_minutes() -> int:
+    """What the reaper actually uses right now — the resolver `supervisor`
+    itself calls, so the page can never report a window the reaper isn't
+    honouring."""
+    override = ai_idle_unload_minutes_override()
+    return ai_idle_unload_minutes() if override is None else override
+
+
+def _ai_idle_state() -> dict:
+    """The `ai_idle` block of GET /api/prefs — same shape as `_calls_effective`:
+    the stored choice, what is actually in force, and what's forcing it."""
+    return {
+        "minutes": ai_idle_unload_minutes(),
+        "effective_minutes": effective_ai_idle_unload_minutes(),
+        "forced_by": _forced_by(AI_IDLE_MINUTES_ENV, ai_idle_unload_minutes_override()),
+    }
+
+
 def fused_engine_available() -> bool:
     """Whether the fused backend is importable, resolved off the request path:
     engine.warm() caches it at startup, a mid-session install flips it via
@@ -346,6 +404,11 @@ def _prefs_response() -> dict:
             **_calls_store(),
             **_calls_effective(),
         },
+        # How long an idle local AI model stays resident before the reaper
+        # unloads it (SPEC AI-13). Same store/effective/forced_by shape as
+        # `calls` above, minus a separate `_store()` helper — there is no
+        # directory fact to report alongside this one.
+        "ai_idle": _ai_idle_state(),
     }
 
 
@@ -537,12 +600,22 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             )
         prefs["calls_retention_days"] = value
         changed = True
+    if "ai_idle_unload_minutes" in body:
+        value = body.get("ai_idle_unload_minutes")
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1_440:
+            return JSONResponse(
+                {"error": "'ai_idle_unload_minutes' must be an integer between 0 and 1440"},
+                status_code=400,
+            )
+        prefs["ai_idle_unload_minutes"] = value
+        changed = True
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
                       "'engines', 'reader_enabled', "
                       "'default_model', 'indexing_enabled', 'calls_enabled', "
-                      "'calls_params' and/or 'calls_retention_days')"},
+                      "'calls_params', 'calls_retention_days' and/or "
+                      "'ai_idle_unload_minutes')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)

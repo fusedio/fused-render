@@ -5,8 +5,10 @@ import {
   choiceReason,
   engineNote,
   ignoredWarning,
+  parseAiIdleMinutes,
   servingLine,
   switchOutcome,
+  unloadCountdown,
   wouldChangeEngine,
 } from "@shell/engines";
 
@@ -271,5 +273,54 @@ describe("capabilityLabel", () => {
     // A capability added server-side should appear here — ugly but present —
     // instead of vanishing from the only page that can configure it.
     expect(capabilityLabel("video-generation")).toBe("video-generation");
+  });
+});
+
+describe("parseAiIdleMinutes", () => {
+  it("accepts an in-range integer", () => {
+    expect(parseAiIdleMinutes("45")).toBe(45);
+    expect(parseAiIdleMinutes("0")).toBe(0);
+    expect(parseAiIdleMinutes("1440")).toBe(1440);
+  });
+
+  it("rejects empty and whitespace-only input rather than reading it as zero", () => {
+    // The bug: `Number("")` is `0` and `Number.isInteger(0)` is `true`, so
+    // without this guard, clearing the field and blurring — the ordinary
+    // intermediate state of editing a number input — silently PUT
+    // `ai_idle_unload_minutes: 0` and turned the whole feature off.
+    expect(parseAiIdleMinutes("")).toBeNull();
+    expect(parseAiIdleMinutes("   ")).toBeNull();
+  });
+
+  it("rejects out-of-range and non-integer input", () => {
+    expect(parseAiIdleMinutes("-1")).toBeNull();
+    expect(parseAiIdleMinutes("1441")).toBeNull();
+    expect(parseAiIdleMinutes("4.5")).toBeNull();
+    expect(parseAiIdleMinutes("abc")).toBeNull();
+  });
+});
+
+describe("unloadCountdown", () => {
+  it("names the minutes when there is more than one", () => {
+    expect(unloadCountdown(240)).toBe("unloads in 4 min");
+  });
+
+  it("rounds to the nearest minute rather than truncating", () => {
+    // 269s is 4:29 — closer to 4 than to 5, and truncating would say 4 anyway,
+    // so this pins ROUNDING specifically against the boundary just past it.
+    expect(unloadCountdown(271)).toBe("unloads in 5 min");
+  });
+
+  it("says 'under a minute' rather than '0 min'", () => {
+    // "0 min" reads as "already unloaded" or as a typo, neither of which is
+    // true with seconds still on the clock.
+    expect(unloadCountdown(45)).toBe("unloads in under a minute");
+  });
+
+  it("says nothing when the window is disabled or forced off", () => {
+    // `null` is what `describe()` sends for both cases (AI-13) — a page has
+    // no reason to distinguish "the user set 0" from "an env var did" here,
+    // since neither one is counting down.
+    expect(unloadCountdown(null)).toBeNull();
   });
 });

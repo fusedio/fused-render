@@ -2291,6 +2291,322 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
+# -- per-worker activity, for the idle reaper (AI-13) ------------------------
+
+
+def test_a_streamed_chunk_re_stamps_last_activity(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 999
+    list(supervisor.generate_text("org/chat", {"messages": []}))
+    # Every yielded chunk re-stamps, not just entry — a stream running longer
+    # than the idle window must never look idle partway through it.
+    assert time.monotonic() - worker.last_activity < 5
+
+
+def test_closing_a_partially_read_stream_frees_in_flight(fake_runner):
+    # `generate_text` is a generator: a page that stops iterating without
+    # calling `close()` is exactly the leak the `finally` in `_in_use` exists
+    # to prevent (see Key decisions).
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    stream = supervisor.generate_text("org/chat", {"messages": []})
+    next(stream)
+    assert worker.in_flight == 1
+    stream.close()
+    assert worker.in_flight == 0
+
+
+def test_in_use_nests_without_losing_track(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    with supervisor._in_use(worker):
+        with supervisor._in_use(worker):
+            assert worker.in_flight == 2
+        assert worker.in_flight == 1
+    assert worker.in_flight == 0
+
+
+# -- the idle reaper (AI-13) ------------------------------------------------
+
+
+def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
+                 capability=registry.TEXT_GENERATION, model="org/idle"):
+    """A `ready` worker planted directly in `_workers`, the same shortcut
+    `test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served` uses — no
+    process, so `_terminate` is stubbed the same way."""
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    worker = supervisor.Worker(model=model, capability=capability,
+                               runner_code="fake-text", token="t", state=state,
+                               last_activity=last_activity, in_flight=in_flight)
+    monkeypatch.setitem(supervisor._workers, capability, worker)
+    return worker
+
+
+def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, state="loading", last_activity=now - 10_000)
+    # A 40-minute `uv sync` or an 8GB pull IS activity, and killing it mid-build
+    # is hostile rather than a memory win — only `ready` is eligible.
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._workers[registry.TEXT_GENERATION] is worker
+
+
+def test_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_in_flight_with_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5, in_flight=1)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_mid_transcription_worker_is_spared_well_past_the_idle_window(monkeypatch):
+    """The bug a collapsed predicate would ship: `generate_transcript` is a
+    single blocking call, not a stream — nothing re-stamps `last_activity`
+    between the request going out and the reply coming back, which can be up
+    to `TRANSCRIBE_TIMEOUT_S` (4h) later. A 30-minute-old stamp on a
+    `SPEECH_TO_TEXT` worker with `in_flight == 1` is exactly what a real
+    90-minute transcription looks like at the 30-minute mark under a
+    10-minute window, and reaping it here is `_terminate` killing the
+    process the request is still waiting on."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 30 * 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_transcription_worker_past_its_leak_ceiling_is_reaped(monkeypatch):
+    """The other half: `in_flight` is not a permanent exemption. Past a
+    ceiling derived from `TRANSCRIBE_TIMEOUT_S` itself, the request that set
+    `in_flight` would already have raised — `_worker_request` has its own
+    timeout — so a counter still reading positive is a leaked stream
+    (an abandoned `generate_text` iterator on another capability, say),
+    never a legitimately slow answer."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    ceiling = supervisor._leak_ceiling(registry.SPEECH_TO_TEXT, 600)
+    _idle_worker(monkeypatch, last_activity=now - ceiling - 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) != []
+
+
+def test_a_slow_first_load_is_not_reaped_the_instant_it_becomes_ready(fake_runner, monkeypatch):
+    """Regression: `last_activity` used to be seeded once, in the `Worker`
+    dataclass, at CONSTRUCTION — before `_bring_up`'s venv build, pull and
+    load even start. A first-ever download that takes longer than the idle
+    window would become `ready` already past it, and the reaper's very next
+    tick would unload it before anything had used it.
+
+    Simulated without actually waiting minutes: `Worker.last_activity`'s
+    `field(default_factory=time.monotonic)` captured the REAL function at
+    class-definition time, so patching the `time` module's `monotonic`
+    attribute afterwards does not touch the construction stamp — only calls
+    made through the module attribute at RUN time are affected, which is
+    every `time.monotonic()` call `_bring_up` makes once the fake worker
+    (a ~0.1s bring-up) actually reaches `ready`. A constant offset rather
+    than a frozen value, so every deadline/elapsed computation along the way
+    still advances normally; only the ABSOLUTE reading moves, by more than
+    the idle window.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: real_monotonic() + 800)
+
+    supervisor.load("org/slow", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/slow")
+
+    # If the ready transition still left `last_activity` at its construction
+    # stamp (real time, unaffected by the patch), `now` here would read it as
+    # ~800s stale — past a 10-minute window — and this would fail.
+    assert supervisor.idle_workers(real_monotonic() + 800) == []
+    assert worker.state == "ready"
+
+
+def test_reap_decision_and_removal_share_one_lock_hold(fake_runner, monkeypatch):
+    """Regression: `reap_idle` used to call `idle_workers()` (one `_lock`
+    acquisition) and then `unload()` (a SECOND, later one) to remove what it
+    found. In the gap between those two acquisitions the table was briefly
+    unlocked, and a request racing in could call `ready_worker()`, enter
+    `_in_use()` and start a call on the very worker the reaper had already
+    condemned — `unload()` matches by model+capability alone and never
+    re-checks `in_flight`, so it would terminate the process that request is
+    now waiting on.
+
+    Driven deterministically rather than left to scheduler luck, with no
+    `sleep()` anywhere: `reap_idle` runs on its OWN thread, and `_is_idle` —
+    called from INSIDE `_claim_for_removal`'s lock hold, unconditionally, for
+    every candidate worker — is patched to pause there on an `Event`, still
+    holding `_lock`. Only once that pause is observed does a second ("racer")
+    thread start and immediately try to claim the same worker via
+    `ready_worker()`, which itself needs `_lock`. Whatever happens next, the
+    racer's call cannot complete until the reaper thread releases the lock —
+    and by then, if the fix holds, decision AND pop have both already
+    happened, so the racer can only ever observe "already gone", never a live
+    worker the reaper is about to terminate out from under it.
+    """
+    supervisor.load("org/racer", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/racer")
+    worker.last_activity = time.monotonic() - 700  # idle past a 10-min window
+
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_is_idle = supervisor._is_idle
+    paused = threading.Event()
+    release = threading.Event()
+
+    def slow_is_idle(w, now, window):
+        result = real_is_idle(w, now, window)
+        if w is worker:
+            paused.set()
+            assert release.wait(5), "the main thread never released us"
+        return result
+
+    monkeypatch.setattr(supervisor, "_is_idle", slow_is_idle)
+
+    result = {}
+
+    def run_reap():
+        result["stopped"] = supervisor.reap_idle(time.monotonic())
+
+    reaper = threading.Thread(target=run_reap)
+    reaper.start()
+    assert paused.wait(5), "reap_idle never reached its decision"
+    # `reap_idle` is now blocked INSIDE `_claim_for_removal`'s lock hold,
+    # mid-decision for this exact worker. Only now does the racer start.
+
+    def racer():
+        result["racer_saw"] = supervisor.ready_worker(registry.TEXT_GENERATION, "org/racer")
+
+    t = threading.Thread(target=racer)
+    t.start()
+    release.set()
+    reaper.join(5)
+    t.join(5)
+
+    assert result["stopped"] == ["org/racer"]
+    # The racer's lookup could only run AFTER the whole reap finished
+    # (decided AND removed) — it needed the same `_lock`, and `reap_idle`
+    # never let go of it mid-decision — so it can only ever find the worker
+    # already gone.
+    assert result["racer_saw"] is None
+
+
+def test_zero_minutes_disables_the_reaper_entirely(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 100_000)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+
+
+def test_a_weights_only_fetch_is_untouched_by_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    stub = supervisor.Worker(model="org/fetching", capability=registry.TEXT_GENERATION,
+                             runner_code="fake-text", token="t", state="downloading",
+                             last_activity=now - 100_000)
+    monkeypatch.setitem(supervisor._fetch_workers, "org/fetching", stub)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._fetch_workers["org/fetching"] is stub
+
+
+def test_the_pref_is_re_read_on_every_call(monkeypatch):
+    """No caching between calls: a preference edited mid-session, or an env
+    override that comes and goes, moves the answer on the very next tick —
+    same discipline as `ready_worker`'s live re-read of the engine choice."""
+    from fused_render.shell import prefs
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 400)
+    minutes = [10]
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: minutes[0])
+    assert supervisor.idle_workers(now) == [], "400s has not reached a 10-minute window"
+    minutes[0] = 5
+    assert supervisor.idle_workers(now) != [], "the SAME worker, a shorter window"
+
+
+def test_the_reaped_job_row_names_the_idle_reason(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, last_activity=now - 700)
+    job_id = supervisor.job_id_for(worker.model)
+    supervisor._report(job_id, title=worker.model, state="running", kind="task")
+
+    assert supervisor.reap_idle(now) == [worker.model]
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job_id)
+    assert row["detail"] == "Unloaded after 10 min idle"
+
+
+def test_describe_reports_idle_seconds_and_the_countdown(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["idleSeconds"] == pytest.approx(60, abs=3)
+    assert row["unloadsInSeconds"] == pytest.approx(540, abs=3)
+
+
+def test_describe_reports_no_countdown_when_the_window_is_disabled(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["unloadsInSeconds"] is None
+
+
+def test_describe_countdowns_a_busy_worker_against_the_leak_ceiling(monkeypatch, fake_runner):
+    """Regression: `unloadsInSeconds` used to be `window - idle age` with no
+    reference to `in_flight`, so a busy worker's card would count down to
+    "unloads in under a minute" and then sit there — the reaper's own
+    predicate (`_is_idle`) spares a busy worker until `_leak_ceiling`, well
+    past the bare window, so the card was asserting an unload that would not
+    happen for a long time yet.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+    worker.in_flight = 1
+
+    row = supervisor.describe()["loaded"][0]
+
+    ceiling = supervisor._leak_ceiling(registry.TEXT_GENERATION, 600)
+    assert row["unloadsInSeconds"] == pytest.approx(ceiling - 60, abs=3)
+    # Sanity: the leak ceiling is well past the bare 10-minute window here,
+    # so this genuinely distinguishes the fix from the old `window`-only math
+    # rather than coincidentally landing on the same number.
+    assert ceiling > 600
+
+
 # -- a worker's environment carries no Hub token of our making (D402) ------------
 
 
@@ -3751,7 +4067,12 @@ def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
         seen["timeout"] = timeout
         return _Reply()
 
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request", fake_request)
     supervisor.generate_transcript("org/whisper", {"path": "/x"},
                                    supervisor.TRANSCRIBE_JOB_PREFIX + "t")
@@ -3821,7 +4142,12 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -3875,7 +4201,12 @@ def test_an_EVICTED_queued_row_is_rebuilt_on_DETECTION_not_on_the_next_tick(monk
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 30.0)
@@ -4126,7 +4457,12 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     it reached the worker to cancel."""
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -4176,7 +4512,12 @@ def test_the_cross_is_honoured_on_the_UNCONTENDED_path_too(monkeypatch):
     being wrong, not the optimisation.
     """
     posted = []
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         lambda *a, **k: posted.append(a) or pytest.fail(
                             "a cancelled transcription reached the worker"))
@@ -4220,7 +4561,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
 
     def spy_ready_worker(capability, model=None):
         resolved.append(model)
-        return object()
+        return types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0)
 
     monkeypatch.setattr(supervisor, "ready_worker", spy_ready_worker)
     monkeypatch.setattr(
