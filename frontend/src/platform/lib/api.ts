@@ -2238,8 +2238,12 @@ export interface AiModelRepo {
     code: string;
     /** The FULL name, for anything that must match the Preferences picker. */
     label: string;
-    /** Without the platform qualifier — "Diffusers (CPU)". Which BUILD would
-     *  load this, so it is what the tag's hover and aria-label say. */
+    /** Which BUILD would load this, so it is what the tag's hover and
+     *  aria-label say. Two rules, not one: a PLATFORM qualifier is dropped
+     *  ("MLX LM (Apple Silicon)" becomes "MLX LM" — it tells someone sitting
+     *  at the machine nothing), while a HARDWARE one is KEPT ("Diffusers
+     *  (CPU)" stays whole — it is the only thing telling three builds of one
+     *  library apart). */
     shortLabel: string;
     /** The engine FAMILY, hardware qualifier and all removed — "Diffusers".
      *  What the card's TAG shows: the tag is a format claim ("these weights
