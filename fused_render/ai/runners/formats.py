@@ -261,6 +261,13 @@ UNLOADABLE_QUANT = {
 #: is a diffusion pipeline. The two text runners are the opposite case — a
 #: directory of safetensors says nothing about the modality — so a match there
 #: never implies a capability.
+#:
+#: `parakeet-mlx` is gone (D406) and was never added here: the branch that
+#: recognises a NeMo ASR `target` claims no runner (see `loaders()`), so there
+#: is no code for this tuple to list. A NeMo ASR snapshot is still decisive —
+#: the config names an ASR class nothing else in this app can read — it is
+#: just decisive about matching NOTHING, which the early return in `loaders()`
+#: enforces directly rather than through this table.
 DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -272,13 +279,6 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # stay out for the same reason `transformers-text` is out: a
             # directory of safetensors says nothing about the modality.
             "diffusers-image-cuda", "diffusers-image-rocm")
-            # `parakeet-mlx` is gone (D406) and was never added here: the branch
-            # that recognises a NeMo ASR `target` claims no runner (see
-            # `loaders()`), so there is no code for this tuple to list. A NeMo
-            # ASR snapshot is still decisive — the config names an ASR class
-            # nothing else in this app can read — it is just decisive about
-            # matching NOTHING, which the early return in `loaders()` enforces
-            # directly rather than through this table.
 
 
 def is_mlx_checkpoint(config: dict) -> bool:
