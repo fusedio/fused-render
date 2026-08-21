@@ -1439,3 +1439,133 @@ def test_download_file_returns_the_path_to_the_one_file(base, monkeypatch,
 
     assert os.path.basename(path) == "q4.gguf"
     assert open(path, "rb").read() == payload
+
+
+# -- metadata from somewhere other than the Hub ---------------------------------
+
+
+def _provider(url, size, etag="e7ag", commit="c0m", **extra):
+    """A `_hub_file_meta`-shaped provider, and the calls it received.
+
+    The same five keys `_hub_file_meta` returns, so `_segmented_fetch` cannot
+    tell where they came from. `extra` is what a NON-Hub source can add that the
+    Hub cannot — `sha256`, for the mirror.
+    """
+    calls = []
+
+    def meta(repo_id, filename, revision):
+        calls.append((repo_id, filename, revision))
+        return dict({"url": url, "location": url, "etag": etag,
+                     "commit": commit, "size": size}, **extra)
+
+    return meta, calls
+
+
+def test_a_supplied_metadata_provider_replaces_the_hub_call(base, monkeypatch,
+                                                            tmp_path, payload):
+    """The seam the model mirror hangs off: the fetcher takes the per-file
+    metadata from its caller instead of resolving it against the Hub.
+
+    Asserted by making `_hub_file_meta` FATAL rather than by counting calls —
+    "the Hub was not consulted" is the property, and a provider that silently
+    fell back to it would still produce the right file.
+    """
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+
+    def never(repo, name, revision):
+        raise AssertionError("the Hub was consulted for a mirrored file")
+
+    monkeypatch.setattr(base, "_hub_file_meta", never)
+    meta, calls = _provider(url, len(payload))
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m",
+                                     meta=meta)
+
+    assert calls == [("org/m", "model.safetensors", "c0m")]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    # Right down to the cache layout: the provider changes where the metadata
+    # comes from and nothing else.
+    assert os.path.exists(os.path.join(folder, "blobs", "e7ag"))
+    assert open(os.path.join(folder, "refs", "main")).read() == "c0m"
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+
+
+def test_the_hub_path_resolves_exactly_as_it_did_before_the_seam(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """No provider means today's behaviour, unchanged: one `_hub_file_meta` per
+    file, with the repo id and the pinned revision."""
+    url, _state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    seen = []
+    monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: (
+        seen.append((repo, name, revision)) or {
+            "url": url, "location": url, "etag": name, "commit": "c0m",
+            "size": len(payload)}))
+
+    base._segmented_fetch("org/m", ["a.bin", "b.bin"], "c0m")
+
+    assert seen == [("org/m", "a.bin", "c0m"), ("org/m", "b.bin", "c0m")]
+
+
+def test_a_supplied_provider_keeps_the_one_commit_and_pinning_checks(base,
+                                                                     monkeypatch,
+                                                                     tmp_path,
+                                                                     payload):
+    """The two rules that make a fetch a SNAPSHOT rather than a pile of files
+    are properties of the fetcher, not of the Hub, so a provider does not get to
+    opt out of them.
+
+    A provider is code we wrote, but it reads a manifest we did not: a manifest
+    naming a commit other than the one being fetched at is exactly the mistake
+    the pin exists to catch.
+    """
+    url, _state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+
+    moved, _calls = _provider(url, len(payload), commit="b" * 40)
+    with pytest.raises(Exception, match="asked for commit"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "a" * 40, meta=moved)
+
+    def two(repo_id, filename, revision):
+        return {"url": url, "location": url, "etag": filename,
+                "commit": "a" * 40 if filename == "a.bin" else "b" * 40,
+                "size": len(payload)}
+
+    with pytest.raises(Exception, match="2 commits"):
+        base._segmented_fetch("org/m", ["a.bin", "b.bin"], "a" * 40, meta=two)
+
+
+def test_a_fetch_that_carries_no_token_sends_no_authorization(base, monkeypatch,
+                                                              tmp_path, payload):
+    """`token=None` means anonymous, even where `location == url`.
+
+    `_cdn_token` sends the Hub token only when the blob URL IS the Hub URL, which
+    is true of our own mirror by construction — same URL, no presigned redirect.
+    Without this seam a user with a Hub token set would offer it to whatever host
+    `FUSED_MODEL_MIRROR` names, which is a credential going somewhere it was
+    never granted for.
+    """
+    url, state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret")
+    meta, _calls = _provider(url, len(payload))
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m", meta=meta,
+                          token=None)
+
+    assert [r["auth"] for r in state["requests"]] == [None] * len(state["requests"])
+    assert "hf_secret" not in json.dumps(state["requests"])
+
+
+def test_the_hub_path_still_sends_the_token_when_the_hub_serves_the_blob(
+        base, monkeypatch, tmp_path, payload):
+    """The other half of the same rule: no `token` argument means ask hf's own
+    store, exactly as before, or every gated repo 401s on the blob."""
+    url, state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret")
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert any(r["auth"] == "Bearer hf_secret" for r in state["requests"])

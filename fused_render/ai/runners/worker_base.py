@@ -1283,18 +1283,25 @@ class _FileFetch:
             self.fd = None
 
 
-def _resolve(repo_id, filenames, revision):
+def _resolve(repo_id, filenames, revision, meta=None):
     """One metadata call per file, concurrently.
 
     Serially this is a round trip per file before a single byte moves, which on
     a repo of thirty shards is several seconds of nothing happening — the exact
     thing this feature exists to remove.
+
+    `meta` is where that metadata comes FROM, defaulting to the Hub. A caller
+    that already knows every file's url, etag, commit and size — the model
+    mirror reads them out of one manifest — supplies its own and the Hub is not
+    consulted at all. Same signature either way, so the pool below cannot tell
+    the difference and neither can anything downstream of it.
     """
+    provider = meta or _hub_file_meta
     with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(MAX_CONNECTIONS, len(filenames)),
             thread_name_prefix="meta") as pool:
         return list(pool.map(
-            lambda name: _hub_file_meta(repo_id, name, revision), filenames))
+            lambda name: provider(repo_id, name, revision), filenames))
 
 
 def _run_segment(fetch, seg):
@@ -1348,8 +1355,28 @@ def _run_segment(fetch, seg):
         raise
 
 
-def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
+#: "no `token` argument was passed", as distinct from "the token is None".
+#: `None` is a real and meaningful value here — it is what the mirror path
+#: passes to mean ANONYMOUS — so it cannot also stand for "ask hf's own store".
+_ASK_HF = object()
+
+
+def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
+                     meta=None, token=_ASK_HF):
     """Fetch `filenames` into the hub cache ourselves. Returns the snapshot dir.
+
+    `meta` and `token` are the two seams a non-Hub source needs, and both
+    default to today's behaviour exactly. `meta` supplies the per-file metadata
+    (see `_resolve`); `token` is the credential the requests carry, and the
+    mirror path passes `None` for it — `_cdn_token` sends the Hub token whenever
+    the blob URL IS the metadata URL, which is true of our own mirror by
+    construction, and a user's Hub token has no business being offered to
+    whatever host `FUSED_MODEL_MIRROR` names.
+
+    Everything else is deliberately NOT a seam. The one-commit check, the
+    asked-for-commit pin, the sparse-file requirement and the ref write are what
+    make a fetch a SNAPSHOT rather than a pile of files, and they hold whoever
+    supplied the metadata — all the more so for a manifest we read off a CDN.
 
     `revision` is REQUIRED and has no default on purpose: it must be the commit
     the caller's file list resolved to, and a default here is exactly how a list
@@ -1385,15 +1412,21 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
     if not _sparse_ok(folder):
         raise _Unsegmentable(f"{folder} cannot hold a sparse file")
 
-    token = _hf_token()
+    if token is _ASK_HF:
+        token = _hf_token()
     stop = threading.Event()
     probes = {}  # host -> range support, so a repo of shards probes once
     fetches, by_etag = [], {}
-    for name, meta in zip(filenames, _resolve(model_id, filenames, revision)):
-        if not (isinstance(meta.get("size"), int) and meta.get("etag")
-                and meta.get("commit")):
-            raise _Unsegmentable(f"{name}: the Hub reported no size, etag or commit")
-        already = by_etag.get(meta["etag"])
+    resolved = _resolve(model_id, filenames, revision, meta)
+    for name, info in zip(filenames, resolved):
+        if not (isinstance(info.get("size"), int) and info.get("etag")
+                and info.get("commit")):
+            # "reported", not "the Hub reported": the metadata may have come
+            # from a caller's own manifest (see `meta` above), and a message
+            # naming the Hub for a mirror manifest sends a reader to the wrong
+            # place.
+            raise _Unsegmentable(f"{name}: no size, etag or commit was reported")
+        already = by_etag.get(info["etag"])
         if already is not None:
             # One etag is one blob, and a repo really does publish the same
             # bytes under two names. A second fetch of it would share the part
@@ -1402,9 +1435,9 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
             # nothing there and taking the whole download into the fallback.
             already.filenames.append(name)
             continue
-        fetch = _FileFetch(folder, model_id, name, revision, meta, token, stop,
+        fetch = _FileFetch(folder, model_id, name, revision, info, token, stop,
                            probes)
-        by_etag[meta["etag"]] = fetch
+        by_etag[info["etag"]] = fetch
         fetches.append(fetch)
 
     commits = {fetch.meta["commit"] for fetch in fetches}
