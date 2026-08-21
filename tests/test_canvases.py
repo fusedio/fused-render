@@ -1224,6 +1224,28 @@ def _manager(name="alpha"):
     return canvases_mod._syncs[name]
 
 
+def _watcher_diag(name="alpha"):
+    """Why the watcher is not making progress, for a wait that timed out.
+
+    `status["watching"]` answers "have we been told to stop", not "is the
+    thread running" (`not stop_event.is_set()`), and `_run()` wraps no
+    try/except around its loop body — so an exception on any tick kills the
+    daemon thread while the payload still reports watching: True, push_state
+    idle, every seq stuck at 0. A leaked `pause_count` and a starved worker
+    look identical from outside. This tells those three apart in the failure
+    message, so an intermittent one arrives already diagnosed instead of as a
+    truncated dict.
+    """
+    try:
+        m = _manager(name)
+    except KeyError:
+        return "no manager registered"
+    return (f"thread_alive={m.thread.is_alive()} pause_count={m.pause_count} "
+            f"stop_set={m.stop_event.is_set()} "
+            f"since_pull_poll={time.time() - m._last_pull_poll:.1f}s "
+            f"dirty_since={m._dirty_since} last_error={m.last_error!r}")
+
+
 # Every SCAN_INTERVAL_S/DEBOUNCE_S/PULL_POLL_S tick of canvases.py's manager
 # loop spawns a fresh subprocess for the stub CLI (manifest probes, zip
 # downloads, pulls, pushes, and validation calls are all
@@ -1316,7 +1338,8 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     shims.set_manifest("t2")
 
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1 and s["push_seq"] >= 1)
-    assert status and status["merge_seq"] >= 1 and status["push_seq"] >= 1, status
+    assert status and status["merge_seq"] >= 1 and status["push_seq"] >= 1, (
+        f"{status} | {_watcher_diag()}")
     assert (harness.root / "alpha" / "a.py").read_text() == "a-local\n"
     assert (harness.root / "alpha" / "b.py").read_text() == "b2-remote\n"
     # The sync-point state lives OUTSIDE the clone dir (a CLI `pull --force`
