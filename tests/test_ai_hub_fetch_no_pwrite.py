@@ -329,17 +329,52 @@ def test_the_part_file_is_opened_with_the_platforms_BINARY_flag(base, monkeypatc
     is exactly how the append route shipped without it, green on macOS and
     silently corrupting every blob on win32.
 
-    So the platform is emulated rather than the flag: `_BINARY` is replaced with
-    a sentinel bit, `os.open` strips it before the real call and records which
-    fds carried it, and `os.write` translates `\n` to `\r\n` for exactly the
-    fds that did NOT — a stand-in for the CRT that is faithful in the one respect
-    that matters. With the flag in place nothing is translated and the file is
-    right; drop the `| _BINARY` from `_plan_append` and this fails on the length,
-    in milliseconds, on any platform.
+    It has **two independent teeth**, which is what makes it meaningful on both
+    platforms rather than only on the one it happens to run on:
+
+    1. `_BINARY` is replaced by the platform's own flag **plus** a sentinel bit,
+       and the wrapped `os.open` strips only the sentinel — so the real flag
+       still reaches the kernel — and records which fds carried it. Asserting
+       that every part-file fd carried it is a RUNTIME proof that `_BINARY`
+       reached the call, and it holds on every platform, `O_BINARY` or not. This
+       tooth alone fails the mutation on win32.
+    2. A stand-in CRT translates `\n` to `\r\n` for fds opened without the
+       marker — **but only where the real platform would not already have done
+       it** (`not real_binary`). On POSIX that makes an otherwise invisible
+       consequence visible; on win32 the kernel IS the translator, so the
+       stand-in steps aside rather than doubling it and testing the emulation.
+       This tooth is what fails the mutation on POSIX, where `_BINARY` is 0 and
+       tooth 1 is the only other witness.
+
+    All four cases, spelled out because getting one of them wrong is how this
+    test failed the first time: correct code translates nothing on either
+    platform; mutated code is translated by the stand-in on POSIX and by the
+    kernel on win32, and `finish`'s length gate refuses to publish either.
+
+    **What the first version got wrong** was replacing `_BINARY` with the
+    sentinel OUTRIGHT. On POSIX that is harmless — 0 for 0 — and on win32 it
+    handed the kernel flags with no binary bit at all: the wrapper correctly
+    abstained (the sentinel WAS there) and the kernel translated instead, so the
+    test failed on the Windows lane by removing the very protection it exists to
+    verify. One translation, 200_000 -> 212_500; a wrapper doubling a text-mode
+    kernel would have given ~225_000, which is how the two were told apart.
+
+    **Not verifiable from POSIX, and deliberately not claimed:** that a real
+    `O_BINARY` changes real kernel behaviour. Injecting a fake `os.O_BINARY`
+    proves only that the value survives to `os.open`, because this platform
+    ignores unknown open flags — no local run can exercise the kernel half.
+    Tooth 1 is what covers that there, and the Windows lane is the only evidence
+    that the flag WORKS.
     """
     sentinel = 1 << 30  # not a real open flag anywhere; stripped before the call
-    monkeypatch.setattr(base, "_BINARY", sentinel)
-    real_open, real_write = os.open, os.write
+    #: The platform's flag is KEPT, not replaced: on win32 the kernel still has
+    #: to be told binary mode, or this test creates the corruption it is looking
+    #: for. The sentinel rides along purely so the wrapper can see which fds the
+    #: production code passed `_BINARY` to.
+    real_binary = getattr(os, "O_BINARY", 0)
+    marker = real_binary | sentinel
+    monkeypatch.setattr(base, "_BINARY", marker)
+    real_open, real_write, real_close = os.open, os.write, os.close
     binary, opened = {}, []
 
     def fake_open(path, flags, mode=0o777, **kw):
@@ -349,15 +384,29 @@ def test_the_part_file_is_opened_with_the_platforms_BINARY_flag(base, monkeypatc
         return fd
 
     def fake_write(fd, data):
-        if binary.get(fd, True):
+        if binary.get(fd, True) or real_binary:
+            # Either this fd asked for binary mode, or the platform has a real
+            # text mode and the KERNEL is the translator — in which case
+            # standing in for it here would translate the same bytes twice and
+            # test the emulation rather than the code.
             return real_write(fd, data)
-        # A text-mode fd: what lands is longer than what was handed over, and
-        # the count returned describes the input rather than the disk.
+        # A text-mode fd on a platform that has no text mode: what lands is
+        # longer than what was handed over, and the count returned describes the
+        # input rather than the disk.
         real_write(fd, bytes(data).replace(b"\n", b"\r\n"))
         return len(data)
 
+    def fake_close(fd):
+        # fd numbers are recycled, and a stale `False` left behind by a closed
+        # part file would translate somebody else's writes — pytest's own
+        # output, most likely. Untracked fds default to binary above; this is
+        # what keeps them untracked.
+        binary.pop(fd, None)
+        return real_close(fd)
+
     monkeypatch.setattr(os, "open", fake_open)
     monkeypatch.setattr(os, "write", fake_write)
+    monkeypatch.setattr(os, "close", fake_close)
 
     url, _state = _start_server(payload)
     folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
@@ -365,6 +414,8 @@ def test_the_part_file_is_opened_with_the_platforms_BINARY_flag(base, monkeypatc
 
     parts = [(path, flag) for path, flag in opened if path.endswith(".fusedpart")]
     assert parts, "the part file was never opened through the wrapper"
+    # The runtime half of the AST test beside this one: the flag was not merely
+    # written in the source, it reached the `os.open` that made this fd.
     assert all(flag for _path, flag in parts), parts
     _holds(os.path.join(snapshot, "model.safetensors"), payload)
     _holds(os.path.join(folder, "blobs", "e7ag"), payload)
