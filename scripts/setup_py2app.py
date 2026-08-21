@@ -163,9 +163,10 @@ def _bundled_distributions():
     silently dropped them from the bundle.
     """
     # tomllib is 3.11+ stdlib; `tomli` is the same parser and is a dependency on
-    # 3.10 (see pyproject). This module is imported by
-    # tests/test_bundle_contents.py, which runs on the whole 3.10-3.13 matrix, so
-    # it cannot assume the newer name.
+    # 3.10 (see pyproject). The fallback stays because requires-python is still
+    # >=3.10, so a source install on 3.10 imports this module -- NOT because CI
+    # exercises it: the matrix starts at 3.11 now, so nothing here proves the
+    # `tomli` branch still works.
     try:
         import tomllib
     except ImportError:

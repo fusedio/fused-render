@@ -291,7 +291,7 @@ def _pin_the_script_interpreter_resolution():
     built from, and its answer depends on TWO things a test has no business
     depending on: the version of Python running the suite, and whether uv's managed
     registry happens to hold a 3.12 on this machine. Left alone, the whole suite
-    would behave differently per interpreter — CI runs the matrix on 3.10/3.11/3.13,
+    would behave differently per interpreter — CI runs the matrix on 3.11/3.13,
     where the resolution goes to "no 3.12 yet", and `is_installed` then answers False
     for every requirement set, so tests about markers, probes and rebuild budgets
     would fail for a reason unrelated to what they assert.
