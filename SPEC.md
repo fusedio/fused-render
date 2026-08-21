@@ -6458,7 +6458,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   floor 256, aspect preserved — read off a small stdlib PNG/JPEG/WebP header
   parser in `ai_runtime.py` (no Pillow in the app process), since the route
   answers before the render and the reply has to describe the render that
-  will actually happen, same as every other field on this endpoint. An
+  will actually happen, same as every other field on this endpoint. **The
+  256 floor overrides "aspect preserved" on an extreme ratio** — a
+  4000x200 base (20:1) floors its short side to 256 and comes back
+  1024x256 (4:1) — a real, accepted consequence of the arithmetic as
+  written and confirmed by the gate run, not an oversight. An
   edit's `steps`/`guidance` also default differently from a plain render (4
   and 1.0, not 28 and 4.0) for the identical reason — an edit inheriting the
   generate defaults silently would be a real quality regression. **Residency

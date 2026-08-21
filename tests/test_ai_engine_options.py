@@ -39,9 +39,10 @@ def test_every_runner_code_named_here_is_a_registered_runner():
     registry and not here would silently stop being refused anything, and every
     option it cannot honour would be accepted and quietly ignored.
 
-    Trivially true while the table is empty (D406) — kept so a future entry is
-    checked the moment it is added, rather than the first time a runner is
-    renamed after that."""
+    Was trivially true while the table was empty (D406 withdrew the last row
+    that populated it); D419 gave it three real rows (the diffusers image
+    family's `image` refusal), so this is now exercised for real rather than
+    kept warm for a hypothetical."""
     codes = {runner.code for runner in registry.all_runners()}
     assert set(engine_options.UNSUPPORTED) <= codes
 
