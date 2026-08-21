@@ -250,25 +250,27 @@ def test_discard_throws_the_walkthrough_away(html):
     view = _block(html, '<div id="anncta">', "</div>")
     assert view.index('id="anndiscard"') < view.index('id="annbtn"')
     body = _block(html, "async function annRecDiscard()", "\n}\n")
-    # the SESSION is snapshotted before the await — flags, face, chunks, ids,
-    # timer, epoch — because a new recording can begin while this one's stop
+    # cancel(), not stop(): the capture handle's cancel is the ending that
+    # DELETES the file (SPEC CP-4), which is what a discard means — a stop
+    # would leave the audio in <home>/recordings with a row pointing at it
+    assert "await handle.cancel();" in body
+    assert "handle.stop()" not in body
+    # the SESSION is snapshotted before the await — flags, face, handle, ids,
+    # timer, epoch — because a new recording can begin while this one's ending
     # settles, and a global read after the await would be the new session's
     # (its marks deleted, its timer killed, its transcript overwritten). Both
     # enders follow the same order (Bugbot, #665, three rounds of it).
-    for fn in (body, _block(html, "async function annRecEnd()", "\n}\n")):
-        stop = fn.index("await stopped;")
+    for fn, ending in ((body, "await handle.cancel();"),
+                       (_block(html, "async function annRecEnd()", "\n}\n"),
+                        "out = await handle.stop();")):
+        stop = fn.index(ending)
         assert fn.index("annRecOn = false;") < stop
         assert fn.index("clearInterval(annRecTimerId);") < stop
         assert fn.index("const armed = annArmEpoch;") < stop
         assert fn.index("annRecIds = [];") < stop
+        assert fn.index("annRecHandle = null;") < stop
     assert body.index('annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");') \
-        < body.index("await stopped;")
-    # ...and the recorder's final dataavailable lands in the SESSION's array:
-    # annRecBegin's sink is a closure, not the global the enders reset
-    begin = _block(html, "async function annRecBegin()", "\n}\n")
-    assert "const chunks = [];" in begin
-    assert "annRecChunks = chunks;" in begin
-    assert "(e) => { if (e.data.size) chunks.push(e.data); }" in begin
+        < body.index("await handle.cancel();")
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
     assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
@@ -538,6 +540,64 @@ def test_a_new_note_autosends_bare_with_no_canned_message(html):
     assert "if (isNew && !sending) annAutoSubmit();" in body
     assert "annPrefillComposer" not in body, \
         "the save path seeds nothing — there is no canned prompt to seed"
+
+
+# ------------------------------------------- the app records, not this page
+
+def test_the_walkthrough_records_through_fused_capture(html):
+    """`fused.capture.audio` (SPEC §45), not a MediaRecorder: the app writes
+    the file and NAMES IT before the first sample, so the stop hands
+    `fused.ai.transcribe({path})` a path instead of this page uploading a blob
+    it had to guess a container for."""
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    assert "await fused.capture.audio(" in begin
+    end = _block(html, "async function annRecEnd()", "\n}\n")
+    assert "out = await handle.stop();" in end
+    assert "const path = out.path;" in end
+    # the whole walkthrough path is off the browser recorder now — no blob, no
+    # upload, and no extension for this page to guess
+    for fn in (begin, end, _block(html, "async function annRecDiscard()", "\n}\n")):
+        # call forms, not words: the comments name what this path stopped
+        # doing and why, which is the part worth keeping
+        assert "new MediaRecorder(" not in fn
+        assert "navigator.mediaDevices" not in fn
+        assert "fused.uploadFile(" not in fn
+        assert "new Blob(" not in fn
+    assert "function annRecExt(" not in html
+
+
+def test_the_walkthrough_names_no_path_of_its_own(html):
+    """The container is the BACKEND's to name (CP-5) — .m4a natively,
+    fragmented mp4 or WebM where the browser encodes — and a caller `path`
+    whose extension contradicts it is refused, so the default timestamped name
+    under <home>/recordings is the only portable ask."""
+    begin = _block(html, "async function annRecBegin()", "\n}\n")
+    call = begin[begin.index("fused.capture.audio("):]
+    call = call[:call.index(")")]
+    assert "path" not in call, call
+    assert "title:" in call
+
+
+def test_the_mic_seat_is_drawn_off_the_probe(html):
+    """`sources()` never prompts (CP-7), so the seat is drawn off its answer
+    rather than off a click that could only ever alert — and a probe that
+    FAILED is not a refusal, so the seat stays."""
+    body = _block(html, "  try {\n    const src = await fused.capture.sources();",
+                  "\n})();")
+    assert "src.audio.available === false" in body
+    assert "annRecBtn.remove();" in body
+    assert 'console.warn("capture probe skipped:"' in body
+
+
+def test_the_teardown_ends_the_recording_without_transcribing(html):
+    """A document going away must not leave the microphone on — but the
+    ending is stop(), which KEEPS the file (CP-4): a teardown the user did not
+    ask for must not throw their walkthrough away."""
+    body = _block(html, 'window.addEventListener("pagehide", () => {',
+                  "annXORemove();")
+    assert "if (handle) handle.stop().catch(() => {});" in body
+    assert "cancel()" not in body
+    assert "fused.ai.transcribe" not in body
 
 
 # ------------------------------------------------ warming the transcriber
