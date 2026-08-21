@@ -41,6 +41,7 @@ Actions:
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       custom=<json string, the "Other" text per question, AskUserQuestion only>,
        note=<free text, ExitPlanMode deny only>)
                                       -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
@@ -361,7 +362,7 @@ def _multi_answer_ok(value: str, labels: list) -> bool:
     return False
 
 
-def _answers_from(questions, answers):
+def _answers_from(questions, answers, custom=None):
     """The answer record that may be latched, or None — which means deny.
 
     MUST stay identical to `_answers_from` in permission_server.py: this copy
@@ -374,10 +375,23 @@ def _answers_from(questions, answers):
     exact question, because the alternative failure is the model acting on a
     choice the user never made. An omitted question is allowed (the CLI reads it
     as unanswered, which is true); an invented one is not.
+
+    `custom` is the one way a value that the model did not author gets through:
+    the card's "Other" box (D406), keyed by the same question text, carrying what
+    the USER typed. It is folded in as one extra option for that question and
+    nothing more — the answer still has to match the option list exactly, the
+    typed string still has to come last in a multi-select join, and free text for
+    a question nobody asked is refused like any other invented answer. The
+    distinction that survives is authorship: a label the model offered, or a
+    sentence the user wrote — never a string neither of them ever produced.
     """
     if not isinstance(questions, list) or not questions:
         return None
     if not isinstance(answers, dict) or not answers:
+        return None
+    if custom is None:
+        custom = {}
+    if not isinstance(custom, dict):
         return None
     asked = {}
     for question in questions:
@@ -395,6 +409,22 @@ def _answers_from(questions, answers):
         if not labels or text in asked:
             return None
         asked[text] = (labels, bool(question.get("multiSelect")))
+    # The typed answers, each folded in as one more option for its own question.
+    # Validated first and as a whole, on the same all-or-nothing rule as the
+    # labels: free text for a question that was never asked is the same
+    # fabrication as an invented label, and an empty box is not an answer.
+    for text, typed in custom.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(typed, str) or not typed:
+            return None
+        labels, multi = asked[text]
+        # Typing out an option's own wording is not a second option: appending it
+        # would let "Alpha, Alpha" match a multi-select join.
+        if typed not in labels:
+            # LAST, because the multi-select join is matched in option order and
+            # the card puts the typed answer after everything ticked.
+            asked[text] = (labels + [typed], multi)
     out = {}
     for text, value in answers.items():
         if not isinstance(text, str) or text not in asked:
@@ -1216,7 +1246,8 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
-            mode: str = "", answers: str = "", note: str = "") -> dict:
+            mode: str = "", answers: str = "", note: str = "",
+            custom: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -1259,12 +1290,21 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
             # one is recorded as a deny rather than as an allow the model would
             # read as "the user did not answer the questions". Validated against
             # the parked request's own questions, never against what was sent.
-            picked = _answers_from(asked.get("questions"), _as_answers(answers))
+            typed = _as_answers(custom)
+            picked = _answers_from(asked.get("questions"), _as_answers(answers),
+                                   typed)
             if picked is None:
                 payload = {"decision": "deny", "scope": "once",
                            "message": BAD_ANSWER}
             else:
                 payload["answers"] = picked
+                # Latched BESIDE the answer, not folded into it: the answer is
+                # one string per question either way, and permission_server
+                # re-validates from scratch — so it needs to be told which part
+                # of that string the user typed rather than inferring it back
+                # out of a join it must not try to split (D406).
+                if typed:
+                    payload["custom"] = typed
         # Anywhere else `answers` is simply not a field: dropping it here is what
         # keeps the page from adding keys to a tool input it does not own.
     else:
@@ -3297,7 +3337,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
-         answers: str = "", note: str = "") -> dict:
+         answers: str = "", note: str = "", custom: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -3319,8 +3359,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         # below — params cross into python string-shaped — and is only read for
         # an AskUserQuestion request (see _decide). `note` is the plan card's
         # equivalent: free text the user typed next to "keep planning", read only
-        # for an ExitPlanMode deny and only ever as part of its message.
-        return _decide(run_id, request_id, decision, scope, mode, answers, note)
+        # for an ExitPlanMode deny and only ever as part of its message. `custom`
+        # is the question card's sibling of both: a JSON record, keyed by the
+        # same question text as `answers`, of what the user typed into "Other".
+        return _decide(run_id, request_id, decision, scope, mode, answers, note,
+                       custom)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is

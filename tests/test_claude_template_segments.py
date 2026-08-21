@@ -17,7 +17,8 @@ probes attached to the code that actually ships.
 markdown probes they need a DOM. `_DOM` below is a hand-built minimal one
 (the same narrow-stub approach as tests/test_claude_app_state.py's `_DOM`,
 widened to what these functions touch: createElement/createTextNode,
-append/appendChild/remove/after/replaceChildren, className + classList,
+append/appendChild/remove/after/replaceWith/replaceChildren, focus,
+className + classList,
 textContent, innerHTML, `open`). No jsdom — the dependency task 1 was told
 not to add, and not needed: nothing here lays out, parses HTML or measures.
 Two properties of the stub are load-bearing for the assertions:
@@ -91,6 +92,7 @@ _TYPER_END = "abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },\n  
 # reports both, so a test can prove which door a string came in through.
 _DOM = r"""
 let _uid = 0;
+let _focused = null;   // the element whose focus() ran last
 function textNode(s) {
   const t = {nodeType: 3, nodeValue: String(s), parentElement: null};
   Object.defineProperty(t, "textContent", {get: () => t.nodeValue});
@@ -114,6 +116,10 @@ function makeEl(tag) {
       n.parentElement = null; return n;
     },
     remove() { if (e.parentElement) e.parentElement.removeChild(e); },
+    // `after` then `remove`, in that order: the question card's "Other" row
+    // swaps a button for its text field and back again, and doing it the other
+    // way round would lose the position the swap exists to keep.
+    replaceWith(n) { e.after(n); e.remove(); },
     after(n) {
       const p = e.parentElement;
       if (!p) return;
@@ -126,6 +132,10 @@ function makeEl(tag) {
       e._text = ""; e._html = null;
       nodes.forEach((n) => e.appendChild(typeof n === "string" ? textNode(n) : n));
     },
+    // Recorded, not swallowed: the question card autofocuses the box an
+    // "Other" row opens, and "the caret is in the field the user just asked
+    // for" is the assertion, not an implementation detail.
+    focus() { _focused = e; },
     setAttribute(k, v) { e.attrs[String(k)] = String(v); },
     getAttribute(k) { return k in e.attrs ? e.attrs[k] : null; },
     // The collapse policy records a user's fold from the SUMMARY's click
@@ -1515,9 +1525,15 @@ def test_a_question_card_renders_the_header_question_and_every_option(card):
     assert _texts(tree, "qtext") == ["Alpha or Beta?"]
     # One control per option, each showing the label AND its description — the
     # label is the only thing that can be sent, so nothing about it is elided.
-    assert _texts(tree, "lbl") == ["Alpha", "Beta"]
-    assert _texts(tree, "desc") == ["Pick Alpha", "Pick Beta"]
-    assert len(_by_class(tree, "qopt")) == 2
+    # …plus the "Other" row this window always adds (D406), last and marked as
+    # not one of Claude's: two-to-four options are its guess at the answer
+    # space, and a card that cannot express disagreement with that guess makes
+    # the user pick the nearest wrong answer.
+    assert _texts(tree, "lbl") == ["Alpha", "Beta", "Other…"]
+    assert _texts(tree, "desc") == ["Pick Alpha", "Pick Beta",
+                                    "Answer in your own words"]
+    assert len(_by_class(tree, "qopt")) == 3
+    assert [n["cls"] for n in _by_class(tree, "qother")] == ["qopt qother"]
     # A single-choice question answers on click, so there is no submit step.
     assert not _by_class(tree, "qsend")
 
@@ -1554,6 +1570,9 @@ def test_clicking_an_option_sends_that_label_as_the_answer(card):
         "scope": "once", "decision": "allow",
         # A JSON string keyed by the exact question text, value = the label.
         "answers": '{"Alpha or Beta?":"Beta"}',
+        # …and the empty second channel. It always goes, so the backend never
+        # has to tell "no Other was used" from "a page too old to have one".
+        "custom": "{}",
     }]
     status = _by_class(got["tree"], "perm-status")[0]
     assert status["text"] == "✓ You chose: Beta"
@@ -1578,10 +1597,12 @@ def test_a_multi_select_question_submits_the_ticked_labels_joined(card):
   byClass(card.el, "qsend")[0].children[0].onclick();
   await settle();
 """, reply={"decision": "allow", "answers": {"Which libraries?": "Alpha, Gamma"}})
+    # Three options, the "Other" tick, and the box it opens into.
     assert [n["type"] for n in _nodes(got["before"]) if n["tag"] == "input"] \
-        == ["checkbox"] * 3
+        == ["checkbox"] * 4 + ["text"]
     assert json.loads(got["sent"][0]["answers"]) == {
         "Which libraries?": "Alpha, Gamma"}
+    assert got["sent"][0]["custom"] == "{}"
     assert _by_class(got["tree"], "perm-status")[0]["text"] == \
         "✓ You chose: Alpha, Gamma"
 
@@ -1599,7 +1620,7 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
   await settle();
   extra.halfway = {sent: sent.length,
                    status: byClass(card.el, "perm-status")[0].textContent};
-  boxes[3].checked = true;         // Beta, on the second question
+  boxes[5].checked = true;         // Beta, on the second question
   submit();
   await settle();
 """, reply={"decision": "allow"})
@@ -1608,10 +1629,130 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
     assert json.loads(got["sent"][0]["answers"]) == {
         "Alpha or Beta?": "Alpha", "Which libraries?": "Beta"}
     # Two questions ⇒ radios for the single-choice one, checkboxes for the other,
-    # grouped per question so one question cannot steal another's selection.
+    # grouped per question so one question cannot steal another's selection —
+    # and an "Other" tick in each group, in that group's own shape, followed by
+    # the text box it opens.
     inputs = [n for n in _nodes(got["before"]) if n["tag"] == "input"]
-    assert [n["type"] for n in inputs] == ["radio"] * 2 + ["checkbox"] * 3
-    assert len({n["name"] for n in inputs}) == 2
+    assert [n["type"] for n in inputs] == \
+        ["radio"] * 3 + ["text"] + ["checkbox"] * 4 + ["text"]
+    # The text boxes are in no group: an "Other" that unticked the question's
+    # options by sharing their name would be answering it by being typed into.
+    assert len({n["name"] for n in inputs if n["type"] != "text"}) == 2
+    assert all(not n["name"] for n in inputs if n["type"] == "text")
+
+
+def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
+    """D406. On a single-choice card every option IS a button, so "Other" is one
+    too and clicking it swaps the button for the field where the button stood —
+    the row the user aimed at stays where they aimed at it. Enter answers, and
+    what leaves is the typed string in `answers` plus the same string in
+    `custom`, which is what tells the backend the user wrote it.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qother")[0].onclick();
+  const field = byClass(card.el, "qtype")[0];
+  extra.opened = {rows: byClass(card.el, "qopt").length,
+                  // Alpha and Beta are still buttons; Other is not one any more.
+                  buttons: byTag(card.el, "BUTTON").length,
+                  focused: _focused === field};
+  field.value = "  Neither — use Delta  ";
+  field.onkeydown({key: "Enter", preventDefault(){}, stopPropagation(){}});
+  await settle();
+""", reply={"decision": "allow",
+            "answers": {"Alpha or Beta?": "Neither — use Delta"}})
+    # The button became the box, in place — three rows before and after — and
+    # the caret is already in it, so the click and the typing are one gesture.
+    assert got["extra"]["opened"] == {"rows": 3, "buttons": 2, "focused": True}
+    sent = got["sent"][0]
+    # Trimmed, and the SAME string on both channels: `answers` is what the model
+    # reads, `custom` is the provenance the validators need to let it through.
+    assert json.loads(sent["answers"]) == {"Alpha or Beta?": "Neither — use Delta"}
+    assert json.loads(sent["custom"]) == {"Alpha or Beta?": "Neither — use Delta"}
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == \
+        "✓ You chose: Neither — use Delta"
+
+
+def test_an_empty_other_box_sends_nothing_and_escape_gives_the_options_back(card):
+    """A blank answer would reach the model as a question the user "answered"
+    with silence, which is worse than an unanswered one — so Enter on an empty
+    box does nothing at all. Esc is the way out, and it restores the row rather
+    than leaving a field the user cannot close."""
+    got = card.build(_ONE_QUESTION, actions="""
+  const press = (key) => byClass(card.el, "qtype")[0].onkeydown(
+    {key, preventDefault(){}, stopPropagation(){}});
+  byClass(card.el, "qother")[0].onclick();
+  byClass(card.el, "qtype")[0].value = "   ";
+  press("Enter");
+  await settle();
+  extra.afterBlankEnter = {sent: sent.length,
+                           fields: byClass(card.el, "qtype").length};
+  press("Escape");
+""")
+    assert got["extra"]["afterBlankEnter"] == {"sent": 0, "fields": 1}
+    # Back to three plain options, the third one closed again.
+    assert got["sent"] == []
+    assert _texts(got["tree"], "lbl") == ["Alpha", "Beta", "Other…"]
+    assert [n["cls"] for n in _by_class(got["tree"], "qother")] == ["qopt qother"]
+
+
+def test_a_multi_select_sends_the_typed_answer_last_alongside_the_ticks(card):
+    """Parity on a multi-select: "Other" is a tick like the rest, and what is
+    typed there JOINS the chosen labels rather than replacing them — appended
+    last, because that is the order the backend matches a join in."""
+    got = card.build(_MULTI, actions="""
+  const boxes = byTag(card.el, "INPUT");
+  boxes[0].checked = true;                    // Alpha
+  boxes[2].checked = true;                    // Gamma
+  boxes[3].checked = true;                    // Other
+  byClass(card.el, "qtype")[0].value = "Delta";
+  byClass(card.el, "qsend")[0].children[0].onclick();
+  await settle();
+""", reply={"decision": "allow",
+            "answers": {"Which libraries?": "Alpha, Gamma, Delta"}})
+    assert json.loads(got["sent"][0]["answers"]) == {
+        "Which libraries?": "Alpha, Gamma, Delta"}
+    assert json.loads(got["sent"][0]["custom"]) == {"Which libraries?": "Delta"}
+
+
+def test_ticking_other_opens_its_box_and_picking_an_option_closes_it_again(card):
+    """The tick is the switch and the box is the answer, so they move together.
+
+    The listener sits on the LIST rather than on the tick, and that is the whole
+    point on a single-choice question: a radio that another option unticks fires
+    no event of its own, so the row would sit there open, focused and ignored
+    while the answer had already moved elsewhere.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  const p2 = {questions: [p.input.questions[0], {question: "Second?",
+              options: [{label: "x"}], multiSelect: false}]};
+  const two = buildPermCard(Object.assign({}, p, {input: p2}), "run-1", "prompt");
+  const list = byClass(two.el, "qopts")[0];
+  const boxes = byTag(list, "INPUT");
+  const fire = () => (list._on.change || []).forEach((f) => f());
+  const row = () => byClass(list, "qother")[0].className;
+  boxes[2].checked = true;                     // Other
+  fire();
+  extra.opened = {cls: row(), focused: _focused === byClass(list, "qtype")[0]};
+  boxes[2].checked = false; boxes[0].checked = true;   // a radio steals it
+  fire();
+  extra.closed = row();
+""")
+    assert got["extra"]["opened"] == {"cls": "qopt qother typing", "focused": True}
+    assert got["extra"]["closed"] == "qopt qother"
+
+
+def test_a_ticked_but_empty_other_is_told_what_is_missing(card):
+    """An open, empty box is a different mistake from an untouched question, and
+    "Pick an answer" to someone who has already decided not to pick one is no
+    help."""
+    got = card.build(_MULTI, actions="""
+  byTag(card.el, "INPUT")[3].checked = true;   // Other, nothing typed
+  byClass(card.el, "qsend")[0].children[0].onclick();
+  await settle();
+""")
+    assert got["sent"] == []
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == \
+        "Type your own answer, or pick one of the options."
 
 
 def test_a_question_card_offers_neither_a_verdict_nor_a_mode_switch(card):
@@ -1652,7 +1793,7 @@ def test_a_failed_send_brings_the_options_back(card):
   byClass(card.el, "qopt")[0].onclick();
   await settle();
 """, reply={"error": "could not record that decision"})
-    assert len(_by_class(got["tree"], "qopt")) == 2
+    assert len(_by_class(got["tree"], "qopt")) == 3
     assert not any(n["disabled"] for n in _nodes(got["tree"])
                    if n["tag"] in ("button", "input"))
     status = _by_class(got["tree"], "perm-status")[0]

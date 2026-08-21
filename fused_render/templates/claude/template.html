@@ -1799,6 +1799,44 @@
     outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
     outline-offset: 2px;
   }
+  /* The "Other" row (D406). Always present, never model-authored: two to four
+     options are Claude's guess at the answer space, and the one thing a fixed
+     list cannot express is disagreement with it. Same box as an option, because
+     it is answered the same way — dashed and with a receding label, because it
+     is the one row on the card Claude did not write and must not read as a
+     fifth thing it suggested. Once it is being typed into it stops being an
+     offer and becomes the answer in progress, so it takes the solid accent edge
+     every other focused control on this card has. */
+  .perm .qopt.qother { border-style: dashed; }
+  .perm .qopt.qother .lbl { font-weight: 500; color: var(--dim); }
+  .perm .qopt.qother.typing {
+    border-style: solid;
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    cursor: default;
+  }
+  /* Hidden until the row is opened rather than absent from the DOM: the field
+     keeps what was typed across an Esc-and-back, and there is nothing to build
+     on the click. */
+  .perm .qtype {
+    display: none;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 6px;
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .perm .qopt.qother.typing .qtype { display: block; }
+  /* Nothing above it in the box: the label is the placeholder's job here. */
+  .perm .qopt.qother.typing > .qtype { margin-top: 0; }
+  .perm .qtype:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  }
   .perm .qsend { margin-top: 12px; }
 
   /* ── plan cards (ExitPlanMode) ──
@@ -11316,6 +11354,19 @@ function buildPermCard(p, run_id, liveMode) {
 // descriptions) and goes in through textContent, whole: the option labels are the
 // only thing that can be sent, so an option the user cannot read properly is an
 // answer they did not mean to give.
+//
+// …with ONE exception, and it is deliberate: every question also gets an "Other"
+// row this window adds (D406), the same entry Claude Code's own prompt appends.
+// The model's two-to-four options are its guess at the answer space, and a card
+// that can only echo that guess back forces the user to pick the nearest wrong
+// answer — the model then acts on a choice nobody made, which is the exact
+// failure the label validation exists to prevent, arriving through the front
+// door. So the typed text rides a SEPARATE `custom` param rather than being
+// smuggled in as a label: `answers` stays strictly "a string the request itself
+// offered", and `custom` is "a string the user wrote", each validated as what it
+// is (agent.py `_answers_from`). Multi-select keeps parity — a typed answer sits
+// alongside the ticked ones, joined last, because that is the order the backend
+// matches a join in.
 function buildQuestionCard(p, run_id) {
   const input = p.input && typeof p.input === "object" ? p.input : {};
   const raw = Array.isArray(input.questions) ? input.questions : [];
@@ -11374,9 +11425,12 @@ function buildQuestionCard(p, run_id) {
   }
 
   // A JSON string, not a nested object: params cross into python string-shaped,
-  // the same way app_state sends its snapshot.
-  const send = (answers) => post(
-    { decision: "allow", answers: JSON.stringify(answers) }, answers);
+  // the same way app_state sends its snapshot. `custom` is the second record —
+  // same keys, values the user TYPED — and it always goes, empty or not, so the
+  // backend never has to tell "no Other was used" from "an older page".
+  const send = (answers, custom) => post(
+    { decision: "allow", answers: JSON.stringify(answers),
+      custom: JSON.stringify(custom || {}) }, answers);
   const dismiss = () => post({ decision: "deny" }, null);
 
   let shown = "";
@@ -11429,22 +11483,63 @@ function buildQuestionCard(p, run_id) {
     return wrap;
   }
 
+  // The one-line editor an "Other" row opens into. Enter answers, Esc gives the
+  // options back, and a blank box does nothing at all — an empty answer would
+  // reach the model as a question the user "answered" with silence, which is
+  // worse than not answering it. keydown stops here: the pane's own shortcuts
+  // must not read a user typing their answer as commands.
+  function otherField(placeholder, onEnter, onEscape) {
+    const field = document.createElement("input");
+    field.type = "text";
+    field.className = "qtype";
+    field.placeholder = placeholder;
+    field.onkeydown = (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        // `|| ""` because an input that was never typed into has no value of
+        // its own to trim.
+        const value = (field.value || "").trim();
+        if (value) onEnter(value);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        onEscape();
+      }
+      ev.stopPropagation();
+    };
+    // Inside a <label> the field is interactive content, so a click on it does
+    // not activate the tick — belt and braces, because a click that silently
+    // unticked the row the user is typing into would be unexplainable.
+    field.onclick = (ev) => { ev.stopPropagation(); };
+    widgets.push(field);
+    return field;
+  }
+
   function submit() {
     const pairs = [];
+    const custom = [];
     for (const block of blocks) {
       const labels = block.picked();
       if (!labels.length) {
         status.className = "perm-status deny";
-        status.textContent = "Pick an answer for every question.";
+        // An open, empty Other box is a different mistake from an untouched
+        // question, and saying "pick an answer" to someone who has already
+        // decided not to pick one is no help.
+        status.textContent = block.typing()
+          ? "Type your own answer, or pick one of the options."
+          : "Pick an answer for every question.";
+        block.focus();
         return;
       }
       // One string per question — the chosen labels joined with ", ", which is
-      // what the CLI validates against the option list it sent.
+      // what the CLI validates against the option list it sent (plus, when the
+      // user typed one, the option this window added on their behalf).
       pairs.push([block.question, labels.join(", ")]);
+      const own = block.typed();
+      if (own) custom.push([block.question, own]);
     }
     // fromEntries, not assignment: a question whose text is "__proto__" would
     // vanish into the prototype setter, exactly as in leftoverInput (D161).
-    send(Object.fromEntries(pairs));
+    send(Object.fromEntries(pairs), Object.fromEntries(custom));
   }
 
   if (answerable) {
@@ -11493,12 +11588,80 @@ function buildQuestionCard(p, run_id) {
         ticks.push({ box, label: option.label });
         list.appendChild(row);
       });
+
+      // …and the row Claude did not write. Last, always: it is the answer for
+      // when none of the ones above are, so it reads after them, and the
+      // backend matches a multi-select join in exactly this order.
+      const other = { label: "Other…", description: "Answer in your own words" };
+      let typed = () => "";        // what is in the box, read at submit time
+      let typing = () => false;    // is the box open but empty?
+      let focusOther = () => {};
+      if (oneShot) {
+        // Each option here IS a button, so Other is one too — and clicking it
+        // swaps the button for the field in place, which keeps the row the user
+        // aimed at exactly where they aimed at it.
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "qopt qother";
+        b.appendChild(optionText(other));
+        const wrap = document.createElement("div");
+        wrap.className = "qopt qother typing";
+        const field = otherField(
+          "Type your answer, then press Enter",
+          (value) => send(Object.fromEntries([[q.question, value]]),
+                          Object.fromEntries([[q.question, value]])),
+          () => { wrap.replaceWith(b); b.focus(); });
+        wrap.appendChild(field);
+        b.onclick = () => { b.replaceWith(wrap); field.focus(); };
+        widgets.push(b);
+        list.appendChild(b);
+      } else {
+        const row = document.createElement("label");
+        row.className = "qopt qother";
+        const box = document.createElement("input");
+        box.type = q.multiSelect ? "checkbox" : "radio";
+        box.name = "q-" + p.id + "-" + i;   // the same group as the options
+        const body = optionText(other);
+        const field = otherField("Your answer",
+                                 () => submit(),
+                                 () => { box.checked = false; sync(); });
+        body.appendChild(field);
+        row.append(box, body);
+        // The tick is the switch and the field is the answer, so they move
+        // together — and the listener sits on the LIST, not on the box: a radio
+        // that another option unticks fires no event of its own, so the group
+        // has to be re-read from whichever tick did fire. Guarded on the edge,
+        // or ticking a sibling checkbox would yank focus back into the field.
+        let open = false;
+        function sync() {
+          if (box.checked === open) return;
+          open = box.checked;
+          row.classList.toggle("typing", open);
+          if (open) field.focus();
+        }
+        list.addEventListener("change", sync);
+        widgets.push(box);
+        list.appendChild(row);
+        const own = () => (field.value || "").trim();
+        typed = () => (box.checked ? own() : "");
+        typing = () => box.checked && !own();
+        focusOther = () => field.focus();
+      }
+
       block.appendChild(list);
       scroll.appendChild(block);
       controls.push(list);
       blocks.push({
         question: q.question,
-        picked: () => ticks.filter((t) => t.box.checked).map((t) => t.label),
+        picked: () => {
+          const chosen = ticks.filter((t) => t.box.checked).map((t) => t.label);
+          const own = typed();
+          if (own) chosen.push(own);
+          return chosen;
+        },
+        typed,
+        typing,
+        focus: focusOther,
       });
     });
     // Same rule as an approval card: no input key is invisible. `questions` is
