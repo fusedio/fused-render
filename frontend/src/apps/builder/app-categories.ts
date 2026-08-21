@@ -43,3 +43,22 @@ export function orderCategories(categories: string[]): string[] {
     (a, b) => learnRank(a) - learnRank(b) || a.localeCompare(b),
   );
 }
+
+// The Folders facet's chips (mode key `repo`, label "Folders" — see MODES in
+// Apps.tsx). A tag is a SOURCE — the workspace tag dir an app was scanned out
+// of, or `linked` for a folder registered from elsewhere — and an exported
+// `.fused` (kind "appfile") has no source folder at all: its
+// "Fused-App" tag names what the artifact IS. That belongs on the card's own
+// tag line, which prints it, and not in a filter row that claims to group by
+// where things came from — so appfile rows contribute no chip.
+//
+// Excluded by `kind`, not by matching the tag text, so rewording the tag
+// cannot quietly put the chip back. The rows stay reachable: an explicit
+// `?tag=` URL still filters to them (the All chip clears it) and the search
+// box still matches their tag.
+//
+// Code-unit sort, unlike orderCategories: these are directory names, not
+// freehand author strings, and the sort is the one the chips have always had.
+export function repoChips(apps: { tag: string; kind?: string | null }[]): string[] {
+  return [...new Set(apps.filter((a) => a.kind !== "appfile").map((a) => a.tag))].sort();
+}

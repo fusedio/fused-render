@@ -97,3 +97,20 @@ export function dragPaneFrac(containerW: number, rawPx: number): number | null {
   if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return null;
   return clampPaneWidth(containerW, rawPx) / containerW;
 }
+
+// WHETHER A DRAG HAS PULLED THE PANE SHUT — the listing pane's version of the
+// sidebars' drag-to-close (platform/lib/panel-drag `resizeWidth` returning
+// null). #680 gave the gesture to both SIDEBARS and left this pane holding at
+// its floor — exactly the clamp-says-"this is as narrow as it goes" reading
+// #680 existed to fix. Same grammar here: between the floor and half the floor
+// the pane sticks (the clamp above already renders that resistance band), and
+// only a pull clean through it — the cursor within PANE_MIN_W/2 of the
+// container's right edge — reads as "shut it". Half the floor rather than a
+// flat count, so the band scales with the floor exactly as `closeOverdrag`
+// does for the sidebar. In a container too narrow to express a split there is
+// no resistance band to pull through (dragPaneFrac is already null there), so
+// there is no close either: a gesture whose warning cannot render must not act.
+export function paneDragCloses(containerW: number, rawPx: number): boolean {
+  if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return false;
+  return rawPx < PANE_MIN_W / 2;
+}

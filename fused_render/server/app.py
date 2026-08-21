@@ -56,6 +56,7 @@ from fused_render.server.routers.git_show import router as git_show_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.render import router as render_router
@@ -277,7 +278,7 @@ def create_app(start_dir: str) -> FastAPI:
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.
-    # Live native recordings are finalised on the way out (SPEC §44/CP-4): a
+    # Live native recordings are finalised on the way out (SPEC §45/CP-4): a
     # .mov whose `moov` atom was never written does not play, so a server that
     # stops while one is running must not just vanish. This covers the plain
     # `fused-render` server (Ctrl-C, uvicorn's own shutdown); the packaged app
@@ -385,7 +386,7 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
-    # Native screen / microphone / still capture (routers/capture.py, SPEC §44):
+    # Native screen / microphone / still capture (routers/capture.py, SPEC §45):
     # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
     # than by the routes being absent — a page must be able to ask.
     app.include_router(capture_router)
@@ -437,6 +438,12 @@ def create_app(start_dir: str) -> FastAPI:
     # my disk" and "what is on the network" fail differently and share nothing
     # but the join.
     app.include_router(hub_models_router)
+    # Signing this machine in to the Hub (routers/hf_auth.py, D402). The app
+    # stores no token: the button drives huggingface_hub's own browser login and
+    # hf persists what comes back, so this router holds a device flow and
+    # nothing else. The read is unguarded and carries no credential — not even
+    # the value of an environment variable that may be overriding hf's store.
+    app.include_router(hf_auth_router)
     # Local inference (routers/ai_runtime.py, SPEC §40): which models this
     # machine is holding in memory, what they cost, and the load/unload/download
     # that change that. Reads unguarded; the three POSTs start processes and

@@ -3355,7 +3355,7 @@
 
   // ----------------------------------------------------------- fused.capture
   //
-  // Native screen / microphone / still capture (SPEC §44). Named `capture` and
+  // Native screen / microphone / still capture (SPEC §45). Named `capture` and
   // not `record` because a screenshot is an instant, not a session: all three
   // calls share one TCC grant, one display list and one output-path rule, so
   // they belong behind one door, and `record.screenshot` would have been a

@@ -793,6 +793,16 @@ def test_an_explicit_override_is_probed_even_with_an_odd_name(monkeypatch, tmp_p
     It still has to pass the probe — the escape hatch relaxes the name guard,
     not the verification.
     """
+    if os.name == "nt":
+        # The wrapper below IS a shebang script (`#!/bin/sh\nexec ...`), made
+        # runnable with chmod +x — a POSIX exec mechanism Windows has none of.
+        # CreateProcess cannot launch it at all (no interpreter association,
+        # no shebang support), so the probe would fail for a reason that has
+        # nothing to do with what this test is actually pinning: that an
+        # explicit override skips the NAME guard. A `.bat`/`.cmd` stand-in
+        # would exercise a different, shell-mediated spawn path instead of
+        # the direct one under test, so this is skipped rather than faked.
+        pytest.skip("the wrapper is a POSIX shebang script by construction")
     wrapper = tmp_path / "app-python-wrapper"
     wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
@@ -1514,6 +1524,14 @@ def test_a_wrapper_that_does_not_work_is_rejected(bundle_like, monkeypatch):
 
 def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
     """A DMG can be mounted at `/Volumes/Fused Render`; nothing may split on it."""
+    if os.name == "nt":
+        # Same gate `_wrapper_interpreter` itself documents: "Windows
+        # interpreters self-locate; there is no PYTHONHOME to restore and no
+        # POSIX shell to do it with." It returns None before ever generating
+        # a body to inspect, regardless of PYTHONHOME below — this is the
+        # `bundle_like` fixture's own skip, just reached directly instead of
+        # through that fixture.
+        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "a state dir"))
     home = tmp_path / "home with spaces"
     (home / "lib").mkdir(parents=True)
@@ -1535,6 +1553,11 @@ def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
 def test_the_wrapper_is_private_and_regenerated_only_when_it_changes(
     tmp_path, monkeypatch
 ):
+    if os.name == "nt":
+        # Same gate as test_the_wrapper_quotes_paths_with_spaces above: no
+        # wrapper is ever generated on Windows, so there is no 0700 mode or
+        # regenerated body to assert on.
+        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     home = tmp_path / "home"
     (home / "lib").mkdir(parents=True)

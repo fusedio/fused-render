@@ -37,7 +37,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { purgeViewStateParams } from "@platform/lib/viewstate";
 import { getPaneFrac, setPaneFrac } from "@apps/explorer/listing/pane-store";
-import { companionFrac, dragPaneFrac } from "@apps/explorer/listing/pane-math";
+import { companionFrac, dragPaneFrac, paneDragCloses } from "@apps/explorer/listing/pane-math";
 
 // THE ONE-TIME PURGE of the per-folder width, run at module init — which is the
 // first time anything in the app cares about a pane at all, and the only place
@@ -95,7 +95,7 @@ export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
 // listing is, it never grows a pane of its own — no nesting.
-export function usePreviewPane(enabled = true) {
+export function usePreviewPane(enabled = true, onDragClose?: () => void) {
   // The fraction the USER chose — dragged somewhere in this session, on this
   // folder or another (pane-store). `null` is not a missing number but a real
   // state, "no choice yet", and it is still worth distinguishing now that the
@@ -136,21 +136,37 @@ export function usePreviewPane(enabled = true) {
     // (see there), and recording the pre-drag fraction as though the user had
     // chosen it would keep a number nobody picked.
     //
-    // There used to be a second flag beside it, for the gesture that CLOSED the
-    // pane by dragging the divider into the right edge. That gesture is gone
-    // with the toggle: closing needs a way back, and with the split decided by
-    // width there is no reopen affordance to offer — a pane dragged shut would
-    // have stayed shut until the window was resized. The drag now just holds at
-    // the pane's floor, which is what the clamp already did all the way to the
-    // edge.
+    // The close-by-drag gesture is BACK (it went away with the old toggle,
+    // when a pane dragged shut had no way back). The reopen affordance exists
+    // again — the header's opener button, the same `_side` vocabulary the
+    // chevron writes — so the seam can honour #680's rule here too: the clamp
+    // holding at the floor reads as "this is as narrow as it goes" while the
+    // pane plainly can go narrower, all the way to shut. `closed` latches the
+    // gesture: once this drag has shut the pane it is over, and a second
+    // pointermove must not write `_side=off` twice.
+    let closed = false;
     let resized = false;
     const onMove = (ev: PointerEvent) => {
+      if (closed) return;
       const rect = splitRef.current?.getBoundingClientRect();
       if (!rect) return;
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps and
       // divided back into a fraction of the container (dragPaneFrac).
-      const next = dragPaneFrac(rect.width, rect.right - ev.clientX);
+      const rawPx = rect.right - ev.clientX;
+      // Dragged clean through the resistance band: the gesture means SHUT.
+      // Deliberately BEFORE any width is recorded this move, and `resized`
+      // untouched by the close: every move before this one stuck the pane at
+      // its floor, and committing that would file the floor as the user's
+      // chosen share — shut a wide pane and it would come back a sliver.
+      // Closing a pane and narrowing it are different acts; one drag must not
+      // do both. (Same rule as platform/lib/panel-drag `committedWidth`.)
+      if (onDragClose && paneDragCloses(rect.width, rawPx)) {
+        closed = true;
+        onDragClose();
+        return;
+      }
+      const next = dragPaneFrac(rect.width, rawPx);
       if (next === null) return;
       resized = true;
       dragged = next;
@@ -171,9 +187,14 @@ export function usePreviewPane(enabled = true) {
       // write here turns it into a chosen width, everywhere, for the rest of
       // the session.
       //
+      // A CLOSE records nothing either, even when the same drag resized on the
+      // way through: the last width that rendered before the shut was the
+      // floor, and filing that as the chosen share would reopen a wide pane as
+      // a sliver. Shut hands back exactly what was remembered before.
+      //
       // Three decimals is the whole of the precision a split is worth: a tenth
       // of a percent of the container, well under a pixel on any window.
-      if (!resized) return;
+      if (closed || !resized) return;
       const settled = Math.round(dragged * 1000) / 1000;
       setPaneFrac(settled);
       // Render the rounded number too, so what is on screen now and what the

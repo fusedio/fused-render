@@ -90,6 +90,11 @@ def api_apps():
     # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
     # sort by recency exactly as workspace apps do.
     apps.extend(registered_apps.registered_apps())
+    # Exported .fused files anywhere on disk, from the file index (D396).
+    # Index unavailable degrades to zero rows — never to a failed listing.
+    from fused_render import exported_apps
+
+    apps.extend(exported_apps.exported_apps())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
@@ -182,6 +187,11 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
             limit=limit, include_updated_at=False, opened_only=True
         )
     )
+    # Opened .fused files (D396): their recents store is already newest-first
+    # and every entry carries openedAt, so they merge exactly as the other two.
+    from fused_render import exported_apps
+
+    recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )

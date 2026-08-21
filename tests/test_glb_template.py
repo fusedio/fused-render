@@ -13,7 +13,9 @@ def test_glb_template_resolves_for_glb_and_gltf():
     assert err is None
     assert [e["mode"] for e in entries][0] == "glb"
     entries, err = _server_templates._templates_for("/tmp/model.gltf", False)
-    assert [e["mode"] for e in entries] == ["glb", "usd", "code"]
+    # .gltf is text, so it also opens in `code`; `claude` trails both keys because
+    # every registered key carries the chat (tests/test_templates.py).
+    assert [e["mode"] for e in entries] == ["glb", "usd", "code", "claude"]
 
 
 def test_glbproj_dir_no_longer_resolves_to_an_editor():

@@ -1,4 +1,4 @@
-"""`/api/capture` — native screen, microphone and still capture (SPEC §44).
+"""`/api/capture` — native screen, microphone and still capture (SPEC §45).
 
 Route wiring only; everything real is `fused_render/capture/`. Shaped after
 `/api/ai/transcribe` (routers/ai_runtime.py): the reply comes back with the

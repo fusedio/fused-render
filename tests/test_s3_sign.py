@@ -215,6 +215,7 @@ def test_resolver_expands_tilde_in_shared_credentials_file(tmp_path, monkeypatch
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # expanduser on Windows
     (home / "creds").write_text(
         "[default]\naws_access_key_id = AKIATILDE\n"
         "aws_secret_access_key = TILDESEC\n", encoding="utf-8")

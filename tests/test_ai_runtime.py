@@ -30,6 +30,10 @@ from fused_render.server import create_app
 from fused_render.server.routers import ai_models, ai_runtime
 from fused_render.server.routers.ai_models import CachedModel
 
+# os.geteuid is POSIX-only; a bare call below would crash collection of this
+# whole module on Windows, before any skipif could act on it.
+_IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
 #: The runner fixtures stub it (nothing is ever built in these tests), so a test
 #: about what it DOES has no other way back to it.
@@ -1166,7 +1170,7 @@ def test_a_machine_with_no_amd_gpu_at_all_says_so(monkeypatch, tmp_path):
     assert "modprobe" not in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 def test_a_kfd_this_user_cannot_open_asks_for_permission(monkeypatch, tmp_path):
     """PERMISSION IS ASKED OF THE KERNEL, never modelled — `os.access`.
 
@@ -1205,7 +1209,7 @@ def test_a_render_node_that_is_ABSENT_is_not_a_permission_problem(
     assert "render` group" not in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 def test_a_render_node_that_is_CLOSED_asks_for_permission(monkeypatch, tmp_path):
     """…and the other state IS the group case, which keeps that advice.
 
@@ -1221,7 +1225,7 @@ def test_a_render_node_that_is_CLOSED_asks_for_permission(monkeypatch, tmp_path)
     assert "render` group" in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 def test_an_open_INTEL_render_node_does_not_admit_rocm(monkeypatch, tmp_path):
     """The render node has to belong to the AMD CARD, not merely to open.
 
@@ -1354,7 +1358,7 @@ def test_wsl2_can_pick_cuda_with_none_of_the_linux_device_nodes(
     assert "needs an NVIDIA GPU" in status.reason
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="os.access ignores mode bits for root")
+@pytest.mark.skipif(_IS_ROOT, reason="os.access ignores mode bits for root")
 @pytest.mark.parametrize("device", ["nvidiactl", "nvidia0", "nvidia-uvm"])
 def test_nvidia_nodes_this_user_cannot_open_ask_for_permission(
         monkeypatch, tmp_path, device):
@@ -1955,6 +1959,19 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
+# -- a worker's environment carries no Hub token of our making (D402) ------------
+
+
+def test_an_inherited_hub_token_is_passed_through_untouched(monkeypatch, tmp_path):
+    """A worker finds the machine's token by calling `huggingface_hub` itself, so
+    nothing here manufactures one — but an `HF_TOKEN` this process inherited is
+    not stripped either: hf reads that variable ahead of its own store, and a
+    machine that exports one expects its workers to use it."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
+    assert supervisor._child_env("worker-token")["HF_TOKEN"] == "hf_from_the_environment"
+
+
 # -- the download-manager join --------------------------------------------------
 
 
@@ -2540,7 +2557,10 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     monkeypatch.setattr(supervisor, "start_image", spy)
     started = client.post("/api/ai/image", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    assert captured["outPreview"] == started["previewPath"]
+    # `captured` is the RAW request the worker gets (a native path,
+    # backslashed on Windows); `previewPath` is the reply's canonical
+    # (forward-slash) form of the same path — see `ai_runtime.canonical_fs_path`.
+    assert ai_runtime.canonical_fs_path(captured["outPreview"]) == started["previewPath"]
     _wait_job(started["jobId"])
 
 
@@ -2856,11 +2876,16 @@ def test_the_transcribe_reply_settles_the_request_before_anything_runs(
     """Everything the caller needs comes back from the POST: which model, which
     file, and where the transcript will land. Nothing waits on the work."""
     reply = _post_transcribe(client, path=recording, task="translate").json()
-    assert reply["path"] == os.path.abspath(recording)
+    # Canonical (forward-slash), like every path this API hands back — see
+    # `ai_runtime.canonical_fs_path` — so it is `os.path.abspath` run through
+    # the SAME transform, not the raw (backslashed, on Windows) form.
+    assert reply["path"] == ai_runtime.canonical_fs_path(os.path.abspath(recording))
     assert reply["model"] == catalog.default_for(registry.SPEECH_TO_TEXT)
     assert reply["task"] == "translate"
     assert reply["output"].endswith(".json")
-    assert os.path.dirname(reply["output"]).endswith(os.path.join("ai", "transcripts"))
+    # A literal forward slash rather than `os.path.join`: `output` is already
+    # canonical, so the suffix it ends with is too, on every platform.
+    assert os.path.dirname(reply["output"]).endswith("ai/transcripts")
     _wait_job(reply["jobId"])
 
 
@@ -2892,7 +2917,10 @@ def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
     reply = _post_transcribe(client, path=recording).json()
     _wait_job(reply["jobId"])
 
-    assert seen["outPartial"] == reply["outputPartial"]
+    # `seen` is the RAW request the worker gets (a native path, backslashed on
+    # Windows); `outputPartial` is the reply's canonical (forward-slash) form
+    # of the same path — see `ai_runtime.canonical_fs_path`.
+    assert ai_runtime.canonical_fs_path(seen["outPartial"]) == reply["outputPartial"]
     # A SIBLING of the two the request already named, not a third location:
     # `_transcripts_dir()` is where the server decided user files go.
     assert (os.path.dirname(seen["outPartial"])
@@ -3138,7 +3166,10 @@ def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
                                                    "page.html")},
                         headers={"X-Fused": "1"})
     assert reply.status_code == 200, reply.json()
-    assert reply.json()["path"] == recording
+    # Canonical (forward-slash), like every path this API hands back — see
+    # `ai_runtime.canonical_fs_path` — not the raw (backslashed, on Windows)
+    # form `recording` is built in.
+    assert reply.json()["path"] == ai_runtime.canonical_fs_path(recording)
     _wait_job(reply.json()["jobId"])
 
 
@@ -3874,8 +3905,13 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
            EXTRA})),
       );
     """.replace("OPTS", opts).replace("EXTRA", extra or '"_": null')
+    # Node writes UTF-8 to stdout regardless of platform; without an explicit
+    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
+    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # text some of these harnesses drive through (see e.g.
+    # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -3965,8 +4001,13 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
           {ok: false, message: err.message, type: err.type, progress, rows})),
       );
     """
+    # Node writes UTF-8 to stdout regardless of platform; without an explicit
+    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
+    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # text some of these harnesses drive through (see e.g.
+    # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -4328,8 +4369,13 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
         # for the caller under test. Without one, `watch(null)` would never
         # reach the branch that decides whether to tail.
         else "{onProgress: () => {}}")
+    # Node writes UTF-8 to stdout regardless of platform; without an explicit
+    # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
+    # (often cp1252), which mangles or crashes on the multibyte transcript
+    # text some of these harnesses drive through (see e.g.
+    # test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place).
     out = subprocess.run(["node", "-e", prelude + fn + call],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

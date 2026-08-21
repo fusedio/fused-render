@@ -1,4 +1,4 @@
-"""Native capture (fused_render/capture/ + routers/capture.py, SPEC §44).
+"""Native capture (fused_render/capture/ + routers/capture.py, SPEC §45).
 
 The Apple half cannot run in the suite — it needs a Mac, a granted TCC
 permission and a real display — so the backend is STUBBED here and what is

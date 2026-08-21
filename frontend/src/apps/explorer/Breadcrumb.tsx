@@ -532,10 +532,23 @@ export function BreadcrumbBar(props: {
 //
 // With no owner (a static label bar, a view still statting) the event is left
 // alone rather than swallowed: the platform menu is a better answer than none.
+// ONE EXCEPTION: an ANCESTOR crumb. The bar's own menu is about the folder the
+// view is SHOWING — New File, Paste, Refresh — so on "Fused" in "~ / Fused / lle"
+// it offered actions that would land two levels below where the user was
+// pointing, plus splits that had nothing to do with the crumb. Those crumbs now
+// name themselves to the owner, which answers with the ancestor pair (Reveal in
+// Finder / Open in New Tab) — the same two items a folder ROW gets.
+//
+// Ancestors only, by selector: the current folder's crumb is a <span> (and the
+// root's is `.last` when the listing IS the root), so "the crumb you are already
+// in" keeps the bar menu, where the current folder and the crumb are one folder
+// and the full list is the right answer.
 function onBarContextMenu(e: React.MouseEvent): void {
   const target = e.target as HTMLElement | null;
   if (target?.closest("input, textarea")) return;
-  if (!openTopbarMenu(e.clientX, e.clientY)) return;
+  const crumb = target?.closest<HTMLElement>(`a.path-crumb:not(.last)[${DROP_PATH_ATTR}]`);
+  const crumbPath = crumb?.getAttribute(DROP_PATH_ATTR) || undefined;
+  if (!openTopbarMenu(e.clientX, e.clientY, crumbPath)) return;
   e.preventDefault();
 }
 

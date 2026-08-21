@@ -39,6 +39,7 @@ TIER_ONE_TEMPLATES = (
     "joblib_model",
     "log_studio",
     "markdown",
+    "mcp",
     "model_card",
     "notebook",
     "plist",

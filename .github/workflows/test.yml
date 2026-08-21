@@ -244,6 +244,77 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
 
+  # Broader Windows coverage than windows-desktop below, which only runs the
+  # five supervisor-specific files gated on windows_desktop paths. This job
+  # runs the WHOLE suite on real Windows to find portability bugs outside the
+  # supervisor (path handling, process spawn, file locking, sockets, …) that
+  # the Linux matrix can only ever simulate.
+  #
+  # One version, not a matrix: unlike test-python below (a source install,
+  # which genuinely has to work across every Python this package supports),
+  # the only Python that ever runs fused-render on a real Windows machine is
+  # the one build_windows_installer.ps1 bundles into the installer — pinned
+  # there via `uv python install 3.12`. Testing 3.10/3.11/3.13 here would be
+  # covering interpreters no Windows user's install ever runs.
+  #
+  # A required check like every other platform job: continue-on-error is gone
+  # now that the suite is green here. It was only ever scaffolding — a job that
+  # cannot fail reports nothing, and the point of this one is to catch the
+  # Windows-only bugs the Linux matrix can only simulate, which it cannot do
+  # from behind a flag that swallows the result.
+  test-python-windows:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v6
+        with:
+          # Same version the bundled installer's `uv python install 3.12` pins.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install fused-render (dev extra)
+        run: python -m pip install -e ".[dev]"
+
+      # Same pinned version + published SHA256 as the Windows installer bundles
+      # (scripts/build_windows_installer.ps1) and the same discipline as the
+      # Linux job's rclone install above — a bad download fails in seconds, not
+      # silently. Added to GITHUB_PATH (not FUSED_RENDER_RCLONE_BIN) so
+      # shutil.which("rclone") finds it exactly the way a dev machine's PATH
+      # would.
+      - name: Install rclone
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $RcloneVersion = "1.74.4"
+          $RcloneSha256 = "ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
+          $rcloneZip = Join-Path $env:RUNNER_TEMP "rclone.zip"
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/v$RcloneVersion/rclone-v$RcloneVersion-windows-amd64.zip" -OutFile $rcloneZip
+          $actualSha = (Get-FileHash -LiteralPath $rcloneZip -Algorithm SHA256).Hash.ToLower()
+          if ($actualSha -ne $RcloneSha256) {
+            throw "rclone zip SHA256 mismatch: expected $RcloneSha256, got $actualSha"
+          }
+          $rcloneDir = Join-Path $env:RUNNER_TEMP "rclone-bin"
+          Expand-Archive -Path $rcloneZip -DestinationPath $rcloneDir -Force
+          $rcloneExe = Get-ChildItem -Path $rcloneDir -Recurse -Filter "rclone.exe" | Select-Object -First 1
+          if (-not $rcloneExe) {
+            throw "rclone.exe not found in the downloaded zip"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $rcloneExe.DirectoryName
+          & $rcloneExe.FullName version
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
   # The optional fused execution engine (D69) — the engine the migration plan
   # promotes to default, after which the built-in executor goes away. Until this
   # job, CI had never run it: no job installed the `[fused]` extra, so every
@@ -607,7 +678,7 @@ jobs:
     name: Test Status
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, frontend, test-python, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, test-python-windows, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -627,9 +698,12 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
-          # app fired ⇒ these five always run (they gate on app only), so
-          # anything other than success is a failure.
-          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
+          # app fired ⇒ these six always run (they gate on app only), so
+          # anything other than success is a failure. test-python-windows is
+          # among them: it gates on `app` exactly like test-python, and it is
+          # listed here rather than with the filter-gated desktop jobs below
+          # because "skipped" is NOT a legitimate outcome for it.
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.test-python-windows.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
               exit 1

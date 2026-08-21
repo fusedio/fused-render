@@ -10,6 +10,7 @@ import shutil
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as claude_sessions_mod
 
@@ -25,6 +26,14 @@ def projects_dir(tmp_path, monkeypatch):
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+def _c(path) -> str:
+    """A folder's expected wire form: both endpoints canonicalize `path` to
+    forward slashes on the way out (see canonical_fs_path), even though the
+    transcript's own `cwd` and this test's `str(Path(...))` are backslashed
+    on Windows."""
+    return canonical_fs_path(str(path))
 
 
 def _session(projects_dir, encoded_dir, session_id, cwd, mtime=None):
@@ -45,7 +54,7 @@ def test_groups_by_transcript_cwd_not_encoded_dirname(client, projects_dir, tmp_
     real.mkdir()
     _session(projects_dir, "-tmp-my-project", "s1", str(real))
     data = client.get("/api/claude-sessions").json()
-    assert [f["path"] for f in data["folders"]] == [str(real)]
+    assert [f["path"] for f in data["folders"]] == [_c(real)]
 
 
 def test_sorted_by_latest_session_first(client, projects_dir, tmp_path):
@@ -56,7 +65,7 @@ def test_sorted_by_latest_session_first(client, projects_dir, tmp_path):
     _session(projects_dir, "proj-a", "s1", str(a), mtime=1000)
     _session(projects_dir, "proj-b", "s1", str(b), mtime=2000)
     data = client.get("/api/claude-sessions").json()
-    assert [f["path"] for f in data["folders"]] == [str(b), str(a)]
+    assert [f["path"] for f in data["folders"]] == [_c(b), _c(a)]
 
 
 def test_multiple_sessions_in_one_folder_collapse_to_one_row(client, projects_dir, tmp_path):
@@ -65,7 +74,7 @@ def test_multiple_sessions_in_one_folder_collapse_to_one_row(client, projects_di
     _session(projects_dir, "proj", "old", str(proj), mtime=1000)
     _session(projects_dir, "proj", "new", str(proj), mtime=5000)
     data = client.get("/api/claude-sessions").json()
-    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert [f["path"] for f in data["folders"]] == [_c(proj)]
 
 
 def test_folder_no_longer_on_disk_is_dropped(client, projects_dir, tmp_path):
@@ -102,7 +111,7 @@ def test_home_opens_only_enough_newest_transcripts_to_fill_the_row(
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
     assert [f["path"] for f in data["folders"]] == [
-        str(folders[19]), str(folders[18]), str(folders[17]),
+        _c(folders[19]), _c(folders[18]), _c(folders[17]),
     ]
     assert len(opened) == 3
 
@@ -135,7 +144,7 @@ def test_home_skips_duplicate_and_missing_folders_until_the_row_is_full(
     monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
-    assert [f["path"] for f in data["folders"]] == [str(a), str(b), str(c)]
+    assert [f["path"] for f in data["folders"]] == [_c(a), _c(b), _c(c)]
     # Four, not five: a/old is never opened. Its directory was already resolved
     # by a/new, and a directory name IS the encoded cwd, so the second file
     # could only have reproduced a folder already in the row.
@@ -164,7 +173,7 @@ def test_home_opens_one_transcript_per_project_directory(
     monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
-    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert [f["path"] for f in data["folders"]] == [_c(proj)]
     assert opened == [str(projects_dir / "proj" / "s9.jsonl")]
 
 
@@ -193,7 +202,7 @@ def test_home_falls_through_to_older_transcripts_of_an_unreadable_newest(
     monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
-    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert [f["path"] for f in data["folders"]] == [_c(proj)]
     assert opened == [str(headless), str(projects_dir / "proj" / "readable.jsonl")]
 
 
@@ -211,10 +220,10 @@ def test_home_collapses_a_collided_directory_to_its_newest_folder(
     _session(projects_dir, "collide", "newer", str(hyphened), mtime=2000)
 
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
-    assert [f["path"] for f in data["folders"]] == [str(hyphened)]
+    assert [f["path"] for f in data["folders"]] == [_c(hyphened)]
     exhaustive = client.get("/api/claude-sessions").json()
     assert sorted(f["path"] for f in exhaustive["folders"]) == sorted(
-        [str(hyphened), str(nested)])
+        [_c(hyphened), _c(nested)])
 
 
 def test_home_session_limit_is_capped_to_its_single_row(

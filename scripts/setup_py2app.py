@@ -436,7 +436,7 @@ OPTIONS = {
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
         # Pinned view (SPEC §25, D97): WKWebView for the status-item popover.
         "WebKit",
-        # Native capture (SPEC §44): fused_render/capture/_darwin.py imports
+        # Native capture (SPEC §45): fused_render/capture/_darwin.py imports
         # these directly. Named rather than derived because they are core deps
         # with a platform marker, not `[bundled]` ones — the same reason AppKit
         # is listed above. Quartz carries the non-prompting permission probe
@@ -473,6 +473,16 @@ OPTIONS = {
         "pluggy", "tomlkit", "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",
+        # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402).
+        # Forced for the reason this whole list exists: every import of it in the
+        # app is INSIDE a function (the router imports it per request, and
+        # `worker_base` must stay stdlib-only at module scope), so a
+        # traced-module copy is exactly the shape that ships a DMG where the
+        # button reports an ImportError — the .pptx failure this file's comments
+        # describe, in a new place. `hf_xet` is its compiled Xet backend and
+        # `filelock` guards its token store; both are reached only from inside
+        # hf, so neither is any more traceable than hf itself.
+        "huggingface_hub", "hf_xet", "filelock",
     ] + BUNDLED_PACKAGES + STDLIB_PACKAGES,
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as
@@ -565,7 +575,7 @@ OPTIONS = {
             "FusedRender previews files you open from network volumes."
         ),
         # `fused.capture.audio` / a screen recording with `audio: "mic"`
-        # (SPEC §44). REQUIRED, not decorative: an app that touches the
+        # (SPEC §45). REQUIRED, not decorative: an app that touches the
         # microphone with no NSMicrophoneUsageDescription is killed by the OS
         # rather than prompted. Screen recording has no matching key — that
         # grant lives only in System Settings.

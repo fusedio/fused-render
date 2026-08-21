@@ -459,7 +459,7 @@ def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DR
          `drain_s`. A live /api/fs/raw read holds files open under a mount, which
          is a measured cause of a busy-mount unmount failure (see
          detach_mount/_quit_tile_daemons), so this comes before the unmounts.
-      2. "capture" — finalise every live native recording (SPEC §44). Here and
+      2. "capture" — finalise every live native recording (SPEC §45). Here and
          not in an `atexit` handler because THIS FUNCTION IS THE ONLY THING THAT
          RUNS: quit ends in `os._exit` (see the DM-9 note above), which skips
          `atexit` entirely — so a recording left to it would be a .mov with no

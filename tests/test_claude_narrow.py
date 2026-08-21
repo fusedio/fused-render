@@ -273,6 +273,34 @@ def test_the_control_row_compacts_and_folds_but_never_at_a_width(html):
         "the row adapts by measuring, never inside a breakpoint"
 
 
+def test_the_rows_need_counts_every_seat_and_reads_sub_pixels(html):
+    """The two ways a hand-summed need can come out SHORT, both of which left a
+    ~6px band at every stage boundary where the row had already wrapped — Schedule
+    and Send on a second line — while the sum still said it fit (Akshil,
+    2026-08-20, narrowing the right sidebar):
+
+      * the SPACER is a flex item, so the browser puts a `gap` on each side of it.
+        It contributes no width, but skipping it from the gap count under-charged
+        the row by exactly one gap — 6px, the width of the failing band.
+      * offsetWidth is an INTEGER. The browser decides the wrap in sub-pixels, so
+        a row of seven controls could be under-read by several pixels at exactly
+        the widths where a few pixels is the whole question.
+
+    A seat is anything laid out at all, asked of the computed `display` — a zero
+    offsetWidth cannot tell "not laid out" from "laid out at zero width"."""
+    need = _fn(html, "function composerRowNeed(row)")
+    assert "getBoundingClientRect().width" in need, \
+        "the wrap is decided in sub-pixels, so the need has to be read in them"
+    assert "offsetWidth" not in need, "offsetWidth rounds; the need must not"
+    assert 'display === "none"' in need, \
+        "only a child that is not laid out loses its seat — and its gap with it"
+    # the spacer keeps its seat (and so its gaps) and only skips the width sum:
+    # the `continue` for it comes AFTER the seat is counted.
+    assert need.index("seats += 1") < need.index('classList.contains("spacer")'), \
+        "the spacer is a seat that pays gaps; only its width is slack"
+    assert "seats - 1" in need, "n seats, n-1 gaps"
+
+
 def test_the_approvals_pill_shortens_and_the_menu_does_not(html):
     """Approvals is the row's only long label ("ask every time" beside "fable" and
     "medium"), so it is the only one with a short form — and the short forms are

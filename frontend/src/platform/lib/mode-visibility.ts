@@ -54,8 +54,9 @@ export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts)
 
 // --- content pane vs. sidebar (Preview's `_side`) ---------------------------
 // Some of the modes around a file are not another WAY OF LOOKING at it, they
-// are companions TO looking at it: the agent chat and the working tree it sits
-// in both talk about the file while you are viewing it as
+// are companions TO looking at it: the agent chat, the working tree it sits in,
+// and the MCP tools its app folder publishes all talk about the file while you
+// are viewing it as
 // something (an image, a table, its source). Putting them in the same radio list
 // as the real content modes made them mutually exclusive with the view they are
 // about — asking Claude about a .png meant giving up looking at the .png.
@@ -68,15 +69,17 @@ export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts)
 // must keep offering them as ordinary modes, which is only safe while "is this a
 // sidebar mode?" has one definition.
 //
-// `git` IS ON THIS LIST AND IS NOT IN ANY FILE'S TEMPLATE LIST, and both halves
-// of that are deliberate. The registry binds `git` to the universal "/" DIRECTORY
-// key alone and its gate refuses anything that is not a directory
+// `git` AND `mcp` ARE ON THIS LIST AND ARE IN NO FILE'S TEMPLATE LIST, and both
+// halves of that are deliberate. The registry binds each to the universal "/"
+// DIRECTORY key alone and both gates refuse anything that is not a directory
 // (templates/git/condition.py: a working tree belongs to the folder, since you
-// stash a tree and not a file), so `partitionModes` will never pull a `git` entry
-// out of a file's own modes. The file sidebar BORROWS one from the file's parent
-// folder instead (apps/explorer/lib/dir-mode.ts) and inserts it here — which is
-// why the ordering below is a rule of its own rather than the registry's.
-export const SIDEBAR_MODES = ["claude", "git"] as const;
+// stash a tree and not a file; templates/mcp/condition.py: the tool manifest
+// belongs to the app folder it sits in), so `partitionModes` will never pull
+// either entry out of a file's own modes. The file sidebar BORROWS them from the
+// file's parent folder instead (apps/explorer/lib/dir-mode.ts) and inserts them
+// here — which is why the ordering below is a rule of its own rather than the
+// registry's.
+export const SIDEBAR_MODES = ["claude", "git", "mcp"] as const;
 
 const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
 
@@ -89,7 +92,7 @@ const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
 // change of mind. A content mode list is OPEN — it is whatever the registry
 // bound to this extension, and a user has no expectation about its length, so a
 // missing entry is invisible rather than confusing. The companion list is
-// CLOSED and always the same two; a user who has seen Claude / Git
+// CLOSED and always the same set; a user who has seen Claude / Git
 // beside one file and only Claude beside the next has been told nothing about
 // why, and dropping the entry would leave a one-entry menu, which hides itself
 // outright, so a file outside a repository would have no switcher at all. Naming
@@ -97,14 +100,15 @@ const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
 //
 // The reasons are CANNED CLIENT-SIDE and per MODE, not per verdict: /api/fs/
 // conditions is bool-only by design (a gate is a condition.py returning a bool,
-// not a message), and the two conditions are stable enough to say in a
-// sentence — the working tree, and the chat's applicability. A
+// not a message), and each condition is stable enough to say in a
+// sentence — the working tree, the app shape, and the chat's applicability. A
 // mode is equally unavailable whether its gate said no or the file never bound
 // the template at all, and from the user's side those are the same fact, so one
 // string covers both.
 const UNAVAILABLE_REASONS: Record<string, string> = {
   claude: "Claude is not available for this file",
   git: "Not inside a git repository",
+  mcp: "Not a fused app folder (needs index.html and a main())",
 };
 
 // Deliberately total: a user registry can bind a mode of its own into either
@@ -134,10 +138,11 @@ export function partitionModes(entries: TemplateEntry[]): {
 // The registry ranks views for a FILE TYPE — which of `.png`'s viewers should
 // open first — and that is a genuinely different question from how the companions
 // rank against each other, which is the same answer for every file: the chat, then
-// the working tree. It also has to be a rule here because the list
-// is ASSEMBLED rather than read: `git` is borrowed from the parent folder (see
-// above) and appended, so leaving the order to the input would rank it by where
-// the assembly happened to put it rather than by what it is.
+// the working tree, then the app's MCP tools. It also has to be a rule here
+// because the list is ASSEMBLED rather than read: `git` and `mcp` are borrowed
+// from the parent folder (see above) and appended, so leaving the order to the
+// input would rank them by where the assembly happened to put them rather than
+// by what they are.
 //
 // Stable within a rank, so an unknown companion (a user registry binding one of
 // its own into this half) keeps its relative position at the end rather than
