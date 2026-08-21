@@ -178,6 +178,10 @@ _IMPORT_TO_DIST = {
     "Quartz": "pyobjc-framework-avfoundation",
     "CoreMedia": "pyobjc-framework-avfoundation",
     "CoreAudio": "pyobjc-framework-avfoundation",
+    # The Linux half of the same feature (CP-11): the desktop portal's
+    # Screenshot interface over D-Bus. linux-only, so the same harmless
+    # maps-to-nothing shape as the pyobjc rows above on the other two platforms.
+    "dbus_fast": "dbus-fast",
     # The engine itself (a `[bundled]` requirement so the macOS force-list
     # derives it — see pyproject and setup_py2app.py). Mapped, so
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but

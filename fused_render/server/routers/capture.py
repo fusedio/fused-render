@@ -6,12 +6,18 @@ OUTPUT PATH already decided, so a page needs no second lookup and a page that
 navigated away can still find what it recorded.
 
 Guarded with `X-Fused` like every other mutating route (D3/D36). A capture is
-not a read: it turns on the microphone and the screen.
+not a read: it turns on the microphone and the screen. The one exception is the
+chunk WebSocket at the bottom — a browser cannot put a header on a handshake —
+which is guarded by the per-recording token from its own start reply plus an
+`Origin` check instead.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Header
+import asyncio
+
+from fastapi import (APIRouter, Body, Header, WebSocket,
+                     WebSocketDisconnect)
 
 from fused_render import capture
 from fused_render.server.common import _error, _require_fused
@@ -95,3 +101,92 @@ def api_capture_screenshot(body: dict = Body(...),
         return _error(str(e), status=409)
     except Exception as e:                      # noqa: BLE001
         return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+
+
+@router.websocket("/api/capture/{cid}/stream")
+async def api_capture_stream(cid: str, ws: WebSocket):
+    """The chunk feed for a recording the PAGE encodes (Windows, Linux).
+
+    On those platforms `MediaRecorder` produces the bytes and this appends them
+    to the file the start reply already named (see `capture/_sink.py` for why
+    the encoder is the page's there and native on macOS). A WebSocket rather
+    than repeated POSTs for the reason D74 gives for `/api/fs/events`: a chunk
+    every second for up to four hours is a connection to hold open, not four
+    thousand requests through a six-per-origin HTTP pool.
+
+    **Guarded by the token from the start reply, not by `X-Fused`** — a browser
+    cannot set headers on a WebSocket handshake. The token is per-recording,
+    single-use and never in a URL a page would link, and `Origin` is checked
+    the way the header guard checks it, so a page on another origin cannot
+    write into this server's files even knowing an id.
+    """
+    await ws.accept()
+    origin = ws.headers.get("origin")
+    if origin and not _same_origin(ws, origin):
+        await ws.close(code=1008, reason="cross-origin stream refused")
+        return
+    try:
+        sink = capture.attach_stream(cid, ws.query_params.get("token"))
+    except capture.CaptureError as e:
+        # 1008 (policy violation) with the reason on it: the page's `onclose`
+        # is the only thing it gets, so the sentence has to travel there.
+        await ws.close(code=1008, reason=str(e)[:120])
+        return
+    try:
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if message.get("text") == "eos":
+                # The page is about to send its stop request, on a DIFFERENT
+                # connection. Frames on this one are ordered, so a reply here
+                # proves every chunk before it was already appended — without
+                # this the stop could close the file first and drop the tail.
+                await ws.send_text("flushed")
+                continue
+            chunk = message.get("bytes")
+            if chunk:
+                # Off the event loop: this is a disk write on the path of every
+                # open socket in the server, and one slow fsync must not stall
+                # the file watcher or a render.
+                await asyncio.to_thread(sink.write, chunk)
+                if sink.done:
+                    # The server ended this recording underneath us (the cap,
+                    # or the manager's ✕). Closing tells the page to stop
+                    # encoding into nothing.
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        # CLOSE EXPLICITLY. Returning from a websocket endpoint does not close
+        # the socket, and this handler leaves the loop on its own (the byte
+        # ceiling, a recording the server ended) as well as on a disconnect —
+        # without this the page sits with an open socket and no `onclose`, so it
+        # keeps encoding into a file nothing is reading.
+        try:
+            await ws.close()
+        except RuntimeError:
+            pass                     # the peer had already gone
+        # The socket closing IS an ending when the page did not stop first —
+        # a reload takes the encoder with it, and the file is kept.
+        await asyncio.to_thread(capture.detach_stream, cid)
+
+
+def _same_origin(ws: WebSocket, origin: str) -> bool:
+    """Is `origin` this server? Compared by host and port, not by string.
+
+    A page is served from `127.0.0.1:<port>` and may reach the socket through
+    `localhost:<port>`; both are this server and neither is another site. An
+    `Origin` with no port is the scheme's default rather than "any port" —
+    treating it as a wildcard would let a page on `http://localhost` attach to a
+    server on some other port.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(origin)
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        return False
+    theirs = parsed.port
+    if theirs is None:
+        theirs = 443 if parsed.scheme == "https" else 80
+    return theirs == ws.url.port

@@ -155,7 +155,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
 | `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Runs the local `claude` (Claude Code) CLI; local-only. See the **"AI calls"** section below for the options, error types, and the worked pattern. |
 | `await fused.fileIndex.search({root, q, limit})` / `.query({sql, limit})` | Read the machine-wide **file index** — one folder's indexed corpus, or one read-only SQL statement over the `files`/`dirs` views (which is also how you get totals, per-extension breakdowns and path matches). Two methods, deliberately; scanning, roots/ignore config and the repos list are raw `fetch` + `X-Fused: 1`. Both resolve with `ready: {indexed, scanning, stale, reason}`, so an empty result can never be rendered as "no matches" when the truth is "no index yet". Use this instead of walking the filesystem in Python for anything machine-wide. For the readiness rule and the Python direct-parquet reader for bulk reads, read `skills/fused-render-index/SKILL.md`. |
-| `await fused.capture.screen(opts)` / `.audio(opts)` / `.screenshot(opts)` / `.sources()` | Record the screen, record the microphone, grab a still — **natively**, so the result is a FILE on this machine (`{path, url, …}`), not a `MediaRecorder` blob. `screen`/`audio` resolve **when the recording is running** with a handle `{id, path, url, state, stop(), cancel()}`: `stop()` resolves with the finished file, `cancel()` deletes it. The path is on the handle immediately, so `fused.ai.transcribe({path: rec.path})` is the next line. `screen({audio: "system"})` captures **system audio**, which a browser cannot do on macOS at all. Call `sources()` first — it never prompts — and hide your record button when `available` is false: this is **macOS 15+ and local only**. See the **"Native capture"** section below. |
+| `await fused.capture.screen(opts)` / `.audio(opts)` / `.screenshot(opts)` / `.sources()` | Record the screen, record the microphone, grab a still — **natively**, so the result is a FILE on this machine (`{path, url, …}`), not a `MediaRecorder` blob. `screen`/`audio` resolve **when the recording is running** with a handle `{id, path, url, state, stop(), cancel()}`: `stop()` resolves with the finished file, `cancel()` deletes it. The path is on the handle immediately, so `fused.ai.transcribe({path: rec.path})` is the next line. `screen({audio: "system"})` captures **system audio**, which `getDisplayMedia` cannot do on macOS at all. Call `sources()` first — it never prompts — and hide your record button when `available` is false: **local only**, and what is available differs per platform (macOS records natively with no picker; Windows and Linux open the browser's share dialog and refuse `display`/`rect`/`cursor` on `screen()`). See the **"Native capture"** section below. |
 | `fused.trackJob(spec)` | Report a long-running operation (a model download, a minutes-long generation) to the shell's **download manager**, so it stays visible after the user browses away from your page. Returns a handle; see the **"Long-running work"** section below. Never throws, never rejects. |
 | `fused.env` | String `"local"` (this local server) vs `"hosted"` (the exported/hosted runtime). Branch on it only if a view must behave differently when exported. |
 | `fused.autoReload(enabled)` | Toggle the automatic reload-on-file-change behavior for this page. Pass `false` to opt out (e.g. an in-page editor that manages its own saves and shouldn't reload under the user). |
@@ -440,14 +440,33 @@ machine owns, which is the whole reason to use them over `getDisplayMedia` /
 `fused.ai.transcribe({path})` directly, and the recording survives your page
 being navigated away from (it is a download-manager job row).
 
-**Ask first, and it never prompts.** macOS 15+ only today (14 for
-`screenshot()`), so draw your UI off the answer rather than off a try/catch:
+**Ask first, and it never prompts.** What is possible differs per machine and
+per browser, so draw your UI off the answer rather than off a try/catch:
 
 ```js
 const src = await fused.capture.sources();
 if (!src.video.available) { hideRecordButton(src.video.reason); return; }
 // src.displays -> [{id, width, height, main}], src.microphones -> [{id, name, default}]
+// `displays` is empty on Linux and on Wayland by design — nothing to name there.
 ```
+
+**The one thing to design around: three platforms, one API, and deliberately no
+field telling you which you got.** Read the refusals and the `reason`s instead of
+sniffing the platform.
+
+| | macOS | Windows | Linux |
+|---|---|---|---|
+| screen recording | native, no picker | browser share picker | browser share picker |
+| survives a page reload | yes | no (file is kept) | no (file is kept) |
+| `display` / `rect` / `cursor` on `screen()` | honoured | refused | refused |
+| `display` / `rect` / `cursor` on `screenshot()` | honoured | honoured | `rect` only |
+| `device` on `audio()` | refused | honoured | honoured |
+| container | `.mov` / `.m4a` | `.mp4` or `.webm` | `.mp4` or `.webm` |
+
+So: do not hardcode an extension when you pass `path` — let the default name the
+file, or read `rec.path`. And if the recording matters, keep the page that
+started it open on Windows and Linux; a reload ends it (the file is kept and the
+row says so, but it is shorter than the user expected).
 
 Recording is a handle, not a promise that resolves at the end:
 
@@ -455,8 +474,10 @@ Recording is a handle, not a promise that resolves at the end:
 const rec = await fused.capture.screen({
   audio: "both",              // false | "mic" | "system" | "both" — "system" is
                               // the one a browser cannot do on macOS at all
-  rect: [0, 0, 1200, 800],    // optional crop, in points on the display
-  path: "walkthrough.mov",    // optional; relative = beside THIS page
+  rect: [0, 0, 1200, 800],    // macOS only — refused where the browser's own
+                              // share picker chooses the region
+  path: "walkthrough.mov",    // optional; relative = beside THIS page. Omit it
+                              // unless you know the container (see the table)
   maxSeconds: 600,            // default 30 min; hitting it STOPS (keeps the file)
 });
 // elapsed seconds come off the recording's job row — there is no onTick:
@@ -469,16 +490,19 @@ const words = await fused.ai.transcribe({ path: out.path, words: true });
 - `rec.cancel()` stops **and deletes**. So does the ✕ on its download-manager
   row — that is the one control left once your page is gone, so treat a cancel
   as "the user does not want this recording", not as "stop".
-- `fused.capture.audio({path: "note.m4a"})` records the microphone alone. It
-  uses the system's current input and **refuses** a `device` (the error names
-  the alternative: a screen recording's `audio: "mic"` takes one).
+- `fused.capture.audio()` records the microphone alone. On macOS it uses the
+  system's current input and **refuses** a `device` (the error names the
+  alternative: a screen recording's `audio: "mic"` takes one); on Windows and
+  Linux a `device` from `sources().microphones` works. Those names are empty
+  until the browser's microphone permission has been granted once.
 - `fused.capture.list()` finds live recordings — including one your page started
   before a reload — and `attach(id)` gives the handle back. Check it on load
   instead of starting a second recording.
 - `screenshot({rect, cursor, path})` has no handle and no job row. The output
   **filename** picks png or jpeg — there is no `format`, so a path and a format
-  cannot disagree about what was written. Native, so it needs no readable
-  document and raises no share prompt.
+  cannot disagree about what was written. Native on **every** platform, so it
+  needs no readable document and raises no share prompt — which is what makes a
+  cross-origin pane shootable.
 - Rejections carry `.type`: `"unavailable"` (this machine cannot — show
   `.message`, it names the reason), `"bad_request"` (your arguments).
 

@@ -1,26 +1,35 @@
 """Native screen, microphone and still capture — the `fused.capture` bridge.
 
-**Platform-neutral half.** This module owns everything that is not Apple: ids,
+**Platform-neutral half.** This module owns everything that is not per-OS: ids,
 output paths, the session registry, the job row a recording appears as in the
-download manager, and the watchdog thread that ticks it. The backend
-(`_darwin.py`) owns the frames and the file, and is asked for four things —
-`probe`, `start_screen`, `start_audio`, `screenshot` — so a second platform is a
-second module, not a second design (the same seam
+download manager, and the watchdog thread that ticks it. A backend owns the
+frames and the file, and is asked for a short list — `probe`, `start_screen`,
+`start_audio`, `stop`, `screenshot`, plus the optional `refuse` and `failure` —
+so a platform is a module, not a second design (the same seam
 `fused_render/supervisor/_backend.py` uses).
 
-**Why native at all**, when a page can already call `getDisplayMedia`: system
-audio (impossible in a browser on macOS), no picker per recording, and — the one
-that pays for the rest — the output is a FILE whose path is known before the
-recording stops, so `fused.ai.transcribe({path})` is the next line rather than a
-blob round-trip through JS. It also survives the page: a recording is a job row,
-so navigating away does not end it.
+**Three backends, and one of them is not native.** `_darwin.py` records with
+ScreenCaptureKit and AVFoundation. `_windows.py` and `_linux.py` take the STILL
+natively — GDI and the desktop portal — and hand RECORDING to `_sink.py`, which
+receives already-encoded chunks from the page's own `MediaRecorder` over a
+WebSocket and appends them to the file. That split is not a shortcut: on Windows
+there is no OS API a non-packaged process can ask to write a movie with system
+audio in it (ffmpeg has no WASAPI input either), while Chromium already does
+exactly what a native recorder would, hardware-encoded. On macOS the browser
+cannot capture system audio at all, which is why that platform is the native one.
 
-**macOS only, and the floor is not the app's floor.** `SCRecordingOutput` is
-macOS 15+, `SCScreenshotManager` 14+, against `LSMinimumSystemVersion` 11.0. So
-"unavailable" has to carry a REASON in every case — wrong OS, too old an OS,
-permission not granted — and `sources()` answers it without ever showing a
-prompt. The prompt belongs to the first real capture, not to a page asking what
-is possible (the same rule the GPU probe follows, SPEC §40).
+**What the design buys, on every platform.** The output is a FILE whose path is
+known before the first frame exists, so `fused.ai.transcribe({path})` is the next
+line rather than a blob round-trip through JS; a recording is a job row, so the
+download manager can show and stop it; and one API answers on three platforms
+with no `via` field for a page to branch on.
+
+**"Unavailable" always carries a REASON.** Wrong OS, an OS too old
+(`SCRecordingOutput` is macOS 15+, `SCScreenshotManager` 14+, against
+`LSMinimumSystemVersion` 11.0), a missing permission, a browser without
+`MediaRecorder`. `sources()` answers all of it without ever showing a prompt —
+the prompt belongs to the first real capture, not to a page asking what is
+possible (the same rule the GPU probe follows, SPEC §40).
 """
 
 from __future__ import annotations
@@ -72,12 +81,26 @@ def _backend():
     Dispatch on `sys.platform` like the supervisor's `_backend`: exactly one
     backend can ever be live in a process, so this is a module lookup and not an
     interface class standing in front of a single implementation.
+
+    Beyond the four calls, a backend may add three optional hooks —
+    `ext(mode, spec)` for the container it is about to write,
+    `refuse(mode, spec)` for what it cannot honour, and `failure(handle)` for a
+    recording it has already lost. Everything platform-specific, INCLUDING the
+    prose of a refusal, belongs there: a sentence naming System Settings is
+    wrong on two of the three platforms, and this module cannot be the place it
+    is written.
     """
+    if sys.platform == "win32":
+        from fused_render.capture import _windows
+
+        return _windows
+    if sys.platform.startswith("linux"):
+        from fused_render.capture import _linux
+
+        return _linux
     if sys.platform != "darwin":
         raise Unsupported(
-            "native capture is macOS-only today — this machine runs "
-            f"{sys.platform}"
-        )
+            f"native capture has no backend for {sys.platform}")
     try:
         from fused_render.capture import _darwin
     except ImportError as e:
@@ -162,7 +185,7 @@ class _Session:
         return JOB_PREFIX + self.id
 
     def public(self) -> dict:
-        return {
+        record = {
             "id": self.id,
             "mode": self.mode,
             "path": self.path,
@@ -172,6 +195,16 @@ class _Session:
             "jobId": self.job,
             "audio": self.spec.get("audio") or False,
         }
+        # A backend whose recording is FED rather than captured says so, and
+        # says it on the wire only: `runtime.js` reads these two to open the
+        # chunk socket, and deletes them before the handle reaches a page. CP-8
+        # forbids a page branching on which implementation served it, and this
+        # is how that promise survives having three of them.
+        transport = getattr(self.handle, "transport", None)
+        if transport:
+            record["transport"] = transport
+            record["streamToken"] = getattr(self.handle, "token", None)
+        return record
 
 
 _lock = threading.Lock()
@@ -284,6 +317,20 @@ def _rect(value):
     return (x, y, w, h)
 
 
+def _ext(backend, mode: str, spec: dict) -> str:
+    """The container the backend is about to write, for the default filename.
+
+    Asked rather than assumed: a QuickTime movie is what one of the three
+    backends produces, and a default `.mov` holding WebM would be a file every
+    other tool misreads. The fallback keeps a minimal backend (and the suite's
+    stub) working without the hook.
+    """
+    hook = getattr(backend, "ext", None)
+    if hook is None:
+        return ".mov" if mode == "screen" else ".m4a"
+    return hook(mode, spec)
+
+
 def start(mode: str, body: dict) -> dict:
     """Begin a recording. Returns the record — path included — immediately.
 
@@ -296,14 +343,27 @@ def start(mode: str, body: dict) -> dict:
         raise CaptureError(f"mode must be 'screen' or 'audio', not {mode!r}")
     backend = _backend()
 
-    spec = {"maxSeconds": _max_seconds(body.get("maxSeconds"))}
+    cid = uuid.uuid4().hex[:12]
+    # The id is in the spec because a backend may need to be FINDABLE by it
+    # before this function returns: `_sink` registers the recording under this
+    # id so the page's chunk socket has something to attach to.
+    spec = {"maxSeconds": _max_seconds(body.get("maxSeconds")), "id": cid,
+            # Which container the caller's encoder is about to produce. Only the
+            # sink backends read it (a page states what `MediaRecorder` can do);
+            # the native backend writes what it writes.
+            "container": body.get("container")}
     if mode == "screen":
         spec["audio"] = _audio_mode(body.get("audio"), required=False)
         spec["display"] = body.get("display")
         spec["rect"] = _rect(body.get("rect"))
-        spec["cursor"] = bool(body.get("cursor", True))
+        # Raw, NOT `bool(... , True)`: a backend that cannot honour `cursor`
+        # must be able to tell "the caller asked" from "the caller said
+        # nothing", or every page passing the documented default would be
+        # refused. Each backend applies its own default.
+        spec["cursor"] = body.get("cursor")
         spec["device"] = body.get("device")
-        out = _resolve_out(body.get("path"), body.get("base"), ".mov")
+        out = _resolve_out(body.get("path"), body.get("base"),
+                           _ext(backend, mode, spec))
     else:
         # ONE check with ONE message. The first cut of this ran the shared
         # `_audio_mode` (which names 'mic', 'system' and 'both' as valid) and
@@ -316,22 +376,27 @@ def start(mode: str, body: dict) -> dict:
                 f"only be 'mic', not {source!r} — for system audio record the "
                 "screen with audio: 'system'")
         spec["audio"] = "mic"
-        # REFUSED, not ignored (the AI-10/D319 posture). Audio-only records
-        # through `AVAudioRecorder`, which has no device selection — the API
-        # that did deadlocked on a run loop this app cannot provide (see
-        # `_darwin.start_audio`). A silently-wrong microphone is a recording the
-        # user has to make twice, so the option says where it does work.
-        if body.get("device"):
-            raise CaptureError(
-                "audio-only recording uses the system's current input device, "
-                "so 'device' cannot be chosen here — record the screen with "
-                "audio: 'mic' to pick a specific microphone, or change the "
-                "input in System Settings › Sound "
-                "(sources().microphones tells you which is current)")
-        spec["device"] = None
-        out = _resolve_out(body.get("path"), body.get("base"), ".m4a")
+        spec["device"] = body.get("device")
+        out = _resolve_out(body.get("path"), body.get("base"),
+                           _ext(backend, mode, spec))
 
-    cid = uuid.uuid4().hex[:12]
+    # REFUSED, not ignored (the AI-10/D319 posture) — and refused by the
+    # BACKEND, because what cannot be honoured differs per platform and so does
+    # the sentence that says where it can be. macOS cannot choose a microphone
+    # for an audio-only recording; the sink platforms cannot honour `display`,
+    # `rect` or `cursor`, because the browser's share picker owns all three.
+    # Asked here, before an id exists, so a refusal is a 400 and not a session
+    # half-created (`refuse` is optional: a backend that honours everything
+    # simply does not define it).
+    # The resolved file, so a backend can refuse a `path` whose extension
+    # contradicts what it is about to write into it.
+    spec["out"] = out
+    refuse = getattr(backend, "refuse", None)
+    if refuse is not None:
+        why = refuse(mode, spec)
+        if why:
+            raise CaptureError(why)
+
     handle = (backend.start_screen(out, spec) if mode == "screen"
               else backend.start_audio(out, spec))
     session = _Session(cid, mode, out, handle, spec)
@@ -488,17 +553,53 @@ def _tick(session: _Session) -> bool:
 # ------------------------------------------------------------------ stopping
 
 
+#: The last few finished recordings, by id — so an ending that arrives SECOND
+#: gets the answer rather than a 404. Two real cases: a double-clicked stop
+#: button, and a streamed recording whose socket closed a moment before the
+#: page's own `stop()` request landed (that close is itself a valid ending, see
+#: `_sink.detach`). Small and unbounded in neither direction: this is a reply
+#: cache, not a second copy of the download manager, which already holds the
+#: history.
+FINISHED_KEEP = 32
+_finished: dict[str, dict] = {}
+
+
+def _remember(cid: str, result: dict) -> dict:
+    _finished[cid] = result
+    while len(_finished) > FINISHED_KEEP:
+        _finished.pop(next(iter(_finished)), None)
+    return result
+
+
 def stop(cid: str, *, discard: bool = False) -> dict:
     """End a recording. `discard=True` deletes the file — that is cancel.
 
     Idempotent-ish by construction: the session is removed from the registry
     under the lock BEFORE the backend is touched, so a ✕ landing at the same
-    moment as the page's own `stop()` cannot finalise the same file twice.
+    moment as the page's own `stop()` cannot finalise the same file twice — and
+    the loser of that race is answered from `_finished` instead of being told
+    its own recording never existed.
     """
     with _lock:
         session = _sessions.pop(cid, None)
     if session is None:
-        raise CaptureError(f"no such capture: {cid}")
+        already = _finished.get(cid)
+        if already is None:
+            raise CaptureError(f"no such capture: {cid}")
+        # A CANCEL that arrives after some other ending still has to delete the
+        # file. The case is real on the streamed backends: the page's socket can
+        # close a moment before its cancel request lands, and that close is an
+        # ending that KEEPS what arrived (`_sink.detach`). Answering with the
+        # cached "stopped" record would leave the file the caller asked to
+        # destroy sitting on disk, reported as deleted.
+        if discard and already.get("path"):
+            try:
+                os.remove(already["path"])
+            except OSError:
+                pass
+            already = dict(already, state="cancelled", path=None, url=None)
+            _finished[cid] = already
+        return already
 
     error = ""
     try:
@@ -516,7 +617,7 @@ def stop(cid: str, *, discard: bool = False) -> dict:
         result = session.public()
         result["path"] = None
         result["url"] = None
-        return result
+        return _remember(cid, result)
 
     session.state = "error" if error else "stopped"
     result = session.public()
@@ -527,7 +628,7 @@ def stop(cid: str, *, discard: bool = False) -> dict:
     else:
         _report(session, state="done",
                 detail=os.path.basename(session.path))
-    return result
+    return _remember(cid, result)
 
 
 def _describe(path: str) -> dict:
@@ -542,8 +643,9 @@ def _describe(path: str) -> dict:
         size = 0
     ext = os.path.splitext(path)[1].lower()
     mime = {".mov": "video/quicktime", ".mp4": "video/mp4",
-            ".m4a": "audio/mp4", ".png": "image/png",
-            ".jpg": "image/jpeg"}.get(ext, "application/octet-stream")
+            ".webm": "video/webm", ".m4a": "audio/mp4",
+            ".png": "image/png", ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg"}.get(ext, "application/octet-stream")
     return {"path": path, "url": "/api/fs/raw?path=" + _quote(path),
             "bytes": size, "mime": mime}
 
@@ -552,6 +654,43 @@ def _quote(path: str) -> str:
     from urllib.parse import quote
 
     return quote(path, safe="")
+
+
+# ------------------------------------------------------------- the chunk feed
+
+
+def attach_stream(cid: str, token: str | None):
+    """Claim a streamed recording for one socket (`routers/capture.py`).
+
+    Only the sink backends have this; on macOS the recording is native and there
+    is nothing to attach, so asking is a `CaptureError` rather than a 500 — a
+    page on the wrong platform gets a sentence, and one route serves all three.
+    """
+    backend = _backend()
+    hook = getattr(backend, "attach", None)
+    if hook is None:
+        raise CaptureError(
+            "recordings on this platform are captured by the app itself, so "
+            "there is no stream to attach")
+    try:
+        return hook(cid, token)
+    except Exception as e:                       # noqa: BLE001 - one shape out
+        raise CaptureError(str(e)) from e
+
+
+def detach_stream(cid: str) -> None:
+    """The socket closed. Best-effort, and never raises into a teardown."""
+    try:
+        hook = getattr(_backend(), "detach", None)
+    except Unsupported:
+        return
+    if hook is None:
+        return
+    try:
+        hook(cid)
+    except Exception:                            # noqa: BLE001 - see above
+        logger.warning("detaching the stream for %s failed", cid,
+                       exc_info=True)
 
 
 # --------------------------------------------------------------- the still
@@ -578,9 +717,17 @@ def screenshot(body: dict) -> dict:
     spec = {
         "display": body.get("display"),
         "rect": _rect(body.get("rect")),
-        "cursor": bool(body.get("cursor", False)),
+        # Raw, for the reason `start` records: the portal has no cursor option
+        # at all, so `_linux` must be able to refuse an explicit `cursor` while
+        # letting a caller who never mentioned one through.
+        "cursor": body.get("cursor"),
         "jpeg": ext in (".jpg", ".jpeg"),
     }
+    refuse = getattr(backend, "refuse", None)
+    if refuse is not None:
+        why = refuse("screenshot", spec)
+        if why:
+            raise CaptureError(why)
     shot = backend.screenshot(out, spec)
     result = _describe(out)
     result.update(shot)

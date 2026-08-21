@@ -142,6 +142,35 @@ def probe() -> dict:
     }
 
 
+def ext(mode: str, spec: dict) -> str:
+    """The container this backend writes. Asked rather than assumed by the
+    neutral half, because the sink backends write whatever `MediaRecorder`
+    produced and cannot promise a QuickTime movie (SPEC CP-5)."""
+    return ".mov" if mode == "screen" else ".m4a"
+
+
+def refuse(mode: str, spec: dict) -> str | None:
+    """What this backend cannot honour, and where the caller can ask instead.
+
+    One option, one platform, one sentence — and it lives HERE rather than in
+    the neutral half because the sentence names System Settings, which is wrong
+    advice on Windows and on Linux.
+
+    Audio-only records through `AVAudioRecorder`, which has no device selection.
+    The API that did — `AVCaptureAudioFileOutput` — deadlocked on a run loop
+    this app cannot provide (see `start_audio`), so the capability is genuinely
+    gone rather than merely unimplemented. A silently-wrong microphone is a
+    recording the user has to make twice, so this says where choosing one works.
+    """
+    if mode == "audio" and spec.get("device"):
+        return ("audio-only recording uses the system's current input device, "
+                "so 'device' cannot be chosen here — record the screen with "
+                "audio: 'mic' to pick a specific microphone, or change the "
+                "input in System Settings › Sound "
+                "(sources().microphones tells you which is current)")
+    return None
+
+
 # ------------------------------------------------------------------- helpers
 
 
@@ -259,7 +288,7 @@ def _display_scale(display) -> int:
     return max(1, round(pixels / points))
 
 
-def _configure(display, spec) -> object:
+def _configure(display, spec, *, cursor_default: bool = True) -> object:
     config = SCK.SCStreamConfiguration.alloc().init()
     # Pixels, not points. `SCDisplay.width` — and `CGDisplayPixelsWide`, despite
     # its name — are POINTS: on the Mac this was written on both say 1800 while
@@ -277,7 +306,12 @@ def _configure(display, spec) -> object:
     else:
         config.setWidth_(int(display.width()) * scale)
         config.setHeight_(int(display.height()) * scale)
-    config.setShowsCursor_(bool(spec.get("cursor", True)))
+    # `cursor` arrives RAW (None when the caller said nothing) so a backend that
+    # cannot honour it can tell the two apart — this one can, so it just applies
+    # the default for the kind of capture: a recording shows the pointer, a
+    # still does not.
+    cursor = spec.get("cursor")
+    config.setShowsCursor_(cursor_default if cursor is None else bool(cursor))
     audio = spec.get("audio")
     if audio in ("system", "both"):
         config.setCapturesAudio_(True)
@@ -472,7 +506,8 @@ def screenshot(out: str, spec: dict) -> dict:
     content_filter = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(
         display, [])
     config = _configure(display, {"rect": spec.get("rect"),
-                                  "cursor": spec.get("cursor", False)})
+                                  "cursor": spec.get("cursor")},
+                        cursor_default=False)
 
     box: dict = {}
     wait = _Wait("taking the screenshot")

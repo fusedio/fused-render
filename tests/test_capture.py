@@ -59,6 +59,18 @@ class FakeBackend:
     start_screen = _start
     start_audio = _start
 
+    def ext(self, mode, spec):
+        return ".mov" if mode == "screen" else ".m4a"
+
+    def refuse(self, mode, spec):
+        # The real macOS backend's one refusal, kept here because the neutral
+        # half's plumbing for it is what these tests exercise.
+        if mode == "audio" and spec.get("device"):
+            return ("audio-only recording uses the system's current input "
+                    "device, so 'device' cannot be chosen here — record the "
+                    "screen with audio: 'mic' to pick a specific microphone")
+        return None
+
     def stop(self, handle):
         handle.stopped = True
 
@@ -99,12 +111,18 @@ def home(tmp_path, monkeypatch):
 
 
 def test_a_machine_that_cannot_capture_says_so_rather_than_raising(monkeypatch):
-    """`sources()` answers on EVERY platform — a page must be able to ask."""
-    monkeypatch.setattr(capture.sys, "platform", "win32")
+    """`sources()` answers on EVERY platform — a page must be able to ask.
+
+    Three platforms have a backend now, so the machine with none is something
+    else entirely (a BSD, an unknown `sys.platform`). What is being tested is
+    unchanged and is the promise CP-8 makes: an answer, shaped like every other
+    answer, with a reason in it.
+    """
+    monkeypatch.setattr(capture.sys, "platform", "sunos5")
     payload = capture.sources()
     assert payload["video"]["available"] is False
     assert payload["audio"]["available"] is False
-    assert "macOS" in payload["video"]["reason"]
+    assert "sunos5" in payload["video"]["reason"]
     # Shape-identical to the real probe, EVERY key included — a page reading
     # `sources().screenshot.available` must not throw where the answer is "no".
     assert payload["displays"] == [] and payload["microphones"] == []
@@ -116,10 +134,10 @@ def test_a_machine_that_cannot_capture_says_so_rather_than_raising(monkeypatch):
 
 def test_starting_on_an_unsupported_platform_is_a_409_not_a_500(monkeypatch,
                                                                client):
-    monkeypatch.setattr(capture.sys, "platform", "linux")
+    monkeypatch.setattr(capture.sys, "platform", "aix7")
     res = client.post("/api/capture/start", json={"mode": "screen"}, headers=H)
     assert res.status_code == 409
-    assert "macOS" in res.json()["error"]
+    assert "aix7" in res.json()["error"]
 
 
 def test_a_backend_that_will_not_import_is_a_reason_not_a_500(monkeypatch,
@@ -301,20 +319,47 @@ def test_cancel_deletes_the_file(backend, client, home):
     assert row["state"] == "cancelled"
 
 
-def test_stopping_the_same_recording_twice_is_a_404_not_a_second_stop(backend,
-                                                                     client,
-                                                                     home):
+def test_a_second_stop_is_the_same_answer_and_not_a_second_stop(backend,
+                                                               client, home):
     """The registry entry is taken under the lock before the device is touched,
     so a ✕ landing at the same moment as the page's own stop cannot finalise
-    (or delete) the file twice."""
+    (or delete) the file twice.
+
+    The LOSER of that race is answered from the finished-record cache rather
+    than told its own recording never existed. Two real cases: a
+    double-clicked stop button, and a streamed recording whose socket closed a
+    moment before the page's stop request landed — that close is itself a valid
+    ending, so a 404 there would report a failure for a recording that worked.
+    """
     started = client.post("/api/capture/start", json={"mode": "audio"},
                           headers=H).json()
-    assert client.post(f"/api/capture/{started['id']}/stop",
-                       headers=H).status_code == 200
-    assert client.post(f"/api/capture/{started['id']}/stop",
-                       headers=H).status_code == 404
-    assert client.post(f"/api/capture/{started['id']}/cancel",
-                       headers=H).status_code == 404
+    first = client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    again = client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert first.status_code == again.status_code == 200
+    assert again.json()["path"] == first.json()["path"]
+    # The file was finalised ONCE: the second stop never reached the backend.
+    assert len([h for h in backend.handles if h.stopped]) == 1
+
+
+def test_a_cancel_after_a_stop_still_deletes_the_file(backend, client, home):
+    """The one thing the cache must not do is let a `cancel` become a no-op.
+
+    On the streamed backends the page's socket can close (an ending that KEEPS
+    what arrived) a moment before its cancel request lands. Answering that with
+    the cached "stopped" record would leave the file the caller asked to destroy
+    on disk, reported as deleted.
+    """
+    started = client.post("/api/capture/start", json={"mode": "audio"},
+                          headers=H).json()
+    client.post(f"/api/capture/{started['id']}/stop", headers=H)
+    assert os.path.exists(started["path"])
+    gone = client.post(f"/api/capture/{started['id']}/cancel", headers=H).json()
+    assert gone["path"] is None and gone["state"] == "cancelled"
+    assert not os.path.exists(started["path"])
+
+
+def test_an_id_that_never_existed_is_still_a_404(backend, client, home):
+    assert client.post("/api/capture/nope/stop", headers=H).status_code == 404
 
 
 def test_the_managers_cross_discards_the_recording(backend, client, home,
@@ -529,6 +574,17 @@ def test_the_runtime_bridge_exposes_capture():
     # that is not described there is not a contract anybody can rely on.
     assert "fused.capture.* -> record the screen, record the mic, grab a still" \
         in source
+    # THE TWO WIRE-ONLY FIELDS MUST NOT REACH A PAGE. `transport` and
+    # `streamToken` steer the browser-encoder path (CP-10); a handle carrying
+    # either would be the `via` field CP-8 forbids, and a page would start
+    # branching on which platform it landed on.
+    handle = block[block.index("const handle = {"):]
+    handle = handle[:handle.index("return handle;")]
+    assert "transport" not in handle and "streamToken" not in handle
+    # `client` is the same promise on the read side: the flag that says "this
+    # platform's recording capability is the browser's" is consumed by the merge
+    # and deleted before `sources()` resolves.
+    assert "delete sources.client;" in block
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")

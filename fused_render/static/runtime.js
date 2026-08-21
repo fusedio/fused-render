@@ -144,16 +144,26 @@
  *     screenshot({display, rect, cursor, path}) -> Promise<{path, url,
  *     width, height, bytes, mime}> is the one call with no handle and no job
  *     row: it is milliseconds. The FILE'S EXTENSION picks png or jpeg (there is
- *     no `format`, so a path and a format cannot disagree). Native, so it needs
- *     no readable document and raises no share prompt — a cross-origin pane is
- *     shootable.
+ *     no `format`, so a path and a format cannot disagree). Native on every
+ *     platform, so it needs no readable document and raises no share prompt —
+ *     a cross-origin pane is shootable.
  *     sources() -> what this machine can capture and what it is waiting for
  *     ({video, audio, systemAudio, screenshot} each {available, granted,
- *     reason}, plus `displays` and `microphones`). It NEVER prompts — the TCC
- *     dialog rides the first real capture — so it is safe to call while drawing
- *     a record button. macOS 15+ only today (14 for screenshot); everywhere
- *     else `available` is false with the reason, and a start rejects .type
- *     "unavailable". Local only — not available on hosted/exported pages.
+ *     reason}, plus `displays` and `microphones`). It NEVER prompts — the
+ *     permission dialog rides the first real capture — so it is safe to call
+ *     while drawing a record button. `available: false` always carries a
+ *     `reason`, and a start rejects .type "unavailable" with the same sentence.
+ *     Local only — not available on hosted/exported pages.
+ *     WHAT DIFFERS BY PLATFORM, since one API serves three: on macOS the app
+ *     records natively (macOS 15+, 14 for the still) with no picker, and a
+ *     recording outlives the page that started it. On Windows and Linux the
+ *     browser records and the server writes the file, so the share picker opens
+ *     when a screen recording starts, `display`/`rect`/`cursor` are REFUSED on
+ *     screen() with a sentence saying why (screenshot() still takes all three
+ *     on Windows), and a full page reload ends a recording — the file is kept
+ *     and its row says so. `device` works on audio() there, and does not on
+ *     macOS. Ask sources() and read the `reason`s rather than sniffing the
+ *     platform: there is deliberately no field naming which one served you.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -3404,6 +3414,288 @@
     return body;
   }
 
+  // -------------------------------------------- the page-side recorder
+  //
+  // Windows and Linux record through the BROWSER, and this server writes the
+  // file. `fused_render/capture/_sink.py` carries the argument; the short form
+  // is that on Windows no OS API a non-packaged process can reach will write a
+  // movie with system audio in it, while Chromium already does exactly that,
+  // hardware-encoded, through the same WGC/WASAPI and PipeWire paths a native
+  // recorder would use. macOS records natively and never comes through here.
+  //
+  // A PAGE NEVER LEARNS WHICH IT GOT. Both resolve with the same handle, and
+  // the two wire-only fields that steer this (`transport`, `streamToken`) are
+  // deleted before the handle is built — CP-8, no `via` field, ever.
+
+  const CAPTURE_SLICE_MS = 1000;
+
+  // mp4 before webm: a fragmented mp4 is what everything else on the machine
+  // reads without a remux. Both are playable AS WRITTEN, which is why a
+  // recording whose page dies still leaves a valid, shorter file rather than a
+  // movie with no index in it.
+  const CAPTURE_TYPES = {
+    screen: [
+      ["mp4", 'video/mp4;codecs="avc1.42E01E,mp4a.40.2"'],
+      ["mp4", "video/mp4"],
+      ["webm", 'video/webm;codecs="vp9,opus"'],
+      ["webm", "video/webm"],
+    ],
+    audio: [
+      ["mp4", 'audio/mp4;codecs="mp4a.40.2"'],
+      ["mp4", "audio/mp4"],
+      ["webm", "audio/webm;codecs=opus"],
+      ["webm", "audio/webm"],
+    ],
+  };
+
+  // The recorder, its stream and its socket live in the TOPMOST same-origin
+  // window, not in this frame. A MediaRecorder belongs to the realm that made
+  // it, so one created here ends when this iframe navigates — and a recording
+  // that stops because the user clicked another file is not a recording. Param
+  // boundaries (D72) decide which URL owns a param and are deliberately NOT
+  // honoured here: this is about object lifetime, not about params.
+  function captureHost() {
+    let host = window;
+    try {
+      while (host.parent && host.parent !== host) {
+        void host.parent.location.href;
+        host = host.parent;
+      }
+    } catch (e) {
+      /* reached a cross-origin ancestor; host is the topmost same-origin one */
+    }
+    return host;
+  }
+
+  function captureType(host, mode) {
+    const Recorder = host.MediaRecorder;
+    if (!Recorder || !Recorder.isTypeSupported) return null;
+    for (const [container, mimeType] of CAPTURE_TYPES[mode] || []) {
+      if (Recorder.isTypeSupported(mimeType)) return { container, mimeType };
+    }
+    return null;
+  }
+
+  function captureMediaOk(host) {
+    const devices = host.navigator && host.navigator.mediaDevices;
+    return !!(host.MediaRecorder && devices && devices.getDisplayMedia
+              && devices.getUserMedia);
+  }
+
+  function captureTracksOff(streams) {
+    for (const stream of streams) {
+      if (!stream) continue;
+      for (const track of stream.getTracks()) {
+        try { track.stop(); } catch (e) { /* already ended */ }
+      }
+    }
+  }
+
+  // Ask for the media BEFORE the server allocates anything: the share picker is
+  // a human decision that can end in "cancel", and a cancelled picker must
+  // leave no job row and no empty file behind. The path is still decided before
+  // the first frame exists, which is what CP-2 actually promises.
+  async function captureOpenMedia(host, body) {
+    const devices = host.navigator.mediaDevices;
+    const wantsSystem = body.audio === "system" || body.audio === "both";
+    const wantsMic = body.mode === "audio"
+      || body.audio === "mic" || body.audio === "both" || body.audio === true;
+    let display = null;
+    let mic = null;
+    try {
+      if (body.mode === "screen") {
+        display = await devices.getDisplayMedia({
+          video: true,
+          audio: wantsSystem,
+          // The standard hint for "put system audio in the choices". Without it
+          // Chromium may offer tab audio only, which is not what `"system"`
+          // asked for.
+          systemAudio: wantsSystem ? "include" : "exclude",
+        });
+      }
+      if (wantsMic) {
+        mic = await devices.getUserMedia({
+          audio: body.device ? { deviceId: { exact: body.device } } : true,
+        });
+      }
+    } catch (err) {
+      captureTracksOff([display, mic]);
+      const wrapped = new Error(
+        err && err.name === "NotAllowedError"
+          ? "the capture was not allowed — the share dialog was dismissed or "
+            + "the permission was denied"
+          : (err && err.message) || "could not open the capture stream");
+      wrapped.type = "bad_request";
+      throw wrapped;
+    }
+
+    const video = display ? display.getVideoTracks() : [];
+    const sound = [];
+    if (display) sound.push(...display.getAudioTracks());
+    if (mic) sound.push(...mic.getAudioTracks());
+    if (body.mode === "audio" && !sound.length) {
+      captureTracksOff([display, mic]);
+      const err = new Error("no microphone track was produced");
+      err.type = "bad_request";
+      throw err;
+    }
+
+    // `audio: "both"` is the one case needing a mixer: MediaRecorder takes ONE
+    // audio track, and system audio and the microphone arrive as two. WebAudio
+    // sums them into a single destination track.
+    let context = null;
+    let track = sound[0] || null;
+    if (sound.length > 1) {
+      const Ctx = host.AudioContext || host.webkitAudioContext;
+      context = new Ctx();
+      const mixed = context.createMediaStreamDestination();
+      for (const one of sound) {
+        const holder = new host.MediaStream([one]);
+        context.createMediaStreamSource(holder).connect(mixed);
+      }
+      track = mixed.stream.getAudioTracks()[0];
+    }
+
+    const stream = new host.MediaStream(
+      [...video, ...(track ? [track] : [])]);
+    return { stream, sources: [display, mic], context };
+  }
+
+  // The socket. Opened before the recorder starts, because a chunk produced
+  // before it is open is a chunk missing from the middle of the file.
+  function captureSocket(host, started) {
+    const where = host.location;
+    const scheme = where.protocol === "https:" ? "wss:" : "ws:";
+    const url = scheme + "//" + where.host + "/api/capture/"
+      + encodeURIComponent(started.id) + "/stream?token="
+      + encodeURIComponent(started.streamToken || "");
+    const ws = new host.WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => resolve(ws);
+      // The server closes with 1008 and a reason when it refuses — a token that
+      // does not match, a recording already streaming. That sentence is the
+      // only thing a page would ever see, so it becomes the error.
+      ws.onclose = (event) => {
+        const why = (event && event.reason)
+          || "the capture stream closed before it opened";
+        const err = new Error(why);
+        err.type = "bad_request";
+        reject(err);
+      };
+      ws.onerror = () => {
+        const err = new Error("could not open the capture stream");
+        err.type = "bad_request";
+        reject(err);
+      };
+    });
+  }
+
+  function captureRecorder(host, started, media) {
+    const recorder = new host.MediaRecorder(media.stream,
+                                            { mimeType: media.mimeType });
+    let closed = false;
+    let ws = null;
+    // ONE chain, not one promise per chunk: `Blob.arrayBuffer()` is async, so
+    // two chunks read in parallel can be sent out of order — and two swapped
+    // clusters are a corrupt container, not a glitch.
+    let queue = Promise.resolve();
+
+    recorder.ondataavailable = (event) => {
+      if (!event.data || !event.data.size) return;
+      queue = queue
+        .then(() => event.data.arrayBuffer())
+        .then((bytes) => {
+          if (ws && ws.readyState === 1) ws.send(bytes);
+        })
+        .catch(() => { /* a closed socket is an ending, not a chunk error */ });
+    };
+
+    return {
+      async begin() {
+        ws = await captureSocket(host, started);
+        ws.onclose = () => {
+          // The server ended it: the cap, the manager's ✕, or a write that
+          // could not continue. Stop producing bytes nothing will read.
+          closed = true;
+          try { recorder.stop(); } catch (e) { /* already stopped */ }
+          captureTracksOff(media.sources);
+        };
+        recorder.start(CAPTURE_SLICE_MS);
+        return this;
+      },
+      // Everything the server must have BEFORE the stop request lands. The
+      // `eos` round-trip is the only thing that actually proves it: frames are
+      // ordered on the socket, so a reply to `eos` means every chunk before it
+      // was already appended — whereas the stop request travels on a different
+      // connection and could otherwise close the file first and lose the tail.
+      async flush() {
+        if (recorder.state !== "inactive") {
+          await new Promise((done) => {
+            recorder.onstop = done;
+            try { recorder.stop(); } catch (e) { done(); }
+          });
+        }
+        await queue;
+        if (closed || !ws || ws.readyState !== 1) return;
+        await new Promise((done) => {
+          const timer = setTimeout(done, 5000);
+          ws.onmessage = (event) => {
+            if (event.data === "flushed") { clearTimeout(timer); done(); }
+          };
+          try { ws.send("eos"); } catch (e) { clearTimeout(timer); done(); }
+        });
+      },
+      dispose() {
+        captureTracksOff(media.sources);
+        if (media.context) {
+          try { media.context.close(); } catch (e) { /* already closed */ }
+        }
+        if (ws) {
+          ws.onclose = null;
+          try { ws.close(); } catch (e) { /* already closed */ }
+        }
+      },
+    };
+  }
+
+  // The streamed half of `screen()`/`audio()`. Media first, then the row, then
+  // the socket, then the encoder — each step undoing the ones before it if it
+  // fails, so a failure never leaves a recording nobody can stop.
+  async function captureStreamed(host, body) {
+    const type = captureType(host, body.mode);
+    if (!captureMediaOk(host) || !type) {
+      const err = new Error(
+        "this browser cannot record: it has no MediaRecorder with a container "
+        + "this app can store. Chrome, Edge or a recent Firefox can");
+      err.type = "unavailable";
+      throw err;
+    }
+    const media = await captureOpenMedia(host, body);
+    media.mimeType = type.mimeType;
+    let started;
+    try {
+      started = await captureFetch(
+        "/api/capture/start",
+        captureBase(Object.assign({}, body, { container: type.container })));
+    } catch (err) {
+      captureTracksOff(media.sources);
+      throw err;
+    }
+    const streamer = captureRecorder(host, started, media);
+    try {
+      await streamer.begin();
+    } catch (err) {
+      streamer.dispose();
+      // The row exists and the file is open, so this cancels rather than
+      // leaking a recording the page has no handle for.
+      captureFetch("/api/capture/" + encodeURIComponent(started.id) + "/cancel")
+        .catch(() => {});
+      throw err;
+    }
+    return captureHandle(started, streamer);
+  }
+
   // A handle, not a promise that resolves at the end: a recording is a session
   // of unknown length under the user's control, so the same shape trackJob and
   // watchJob use. `state` and `seconds` are GETTERS — a page polling them in a
@@ -3412,7 +3704,7 @@
   // this recording already publishes, and `fused.watchJob(rec.jobId)` is the
   // documented way to read a row — a second, private spelling of it would be a
   // forever contract that only wrapped a public one.
-  function captureHandle(started) {
+  function captureHandle(started, streamer) {
     let state = "recording";
     let result = null;
     // The PROMISE is memoized, not the settled value: a double-clicked stop
@@ -3423,9 +3715,23 @@
     let ending = null;
     function end(action) {
       if (ending) return ending;
-      ending = captureFetch(
-        "/api/capture/" + encodeURIComponent(started.id) + "/" + action)
+      // A streamed recording has to be FLUSHED first: the encoder is in this
+      // browser, and the last timeslice is still in flight when the button is
+      // clicked. `flush()` also waits for the server to acknowledge it, so the
+      // stop request cannot close the file ahead of the tail (see
+      // `captureRecorder`). Native recordings have no streamer and go straight
+      // to the request.
+      ending = (streamer ? streamer.flush() : Promise.resolve())
+        .catch(() => {})
+        .then(() => captureFetch(
+          "/api/capture/" + encodeURIComponent(started.id) + "/" + action))
         .then((done) => {
+          // AFTER the request, not before: disposing closes the socket, and a
+          // socket closing is itself an ending (`_sink.detach`) — one that
+          // KEEPS the file. Racing it ahead of a `cancel` would answer from the
+          // finished-record cache and leave the file the caller asked to
+          // delete.
+          if (streamer) streamer.dispose();
           state = done.state
             || (action === "cancel" ? "cancelled" : "stopped");
           // A stop whose file failed to write reports the failure rather than
@@ -3439,6 +3745,7 @@
           return done;
         })
         .catch((err) => {
+          if (streamer) streamer.dispose();
           ending = null;
           throw err;
         });
@@ -3478,8 +3785,32 @@
                        "maxSeconds", "title"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
-    return captureFetch("/api/capture/start", captureBase(body))
-      .then(captureHandle);
+    return captureStart(body);
+  }
+
+  // WHERE THE TWO PATHS FORK, and the only place they do. `sources().client`
+  // says the recording is the browser's to make on this platform — the same
+  // flag `captureSources` strips before a page can read it — so the decision is
+  // made once, from the server's own answer, rather than by sniffing a user
+  // agent. A page calls `screen()`; what happens under it is not its business
+  // (CP-8).
+  function captureStart(body) {
+    return captureFetch("/api/capture", undefined, "GET").then((data) => {
+      const sources = (data && data.sources) || {};
+      if (!sources.client) {
+        return captureFetch("/api/capture/start", captureBase(body))
+          .then((started) => captureHandle(started));
+      }
+      // An unavailable machine must reject with the server's own sentence
+      // rather than opening a share dialog that cannot lead anywhere.
+      const gate = body.mode === "audio" ? sources.audio : sources.video;
+      if (gate && gate.available === false) {
+        const err = new Error(gate.reason || "capture is unavailable here");
+        err.type = "unavailable";
+        return Promise.reject(err);
+      }
+      return captureStreamed(captureHost(), body);
+    });
   }
 
   // fused.capture.audio({source, path, maxSeconds, title})
@@ -3498,8 +3829,7 @@
     for (const key of ["source", "device", "path", "maxSeconds", "title"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
-    return captureFetch("/api/capture/start", captureBase(body))
-      .then(captureHandle);
+    return captureStart(body);
   }
 
   // fused.capture.screenshot({display, rect, cursor, path})
@@ -3526,7 +3856,50 @@
   // a recorder UI reads all of it in one paint.
   function captureSources() {
     return captureFetch("/api/capture", undefined, "GET")
-      .then((data) => data.sources);
+      .then((data) => captureMerge(data.sources));
+  }
+
+  // On the platforms where the BROWSER records, whether a recording is possible
+  // is a fact about this browser and not about the machine — and a server route
+  // cannot know which browser is asking. So the server answers `client: true`
+  // and the three recording keys get replaced here, from what this window can
+  // actually do. The flag is DELETED on the way out: a page reads
+  // `{available, reason}` exactly as it does on macOS and has nothing to branch
+  // on (CP-8).
+  async function captureMerge(sources) {
+    if (!sources || !sources.client) return sources;
+    delete sources.client;
+    const host = captureHost();
+    const type = captureType(host, "screen");
+    const ok = captureMediaOk(host) && !!type;
+    const why = ok ? null
+      : "this browser cannot record — it has no MediaRecorder with a container "
+        + "this app can store. Chrome, Edge or a recent Firefox can";
+    sources.video = { available: ok, granted: ok, reason: why };
+    sources.audio = {
+      available: ok && !!captureType(host, "audio"),
+      granted: ok,
+      reason: why,
+    };
+    sources.systemAudio = { available: ok, reason: why };
+    if (ok) {
+      try {
+        const devices = await host.navigator.mediaDevices.enumerateDevices();
+        // `label` is EMPTY until the microphone permission has been granted
+        // once — a browser rule, not a bug here. A page shows what it gets and
+        // the names appear after the first recording.
+        sources.microphones = devices
+          .filter((device) => device.kind === "audioinput")
+          .map((device, index) => ({
+            id: device.deviceId,
+            name: device.label || "Microphone " + (index + 1),
+            default: device.deviceId === "default" || index === 0,
+          }));
+      } catch (e) {
+        sources.microphones = [];
+      }
+    }
+    return sources;
   }
 
   // Live recordings on this machine — including ones ANOTHER page started, which
