@@ -55,6 +55,7 @@ import time
 # the same self-directory insert `partial.py` falls back to.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import engine_options  # noqa: E402 - refuse `image` on arrival; see its docstring
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import preview  # noqa: E402 - the ONE live-thumbnail writer; see preview.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
@@ -292,6 +293,21 @@ def generate(body):
     pipe = _loaded.get("pipe")
     if pipe is None:
         raise RuntimeError("no pipeline is loaded")
+
+    # The endpoint already refuses `image` before a job opens (it knows the
+    # RESOLVED runner code); this is the second door `engine_options.py`'s own
+    # docstring requires — the one a caller reaches by talking to this worker
+    # directly, bypassing the endpoint entirely. This process's own runner
+    # CODE is not knowable here: `diffusers_image[_cuda|_rocm]/worker.py` are
+    # three five-line shells that all call `torch_image.main()` identically
+    # (see the module docstring), and `worker_base.serve`'s argv carries no
+    # such flag. "diffusers-image" is safe to use as a stand-in ONLY because
+    # every entry this family carries in `engine_options.UNSUPPORTED` reads
+    # the identical sentence — a fact about the LIBRARY, not about which
+    # wheel is actually running — so whichever of the three this process is,
+    # the refusal is correct. A future option whose wording legitimately
+    # differs by hardware could not reuse this call as-is.
+    engine_options.unsupported_or_raise("diffusers-image", image=body.get("image"))
 
     prompt = str(body.get("prompt") or "")
     width = int(body.get("width") or 1024)

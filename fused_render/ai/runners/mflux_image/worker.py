@@ -137,6 +137,12 @@ def _pin_stream():
 #: variant class for.
 _VARIANTS = formats.MFLUX_VARIANTS
 
+#: …and its EDIT counterpart (`fused.ai.image({image})`, mflux-only). A second,
+#: independent table for the reason `formats.MFLUX_EDIT_VARIANTS` gives:
+#: `Flux2KleinEdit` does not subclass `Flux2Klein`, so the two variant classes
+#: for one repo id cannot share a row.
+_EDIT_VARIANTS = formats.MFLUX_EDIT_VARIANTS
+
 #: What an mflux-readable snapshot always has: component subfolders of MLX
 #: safetensors. Checked by NAME before the import, exactly as the whisper
 #: runners check theirs — a repo in the wrong format is a fact about the
@@ -159,28 +165,44 @@ def download(model_id):
     return worker_base.download_snapshot(model_id)
 
 
-def load(model_id, fetched):
-    """`fetched` is what `download` returned — the snapshot directory."""
-    recipe = _VARIANTS.get(model_id)
-    # BOTH checks come before the import, and they answer different questions.
-    # This one is about the CATALOG: a repo nobody has written a variant for.
+#: `mode` -> the table `_build_variant` reads it from. `"generate"` is the
+#: untouched path every caller who never passes `image` stays on (Decision 3);
+#: `"edit"` is the one `_ensure_mode` swaps to when a request's `image` says
+#: otherwise. Keying `load()` by `(model_id, mode)` (Gate B) means, in this
+#: one-process-per-model worker, keying THIS table by mode and re-running
+#: `_build_variant` when the resident mode differs from what a request needs —
+#: there is no second worker process to route to instead.
+_MODE_TABLES = {"generate": _VARIANTS, "edit": _EDIT_VARIANTS}
+
+
+def _build_variant(model_id, fetched, mode):
+    """The mflux model object for `mode` ('generate' or 'edit') over the
+    snapshot at `fetched`, and the vae key its recipe carries.
+
+    Shared by `load()` (first bring-up, always 'generate') and `_ensure_mode`
+    (the lazy swap `generate()` triggers when a request's mode differs from
+    the resident one) — one place that imports the variant class, builds it
+    and registers the step reporter, so the two callers cannot build it two
+    different ways.
+    """
+    table = _MODE_TABLES[mode]
+    recipe = table.get(model_id)
     if recipe is None:
+        if mode == "edit":
+            # Reached only if a model appears in `_VARIANTS` (so `load()`
+            # accepted it for plain generation) but has no row in
+            # `_EDIT_VARIANTS` — every model this build knows about today
+            # has both, so this is a future-model gap, not today's.
+            raise RuntimeError(
+                f"{model_id} is not a model this runner knows how to edit an "
+                "image with — it has no edit variant class named for it, "
+                "only a plain generate one.")
         raise RuntimeError(
             f"{model_id} is not a model this runner knows how to build. It "
             "loads mflux's own MLX conversions, and each one needs a variant "
             "class this build has to name explicitly. Try "
             "mlx-community/FLUX.2-Klein-4B-4bit, or switch this capability to "
             "the Diffusers engine on the AI Models page's Engines tab.")
-    # …and this one is about the DOWNLOAD: a repo of the right name in the wrong
-    # format, which is what a torch or GGUF image repo looks like from here.
-    missing = [name for name in _MLX_COMPONENTS
-               if not os.path.isdir(os.path.join(fetched, name))]
-    if missing:
-        raise RuntimeError(
-            f"{model_id} has no {missing[0]}/ folder — this runner loads MLX "
-            "conversions, whose weights are split into transformer/, "
-            "text_encoder/ and vae/ subfolders. A diffusers or GGUF repo will "
-            "not load here.")
 
     import importlib
 
@@ -266,23 +288,82 @@ def load(model_id, fetched):
     # is exactly what happened last time.
     _pin_stream()
     model = variant_cls(model_config=model_config, model_path=fetched)
-    # ONE registration, at load time. `CallbackRegistry.register` APPENDS, and
-    # the registry belongs to the model rather than to a call — so registering
-    # per request would leave a generation reporting once per previous request
-    # as well, each to a job row that is over. The reporter reads the live
-    # request out of `_request` instead.
+    # ONE registration, per BUILD. `CallbackRegistry.register` APPENDS, and the
+    # registry belongs to the MODEL OBJECT rather than to a call — a mode swap
+    # builds a fresh object, so this still runs exactly once for it. The
+    # reporter reads the live request out of `_request` instead.
     model.callbacks.register(_StepReporter())
-    _loaded["model"] = model
     # The key the live preview's projection table is keyed by. The torch runner
     # reads it off `type(pipe.vae).__name__`; there is no such object here, so
     # it comes out of the recipe — see `formats.MFLUX_VARIANTS` for why an
     # autoencoder class name is the right thing for an MLX table to carry.
-    _loaded["vae"] = recipe.get("vae")
+    return model, recipe.get("vae")
+
+
+def load(model_id, fetched):
+    """`fetched` is what `download` returned — the snapshot directory."""
+    # BOTH checks come before the import `_build_variant` does, and they
+    # answer different questions. This one is about the CATALOG: a repo
+    # nobody has written a variant for.
+    if model_id not in _VARIANTS:
+        raise RuntimeError(
+            f"{model_id} is not a model this runner knows how to build. It "
+            "loads mflux's own MLX conversions, and each one needs a variant "
+            "class this build has to name explicitly. Try "
+            "mlx-community/FLUX.2-Klein-4B-4bit, or switch this capability to "
+            "the Diffusers engine on the AI Models page's Engines tab.")
+    # …and this one is about the DOWNLOAD: a repo of the right name in the wrong
+    # format, which is what a torch or GGUF image repo looks like from here.
+    missing = [name for name in _MLX_COMPONENTS
+               if not os.path.isdir(os.path.join(fetched, name))]
+    if missing:
+        raise RuntimeError(
+            f"{model_id} has no {missing[0]}/ folder — this runner loads MLX "
+            "conversions, whose weights are split into transformer/, "
+            "text_encoder/ and vae/ subfolders. A diffusers or GGUF repo will "
+            "not load here.")
+
+    model, vae = _build_variant(model_id, fetched, "generate")
+    _loaded["model"] = model
+    _loaded["vae"] = vae
+    _loaded["mode"] = "generate"
+    # Remembered so `_ensure_mode` can re-run `_build_variant` for the OTHER
+    # mode without a second `download()` — the snapshot is already on disk and
+    # `download` has already reported those bytes to the job row, so a second
+    # fetch here would be an unreported download the user watches as a
+    # stalled render.
+    _loaded["model_id"] = model_id
+    _loaded["fetched"] = fetched
     # See `worker_base.STATE["device"]`. MLX is Metal or nothing, so unlike the
     # torch runner there is nothing to detect — but the page shows this field to
     # explain a speed, and a user comparing the two engines should be able to
     # read which one they are on.
     worker_base.set_state(device="mps")
+
+
+def _ensure_mode(mode):
+    """Make the resident model's MODE match `mode`, swapping if it does not.
+
+    Decision 3: residency is keyed by `(model_id, mode)`. This is a
+    ONE-PROCESS-PER-MODEL worker (`worker_base.serve` builds exactly one
+    model at bring-up) — there is no second worker to route an edit request
+    to, so the swap happens in place, lazily, only when a request's mode
+    actually differs from the one already resident. A run of ordinary
+    generates after an edit (or vice versa) swaps back the same way; neither
+    direction touches the network, since `_build_variant` never re-downloads.
+
+    Plain generate is UNAFFECTED by this function's existence: a caller who
+    never passes `image` always finds `_loaded["mode"] == "generate"` already
+    (`load()` sets it), so this returns on its first line and the resident
+    `Flux2Klein` object built at load time is untouched for the life of the
+    process — Decision 3's "zero behaviour change" in code.
+    """
+    if _loaded.get("mode") == mode:
+        return
+    model, vae = _build_variant(_loaded["model_id"], _loaded["fetched"], mode)
+    _loaded["model"] = model
+    _loaded["vae"] = vae
+    _loaded["mode"] = mode
 
 
 def memory():
@@ -447,11 +528,27 @@ def generate(body):
     ITS defaults too — 28 steps and guidance 4.0, rather than mflux's own 4 and
     1.0 — because a caller that omits them must get the same picture-making
     behaviour from either engine. Switching engines is a performance decision,
-    not a silent change to what an unparameterised render means.
+    not a silent change to what an unparameterised render means. (Edit
+    defaults come in through `steps`/`guidance` too — the ROUTE decides them,
+    per Decision 1/AI-9f, so this function stays ignorant of which numbers
+    mean "edit" and which mean "generate".)
+
+    **`image`, if present, is a single base-image PATH — never a list.** Its
+    presence is what selects the mode (`_ensure_mode`): a request that carries
+    it renders through `Flux2KleinEdit` with `image_paths=[image]`, which is
+    the library's own shape (Gate A/D); one that omits it stays on the
+    untouched `Flux2Klein` path, exactly as before this option existed.
+    `image_path`/`image_strength` — the PLAIN variant's own image argument —
+    are never passed from here: Gate A found that argument inert unless
+    `image_strength` also arrives, and even then it is img2img noise strength,
+    not instruction editing, which is not what `image` promises a caller.
     """
-    model = _loaded.get("model")
-    if model is None:
+    if _loaded.get("model") is None:
         raise RuntimeError("no model is loaded")
+    image = body.get("image") or None
+    mode = "edit" if image else "generate"
+    _ensure_mode(mode)
+    model = _loaded["model"]
     # BEFORE anything touches the model: this is a request thread, the weights it
     # is about to force were built on the bring-up thread, and mlx 0.32's default
     # streams are per (thread, device). See `_pin_stream`.
@@ -487,9 +584,15 @@ def generate(body):
     # duplicate bytes. A cancel or a failure discards it too (`preview.Sink`).
     with frames:
         try:
-            image = model.generate_image(
-                seed=seed, prompt=prompt, num_inference_steps=steps,
-                height=height, width=width, guidance=guidance)
+            kwargs = dict(seed=seed, prompt=prompt, num_inference_steps=steps,
+                          height=height, width=width, guidance=guidance)
+            if mode == "edit":
+                # The library's own shape (Gate A/D): `Flux2KleinEdit` takes
+                # `image_paths`, a LIST, even though `image` here is always
+                # exactly one path (Decision 4 — an array or non-string
+                # `image` is refused before this worker is ever reached).
+                kwargs["image_paths"] = [image]
+            rendered = model.generate_image(**kwargs)
         finally:
             # Even on the cancel path: a reporter left pointing at a finished
             # request would tick a row that is closed.
@@ -502,7 +605,7 @@ def generate(body):
         # the default would answer a request with a file at a path nobody was
         # given, while `out` stayed empty or stale. The server owns the
         # location; this process owns the pixels.
-        image.save(out, overwrite=True)
+        rendered.save(out, overwrite=True)
     return {
         "path": out,
         "seconds": round(time.time() - started, 2),
