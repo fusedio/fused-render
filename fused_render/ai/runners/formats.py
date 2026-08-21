@@ -328,6 +328,47 @@ def _gguf_skip_value(buf: bytes, offset: int, value_type: int) -> int:
     return offset + _GGUF_SCALAR_SIZES[value_type]
 
 
+def _gguf_uint_by_suffix(path: str, suffix: str) -> int | None:
+    """The one unsigned/signed-int GGUF header value whose key ends in `suffix`.
+
+    Matched by SUFFIX rather than by a full key, because every architecture
+    namespaces its own metadata (`qwen35.block_count`, `lfm2moe.expert_count`)
+    and exactly one such key exists in a well-formed GGUF — so no caller needs
+    to read `general.architecture` first, and an architecture this module has
+    never heard of still answers.
+
+    Bounded local peek, and fails toward None on every malformed shape: a
+    truncated read, a missing magic, or a value type this app does not model
+    is "cannot tell", never a crash and never a guess. That last case matters
+    more than it looks — the peek is a fixed `_GGUF_HEADER_PEEK_BYTES` window
+    and a GGUF's tokenizer arrays are megabytes wide, so a key that sorts
+    after them is simply not visible from here and reads as None. Both keys
+    this is used for sit in the architecture block, ahead of the tokenizer.
+    """
+    try:
+        with open(path, "rb") as handle:
+            buf = handle.read(_GGUF_HEADER_PEEK_BYTES)
+    except OSError:
+        return None
+    try:
+        if buf[:4] != b"GGUF":
+            return None
+        (kv_count,) = struct.unpack_from("<Q", buf, 16)
+        offset = 24
+        for _ in range(kv_count):
+            key, offset = _gguf_read_string(buf, offset)
+            (value_type,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            if key.endswith(suffix) and value_type in (4, 5):
+                fmt = "<I" if value_type == 4 else "<i"
+                (value,) = struct.unpack_from(fmt, buf, offset)
+                return value
+            offset = _gguf_skip_value(buf, offset, value_type)
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return None
+    return None
+
+
 def gguf_architecture(path: str) -> str | None:
     """`general.architecture` out of a GGUF file's own header, or None.
 
@@ -403,28 +444,28 @@ def gguf_block_count(path: str) -> int | None:
     model is "cannot tell", never a crash and never a guess. Callers must
     treat None as "no sizing information", not as zero layers.
     """
-    try:
-        with open(path, "rb") as handle:
-            buf = handle.read(_GGUF_HEADER_PEEK_BYTES)
-    except OSError:
-        return None
-    try:
-        if buf[:4] != b"GGUF":
-            return None
-        (kv_count,) = struct.unpack_from("<Q", buf, 16)
-        offset = 24
-        for _ in range(kv_count):
-            key, offset = _gguf_read_string(buf, offset)
-            (value_type,) = struct.unpack_from("<I", buf, offset)
-            offset += 4
-            if key.endswith(".block_count") and value_type in (4, 5):
-                fmt = "<I" if value_type == 4 else "<i"
-                (value,) = struct.unpack_from(fmt, buf, offset)
-                return value
-            offset = _gguf_skip_value(buf, offset, value_type)
-    except (struct.error, IndexError, UnicodeDecodeError):
-        return None
-    return None
+    return _gguf_uint_by_suffix(path, ".block_count")
+
+
+def gguf_expert_count(path: str) -> int | None:
+    """How many experts a mixture-of-experts GGUF holds, or None if it is dense.
+
+    Read for ONE decision, in `llama_text._offload_schedule`: a MoE model can
+    be split a way a dense one cannot — its expert tensors are most of the
+    weights but only a few of them are multiplied per token, so parking those
+    on the CPU and keeping attention on the GPU costs far less speed than
+    dropping whole layers does. Nothing else may branch on this; in
+    particular it is NOT a quality or capability signal.
+
+    None means "no expert weights to park", and a dense model genuinely has
+    no such key — verified against the local cache on 2026-08-21, where
+    `LFM2.5-8B-A1B` carries `lfm2moe.expert_count = 32` (with
+    `expert_used_count = 4`) and `Qwen3.5-4B`, `gemma-4-E4B-it` and
+    `LFM2.5-1.2B` carry no `expert`-prefixed key at all. Same suffix match,
+    same bounded peek and the same fail-toward-None contract as
+    `gguf_block_count` — see `_gguf_uint_by_suffix`.
+    """
+    return _gguf_uint_by_suffix(path, ".expert_count")
 
 
 #: Curated `(repo, file)` pairs `runners/llama_text.py` actually
