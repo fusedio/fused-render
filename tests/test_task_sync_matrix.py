@@ -681,3 +681,32 @@ def test_events_emitted_once_and_ack_is_monotonic(target, spawned):
     assert schedule.undelivered_events() == []
     schedule.ack_events(0)  # replayed / out-of-order ack cannot re-arm
     assert schedule.undelivered_events() == []
+
+
+def test_a_stop_from_the_chat_is_a_stop_on_the_board_too(client, target, spawned):
+    """THE OTHER STOP BUTTON. The queue card's ✕ goes through the job registry,
+    so the watcher knows the end was asked for and records `cancelled`. The
+    CHAT's own Stop button calls agent._cancel directly — the scheduler never
+    hears about it and only sees the kill's error on its next observation, which
+    it files as a failed turn. Same act, same run, two verdicts: the chat says
+    "Stopped." and the board flies a red Failed mark.
+
+    The run's own cancel marker is what closes it: `_poll` reports `cancelled`
+    (this branch added it for the chat), so the watcher can read the same fact
+    the chat reads instead of inferring a crash from the error."""
+    schedule.create(str(target), "stop me from the chat", _in(-5))
+    _tick()
+    stored = _entry()
+    # what `_poll` returns for a run killed by agent._cancel: dead, with the
+    # error the kill leaves behind, AND its own record of having been cancelled
+    schedule._turn_tick(dict(stored), "r-1", DummyAgent(),
+                        {"session_id": "sess-chatstop", "done": True,
+                         "error": "claude exited before completing the reply",
+                         "cancelled": True})
+    entry = _entry()
+    assert entry["turn"] == "cancelled", (
+        f"a stop pressed in the chat is recorded as {entry['turn']!r} — the "
+        "board reads that as Failed while the chat says Stopped")
+    row = {t["key"]: t for t in _board(client)}["sess-chatstop"]
+    assert row["status"] == "done" and row["failed"] is False
+    assert row["messages"][0]["turn"] == "cancelled"

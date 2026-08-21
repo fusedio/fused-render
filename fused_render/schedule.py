@@ -1314,6 +1314,27 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
         _chain_session(str(entry.get("template_id") or ""), ran)
     if data.get("done"):
         reason = str(data.get("error") or "")
+        if data.get("cancelled"):
+            # THE OTHER STOP BUTTON. The queue card's ✕ arrives as a
+            # `cancel_requested` flag on the job row and is handled below, so
+            # this module knows that stop was asked for. The CHAT's own Stop
+            # calls `agent._cancel` directly and tells this module nothing — so
+            # all the watcher used to see was the kill's error, which it filed
+            # as a FAILED turn: the chat said "Stopped." and the board flew a
+            # red Failed mark for the same act on the same run, which is the
+            # disagreement this whole branch exists to end.
+            #
+            # The run's own cancel marker is the shared fact (agent.py
+            # `_cancel` writes it, `_poll` reports it), so both stops are
+            # recorded identically — and the kill's error is deliberately NOT
+            # kept: it describes a truncated reply, which is what a stop IS,
+            # and storing it would put a reason on the row for something that
+            # went exactly as asked. No event either, for the same reason the ✕
+            # below emits none: a stop needs no toast to tell the person who
+            # pressed it.
+            _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
+            _report(entry_id, state="cancelled")
+            return False
         if reason:
             _update(entry_id, turn="failed", error=reason,
                     turn_at=_now().isoformat())
