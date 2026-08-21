@@ -6230,7 +6230,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   environment failure look like a transient race. "Unloaded" survives as the
   answer for what it actually describes: a record that never errored and was
   taken away — evicted by another model, or unloaded from the AI Models page.
-- **AI-9d** **The request envelope of a job-backed AI call is closed** (D407):
+- **AI-9d** **The request envelope of a job-backed AI call is closed** (D411):
   an option `/api/ai/image` or `/api/ai/transcribe` does not have is a 400
   naming it, not a value silently dropped. `runners/engine_options.py`
   already refuses an option an ENGINE cannot honour rather than ignoring it

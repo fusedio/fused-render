@@ -3955,7 +3955,7 @@ def _lift_js_fn(source, marker):
 
 def _js_fn_with_helper(source, marker):
     """`_lift_js_fn`, plus `rejectUnknownOptions` ahead of it — `aiImage` and
-    `aiTranscribe` both call it now (D407), and it is not itself part of
+    `aiTranscribe` both call it now (D411), and it is not itself part of
     either function's own source, so a harness that lifts only the target
     function leaves the call unresolved."""
     return (_lift_js_fn(source, "  function rejectUnknownOptions(")

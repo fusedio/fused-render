@@ -2620,7 +2620,7 @@
   // a rule that lives in `runners/preview.py`, and being wrong about it on some
   // future model — whereas "the file is gone once the row is terminal" is this
   // bridge's own fact, and it is the one that would be seen every render.
-  // The request envelope of a job-backed AI call is closed (D407): an option
+  // The request envelope of a job-backed AI call is closed (D411): an option
   // this API does not have is refused, not dropped. Checked before the POST
   // — and before the field checks below it, matching the server's own
   // ordering — so the caller learns it in one round trip and with a message
@@ -2732,7 +2732,7 @@
   // watching a 90-minute recording is actually thinking in.
   function aiTranscribe(opts) {
     opts = opts || {};
-    // The envelope check, same as `aiImage` and for the same reason (D407),
+    // The envelope check, same as `aiImage` and for the same reason (D411),
     // and checked BEFORE `path` for the same reason too: a call with both an
     // unknown option and no `path` must learn about the option it does not
     // have, not about the missing field, or "fixing" the field reported

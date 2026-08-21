@@ -201,7 +201,7 @@ el.dataset.seed = img.seed;
 | `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
 | `onProgress(job)` | — | — | per denoising step |
 
-**That is the whole surface**: no negative prompt, no image-to-image or inpainting, no batch count, no scheduler or LoRA. One prompt in, one PNG out; two pictures means two calls. Pass an option that is not in the table above — `image`, `strength`, a typo — and the call is refused `bad_request` rather than quietly rendering text-to-image and ignoring what you asked for; the request envelope is closed, both in the bridge and on the server, so a page cannot get a plausible-looking picture back from an option that was never honoured (D407).
+**That is the whole surface**: no negative prompt, no image-to-image or inpainting, no batch count, no scheduler or LoRA. One prompt in, one PNG out; two pictures means two calls. Pass an option that is not in the table above — `image`, `strength`, a typo — and the call is refused `bad_request` rather than quietly rendering text-to-image and ignoring what you asked for; the request envelope is closed, both in the bridge and on the server, so a page cannot get a plausible-looking picture back from an option that was never honoured (D411).
 
 Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for.
 

@@ -64,7 +64,7 @@ _MIN_SIDE, _MAX_SIDE, _SIDE_STEP = 256, 2048, 16
 _MAX_STEPS = 100
 _MAX_SEED = 2**31 - 1
 
-# The request envelope of a job-backed AI call is closed (D407): an option
+# The request envelope of a job-backed AI call is closed (D411): an option
 # neither of these routes has is refused with a 400 rather than silently
 # dropped. These are the CALLER-FACING sets — the same facts `runtime.js`
 # restates as its own whitelist arrays, and `test_the_bridges_accepted_*`
