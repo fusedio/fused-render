@@ -1040,15 +1040,20 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
 
 @requires_symlinks
 def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
-    """The one a llama.cpp user's cache is full of: no config.json, no card,
-    just weights — and the library is all that can honestly be read off them.
+    """No config.json, no card, no real GGUF header either — a fixture whose
+    `.gguf` file is fake bytes, not a real one — and the library is all that
+    can honestly be read off it.
 
-    It used to say "text generation" here, which is a guess about the MODALITY
-    made from a CONTAINER, and it was wrong on the first image repo it met
-    (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer the diffusers
-    recipe fetches). The guess never bought anything either: no runner that
-    ships loads a GGUF-only repo, so all it ever produced was a Load button
-    that fails.
+    It used to say "text generation" here unconditionally, which is a guess
+    about the MODALITY made from a CONTAINER, and it was wrong on the first
+    image repo it met (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized
+    transformer the diffusers recipe fetches). Since SPEC AI-11 a GGUF whose
+    OWN `general.architecture` metadata names a real causal-text model DOES
+    get a task and a Load button (`llamacpp-text`) —
+    `test_ai_runtime.py::test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp`
+    covers that with a real header. This fixture's file is not one (no magic
+    bytes to read at all), which is why it still reads exactly as it did
+    before that runner existed: nothing here can tell what it is.
     """
     repo = _repo(hub, "models--TheBloke--m-GGUF", blobs={"w": 10},
                  snapshots={"c1": {"model.Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
@@ -1481,8 +1486,12 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
     not even a model, it is the quantized transformer the diffusers recipe
     fetches for FLUX.2 klein. It read "Text generation" with a Load button,
     which is the exact failure `capability_for_task` warns about: a GGUF file
-    is a container, not a modality, and no shipping runner loads a GGUF-only
-    repo at all."""
+    is a container, not a modality. `formats.component()` is what excludes
+    THIS repo specifically (it is a COMPONENT, never a `load()` target on its
+    own); a GGUF repo that is not a known component additionally needs its
+    own `general.architecture` metadata to name a real causal-text model
+    before `llamacpp-text` (SPEC AI-11) calls it decisively text — the
+    fixture's file has none, so it reads the same either way."""
     _repo(hub, "models--unsloth--FLUX.2-klein-4B-GGUF", blobs={"w": 10},
           snapshots={"c1": {"flux-2-klein-4b-Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
     row = _repo_row(client, "unsloth/FLUX.2-klein-4B-GGUF")
@@ -1512,6 +1521,42 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
     assert row["task"] == "image generation"
     assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"]["code"] == "diffusers-image"
+
+
+@requires_symlinks
+def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
+        client, hub, monkeypatch):
+    """Three names on the wire, because the card wants two different things.
+
+    The card's TAG is a format claim, so it wears the family ("Diffusers") —
+    every Diffusers row reads the identical safetensors and "(CPU)" on a tag
+    describing a file on disk is noise plus a leak of which machine is reading
+    it. The tag's hover keeps the hardware-qualified `shortLabel`, so nothing
+    is lost. Both are asserted here rather than only in the registry because
+    the payload is built at TWO sites in this router — the serving engine and
+    the engine that merely reads the format — and one of them shipped without
+    a key before now.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    # The SERVING site: Diffusers CPU is the image engine on Linux.
+    serving = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert serving["shortLabel"] == "Diffusers (CPU)"
+    assert serving["familyLabel"] == "Diffusers"
+    # …and the OTHER site: on a Mac the image engine is MLX FLUX, so this repo
+    # comes back naming the engine that reads it with `available: false`. Same
+    # row, same two names — a payload missing the key here would leave the tag
+    # blank on exactly the cards that need explaining.
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert other["code"] == "diffusers-image" and other["available"] is False
+    assert other["shortLabel"] == "Diffusers (CPU)"
+    assert other["familyLabel"] == "Diffusers"
 
 
 @requires_symlinks

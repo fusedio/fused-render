@@ -860,7 +860,16 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image": "(CPU)",
     "diffusers-image-cuda": "(CUDA)",
     "diffusers-image-rocm": "(ROCm)",
+    "llamacpp-text": "(CPU)",
+    "llamacpp-text-vulkan": "(Vulkan)",
 }
+
+#: Every qualifier this app uses to name a BUILD rather than a platform.
+#:
+#: The vocabulary is closed on purpose: it is what
+#: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
+#: name against, and what Task B's family test forbids in a family name.
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -890,6 +899,76 @@ def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
         if row["effective"]:
             runner = registry.by_code(row["effective"])
             assert row["effectiveShortLabel"] == runner.short
+
+
+def test_every_runner_names_its_family_with_no_hardware_in_it():
+    """A THIRD name per runner, and the card's tag is what it exists for.
+
+    The tag on a Local card is a FORMAT claim — "Diffusers" is exactly the
+    statement that these weights are safetensors a Diffusers pipeline opens —
+    and all three Diffusers rows read the identical file, so "(ROCm)" on that
+    tag answers a question nobody asked of a file on disk and leaks which
+    machine happens to be reading it. `family_label` is that claim with the
+    hardware taken out; the hardware-qualified `short_label` stays on the
+    tag's hover, so the full truth is one hover away rather than gone.
+
+    A prefix of `short_label` and never a regex over it, for `short_label`'s
+    own reason: derived names make the value a side effect of somebody's
+    punctuation. The prefix check is what keeps the pair one engine.
+    """
+    for runner in registry.all_runners():
+        assert runner.family_label, f"{runner.code} has no family name"
+        assert runner.family == runner.family_label
+        assert runner.short_label.startswith(runner.family_label), (
+            f"{runner.code}: {runner.family_label!r} is not the start of "
+            f"{runner.short_label!r}")
+        for qualifier in _HARDWARE_QUALIFIERS + ("(Apple Silicon)",):
+            assert qualifier not in runner.family_label, (
+                f"{runner.code}: {runner.family_label!r} carries {qualifier} — "
+                f"a tag that is a format claim must not name the hardware")
+    # And the field earns its existence: on a hardware variant it is genuinely
+    # a different string from the short name. Without a row like that the test
+    # above would pass on a registry that simply copied `short_label` across.
+    assert registry.by_code("diffusers-image-rocm").family_label == "Diffusers"
+
+
+def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
+    """Sibling rows of one library are told apart by HARDWARE, never by format.
+
+    The regression this locks out shipped once: the first llama.cpp row was
+    called "llama.cpp (GGUF)" beside "llama.cpp (Vulkan)", and GGUF is not what
+    tells those two apart — both load it through the same
+    `runners/llama_text.py`. A qualifier naming something a sibling also does is
+    a qualifier that answers nothing, and it cost that row a hardware name it
+    needed: the Vulkan row's own note has to point at "the CPU build", which
+    only reads as a cross-reference once the row is CALLED that.
+
+    So the rule, per library: where two rows share a `label` stem, each
+    qualifier must come from `_HARDWARE_QUALIFIERS`, they must differ, and no
+    name may repeat a format tag both rows declare in `hub_filter_tags`.
+    """
+    families: dict[str, list] = {}
+    for runner in registry.all_runners():
+        families.setdefault(runner.label.split(" (")[0], []).append(runner)
+    siblings = {stem: rows for stem, rows in families.items() if len(rows) > 1}
+    # If this is ever empty the test has stopped testing anything — every
+    # hardware-variant family could have been renamed out from under it.
+    assert "llama.cpp" in siblings, sorted(families)
+    for stem, rows in siblings.items():
+        qualifiers = [runner.label[len(stem):].strip() for runner in rows]
+        assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
+        for runner, qualifier in zip(rows, qualifiers):
+            assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
+            # And the hardware is in BOTH names, the shape the torch rows set:
+            # the short name is what the Local card and the job row print, so a
+            # family whose short names collide renders as one engine there.
+            assert runner.short_label == runner.label, runner.code
+        shared = set.intersection(*(set(r.hub_filter_tags) for r in rows))
+        for runner in rows:
+            for tag in shared:
+                assert tag.lower() not in runner.label.lower(), (
+                    f"{runner.code}: {runner.label!r} names {tag!r}, which "
+                    f"every {stem} row reads — it distinguishes nothing")
 
 
 def test_every_suggested_model_names_a_runner_that_exists():
@@ -937,7 +1016,16 @@ def test_text_generation_resolves_to_a_runner_on_every_supported_platform(monkey
 
 
 def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch):
-    """Availability controls the catalog and Load button, so it is a support claim."""
+    """Availability controls the catalog and Load button, so it is a support claim.
+
+    Both text runners that would otherwise be reachable on Darwin have to
+    say no here: `transformers-text` because Intel macOS is not a
+    distribution target, and `llamacpp-text` because the maintainer's wheel
+    index publishes no macOS x86_64 build at all — checked directly in
+    `test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags`
+    below, since "for_capability returns None" alone would also pass if
+    EITHER reason regressed while the other still covered for it.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
 
@@ -945,6 +1033,31 @@ def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch)
     status = registry.by_code("transformers-text").available()
     assert status.ok is False
     assert "Apple Silicon macOS" in status.reason
+    llamacpp_status = registry.by_code("llamacpp-text").available()
+    assert llamacpp_status.ok is False
+    assert "Apple Silicon" in llamacpp_status.reason
+
+
+def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypatch):
+    """`_llamacpp_platform`, pinned directly rather than only through
+    `for_capability` — the maintainer's CPU index publishes wheels for
+    Windows (any arch it runs on), Linux (any arch), and macOS arm64 ONLY;
+    there is no macOS x86_64 tag (verified against the index listing, D406).
+    """
+    for system, machine in (
+        ("Windows", "AMD64"), ("Linux", "x86_64"), ("Linux", "aarch64"),
+        ("Darwin", "arm64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text").available()
+        assert status.ok is True, (system, machine, status.reason)
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    status = registry.by_code("llamacpp-text").available()
+    assert status.ok is False
+    assert "macOS x86_64" in status.reason
 
 
 def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
@@ -1744,6 +1857,206 @@ def test_the_registry_describes_the_transcription_runner():
     assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
 
 
+def test_llamacpp_text_is_registered_below_every_transformers_row(monkeypatch):
+    """AI-11's precedent, restated for the fourth text runner: it sits BELOW
+    all three `transformers-text` rows, so `auto` resolution never reaches it
+    on ANY platform — reaching it is always a choice made on the Engines tab.
+
+    Position is checked directly, rather than only inferred from behaviour,
+    because the ordering is invisible in a diff of the table (the same
+    argument `test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR`'s
+    docstring makes about the CPU/CUDA/ROCm split) and nothing else fails when
+    a row moves one line up.
+    """
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert codes.index("llamacpp-text") > codes.index("transformers-text")
+    assert codes.index("llamacpp-text") > codes.index("transformers-text-cuda")
+    assert codes.index("llamacpp-text") > codes.index("transformers-text-rocm")
+
+    # AUTO on every platform this app ships reaches MLX or a transformers row,
+    # never this one — `_always` makes it AVAILABLE everywhere, which is
+    # exactly why the ORDER is what keeps `auto` off it.
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
+
+
+def test_llamacpp_text_is_reachable_only_by_an_explicit_preference(monkeypatch):
+    """The other half of "opt-in": `_always` means it CAN run everywhere, and a
+    preference naming it is honoured exactly like any other runner's — the
+    registered position only keeps AUTO off it, never a deliberate choice."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text" and resolution.honoured
+
+
+def test_llamacpp_text_suggestions_are_smallest_first_and_curated_by_filename():
+    """Every id here is the GGUF's own filename, not a Hub repo id — see
+    `runners/llama_text.py`'s module docstring for why there is no
+    `repo:quant` grammar. `test_every_suggestion_list_is_ordered_smallest_first`
+    already pins the ordering rule generically; this pins the SHAPE that is
+    specific to this runner's list."""
+    entries = catalog.SUGGESTIONS["llamacpp-text"]
+    assert len(entries) >= 3
+    for entry in entries:
+        assert entry["id"].endswith(".gguf"), entry["id"]
+        assert "/" not in entry["id"], (
+            f"{entry['id']} looks like a Hub repo id — this list's ids are "
+            f"curated filenames, never repo ids")
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert "llamacpp-text" in codes
+
+
+def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
+    """`default_for` follows the RESOLVED runner (`catalog._runner_for`), so it
+    only reaches this list once a preference actually selects the engine —
+    the same mechanism `test_the_default_is_the_smallest_model_the_active_runner_offers`
+    exercises for the other runners."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+    entries = catalog.SUGGESTIONS["llamacpp-text"]
+    assert catalog.default_for(registry.TEXT_GENERATION) == entries[0]["id"]
+
+
+def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monkeypatch):
+    """The Vulkan variant sits directly after the CPU/Metal row and still below
+    every transformers row — `auto` resolution must not move on any platform
+    just because this row now exists, the same property
+    `test_llamacpp_text_is_registered_below_every_transformers_row` pins for
+    its neighbour."""
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert codes.index("llamacpp-text-vulkan") == codes.index("llamacpp-text") + 1
+    assert codes.index("llamacpp-text-vulkan") > codes.index("transformers-text")
+    assert codes.index("llamacpp-text-vulkan") > codes.index("transformers-text-cuda")
+    assert codes.index("llamacpp-text-vulkan") > codes.index("transformers-text-rocm")
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+
+
+def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
+    """`_vulkan`, pinned directly — the maintainer's vulkan index publishes
+    `manylinux2014_x86_64` and `win_amd64` for `0.3.29` and NOTHING else: no
+    macOS build (Apple Silicon already gets acceleration through the CPU
+    index's Metal-linked wheel), no Linux aarch64, no Windows ARM64.
+
+    A working loader and ICD are faked via the same `_fake_vulkan` fixture
+    `test_vulkan_needs_a_registered_icd_even_with_a_working_loader` and its
+    neighbours use, so this only pins the ARCHITECTURE half of the gate.
+    """
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        _fake_vulkan(monkeypatch, tmp_path, system)
+        status = registry.by_code("llamacpp-text-vulkan").available()
+        assert status.ok is True, (system, machine, status.reason)
+
+    for system, machine in (
+        ("Darwin", "arm64"), ("Linux", "aarch64"), ("Windows", "ARM64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text-vulkan").available()
+        assert status.ok is False, (system, machine)
+        assert "x86_64" in status.reason
+
+
+def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True):
+    """A machine with a working Vulkan loader and (optionally) a registered
+    ICD — real files under `tmp_path`, repointed onto the module constants
+    `_vulkan` reads, the same style `test_windows_gates_cuda_on_the_drivers_own_cuda_library`
+    uses for `NVCUDA_DLL` rather than a global `os.path` patch.
+    """
+    if system == "Windows":
+        dll = tmp_path / "vulkan-1.dll"
+        if loader:
+            dll.write_text("")
+        monkeypatch.setattr(registry, "VULKAN_DLL", str(dll))
+        return
+    loader_path = tmp_path / "libvulkan.so.1"
+    if loader:
+        loader_path.write_text("")
+    monkeypatch.setattr(registry, "VULKAN_LOADER_PATHS", (str(loader_path),))
+    icd_dir = tmp_path / "icd.d"
+    icd_dir.mkdir(exist_ok=True)
+    if icd:
+        (icd_dir / "fake_icd.json").write_text("")
+    monkeypatch.setattr(registry, "VULKAN_ICD_DIRS", (str(icd_dir),))
+
+
+def test_vulkan_needs_the_loader_even_before_a_gpu_is_asked_about(monkeypatch, tmp_path):
+    """The hard-failure half: `libggml-vulkan.so`/`ggml-vulkan.dll` link the
+    loader directly (`DT_NEEDED libvulkan.so.1` / a PE import on
+    `vulkan-1.dll`, read off the actual `0.3.29` wheels on 2026-08-21), so a
+    missing loader fails `import llama_cpp` itself — refused here rather than
+    left to that import error, the same reasoning `_cuda`'s missing-device
+    case documents for why ITS checks exist at all.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", loader=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "loader" in status.reason
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _fake_vulkan(monkeypatch, tmp_path, "Windows", loader=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "Vulkan driver" in status.reason
+
+
+def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, tmp_path):
+    """The advisory half, on Linux only — Windows has no equivalent manifest
+    directory this module checks, per `_vulkan`'s own docstring, so the DLL
+    check stands in for both halves there.
+
+    A loader with no registered driver is not a load failure (ggml's own
+    bundled CPU backend answers instead), but it IS the "advertising a claim
+    that buys nothing" case `_cuda`/`_rocm`'s device checks already refuse —
+    an 8x larger download for the exact CPU outcome `llamacpp-text` already
+    gives more cheaply.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", loader=True, icd=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "driver" in status.reason
+
+
+def test_llamacpp_text_vulkan_is_reachable_only_by_an_explicit_preference(monkeypatch, tmp_path):
+    """Opt-in like its neighbour: a working loader and ICD make the row
+    AVAILABLE, but `auto` still resolves to a transformers row — reaching this
+    one is a choice."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text-vulkan")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text-vulkan" and resolution.honoured
+
+
+def test_llamacpp_text_vulkan_shares_its_neighbours_suggestion_list():
+    """`_SHARED_SUGGESTIONS` aliases this row to `llamacpp-text`'s curated
+    list, the same way the CUDA/ROCm transformers rows share theirs — one
+    GGUF is one GGUF whichever wheel loads it, so a second copy of the list
+    would be the exact drift `_SHARED_SUGGESTIONS`'s own docstring warns
+    about."""
+    assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
+
+
 def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
     """Wheels only — a VCS or URL dependency is a source build, and a source
     build is a build backend running in an interpreter uv creates for it.
@@ -2410,7 +2723,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
         "mlx-text", "transformers-text", "transformers-text-cuda",
-        "transformers-text-rocm", "diffusers-image", "diffusers-image-cuda",
+        "transformers-text-rocm", "llamacpp-text", "llamacpp-text-vulkan",
+        "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper"}
     assert body["loaded"] == []
@@ -5096,15 +5410,66 @@ def test_an_uncached_unknown_repo_still_defaults_to_text_generation(
 
 def test_a_cached_repo_no_engine_reads_is_refused_by_name(client, hub, dispatched):
     """Not a FileNotFoundError from inside a library, and not a bare "unknown
-    capability": the repo, what it looks like, and what to pass."""
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
-    response = _load(client, {"model": "org/gguf-only"})
+    capability": the repo, what it looks like, and what to pass.
+
+    A `.ckpt`-only repo, not a `.gguf` one: since SPEC AI-11 a root-level GGUF
+    IS decisively loadable, by `llamacpp-text` — see
+    `test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp` below. `.ckpt` is
+    a raw pickle checkpoint no format check here recognises (it is not in
+    `formats.TORCH_WEIGHTS`), so it remains a case nothing reads.
+    """
+    _cached_repo(hub, "org/ckpt-only", files=("model.ckpt", "README.md"))
+    response = _load(client, {"model": "org/ckpt-only"})
     assert response.status_code == 400
     message = response.json()["error"]
-    assert "org/gguf-only" in message
-    assert "gguf" in message
+    assert "org/ckpt-only" in message
     assert "capability" in message
     assert registry.IMAGE_GENERATION in message and registry.SPEECH_TO_TEXT in message
+    assert dispatched == []
+
+
+def _gguf_bytes(architecture: str) -> bytes:
+    """A minimal, real GGUF header declaring `general.architecture` — enough
+    for `formats.gguf_architecture` to read, which is what `loaders()` now
+    requires before calling a root `.gguf` decisively `llamacpp-text`
+    (code review finding 4: presence of the extension alone is not enough,
+    since GGUF is a container format shared with image and speech models)."""
+    import struct
+
+    pairs = [("general.architecture", architecture)]
+    buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
+        struct.pack("<Q", len(pairs))
+    for key, value in pairs:
+        buf += struct.pack("<Q", len(key.encode())) + key.encode()
+        buf += struct.pack("<I", 8)  # GGUF string type
+        buf += struct.pack("<Q", len(value.encode())) + value.encode()
+    return buf
+
+
+def test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp(client, hub, dispatched):
+    """The other half of the story the test above used to tell alone: since
+    SPEC AI-11 a root-level `.gguf` whose OWN `general.architecture` is a
+    recognised text one IS decisively `llamacpp-text`'s (`formats.DECISIVE`),
+    so `cached_capability`'s `meta.loaders` fallback resolves it to text
+    generation with no task label needed — the same mechanism
+    `test_a_cached_repo_with_no_task_but_readable_weights_is_text` exercises
+    for a bare directory of safetensors."""
+    repo_dir = _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    assert _load(client, {"model": "org/gguf-only"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_gguf_repo_with_a_non_text_architecture_is_still_refused(
+        client, hub, dispatched):
+    """`city96/FLUX.1-dev-gguf`'s own shape, verified 2026-08-21
+    (`general.architecture = "flux"`) — a root `.gguf` alone must not be
+    enough, or this app would offer a Load button for an image model under
+    the text-generation capability (code review finding 4)."""
+    repo_dir = _cached_repo(hub, "org/flux-gguf", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("flux"))
+    response = _load(client, {"model": "org/flux-gguf"})
+    assert response.status_code == 400
     assert dispatched == []
 
 
@@ -5132,11 +5497,14 @@ def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
 
 
 def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched):
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf",))
-    response = client.post("/api/ai/runtime/download", json={"model": "org/gguf-only"},
+    """`.ckpt`-only, not `.gguf` — see the docstring on
+    `test_a_cached_repo_no_engine_reads_is_refused_by_name` for why a GGUF is
+    no longer this test's example (SPEC AI-11)."""
+    _cached_repo(hub, "org/ckpt-only", files=("model.ckpt",))
+    response = client.post("/api/ai/runtime/download", json={"model": "org/ckpt-only"},
                            headers={"X-Fused": "1"})
     assert response.status_code == 400
-    assert "org/gguf-only" in response.json()["error"]
+    assert "org/ckpt-only" in response.json()["error"]
     assert dispatched == []
 
 
@@ -5281,6 +5649,60 @@ def test_a_curated_repo_that_is_not_on_disk_says_so(client, hub):
     assert row["models"]
     assert all(m["downloaded"] is False for m in row["models"])
     assert all(m["source"] == "curated" for m in row["models"])
+
+
+def test_a_llamacpp_curated_id_is_marked_downloaded_and_not_duplicated(
+        client, hub, monkeypatch):
+    """The regression code review found (finding 3): `formats.GGUF_RECIPES`
+    keys `llamacpp-text`'s catalog entries by FILENAME, and
+    `_catalog_with_downloads`'s `on_disk` set holds REPO ids — so
+    `entry["id"] in on_disk` could never be true for one of these entries,
+    and the SAME downloaded bytes then reappeared a second time as an
+    undifferentiated "cached" row under the bare repo id, whose Load button
+    failed (finding 2). Both symptoms must be gone together: the curated
+    entry reads `downloaded: true`, and the repo does not also appear as a
+    plain cached row.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    entry_id = "Qwen3.5-9B-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
+        _gguf_bytes("qwen35"))
+
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    curated_match = next(m for m in row["models"] if m["id"] == entry_id)
+    assert curated_match["downloaded"] is True
+    assert curated_match["source"] == "curated"
+    # The repo id itself must NOT also appear as a second, "cached" row.
+    assert not any(m["id"] == recipe["repo"] for m in row["models"])
+
+
+def test_a_llamacpp_curated_id_with_a_sibling_quant_not_downloaded_is_told_apart(
+        client, hub, monkeypatch):
+    """`unsloth/Qwen3.5-4B-GGUF` curates TWO catalog entries (Q5_K_M and
+    Q8_0) — downloading one must not mark the OTHER "downloaded" too, since
+    `CachedModel.files` is checked per FILE, not per repo."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    downloaded_id = "Qwen3.5-4B-Q5_K_M.gguf"
+    other_id = "Qwen3.5-4B-Q8_0.gguf"
+    recipe = formats.GGUF_RECIPES[downloaded_id]
+    repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
+        _gguf_bytes("qwen35"))
+
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    by_id = {m["id"]: m for m in row["models"]}
+    assert by_id[downloaded_id]["downloaded"] is True
+    assert by_id[other_id]["downloaded"] is False
+    # Still no duplicate cached row for the shared repo.
+    assert not any(m["id"] == recipe["repo"] for m in row["models"])
 
 
 def test_a_component_repo_an_engine_fetched_is_never_offered_as_a_model(client, hub):
