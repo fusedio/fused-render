@@ -200,6 +200,24 @@ export function switchOutcome(
  *  remain on the clock — hence the separate "under a minute" phrasing below
  *  the first whole one.
  */
+/** Parse the idle-window input field's raw text into a valid whole-minutes
+ *  value (0..1440), or `null` when it isn't one yet.
+ *
+ *  Lifted out of `AiModelsEngines.tsx`'s commit handler specifically so this
+ *  is testable: `Number("")` is `0` and `Number.isInteger(0)` is `true`, so
+ *  the ordinary intermediate state of editing a number field — select-all,
+ *  delete, click away — would otherwise parse as a valid `0` and silently
+ *  PUT "never unload". An empty or whitespace-only string is "not a value
+ *  yet", not zero, and reads the same as any other invalid input: the
+ *  caller's job is to leave the stored value alone, never to guess.
+ */
+export function parseAiIdleMinutes(value: string): number | null {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1440) return null;
+  return parsed;
+}
+
 export function unloadCountdown(unloadsInSeconds: number | null): string | null {
   if (unloadsInSeconds === null) return null;
   if (unloadsInSeconds < 60) return "unloads in under a minute";

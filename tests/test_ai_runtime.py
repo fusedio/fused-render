@@ -2249,6 +2249,31 @@ def test_describe_reports_no_countdown_when_the_window_is_disabled(monkeypatch, 
     assert row["unloadsInSeconds"] is None
 
 
+def test_describe_countdowns_a_busy_worker_against_the_leak_ceiling(monkeypatch, fake_runner):
+    """Regression: `unloadsInSeconds` used to be `window - idle age` with no
+    reference to `in_flight`, so a busy worker's card would count down to
+    "unloads in under a minute" and then sit there — the reaper's own
+    predicate (`_is_idle`) spares a busy worker until `_leak_ceiling`, well
+    past the bare window, so the card was asserting an unload that would not
+    happen for a long time yet.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+    worker.in_flight = 1
+
+    row = supervisor.describe()["loaded"][0]
+
+    ceiling = supervisor._leak_ceiling(registry.TEXT_GENERATION, 600)
+    assert row["unloadsInSeconds"] == pytest.approx(ceiling - 60, abs=3)
+    # Sanity: the leak ceiling is well past the bare 10-minute window here,
+    # so this genuinely distinguishes the fix from the old `window`-only math
+    # rather than coincidentally landing on the same number.
+    assert ceiling > 600
+
+
 # -- a worker's environment carries no Hub token of our making (D402) ------------
 
 

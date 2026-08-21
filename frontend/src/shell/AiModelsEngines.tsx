@@ -41,6 +41,7 @@ import {
   choiceReason,
   engineNote,
   ignoredWarning,
+  parseAiIdleMinutes,
   servingLine,
   switchOutcome,
 } from "@shell/engines";
@@ -217,8 +218,13 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
   }, [idle.minutes]);
 
   const commit = async () => {
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1440) {
+    // `parseAiIdleMinutes` is what stands between an empty/whitespace field
+    // (the ordinary intermediate state of editing a number input) and a
+    // silent PUT of `0` — `Number("")` is `0`, and this input has no other
+    // guard against it. `null` covers that case and every other invalid one
+    // the same way: snap back to the stored value rather than guess.
+    const parsed = parseAiIdleMinutes(value);
+    if (parsed === null) {
       setValue(String(idle.minutes));
       return;
     }

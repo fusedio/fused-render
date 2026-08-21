@@ -5,6 +5,7 @@ import {
   choiceReason,
   engineNote,
   ignoredWarning,
+  parseAiIdleMinutes,
   servingLine,
   switchOutcome,
   unloadCountdown,
@@ -272,6 +273,30 @@ describe("capabilityLabel", () => {
     // A capability added server-side should appear here — ugly but present —
     // instead of vanishing from the only page that can configure it.
     expect(capabilityLabel("video-generation")).toBe("video-generation");
+  });
+});
+
+describe("parseAiIdleMinutes", () => {
+  it("accepts an in-range integer", () => {
+    expect(parseAiIdleMinutes("45")).toBe(45);
+    expect(parseAiIdleMinutes("0")).toBe(0);
+    expect(parseAiIdleMinutes("1440")).toBe(1440);
+  });
+
+  it("rejects empty and whitespace-only input rather than reading it as zero", () => {
+    // The bug: `Number("")` is `0` and `Number.isInteger(0)` is `true`, so
+    // without this guard, clearing the field and blurring — the ordinary
+    // intermediate state of editing a number input — silently PUT
+    // `ai_idle_unload_minutes: 0` and turned the whole feature off.
+    expect(parseAiIdleMinutes("")).toBeNull();
+    expect(parseAiIdleMinutes("   ")).toBeNull();
+  });
+
+  it("rejects out-of-range and non-integer input", () => {
+    expect(parseAiIdleMinutes("-1")).toBeNull();
+    expect(parseAiIdleMinutes("1441")).toBeNull();
+    expect(parseAiIdleMinutes("4.5")).toBeNull();
+    expect(parseAiIdleMinutes("abc")).toBeNull();
   });
 });
 

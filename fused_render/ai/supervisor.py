@@ -1300,9 +1300,20 @@ def _is_idle(worker: Worker, now: float, window: float) -> bool:
     """
     if worker.state != "ready":
         return False
-    age = now - worker.last_activity
-    bound = _leak_ceiling(worker.capability, window) if worker.in_flight > 0 else window
-    return age >= bound
+    return now - worker.last_activity >= _idle_bound(worker, window)
+
+
+def _idle_bound(worker: Worker, window: float) -> float:
+    """How stale `worker.last_activity` must be, in seconds, before it counts
+    as idle — `_leak_ceiling` for a busy worker, the bare window otherwise.
+
+    Split out of `_is_idle` so `describe()` can compute the SAME bound for
+    `unloadsInSeconds`: a countdown computed against the bare window alone
+    would count a busy transcription down to "unloads in under a minute" and
+    then leave it sitting there, wrongly promising an unload the reaper's own
+    predicate will not perform.
+    """
+    return _leak_ceiling(worker.capability, window) if worker.in_flight > 0 else window
 
 
 def idle_workers(now: float) -> list[Worker]:
@@ -1878,8 +1889,16 @@ def describe() -> dict:
                 # number that never counts down: a page must not draw a
                 # countdown for a window that is disabled.
                 "idleSeconds": max(0.0, now - w.last_activity),
+                # Against `_idle_bound` — the SAME bound `_is_idle` reaps
+                # by — never the bare window: a busy worker (`in_flight > 0`)
+                # is spared until `_leak_ceiling`, and counting down against
+                # `window` alone would run a 90-minute transcription's card
+                # to "unloads in under a minute" and leave it sitting there
+                # for the rest of the hour, wrongly promising an unload the
+                # reaper will not perform.
                 "unloadsInSeconds": (
-                    None if window is None else max(0.0, window - (now - w.last_activity))
+                    None if window is None
+                    else max(0.0, _idle_bound(w, window) - (now - w.last_activity))
                 ),
             }
             for w in _workers.values()

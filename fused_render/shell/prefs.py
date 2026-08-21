@@ -86,10 +86,13 @@ DEFAULT_CALLS_RETENTION_DAYS = 14
 #: minutes and a seconds control invites off-by-1000 mistakes. `0` disables
 #: the reaper entirely, same "0 = off" shape as `calls_retention_days`.
 DEFAULT_AI_IDLE_UNLOAD_MINUTES = 10
-#: The env var a *set, in-range* value of which overrides the stored pref —
+#: The env var a *set, parsable* value of which overrides the stored pref —
 #: same precedence as `FUSED_RENDER_CALLS_RETENTION_DAYS`, so a machine-level
 #: policy (a shared workstation someone wants to keep more aggressive than
-#: whatever a user dials in) can win without touching prefs.json.
+#: whatever a user dials in) can win without touching prefs.json. Clamped to
+#: a non-negative integer, same as the calls one, and deliberately no UPPER
+#: clamp either: `=100000` is honoured as-is rather than silently capped at
+#: 1440, which would make the override lie about what it is forcing.
 AI_IDLE_MINUTES_ENV = "FUSED_RENDER_AI_IDLE_MINUTES"
 
 
