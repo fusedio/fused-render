@@ -253,16 +253,16 @@ def test_discard_throws_the_walkthrough_away(html):
     # cancel(), not stop(): the capture handle's cancel is the ending that
     # DELETES the file (SPEC CP-4), which is what a discard means — a stop
     # would leave the audio in <home>/recordings with a row pointing at it
-    assert "await handle.cancel();" in body
+    assert "await handle.cancel()" in body
     assert "handle.stop()" not in body
     # the SESSION is snapshotted before the await — flags, face, handle, ids,
     # timer, epoch — because a new recording can begin while this one's ending
     # settles, and a global read after the await would be the new session's
     # (its marks deleted, its timer killed, its transcript overwritten). Both
     # enders follow the same order (Bugbot, #665, three rounds of it).
-    for fn, ending in ((body, "await handle.cancel();"),
+    for fn, ending in ((body, "await handle.cancel()"),
                        (_block(html, "async function annRecEnd()", "\n}\n"),
-                        "out = await handle.stop();")):
+                        "await handle.stop()")):
         stop = fn.index(ending)
         assert fn.index("annRecOn = false;") < stop
         assert fn.index("clearInterval(annRecTimerId);") < stop
@@ -270,7 +270,7 @@ def test_discard_throws_the_walkthrough_away(html):
         assert fn.index("annRecIds = [];") < stop
         assert fn.index("annRecHandle = null;") < stop
     assert body.index('annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");') \
-        < body.index("await handle.cancel();")
+        < body.index("await handle.cancel()")
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
     assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
     assert "fused.ai.transcribe" not in body and "annAutoSubmit" not in body
@@ -552,7 +552,7 @@ def test_the_walkthrough_records_through_fused_capture(html):
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert "await fused.capture.audio(" in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert "out = await handle.stop();" in end
+    assert "const out = await handle.stop()" in end
     assert "const path = out.path;" in end
     # the whole walkthrough path is off the browser recorder now — no blob, no
     # upload, and no extension for this page to guess
