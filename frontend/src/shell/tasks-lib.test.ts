@@ -6190,12 +6190,97 @@ describe("sortByLane", () => {
       .toEqual(["soon", "run", "fail", "done", "arch"]);
   });
 
-  it("keeps the server's order inside a rank, and never re-sorts", () => {
+  // ---- and, inside a rank, by the time the row PRINTS ------------------------
+  // The rank is only half the order. The other half used to be "whatever the
+  // server said", and on screen that read as random: the server sorts by
+  // `last_active`, a row prints its next or last run, so two adjacent Done rows
+  // could show "2h ago" above "10m ago". These pin the key the reader can see.
+
+  const S = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+  /** A settled row whose printed time is `at` — its last run (taskWhen). */
+  const ran = (key: string, at: number, over: Partial<Task> = {}) =>
+    task({
+      key,
+      status: "done",
+      messages: [msg({ ran_at: at, at })],
+      message_count: 1,
+      last_active: at,
+      ...over,
+    });
+
+  /** A row that prints no time at all: the em-dash row, `kind: "none"`. */
+  const timeless = (key: string, over: Partial<Task> = {}) =>
+    task({ key, status: "done", messages: [], message_count: 0, last_active: 0, ...over });
+
+  it("orders a settled rank most recent first", () => {
     const rows = [
-      task({ key: "first", status: "done", last_active: 1 }),
-      task({ key: "second", status: "done", last_active: 999 }),
+      ran("mid", S("2026-08-16T10:00:00")),
+      ran("old", S("2026-08-16T09:00:00")),
+      ran("new", S("2026-08-16T11:00:00")),
     ];
-    expect(sortByLane(rows).map((t) => t.key)).toEqual(["first", "second"]);
+    expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual(["new", "mid", "old"]);
+    // And it is the PRINTED time doing it, not `last_active`: give the oldest run
+    // the newest `last_active` and the order does not budge, because that number
+    // is not on the row.
+    const lying = [
+      ran("new", S("2026-08-16T11:00:00"), { last_active: 1 }),
+      ran("old", S("2026-08-16T09:00:00"), { last_active: S("2026-08-16T11:59:00") }),
+    ];
+    expect(sortByLane(lying, NOW).map((t) => t.key)).toEqual(["new", "old"]);
+  });
+
+  it("orders Upcoming soonest first, so an overdue run is the top row", () => {
+    const rows = [
+      upcoming([S("2026-08-16T18:00:00")], { key: "later" }),
+      upcoming([S("2026-08-16T11:00:00")], { key: "overdue" }), // before NOW
+      upcoming([S("2026-08-16T13:00:00")], { key: "soon" }),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["overdue", "soon", "later"]);
+  });
+
+  it("keeps the server's order when two rows print the same time", () => {
+    const at = S("2026-08-16T10:00:00");
+    const rows = [ran("first", at), ran("second", at), ran("third", at)];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["first", "second", "third"]);
+    // The tie is broken by the incoming index explicitly, not by engine
+    // stability: two runs in the same second must not trade places between polls.
+    const flipped = [ran("second", at), ran("first", at)];
+    expect(sortByLane(flipped, NOW).map((t) => t.key)).toEqual(["second", "first"]);
+  });
+
+  it("puts a row with no time at all LAST in its rank, both directions", () => {
+    // Descending: it cannot claim a place among rows sorted by a fact it lacks.
+    const settled = [
+      timeless("none"),
+      ran("old", S("2026-08-16T09:00:00")),
+      ran("new", S("2026-08-16T11:00:00")),
+    ];
+    expect(taskWhen(settled[0], NOW).kind).toBe("none");
+    expect(sortByLane(settled, NOW).map((t) => t.key)).toEqual(["new", "old", "none"]);
+    // Ascending too — a 0 sorted as a time would be 1970 and lead the rank.
+    const ahead = [
+      timeless("none", { status: "upcoming" }),
+      upcoming([S("2026-08-16T18:00:00")], { key: "later" }),
+      upcoming([S("2026-08-16T13:00:00")], { key: "soon" }),
+    ];
+    expect(sortByLane(ahead, NOW).map((t) => t.key)).toEqual(["soon", "later", "none"]);
+  });
+
+  it("sorts inside each rank without leaking a row across ranks", () => {
+    const rows = [
+      ran("done-old", S("2026-08-16T09:00:00")),
+      upcoming([S("2026-08-16T18:00:00")], { key: "up-late" }),
+      ran("fail-new", S("2026-08-16T11:00:00"), { status: FAILED }),
+      ran("done-new", S("2026-08-16T11:30:00")),
+      upcoming([S("2026-08-16T13:00:00")], { key: "up-soon" }),
+      ran("fail-old", S("2026-08-16T08:00:00"), { status: FAILED }),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual([
+      "up-soon", "up-late", "fail-new", "fail-old", "done-new", "done-old",
+    ]);
   });
 
   it("never mutates the polled list React is still holding", () => {

@@ -933,9 +933,16 @@ export function TaskList({
   // on every keystroke of the search box.
   const showProject = useMemo(() => spansProjects(tasks), [tasks]);
 
-  // The list's rows, in rank order (tasks-lib.sortByLane). Memoised for the same
-  // reason `showProject` is: this runs on every keystroke of the search box and
-  // the answer only moves when the rows do.
+  // The list's rows, in rank order and then by printed time (tasks-lib.sortByLane).
+  // Memoised for the same reason `showProject` is: this runs on every keystroke of
+  // the search box and the answer only moves when the rows do.
+  //
+  // `now` is left to the default rather than threaded through a dep, exactly as the
+  // Board does with groupByColumn: the recency order can only change when a run
+  // does, and a run that happened is a new `tasks` from the poll — so the poll that
+  // makes the order stale is the same poll that re-runs this memo with a fresh
+  // clock. A ticking `now` in the deps would re-sort the list every second to
+  // produce the identical order.
   const rows = useMemo(() => sortByLane(tasks), [tasks]);
 
   /**
@@ -1241,8 +1248,9 @@ export function TaskList({
       {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
       <div className="tasks-list" ref={listRef} onScroll={onScroll}>
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
-          In Progress, Failed, Done, Archive — rank order, server order inside
-          each rank, and no headers, dividers or counts between them.
+          In Progress, Failed, Done, Archive — rank order, and inside each rank
+          the time the rows themselves print (newest first; Upcoming soonest
+          first), with no headers, dividers or counts between them.
 
           The grouping is a SORT and nothing more (Akshil, 2026-08-18). Headers
           lived here for a round and were wrong on a list: the Board's lanes are

@@ -986,4 +986,4 @@ def test_a_transformers_format_repo_is_named_as_the_cause(worker, tmp_path):
         worker.load("openai/whisper-large-v3", str(snapshot))
     message = str(caught.value)
     assert "model.bin" in message and "CTranslate2" in message
-    assert "Systran/faster-whisper-large-v3" in message
+    assert "Systran/faster-whisper-small" in message

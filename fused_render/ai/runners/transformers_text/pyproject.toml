@@ -61,23 +61,31 @@
 # `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
 # these manifests and `uv sync` runs bare, so an unbounded requirement is
 # re-resolved from PyPI on every new venv key and a major bump lands on users
-# with no commit behind it. `transformers` keeps its `>=4.51` floor and gains
-# only `<6` — the installed version is 5.x, but raising the floor to it would
-# forbid the 4.x this runner is currently happy on, which is a change to what is
-# allowed TODAY rather than protection against tomorrow. The floor's job (stated
-# below) is qwen3 support; the ceiling's job is the next rewrite.
+# with no commit behind it. `transformers` now carries `>=5.15,<6`: the floor
+# MOVED, because the catalog moved under it — the reasoning that once kept it at
+# `4.51` ("raising it would forbid the 4.x this runner is currently happy on")
+# stopped applying the moment the suggested models stopped loading on 4.x. The
+# floor's job (stated below) is still the same job: whatever the catalog's
+# entries need in order to be resolvable at all. The ceiling's job is the next
+# rewrite.
 #
 # What each earns:
 #   torch           the tensors and the device (CUDA / MPS / CPU). `<3` — the
 #                   major is the whole ABI and every wheel behind it.
 #   transformers    the model classes, the chat templates and TextIteratorStreamer.
-#                   `>=4.51` because that is the release that knows what a
-#                   `qwen3` is, and three of the four models this runner's
-#                   catalog suggests are Qwen3 — an older resolution installs
-#                   perfectly and then fails every one of those Downloads with
-#                   `KeyError: 'qwen3'`, which reads as a broken model rather
+#                   `>=5.15` because that is a release that knows what a
+#                   `qwen3_5` is, and two of the four models this runner's
+#                   catalog suggests are Qwen3.5 — a 4.x resolution installs
+#                   perfectly and then fails both of those Downloads with
+#                   `KeyError: 'qwen3_5'`, which reads as a broken model rather
 #                   than an environment a version too old. A floor is the only
-#                   place that can be said once for all of them.
+#                   place that can be said once for all of them. `qwen3_5`
+#                   first appears in transformers 5.2.0; the floor is the higher
+#                   `5.15` because that is what is verified end to end here
+#                   (5.15.1, the installed runner venv) rather than the earliest
+#                   version that merely contains the mapping — this file has no
+#                   lockfile, so the floor is the only place a tested-against
+#                   version can be recorded.
 #   accelerate      `device_map` and the low-memory load path for a big checkpoint
 #   sentencepiece   the tokenizer format some instruct models still ship
 #   protobuf        sentencepiece's model format needs it at load time
@@ -89,7 +97,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.13,<3",
-    "transformers>=4.51,<6",
+    "transformers>=5.15,<6",
     "accelerate>=1.14,<2",
     "sentencepiece",
     "protobuf",

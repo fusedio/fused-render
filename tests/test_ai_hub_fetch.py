@@ -36,6 +36,7 @@ import json
 import os
 import socketserver
 import threading
+import time
 import types
 
 import pytest
@@ -117,7 +118,14 @@ def _start_server(payload, **flags):
              "ranges": True, "lie_after_probe": False, "clamp": False,
              "budget": None, "unauthorized": 0, "unauthorized_on": (),
              "break_first": 0, "break_bytes": 0, "chunk_cap": None,
-             "probe_fail_first": 0}
+             "probe_fail_first": 0,
+             # `hold_first_real`: the FIRST real (non-probe) request blocks
+             # entirely — no status line, no bytes — until `state["release"]`
+             # is set. Models one connection stalled mid-flight, for a test
+             # that needs to observe OTHER chunks being asked for while one is
+             # still open, not merely infer it from timing.
+             "hold_first_real": False, "release": threading.Event(),
+             "_held": False}
     state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -129,7 +137,7 @@ def _start_server(payload, **flags):
         def do_GET(self):
             header = self.headers.get("Range")
             probe = header == "bytes=0-0"
-            failed_probe = expired = False  # bound on every branch, not just one
+            failed_probe = expired = hold = False  # bound on every branch
             with state["lock"]:
                 state["log"].append(header)
                 state["requests"].append({
@@ -144,6 +152,12 @@ def _start_server(payload, **flags):
                                or state["real"] in state["unauthorized_on"])
                     if state["unauthorized"] > 0:
                         state["unauthorized"] -= 1
+                    if state["hold_first_real"] and not state["_held"]:
+                        state["_held"] = True
+                        hold = True
+
+            if hold:
+                state["release"].wait(timeout=10.0)
 
             if failed_probe:
                 self.send_response(503)
@@ -231,12 +245,22 @@ def payload():
 
 
 def _wire(base, monkeypatch, tmp_path, url, size, etag="e7ag", commit="c0m",
-          segment_min=20_000):
-    """Point worker_base at the local server and a throwaway cache folder."""
+          segment_min=20_000, chunk_bytes=50_000):
+    """Point worker_base at the local server and a throwaway cache folder.
+
+    `chunk_bytes` stands in for the real `CHUNK_BYTES` (32MB), the same way
+    `segment_min` stands in for `SEGMENT_MIN_BYTES`: the 200_000-byte `payload`
+    fixture has to split several ways without downloading real megabytes. The
+    default, 50_000, divides the fixture into exactly four equal chunks — the
+    same four offsets `MAX_SEGMENTS_PER_FILE` used to produce — so the many
+    existing assertions on `[0, 50_000, 100_000, 150_000]` keep meaning what
+    they said even though nothing under test caps the chunk COUNT any more.
+    """
     folder = str(tmp_path / "models--org--m")
     monkeypatch.setattr(base, "repo_folder",
                         lambda model_id, repo_type="model": folder)
     monkeypatch.setattr(base, "SEGMENT_MIN_BYTES", segment_min)
+    monkeypatch.setattr(base, "CHUNK_BYTES", chunk_bytes)
     monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: {
         "url": url, "location": url, "etag": etag, "commit": commit, "size": size})
     return folder
@@ -728,9 +752,10 @@ def test_a_rejected_sidecar_does_not_keep_its_layout(base, monkeypatch, tmp_path
     with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
         # Two segments, but not the two this size would produce: identity holds,
         # so it survives as far as the layout check, which rejects it.
-        json.dump({"etag": "e7ag", "size": len(payload), "segments": [
-            {"start": 0, "end": 10, "done": 0},
-            {"start": 11, "end": len(payload) - 1, "done": 0}]}, handle)
+        json.dump({"version": base.SIDECAR_VERSION, "etag": "e7ag",
+                  "size": len(payload), "segments": [
+                      {"start": 0, "end": 10, "done": 0},
+                      {"start": 11, "end": len(payload) - 1, "done": 0}]}, handle)
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
@@ -850,7 +875,7 @@ def test_a_sidecar_that_does_not_match_is_thrown_away(base, monkeypatch, tmp_pat
     with open(os.path.join(blobs, "e7ag.fusedpart"), "wb") as handle:
         handle.write(b"\xff" * len(payload))
     span = len(payload) // 4
-    state = {"etag": "e7ag", "size": len(payload),
+    state = {"version": base.SIDECAR_VERSION, "etag": "e7ag", "size": len(payload),
              "segments": [{"start": i * span, "end": (i + 1) * span - 1,
                            "done": span} for i in range(4)]}
     state[wrong] = {"etag": "an-older-revision", "size": len(payload) + 1,
@@ -861,6 +886,159 @@ def test_a_sidecar_that_does_not_match_is_thrown_away(base, monkeypatch, tmp_pat
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_sidecar_from_before_the_chunk_queue_is_discarded_not_misread(
+        base, monkeypatch, tmp_path, payload):
+    """The chunk queue changed the shape of a resume: segments used to be
+    `size / MAX_SEGMENTS_PER_FILE` equal shares, and are now fixed-size chunks
+    pulled from a queue. A sidecar an OLDER build left behind describes the old
+    shape — same field names, different boundaries — and reading it as the new
+    shape would silently misplace every cursor: bytes recorded as landed at one
+    offset are really the offset a four-way split put there, and resuming
+    "into" them writes the file wrong under a correct-looking etag and size.
+
+    So the sidecar carries an explicit `version`, and anything that is not
+    today's number is treated exactly like no sidecar at all — the safe
+    reading, since size/etag still match and nothing else marks it as stale.
+    This one has no `version` key at all, which is what every sidecar written
+    before this existed looks like.
+    """
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    blobs = os.path.join(folder, "blobs")
+    os.makedirs(blobs)
+    with open(os.path.join(blobs, "e7ag.fusedpart"), "wb") as handle:
+        handle.write(b"\0" * len(payload))
+    with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
+        # The OLD shape: two equal size/2 shares, no `version` key at all.
+        half = len(payload) // 2
+        json.dump({"etag": "e7ag", "size": len(payload), "segments": [
+            {"start": 0, "end": half - 1, "done": half},
+            {"start": half, "end": len(payload) - 1, "done": half}]}, handle)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    # A fresh, fixed-size-chunk download — not a resume into the old layout's
+    # offsets, which this asserts by seeing every chunk boundary asked for.
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+
+
+def test_a_sidecar_from_a_future_version_is_also_discarded(base, monkeypatch,
+                                                            tmp_path, payload):
+    """Not just missing — ANY version that is not today's number, because a
+    format can change again and a stale reader must not guess that a number it
+    does not recognise is close enough."""
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    blobs = os.path.join(folder, "blobs")
+    os.makedirs(blobs)
+    with open(os.path.join(blobs, "e7ag.fusedpart"), "wb") as handle:
+        handle.write(b"\0" * len(payload))
+    with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
+        json.dump({"version": base.SIDECAR_VERSION + 1, "etag": "e7ag",
+                  "size": len(payload), "segments": [
+                      {"start": 0, "end": len(payload) - 1, "done": len(payload)}]},
+                  handle)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+@pytest.mark.parametrize("content", ["2", "[1, 2, 3]", '"just a string"'])
+def test_a_sidecar_that_is_not_an_OBJECT_is_thrown_away_not_fatal(
+        base, monkeypatch, tmp_path, payload, content):
+    """A sidecar whose JSON parses but is not a dict — a truncated write that
+    still happens to be valid JSON on its own — used to hit `state["etag"]`
+    and raise `TypeError`, caught by the same tuple as everything else here:
+    "no sidecar", one file restarts clean. `state.get("version")` runs BEFORE
+    that check now, and `.get` on a non-dict raises `AttributeError` instead —
+    which was NOT in the tuple, so this escaped `_saved` and `plan()` entirely,
+    turning a clean one-file restart into a whole-repo fallback that deletes
+    every OTHER file's progress via `_clear_parts`. This must still resolve
+    quietly to a fresh download of the one affected file, on the segmented
+    path — never a repo-wide fallback.
+    """
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    blobs = os.path.join(folder, "blobs")
+    os.makedirs(blobs)
+    with open(os.path.join(blobs, "e7ag.fusedpart"), "wb") as handle:
+        handle.write(b"\0" * len(payload))
+    with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
+        handle.write(content)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    # Fresh, fixed-size-chunk download — the segmented path, not the fallback:
+    # a repo-wide `_Unsegmentable`/fallback would never touch this server at
+    # all, since `_fake_hub`/`_wire` only wires the real server for the fast
+    # path.
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+
+
+def test_a_large_file_splits_into_many_fixed_size_chunks_not_four(
+        base, monkeypatch, tmp_path):
+    """`MAX_SEGMENTS_PER_FILE` capped a file at 4 segments so that a static
+    size/N split never opened more than 4 sockets for one file — a number that
+    stopped meaning anything once segments became fixed-size chunks pulled from
+    a GLOBAL queue capped by `MAX_CONNECTIONS`. A file many times a chunk must
+    still produce many chunks: that is what lets a worker that finishes early
+    pull the NEXT chunk instead of finding nothing left to steal.
+    """
+    payload_size = 900_000  # 18 chunks at the 50_000-byte test chunk size
+    url, state = _start_server(b"\0" * payload_size)
+    _wire(base, monkeypatch, tmp_path, url, payload_size)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert len(_ranges(state["log"])) == 18, (
+        "a big file was still capped at a handful of segments")
+
+
+def test_a_slow_chunk_does_not_block_other_chunks_from_starting(base, monkeypatch,
+                                                                tmp_path):
+    """The mechanism behind the tail fix: workers pull the NEXT chunk off a
+    shared queue rather than each owning a fixed share for the whole download.
+
+    One connection is held open — mid-body, past its headers — while the pool
+    has `MAX_CONNECTIONS - 1` other workers free. If chunks were still static
+    per-worker shares, those workers would have nothing else queued once their
+    own share was assigned; with a queue many chunks deep, they keep pulling
+    and finishing the REST of the file while the slow one is still in flight.
+    Asserted on ORDER, not on wall-clock: every other chunk's request has to
+    reach the server before the held one is allowed to finish, which a
+    time-based assertion could only ever suggest and this proves directly.
+    """
+    payload_size = 900_000  # 18 chunks at the 50_000-byte test chunk size
+    url, state = _start_server(b"\0" * payload_size, hold_first_real=True)
+    _wire(base, monkeypatch, tmp_path, url, payload_size)
+    monkeypatch.setattr(base, "MAX_CONNECTIONS", 8)
+
+    thread = threading.Thread(
+        target=base._segmented_fetch, args=("org/m", ["model.safetensors"], "c0m"))
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while not state["_held"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert state["_held"], "no request ever reached the server"
+
+        # The other 17 chunks are asked for while the first sits open with no
+        # response at all — only possible if a free worker pulls the NEXT
+        # queued chunk instead of finding nothing left assigned to it, which
+        # is exactly the property a static size/N split does not have.
+        deadline = time.monotonic() + 5.0
+        while len(_ranges(state["log"])) < 18 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(_ranges(state["log"])) == 18, (
+            "the rest of the file waited on the one held-open chunk")
+    finally:
+        state["release"].set()
+        thread.join(timeout=5.0)
 
 
 # -- the cache layout is the Hub's, not ours ------------------------------------
@@ -1132,6 +1310,33 @@ def test_download_file_falls_back_like_the_snapshot_does(base, monkeypatch, tmp_
         monkeypatch.setattr(base, "_hub_file_meta", boom)
 
     assert base.download_file("org/m", "q4.gguf") == "/cache/blobs/gguf"
+
+
+def test_download_files_fallback_wires_a_byte_counter_through(base, monkeypatch,
+                                                               tmp_path, payload):
+    """`download_file`'s own `hub()`, not just `download_snapshot`'s: each call
+    site builds its own `_HubByteTicker` and has to hand hf's downloader the
+    matching `tqdm_class`, or the fallback bar is back to disk-walk-only."""
+    _wire(base, monkeypatch, tmp_path, "http://unused/weights", len(payload))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    seen_bars = []
+
+    def hf_hub_download(repo_id=None, filename=None, tqdm_class=None, **kwargs):
+        if tqdm_class is not None:
+            bar = tqdm_class(desc=f"{filename}: reconstructing file",
+                             total=len(payload), unit="B")
+            bar.update(len(payload))
+            seen_bars.append(bar)
+        return "/cache/blobs/gguf"
+
+    _fake_hub(monkeypatch, hf_hub_download=hf_hub_download,
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+    monkeypatch.setattr(base, "_repo_files", lambda *a, **k: (
+        _ for _ in ()).throw(RuntimeError("no listing")))
+
+    assert base.download_file("org/m", "q4.gguf") == "/cache/blobs/gguf"
+    assert len(seen_bars) == 1, "download_file's fallback did not pass tqdm_class"
 
 
 @pytest.mark.parametrize("call", ["snapshot", "file"])

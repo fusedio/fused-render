@@ -87,7 +87,7 @@ def test_an_mlx_checkpoint_is_named_as_mlx(worker, tmp_path):
     message = str(caught.value)
     assert "MLX" in message and "Apple Silicon" in message
     # …and it names one that WILL load, because the alternative is a web search.
-    assert "Qwen/Qwen3-4B-Instruct-2507" in message
+    assert "Qwen/Qwen3.5-4B" in message
 
 
 def test_an_awq_checkpoint_names_the_scheme_and_not_a_missing_module(worker, tmp_path):
@@ -96,14 +96,24 @@ def test_an_awq_checkpoint_names_the_scheme_and_not_a_missing_module(worker, tmp
         worker.load("org/model-awq", path)
 
 
-def test_a_bitsandbytes_checkpoint_says_it_needs_a_GPU(worker, tmp_path):
+def test_a_bitsandbytes_checkpoint_names_the_missing_package(worker, tmp_path):
     """A 4-bit bnb repo is the obvious way to make an 8B model fit, and it does
-    not work here — the runner ships neither bitsandbytes nor, on Windows, a
-    torch that can see a GPU. Saying which of the two is missing is the
-    difference between installing something and picking a different model."""
+    not work here — the runner does not install bitsandbytes.
+
+    **The message deliberately no longer says "NVIDIA", and the old wording is
+    what this test used to pin.** bitsandbytes is MIT and wheel-only on every
+    platform this runner ships to, and NF4 does load and generate on a CPU
+    (measured 2026-08-21; see `runners/formats.py`) — it is just several times
+    slower than the unquantized weights, which is why the package stays out of
+    the manifest. A refusal citing a missing GPU would send someone off to buy
+    or rent the wrong thing, so the assertion is on the PACKAGE and on the
+    reason it is absent."""
     path = _snapshot(tmp_path, {"quantization_config": {"quant_method": "bitsandbytes"}})
-    with pytest.raises(RuntimeError, match="NVIDIA"):
+    with pytest.raises(RuntimeError, match="bitsandbytes") as caught:
         worker.load("unsloth/Qwen3-8B-bnb-4bit", path)
+    message = str(caught.value)
+    assert "NVIDIA" not in message and "GPU" not in message
+    assert "slower" in message
 
 
 def test_a_gguf_only_repo_is_refused_rather_than_expanded(worker, tmp_path):
@@ -141,7 +151,9 @@ def test_a_repo_with_no_config_is_not_refused_for_that_alone(worker, tmp_path):
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        ("4.51.0", "torch_dtype"),   # the runner's declared floor
+        # Below the runner's declared floor (`>=5.15`) and kept anyway: this
+        # branch guards a developer's ad-hoc interpreter, not a declared install.
+        ("4.51.0", "torch_dtype"),
         ("4.55.4", "torch_dtype"),
         ("4.56.0", "dtype"),
         ("4.57.0.dev0", "dtype"),   # a dev build must not parse as 4.5
