@@ -5595,3 +5595,103 @@ def test_the_size_walk_is_not_repeated_while_a_repo_sits_still(client, hub, monk
     # …and the size cache still answers, because nothing about the repo moved. This
     # is the assertion that would fail if the walk were keyed on time.
     assert len(walks) == 1
+
+
+# -- the model mirror's permission is handed down per model (AI-5l) --------------
+
+
+def _suggested_id():
+    """One id from the curated list, whatever it is today.
+
+    Taken from the catalog rather than hardcoded: the shortlist is refreshed
+    every few releases, and a test naming a model that has since been dropped
+    would assert about a repo the app no longer offers.
+    """
+    return sorted(catalog.all_suggested_ids())[0]
+
+
+def test_a_suggested_model_may_use_the_mirror(monkeypatch, tmp_path):
+    """The permission is the repo id, not a bare flag.
+
+    Carrying the id is what stops a value that arrived some other way from
+    licensing a probe for whatever the next download happens to be — the worker
+    checks it against the model it was sent to fetch.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    model = _suggested_id()
+    assert supervisor._child_env("t", model)["FUSED_MODEL_MIRROR_OK"] == model
+
+
+def test_a_model_the_user_found_themselves_may_not(monkeypatch, tmp_path):
+    """A Discover model is never NAMED to our distribution.
+
+    This is the privacy choice the whole per-model design exists for, not an
+    optimisation: the probe itself is what would tell us which models a user
+    downloads.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    env = supervisor._child_env("t", "somebody/a-model-we-never-suggested")
+    assert "FUSED_MODEL_MIRROR_OK" not in env
+
+
+def test_a_worker_with_no_model_gets_no_permission(monkeypatch, tmp_path):
+    """The default argument, which is what every other `_child_env` caller
+    gets. No model, no permission — never a permission for everything."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    assert "FUSED_MODEL_MIRROR_OK" not in supervisor._child_env("t")
+
+
+def test_an_inherited_permission_is_stripped_rather_than_passed_on(monkeypatch,
+                                                                   tmp_path):
+    """This environment is a COPY of the server's.
+
+    So a variable an operator or a parent process exported would otherwise reach
+    every worker for every model, which is exactly the global switch this design
+    refused. Stripped, the only way it is ever set is the decision above.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "somebody/anything")
+    env = supervisor._child_env("t", "somebody/a-model-we-never-suggested")
+    assert "FUSED_MODEL_MIRROR_OK" not in env
+
+
+def test_an_operator_set_base_url_reaches_the_worker(monkeypatch, tmp_path):
+    """`FUSED_MODEL_MIRROR` is left exactly as it was found — pointing it at a
+    staging distribution is the supported way to use this, and unset is the
+    shipped default that leaves every download on today's path."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "https://mirror.example/staging")
+    env = supervisor._child_env("t", _suggested_id())
+    assert env["FUSED_MODEL_MIRROR"] == "https://mirror.example/staging"
+
+    monkeypatch.delenv("FUSED_MODEL_MIRROR")
+    assert "FUSED_MODEL_MIRROR" not in supervisor._child_env("t", _suggested_id())
+
+
+def test_neither_spawn_site_forgets_the_model(monkeypatch):
+    """Both spawn sites, in lockstep.
+
+    One of them forgetting it is a mirror that works for a Download button and
+    not for a load-triggered fetch — the same model, downloaded two ways, taking
+    two different paths — and nothing in the app's behaviour would say so.
+    Checked on the SOURCE because that is the shape of the mistake: an argument
+    with a default is exactly the kind a call site silently omits.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(supervisor))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and getattr(node.func, "id", None) == "_child_env"]
+    assert len(calls) == 2, f"{len(calls)} `_child_env` call sites, expected 2"
+    for call in calls:
+        assert len(call.args) == 2, (
+            f"_child_env at line {call.lineno} passes no model, so that worker "
+            f"can never use the mirror")
+        # …and passes the model being FETCHED, not some other string. A worker
+        # handed the wrong id gets no permission at all, since the id is what
+        # `mirror.allowed` compares against.
+        assert ast.unparse(call.args[1]) in ("worker.model", "model"), (
+            f"_child_env at line {call.lineno} passes "
+            f"{ast.unparse(call.args[1])!r} as the model")

@@ -437,7 +437,31 @@ def _terminate(worker: Worker) -> None:
     _cleanup_files(worker)
 
 
-def _child_env(token: str) -> dict:
+def _mirror_ok(model: str) -> bool:
+    """Whether `model` is one of OUR suggested models (SPEC AI-5l).
+
+    The decision has to happen HERE, in the server process, because `catalog` is
+    unreachable from a runner's interpreter — a worker imports `worker_base` and
+    `mirror` as bare modules with no `fused_render` package on `sys.path`. But
+    the reason it must happen here is a privacy one rather than a mechanical
+    one: the worker is told the answer for the ONE model it was sent to fetch
+    and for nothing else, so our distribution is never asked about a model the
+    user picked from Discover, and we cannot learn that they downloaded it.
+
+    Best-effort: a catalog that cannot be read is "not suggested", which leaves
+    the download on the Hub path exactly as it is today.
+    """
+    if not model:
+        return False
+    try:
+        from fused_render.ai import catalog
+
+        return model in catalog.all_suggested_ids()
+    except Exception:  # noqa: BLE001 - no answer means the Hub, which always works
+        return False
+
+
+def _child_env(token: str, model: str = "") -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -453,11 +477,24 @@ def _child_env(token: str) -> dict:
     and passes on in the copy below. Nothing in this app holds a credential to
     inject, and manufacturing one here would assert something about an
     environment the caller was asked nothing about.
+
+    **`FUSED_MODEL_MIRROR_OK` is the model mirror's permission** and carries the
+    repo id rather than a bare flag, so a value that arrived some other way
+    cannot licence a probe for whatever the next download happens to be. It is
+    also POPPED when the answer is no, because this environment is a copy of the
+    server's: an operator (or a parent process) exporting it would otherwise hand
+    every worker permission for every model. `FUSED_MODEL_MIRROR` itself is left
+    alone — an operator pointing it at staging is the supported way to use this,
+    and unset is the shipped default that leaves every download on the Hub path.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
         env.pop(name, None)
     env["FUSED_AI_WORKER_TOKEN"] = token
+    if _mirror_ok(model):
+        env["FUSED_MODEL_MIRROR_OK"] = model
+    else:
+        env.pop("FUSED_MODEL_MIRROR_OK", None)
     return env
 
 
@@ -520,7 +557,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
         stdout=subprocess.DEVNULL,
         stderr=open(log, "w"),
         cwd=runner.folder,
-        env=_child_env(worker.token),
+        env=_child_env(worker.token, worker.model),
         close_fds=True,
         **SPAWN_KWARGS,
     )
@@ -782,7 +819,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
-            cwd=runner.folder, env=_child_env(stub.token), close_fds=True,
+            cwd=runner.folder, env=_child_env(stub.token, model), close_fds=True,
             **SPAWN_KWARGS,
         )
         stub.pid = proc.pid
