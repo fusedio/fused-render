@@ -129,10 +129,19 @@ the other side of the comparison is deleted — only unvisitable:
   (pure CPU) as the guaranteed-to-work floor. A hard OOM that kills the Load
   button outright would be the worse failure mode for a 4-8GB laptop GPU
   asked to hold a model sized for a bigger one; a slower partial load is not.
+* **A mixture-of-experts model gets one extra rung that dense models cannot
+  use (D418).** Its expert tensors are most of the weights but only a few are
+  multiplied per token, so `_experts_on_cpu` pins just those to system RAM
+  and leaves every LAYER on the GPU — less VRAM than the smallest dense rung
+  and more throughput at the same time, which is why it sits directly above
+  pure CPU rather than anywhere higher. See `_offload_schedule` for the
+  measurements that fix that position, and `_experts_on_cpu` for why it costs
+  a monkeypatch that no version bump will retire.
 * **The reported device now reflects what actually happened, not what this
   runner assumed.** `worker_base.set_state(device=...)` is `"cpu"`, `"gpu"`
-  (every layer offloaded), or `"gpu (partial)"` (the backoff above landed on
-  fewer than the model's own total) — a MEASUREMENT of which attempt
+  (every layer offloaded), `"gpu (partial)"` (the backoff above landed on
+  fewer than the model's own total) or `"gpu (experts on cpu)"` (every layer
+  offloaded, expert weights in system RAM) — a MEASUREMENT of which attempt
   succeeded, the same principle AI-11b already states about reporting a probed
   device rather than an assumed one. It cannot say "Vulkan" or "Metal" by name: nothing in the
   bound API reports which backend actually served the request, only whether
@@ -180,6 +189,8 @@ users download.
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import os
 import sys
 import time
@@ -391,8 +402,12 @@ def download(model_id):
         recipe["repo"], filename, detail=f"Fetching {filename}…")
 
 
-def _offload_schedule(total_layers):
-    """Layer counts to try offloading, largest first, always ending in `0`.
+def _offload_schedule(total_layers, has_experts=False):
+    """Offload attempts to try, largest VRAM footprint first, always ending in CPU.
+
+    Each attempt is a `(n_gpu_layers, experts_on_cpu)` pair rather than a bare
+    layer count, because there are TWO ways to use less VRAM and they are not
+    interchangeable — see `_experts_on_cpu` for the second one.
 
     See the module docstring's "sized by trying, not calculating" note for
     why this exists at all. `total_layers` is the model's own layer count,
@@ -403,16 +418,127 @@ def _offload_schedule(total_layers):
     of attempts regardless of how many layers the model has, rather than
     decrementing by ones), deduplicated and sorted so a small model's
     rounding never repeats a step. When it is `None` (the header could not be
-    read), there is nothing to fraction against, so the schedule is the
-    two-tier `(-1, 0)` — llama.cpp's own "all layers" sentinel, then pure CPU
-    — which still gets a working fallback, just without an intermediate
-    partial-offload step.
+    read), there is nothing to fraction against, so the dense part collapses
+    to `(-1, False)` then `(0, False)` — llama.cpp's own "all layers"
+    sentinel, then pure CPU — which still gets a working fallback, just
+    without an intermediate partial-offload step. The expert rung below needs
+    no layer count (it moves TENSORS, not layers), so it survives that
+    collapse.
+
+    **`has_experts` inserts one extra rung immediately above pure CPU**, and
+    only for a mixture-of-experts model (`formats.gguf_expert_count`). It
+    keeps EVERY layer on the GPU and moves just the expert tensors to system
+    RAM, which is both smaller and faster than the thirds-rung above it —
+    measured on `LFM2.5-8B-A1B-Q4_K_M` (24 layers, 32 experts, 4 used per
+    token) against a Radeon RX 9060 XT, warm, median of three 64-token
+    generations:
+
+        24 layers, dense       4909 MiB VRAM   161.6 tok/s
+         8 layers, dense       1731 MiB VRAM    55.6 tok/s
+         3 layers, dense        659 MiB VRAM    41.4 tok/s
+        all layers, experts     462 MiB VRAM    50.5 tok/s   <- this rung
+
+    So it goes BELOW the fractional rungs, not above them: full offload is
+    three times faster than any split and must still be tried first, and the
+    thirds beat it whenever they fit. It earns its place only against the
+    bottom rung, which it dominates on both axes at once — less VRAM AND more
+    throughput — which is the whole argument for the rung existing. The gain
+    is real but modest (+22% here); it grows with the fraction of a model's
+    weights that are experts, and this row is a mild case at 4-of-32.
     """
     if not total_layers or total_layers <= 0:
-        return (-1, 0)
-    steps = sorted({total_layers, (total_layers * 2) // 3, total_layers // 3, 0},
-                   reverse=True)
+        steps = [(-1, False)]
+    else:
+        counts = sorted({total_layers, (total_layers * 2) // 3, total_layers // 3},
+                        reverse=True)
+        steps = [(count, False) for count in counts if count > 0]
+    if has_experts:
+        steps.append((-1, True))
+    steps.append((0, False))
     return tuple(steps)
+
+
+@contextlib.contextmanager
+def _experts_on_cpu(llama_cpp, enabled):
+    """Pin a MoE model's expert tensors to system RAM for the `Llama()` inside.
+
+    This is llama.cpp's own `--n-cpu-moe`, which is not a model flag but a
+    `tensor_buft_overrides` entry: a `(regex, buffer type)` pair the loader
+    consults per tensor, here matching the expert weights and sending them to
+    the CPU buffer type. Experts are ordinary tensors and are all LOADED
+    either way — only where they live differs, and only the COMPUTE was ever
+    conditional.
+
+    **Why a monkeypatch and not an argument.** `llama_cpp.Llama.__init__`
+    never touches `tensor_buft_overrides`; it fills a fresh
+    `llama_model_default_params()` and constructs the model in the same call,
+    so there is no object to reach between the two. Its `**kwargs` are
+    swallowed, not forwarded. Checked against 0.3.29 (our pin), 0.3.32 and
+    0.3.35 (latest as of 2026-08-21) — all three still carry the binding's own
+    `("tensor_buft_overrides", ctypes.c_void_p),  # NOTE: unused` and no live
+    reference in `llama.py`, so BUMPING THE PIN DOES NOT REMOVE THIS HACK, and
+    a bump should not be taken as a reason to go looking. Patch the factory,
+    restore it in `finally`, keep the array alive across the `yield` — a
+    freed array would leave the C side reading released memory.
+
+    Two things make it far less invasive than it sounds. The struct field is
+    already declared `c_void_p`, so the params struct needs no redeclaring —
+    a plain `cast` fills it. And `ggml_backend_cpu_buffer_type` is reachable
+    on `llama_cpp._lib`, the handle the binding has already opened, so there
+    is no second `dlopen` and no `.so`/`.dylib` name to get right per
+    platform.
+
+    Failing to build the override is NOT fatal: it costs throughput, never
+    correctness, and the caller's next rung is plain CPU anyway. So a binding
+    that has moved out from under this yields unpatched rather than refusing
+    to load the model at all.
+    """
+    if not enabled:
+        yield False
+        return
+    try:
+        # `_lib` is shared process-wide and its function objects are cached by
+        # ctypes, so `restype` is put back as soon as the pointer is in hand —
+        # the factory patch below is restored just as carefully, and leaving
+        # this one hanging would be the odd asymmetry. `getattr` with a
+        # default because a function that has never had a `restype` set does
+        # not carry the attribute at all.
+        cpu_buft = llama_cpp.llama_cpp._lib.ggml_backend_cpu_buffer_type
+        previous_restype = getattr(cpu_buft, "restype", None)
+        cpu_buft.restype = ctypes.c_void_p
+
+        class _Override(ctypes.Structure):
+            _fields_ = [("pattern", ctypes.c_char_p), ("buft", ctypes.c_void_p)]
+
+        # NULL-terminated, as `llama.h` documents the array. The pattern is
+        # llama.cpp's own for `--cpu-moe`, matched with `std::regex_search`
+        # against each tensor name (`blk.7.ffn_up_exps.weight`).
+        overrides = (_Override * 2)()
+        overrides[0].pattern = rb"\.ffn_(up|down|gate)_exps"
+        try:
+            overrides[0].buft = cpu_buft()
+        finally:
+            cpu_buft.restype = previous_restype
+        original = llama_cpp.llama_cpp.llama_model_default_params
+    except Exception:  # noqa: BLE001 - see "not fatal" above
+        print("llamacpp-text: expert offload unavailable, loading without it",
+              file=sys.stderr)
+        yield False
+        return
+
+    def _patched():
+        params = original()
+        params.tensor_buft_overrides = ctypes.cast(overrides, ctypes.c_void_p)
+        return params
+
+    # Patched on the SUBMODULE, not the package: `llama_cpp/llama.py` does
+    # `import llama_cpp.llama_cpp as llama_cpp`, so patching the package
+    # attribute binds a name nothing reads and silently does nothing.
+    llama_cpp.llama_cpp.llama_model_default_params = _patched
+    try:
+        yield True
+    finally:
+        llama_cpp.llama_cpp.llama_model_default_params = original
 
 
 def load(model_id, gguf_path):
@@ -435,21 +561,29 @@ def load(model_id, gguf_path):
     # Silicon's Metal-linked wheel and a Vulkan build with a working one.
     gpu_capable = bool(llama_cpp.llama_supports_gpu_offload())
     total_layers = formats.gguf_block_count(gguf_path) if gpu_capable else None
-    schedule = _offload_schedule(total_layers) if gpu_capable else (0,)
+    # Only asked when a GPU could actually use the answer: on a CPU-only build
+    # every tensor is in system RAM already, so pinning the experts there is a
+    # no-op and the header read would be pure cost.
+    has_experts = bool(formats.gguf_expert_count(gguf_path)) if gpu_capable else False
+    schedule = _offload_schedule(total_layers, has_experts) if gpu_capable \
+        else ((0, False),)
 
     llm = None
     n_layers = 0
-    for index, candidate in enumerate(schedule):
+    experts_parked = False
+    for index, (candidate, park_experts) in enumerate(schedule):
         is_last = index == len(schedule) - 1
         try:
-            llm = Llama(
-                model_path=gguf_path,
-                n_ctx=_N_CTX,
-                n_threads=os.cpu_count() or 4,
-                n_gpu_layers=candidate,
-                verbose=False,
-            )
+            with _experts_on_cpu(llama_cpp, park_experts) as parked:
+                llm = Llama(
+                    model_path=gguf_path,
+                    n_ctx=_N_CTX,
+                    n_threads=os.cpu_count() or 4,
+                    n_gpu_layers=candidate,
+                    verbose=False,
+                )
             n_layers = candidate
+            experts_parked = parked
             break
         except Exception:  # noqa: BLE001 - this loop IS the VRAM-sizing probe
             if is_last:
@@ -459,12 +593,19 @@ def load(model_id, gguf_path):
                 # corrupt download, an unreadable file) and must not be
                 # swallowed the way a too-large GPU request is above.
                 raise
-            print(f"llamacpp-text: {candidate} GPU layers did not fit, "
-                  f"retrying with fewer", file=sys.stderr)
+            attempted = "experts on CPU" if park_experts \
+                else f"{candidate} GPU layers"
+            print(f"llamacpp-text: {attempted} did not fit, retrying with less",
+                  file=sys.stderr)
     _loaded["llm"] = llm
 
     if n_layers == 0:
         device = "cpu"
+    elif experts_parked:
+        # Distinct from both neighbours on purpose: every LAYER is on the GPU,
+        # so "gpu (partial)" would misdescribe it, but the expert weights —
+        # most of the file — are in system RAM, so "gpu" would overclaim.
+        device = "gpu (experts on cpu)"
     elif n_layers == -1 or (total_layers and n_layers >= total_layers):
         device = "gpu"
     else:

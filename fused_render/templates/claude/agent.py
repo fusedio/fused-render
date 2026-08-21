@@ -2842,6 +2842,13 @@ def _poll(run_id: str, file: str = "") -> dict:
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
+            # WAS THIS RUN'S END ASKED FOR — read off the run rather than
+            # remembered by whoever asked. The page's own stop button sets a
+            # variable and can swallow the resulting error itself, but a stop
+            # from anywhere else (the tasks queue card's ✕, which goes through
+            # schedule.py) left this page reporting the kill as a crash. See
+            # `_cancel`, which writes the marker.
+            "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
             "segments": _segments_from_rows(parsed)}
 
 
@@ -3287,6 +3294,65 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
     return res
 
 
+def _stopped_last(file: str, session_id: str) -> bool:
+    """Was the most recent run of this conversation STOPPED by the user?
+
+    A killed run writes no `result` row, so a stopped turn is indistinguishable
+    in the transcript from one that crashed or one that simply streamed less
+    than usual — the transcript records what claude said, never why it stopped
+    saying it. The evidence lives in the run dir instead (`_cancel`'s marker),
+    which is why this reads runs rather than records.
+
+    NEWEST RUN ONLY, and that is the whole rule. The question a reopened chat
+    asks is about the turn at the bottom of it, so a run that was stopped
+    yesterday and followed by one that completed says nothing about what is on
+    screen now — answering True there would put "Stopped" under a finished
+    reply. So the newest run for this conversation decides, and it decides for
+    itself: no marker, no note.
+
+    Matched the way `_live_run` matches — the target, then either the session
+    the run RESUMED or the one the CLI minted for it, since `--fork-session`
+    makes those differ — and bounded by the same scan limit, because a run
+    buried under sixty newer ones is not the bottom of anybody's chat.
+
+    False for everything unreadable. A missing runs dir, a meta.json that will
+    not parse, a marker we cannot stat: the note is an explanation, and an
+    explanation nobody can substantiate is better left unsaid than guessed.
+    """
+    if not session_id:
+        return False
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)[:_LIVE_SCAN_LIMIT]
+    except OSError:
+        return False
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if os.path.abspath(meta.get("file", "")) != file:
+            continue
+        own = ""
+        try:
+            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                own = fh.read().strip()
+        except OSError:
+            pass
+        if not own:
+            own = _session_from_out(run_dir)
+        if own != session_id and str(meta.get("resumed_from") or "") != session_id:
+            continue
+        # The newest run of this conversation — whatever it says, it is the
+        # answer, so this returns rather than carrying on down the list.
+        return os.path.exists(os.path.join(run_dir, "cancelled"))
+    return False
+
+
 def _transcript_stat(path: str) -> dict:
     """`{path, mtime, size}` for a session transcript — the page's watermark.
 
@@ -3423,6 +3489,17 @@ def _history(file: str, session_id: str) -> dict:
                 else:
                     turns.append({"role": "assistant", "text": text})
     close_stretch()
+    # ...and whether the last of those turns was ENDED BY THE USER. The
+    # transcript cannot say — a killed run just stops writing — so it is read
+    # off the run dir (`_stopped_last`) and reported on the turn it belongs to,
+    # which is the one the reader is looking at the bottom of. The page draws it
+    # as the same ⏹ note a live stop leaves behind, so a stop looks identical
+    # whether you watched it happen or came back to it later.
+    if turns and _stopped_last(file, session_id):
+        turns[-1]["stopped"] = True
+    # `transcript` is the watermark the page's live watch compares against
+    # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
+    # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat}
 
 
@@ -3432,6 +3509,26 @@ def _cancel(run_id: str) -> dict:
     # so reject anything that could resolve outside the runs dir.
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
+    # WHO ASKED, written down before anything is killed.
+    #
+    # Killing claude leaves the run dead with no `result` row, which `_poll`
+    # reports as an error BY DESIGN — a truncated reply must never read as a
+    # clean success. The page that PRESSED stop knows to swallow that error and
+    # say "Stopped" instead, but it knows it from a variable of its own
+    # (`stoppedRun`), so every other reader saw a crash: a stop from the tasks
+    # queue card left the chat showing "claude exited before completing the
+    # reply", and a chat reopened afterwards showed a half-finished reply with
+    # nothing at all to say the user had ended it (Akshil, 2026-08-21).
+    #
+    # This marker is the RUN's own record that its end was asked for, so `_poll`
+    # and `_history` can both say so however the stop arrived. Written first,
+    # because everything below can fail — an unreadable pid, a kill that does
+    # not land — and the intent is true regardless of how the kill went.
+    try:
+        with _private_open(os.path.join(run_dir, "cancelled")) as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass  # bookkeeping must never stand between the user and a kill
     # Answer before killing: the kill takes the whole tree (the MCP server
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.

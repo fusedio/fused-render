@@ -1275,3 +1275,50 @@ button.tasks-caret,
   white-space: nowrap;
   opacity: 0.85;
 }
+
+/* ---- "and that one was stopped" --------------------------------------------
+   A run the user stopped settles in Done — the stop was asked for, so it is an
+   outcome and not a fault — and the lane's ring is then the same green ring a
+   completed run wears. This is the word that closes that gap
+   (tasks-lib.outcomeTag), beside the task id on both the List row and the Board
+   card.
+
+   THE ONLY PILL ON THIS PAGE, and the reason is the failure that produced it.
+   It shipped as bare 11px muted text in the card's foot, in the same register as
+   the folder chip and the next-run chip beside it — and read as part of the
+   folder's name: "Fused Stopped" (Akshil, 2026-08-21, screenshot). Words in a
+   row of words join into a phrase; a bordered object cannot. Everything else
+   here stays argued down to a ring, a weight or bare text, because those all
+   compete with the title for one glance — this one has to interrupt.
+
+   Quiet FOR a pill, though: the muted foreground, a hairline border of the same
+   colour at low alpha, no fill. It is a correction to the lane, not an alarm —
+   an alarm is the red ring, and a stop the user asked for has nothing to alarm
+   anybody about. `currentColor` for the border so the two cannot drift apart in
+   either theme.
+
+   SIZED TO THE ID BESIDE IT, which is the whole of the second fix (Akshil,
+   2026-08-21, screenshot: "pill and task id have a size difference or they
+   aren't aligned properly"). Both containers already centre their children, so
+   the misalignment was never the layout — it was the pill's own box. `padding:
+   2px 6px` on `line-height: 1` plus two borders made it ~16px tall against the
+   id's ~13px line box, so it read as a bigger object sitting off-centre.
+
+   An explicit height instead, matched to that line box, with the text centred
+   inside by `inline-flex` rather than by padding: the pill then hugs its word,
+   the two boxes are the same height, and their centres coincide wherever they
+   are drawn — no per-view nudging. 10px text inside a 14px box against an 11px
+   id is the same optical weight, one step quieter. */
+.tasks-outcome-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  color: var(--fg-muted);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}

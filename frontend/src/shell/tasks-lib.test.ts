@@ -64,6 +64,7 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  outcomeTag,
   nextRunAt,
   openMessageHref,
   openThreadIntent,
@@ -4209,8 +4210,11 @@ describe("the folder chip on a row and a card", () => {
   });
 
   it("takes the whole chip away, not the name inside it", () => {
-    // On the card the chip is the only thing in the foot, so the foot goes with it
-    // rather than leaving a line of padding.
+    // On the card the foot holds the chip and the run ahead, so it goes
+    // entirely when neither has anything to say rather than leaving a line of
+    // padding. The outcome pill is deliberately NOT among them: it sits beside
+    // the id, where marks about the task live — in the foot it read as part of
+    // the folder's name (Akshil, 2026-08-21).
     expect(CARD).toMatch(
       /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
@@ -6322,6 +6326,97 @@ describe("sortByLane", () => {
 });
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
+
+describe("the outcome pill, beside the id in both views", () => {
+  /** The two markups this pill has to appear in, sliced the same way the ring
+   *  and chevron tests slice them. */
+  const CARD = VIEWS.slice(
+    VIEWS.indexOf('<span className="schedule-tv-card-head">'),
+    VIEWS.indexOf('className="tasks-card-acts"'),
+  );
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
+
+  it("is one component, used in the same place on the row and the card", () => {
+    // §1: same element, same behaviour in every view. The pill shipped as bare
+    // text in the card's FOOT, where it ran together with the folder chip into
+    // one phrase — "Fused Stopped" (Akshil, 2026-08-21). Beside the id it cannot
+    // be read as part of anything else, and one component in both views is what
+    // keeps the two from drifting back apart.
+    expect(VIEWS).toContain("function OutcomePill(");
+    expect((VIEWS.match(/<OutcomePill outcome=\{outcome\} \/>/g) ?? []).length).toBe(2);
+    // Directly after the task id, in both.
+    expect(ROW).toMatch(/<IdChip id=\{task\.task_id\} kind="task" \/>[\s\S]{0,400}?<OutcomePill/);
+    expect(CARD).toMatch(/<IdChip id=\{task\.task_id\} kind="task" \/>\s*\{outcome && <OutcomePill/);
+    // ...and nowhere near the foot, which is the arrangement that failed.
+    expect(CARD).not.toMatch(/schedule-tv-card-foot"[\s\S]*?<OutcomePill/);
+  });
+
+  it("is a bordered pill, not another line of muted text", () => {
+    // The border IS the fix: words in a row of words join into a phrase, a
+    // bordered object cannot. Quiet for a pill — muted foreground, hairline
+    // border, no fill — because it corrects the lane rather than raising an
+    // alarm (the red ring is the alarm).
+    expect(TASKS_CSS).toContain(".tasks-outcome-pill");
+    const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-outcome-pill"));
+    expect(rule).toMatch(/border-radius: 999px/);
+    expect(rule).toMatch(/border: 1px solid/);
+  });
+});
+
+describe("outcomeTag: the word the Done lane cannot say", () => {
+  const AT = Math.floor(Date.parse("2026-08-16T09:00:00") / 1000);
+
+  it("says Stopped for a run the user ended", () => {
+    // A stop settles in Done (it was asked for, so it is an outcome and not a
+    // fault) and wears the same green ring a completed run does — so without a
+    // word, the card cannot say the work did not finish.
+    const t = task({
+      status: "done",
+      messages: [msg({ at: AT, ran_at: AT, state: "sent", turn: "cancelled" })],
+    });
+    expect(outcomeTag(t)!.text).toBe("Stopped");
+    expect(outcomeTag(t)!.title).toContain("stopped");
+  });
+
+  it("says nothing about a run that finished, failed, or is still going", () => {
+    // Every other outcome is already carried by the lane or by the ring, and a
+    // second mark for a fact the row already states is the double-signalling
+    // this page keeps removing.
+    for (const turn of ["done", "idle", "unknown", ""]) {
+      const t = task({
+        messages: [msg({ at: AT, ran_at: AT, state: "sent", turn: turn as never })],
+      });
+      expect([turn, outcomeTag(t)]).toEqual([turn, null]);
+    }
+  });
+
+  it("reads the NEWEST started run, so an old stop is history", () => {
+    // The tag describes the run the status is about. A stopped run under a
+    // later completed one is not what the lane is reporting, and labelling the
+    // card Stopped there would put the word under a finished reply.
+    const t = task({
+      status: "done",
+      messages: [
+        msg({ message_id: "MSG-002", at: AT + 3600, ran_at: AT + 3600, turn: "done" }),
+        msg({ message_id: "MSG-001", at: AT, ran_at: AT, turn: "cancelled" }),
+      ],
+    });
+    expect(outcomeTag(t)).toBe(null);
+  });
+
+  it("says nothing on a task that has never run", () => {
+    // `pending` has not started, so there is no outcome to name — the belt to
+    // activeMessage's braces, and what keeps a projected occurrence quiet.
+    const t = task({
+      status: "upcoming",
+      messages: [msg({ state: "pending", turn: "" })],
+    });
+    expect(outcomeTag(t)).toBe(null);
+  });
+});
 
 describe("nextRunChip", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;

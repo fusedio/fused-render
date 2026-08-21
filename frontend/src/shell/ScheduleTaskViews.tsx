@@ -80,6 +80,7 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  outcomeTag,
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
@@ -107,6 +108,7 @@ import type {
   LaneChoices,
   ListMemory,
   OpenThreadIntent,
+  OutcomeTag,
   TaskFilters,
   TaskRunIntent,
 } from "./tasks-lib";
@@ -381,6 +383,31 @@ export function IdentityChip({ name, title }: { name: string; title?: string }) 
  * out loud and searched for. Monospaced, because a column of them is scanned. */
 function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
+}
+
+/* The one word a lane cannot say about the run it is showing — today only
+   "Stopped", for a run the user ended (tasks-lib.outcomeTag).
+
+   A PILL, and the only one on this page. Every other mark here has been argued
+   down to a ring, a weight, or bare text, because they all competed with the
+   title for the same glance. This one is different in kind: it is not a status
+   the lane already carries (that is the ring's job) but a CORRECTION to what the
+   lane implies — Done, but it did not finish — and it has to survive being read
+   beside whatever else is on the line. Bare text did not: in the card's foot
+   next to the folder chip, "Fused Stopped" read as the name of the folder
+   (Akshil, 2026-08-21, screenshot). A border is what makes it a separate object
+   rather than the next word in a phrase.
+
+   BESIDE THE ID, in both views. The id line is where marks ABOUT the task live
+   (the off-lane status ring is already there), the title line is for the work's
+   own words, and the foot is for the run's circumstances — the folder it ran in,
+   the run ahead. This is a fact about the task, so it goes with the id. */
+function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
+  return (
+    <span className="tasks-outcome-pill" title={outcome.title}>
+      {outcome.text}
+    </span>
+  );
 }
 
 /* There is no `UnreadDot` any more (2026-08-18). It was a 7px grey dot trailing a
@@ -1410,6 +1437,9 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
+  // ...and the one word a settled lane cannot say: that the last run was
+  // STOPPED rather than finished (tasks-lib.outcomeTag).
+  const outcome = outcomeTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -1915,6 +1945,10 @@ function TaskNode({
           )}
         </span>
         <IdChip id={task.task_id} kind="task" />
+        {/* Beside the id, the same component in the same place as on the card
+            (design-principles §1): a tag that moved between the two views would
+            be two different marks to learn. */}
+        {outcome && <OutcomePill outcome={outcome} />}
         {/* Greyed while the work is still ahead of it (tasks-lib.isUpcomingTask):
             a list is mostly history, and the rows that have not happened yet are
             the ones a reader is not being asked to read. The TITLE only — the id,
@@ -2761,6 +2795,11 @@ function TaskCard({
   const run = showsRowActions(task) ? taskRunIntent(task) : null;
   // The run still to come, when this card's lane does not already order by it.
   const soon = nextRunChip(task);
+  // ...and the one word the Done lane cannot say on its own: that this card's
+  // last run was STOPPED rather than finished (tasks-lib.outcomeTag). Same
+  // function the List row asks, so the two views cannot describe one run
+  // differently.
+  const outcome = outcomeTag(task);
   // The lane this card is IN. Not passed down: `groupByColumn` files every card
   // by `taskColumn`, so asking it here is asking the same function that decided
   // which lane header the card is sitting under — a prop would be a second
@@ -2862,6 +2901,7 @@ function TaskCard({
         <span className="schedule-tv-card-head">
           {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
+          {outcome && <OutcomePill outcome={outcome} />}
         </span>
         {/* Nothing trails the title any more (2026-08-18). Three arrangements of
             an unread mark lived in this slot and each one was a fix for the last:

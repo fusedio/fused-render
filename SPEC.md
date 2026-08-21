@@ -6104,7 +6104,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   capability is validated and used unchanged, so this governs only the omitted
   case.
 - **AI-5l** **A SUGGESTED model may be fetched from OUR OWN distribution, and any
-  doubt goes to the Hub** (D418). CloudFront's access logs are then the answer to
+  doubt goes to the Hub** (D419). CloudFront's access logs are then the answer to
   "did this user download a model", with no telemetry in the app at all — one
   `manifest.json` request per download attempt, made before a single byte moves,
   and logged even on a cache hit. Two objects, not a protocol:
@@ -6231,7 +6231,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   until the build script reruns — reproducibility, at the cost of lagging a
   fix.
 - **AI-5m** **ONE FILE off the mirror is a SECOND object with a WEAKER claim, not
-  a relaxed manifest** (D419). AI-5l's branch lives in `download_snapshot` alone,
+  a relaxed manifest** (D420). AI-5l's branch lives in `download_snapshot` alone,
   and `llama_text.download` does not go through it: it fetches one GGUF with
   `download_file`, because a GGUF repo publishes dozens of quantizations of the
   same model (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB file).
@@ -7190,8 +7190,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   when it can still change a decision. All three runners report it — the image
   runner has had the same Windows CPU-only problem since D257 and never said so.
   (Written when three runners reported it; the text half is now llama.cpp's
-  `"cpu"`/`"gpu"`/`"gpu (partial)"`, which is the same statement with a backoff
-  outcome folded in — see AI-11f.)
+  `"cpu"`/`"gpu"`/`"gpu (partial)"`/`"gpu (experts on cpu)"`, which is the same
+  statement with a backoff outcome folded in — see AI-11f.)
   **Windows CUDA IS offered as of D381, and the objection that used to block it
   is void.** That objection — pulling torch from `download.pytorch.org` through a
   `[[tool.uv.index]]` would cost EVERY Windows user a ~3GB CUDA runtime to serve
@@ -7331,10 +7331,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   neither the binding nor llama.cpp itself can check available VRAM before
   allocating, so sizing is done by catching a failed allocation and retrying
   smaller, down to `0` (CPU) as the guaranteed floor, rather than letting an
-  oversized request fail the Load outright. `worker_base.STATE["device"]`
-  reports `"cpu"`, `"gpu"`, or `"gpu (partial)"` accordingly — a measurement
-  of which attempt succeeded, not a name for which backend served it, since
-  the bound API cannot distinguish Vulkan from Metal.
+  oversized request fail the Load outright. **A mixture-of-experts model gets
+  one rung a dense model cannot use, directly above pure CPU** (D418): its
+  expert tensors are most of the weights but only a few are multiplied per
+  token, so they are pinned to system RAM while every LAYER stays on the GPU —
+  measured on this branch's own hardware at less VRAM AND more throughput than
+  the smallest dense split, which is what fixes its position in the sequence.
+  `worker_base.STATE["device"]` reports `"cpu"`, `"gpu"`, `"gpu (partial)"`, or
+  `"gpu (experts on cpu)"` accordingly — a measurement of which attempt
+  succeeded, not a name for which backend served it, since the bound API
+  cannot distinguish Vulkan from Metal.
 - **AI-11g** **Any Hub repo with a loadable root-level GGUF resolves, not
   only the 5 curated filenames in `formats.GGUF_RECIPES`** (D412).
   `formats.pick_gguf_file()` ranks an arbitrary repo's own file listing —

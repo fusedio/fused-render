@@ -477,8 +477,12 @@ describe("one scheduled run, one row, at every step of its life", () => {
     // QUEUE READ is still stale here (`live` still lists the entry): the handover does
     // not wait on it, so a failing queue endpoint cannot strand the outcome.
     expect(shownRows(live, ended)).toEqual([`j:${LIVE_JOB}`]);
-    // and folded it is history like the rest of it — one row or none, never two
-    expect(shownRows(live, ended, true)).toEqual([]);
+    // and folded it is the SAME one row: the outcome of unattended work is the
+    // one report the fold may not take (foldedJobRows, 2026-08-21), because a
+    // collapsed card that showed the run thinking and then dropped the row told
+    // the story backwards. One row, never two — which is this test's property,
+    // and it is untouched by which half owns it.
+    expect(shownRows(live, ended, true)).toEqual([`j:${LIVE_JOB}`]);
   });
 
   it("draws one row in the MIRROR image — the queue says gone, the job says running", () => {
@@ -499,9 +503,12 @@ describe("one scheduled run, one row, at every step of its life", () => {
     // The other failure mode, and the one the old unconditional drop was protecting
     // against. Every moment the pair of halves can actually be in, times both fold
     // states: exactly one row for this run, never two and never zero.
-    // `inFlight` — work still going, so its row must survive the fold as well. A
-    // FINISHED run is history and folds with the rest of it; what it must never do
-    // is appear twice, which is the half of the property that holds everywhere.
+    // `inFlight` — does this run's row survive the FOLD. Work still going always
+    // does (its ✕ is the only stop), and since 2026-08-21 so does its OUTCOME:
+    // the closing frame is the one report a collapsed card may not swallow, and
+    // it retires itself in FINISHED_TTL_S. So every step here is `true`, and what
+    // the property still holds everywhere is the half that matters — exactly one
+    // row for this run, never two and never zero.
     // The fifth field is the QUEUE half's job snapshot when it differs from this
     // half's — the transition window, where the two halves disagree about whether the
     // run is over and the duplicate used to appear.
@@ -510,7 +517,7 @@ describe("one scheduled run, one row, at every step of its life", () => {
       ["queued", queued, [], true],
       ["sending", sending, [], true],
       ["live", live, [liveJob()], true],
-      ["finished", [], [ended], false],
+      ["finished", [], [ended], true],
       // the in-flight moment with the queue read failing
       ["live, no queue read", [], [liveJob()], true],
       // and a stale running row against a queue row in each earlier tense, which is
@@ -521,7 +528,7 @@ describe("one scheduled run, one row, at every step of its life", () => {
       // the queue half is a snapshot behind (the queue row is the one row); then it
       // catches up while its READ is still stale (the outcome row is the one row).
       ["ended, queue half behind", live, [ended], true, [liveJob()]],
-      ["ended, queue read still stale", live, [ended], false],
+      ["ended, queue read still stale", live, [ended], true],
       // the mirror image: the entry has left every queue list — which is what the
       // server does first, every run — while the job row is still running
       ["still running, entry already gone", [], [liveJob()], true, []],
@@ -548,16 +555,35 @@ describe("one scheduled run, one row, at every step of its life", () => {
     expect(shownRows([], [liveJob()], true)).toEqual([`j:${LIVE_JOB}`]);
   });
 
-  it("still folds away everything the preference was set to fold", () => {
-    // A download and a scheduled run that ENDED are history, not unattended work:
-    // one ✕ is a request for work the user started, the other row is a report.
+  it("lets a scheduled run's OUTCOME through the fold, but not a download", () => {
+    // A collapsed card used to show the run thinking and then simply lose the
+    // row at the verdict — the story told backwards, with no surface ever
+    // saying it finished (Akshil, 2026-08-21). The outcome of unattended work
+    // is the one report the fold may not take; a download's row is work the
+    // user started themselves and is one expand away, exactly what the
+    // preference was set to fold. `done` retires itself in 30s (FINISHED_TTL_S).
     const history = [
       job({ id: "sys:ai-model:repo", kind: "download" }),
       liveJob({ state: "done" }),
     ];
-    expect(foldedJobRows(history)).toEqual([]);
-    expect(shownRows([], history, true)).toEqual([]);
+    expect(foldedJobRows(history).map((j) => j.id)).toEqual([LIVE_JOB]);
+    expect(shownRows([], history, true)).toEqual([`j:${LIVE_JOB}`]);
     expect(shownRows([], history, false)).toEqual(["j:sys:ai-model:repo", `j:${LIVE_JOB}`]);
+  });
+
+  it("keeps an ERROR row behind the fold — it is kept until dismissed", () => {
+    // The asymmetry is deliberate. done/cancelled are swept after
+    // FINISHED_TTL_S, so the fold gains one closing frame and gives it back;
+    // an error row is kept until someone dismisses it (jobs.py `_sweep`), so
+    // piercing the fold with one would defeat the collapse preference for as
+    // long as it sat there. The card's header already says a run failed.
+    expect(foldedJobRows([liveJob({ state: "error" })])).toEqual([]);
+  });
+
+  it("lets a run the user STOPPED through the fold, like any other outcome", () => {
+    expect(foldedJobRows([liveJob({ state: "cancelled" })]).map((j) => j.id)).toEqual([
+      LIVE_JOB,
+    ]);
   });
 
   it("counts the stand-in row in the one header, and leaves no empty card", () => {
