@@ -19,7 +19,7 @@ import {
   type ChatTurn,
   type ChatUsage,
 } from "./playgroundClient";
-import { readParam, writeParams } from "./AiModelsPlayground";
+import { numParam, readParam, writeParams } from "./AiModelsPlayground";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
 // a slider cannot ask for a value the request would 400 on.
@@ -64,9 +64,9 @@ export function PlaygroundChat({
   // Settings read from the URL once and written back debounced — only the
   // non-defaults, so a fresh playground is a clean URL and a shared link
   // carries exactly what its sender changed.
-  const [temperature, setTemperature] = useState(() => Number(readParam("temp") ?? DEFAULTS.temperature));
-  const [topP, setTopP] = useState(() => Number(readParam("topp") ?? DEFAULTS.top_p));
-  const [maxTokens, setMaxTokens] = useState(() => Number(readParam("maxtok") ?? DEFAULTS.max_tokens));
+  const [temperature, setTemperature] = useState(() => numParam("temp", DEFAULTS.temperature));
+  const [topP, setTopP] = useState(() => numParam("topp", DEFAULTS.top_p));
+  const [maxTokens, setMaxTokens] = useState(() => numParam("maxtok", DEFAULTS.max_tokens));
   const [system, setSystem] = useState(() => readParam("system") ?? "");
   useEffect(() => {
     const timer = window.setTimeout(() => {

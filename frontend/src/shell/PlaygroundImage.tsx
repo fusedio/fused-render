@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./playgroundClient";
-import { readParam, writeParams } from "./AiModelsPlayground";
+import { numParam, readParam, writeParams } from "./AiModelsPlayground";
 
 const DEFAULTS = { width: 1024, height: 1024, steps: 28, guidance: 4.0 };
 
@@ -28,10 +28,10 @@ interface Run {
 
 export function PlaygroundImage({ model }: { model: string }) {
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
-  const [width, setWidth] = useState(() => Number(readParam("w") ?? DEFAULTS.width));
-  const [height, setHeight] = useState(() => Number(readParam("h") ?? DEFAULTS.height));
-  const [steps, setSteps] = useState(() => Number(readParam("steps") ?? DEFAULTS.steps));
-  const [guidance, setGuidance] = useState(() => Number(readParam("guidance") ?? DEFAULTS.guidance));
+  const [width, setWidth] = useState(() => numParam("w", DEFAULTS.width));
+  const [height, setHeight] = useState(() => numParam("h", DEFAULTS.height));
+  const [steps, setSteps] = useState(() => numParam("steps", DEFAULTS.steps));
+  const [guidance, setGuidance] = useState(() => numParam("guidance", DEFAULTS.guidance));
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
   const [advanced, setAdvanced] = useState(false);
   const [run, setRun] = useState<Run | null>(null);

@@ -69,6 +69,15 @@ export function readParam(key: string): string | null {
   return new URLSearchParams(location.search).get(key);
 }
 
+/** A numeric param, defensively: a shared link is exactly where a malformed or
+ *  empty value arrives, and `Number("")` is 0 — a temperature nobody chose. */
+export function numParam(key: string, fallback: number): number {
+  const raw = readParam(key);
+  if (raw === null || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 /** Rewrite query params in place — null deletes. `replaceSearch`, not
  *  navigate: model browsing and slider drags must not stack history entries. */
 export function writeParams(updates: Record<string, string | null>): void {
