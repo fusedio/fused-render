@@ -43,12 +43,29 @@ import ScreenCaptureKit as SCK
 _AAC = 1633772320
 _QUALITY_HIGH = 96
 
+#: **The floor is per VERB, not one number** (SPEC CP-8).
+#:
+#: Recording's floor is the floor of the thing that makes it worth doing
+#: natively: a page can already record a screen with `MediaRecorder`, and
+#: SYSTEM AUDIO is the one thing it cannot do on macOS. That is
+#: `SCStreamConfiguration.capturesAudio`, which is macOS 13 — below it this
+#: module has nothing to offer that the browser does not already do better.
+RECORD_MIN = (13, 0)
 #: `SCRecordingOutput` — the API that writes the movie for us — is macOS 15.
-#: `SCScreenshotManager` is 14. Below those this module has nothing to offer
-#: that is worth the frame plumbing, so it says so instead (an `AVAssetWriter`
-#: encoder for 12.3–14 is a later decision, not a silent degradation).
-RECORD_MIN = (15, 0)
-SHOT_MIN = (14, 0)
+#: Below it `_darwin_mux` supplies the `AVAssetWriter` that does the same job,
+#: which is the "later decision" the first cut of this comment deferred (D413).
+SCRO_MIN = (15, 0)
+#: `SCScreenshotManager` is 14. `CGDisplayCreateImage` covers 13 (`_cg_shot`),
+#: so the still's floor is 13 as well.
+SHOT_MIN = (13, 0)
+SCSHOT_MIN = (14, 0)
+
+#: Env var forcing the `AVAssetWriter` path on a Mac new enough for
+#: `SCRecordingOutput`. Every API `_darwin_mux` uses exists on 15 too, so this
+#: is how the 13–14 recorder can be exercised on the machines most likely to be
+#: developing it — otherwise the only code path nobody here can run is the one
+#: that was just written.
+FORCE_MUX = "FUSED_CAPTURE_FORCE_MUX"
 
 #: How long to wait for a start/stop/screenshot completion handler. Generous —
 #: a first capture can sit behind the TCC prompt the user has to answer — but
@@ -288,7 +305,16 @@ def _display_scale(display) -> int:
     return max(1, round(pixels / points))
 
 
-def _configure(display, spec, *, cursor_default: bool = True) -> object:
+def _use_mux() -> bool:
+    """Whether this recording is written by `_darwin_mux` rather than by
+    `SCRecordingOutput` — below macOS 15, or when deliberately forced."""
+    if os.environ.get(FORCE_MUX, "").strip().lower() in ("1", "true", "yes"):
+        return True
+    return _os_version() < SCRO_MIN
+
+
+def _configure(display, spec, *, cursor_default: bool = True,
+               stream_mic: bool = True) -> object:
     config = SCK.SCStreamConfiguration.alloc().init()
     # Pixels, not points. `SCDisplay.width` — and `CGDisplayPixelsWide`, despite
     # its name — are POINTS: on the Mac this was written on both say 1800 while
@@ -315,7 +341,11 @@ def _configure(display, spec, *, cursor_default: bool = True) -> object:
     audio = spec.get("audio")
     if audio in ("system", "both"):
         config.setCapturesAudio_(True)
-    if audio in ("mic", "both"):
+    # `captureMicrophone` is macOS 15, and on the `_darwin_mux` path the
+    # microphone comes from an `AVCaptureSession` at every version — asking the
+    # stream for it as well would mix the same voice into the movie twice.
+    if (audio in ("mic", "both") and stream_mic
+            and config.respondsToSelector_(b"setCaptureMicrophone:")):
         config.setCaptureMicrophone_(True)
         # The one place a specific microphone CAN be chosen — see
         # `start_audio`'s note about why audio-only cannot.
@@ -363,6 +393,12 @@ def start_screen(out: str, spec: dict) -> _ScreenHandle:
     """Start recording a display to `out` (.mov). Returns when frames flow."""
     _require_record()
     display = _display(spec.get("display"))
+    if _use_mux():
+        from fused_render.capture import _darwin_mux
+
+        return _darwin_mux.start(
+            out, display, _configure(display, spec, stream_mic=False), spec)
+
     content_filter = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(
         display, [])
     config = _configure(display, spec)
@@ -455,6 +491,10 @@ def failure(handle) -> str | None:
     that, and it is why the delegate stores the error instead of only unblocking
     `stop`.
     """
+    from fused_render.capture import _darwin_mux
+
+    if isinstance(handle, _darwin_mux.MuxHandle):
+        return _darwin_mux.failure(handle)
     if isinstance(handle, _ScreenHandle):
         return handle.finished.error or None
     return None
@@ -470,6 +510,11 @@ def stop(handle) -> None:
     however quiet its delegate was. AVFoundation's callback needs a run loop
     nobody here can promise, so audio only ever watches the file.
     """
+    from fused_render.capture import _darwin_mux
+
+    if isinstance(handle, _darwin_mux.MuxHandle):
+        _darwin_mux.stop(handle)
+        return
     if isinstance(handle, _ScreenHandle):
         wait = _Wait("stopping the capture")
         handle.stream.stopCaptureWithCompletionHandler_(wait.done)
@@ -494,8 +539,62 @@ def stop(handle) -> None:
 # --------------------------------------------------------------------- still
 
 
+def _write_image(out: str, image, jpeg: bool) -> dict:
+    """Encode a `CGImage` to `out`. Shared by both still paths.
+
+    The container follows the OUTPUT NAME rather than a `format` option: a
+    caller who asked for "shot.jpg" and got PNG bytes under that name has a
+    file every other tool will misread, and two ways to say one thing is one
+    too many on a forever surface.
+    """
+    utype = "public.jpeg" if jpeg else "public.png"
+    url = Foundation.NSURL.fileURLWithPath_(out)
+    dest = Quartz.CGImageDestinationCreateWithURL(url, utype, 1, None)
+    if dest is None:
+        raise RuntimeError(f"could not write {out}")
+    Quartz.CGImageDestinationAddImage(dest, image, None)
+    if not Quartz.CGImageDestinationFinalize(dest):
+        raise RuntimeError(f"could not encode {out}")
+    return {"width": int(Quartz.CGImageGetWidth(image)),
+            "height": int(Quartz.CGImageGetHeight(image))}
+
+
+def _cg_shot(out: str, display, spec: dict) -> dict:
+    """The still on macOS 13, where `SCScreenshotManager` does not exist yet.
+
+    `CGDisplayCreateImage` predates all of ScreenCaptureKit and is deprecated
+    from 14 — which costs nothing, because 14 is exactly where the other path
+    takes over. It returns BACKING pixels, so the Retina rule `_display_scale`
+    exists for is honoured here for free rather than reimplemented.
+
+    The one thing it cannot do is draw the pointer, so `cursor: true` is
+    REFUSED with a sentence naming the version that can, rather than quietly
+    handing back a still with no cursor in it (the AI-10/D319 posture).
+    """
+    if spec.get("cursor"):
+        from fused_render.capture import CaptureError
+
+        raise CaptureError(
+            "'cursor' cannot be honoured for a screenshot on this Mac — "
+            "CGDisplayCreateImage never draws the pointer, and "
+            "SCScreenshotManager, which does, arrives in macOS 14")
+    display_id = display.displayID()
+    rect = spec.get("rect")
+    if rect:
+        x, y, w, h = rect
+        image = Quartz.CGDisplayCreateImageForRect(
+            display_id, Quartz.CGRectMake(x, y, w, h))
+    else:
+        image = Quartz.CGDisplayCreateImage(display_id)
+    if image is None:
+        raise RuntimeError(
+            "the screenshot came back empty — Screen Recording permission is "
+            "most likely denied (System Settings › Privacy & Security)")
+    return _write_image(out, image, bool(spec.get("jpeg")))
+
+
 def screenshot(out: str, spec: dict) -> dict:
-    """One frame to `out`, via `SCScreenshotManager` (macOS 14+)."""
+    """One frame to `out` — `SCScreenshotManager` on 14+, CoreGraphics on 13."""
     old = _too_old(SHOT_MIN)
     if old:
         from fused_render.capture import Unsupported
@@ -503,6 +602,9 @@ def screenshot(out: str, spec: dict) -> dict:
         raise Unsupported("screenshots " + old)
 
     display = _display(spec.get("display"))
+    if _too_old(SCSHOT_MIN):
+        return _cg_shot(out, display, spec)
+
     content_filter = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(
         display, [])
     config = _configure(display, {"rect": spec.get("rect"),
@@ -523,17 +625,4 @@ def screenshot(out: str, spec: dict) -> dict:
     if image is None:
         raise RuntimeError("the screenshot came back empty")
 
-    # The container follows the OUTPUT NAME rather than a `format` option: a
-    # caller who asked for "shot.jpg" and got PNG bytes under that name has a
-    # file every other tool will misread, and two ways to say one thing is one
-    # too many on a forever surface.
-    utype = "public.jpeg" if spec.get("jpeg") else "public.png"
-    url = Foundation.NSURL.fileURLWithPath_(out)
-    dest = Quartz.CGImageDestinationCreateWithURL(url, utype, 1, None)
-    if dest is None:
-        raise RuntimeError(f"could not write {out}")
-    Quartz.CGImageDestinationAddImage(dest, image, None)
-    if not Quartz.CGImageDestinationFinalize(dest):
-        raise RuntimeError(f"could not encode {out}")
-    return {"width": int(Quartz.CGImageGetWidth(image)),
-            "height": int(Quartz.CGImageGetHeight(image))}
+    return _write_image(out, image, bool(spec.get("jpeg")))

@@ -619,3 +619,164 @@ def test_the_macos_backend_imports_and_probes_without_prompting():
         assert set(payload[key]) >= {"available", "reason"}
     assert isinstance(payload["displays"], list)
     assert isinstance(payload["microphones"], list)
+
+
+# --------------------------------------------------- the macOS 13-14 recorder
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_the_floors_are_per_verb_and_not_one_number():
+    """CP-8. `SCRecordingOutput` is 15 and `SCScreenshotManager` is 14, but
+    neither is the floor of the FEATURE: `_darwin_mux` writes the movie below
+    15 and `CGDisplayCreateImage` takes the still below 14, so what is left is
+    the floor of the thing native capture is FOR — system audio, macOS 13."""
+    from fused_render.capture import _darwin
+
+    assert _darwin.RECORD_MIN == (13, 0)
+    assert _darwin.SHOT_MIN == (13, 0)
+    assert _darwin.SCRO_MIN == (15, 0)
+    assert _darwin.SCSHOT_MIN == (14, 0)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_below_the_floor_is_a_reason_naming_thirteen(monkeypatch):
+    """A 12.x Mac must read `available: false` with a sentence, not a raise —
+    the probe is read while a page draws a record button."""
+    from fused_render.capture import _darwin
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (12, 4))
+    monkeypatch.setattr(_darwin.platform, "mac_ver", lambda: ("12.4", "", ""))
+    payload = _darwin.probe()
+    assert payload["video"]["available"] is False
+    assert "needs macOS 13" in payload["video"]["reason"]
+    assert payload["systemAudio"]["available"] is False
+    assert payload["screenshot"]["available"] is False
+    # Audio-only never needed ScreenCaptureKit at all, so it does not move.
+    assert payload["audio"]["available"] is True
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_a_thirteen_or_fourteen_mac_routes_to_the_muxer(monkeypatch):
+    from fused_render.capture import _darwin
+
+    for version in ((13, 0), (13, 6), (14, 5)):
+        monkeypatch.setattr(_darwin, "_os_version", lambda v=version: v)
+        assert _darwin._use_mux() is True
+    for version in ((15, 0), (26, 6)):
+        monkeypatch.setattr(_darwin, "_os_version", lambda v=version: v)
+        assert _darwin._use_mux() is False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_the_muxer_can_be_forced_on_a_new_mac(monkeypatch):
+    """Every API `_darwin_mux` uses exists on 15 too. Without this env var the
+    only code path nobody developing it can run is the one just written."""
+    from fused_render.capture import _darwin
+
+    monkeypatch.setattr(_darwin, "_os_version", lambda: (26, 6))
+    monkeypatch.setenv(_darwin.FORCE_MUX, "1")
+    assert _darwin._use_mux() is True
+    monkeypatch.setenv(_darwin.FORCE_MUX, "0")
+    assert _darwin._use_mux() is False
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_the_stream_is_not_asked_for_a_microphone_on_the_mux_path(monkeypatch):
+    """`captureMicrophone` is macOS 15, and on the mux path the microphone
+    comes from an `AVCaptureSession` at EVERY version — asking the stream too
+    would mix the same voice into the movie twice.
+
+    Asserted against a REAL `SCStreamConfiguration` rather than a recording
+    stub: the guard is a `respondsToSelector_` check, so a fake that answers
+    every selector would pass while the thing being tested does not exist."""
+    import ScreenCaptureKit as SCK
+
+    from fused_render.capture import _darwin
+
+    if not SCK.SCStreamConfiguration.alloc().init().respondsToSelector_(
+            b"setCaptureMicrophone:"):
+        pytest.skip("this Mac is below macOS 15, where the guard is moot")
+
+    monkeypatch.setattr(_darwin, "_display_scale", lambda display: 2)
+
+    class FakeDisplay:
+        @staticmethod
+        def width():
+            return 100
+
+        @staticmethod
+        def height():
+            return 100
+
+        @staticmethod
+        def displayID():
+            return 1
+
+    muxed = _darwin._configure(FakeDisplay(), {"audio": "both"},
+                               stream_mic=False)
+    assert bool(muxed.capturesAudio()) is True
+    assert bool(muxed.captureMicrophone()) is False
+
+    native = _darwin._configure(FakeDisplay(), {"audio": "both"},
+                                stream_mic=True)
+    assert bool(native.capturesAudio()) is True
+    assert bool(native.captureMicrophone()) is True
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_a_cursor_still_is_refused_on_thirteen_rather_than_drawn_without_one():
+    """`CGDisplayCreateImage` never draws the pointer. Handing back a still
+    that silently lacks it is the D319 mistake; the sentence names the version
+    where `cursor` works."""
+    from fused_render.capture import _darwin
+
+    with pytest.raises(capture.CaptureError) as caught:
+        _darwin._cg_shot("/tmp/never-written.png", object(), {"cursor": True})
+    assert "macOS 14" in str(caught.value)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_the_mux_backend_imports_and_exposes_the_seam():
+    """Import alone: the delegates declare real ObjC protocols and the module
+    creates its dispatch queues at import time, so a typo in either is an
+    ImportError here rather than a recording that never delivers a frame."""
+    from fused_render.capture import _darwin_mux
+
+    for hook in ("start", "stop", "failure"):
+        assert callable(getattr(_darwin_mux, hook))
+    assert _darwin_mux._SCREEN_Q.className() == "OS_dispatch_queue_serial"
+    assert _darwin_mux._MIC_Q.className() == "OS_dispatch_queue_serial"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_a_mux_recording_that_saw_no_frames_is_an_error_not_a_dead_file():
+    """`finishWriting` over a session that never started produces a file that
+    does not play. A row saying "done" over one of those is the worst outcome
+    available (D409), so this raises instead."""
+    from fused_render.capture import _darwin_mux
+
+    handle = _darwin_mux.MuxHandle("/tmp/never-written.mov", None)
+    cancelled = []
+    handle.writer = type("W", (), {
+        "cancelWriting": lambda self: cancelled.append(True),
+        "error": lambda self: None,
+    })()
+    with pytest.raises(RuntimeError) as caught:
+        handle.finish()
+    assert "no frames" in str(caught.value)
+    assert cancelled == [True]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
+def test_the_mux_handle_reports_an_error_it_has_already_died_of():
+    """The read side of the per-tick `failure(handle)` hook. Without it a
+    stream that dies at minute two ticks "Recording" to the cap over a file
+    nothing is writing."""
+    from fused_render.capture import _darwin_mux
+
+    handle = _darwin_mux.MuxHandle("/tmp/x.mov", "system")
+    assert _darwin_mux.failure(handle) is None
+    handle.note_error("the display went away")
+    assert _darwin_mux.failure(handle) == "the display went away"
+    handle.note_error("something later")
+    assert _darwin_mux.failure(handle) == "the display went away"
