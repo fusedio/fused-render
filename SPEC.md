@@ -7052,6 +7052,39 @@ an AI Models page that could say what was on disk but not what was *running*.
   reports `"cpu"`, `"gpu"`, or `"gpu (partial)"` accordingly — a measurement
   of which attempt succeeded, not a name for which backend served it, since
   the bound API cannot distinguish Vulkan from Metal.
+- **AI-11g** **Any Hub repo with a loadable root-level GGUF resolves, not
+  only the 5 curated filenames in `formats.GGUF_RECIPES`** (D407).
+  `formats.pick_gguf_file()` ranks an arbitrary repo's own file listing —
+  excluding subdirectories, multi-part shards, and auxiliary weights
+  (`mmproj`/`mtp`/`draft`/`projector`, widened past one observed file to a
+  scan of ~200 real repos before being trusted), then ranking by
+  quantization suffix starting at `Q4_K_M` rather than the true smallest
+  quant a repo might publish — deliberately, since `_offload_schedule`'s
+  backoff can turn a too-large pick into a slower load but nothing can turn
+  an already-downloaded, needlessly degraded quant into a better one.
+  unsloth's `UD-` dynamic quants are eligible but rank below every plain
+  quant of a named bit-width family; a lone unranked file still resolves
+  (no ambiguity to refuse), and more than one does not (refused by name,
+  never guessed at — a `mmproj` is also small and is not a chat model).
+  Deterministic and hardware-blind on purpose: `catalog.py`'s `size_gb` and
+  `ai_runtime.py`'s downloaded/curated join both require a model id to mean
+  the same bytes everywhere, and there is no VRAM query available through
+  the wheel to budget against regardless (confirmed by reading the
+  installed bindings). `llama_text._resolve_model_id` falls back to this
+  for any repo `GGUF_RECIPES` has never heard of, checking the local hf
+  cache before ever asking the Hub. `hub_models.py`'s search runs the SAME
+  picker over a result's `siblings` (`expand[]=siblings`, confirmed live to
+  return a repo's complete file list in the search LIST response with no
+  per-repo follow-up call) and drops a row it cannot resolve — the one
+  runner-specific branch in that module, gated on a new optional
+  `Runner.hub_filter_tags` field (`("gguf",)` on both llama.cpp rows, empty
+  elsewhere) so the module's "adding a runner needs no edit here" property
+  survives. Reading which tag applies asks the machine's ACTIVE runner
+  (`registry.for_capability`), a deliberate, documented exception to
+  `hub_models.py`'s "search does not depend on the host" rule — justified
+  the same way `_UNRUNNABLE_LIBRARIES` already is for FORMAT rather than
+  hardware availability, and kept narrow: two machines differ only after a
+  VISIBLE Preferences choice, never for a reason neither could see.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
