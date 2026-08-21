@@ -2,16 +2,22 @@
 
 `fused.ai.transcribe` takes `task`, `language` and `initialPrompt`, and the two
 speech-to-text engines this app ships — MLX Whisper and Faster Whisper — both
-answer all three, so `UNSUPPORTED` below is currently empty. It carried one
-entry, `parakeet-mlx` (D319, SPEC AI-10g), for the engine that answered none of
-them: it transcribed only, detected its own language among the 25 its weights
-were trained on with no way to pin one, and was a transducer with no text to
-condition on. D406 withdrew that engine — maintenance cost not justified by
-use — and the table went with it, but the MECHANISM stays: the day another
-engine refuses an option, this is where the refusal is declared. **Refused,
-never ignored** — accepting an option and quietly doing something else is the
-failure this app rates worst, because a page that asked for English and got
-French has nothing on the row telling it which engine decided.
+answer all three, so `UNSUPPORTED` carried no TRANSCRIBE rows for a while. It
+carried one entry, `parakeet-mlx` (D319, SPEC AI-10g), for the engine that
+answered none of them: it transcribed only, detected its own language among
+the 25 its weights were trained on with no way to pin one, and was a
+transducer with no text to condition on. D406 withdrew that engine —
+maintenance cost not justified by use — and the table went with it, but the
+MECHANISM stayed: the day another engine refuses an option, this is where the
+refusal is declared. That day came for `fused.ai.image`'s own `image` option
+(D418) — every diffusers image code refuses it, mflux is the only engine that
+honours it — so the table is no longer empty, and the mechanism is now proven
+across BOTH job-backed AI calls, not just the one it was written for.
+**Refused, never ignored** — accepting an option and quietly doing something
+else is the failure this app rates worst, because a page that asked for
+English and got French has nothing on the row telling it which engine
+decided, and neither does a page that asked to edit a photo and got a fresh
+one instead.
 
 **`words` (D392) does NOT belong in this table**, and it is the one option that
 does not: an ignored option is refused here because it is undetectable, and word
