@@ -32,7 +32,7 @@
 // near the viewport and unmounts it once scrolled well past, showing step 3's
 // empty thumb in between — an offloaded card reads the same as an app with no
 // live preview (D365).
-import { useCallback, useRef, useState } from "react";
+import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
@@ -100,7 +100,7 @@ export function AppPreviewCard({
         : null;
   // Gates the live-iframe branch only — preview.png costs nothing to keep
   // mounted and the empty thumb costs nothing at all, so neither needs this.
-  const [thumbRef, nearViewport, inViewport] = useNearViewport<HTMLSpanElement>();
+  const [thumbRef, nearViewport, onScreen] = useNearViewport<HTMLSpanElement>();
   // Hover on a png-thumbed card swaps in the live app: the iframe mounts
   // UNDER the still image on mouseenter and the image only fades once the
   // iframe has loaded (`liveReady`), so the swap never shows a blank frame
@@ -139,19 +139,17 @@ export function AppPreviewCard({
   // `wantsLive` above, so the extra effect run it causes is the one that
   // mounts the hover iframe — no started preview is torn down for it.
   const hoverPriority = Boolean(shotSrc && !shotFailed && hovered);
-  // Every other card ranks by whether it is ON SCREEN, as a STABLE getter the
-  // queue reads at admission time (preview-start's Priority). The 800px
-  // lookahead means a scroll queues a couple of rows the reader cannot see
-  // yet, and with two slots the cards they ARE looking at used to wait behind
-  // those in request order. A getter rather than a dependency because
-  // usePreviewStart's effect restarts the iframe whenever its deps change:
-  // promoting a waiting card through the deps would tear down a running one.
-  const onScreen = useRef(false);
-  onScreen.current = inViewport;
-  const backgroundRank = useCallback(() => onScreen.current, []);
+  // Every other card ranks by whether it is ON SCREEN — useNearViewport's
+  // third slot, a STABLE getter the queue reads at admission time
+  // (preview-start's Priority). The 800px lookahead means a scroll queues a
+  // couple of rows the reader cannot see yet, and with two slots the cards
+  // they ARE looking at used to wait behind those in request order. A getter
+  // rather than a dependency because usePreviewStart's effect restarts the
+  // iframe whenever its deps change: promoting a waiting card through the deps
+  // would tear down a running one.
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
-    hoverPriority || backgroundRank,
+    hoverPriority || onScreen,
   );
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.

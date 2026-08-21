@@ -49,6 +49,30 @@ test("preview cards rank their queued start by being on screen", () => {
   // Through a stable getter, never a dependency: usePreviewStart's effect
   // restarts the iframe whenever its deps change, so promoting a waiting card
   // that way would tear down a running one.
-  expect(src).toContain("const backgroundRank = useCallback(() => onScreen.current, []);");
-  expect(src).toContain("hoverPriority || backgroundRank");
+  expect(src).toContain("const [thumbRef, nearViewport, onScreen] = useNearViewport");
+  expect(src).toContain("hoverPriority || onScreen");
+});
+
+// The rank getter is a ref, not state, in the SHARED hook: every card crosses
+// the real viewport edge on every scroll, and Home's bookmark cards destructure
+// only `[ref, near]` — as state they would re-render for a slot they never read.
+test("the on-screen rank costs no render", () => {
+  const src = readFileSync(
+    join(import.meta.dir, "../../platform/lib/preview-start.ts"),
+    "utf8",
+  );
+  expect(src).toContain("const visible = useRef(false);");
+  expect(src).toContain("const isVisible = useCallback(() => visible.current, []);");
+  expect(src).not.toContain("setVisible");
+});
+
+// The head start is for a skeleton, not for a grid that is already drawn: on a
+// thin recents store /api/apps/home runs the same workspace walk as the
+// catalog, so a revisit or a `nonce` refetch would pay it twice for an answer
+// the setApps guard discards.
+test("the fast row is skipped once a full catalog is on screen", () => {
+  const src = apps();
+  expect(src).toContain("const cold = useRef(catalogCache === null);");
+  expect(src).toContain("if (cold.current) {");
+  expect(src).toContain("cold.current = false;");
 });

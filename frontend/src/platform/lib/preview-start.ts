@@ -104,12 +104,20 @@ const NEAR_VIEWPORT_MARGIN = "800px 0px";
 // fixed per observer — and the second is a per-card cost of one more entry in
 // the same callback machinery, against a whole iframe document per card.
 //
+// `near` is STATE because mounting an iframe is a render; `visible` is a REF
+// behind a stable getter because ranking an already-queued start is not.
+// Crossing the real viewport edge happens for every card on every scroll, and
+// the only consumer (a Priority getter the queue reads at admission) reads it
+// out of a ref anyway — as state it would re-render every card twice per
+// scroll-past for a value no render depends on, and Home's bookmark cards
+// would pay that for a tuple slot they never destructure.
+//
 // The third tuple slot is additive: callers that only gate mounting keep
 // destructuring `[ref, near]`.
-export function useNearViewport<T extends Element>(): [RefObject<T>, boolean, boolean] {
+export function useNearViewport<T extends Element>(): [RefObject<T>, boolean, () => boolean] {
   const ref = useRef<T>(null);
   const [near, setNear] = useState(false);
-  const [visible, setVisible] = useState(false);
+  const visible = useRef(false);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -123,13 +131,16 @@ export function useNearViewport<T extends Element>(): [RefObject<T>, boolean, bo
       return io;
     };
     const nearIo = observe(NEAR_VIEWPORT_MARGIN, setNear);
-    const visibleIo = observe("0px", setVisible);
+    const visibleIo = observe("0px", (v) => {
+      visible.current = v;
+    });
     return () => {
       nearIo.disconnect();
       visibleIo.disconnect();
     };
   }, []);
-  return [ref, near, visible];
+  const isVisible = useCallback(() => visible.current, []);
+  return [ref, near, isVisible];
 }
 
 type IdleWindow = Window & {

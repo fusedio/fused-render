@@ -11,7 +11,7 @@
 // Order is always recently-opened (modified time stands in
 // for an app never opened — appEntry.sortApps); filtering never reorders cards
 // relative to each other.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getApps, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
@@ -189,21 +189,32 @@ export default function Apps({ config }: { config: Config }) {
   // back to the same exhaustive walk — so it must never be a gate in front of
   // the catalog. Its failure is likewise silent: the catalog is the answer,
   // this is a head start.
+  //
+  // And ONLY while there is a skeleton for it to replace (`cold`). Once a full
+  // grid is on screen the fast row's answer is discarded on arrival anyway —
+  // the setApps guard below refuses to overwrite one — but for the thin-recents
+  // user the request is not free on the server either: /api/apps/home falls
+  // back to the SAME workspace walk, so firing it on a cache-warm revisit or on
+  // a `nonce` refetch (create, showcase sync) would pay that walk twice for an
+  // answer nothing reads.
+  const cold = useRef(catalogCache === null);
   useEffect(() => {
     let alive = true;
-    getHomeApps(FAST_ROW).then(
-      ({ apps: fast }) => {
-        // Never overwrite a full grid — a cached one from a previous visit, or
-        // a catalog that simply won this race.
-        if (!alive || fast.length === 0) return;
-        setApps((prev) => (prev.status === "loading" ? { status: "partial", data: fast } : prev));
-      },
-      () => undefined,
-    );
+    if (cold.current) {
+      getHomeApps(FAST_ROW).then(
+        ({ apps: fast }) => {
+          // Never overwrite a full grid — a catalog that simply won this race.
+          if (!alive || fast.length === 0) return;
+          setApps((prev) => (prev.status === "loading" ? { status: "partial", data: fast } : prev));
+        },
+        () => undefined,
+      );
+    }
     getApps().then(
       ({ apps }) => {
         if (!alive) return;
         catalogCache = apps;
+        cold.current = false;
         setError(null);
         setApps({ status: "ok", data: apps });
       },
