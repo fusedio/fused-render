@@ -841,22 +841,48 @@ def _read_log(run_dir: str) -> tuple:
     `truncated` travels with the text because the caller's verdict depends on
     it: a missing `result` row means something different when the reason might
     simply be that the log outgrew what was read.
+
+    THE TWO READS MUST NOT OVERLAP, and that is the whole subtlety here. For a
+    size between `_LOG_CAP` and `_LOG_CAP + _RESULT_TAIL`, a plain
+    `size - _RESULT_TAIL` seek starts INSIDE the region the head already
+    returned, so every `tool_use`/`tool_result` line in the overlap is parsed
+    twice. That is not a cosmetic double-count: the second `tool_use` finds its
+    own node no longer pending, so the attribution walks on to the NEXT pending
+    node with the same `mcpName`, rebinds `call_owner[tool_use_id]` to it, and
+    the duplicate `tool_result` then marks a step that never ran `done` — with
+    the first step's output — while the step that really ran is left `running`
+    and gets flipped to `error` when the run ends. Measured on a two-node graph
+    calling one tool: node A (succeeded) reported `error`, node B (never ran)
+    reported `done` with A's output. So the tail is clamped to start no earlier
+    than the head ended.
+
+    When the clamp makes the two reads CONTIGUOUS they are concatenated with no
+    separator, because `read(_LOG_CAP)` counts CHARACTERS and may stop
+    mid-line: joining with a newline there would split one good line into two
+    unparseable halves and silently drop whatever it carried. When a genuine gap
+    remains, the newline is what stops the head's truncated last line and the
+    tail's partial first line from fusing into one — both are skipped by the
+    parse loop either way.
     """
     path = os.path.join(run_dir, "out.jsonl")
     try:
         size = os.path.getsize(path)
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             head = fh.read(_LOG_CAP)
-            if size <= len(head.encode("utf-8", "replace")):
-                return head, False
-            # A byte seek into a text handle is not allowed past a plain
-            # `tell()` offset, so the tail is read as bytes and decoded here.
-            # The first line of the tail is almost certainly a partial one; the
-            # parse loop already skips unparseable lines, so it costs nothing.
-            with open(path, "rb") as raw:
-                raw.seek(max(0, size - _RESULT_TAIL))
-                tail = raw.read().decode("utf-8", "replace")
-            return head + "\n" + tail, True
+        # BYTES, not characters: `_LOG_CAP` bounded a text read, and the seek
+        # below is a byte offset. Comparing the two in different units is what
+        # would let the clamp leak an overlap back in on a non-ASCII log.
+        head_bytes = len(head.encode("utf-8", "replace"))
+        if size <= head_bytes:
+            return head, False
+        # A byte seek into a text handle is not allowed past a plain `tell()`
+        # offset, so the tail is read as bytes and decoded here.
+        start = max(head_bytes, size - _RESULT_TAIL)
+        with open(path, "rb") as raw:
+            raw.seek(start)
+            tail = raw.read().decode("utf-8", "replace")
+        joiner = "" if start == head_bytes else "\n"
+        return head + joiner + tail, True
     except OSError:
         return "", False
 

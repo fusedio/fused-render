@@ -159,6 +159,21 @@ def _http_json(url: str, payload=None, timeout: float = _HTTP_TIMEOUT):
         req = urllib.request.Request(url, data=data, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as res:
             return json.loads(res.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        # A 4xx/5xx CARRIES THE SERVER'S OWN SENTENCE and must not be flattened
+        # into "no answer". `/api/index/scan` refuses with 409 and
+        # `{"error": "indexing is disabled in Preferences"}` — an actionable
+        # instruction the user can act on — and urllib raises that as an
+        # exception whose body is still readable. Swallowing it left the panel
+        # saying "got no usable answer" about a request the server had already
+        # explained. HTTPError subclasses URLError, so this clause must come
+        # first; a body that is not JSON still yields the status rather than
+        # None, because "the server refused" and "nothing answered" are
+        # different things to tell someone.
+        try:
+            return json.loads(exc.read().decode("utf-8", "replace"))
+        except (OSError, ValueError):
+            return {"error": "HTTP %s from %s" % (exc.code, url)}
     except (urllib.error.URLError, OSError, ValueError):
         return None
 
@@ -326,7 +341,16 @@ def _registered_folders() -> list:
             raw = json.load(fh)
     except (OSError, ValueError):
         return []
-    entries = raw if isinstance(raw, list) else (raw.get("apps") if isinstance(raw, dict) else [])
+    # `{"entries": [...]}` is the store's shape (`registered_apps.write_entries`),
+    # and reading the wrong key here made this whole source DEAD: it returned []
+    # every time, so the one place that finds a curated app folder OUTSIDE the
+    # workspace contributed nothing. The failure was invisible because the
+    # workspace walk covers the common case — an app in ~/Fused is found either
+    # way — so the palette only came up short for exactly the user this source
+    # exists for: one who curated a folder elsewhere while the index was behind.
+    # A bare list is still accepted in case the store predates that shape.
+    entries = raw if isinstance(raw, list) else (
+        raw.get("entries") if isinstance(raw, dict) else [])
     out = []
     for entry in entries if isinstance(entries, list) else []:
         folder = entry.get("path") if isinstance(entry, dict) else None
