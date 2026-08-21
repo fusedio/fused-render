@@ -2245,8 +2245,8 @@ def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
 
     Read through `projectenv.dependencies_of` — the app's own manifest reader,
     which is markers-and-all verbatim (what a packaging invariant wants) and
-    which already carries the `tomli` fallback for the 3.10 that
-    `requires-python` still promises.
+    which still carries a `tomli` fallback, now unreachable: `requires-python`
+    is >=3.11, so `tomllib` is always there.
     """
     from fused_render import projectenv
 

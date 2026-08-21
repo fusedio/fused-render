@@ -45,7 +45,7 @@ import pytest
 
 
 def _import_toml():
-    """tomllib (3.11+) or the tomli dependency that covers 3.10.
+    """tomllib, with a `tomli` arm the >=3.11 floor makes unreachable.
 
     Same shape as `tests/test_template_locks.py`'s and
     `tests/test_bundle_contents.py`'s, and copied rather than shared for the
@@ -57,18 +57,17 @@ def _import_toml():
     a skipif MARKER rather than a parser accessor and would not migrate anyway.
 
     **A bare `import tomllib` is what this exists to prevent, and writing one
-    here is what shipped a red CI.** `requires-python` is >=3.10, tomllib is
-    3.11+ stdlib, and on 3.10 the bare import raises ModuleNotFoundError at
-    COLLECTION — which errors the whole module out rather than skipping it, so a
-    dependency-integrity suite silently stops running on the interpreter version
-    it is most likely to catch a packaging bug on. Local runs are on 3.12 and
-    cannot see it.
+    here is what shipped a red CI.** Back when `requires-python` was >=3.10 the
+    bare import raised ModuleNotFoundError at COLLECTION — erroring the whole
+    module out rather than skipping it, so a dependency-integrity suite silently
+    stopped running on the interpreter version most likely to catch a packaging
+    bug. Local runs were on 3.12 and could not see it.
 
-    `tomli>=2.0; python_version < '3.11'` is a declared dependency of this
-    project (`pyproject.toml`), so on 3.10 these tests RUN — the skip is only
-    for an install that genuinely has neither. `allow_module_level=True`
-    because this is called at import time, where a plain `pytest.skip` is an
-    error rather than a skip.
+    The floor is >=3.11 now, so `tomllib` is always importable and `tomli` is no
+    longer a declared dependency: the fallback and the skip are both unreachable.
+    They stay as the shape that keeps a bare module-scope import from coming
+    back. `allow_module_level=True` because this is called at import time, where
+    a plain `pytest.skip` is an error rather than a skip.
     """
     try:
         import tomllib
