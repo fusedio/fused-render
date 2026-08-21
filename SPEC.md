@@ -7977,7 +7977,10 @@ and it says so through `sources()` rather than by being absent.
   control left — a cap that discarded would leave no ending that kept the file.
   A recording the backend has already LOST is a fourth ending the watchdog
   reports the moment it sees it, rather than ticking "Recording" to the cap over
-  a file nothing is writing.
+  a file nothing is writing. **The cap is enforced before either of those two
+  probes**, and before anything else that can fail: it is the promise that a
+  microphone nobody stops still turns off, so a probe raising on every tick
+  must not be able to sit in front of it.
   **Finalising on the way out is wired into the paths that really run**: the
   `"capture"` rung of `app.quit_teardown` (the packaged app quits via `os._exit`
   — DM-9 — so an `atexit` handler there is dead code) and the server's ASGI

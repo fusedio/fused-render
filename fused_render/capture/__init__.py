@@ -26,6 +26,7 @@ is possible (the same rule the GPU probe follows, SPEC §40).
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import sys
 import threading
@@ -33,6 +34,8 @@ import time
 import uuid
 
 from fused_render import jobs
+
+logger = logging.getLogger(__name__)
 
 #: Job ids are server-owned (`jobs.OWNER_SERVER`): the work is this process's,
 #: so the manager's ✕ can really stop it — and a page cannot forge a "done" for
@@ -317,11 +320,20 @@ def start(mode: str, body: dict) -> dict:
 
 
 def _report(session: _Session, **fields) -> None:
-    """One job tick, best-effort. Reporting must never break the recording."""
+    """One job tick, best-effort. Reporting must never break the recording.
+
+    Catches EVERYTHING, which is what that sentence has to mean to be worth
+    stating. The two named exceptions it used to catch are the expected ones,
+    but both call sites are load-bearing in a way a row is not: raising out of
+    the one in `start` registers a session whose watchdog thread was never
+    spawned — a recording with no cap and no ✕ — and raising out of the one in
+    `_watch` costs a tick (see the guard there).
+    """
     try:
         jobs.upsert({"id": session.job, **fields}, server=True)
-    except (jobs.JobError, ValueError):
-        pass
+    except Exception:                            # noqa: BLE001 - a row, not the work
+        logger.warning("reporting the capture job row failed for %s",
+                       session.id, exc_info=True)
 
 
 def _failure(session: _Session) -> str | None:
@@ -341,7 +353,18 @@ def _failure(session: _Session) -> str | None:
 
 
 def _cancel_requested(session: _Session) -> bool:
-    for record in jobs.list_jobs():
+    """Has the manager's ✕ been pressed? Best-effort, like `_failure`.
+
+    A registry this cannot read is not a cancel, and must not become one — nor
+    take the watchdog down, which would strand the recording with no cap either
+    (see `_watch`). So an unreadable store answers "no" and the next tick asks
+    again.
+    """
+    try:
+        records = jobs.list_jobs()
+    except Exception:                            # noqa: BLE001 - a probe
+        return False
+    for record in records:
         if record["id"] == session.job:
             return bool(record.get("cancel_requested"))
     return False
@@ -353,40 +376,79 @@ def _watch(session: _Session) -> None:
     ✕ DISCARDS (the house meaning of cancel, and consistent with every other
     row); the cap STOPS AND KEEPS, because for a recording whose page is gone
     the cap is the only ending that does not destroy the content.
+
+    **A tick that raises must not take the thread with it.** Once the page that
+    started a recording is gone, this loop IS the only remaining control — both
+    of them — so a dead watchdog is a microphone nothing can turn off, behind a
+    row that ticks "Recording" forever. Every ending in `_tick` is still a real
+    return; only an unexpected failure is swallowed, and the next tick retries.
+
+    This guard alone is not enough, which is why `_tick` checks the cap FIRST:
+    a probe that fails on EVERY tick (not just one) would otherwise sit in front
+    of the cap forever and the guard would faithfully log it forever.
     """
     while True:
         time.sleep(TICK_S)
         with _lock:
             if _sessions.get(session.id) is not session:
                 return          # stopped by its owner; that path reports.
-        elapsed = time.time() - session.started_at
-        # A recording that has already failed must not tick "Recording" for the
-        # rest of its cap: the user would narrate into a file nothing is
-        # writing. Asked before the endings, because it IS one.
-        died = _failure(session)
-        if died:
-            with _lock:
-                _sessions.pop(session.id, None)
-            session.state = "error"
-            _report(session, state="error", message=died)
-            try:
-                _backend().stop(session.handle)
-            except Exception:                    # noqa: BLE001 - already failed
-                pass
-            return
-        if _cancel_requested(session):
-            try:
-                stop(session.id, discard=True)
-            except (CaptureError, Unsupported):
-                pass
-            return
-        if elapsed >= session.max_seconds:
-            try:
-                stop(session.id)
-            except (CaptureError, Unsupported):
-                pass
-            return
-        _report(session, done=round(min(elapsed, session.max_seconds), 1))
+        try:
+            if _tick(session):
+                return
+        except Exception:                        # noqa: BLE001 - see above
+            logger.warning("the capture watchdog tick failed for %s",
+                           session.id, exc_info=True)
+
+
+def _tick(session: _Session) -> bool:
+    """One watchdog pass. True when this recording has ENDED and nothing is left.
+
+    Split out of `_watch` so the loop has one place to guard: the endings are
+    here, the "never die" is there.
+
+    **The cap is checked first, before anything that can fail**, and that
+    ordering is the guarantee rather than a preference. `DEFAULT_MAX_SECONDS`
+    exists so that a recording nobody stops still ends — a hard promise about
+    turning a microphone off — while the two probes under it are signals about
+    a recording that is still running. A probe that fails on every tick (a
+    backend hook raising, an unreadable job store) would, placed above the cap,
+    strand the recording for as long as the process lives; `_watch`'s guard
+    would log each failure and change nothing. Below it, the same failure costs
+    a message.
+
+    The cost of the order is one tie: a recording that dies in the same tick it
+    reaches its cap ends as "done" rather than "error". The file was written up
+    to the cap either way, so the row is the only difference.
+    """
+    elapsed = time.time() - session.started_at
+    if elapsed >= session.max_seconds:
+        try:
+            stop(session.id)
+        except (CaptureError, Unsupported):
+            pass
+        return True
+    # A recording that has already failed must not tick "Recording" for the
+    # rest of its cap: the user would narrate into a file nothing is writing.
+    # Asked before the ✕, because it IS an ending.
+    died = _failure(session)
+    if died:
+        with _lock:
+            _sessions.pop(session.id, None)
+        session.state = "error"
+        _report(session, state="error", message=died)
+        try:
+            _backend().stop(session.handle)
+        except Exception:                        # noqa: BLE001 - already failed
+            pass
+        return True
+    if _cancel_requested(session):
+        try:
+            stop(session.id, discard=True)
+        except (CaptureError, Unsupported):
+            pass
+        return True
+    _report(session, done=round(min(elapsed, session.max_seconds), 1))
+    return False
 
 
 # ------------------------------------------------------------------ stopping

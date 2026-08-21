@@ -320,6 +320,85 @@ def test_a_recording_that_dies_mid_flight_ends_its_row_then(backend, client,
     assert backend.handles[0].stopped is True
 
 
+def test_a_tick_that_raises_does_not_strand_the_recording(backend, client,
+                                                          home, monkeypatch):
+    """The watchdog is the ONLY control left once the page that started a
+    recording is gone — it carries both the cap and the ✕. So a tick that
+    raises must not take the thread with it: a dead watchdog is a microphone
+    nothing can turn off, behind a row that ticks "Recording" forever.
+
+    This probe fails on EVERY tick, not one, which is the case a try/except
+    around the loop does not answer on its own — it is why `_tick` checks the
+    cap before anything that can fail. With the probe above the cap, the guard
+    logs the same failure until the process dies and the recording never ends.
+    """
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    monkeypatch.setattr(capture, "_max_seconds", lambda value: 0.3)
+
+    calls = []
+
+    def exploding_failure(session):
+        calls.append(session.id)
+        raise RuntimeError("the backend probe fell over")
+
+    # `_failure` guards itself, so REPLACING it is what gets an exception past
+    # the tick's own handling and onto the loop.
+    monkeypatch.setattr(capture, "_failure", exploding_failure)
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    # The cap still landed, the file was KEPT, and the backend was finalised —
+    # `elapsed` only grows, so a failing tick costs one tick, not the ending.
+    assert capture.active() == []
+    assert os.path.exists(started["path"])
+    assert backend.handles[0].stopped is True
+    assert len(calls) > 1                        # it really did keep ticking
+
+
+def test_a_job_store_that_cannot_be_written_still_records(backend, client,
+                                                          home, monkeypatch):
+    """`_report` is a ROW, not the work. It used to catch two named exceptions
+    under a docstring promising it never breaks a recording — and the `start`
+    call site is load-bearing: raising there registers a session whose watchdog
+    thread was never spawned, i.e. a recording with no cap and no ✕."""
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+    monkeypatch.setattr(capture, "_max_seconds", lambda value: 0.3)
+
+    def exploding_upsert(body, **kwargs):
+        raise RuntimeError("the job store fell over")
+
+    monkeypatch.setattr(jobs, "upsert", exploding_upsert)
+    res = client.post("/api/capture/start", json={"mode": "screen"}, headers=H)
+    assert res.status_code == 200                # the row failed, not the start
+    started = res.json()
+    deadline = time.monotonic() + 5
+    while capture.active() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert capture.active() == []                # the cap still ran
+    assert os.path.exists(started["path"])
+    assert backend.handles[0].stopped is True
+
+
+def test_an_unreadable_job_store_is_not_a_cancel(backend, client, home,
+                                                 monkeypatch):
+    """`_cancel_requested` is a probe: a registry it cannot read answers "no".
+    Reading it as a cancel would DELETE a recording over a transient failure —
+    the one ending that destroys the file."""
+    monkeypatch.setattr(capture, "TICK_S", 0.05)
+
+    def exploding_list(**kwargs):
+        raise RuntimeError("the job store fell over")
+
+    monkeypatch.setattr(jobs, "list_jobs", exploding_list)
+    started = client.post("/api/capture/start", json={"mode": "screen"},
+                          headers=H).json()
+    time.sleep(0.3)
+    assert [r["id"] for r in capture.active()] == [started["id"]]
+    assert os.path.exists(started["path"])
+
+
 def test_stop_all_is_wired_into_the_paths_that_actually_run_on_exit():
     """`atexit` is the BACKSTOP, not the mechanism: the packaged app quits via
     `os._exit` (SPEC DM-9), which runs no atexit handler at all. So the two real
