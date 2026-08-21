@@ -693,5 +693,132 @@ def test_history_of_an_unknown_session_is_still_empty(agent, tmp_path, monkeypat
     monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
     target = tmp_path / "page.html"
     target.write_text("x")
-    assert agent._history(str(target), "missing") == {"turns": []}
-    assert agent._history(str(target), "../escape") == {"turns": []}
+    # `transcript` rides on every history payload now (D415's watermark); the
+    # rule this test owns is that neither of these renders a turn.
+    assert agent._history(str(target), "missing")["turns"] == []
+    assert agent._history(str(target), "../escape")["turns"] == []
+
+
+# ------------------------------------------- the background-task wake (D415)
+
+def _wake_row(summary="Background command \"pytest -q\" completed (exit code 0)",
+              status="completed"):
+    """The `out.jsonl` shape: a `system` row the CLI writes when the harness
+    wakes the run because a background shell finished."""
+    return {"type": "system", "subtype": "task_notification",
+            "status": status, "summary": summary}
+
+
+def test_a_task_notification_becomes_a_notice_segment(agent, tmp_path):
+    data = _poll_rows(agent, tmp_path, [
+        _delta("text_delta", "Started the tests."),
+        {"type": "result", "result": "Started the tests.", "session_id": "s1"},
+        _wake_row(),
+        _delta("text_delta", "They passed."),
+    ])
+    kinds = [s["kind"] for s in data["segments"]]
+    assert kinds == ["text", "notice", "text"]
+    assert data["segments"][1]["text"].startswith("Background command")
+    assert data["segments"][1]["status"] == "completed"
+    # The prose either side stays two segments, so the woken turn does not glue
+    # itself onto the sentence that ended the previous one.
+    assert data["segments"][2]["text"] == "They passed."
+
+
+def test_a_task_notification_with_no_summary_still_says_something(agent, tmp_path):
+    data = _poll_rows(agent, tmp_path, [_wake_row(summary="")])
+    assert data["segments"] == []  # nothing to say = nothing drawn
+
+
+def test_history_renders_a_task_notification_as_a_notice_not_a_bubble(
+        agent, tmp_path, monkeypatch):
+    """The persisted transcript records the wake as a synthetic `user` record of
+    raw XML. It used to render as a message bubble the user never typed."""
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("run the tests in the background"),
+        _t_assistant([{"type": "text", "text": "Started."}]),
+        _t_user("<task-notification>\n<task-id>b1</task-id>\n"
+                "<status>completed</status>\n"
+                "<summary>Background command \"pytest -q\" completed"
+                "</summary>\n</task-notification>"),
+        _t_assistant([{"type": "text", "text": "They passed."}]),
+    ])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert "task-notification" not in json.dumps(turns)
+    assert [s["kind"] for s in turns[1]["segments"]] == ["text", "notice", "text"]
+    assert turns[1]["segments"][1]["text"] == \
+        'Background command "pytest -q" completed'
+
+
+def test_history_drops_the_other_synthetic_user_records_too(
+        agent, tmp_path, monkeypatch):
+    """Everything in `_MACHINERY_DROP` is Claude Code writing a `user` record on
+    the user's behalf — none of them are turns."""
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("<system-reminder>be nice</system-reminder>"),
+        _t_user("<bash-input>ls</bash-input>"),
+        _t_user("hello"),
+        _t_assistant([{"type": "text", "text": "hi"}]),
+    ])
+    assert [t["text"] for t in turns if t["role"] == "user"] == ["hello"]
+
+
+def test_a_message_that_merely_mentions_the_tag_is_still_the_users(
+        agent, tmp_path, monkeypatch):
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("why does <task-notification> render as XML?"),
+    ])
+    assert [t["role"] for t in turns] == ["user"]
+
+
+# ------------------------------- the transcript watermark (D415)
+
+def test_history_hands_back_the_file_it_read(agent, tmp_path, monkeypatch):
+    """The page follows the conversation by this: it re-renders when the file
+    moves past the watermark its last render came with. The PATH rides along
+    because resolving an id to a transcript is `_history`'s job — it is the only
+    reader that knows which folder this chat is open on — and the liveness
+    endpoint refuses to guess it."""
+    import os
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    d = projects / agent._munge(str(target.parent))
+    os.makedirs(d, exist_ok=True)
+    path = d / "sess1.jsonl"
+    path.write_text(json.dumps(_t_user("hello")) + "\n")
+
+    out = agent._history(str(target), "sess1")
+    assert out["transcript"]["path"] == str(path)
+    assert out["transcript"]["size"] == path.stat().st_size
+    assert out["transcript"]["mtime"] == path.stat().st_mtime
+
+
+def test_a_transcript_that_does_not_exist_yet_still_answers_a_watermark(
+        agent, tmp_path, monkeypatch):
+    """Zeroes, not a missing key: a chat can be open on a session whose first
+    row has not been written, and the first row written moves the watermark."""
+    import os
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
+    out = agent._history(str(target), "sess1")
+    assert out["turns"] == []
+    assert out["transcript"]["mtime"] == 0.0 and out["transcript"]["size"] == 0
+    assert out["transcript"]["path"].endswith("sess1.jsonl")
+    # ...and a refused id names no file at all rather than one it did not check.
+    bad = agent._history(str(target), "../escape")
+    assert bad["turns"] == [] and bad["transcript"]["path"] == ""
+
+
+def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
+    """Order is the guarantee: a stat taken AFTER the read would describe rows
+    the payload does not contain — a turn silently swallowed for good. Taken
+    first, a write that lands mid-read costs one redundant re-render."""
+    src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
+    body = src[src.index("def _history(file: str, session_id: str)"):]
+    body = body[:body.index("\ndef ")]
+    assert body.index("_transcript_stat(path)") < body.index("for line in open(path")

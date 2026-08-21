@@ -2243,6 +2243,17 @@
     padding-left: 10px;
     margin-top: 4px;
   }
+  /* The background-task chip (buildNoticeView, D415). Sized and coloured like
+     the thinking summary rather than like a tool chip: it is a note about why
+     the next paragraph exists, not a thing to open, so it carries no border, no
+     hover and no pointer — everything a chip has that invites a click. */
+  .seg-notice {
+    display: flex; gap: 6px; align-items: baseline;
+    color: var(--faint); font-size: 12px; margin: 6px 0;
+    white-space: normal; word-break: break-word;
+  }
+  .seg-notice-glyph { flex: none; font-size: 10px; }
+
   /* Opening a chip or a thinking block reveals its body in one short beat, so
      the eye follows what appeared instead of re-finding it after a jump.
      Opacity + 2px of travel only (no height animation: <details> has no
@@ -12139,7 +12150,14 @@ function retryVerb(retry) {
   return what + " — retrying (" + retry.attempt + budget + ")";
 }
 
-function addWorking() {
+// `opts.stoppable: false` drops the stop button, and `opts.verb` fixes the word
+// instead of drawing one from the phase. Both exist for the same caller — the
+// line that reports a turn running OUTSIDE this app (D415's transcript-follow),
+// which has no process to kill and no phase to read, and where a "stop · esc"
+// that quietly does nothing would be the worst control on the page.
+function addWorking(opts) {
+  const fixedVerb = (opts && opts.verb) || "";
+  const stoppable = !(opts && opts.stoppable === false);
   const d = document.createElement("div");
   d.className = "turn working";
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
@@ -12150,16 +12168,19 @@ function addWorking() {
     // The key rides on the label, not in a hint row: same reasoning as the
     // claude template — a separate hint line grows and shrinks the chrome every
     // time a turn starts and ends, and the pane here is narrower still.
-    + '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>';
+    + (stoppable
+       ? '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>'
+       : "");
   const verbEl = d.querySelector(".verb");
   const meta = d.querySelector(".meta");
   const stopBtn = d.querySelector(".stop");
-  stopBtn.addEventListener("click", () => stopRun());
+  if (stopBtn) stopBtn.addEventListener("click", () => stopRun());
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
     // A live retry outranks every phase but the user's own stop: it is the only
     // one of these that explains why nothing is happening.
     verbEl.textContent = (stopping ? "Stopping" :
+                          fixedVerb ? fixedVerb :
                           stats.retry ? retryVerb(stats.retry) :
                           stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
@@ -12193,7 +12214,7 @@ function addWorking() {
     setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
-    setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
+    setStopping(on) { stopping = on; if (stopBtn) stopBtn.disabled = on; draw(); },
     stop: () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVis); },
   };
 }
@@ -12889,9 +12910,35 @@ function buildTextView() {
   };
 }
 
+// A system chip: the harness woke the run because a background shell it had
+// started finished or was stopped (agent.py's `notice` segment, D415). It is
+// the ONE line that accounts for a reply nobody asked for — without it the
+// turn underneath reads as the agent answering a message that is not there —
+// and it is deliberately not a bubble: the user did not say it, and the raw
+// `<task-notification>` XML it replaces was a screenful of machinery quoted at
+// the person it was never addressed to.
+//
+// Plain text, never renderMd: the summary is a sentence the CLI wrote about a
+// command the user ran, and running it through markdown would let a stray
+// backtick or underscore in a command line restyle the chip.
+function buildNoticeView() {
+  const el = document.createElement("div");
+  el.className = "seg-notice";
+  const glyph = document.createElement("span");
+  glyph.className = "seg-notice-glyph";
+  glyph.textContent = "⏵";
+  const words = document.createElement("span");
+  el.append(glyph, words);
+  return {
+    kind: "notice", el, text: null,
+    render(t) { words.textContent = t; },
+  };
+}
+
 function buildSegmentView(seg, key) {
   if (seg.kind === "tool") return buildToolChip(seg, key);
   if (seg.kind === "thinking") return buildThinkingView(key);
+  if (seg.kind === "notice") return buildNoticeView();
   return buildTextView();  // "text", and anything a newer agent.py invents
 }
 
@@ -12941,7 +12988,7 @@ function renderSegments(container, segments, opts) {
     const seg = list[i] || {};
     let view = st.views[i];
     if (!view || view.kind !== (seg.kind === "tool" || seg.kind === "thinking"
-                                ? seg.kind : "text")) {
+                                || seg.kind === "notice" ? seg.kind : "text")) {
       // A settled index never changes kind (segments only grow, and same-kind
       // neighbours merge in agent.py) — but rebuilding beats rendering a tool
       // call into a prose element if that ever stops being true.
@@ -13445,6 +13492,9 @@ async function pollLoop(run_id, gen = logGen) {
   activeRun = run_id;
   activeWorking = w;
   setRunningUi(true);
+  // A real run owns the chrome now: the transcript-follower's line (if it beat
+  // the adoption to the same turn) is a second, blinder report of it (D415).
+  setExternalWorking(false);
   // `gen` is the log generation this loop is allowed to write, and it is the
   // CALLER'S sample, not one taken here (Bugbot, PR #653): sendMessage and
   // resumeRun sample it before their own awaited start/probe, so a Back that
@@ -13580,6 +13630,11 @@ async function pollLoop(run_id, gen = logGen) {
       activeSegBody = null;
       setRunningUi(false);
     }
+    // When THIS page's turn ended, in the same clock the transcript stat speaks
+    // (epoch seconds). The follower compares against it so the rows this run
+    // just wrote — and `session_liveness`' few seconds of grace after them — are
+    // not read back as somebody else's turn (D415, followDecision).
+    ownRunEndedAt = Date.now() / 1000;
     // Turn boundary either way — the tasks surfaces should hear about it even
     // when a newer loop owns the chrome (the ACTIVITY is real regardless).
     noteChatActivity();
@@ -13598,9 +13653,16 @@ async function pollLoop(run_id, gen = logGen) {
 // plus a nonce means two panes stamping in the same millisecond cannot swallow
 // each other's poke. Best-effort — a blocked store (private mode, locked-down
 // webview) costs the poke, never the turn; the polls still cover it.
+//
+// A SECOND audience now: another copy of THIS page (D415). The stamp already
+// says "a turn just started somewhere on this origin", which is precisely the
+// question the live watch is polling for, so the other tab's watch listens for
+// it and adopts the run in milliseconds instead of on its next lap.
+const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+
 function noteChatActivity() {
   try {
-    localStorage.setItem("fused-render:chat-activity",
+    localStorage.setItem(CHAT_ACTIVITY_KEY,
       Date.now() + ":" + Math.random().toString(36).slice(2));
   } catch (err) { /* the 20-30s polls remain the fallback */ }
 }
@@ -14590,12 +14652,17 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 //
 // Gen-guarded like every other loop that outlives an await: leaving the chat
 // bumps logGen and the watch dies with the transcript it was watching.
-async function adoptLiveRun(session_id) {
+// `opts.laps` is how many times to look before giving up. The default is the
+// reopen's ~3s window; the standing watch below passes 1, because it is asking
+// again in ten seconds anyway and has no spawn window to cover — a repeated
+// lookup there would be the same question asked eight times a lap forever.
+async function adoptLiveRun(session_id, opts) {
   const gen = logGen;
+  const laps = (opts && opts.laps) || 8;
   // ~3s of looking: one tick is the common case (the reopen itself), the tail
   // exists for the spawn window above. Each miss waits one poll interval, so
   // the working row appears within ~400ms of the run becoming visible.
-  for (let tries = 0; tries < 8; tries++) {
+  for (let tries = 0; tries < laps; tries++) {
     if (tries) await sleep(400);
     if (logGen !== gen) return;       // the reader left; nothing here is ours
     if (activeRun) return;            // a turn is attached — adopted, or the user's own
@@ -14621,7 +14688,7 @@ async function adoptLiveRun(session_id) {
     // resumeRun can itself bail on a gate grabbed between these two lines — the
     // loop, not this call, is the guarantee: a bailed attempt comes back around,
     // and the `activeRun` check above ends the watch once anyone has attached.
-    await resumeRun(id);
+    await resumeRun(id, { quiet: !!(opts && opts.quiet) });
     // resumeRun resolves at the END of the turn, so a completed call means the
     // run was handled — its done branch cleared the param. The one call that
     // resolves with the param still reading `id` is the bail above, and only
@@ -14630,9 +14697,226 @@ async function adoptLiveRun(session_id) {
   }
 }
 
+// ── the standing watch: a turn this frame did not start, at any moment ──────
+//
+// `adoptLiveRun` above is a WINDOW — three seconds around opening a chat — and
+// that was the whole of the page's answer to "is something running that I am
+// not showing?". It covers arriving late and covers nothing after: a session
+// that becomes busy while this chat sits open lit no indicator and streamed
+// nothing, whoever started the turn (D415). The reported case is the harness's
+// own — a background shell finishes, the run wakes for another turn — and it is
+// not the only one: the same chat open in a second pane, a `claude` the user
+// resumed from a terminal against a run this page never saw, a spawn from the
+// canvases workspace. None of them go through `sendMessage`, which is the only
+// path that used to arm the running chrome.
+//
+// So the question is asked on a timer for the life of the page, and asked of the
+// SERVER — the one party that knows a run is alive — rather than inferred from
+// what this frame happens to have sent. Cheap by construction: `live_run` reads
+// at most 60 meta.json files, and every lap that finds an attached turn
+// (`activeRun`) or a held gate returns before asking anything at all.
+//
+// **A TIMER ALONE IS A BLIND WINDOW, AND A SHORT TURN FITS INSIDE IT.** The
+// first version of this watch was a 10s interval and nothing else, and it was
+// half a fix (Akshil, 2026-08-21, two tabs on one chat): the reply appeared in
+// the second tab ten seconds late with no chrome at all — the lap that finally
+// looked found a run that had already FINISHED, so `resumeRun` took its
+// done-branch and repaired the transcript in silence. Adoption worked; the
+// turn was simply over before anyone asked. Arming mid-turn was never the
+// defect (a lap that catches a live run does light the working line and the
+// stop square), so the fix is to ask SOONER, not to arm harder.
+//
+// Three triggers, cheapest and fastest first:
+//
+//   * **A poke from the tab that started it.** `noteChatActivity` already
+//     stamps `localStorage` at the START of every turn this app runs, for the
+//     shell's tasks store — and a `storage` event fires in every OTHER document
+//     on this origin and never in the writer, which is exactly the shape needed.
+//     So the two-tab case costs no polling at all and lands in milliseconds:
+//     tab B stamps as its poll loop opens, tab A laps immediately and attaches
+//     while the turn is still streaming.
+//   * **Becoming visible / focused.** A tab that was in the background while
+//     something ran should not wait out an interval to catch up.
+//   * **The interval**, now 5s and SKIPPED while the document is hidden. It is
+//     the backstop for the one starter that pokes nothing this page can hear —
+//     a run spawned by the server (a scheduled message, the canvases
+//     workspace) — and halving it halves the worst case for that path.
+//
+// Hidden tabs give up the interval deliberately: chrome nobody is looking at is
+// worth nothing, the storage poke still reaches them (a `storage` event does not
+// care about visibility), and becoming visible laps at once. What that trades
+// away is a background tab catching a SERVER-started run while it is hidden — it
+// then catches it on return, which is the same repair it used to get.
+//
+// Every trigger goes through the one `liveWatchTick`, whose `liveWatchBusy` seat
+// makes a burst of them (a poke landing on an interval landing on a focus) one
+// lookup rather than three.
+const LIVE_WATCH_MS = 5000;
+let liveWatchBusy = false;   // one lap at a time; a lap can outlive its interval
+
+async function liveWatchTick() {
+  if (liveWatchBusy || activeRun || sending) return;
+  const session_id = fused.params.get("session_id") || "";
+  // Only with a session on screen. Without one there is no conversation to
+  // adopt a turn INTO — the landing page's own send makes the session — and
+  // `live_run` with no session matches on the target alone, which would drag a
+  // run belonging to some other chat about this folder onto this screen.
+  if (!session_id) return;
+  liveWatchBusy = true;
+  try {
+    await adoptLiveRun(session_id, { laps: 1, quiet: true });
+    // RUN DIRS FIRST, ALWAYS. A run this app spawned streams token by token and
+    // owns the chrome; the transcript is the coarser, blinder fallback and only
+    // speaks for the turns no run dir can account for. So it is asked strictly
+    // after, and only if nothing attached.
+    if (!activeRun && !sending) await followTranscript(session_id);
+  } finally {
+    liveWatchBusy = false;
+  }
+}
+
+// ── following a conversation this app is not driving ────────────────────────
+//
+// **The gap D415 recorded and this closes** (Akshil, 2026-08-21): an interactive
+// `claude` in a terminal, resuming the very session the chat is open on. It
+// creates NO run dir, so `live_run` is blind to it by construction — the whole
+// watch above cannot see it — and the chat showed nothing at all until the
+// reader hit reload, at which point the missing turns (background-task chip
+// included) appeared correctly, because the reload path was never the problem.
+//
+// So the reload is what is automated, and deliberately nothing more:
+//
+//   * **The server stats the transcript** (`/api/claude-sessions/liveness`) and
+//     the page compares `(mtime, size)` against the watermark its last render
+//     came back with. One `os.stat` per lap, no parsing, no rows on the wire.
+//   * **A move re-renders through `loadHistory`** — the same renderer the manual
+//     reload used, in `refresh` mode so nothing flickers and nobody's scroll
+//     jumps. Not an append: the page does not decide what is new, it re-asks
+//     what the conversation IS. That is the point D415 argued when it rejected
+//     the page tailing `~/.claude/projects` — turn boundaries are `_history`'s
+//     job, on the server, over rows it already knows how to read.
+//   * **`running` is the transcript's LAST MESSAGE**
+//     (`session_liveness.transcript_turn_open`): a user row, or an assistant row
+//     still calling tools, is a turn in flight; a plain assistant reply is one
+//     that ended. NOT the 45s activity window the Inbox badge uses — measured
+//     here, that window kept the line shimmering under a reply that had already
+//     landed, because a run started outside this app writes no turn-end record
+//     for it to find. What is left is one lap of lag in each direction, and the
+//     line carries NO stop button: a turn running in someone else's process is
+//     not this page's to kill, and a control that quietly does nothing is worse
+//     than no control at all.
+//
+// Granularity is a whole turn, not a token. That is the honest ceiling on
+// following a file somebody else is appending to, and it is what the reader was
+// doing by hand anyway.
+let transcriptMark = null;   // {path, mtime, size} the visible render is good to
+let ownRunEndedAt = 0;       // epoch seconds: when THIS page's last run finished
+let externalWorking = null;  // the working line for a turn this page cannot see
+
+function noteTranscript(stat) {
+  if (stat && typeof stat.path === "string") transcriptMark = stat;
+}
+
+// Pure, so the rule can be read (and tested) without a server: given what the
+// last render was good up to and what the file looks like now, does the page
+// re-render, and is somebody mid-turn in there?
+//
+// `ownRunEndedAt` is the guard that keeps this page from reporting its OWN turn
+// back to itself: the transcript is freshest right after a run this frame
+// streamed, and `session_liveness` will still call the session running for a few
+// seconds afterwards. A probe no newer than our own last turn is our own echo.
+function followDecision(mark, probe, ownEnd) {
+  if (!mark || !mark.path || !probe || !probe.exists) {
+    return { refresh: false, running: false };
+  }
+  return {
+    refresh: probe.mtime !== mark.mtime || probe.size !== mark.size,
+    running: !!probe.running && probe.mtime > (ownEnd || 0),
+  };
+}
+
+async function followTranscript(session_id) {
+  const mark = transcriptMark;
+  if (!mark || !mark.path) return;   // no render to compare against yet
+  const gen = logGen;
+  let probe = null;
+  try {
+    const res = await fetch("/api/claude-sessions/liveness?path="
+                            + encodeURIComponent(mark.path));
+    if (!res.ok) return;
+    probe = await res.json();
+  } catch (err) {
+    return;  // a failed stat leaves the transcript exactly as it rendered
+  }
+  // Everything can have changed across the await, and each of these outranks a
+  // stale answer: the reader left, or a real run attached and owns the chrome.
+  if (logGen !== gen || activeRun || sending) return;
+  if (transcriptMark !== mark) return;   // a render landed while we asked
+  const verdict = followDecision(mark, probe, ownRunEndedAt);
+  // Refresh FIRST, then the line: `loadHistory` replaces the log wholesale, so a
+  // line added before it would be swept by the very render it announces.
+  // `loadHistory` writes the new watermark itself, from its own pre-read stat —
+  // never from this probe, which is older than the rows the refetch brings.
+  if (verdict.refresh) await loadHistory(session_id, { refresh: true });
+  if (logGen === gen && !activeRun) setExternalWorking(verdict.running);
+}
+
+// The working line for a turn happening somewhere else. Reuses the one the poll
+// loop uses so a reader does not have to learn a second shape of "busy", minus
+// the two things this page cannot honestly offer: a stop button (the process is
+// not ours) and a token count (we are reading a file, not a stream).
+function setExternalWorking(on) {
+  // A log wipe (leaving the chat, a refresh render) takes the element without
+  // telling us. Drop the stale handle first, or its timer outlives the node and
+  // the seat stays taken so the line never comes back.
+  if (externalWorking && !externalWorking.el.isConnected) {
+    externalWorking.stop();
+    externalWorking = null;
+  }
+  if (on && !externalWorking) {
+    externalWorking = addWorking({ verb: "Running outside this app",
+                                   stoppable: false });
+    externalWorking.setStats(0, "external", null);
+  } else if (!on && externalWorking) {
+    externalWorking.stop();
+    externalWorking.el.remove();
+    externalWorking = null;
+  }
+}
+
+setInterval(() => { if (!document.hidden) liveWatchTick(); }, LIVE_WATCH_MS);
+// The cross-tab poke. Keyed, because every other `storage` event on this origin
+// (the queue mirror, the shell's own stores) is not news about a turn — and the
+// key is read from the one constant `noteChatActivity` writes, so a rename
+// cannot leave this listening to a key nobody sets any more.
+window.addEventListener("storage", (e) => {
+  if (e.key === CHAT_ACTIVITY_KEY) liveWatchTick();
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) liveWatchTick();
+});
+window.addEventListener("focus", () => liveWatchTick());
+
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
   const retryUnknown = !!(opts && opts.retryUnknown);
+  // The standing watch's posture (D415): **print the run's message unless this
+  // transcript is already showing it.** The watch adopts turns nobody on this
+  // page started, and those split two ways — a run whose message IS on screen
+  // (the woken run whose first turn this frame streamed; re-printing it would
+  // be the page inventing a turn) and a run whose message is NOT (a send made
+  // in another tab, whose words belong here as much as the reply does). The
+  // first version suppressed the line unconditionally and got the second case
+  // visibly wrong: the second tab showed an answer hanging under no question.
+  //
+  // `matches` below is the same question asked of the LAST bubble only, because
+  // it also decides whether to STRIP rows; this one only decides whether to
+  // print, so it may look at the whole transcript. A message the user sent twice
+  // reads as already-shown and prints nothing — the safe direction, and the same
+  // coincidence `matches` already refuses to resolve.
+  const quiet = !!(opts && opts.quiet);
+  const onScreen = (msg) => !!msg && [...log.querySelectorAll(".user .bubble")]
+    .some((b) => b.textContent === msg);
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
@@ -14702,11 +14986,16 @@ async function resumeRun(run_id, opts) {
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
-      } else if ((!users.length || neverShown) && probeMsg) {
-        // Appended, never matched: either the log is empty, or the caller has told
-        // us this run's turn was never on screen (a scheduled send that fired and
-        // finished between polls). Both render the whole turn — user line plus the
-        // assistant rows and their tool timeline from the poll payload.
+      } else if ((!users.length || neverShown
+                  || (quiet && !onScreen(probeMsg))) && probeMsg) {
+        // Appended, never matched: the log is empty, or the caller has told us
+        // this run's turn was never on screen (a scheduled send that fired and
+        // finished between polls), or the watch found a turn made in another tab
+        // that this transcript has never shown — a SHORT turn is over before the
+        // watch's first look, and dropping it silently was the whole of the
+        // second tab's remaining complaint (D415). All three render the whole
+        // turn — user line plus the assistant rows and their tool timeline from
+        // the poll payload.
         addUser(probeMsg);
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
@@ -14719,7 +15008,7 @@ async function resumeRun(run_id, opts) {
       // In flight and this turn's user line is on screen: keep it, drop the
       // partial assistant rows — pollLoop re-streams the whole turn.
       while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-    } else if (probeMsg) {
+    } else if (probeMsg && !(quiet && onScreen(probeMsg))) {
       addUser(probeMsg);
     }
     await pollLoop(run_id, gen);
@@ -14826,22 +15115,49 @@ function renderLogSkeleton() {
   log.append(user, assistant);
 }
 
-async function loadHistory(session_id) {
+// `opts.refresh` re-renders the SAME conversation because it grew underneath
+// this page (transcript-follow, D415) rather than replacing it with a different
+// one. Three differences, all of them about not making a reader feel the redraw:
+//
+//   * NO SKELETON. The turns already on screen are the right thing to look at
+//     until the new ones are ready; blanking to placeholders for the length of a
+//     round trip is a flicker that announces nothing.
+//   * SCROLL IS KEPT, not sent to the bottom — except for a reader who was
+//     already at the bottom, who is following along and gets carried with the
+//     new turn (the same `nearBottom` rule streaming output obeys).
+//   * The per-transcript records are NOT cleared. `scheduleResetForNewTranscript`
+//     re-baselines which scheduled runs may attach, so doing it here would write
+//     a run that fired seconds ago off as "already on screen", every five
+//     seconds. Same for the card-collapse overrides: a re-render that re-folds a
+//     chip the reader deliberately opened is the redraw made visible.
+//
+// Everything else is the reload path unchanged — one renderer, which is what
+// made a manual reload correct in the first place and is why this reuses it.
+async function loadHistory(session_id, opts) {
+  const refresh = !!(opts && opts.refresh);
   // Reuse the `sending` gate: a message sent during the await would be
   // appended first and the older history turns dumped after it.
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
+  const keepTop = refresh && !nearBottom() ? logwrap.scrollTop : null;
   permCards.clear();
   notedSkills.clear();
-  resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
-  // Same reason as the two clears above: this transcript is about to be REPLACED,
-  // so every per-transcript record has to go with it — including which scheduled
-  // runs are on screen (scheduleResetForNewTranscript).
-  scheduleResetForNewTranscript();
-  renderLogSkeleton();  // replace the visible conversation, don't append to it
+  if (!refresh) {
+    resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
+    // Same reason as the two clears above: this transcript is about to be REPLACED,
+    // so every per-transcript record has to go with it — including which scheduled
+    // runs are on screen (scheduleResetForNewTranscript).
+    scheduleResetForNewTranscript();
+    renderLogSkeleton();  // replace the visible conversation, don't append to it
+  }
   try {
-    const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
+    const { turns, transcript } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
+    // The watermark this render is good up to. Stat'd BEFORE the rows were read
+    // (see `_transcript_stat`), so it can only ever be too OLD — a write that
+    // landed mid-read costs one redundant re-render on the next lap, where a
+    // watermark that was too new would cost the turn.
+    noteTranscript(transcript);
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
       // Assistant turns carry `segments`; USER turns have no such key at all,
@@ -14868,9 +15184,16 @@ async function loadHistory(session_id) {
     // above rendered every turn there will be, synchronously. Falls through to
     // the bottom when there is no anchor, or when the anchor names a turn this
     // transcript does not contain.
-    if (!consumeAnchor()) scrollBottom();
+    // A refresh is not a navigation: a reader parked mid-conversation stays
+    // where they were reading, and only one who was already at the bottom is
+    // carried down to the turn that just landed. `?msg=` is a link the reader
+    // followed once and is not re-honoured on every lap.
+    if (refresh) {
+      if (keepTop !== null) logwrap.scrollTop = keepTop;
+      else scrollBottom();
+    } else if (!consumeAnchor()) scrollBottom();
   } catch (err) {
-    log.innerHTML = "";
+    if (!refresh) log.innerHTML = "";   // a failed REFRESH keeps the turns it has
     console.warn("history restore failed:", err.message);
   } finally {
     if (sendSeq === seat) sending = false;
