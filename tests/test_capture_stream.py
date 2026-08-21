@@ -110,6 +110,15 @@ def test_the_start_reply_carries_what_the_page_needs_to_attach(backend, client):
     started = _start(client)
     assert started["transport"] == "stream"
     assert started["streamToken"] and len(started["streamToken"]) > 20
+    # THE START REPLY IS THE ONLY PLACE EITHER APPEARS. `GET /api/capture` is
+    # unguarded — no `X-Fused` — so a token on its rows would hand every live
+    # recording's bearer credential to anything that can make a GET, giving away
+    # the guard the socket has instead of a header. `transport` on a `list()` row
+    # would also be the `via` field CP-8 forbids.
+    rows = client.get("/api/capture").json()["active"]
+    assert rows and rows[0]["id"] == started["id"]
+    for row in rows:
+        assert "streamToken" not in row and "transport" not in row
     # The path is decided before a single byte exists, which is the whole
     # contract (CP-2) and is what makes `transcribe({path})` the next line.
     assert started["path"].endswith(".webm")
@@ -447,3 +456,92 @@ def test_linux_refuses_the_two_options_the_portal_does_not_have():
     assert "no such option" in _linux.refuse("screenshot", {"cursor": False})
     # And everything else defers to the shared sink.
     assert _linux.refuse("screen", {"rect": (0, 0, 1, 1)}) is not None
+
+
+# ------------------------------------------------ the bridge, actually running
+
+
+PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "_capture_bridge_probe.mjs")
+RUNTIME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "fused_render", "static", "runtime.js")
+
+
+def _probe():
+    """Run `runtime.js`'s capture bridge against a DOM/media stub, via node."""
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:                                     # pragma: no cover
+        pytest.skip("node is required to run the bridge")
+    done = subprocess.run([node, PROBE, RUNTIME], capture_output=True,
+                          text=True)
+    assert done.returncode == 0, f"the probe crashed:\n{done.stderr[-3000:]}"
+    out = json.loads(done.stdout)
+    assert out["error"] is None, out["error"]
+    return out
+
+
+def test_the_streamed_start_does_things_in_the_only_safe_order():
+    """The correctness of this path is almost entirely ORDER, and none of it is
+    visible to Python — so the bridge is run for real (see the probe's header).
+
+    Four orderings, each with a failure it prevents:
+      * the share picker BEFORE the start request — a cancelled picker must not
+        leave a job row over an empty file;
+      * the socket BEFORE `recorder.start()` — a chunk produced before it is a
+        hole in the middle of the container;
+      * the last chunk BEFORE `eos`;
+      * `eos` answered BEFORE the stop request, which travels on another
+        connection and would otherwise close the file ahead of the tail.
+    """
+    order = [step for step in _probe()["order"] if step != "fetch GET /api/capture"]
+    assert order == [
+        "picker",
+        "fetch POST /api/capture/start",
+        "ws.open",
+        "recorder.start:1000",
+        "ws.chunk",
+        "recorder.stop",
+        "ws.chunk",
+        "ws.eos",
+        "fetch POST /api/capture/abc123/stop",
+        "ws.close",
+    ], order
+
+
+def test_chunks_reach_the_socket_in_the_order_they_were_produced():
+    """`Blob.arrayBuffer()` is async, so two chunks read in parallel can be sent
+    out of order — and two swapped clusters are a corrupt container, not a
+    glitch. The probe's blobs are 3 bytes then 1."""
+    assert _probe()["chunks"] == [3, 1]
+
+
+def test_the_handle_a_page_gets_names_no_backend():
+    """CP-8, on the surface a page actually touches. `transport` and
+    `streamToken` exist on the wire and must not survive into the handle, and
+    `sources().client` must not survive into the payload."""
+    out = _probe()
+    assert out["handle"]["leaks"] == []
+    assert out["sources"]["clientStripped"] is True
+    assert out["handle"]["path"] == "/tmp/x.mp4"      # known before any frame
+    assert out["stop"]["mime"] == "video/mp4"
+
+
+def test_the_container_comes_from_what_the_browser_can_encode():
+    """The stub supports mp4 only, so the bridge must ask for mp4 — the path in
+    the reply is the server's, but the CHOICE is the browser's (CP-5)."""
+    out = _probe()
+    assert out["stop"]["path"].endswith(".mp4")
+
+
+def test_a_microphone_with_no_label_yet_still_gets_a_name():
+    """Chromium withholds device labels until the permission has been granted
+    once. A page showing an empty string in a picker is worse than a placeholder,
+    and this is a browser rule rather than something to fix."""
+    mics = _probe()["sources"]["microphones"]
+    assert [m["name"] for m in mics] == ["Microphone 1"]
+    # And a camera is not a microphone.
+    assert len(mics) == 1

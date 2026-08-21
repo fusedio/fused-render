@@ -195,11 +195,23 @@ class _Session:
             "jobId": self.job,
             "audio": self.spec.get("audio") or False,
         }
-        # A backend whose recording is FED rather than captured says so, and
-        # says it on the wire only: `runtime.js` reads these two to open the
-        # chunk socket, and deletes them before the handle reaches a page. CP-8
-        # forbids a page branching on which implementation served it, and this
-        # is how that promise survives having three of them.
+        return record
+
+    def opening(self) -> dict:
+        """`public()` plus what only the STARTING caller may be told.
+
+        A backend whose recording is FED rather than captured needs the page to
+        open a socket, and the token that authorises it. **Both are on the start
+        reply and nowhere else** — deliberately not on `public()`, because
+        `active()` feeds the unguarded `GET /api/capture`, and putting the token
+        there would hand every live recording's bearer credential to anything
+        that can make a GET, which is the whole guard given away. It would also
+        be the `via` field CP-8 forbids: a page reading `list()` could branch on
+        `transport`. `runtime.js` consumes both here and drops them before the
+        handle exists; nothing needs them again, since `attach()` re-adopts a
+        recording's CONTROLS and never its encoder.
+        """
+        record = self.public()
         transport = getattr(self.handle, "transport", None)
         if transport:
             record["transport"] = transport
@@ -411,7 +423,9 @@ def start(mode: str, body: dict) -> dict:
             detail="Recording — ✕ discards it")
     threading.Thread(target=_watch, args=(session,), daemon=True,
                      name=f"capture-{cid}").start()
-    return session.public()
+    # `opening()`, not `public()`: this is the ONE reply allowed to carry the
+    # stream token (see the method).
+    return session.opening()
 
 
 def _report(session: _Session, **fields) -> None:

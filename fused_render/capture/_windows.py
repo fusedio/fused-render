@@ -88,8 +88,12 @@ def _monitors() -> list[dict]:
     """
     _dpi_aware()
     found: list[dict] = []
+    # LPARAM is pointer-sized and INTEGRAL. Declaring it as a double is the
+    # kind of ABI slip that limps along on x64 (the value is unused here) and
+    # corrupts the frame somewhere else — worth getting right in the one
+    # function no test on this machine can reach.
     proto = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
-                               ctypes.POINTER(_RECT), ctypes.c_double)
+                               ctypes.POINTER(_RECT), ctypes.c_ssize_t)
     primary = (_u32().GetSystemMetrics(0), _u32().GetSystemMetrics(1))
 
     def each(_handle, _dc, rect, _data):
@@ -143,10 +147,16 @@ def _pick(display, monitors: list[dict]) -> dict:
 def _region(monitor: dict, rect) -> tuple[int, int, int, int]:
     """The pixels to copy: the monitor, or a `rect` inside it.
 
-    `rect` arrives in the SAME units the other backends use — points, relative
-    to the chosen display — so this offsets it by the monitor's own origin in
-    the virtual desktop. Pure arithmetic, deliberately: it is the part most
-    likely to be wrong and the only part testable off Windows.
+    **`rect` is in the units the `displays` entry it applies to reports**, which
+    here means PHYSICAL PIXELS: this process is per-monitor DPI aware, so
+    `EnumDisplayMonitors` hands back real pixels and `sources().displays` says
+    so. That rule is what makes one `rect` argument mean one thing across three
+    backends without a scale factor a caller has to know — macOS reports points
+    and records at the panel's pixel scale, so a rect there is points. The only
+    work left is offsetting by the monitor's own origin in the virtual desktop.
+
+    Pure arithmetic, deliberately: it is the part most likely to be wrong and
+    the only part testable off Windows.
     """
     if not rect:
         return monitor["x"], monitor["y"], monitor["width"], monitor["height"]

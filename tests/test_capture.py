@@ -587,6 +587,28 @@ def test_the_runtime_bridge_exposes_capture():
     assert "delete sources.client;" in block
 
 
+def test_the_runtime_bridge_still_parses():
+    """`node --check` on runtime.js — the cheapest guard that exists here.
+
+    Nothing in this suite EXECUTES the bridge (it needs a browser), so every
+    other test reads it as text and a stray brace would ship a file that breaks
+    every page in the app rather than one feature. Skipped rather than failed
+    where node is absent, like `test_git_view_renders.py` does.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:                                     # pragma: no cover
+        pytest.skip("node is not installed")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    done = subprocess.run(
+        [node, "--check",
+         os.path.join(root, "fused_render", "static", "runtime.js")],
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="the macOS backend")
 def test_the_macos_backend_imports_and_probes_without_prompting():
     """Import + probe only: it must not need a display, a grant, or a click."""
