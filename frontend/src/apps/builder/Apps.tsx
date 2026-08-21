@@ -294,7 +294,12 @@ export default function Apps({ config }: { config: Config }) {
               </button>
             ))}
           </div>
-          {(chips.length > 0 || tag !== null || category !== null) && (
+          {/* Held open through the partial phase (chips are catalog-derived and
+              so still empty then): letting the row appear when the catalog
+              lands would push the grid down under a pointer already on a
+              card. */}
+          {(chips.length > 0 || tag !== null || category !== null
+            || apps.status === "partial") && (
             <div className="apps-tags" role="group" aria-label={`Filter by ${modeLabel(mode)}`}>
               {/* Active only when nothing filters; clicking clears both params. */}
               <button
