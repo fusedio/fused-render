@@ -131,7 +131,7 @@ def test_a_root_level_gguf_needs_a_recognised_text_architecture_too():
     names = {"model.Q4_K_M.gguf"}
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config={},
-        torch_weights=False, gguf_architecture="qwen35") == ("llamacpp-text",)
+        torch_weights=False, gguf_architecture="qwen35") == formats.LLAMACPP_RUNNERS
     # No architecture read (a truncated peek, or the caller never asked) —
     # fails toward NOT decisive, never toward a guess.
     assert formats.loaders(
@@ -248,6 +248,7 @@ def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():
     """
     assert set(formats.DIFFUSERS_RUNNERS) <= set(formats.DECISIVE)
     assert not set(formats.TRANSFORMERS_RUNNERS) & set(formats.DECISIVE)
+    assert set(formats.LLAMACPP_RUNNERS) <= set(formats.DECISIVE)
 
 
 def test_mflux_needs_the_variant_table_as_well_as_the_layout():
@@ -276,7 +277,7 @@ def test_a_root_level_gguf_is_llamacpp_texts_and_nothing_elses():
         repo_id="unsloth/Qwen3.5-9B-GGUF",
         names={"Qwen3.5-9B-Q4_K_M.gguf", "model.safetensors"}, dirnames=set(),
         config={}, torch_weights=True, gguf_architecture="qwen35")
-    assert codes == ("llamacpp-text",)
+    assert codes == formats.LLAMACPP_RUNNERS
 
 
 def test_gguf_architecture_is_read_from_a_real_gguf_header(tmp_path):
@@ -348,7 +349,7 @@ def test_the_gguf_branch_is_genuinely_exclusive_even_against_a_diffusers_index()
         repo_id="org/both", names={formats.DIFFUSERS_INDEX, "model.gguf"},
         dirnames=set(), config={}, torch_weights=False,
         gguf_architecture="qwen35")
-    assert codes == ("llamacpp-text",)
+    assert codes == formats.LLAMACPP_RUNNERS
 
 
 def test_a_ct2_whisper_repo_needs_more_than_the_filename():

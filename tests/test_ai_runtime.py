@@ -840,6 +840,7 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image": "(CPU)",
     "diffusers-image-cuda": "(CUDA)",
     "diffusers-image-rocm": "(ROCm)",
+    "llamacpp-text-vulkan": "(Vulkan)",
 }
 
 
@@ -1827,6 +1828,137 @@ def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
     assert catalog.default_for(registry.TEXT_GENERATION) == entries[0]["id"]
 
 
+def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monkeypatch):
+    """The Vulkan variant sits directly after the CPU/Metal row and still below
+    every transformers row — `auto` resolution must not move on any platform
+    just because this row now exists, the same property
+    `test_llamacpp_text_is_registered_below_every_transformers_row` pins for
+    its neighbour."""
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert codes.index("llamacpp-text-vulkan") == codes.index("llamacpp-text") + 1
+    assert codes.index("llamacpp-text-vulkan") > codes.index("transformers-text")
+    assert codes.index("llamacpp-text-vulkan") > codes.index("transformers-text-cuda")
+    assert codes.index("llamacpp-text-vulkan") > codes.index("transformers-text-rocm")
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+
+
+def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
+    """`_vulkan`, pinned directly — the maintainer's vulkan index publishes
+    `manylinux2014_x86_64` and `win_amd64` for `0.3.29` and NOTHING else: no
+    macOS build (Apple Silicon already gets acceleration through the CPU
+    index's Metal-linked wheel), no Linux aarch64, no Windows ARM64.
+
+    A working loader and ICD are faked via the same `_fake_vulkan` fixture
+    `test_vulkan_needs_a_registered_icd_even_with_a_working_loader` and its
+    neighbours use, so this only pins the ARCHITECTURE half of the gate.
+    """
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        _fake_vulkan(monkeypatch, tmp_path, system)
+        status = registry.by_code("llamacpp-text-vulkan").available()
+        assert status.ok is True, (system, machine, status.reason)
+
+    for system, machine in (
+        ("Darwin", "arm64"), ("Linux", "aarch64"), ("Windows", "ARM64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text-vulkan").available()
+        assert status.ok is False, (system, machine)
+        assert "x86_64" in status.reason
+
+
+def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True):
+    """A machine with a working Vulkan loader and (optionally) a registered
+    ICD — real files under `tmp_path`, repointed onto the module constants
+    `_vulkan` reads, the same style `test_windows_gates_cuda_on_the_drivers_own_cuda_library`
+    uses for `NVCUDA_DLL` rather than a global `os.path` patch.
+    """
+    if system == "Windows":
+        dll = tmp_path / "vulkan-1.dll"
+        if loader:
+            dll.write_text("")
+        monkeypatch.setattr(registry, "VULKAN_DLL", str(dll))
+        return
+    loader_path = tmp_path / "libvulkan.so.1"
+    if loader:
+        loader_path.write_text("")
+    monkeypatch.setattr(registry, "VULKAN_LOADER_PATHS", (str(loader_path),))
+    icd_dir = tmp_path / "icd.d"
+    icd_dir.mkdir(exist_ok=True)
+    if icd:
+        (icd_dir / "fake_icd.json").write_text("")
+    monkeypatch.setattr(registry, "VULKAN_ICD_DIRS", (str(icd_dir),))
+
+
+def test_vulkan_needs_the_loader_even_before_a_gpu_is_asked_about(monkeypatch, tmp_path):
+    """The hard-failure half: `libggml-vulkan.so`/`ggml-vulkan.dll` link the
+    loader directly (`DT_NEEDED libvulkan.so.1` / a PE import on
+    `vulkan-1.dll`, read off the actual `0.3.29` wheels on 2026-08-21), so a
+    missing loader fails `import llama_cpp` itself — refused here rather than
+    left to that import error, the same reasoning `_cuda`'s missing-device
+    case documents for why ITS checks exist at all.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", loader=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "loader" in status.reason
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _fake_vulkan(monkeypatch, tmp_path, "Windows", loader=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "Vulkan driver" in status.reason
+
+
+def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, tmp_path):
+    """The advisory half, on Linux only — Windows has no equivalent manifest
+    directory this module checks, per `_vulkan`'s own docstring, so the DLL
+    check stands in for both halves there.
+
+    A loader with no registered driver is not a load failure (ggml's own
+    bundled CPU backend answers instead), but it IS the "advertising a claim
+    that buys nothing" case `_cuda`/`_rocm`'s device checks already refuse —
+    an 8x larger download for the exact CPU outcome `llamacpp-text` already
+    gives more cheaply.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", loader=True, icd=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "driver" in status.reason
+
+
+def test_llamacpp_text_vulkan_is_reachable_only_by_an_explicit_preference(monkeypatch, tmp_path):
+    """Opt-in like its neighbour: a working loader and ICD make the row
+    AVAILABLE, but `auto` still resolves to a transformers row — reaching this
+    one is a choice."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text-vulkan")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text-vulkan" and resolution.honoured
+
+
+def test_llamacpp_text_vulkan_shares_its_neighbours_suggestion_list():
+    """`_SHARED_SUGGESTIONS` aliases this row to `llamacpp-text`'s curated
+    list, the same way the CUDA/ROCm transformers rows share theirs — one
+    GGUF is one GGUF whichever wheel loads it, so a second copy of the list
+    would be the exact drift `_SHARED_SUGGESTIONS`'s own docstring warns
+    about."""
+    assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
+
+
 def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
     """Wheels only — a VCS or URL dependency is a source build, and a source
     build is a build backend running in an interpreter uv creates for it.
@@ -2493,7 +2625,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
         "mlx-text", "transformers-text", "transformers-text-cuda",
-        "transformers-text-rocm", "llamacpp-text",
+        "transformers-text-rocm", "llamacpp-text", "llamacpp-text-vulkan",
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper", "parakeet-mlx"}
