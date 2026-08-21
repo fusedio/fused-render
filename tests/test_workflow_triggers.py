@@ -511,10 +511,16 @@ def test_a_dropped_file_starts_a_run_carrying_its_path(doc, runner, drop):
     started = wt.tick()
     assert len(started) == 1
     payload = started[0]["payload"]
-    assert payload["path"] == str(target)
+    assert payload["path"] == os.path.abspath(str(target))
     assert payload["name"] == "invoice.csv"
     assert payload["ext"] == "csv"
-    assert payload["size"] == len("a,b\n1,2\n")
+    # AGAINST THE FILE, NOT AGAINST THE STRING THAT WAS WRITTEN. The payload's
+    # `size` comes from `st_size` and describes the bytes that actually landed;
+    # a text-mode write translates each "\n" to "\r\n" on Windows, so the
+    # string's length is not the file's length there. Asserting `len(...)`
+    # tested the platform rather than the payload.
+    assert payload["size"] == os.path.getsize(target)
+    assert payload["size"] > 0
     assert started[0]["source"] == "file:inbox"
 
 
