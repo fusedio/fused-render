@@ -362,6 +362,58 @@ def is_text_gguf(path: str) -> bool:
     return gguf_architecture(path) in GGUF_TEXT_ARCHITECTURES
 
 
+def gguf_block_count(path: str) -> int | None:
+    """The model's own transformer layer count out of its GGUF header, or None.
+
+    **Why `llama_text.py` needs this at all.** Neither `llama-cpp-python`
+    0.3.29's ctypes surface nor any vendor SDK this app is willing to shell
+    out to exposes available GPU memory — the bindings wrap `llama.h`, not
+    the lower-level `ggml-backend.h` functions (`ggml_backend_dev_memory`)
+    that would answer it, confirmed by reading the installed package's own
+    `llama_cpp.py`. So there is no way to CALCULATE how many layers of a
+    given model fit in whatever VRAM this machine has; the only honest
+    alternative is to know the total layer count and TRY a shrinking sequence
+    of offload counts, and this is where that number comes from.
+
+    GGUF's own key convention is `<architecture>.block_count` — verified by
+    downloading the real header bytes of `unsloth/Qwen3.5-4B-GGUF`,
+    `unsloth/Qwen3.5-9B-GGUF` and `unsloth/Qwen3.8-27B-GGUF` on 2026-08-21
+    (`qwen35.block_count` in all three, 32/32/65 respectively) rather than
+    assumed from the spec alone. Matched by SUFFIX rather than requiring the
+    caller to already know the architecture prefix: exactly one such key
+    exists in a well-formed GGUF, so this needs no second read of
+    `general.architecture` first, and works even for an architecture this
+    module has never heard of.
+
+    Same bounded local peek and the same fail-toward-None contract as
+    `gguf_architecture` — a truncated read or a value type this app does not
+    model is "cannot tell", never a crash and never a guess. Callers must
+    treat None as "no sizing information", not as zero layers.
+    """
+    try:
+        with open(path, "rb") as handle:
+            buf = handle.read(_GGUF_HEADER_PEEK_BYTES)
+    except OSError:
+        return None
+    try:
+        if buf[:4] != b"GGUF":
+            return None
+        (kv_count,) = struct.unpack_from("<Q", buf, 16)
+        offset = 24
+        for _ in range(kv_count):
+            key, offset = _gguf_read_string(buf, offset)
+            (value_type,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            if key.endswith(".block_count") and value_type in (4, 5):
+                fmt = "<I" if value_type == 4 else "<i"
+                (value,) = struct.unpack_from(fmt, buf, offset)
+                return value
+            offset = _gguf_skip_value(buf, offset, value_type)
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return None
+    return None
+
+
 #: Curated `(repo, file)` pairs `runners/llama_text.py` actually
 #: downloads, keyed by an OPAQUE id — the GGUF's own filename, never parsed
 #: for structure. See that module's docstring for why there is no

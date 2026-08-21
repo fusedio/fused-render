@@ -66,11 +66,51 @@ here, because there is nothing at those repos' roots for it to fetch.
 
 Three things differ from `torch_text.py`, and all three are llama.cpp's doing:
 
-* **CPU only, and that is the whole of the device story.** No CUDA/ROCm/Metal
-  variant of this runner exists in this change (the pyproject header states
-  why), so `worker_base.set_state(device="cpu")` is unconditional rather than
-  probed — unlike torch, there is no second device this process could have
-  landed on.
+* **GPU offload is decided by the LINKED BUILD, never by this module knowing
+  which folder imported it.** `llamacpp_text/` and `llamacpp_text_vulkan/`
+  install the SAME `llama-cpp-python==0.3.29` pin against different wheel
+  indexes, and this module must not branch on which one — a Vulkan-specific
+  `if` here would be a difference between the two folders no test could see,
+  the same rule the module docstring states about growing a second line of
+  behaviour anywhere else. `llama_cpp.llama_supports_gpu_offload()` answers
+  the question honestly instead: it is a real llama.cpp C API (not a
+  `verbose`-log inference), and reading its implementation at the vendored
+  commit (`src/llama.cpp`) shows it asks ggml's OWN backend registry for a
+  real `GPU` or `IGPU` device — `ggml_backend_dev_by_type(...) != nullptr` —
+  which is false on a CPU-only build (no GPU backend `.so` even linked),
+  false on a Vulkan build with the loader present but no ICD registered (the
+  backend registers zero devices), and true on Apple Silicon's Metal-linked
+  wheel and a Vulkan build with a working driver alike. So the SAME check
+  gets Metal right on macOS for free, with no Apple-specific code, which is
+  the whole reason this is one shared module and not three.
+  `n_gpu_layers` defaults to `0` in `llama-cpp-python` — verified against
+  0.3.29's own `Llama.__init__` signature — so leaving it unset was silently
+  CPU-only even on a Vulkan install; `load()` below now asks first.
+* **Offload is SIZED BY TRYING, because nothing in this binding can size it
+  by CALCULATING.** llama.cpp does not check available VRAM before
+  allocating a layer's GPU buffer — `llama-model.cpp` only clamps the
+  requested count to the model's own total layer count
+  (`n_gpu = std::min(n_gpu_layers, n_layer_all)`), never to what the device
+  has free — and `llama_cpp.py`'s ctypes surface has no binding for
+  `ggml_backend_dev_memory` or any other free-VRAM query, confirmed by
+  reading the installed package. A buffer allocation that does not fit
+  raises a catchable Python exception rather than aborting the process
+  (`llama_model_load`'s own `try`/`catch` in `src/llama.cpp` converts it to a
+  clean load failure, read at the vendored commit) — so `load()` exploits
+  that: it reads the model's own layer count off its GGUF header
+  (`formats.gguf_block_count`) and tries a shrinking sequence of offload
+  counts, catching each failed attempt and trying fewer layers, down to `0`
+  (pure CPU) as the guaranteed-to-work floor. A hard OOM that kills the Load
+  button outright would be the worse failure mode for a 4-8GB laptop GPU
+  asked to hold a model sized for a bigger one; a slower partial load is not.
+* **The reported device now reflects what actually happened, not what this
+  runner assumed.** `worker_base.set_state(device=...)` is `"cpu"`, `"gpu"`
+  (every layer offloaded), or `"gpu (partial)"` (the backoff above landed on
+  fewer than the model's own total) — a MEASUREMENT of which attempt
+  succeeded, the same principle AI-11b already states for `torch_text`'s own
+  probed device. It cannot say "Vulkan" or "Metal" by name: nothing in the
+  bound API reports which backend actually served the request, only whether
+  a GPU-shaped device existed at all.
 * **The chat template is rendered by hand, from the GGUF's own embedded jinja2
   source, because `create_completion(stream=True)` — not
   `create_chat_completion` — is what keeps the streaming contract identical to
@@ -228,6 +268,30 @@ def download(model_id):
         recipe["repo"], filename, detail=f"Fetching {filename}…")
 
 
+def _offload_schedule(total_layers):
+    """Layer counts to try offloading, largest first, always ending in `0`.
+
+    See the module docstring's "sized by trying, not calculating" note for
+    why this exists at all. `total_layers` is the model's own layer count,
+    read off its GGUF header by the caller (`formats.gguf_block_count`) —
+    passed in rather than read here so `load()` reads the file's header
+    exactly once. When it is known, the schedule steps down through roughly
+    thirds of it (a shrinking sequence that reaches `0` in a bounded number
+    of attempts regardless of how many layers the model has, rather than
+    decrementing by ones), deduplicated and sorted so a small model's
+    rounding never repeats a step. When it is `None` (the header could not be
+    read), there is nothing to fraction against, so the schedule is the
+    two-tier `(-1, 0)` — llama.cpp's own "all layers" sentinel, then pure CPU
+    — which still gets a working fallback, just without an intermediate
+    partial-offload step.
+    """
+    if not total_layers or total_layers <= 0:
+        return (-1, 0)
+    steps = sorted({total_layers, (total_layers * 2) // 3, total_layers // 3, 0},
+                   reverse=True)
+    return tuple(steps)
+
+
 def load(model_id, gguf_path):
     """`gguf_path` is what `download` returned — the one `.gguf` file's path."""
     # The curation check comes first, before the heavy import, for the reason
@@ -237,20 +301,56 @@ def load(model_id, gguf_path):
     # path that was never fetched.
     _resolve_model_id(model_id)
 
+    import llama_cpp
     from llama_cpp import Llama
 
-    llm = Llama(
-        model_path=gguf_path,
-        n_ctx=_N_CTX,
-        n_threads=os.cpu_count() or 4,
-        verbose=False,
-    )
+    # A real llama.cpp API asked at call time, not inferred from which folder
+    # imported this module — see the module docstring's "decided by the
+    # linked build" note. False on a CPU-only build (no GPU backend even
+    # linked) and on a Vulkan build with no usable driver; true on Apple
+    # Silicon's Metal-linked wheel and a Vulkan build with a working one.
+    gpu_capable = bool(llama_cpp.llama_supports_gpu_offload())
+    total_layers = formats.gguf_block_count(gguf_path) if gpu_capable else None
+    schedule = _offload_schedule(total_layers) if gpu_capable else (0,)
+
+    llm = None
+    n_layers = 0
+    for index, candidate in enumerate(schedule):
+        is_last = index == len(schedule) - 1
+        try:
+            llm = Llama(
+                model_path=gguf_path,
+                n_ctx=_N_CTX,
+                n_threads=os.cpu_count() or 4,
+                n_gpu_layers=candidate,
+                verbose=False,
+            )
+            n_layers = candidate
+            break
+        except Exception:  # noqa: BLE001 - this loop IS the VRAM-sizing probe
+            if is_last:
+                # No smaller candidate is left to try — including plain CPU
+                # (`0`), which llama.cpp can always satisfy if the file and
+                # its metadata are valid — so this is a REAL failure (a
+                # corrupt download, an unreadable file) and must not be
+                # swallowed the way a too-large GPU request is above.
+                raise
+            print(f"llamacpp-text: {candidate} GPU layers did not fit, "
+                  f"retrying with fewer", file=sys.stderr)
     _loaded["llm"] = llm
-    # Always "cpu" — see the module docstring. Still set through the same
-    # field every other runner reports through (`worker_base.STATE["device"]`),
-    # because a page reading that field must not need a special case for the
-    # one engine that never varies.
-    worker_base.set_state(device="cpu")
+
+    if n_layers == 0:
+        device = "cpu"
+    elif n_layers == -1 or (total_layers and n_layers >= total_layers):
+        device = "gpu"
+    else:
+        device = "gpu (partial)"
+    # Still set through the same field every other runner reports through
+    # (`worker_base.STATE["device"]`), because a page reading that field must
+    # not need a special case for this engine — only the VALUE is new, per
+    # the module docstring's "reported device now reflects what actually
+    # happened" note.
+    worker_base.set_state(device=device)
 
 
 def memory():
