@@ -77,7 +77,7 @@ TRANSCRIBE = "transcribe"
 #: SPEC AI-9f) gave this table its first real rows since. The three diffusers
 #: image codes each refuse `image` for the identical reason: the diffusers
 #: pipeline's own image/edit signature is unverified on any machine this app
-#: has run on (see the flux2-edit handoff's "out of scope" section), and a
+#: has run on (D418's "out of scope" note), and a
 #: wrong guess there would be a broken engine that passes every test. All
 #: three carry the SAME sentence because the fact is about the LIBRARY, not
 #: about the wheel — `diffusers-image-cuda` and `diffusers-image-rocm` read
