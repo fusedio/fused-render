@@ -5900,7 +5900,33 @@ an AI Models page that could say what was on disk but not what was *running*.
   write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
   that makes them true: snapshot the cursors, **fsync the data, then write the
   sidecar** — a recorded byte is always a durable byte, so a resume never
-  skips one that was still in flight. **The sidecar carries its own version
+  skips one that was still in flight. **A platform with no `os.pwrite` —
+  Windows, and nothing else — fetches each file on ONE append-only stream
+  instead, which is the same guarantee by another route rather than a weaker
+  one.** `pwrite` is required because segments write OUT OF ORDER into a
+  pre-sized file, where a buffered seek-and-write would let the count run ahead
+  of the disk; with a single `O_APPEND` stream there is no out-of-order write
+  left to make, so the file's LENGTH is the progress and a resume is a `Range`
+  from that length. The pre-sized file goes with it, and so do the two things
+  that existed for it: no sparse-filesystem requirement on this route, and a bar
+  that can read the length rather than the allocated blocks (AI-5b). The sidecar
+  still LICENSES the resume, and the one segment this plan derives is also what
+  refuses to append into a part file the segmented path left — many recorded
+  segments against one derived, so the layout check discards it exactly like no
+  sidecar at all — with the refusal holding in the other direction too, since a
+  segmented run finds an appended part file shorter than the pre-sized one it
+  requires. The recorded cursor and the file are then made to AGREE before a
+  byte moves, by truncating the file back to the cursor: appending cannot
+  overwrite an un-fsynced tail the way a positional write does, so that tail
+  goes rather than being counted, which costs at most one flush interval of
+  re-fetched bytes. The serialization is per FILE and not repo-wide — two files
+  are two fds and nothing between them is out of order — so a repo of shards
+  still moves on `MAX_CONNECTIONS` connections and only a single huge shard
+  loses its parallelism. It was a flat refusal until this, and the refusal was
+  invisible exactly where it mattered: the model mirror's only transport is this
+  fetch, so a win32 client declined every time and no Windows acquisition ever
+  reached the access logs the mirror exists to produce (AI-5l). **The sidecar
+  carries its own version
   number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
   list MEANS — fixed pieces rather than equal shares — so a sidecar written
   before this existed can have the right etag and size and a self-consistent
@@ -5911,7 +5937,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
   hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
   are written out of order,
-  and handing it one would produce a silently corrupt blob. Resume demands that
+  and handing it one would produce a silently corrupt blob. (A prefix, on the
+  append-only route — but which of the two wrote a given part file is not
+  something hf could tell, so the suffix stays ours on both and the fallback
+  deletes them rather than offering hf a file whose meaning depends on the
+  platform.) Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
   therefore three-valued**, because two rules turn on the difference between a
@@ -5944,9 +5974,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   before a byte arrives, so a sparse file of pure holes measures exactly right.
   No hash, like huggingface_hub itself, which relies on TLS and `Content-Length`.
   **Every failure and every incapability falls back to `snapshot_download` /
-  `hf_hub_download`** — no range support, a Hub API that moved, a platform with
-  no `os.pwrite`, a cache filesystem that allocates rather than holding a sparse
-  file, an argument ours does not understand — logging the reason to stderr and
+  `hf_hub_download`** — no range support, a Hub API that moved, a cache
+  filesystem that allocates rather than holding a sparse file (asked only where
+  a file is pre-sized, so not on the append-only route), an argument ours does
+  not understand; a platform with no `os.pwrite` was on this list and is not any
+  more — logging the reason to stderr and
   clearing our part files first, because a download that got faster and sometimes
   broken would be a bad trade. Resume therefore covers the app being killed, quit
   or crashed — the case that motivated it — and not a fetch that fell back, which
@@ -6168,15 +6200,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   skipped is a non-zero exit** — the loop stays tolerant so one absent model does
   not stop the other nineteen, but publishing 19 of 20 green is how a suggested
   model goes missing from the mirror unnoticed, since its download quietly staying
-  on the Hub is invisible by design. **On Windows the mirror never fetches.** Its only transport is
-  `_segmented_fetch`, which refuses without `os.pwrite` (AI-5i: buffered
-  seek-and-write would break the guarantee that a counted byte is a written
-  byte), so a win32 client makes the one manifest request, declines, and takes
-  the Hub path like any other download. That is inherited rather than new, but it
-  decides what the access logs MEAN — Windows acquisitions are invisible to them
-  — and it is why the generator/client round-trip test is split in two, an
-  agreement half that runs everywhere and a fetch half gated on `os.pwrite`. The
-  cost of learning this the hard way was a Windows CI failure reporting a 401
+  on the Hub is invisible by design. **Windows fetches from the mirror like every other platform**, and that is a
+  change from how this shipped. The mirror's only transport is
+  `_segmented_fetch`, which used to refuse outright without `os.pwrite`, so a
+  win32 client made the one manifest request, declined, and took the Hub path
+  like any other download — which decided what the access logs MEANT, since
+  Windows acquisitions were invisible to them and the count is the entire point
+  of the feature. That transport now degrades to a single append-only stream
+  rather than refusing (AI-5i), so the count is complete across platforms and
+  what Windows gives up is parallelism within one file, not the mirror. The
+  generator/client round-trip test is still split in two, an agreement half and
+  a fetch half, but no longer BY PLATFORM: both halves run everywhere, and the
+  fetch half is now the one test in this feature that proves a real Windows
+  download end to end. The cost of learning the old behaviour the hard way was a
+  Windows CI failure reporting a 401
   from huggingface.co: the mirror declined, the download fell through to a REAL
   Hub listing, and the test had no business being able to leave the machine at
   all. Every test in this feature now runs under a fixture that refuses a
