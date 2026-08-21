@@ -13167,6 +13167,15 @@ let stoppedRun = "";
 // it is swallowed here, and only here. Pure, and tested as such — against the
 // claude template's copy, which must decide identically.
 function runEnding(data, stopped) {
+  // A STOP THIS PAGE DID NOT PRESS IS STILL A STOP. `stopped` is the page's own
+  // memory of its own button, and it was the only thing this consulted — so a
+  // run cancelled from the tasks queue card (the ✕ that goes through
+  // schedule.py and really kills the process) ended up here as a red error
+  // about claude exiting unexpectedly: a crash, reported to the very person who
+  // asked for the stop (Akshil, 2026-08-21). `data.cancelled` is the RUN's own
+  // record of having been cancelled, written by agent.py `_cancel` whoever
+  // called it, so both routes end the same way.
+  stopped = stopped || !!(data && data.cancelled);
   if (!stopped) return { error: data.error || "", note: "", keepText: !data.error };
   // The stop landed. Whatever streamed before the kill is real work and stays.
   if (data.error) return { error: "", note: "Stopped.", keepText: true };
@@ -15196,7 +15205,17 @@ async function loadHistory(session_id, opts) {
         // same way sendMessage finds the turn to hang its own receipt on.
         const turns = log.querySelectorAll(".turn.user");
         shotRestoreReceipt(turns[turns.length - 1], t.text);
-      } else addAssistantTurn(t.text, t.segments);
+      } else {
+        addAssistantTurn(t.text, t.segments);
+        // ...and, on the turn it belongs to, that the user ENDED it. A killed
+        // run writes no result row, so the reply above simply stops
+        // mid-thought — and a reopened chat showed exactly that, with nothing
+        // anywhere to say why (Akshil, 2026-08-21). agent.py `_stopped_last`
+        // reads the run's own cancel marker; this is the same ⏹ note a live
+        // stop leaves behind, so the conversation reads identically whether you
+        // watched the stop happen or came back to it afterwards.
+        if (t.stopped) addNote("Stopped.", null, "⏹");
+      }
     }
     attachCodeCopy(log);  // one pass over the whole restored transcript
     // The transcript is now on screen, so this is both the first moment a

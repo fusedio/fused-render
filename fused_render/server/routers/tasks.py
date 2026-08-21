@@ -399,21 +399,38 @@ def _entry_state(entry: dict) -> str:
     return state
 
 
-def _entry_turn(entry: dict, live: bool) -> str:
+def _entry_turn(entry: dict) -> str:
     """How the turn a scheduled message started is going: "" while it is in
-    flight, `done` once it ended, `idle` for one that started and stopped
-    reporting with nothing running now, `unknown` where the watcher said so."""
+    flight, `done` once it ended, `cancelled` for one the user stopped,
+    `unknown` where the watcher said so.
+
+    THE STORE IS THE AUTHORITY on "in flight", and this deliberately no longer
+    folds transcript liveness in. `turn` is written exactly once, when the
+    turn ends, and the sweep closes an abandoned turn as `unknown` within one
+    tick (schedule.py `_claim_due`) — so `sent` with no `turn` IS a running
+    turn, whatever the transcript's mtime says. Folding liveness in was the
+    board's half of the queue/board desync: a turn thinking through a long
+    tool call appends nothing for minutes, this read that as `idle`, and
+    `_message_verdict` then filed a RUNNING task under Done — the board said
+    finished while the dock, reading the store, said thinking. The dock's own
+    live list has always been `sent && !turn`; this makes the board read the
+    same store fact instead of second-guessing it with a heuristic that
+    exists for pure chat turns (which have no watcher and keep it —
+    `_turn_of_newest_chat`).
+
+    `cancelled` passes through by name rather than collapsing into `done`:
+    the dock and the schedule list say "Stopped" for it, and the board's rows
+    must use the same word. The LANE is still Done (`_message_verdict`) —
+    a stop the user asked for is a settled outcome, not a fault."""
     turn = str(entry.get("turn") or "")
-    if turn == "unknown":
-        return "unknown"
+    if turn in ("unknown", "cancelled"):
+        return turn
     if turn:
         return "done"
-    if str(entry.get("state") or "") in _IN_TRANSCRIPT:
-        return "" if live else "idle"
     return ""
 
 
-def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
+def _scheduled_message(entry: dict, at: float, ran_at: float,
                        anchor: str) -> dict:
     return {
         "message_id": "",
@@ -433,7 +450,7 @@ def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
         "unread": False,
         "entry_id": str(entry.get("id") or ""),
         "template_id": str(entry.get("template_id") or ""),
-        "turn": _entry_turn(entry, live),
+        "turn": _entry_turn(entry),
         "anchor": anchor,
     }
 
@@ -463,7 +480,7 @@ def _chat_message(prompt: dict) -> dict:
     }
 
 
-def _merge(prompts: list[dict], entries: list[dict], live: bool) -> list[dict]:
+def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
     """One thread, oldest first, with the scheduled entries joined onto the
     prompts they became.
 
@@ -502,7 +519,7 @@ def _merge(prompts: list[dict], entries: list[dict], live: bool) -> list[dict]:
                 matched = prompts[best[1]]
                 ran_at = matched["at"] or ran_at
                 anchor = matched["anchor"]
-        messages.append(_scheduled_message(entry, live, at, ran_at, anchor))
+        messages.append(_scheduled_message(entry, at, ran_at, anchor))
     for j, prompt in enumerate(prompts):
         if j not in taken:
             messages.append(_chat_message(prompt))
@@ -584,12 +601,30 @@ def _message_verdict(message: dict) -> str | None:
     that set FUSED_RENDER_SCHEDULE_MAX_LATE (a missed OCCURRENCE reads as
     `skipped`), the row already paints it red off the `failed` flag, and
     promoting it to the Failed lane is a separate decision nobody has made.
+
+    A scheduled `sent` with NO turn yet is the other promise: the session
+    started and the watcher has not pronounced it over, so it has nothing to
+    say — it is RUNNING (`_message_running`), not done. Answering `done` here
+    was the premature-Done half of the queue/board desync: in the window
+    between the spawn and the watcher's first report (no claude_session_id in
+    the busy set yet, no transcript to be live) the board filed a running task
+    under Done while the dock said thinking. Scheduled only: a CHAT message's
+    empty turn means the transcript's own liveness ran out, which has no
+    watcher behind it and keeps its old reading.
+
+    A turn the user STOPPED (`cancelled`) still answers `done` — the lane for
+    a settled outcome — and the word "Stopped" rides on the message's `turn`
+    (`_entry_turn`), so the board and the dock describe the stop identically.
     """
     state = message["state"]
     if state == "error":
         return "failed"
     if state == "sent":
-        return "failed" if message["turn"] == "unknown" else "done"
+        if message["turn"] == "unknown":
+            return "failed"
+        if message["kind"] == "scheduled" and not message["turn"]:
+            return None
+        return "done"
     if state == "missed":
         return "done"
     return None
@@ -727,9 +762,22 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
 # stops being the finished turn's own echo and starts being evidence of new
 # work. The closing records land in the same breath as the verdict (the watcher
 # stamps `turn_at` the moment the run reports done, seconds after the last real
-# record) — a couple of seconds absorbs that ordering jitter and clock skew,
-# while a session genuinely still working appends records well past it.
-_VERDICT_ECHO_SEC = 5.0
+# record) — this window absorbs that ordering jitter and clock skew, while a
+# session genuinely still working appends records well past it.
+#
+# WIDENED FROM 5s (2026-08-21). Five seconds only covered the watcher's own
+# ordering jitter, and the CLI's teardown is slower than that on a busy
+# machine: one late record dated 6-20s after `turn_at` put the board back on In
+# Progress for the rest of the 45-second liveness window while the dock, which
+# reads the store, had said finished — the same two-surface disagreement from
+# the other side. 15s is the largest value that still lets a session which is
+# GENUINELY still working keep its vote: sustained work appends records
+# continuously, so its tail runs past any fixed window (TASK-001's pin is 27s
+# past the verdict and must stay In Progress), while an echo is a handful of
+# rows and stops. The cost of a fixed window is bounded and one-directional —
+# real follow-up work that goes quiet for a moment is announced up to 15s
+# late, never announced wrongly.
+_VERDICT_ECHO_SEC = 15.0
 
 
 def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
@@ -1284,7 +1332,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # prompts and the unfired entries — a prompt outside that window cannot be
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
-    merged = _merge(prompts, task["entries"], live)
+    merged = _merge(prompts, task["entries"])
     # A run that has already reported its verdict does not keep the row In
     # Progress off its own closing transcript records: the queue card in the
     # corner says finished within seconds of the result row, and this page
@@ -1520,7 +1568,7 @@ def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
     live, _active = _live(task["path"], now)
     prompts = _full_prompts(task["path"]) if task["path"] else []
-    messages = _merge(prompts, task["entries"], live)
+    messages = _merge(prompts, task["entries"])
     _turn_of_newest_chat(messages, live)
     _mark_unread(messages, task["key"], read)
     return messages

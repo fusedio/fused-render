@@ -151,14 +151,31 @@ export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
  * collapsed weeks ago, a turn running unattended, and nothing on screen to stop it
  * or to say that expanding would help.
  *
- * Nothing else survives. A download's ✕ is a cancel REQUEST for work the user
- * started themselves and is one expand away, which is what the preference was set
- * to fold; and a terminal scheduled row is a report, not a control, so it folds with
- * the rest of the history. Only work that is still running and still unattended
- * earns a place through the fold.
+ * A SCHEDULED RUN'S OUTCOME SURVIVES TOO, and that is a reversal (Akshil,
+ * 2026-08-21: a run showed "thinking" in the corner, then the row simply
+ * disappeared and no surface ever said it had finished). A terminal row is a
+ * report rather than a control, which was the reason to fold it — but folding
+ * the ONLY report of unattended work leaves the collapsed card telling the story
+ * backwards: a run appears, works, and vanishes mid-sentence. The row the user
+ * watched has to be the row that says how it ended.
+ *
+ * `done` and `cancelled` only, never `error`. Not a hedge — the two are
+ * self-retiring (jobs.py sweeps a finished row after FINISHED_TTL_S, 30s), so
+ * the fold gains one closing frame and gives it back. An `error` row is kept
+ * until it is dismissed BY DESIGN (it is the outcome someone may have to act
+ * on), so piercing the fold with one would defeat the collapse preference for as
+ * long as it sat there — and the card's header already carries the count that
+ * says a run failed.
+ *
+ * Nothing else survives: a download's ✕ is a cancel REQUEST for work the user
+ * started themselves and is one expand away, which is exactly what the
+ * preference was set to fold.
  */
 export function foldedJobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => isRunning(j) && scheduleEntryId(j.id) !== "");
+  return jobs.filter((j) => {
+    if (scheduleEntryId(j.id) === "") return false;
+    return isRunning(j) || j.state === "done" || j.state === "cancelled";
+  });
 }
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
