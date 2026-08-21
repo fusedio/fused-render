@@ -64,6 +64,13 @@ rather than as a parse error, which is what makes that path work.
         {"name": "folder", "source": "previous", "value": ""}
       ],
       "observedOutput": {"kind": "object", "keys": ["messages", "total"]}
+    },
+    {
+      "id": "n2",
+      "kind": "prompt",
+      "prompt": "Summarise which accounts have unread mail.",
+      "label": "Summarise",
+      "x": 700, "y": 90
     }
   ],
   "edges": [
@@ -72,6 +79,21 @@ rather than as a parse error, which is what makes that path work.
   ]
 }
 ```
+
+`kind` is the ONE discriminator, and its absence is load-bearing: a node with no
+`kind` is a `"tool"` node, which is every node in every document written before
+prompt steps existed. The two kinds are:
+
+* **`"tool"`** (the default) — `app` + `tool` name a curated MCP tool, and
+  `inputs` records which of its parameters this step sets.
+* **`"prompt"`** — a REASONING step. `prompt` holds the author's sentence; `app`,
+  `tool` and `inputs` are absent, because there is no signature to expose
+  parameters from. It compiles to *do this, then call `step_note` with your
+  conclusion* against `step_server.py`'s one-tool MCP server, so the step is
+  observed from a real tool call like every other one, and its conclusion is a
+  tool result a downstream node's `source: "previous"` input reads like every
+  other step's output. `run.py`'s docstring and `step_server.py`'s record why
+  that shape was chosen over a second progress mechanism.
 
 `inputs` is the part that does not fall out of MCP, and it is why the format
 exists at all. A dispatcher entrypoint gives every parameter a default, so its

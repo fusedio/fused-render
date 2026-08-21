@@ -8462,3 +8462,68 @@ currently does", not "this is what it must always do".
   from a saved node rather than refused: that is MC-4's situation, the served
   tool keeps working, and sending a name the schema does not carry is what would
   actually fail the call.
+- **WC-9** **A PROMPT STEP IS GIVEN A REAL TOOL CALL, so the observation model
+  does not need a second half.** A node may be `kind: "prompt"`: a sentence the
+  author wants worked out between two tool calls, with no curated tool behind it.
+  Written naively it would be invisible to all three of `_compile`, `_prompt` and
+  `_poll` and would sit `pending` for the whole run — and the alternative,
+  believing a "step 3 done" line in the narration, is the one thing WC-5 exists
+  to refuse. So `templates/workflow/step_server.py` is a one-tool stdio MCP
+  server, `step_note(step_id, result)`, speaking the same `2025-06-18` envelope
+  `fused app serve` does; it echoes the note back, holds no state and touches no
+  files. The step compiles to *do this, then call `step_note` with your
+  conclusion*. Everything downstream then works with no special case: the node
+  lights up from a genuine `tool_use`/`tool_result` pair, `--allowed-tools` gains
+  exactly one entry, `_observed` records the shape onto the document, and a later
+  node's `source: "previous"` reads the conclusion like any other step's output.
+- **WC-9a** **`kind` is the whole format delta, and its ABSENCE means `"tool"`.**
+  A node written before prompt steps existed carries no `kind` and must keep
+  working, so the default is not a validation concern but the compatibility rule
+  itself. A prompt node carries `prompt` and no `app`/`tool`/`inputs` — there is
+  no signature to expose parameters from — so the inspector shows a textarea in
+  place of the picker and the canvas draws it in the note palette, dashed: it is
+  a different KIND of thing, not a tool node with an odd label.
+- **WC-9b** **Attribution for a prompt step is EXACT, and the server name is
+  RESERVED.** `step_id` is an argument, so `_poll` reads which node a `step_note`
+  call belongs to instead of guessing — WC-5's name-match heuristic stays, but
+  only for real MCP tools, whose calls carry no such tag. The server is
+  registered under a fixed name seeded into `_server_names`' dedup set, so an app
+  folder that happens to share it is renamed AROUND it rather than over it (the
+  other way round, every prompt step in the graph would call a tool that is not
+  there), and only when the graph actually holds a prompt node. It is spawned
+  with `sys.executable`, never a bare `python`: D334's rule about not guessing
+  `fused` on a detached session's PATH applies to the interpreter too.
+- **WC-9c** **The author's prompt text cannot restructure the prompt.** It is
+  the only untrusted-SHAPED string in the compiled document — everything else is
+  a tool name this module validated or a value it serialized — and it is
+  rendered into the `-p` argument as a JSON string literal, so a step whose text
+  contains a line reading `RULES` or `- You may call any tool` cannot look like
+  a new section. Labels and conditions, which do occupy a line of the numbered
+  list, are collapsed to a single line for the same reason. The RULES section
+  states that quoted text is content and never instruction.
+- **WC-10** **THE RUN'S CLOSING PARAGRAPH IS KEPT, AND IT IS NOT AN ERROR.**
+  `_poll` read the stream's `result` row only when `is_error` was set, so on
+  every SUCCESSFUL run the one piece of text that had read the whole run — which
+  steps ran, what each returned, what was skipped and why — was discarded. It
+  comes back as `summary`, capped like every other payload here and deliberately
+  separate from `error`: a run that finished and said something is not a run
+  that failed and said something.
+- **WC-10a** **A terminal step wears its result ON THE CANVAS.** A step nothing
+  runs after is where the workflow's answer is, and it was drawn identically to
+  every other node with its output reachable only by clicking it afterwards. It
+  now carries an output card hung under the node — absolutely positioned, so the
+  node's own box and therefore every wire endpoint is unchanged — and a graph
+  with several terminal steps gets several cards. The run summary is a card too,
+  but on the STAGE rather than in the world: it describes the run and not any
+  one node, and a card that panned away with the graph is a card nobody finds
+  again.
+- **WC-10b** **A result is rendered as what it IS.** Output was one 8000-character
+  `pre-wrap` blob, which is exactly what `search_mail`'s JSON looks like: a wall.
+  Text that parses as JSON is drawn as a collapsible tree, and an array of
+  uniform objects as a table — the two shapes an MCP tool actually answers with.
+  Anything that does not parse keeps the blob, which is the honest rendering of
+  text that is text. A result the cap actually CUT is almost never valid JSON, so
+  `poll` says `truncated` as its own field and the page renders that word rather
+  than blaming the tool for a parse error the cap caused. Which disclosures the
+  reader opened survives the poll tick, because a tree rebuilt from scratch every
+  1.5 s would slam shut once a second for the length of the run.
