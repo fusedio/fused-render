@@ -5603,6 +5603,34 @@ an AI Models page that could say what was on disk but not what was *running*.
   built on a user's laptop the first time they press Download, and compiling
   from source there is minutes of their battery for something a release already
   answers. Held by a test over every runner's declaration.
+  **Amended (D406): the rule is WHEELS, not PyPI.** AI-11's original refusal of
+  `llama-cpp-python` rested on PyPI publishing an sdist for it and nothing
+  else, which is still true and stopped being the whole story: the
+  maintainer's own index (`abetlen.github.io/llama-cpp-python/whl/cpu/`)
+  publishes complete, current `py3-none` wheels — a prebuilt shared library
+  behind ctypes, no compiler anywhere in the path — checked directly rather
+  than assumed. A non-PyPI index is therefore admissible under this rule, but
+  ONLY confined to the one distribution it exists for: `explicit = true`,
+  exactly the confinement `transformers_text/pyproject.toml` already uses for
+  PyTorch's CPU index, so the index cannot become a candidate for anything
+  else a runner declares. **The residual risk is a second host to trust, and
+  it turned out to be worse than that phrase suggests.** A sweep of every
+  macOS arm64 wheel this specific index has published for
+  `llama-cpp-python` found the corruption is close to a coin flip per
+  release — 4 of 16 sampled pass a zip-integrity check, the rest fail under
+  three different corruption signatures, every failure's sha256 matches its
+  own published GitHub digest (so this is upstream publishing bad bytes, not
+  a CDN), and wheel size is not a proxy for which. Root-caused to upstream
+  issue #1650 (the release job's own artifact-merge step corrupts wheels that
+  built fine), open since Aug 2024. This is why `llamacpp-text` (AI-11's
+  amendment) is opt-in and registered FOURTH rather than made a fallback
+  anywhere in the resolution order — a capability whose install can silently
+  fail on the maintainer's own release pipeline must never be something
+  `auto` reaches for. The test over every runner's declaration is now the
+  general form of this rule (a non-PyPI index must be `explicit = true`, on a
+  wheel-shaped source) rather than a per-folder exemption, so the NEXT runner
+  that needs an index outside PyPI or a torch mirror is caught by the same
+  check rather than requiring a new one.
 - **AI-2b** **CPU is what `auto` resolves to off Apple Silicon; an accelerated
   build is an explicit choice, and a HARD GATE stands in front of it** (D381).
   The registry's order is the default (AI-2, AI-10e), and it puts the Apple
@@ -5632,16 +5660,36 @@ an AI Models page that could say what was on disk but not what was *running*.
   ("(CTranslate2)") are both that second kind of fact and drop. "(CUDA)" is not:
   it is the engine's IDENTITY, and dropping it makes three rows print one name on
   every surface but the picker. So `label` and `short_label` are EQUAL on all
-  six torch rows ("Diffusers (CUDA)"), and a bracketed qualifier in the SHORT
-  name is therefore the marker of a hardware variant, which leaves the
-  Apple-only rows visually distinct from them. `(PyTorch)` is gone from the
-  family: the library stopped being what distinguishes these rows from each
-  other, and the accelerator is what does. **A qualifier names the BUILD, not a
+  six torch rows and on both llama.cpp rows ("Diffusers (CUDA)", "llama.cpp
+  (CPU)"), and a bracketed qualifier in the SHORT name is therefore the marker
+  of a hardware variant, which leaves the Apple-only rows visually distinct from
+  them. `(PyTorch)` is gone from the family: the library stopped being what
+  distinguishes these rows from each other, and the accelerator is what does.
+  **The qualifier axis is HARDWARE, never format**: "llama.cpp (GGUF)" beside
+  "llama.cpp (Vulkan)" qualified the wrong axis and was renamed to "llama.cpp
+  (CPU)", because both rows read GGUF through the same
+  `runners/llama_text.py` — a qualifier naming something the sibling row also
+  does distinguishes nothing, and it cost that row the hardware name its
+  sibling's `note` has to cross-reference. **A qualifier names the BUILD, not a
   prediction about the reader's device** (D382): "(CPU)" is the `whl/cpu` pin —
   the install with no accelerator libraries in it — and that same pin runs on the
   GPU on Apple Silicon, so the row keeps its name there and its `note` carries the
   Mac case (AI-11b). Renaming it would break a stored preference, which keys on
   `code`, and would leave the picker with two rows called the same thing.
+  **A THIRD name, `family_label`, exists for the one surface whose statement is
+  about the FILE rather than about this machine: the Local card's engine tag.**
+  That tag is a format claim — "Diffusers" says these weights are safetensors a
+  Diffusers pipeline opens — and all three Diffusers rows read the identical
+  file, so the accelerator there answers nothing a reader could ask about a
+  download on disk and leaks the machine's configuration into a sentence about
+  the model. The tag renders `familyLabel`; its `title` and `aria-label` keep
+  the hardware-qualified `shortLabel`, so which build would load it is one hover
+  away, and WCAG 2.5.3 still holds because the family is a PREFIX of the short
+  name. It is a field on every row, not a parenthetical stripped by regex, for
+  the reason `short_label` is not derived either. It is deliberately absent from
+  the Engines-tab payload (`registry.describe`): there the reader is choosing
+  BETWEEN builds of one library, and a family name is precisely the string that
+  cannot tell those rows apart.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -6743,17 +6791,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   advertised by the runner. Nothing else in the app learned that a capability
   can have two runners, which is the claim AI-2 made and this is the test of it.
   **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
-  the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
-  and no wheels at all, so declaring it would put cmake and a C++ toolchain —
-  MSVC, on Windows — between a user and the Download button, with its prebuilt
-  wheels on a private index that is a second thing to trust. torch is the
-  runtime this app already builds on users' machines for the image runner, so
-  its install path and its failure modes are known rather than guessed at.
-  `onnxruntime-genai` is the credible alternative (tiny, fast int4 on CPU,
-  DirectML reaching every Windows GPU) and was deferred rather than dismissed:
-  it only loads pre-converted ONNX repos, so the Hub models the page already
-  offers a Load button for would refuse — and as a SECOND text runner it would
-  break the rule that a model id never picks the runner.
+  the obvious pick and was refused by AI-2a at the time: `llama-cpp-python`
+  publishes an sdist and no wheels at all on PyPI, so declaring it would put
+  cmake and a C++ toolchain — MSVC, on Windows — between a user and the
+  Download button, with its prebuilt wheels on a private index that is a
+  second thing to trust. torch is the runtime this app already builds on
+  users' machines for the image runner, so its install path and its failure
+  modes are known rather than guessed at. `onnxruntime-genai` is the credible
+  alternative (tiny, fast int4 on CPU, DirectML reaching every Windows GPU)
+  and was deferred rather than dismissed: it only loads pre-converted ONNX
+  repos, so the Hub models the page already offers a Load button for would
+  refuse — and as a SECOND text runner it would break the rule that a model
+  id never picks the runner. **Revised (D406): llama.cpp shipped anyway, as a
+  FOURTH, opt-in runner, once the packaging objection was checked rather than
+  taken as settled** — see AI-11f and AI-2a's amendment. torch's position as
+  the cross-platform default is unaffected: this did not change which backend
+  `auto` reaches for on any platform, only what a user can additionally choose.
 - **AI-11a** **The CATALOG is keyed by runner, and the page says which one it
   resolved.** This is the part a second runner really did change. A suggestion
   is only meaningful for the backend that will load it: `mlx-community/…` is
@@ -6893,7 +6946,144 @@ an AI Models page that could say what was on disk but not what was *running*.
   are full-snapshot download estimates from the Hub's per-file byte metadata,
   not claims about measured filesystem usage (D295). A first real load is the
   outstanding verification.
-
+- **AI-11f** **`llamacpp-text` is a FOURTH text runner, GGUF via
+  `llama-cpp-python`, registered BELOW all three `transformers-text` rows so
+  `auto` never reaches it on any platform** (D406). AI-11's original refusal
+  rested on one fact — PyPI publishes an sdist for `llama-cpp-python` and no
+  wheels — and that fact held while a second one went unchecked: the
+  maintainer's own index publishes complete, current `py3-none` wheels, a
+  prebuilt shared library behind ctypes with no compiler anywhere in the
+  install path. AI-2a's amendment records the wheels-only rule surviving
+  that: a non-PyPI index is admissible, `explicit = true` and confined to the
+  one distribution it exists for, same as the torch mirrors already are.
+  **What does NOT survive checking is the assumption that a wheel existing
+  means it is INTACT**, and that is the reason this runner is opt-in and
+  fourth rather than a fallback anywhere in the order: a sweep of this
+  specific index's macOS arm64 wheels across sixteen releases of
+  `llama-cpp-python` found roughly a coin flip's worth intact (4 of 16), every
+  failure with a sha256 matching its own published digest, root-caused to
+  upstream issue #1650 (the release job's own artifact-merge step, corrupting
+  wheels that built cleanly). The pin (`0.3.29`) is the newest release where
+  every platform tag this runner ships — macOS arm64 and both `manylinux_2_17`
+  tags and `win_amd64` — passes a `zipfile.testzip()` audit, not the newest
+  release that resolves; `llamacpp_text/pyproject.toml` carries the full
+  table and the rule that a version bump must repeat it. **The model-id
+  problem is `torch_image._GGUF_RECIPES`'s shape, reused rather than
+  reinvented**: a GGUF repo commonly publishes two dozen quantizations of one
+  model, so a model here is a `(repo, filename)` pair under a curated,
+  opaque id — the file's own name, never parsed — instead of a `repo:Q4_K_M`
+  grammar that would touch every page, preference and cache tag treating a
+  model id as a Hub repo id verbatim. Accepted and stated rather than fixed:
+  Hub search on the Discover tab cannot populate this engine, since a typed
+  repo id supplies no filename and only the curated ids load — UNLESS the
+  repo is already cached under one of them, in which case the worker's own
+  `_resolve_model_id` reads the ONE recipe whose file `worker_base._cached_file`
+  finds on disk and loads that: the AI Models page's cache scan is keyed by
+  REPO id, never by this table's filename keys, so without that fallback the
+  exact model a user just downloaded through this engine became unloadable
+  again under the id its own Load button offered it by. A repo curating more
+  than one quantization with NEITHER cached is refused by name rather than
+  guessed at, naming the ids to pick from instead. **No external tokenizer
+  download**: GGUF is single-file by design, so the vocabulary and the
+  model's own chat template live inside the one `.gguf`'s key-value metadata
+  (`llama_cpp.Llama.metadata`), which this runner renders by hand with
+  jinja2 and hands to `create_completion(stream=True)` — never
+  `create_chat_completion`, so the NDJSON contract stays identical to
+  `torch_text.generate`'s. `enable_thinking=False` rides into the render
+  context unconditionally, the same default AI-11d chose for the family of
+  models this shares (Qwen3.5), because Jinja silently ignores a context
+  variable a template never reads. **The chat template reads
+  `Llama._model.token_get_text`/`add_bos_token`, not the public `Llama`
+  surface** — `Llama` itself has no `token_get_text` at all, verified
+  against the installed 0.3.29, and `add_bos_token` decides whether
+  `create_completion` will prepend BOS itself; the rendered `bos_token` is
+  therefore left EMPTY whenever it will, so a template that also spells it
+  out cannot double it. `formats.py` gains a DECISIVE branch, but presence
+  of the extension is not enough on its own: a root-level `.gguf` is only
+  decisive when its OWN `general.architecture` metadata names a recognised
+  causal-text architecture (`formats.GGUF_TEXT_ARCHITECTURES`, read off
+  llama.cpp's own `LLM_ARCH_NAMES` at the vendored commit) — GGUF is a
+  container shared with image models (`city96/FLUX.1-dev-gguf`, architecture
+  `"flux"`) and speech ones, and the check is genuinely exclusive, evaluated
+  before the diffusers/mflux branches rather than after, so a snapshot that
+  happened to carry both a `model_index.json` and a root `.gguf` cannot read
+  as this engine's. `torch_text._weights_here`'s refusal — which used to end
+  at "a repo of GGUF files is llama.cpp's format" with nowhere to go — now
+  names this engine as the answer. **A fifth text runner, `llamacpp-text-vulkan`,
+  is this engine's GPU-accelerated variant on NVIDIA and AMD** (D406's
+  addendum), registered immediately below `llamacpp-text` and still below
+  every `transformers-text` row, sharing `runners/llama_text.py` and
+  `catalog.SUGGESTIONS["llamacpp-text"]` unchanged — a GGUF is one format and
+  one curated list whichever wheel loads it. It exists because the CPU
+  index's acceleration story is Apple-only (Metal, via that wheel's own
+  linked `libggml-metal.dylib`) and the maintainer publishes a separate
+  `vulkan` index with no ROCm/HIP index alongside it, making Vulkan the one
+  path that reaches both vendors. That index publishes wheels for exactly
+  two platform tags at the shared `0.3.29` pin —
+  `manylinux2014_x86_64.manylinux_2_17_x86_64` and `win_amd64`, audited by
+  D406's own method and passing — so `registry._vulkan` refuses every other
+  architecture outright. Where it differs from `_cuda`/`_rocm` is WHY a
+  missing device still needs a hard gate at all: a Vulkan wheel links its
+  GPU backend directly (`DT_NEEDED libvulkan.so.1` in `libggml-vulkan.so`,
+  `libggml.so`/`libllama.so` needing that in turn; the identical import on
+  `vulkan-1.dll` on Windows), so a machine with the wheel installed but no
+  Vulkan loader on its library path fails `import llama_cpp` itself rather
+  than degrading — refused before `uv sync` ever runs, the same way a
+  missing NVIDIA/AMD device already is. A loader present with no driver ICD
+  registered is not a load failure (the wheel also bundles ggml's ordinary
+  CPU backend, which answers instead), so that half is refused only for
+  buying nothing over the cheaper CPU-index wheel, not for being broken.
+  **Correction to the paragraph above (2026-08-21): "the CPU index's
+  acceleration story is Apple-only" was true of the WHEEL and false of the
+  RUNNER — `load()` never passed `n_gpu_layers`, which `llama-cpp-python`
+  defaults to `0`, so the Metal-linked macOS wheel was also CPU-only in
+  practice until this was fixed.** `load()` now asks
+  `llama_cpp.llama_supports_gpu_offload()` — a real llama.cpp API that
+  queries ggml's backend registry for an actual `GPU`/`IGPU` device, true on
+  Metal and a working Vulkan install alike, false otherwise — and, when true,
+  tries a shrinking sequence of `n_gpu_layers` (sized against the model's own
+  layer count, read off its GGUF header) rather than either hardcoding `0` or
+  guessing a fixed number that could overcommit a small laptop GPU's VRAM;
+  neither the binding nor llama.cpp itself can check available VRAM before
+  allocating, so sizing is done by catching a failed allocation and retrying
+  smaller, down to `0` (CPU) as the guaranteed floor, rather than letting an
+  oversized request fail the Load outright. `worker_base.STATE["device"]`
+  reports `"cpu"`, `"gpu"`, or `"gpu (partial)"` accordingly — a measurement
+  of which attempt succeeded, not a name for which backend served it, since
+  the bound API cannot distinguish Vulkan from Metal.
+- **AI-11g** **Any Hub repo with a loadable root-level GGUF resolves, not
+  only the 5 curated filenames in `formats.GGUF_RECIPES`** (D407).
+  `formats.pick_gguf_file()` ranks an arbitrary repo's own file listing —
+  excluding subdirectories, multi-part shards, and auxiliary weights
+  (`mmproj`/`mtp`/`draft`/`projector`, widened past one observed file to a
+  scan of ~200 real repos before being trusted), then ranking by
+  quantization suffix starting at `Q4_K_M` rather than the true smallest
+  quant a repo might publish — deliberately, since `_offload_schedule`'s
+  backoff can turn a too-large pick into a slower load but nothing can turn
+  an already-downloaded, needlessly degraded quant into a better one.
+  unsloth's `UD-` dynamic quants are eligible but rank below every plain
+  quant of a named bit-width family; a lone unranked file still resolves
+  (no ambiguity to refuse), and more than one does not (refused by name,
+  never guessed at — a `mmproj` is also small and is not a chat model).
+  Deterministic and hardware-blind on purpose: `catalog.py`'s `size_gb` and
+  `ai_runtime.py`'s downloaded/curated join both require a model id to mean
+  the same bytes everywhere, and there is no VRAM query available through
+  the wheel to budget against regardless (confirmed by reading the
+  installed bindings). `llama_text._resolve_model_id` falls back to this
+  for any repo `GGUF_RECIPES` has never heard of, checking the local hf
+  cache before ever asking the Hub. `hub_models.py`'s search runs the SAME
+  picker over a result's `siblings` (`expand[]=siblings`, confirmed live to
+  return a repo's complete file list in the search LIST response with no
+  per-repo follow-up call) and drops a row it cannot resolve — the one
+  runner-specific branch in that module, gated on a new optional
+  `Runner.hub_filter_tags` field (`("gguf",)` on both llama.cpp rows, empty
+  elsewhere) so the module's "adding a runner needs no edit here" property
+  survives. Reading which tag applies asks the machine's ACTIVE runner
+  (`registry.for_capability`), a deliberate, documented exception to
+  `hub_models.py`'s "search does not depend on the host" rule — justified
+  the same way `_UNRUNNABLE_LIBRARIES` already is for FORMAT rather than
+  hardware availability, and kept narrow: two machines differ only after a
+  VISIBLE Preferences choice, never for a reason neither could see.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every

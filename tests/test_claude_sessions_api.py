@@ -253,7 +253,7 @@ def test_home_missing_projects_dir_is_empty(client, projects_dir):
     assert client.get("/api/claude-sessions/home").json() == {"folders": []}
 
 
-# ── GET /api/claude-sessions/liveness — has this conversation moved? (D411) ──
+# ── GET /api/claude-sessions/liveness — has this conversation moved? (D413) ──
 #
 # The claude chat's transcript-follower asks this on every lap for a session it
 # is showing and has no run of: a turn driven from a terminal writes no run dir,
