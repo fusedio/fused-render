@@ -7917,3 +7917,149 @@ manifest is the entire contract between them.
   (unclickable), and could-not-tell (re-probes). A control that offered a
   direction before the answer was in would be asserting the opposite of what
   might be true.
+
+## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
+
+`fused.capture` lets a page record the screen, record the microphone, and grab
+a single still — and the result is a FILE on this machine, at a path known before
+the first frame, rather than a blob a page has to round-trip through JS. All
+three platforms, one API, no field naming which one served you.
+
+- **CP-0** The surface is deliberately small, because a bridge method is a
+  forever contract. Cut in review before shipping: `onTick` (a recording
+  publishes a job row and `fused.watchJob(jobId)` is the documented way to read
+  one — a private second spelling of it buys nothing), `format` on the still
+  (above), and a `get(id)` with no caller. `list()`/`attach(id)` stayed: after a
+  reload they are the only way back to a live recording's `stop()`, and ✕
+  discards, so without them a reload can only destroy what it finds.
+- **CP-1** Three verbs behind one namespace: `capture.screen(opts)` and
+  `capture.audio(opts)` resolve WHEN THE RECORDING IS RUNNING with a handle
+  (`{id, path, url, mode, jobId, state, stop(), cancel()}`), and
+  `capture.screenshot(opts)` resolves with the file. `sources()` reports what
+  the machine can do, `list()` the live recordings, `attach(id)` the handle for
+  one of them. Named `capture` and not `record` because a still is an instant,
+  not a session — and because all three share one TCC grant, one display list
+  and one output-path rule, so a root-level `fused.screenshot()` would be a
+  second door onto one permission model.
+- **CP-2** **The path is decided before the first frame exists** and is on the
+  start reply — the same contract `/api/ai/transcribe` has, and the reason this
+  is worth having at all: `fused.ai.transcribe({path: rec.path})` is the next
+  line, with no bytes through JS. A recording therefore also outlives its page.
+- **CP-3** A recording is a server-owned job row (`sys:capture:<id>`,
+  SPEC §36): visible in the download manager after the page that started it is
+  navigated away from, `unit: "s"`, `total` = `maxSeconds`. Its ✕ **discards**,
+  like every other row, and the row's `detail` says so in words.
+- **CP-4** **Three endings, and only one of them destroys the file.**
+  `stop()` keeps it; `cancel()` and the manager's ✕ delete it; hitting
+  `maxSeconds` (default 30 min, hard ceiling 4 h) is a STOP. The cap has to
+  keep, because a page can be closed mid-recording and then the ✕ is the only
+  control left — a cap that discarded would leave no ending that kept the file.
+  A recording the backend has already LOST is a fourth ending the watchdog
+  reports the moment it sees it, rather than ticking "Recording" to the cap over
+  a file nothing is writing. **The cap is enforced before either of those two
+  probes**, and before anything else that can fail: it is the promise that a
+  microphone nobody stops still turns off, so a probe raising on every tick
+  must not be able to sit in front of it.
+  **Finalising on the way out is wired into the paths that really run**: the
+  `"capture"` rung of `app.quit_teardown` (the packaged app quits via `os._exit`
+  — DM-9 — so an `atexit` handler there is dead code) and the server's ASGI
+  shutdown for the plain `fused-render` process. Both exist because a
+  half-written .mov has no `moov` atom and does not play.
+- **CP-5** Output lands in `<home>/recordings` (beside `<home>/ai/transcripts`),
+  or at a caller `path` — relative to the CALLING PAGE, the rule
+  `readFile`/`rawUrl`/`transcribe` follow (RH-1). **The container is the
+  BACKEND's to name** (`ext(mode, spec)`), because one of the three does not
+  encode: macOS writes `.mov` (h264 + aac) and `.m4a` (aac); the streamed
+  platforms write what `MediaRecorder` produced, fragmented `.mp4`/`.m4a` where
+  the browser supports avc1 and `.webm` (VP9 + Opus) otherwise, named by the
+  `container` the page states in its start body. A caller `path` whose extension
+  contradicts that is refused rather than filled with something else. Still →
+  png or jpeg **as the output filename says** —
+  there is no `format` option, because a `path` and a `format` can disagree and
+  "shot.jpg" holding PNG bytes is a file every other tool misreads. Recordings
+  are captured at the display's real pixel scale, so a Retina recording is not
+  half-size.
+- **CP-6** `audio` on a screen recording is `false`, `"mic"`, `"system"` or
+  `"both"` — named, and refused rather than coerced, the posture AI-10 takes on
+  `task`. **System audio is what a browser cannot do on macOS at all**, and that
+  is what justifies the native path there — and, read the other way, why the
+  other two platforms do not need one (CP-10): Chromium shares system audio on
+  Windows and through the PipeWire portal on Linux. Audio-only on macOS records
+  the system's current input and **refuses** `device` rather than ignoring it,
+  naming where a specific microphone can be chosen (a screen recording's
+  `audio: "mic"`) — see D409 for why the API that could do both deadlocked. On
+  the streamed platforms both paths are `getUserMedia`, so `device` is honoured
+  on `audio()` too; that asymmetry is a refusal sentence on one platform, never
+  a flag a page reads.
+- **CP-7** **The probe never prompts.** `sources()` answers permission from
+  `CGPreflightScreenCaptureAccess` and `AVCaptureDevice.authorizationStatus`,
+  and lists displays from `CGGetActiveDisplayList` — never
+  `SCShareableContent`, which raises the TCC dialog. The dialog rides the first
+  real capture, where the user has just asked for one. Same rule the GPU probe
+  follows (SPEC §40): a page asking "can I?" must not change anything.
+- **CP-8** **The floor is macOS 15, not the app's floor.** `SCRecordingOutput`
+  is 15+ and `SCScreenshotManager` 14+, against `LSMinimumSystemVersion` 11.0,
+  so a 12–14 Mac gets `available: false, reason: "needs macOS 15"` and a start
+  rejects `"unavailable"` with the same sentence. Windows and Linux get the same
+  shape with their own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT
+  too** — the macOS module loads its frameworks at module top and
+  `ScreenCaptureKit.framework` does not exist below macOS 12.3, so an
+  unimportable backend is `Unsupported` (a 409) rather than an ImportError (a
+  500). And `sources()` cannot raise AT ALL: a failure this module did not
+  predict is still `available: false`, carrying the exception as its reason,
+  because the promise is about the shape and a page reads it while drawing a
+  record button. **No `via` field anywhere**, and that survived gaining a
+  second implementation: the two wire fields that steer the streamed path
+  (`transport`, `streamToken`) are consumed by `runtime.js` and deleted before
+  the handle exists, as is the `client` flag on `sources()`. A page reads
+  `{available, reason}` and refusal sentences; it never learns which backend it
+  got, and `tests/test_capture.py` fails if any of the three leaks.
+  Local only — a hosted/exported page has no capture (docs/EXPORT.md).
+- **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
+  that touches the mic without it is killed, not prompted) and
+  `com.apple.security.device.audio-input` in the hardened-runtime entitlements
+  (without it the mic is refused whatever TCC says). Screen recording needs
+  neither — only the System Settings grant, which macOS 15+ re-confirms after
+  ~30 idle days. Windows and Linux need no packaging step at all: the still is
+  ordinary GDI/D-Bus, and the recording permission is the browser's to ask for.
+- **CP-10** **Windows and Linux split by CAPABILITY, not by platform: a native
+  still, and a recording the PAGE encodes into a file this server writes.**
+  A still is one `BitBlt` (Windows) or one `org.freedesktop.portal.Screenshot`
+  call (Linux) — instant, no picker, no permission — so it stays native and
+  keeps `display`, `rect` and `cursor` working where the OS supports them.
+  A recording with SYSTEM AUDIO in it has no OS API a non-packaged Python
+  process can reach on Windows: `AppRecordingManager` needs MSIX identity,
+  `Windows.Graphics.Capture` hands out D3D surfaces with no muxer,
+  Media Foundation has no screen source, and ffmpeg's Windows inputs are
+  dshow/gdigrab/vfwcap — **no WASAPI, so no loopback without a third-party
+  driver**. Chromium already does what a native recorder would (WGC plus WASAPI
+  loopback; the PipeWire portal on Linux; hardware-encoded), so the page runs
+  `MediaRecorder` and `capture/_sink.py` appends its chunks over a WebSocket.
+  Everything that makes this feature worth having is unchanged: the path is
+  decided at start (CP-2), it is a job row with the same three endings (CP-3,
+  CP-4), and `fused.ai.transcribe({path})` is still the next line. What is
+  genuinely different is stated rather than hidden — `display`/`rect`/`cursor`
+  are REFUSED on `screen()` because the browser's share picker owns the region,
+  `device` DOES work on `audio()` (it does not on macOS, CP-6), the container is
+  fragmented mp4 or WebM as `MediaRecorder.isTypeSupported` allows, and a full
+  page reload ends the recording. That last one is the only regression against
+  macOS, and it fails safely: both containers are playable AS WRITTEN, so the
+  socket closing keeps the file, marks the row done and says why — there is no
+  `moov` atom to lose and never a row claiming to record over a file nothing is
+  writing. Rejected: bundling ffmpeg (40–60 MB, and still no system audio),
+  and WGC through `MediaStreamSource` (per-frame Python and D3D copies for
+  hours). The socket is guarded by the per-recording token from its own start
+  reply plus an `Origin` check, because a browser cannot put `X-Fused` on a
+  handshake.
+- **CP-11** **What only the browser knows is answered by the browser.** On the
+  streamed platforms whether a recording is possible is a fact about the BROWSER
+  — has it `MediaRecorder`, will it share system audio — and a server route
+  cannot know which one is asking. So those probes answer `client: true` and
+  `runtime.js` replaces `video`, `audio`, `systemAudio` and `microphones` from
+  what its own window can do, then deletes the flag (CP-8). Firefox therefore
+  reports `video.available: false` with a reason naming Chrome or Edge, on the
+  same machine where Chrome reports true. Two limits are documented rather than
+  papered over: mic LABELS are empty until the permission has been granted once
+  (a browser rule), and on Wayland `displays` is always `[]` because no client
+  may enumerate them without prompting — `display` is refused there with a
+  sentence instead of offered as a list nothing accepts.
