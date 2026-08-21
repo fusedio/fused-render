@@ -186,6 +186,44 @@ export function switchOutcome(
   return wouldChangeEngine(row, code, auto) ? "switched" : null;
 }
 
+/** "unloads in 4 min" (AI-13) — the resident-model countdown, or null when
+ *  there is none to show.
+ *
+ *  `null` covers both a disabled window (`0`, from either the stored pref or
+ *  an env override) and any other reason the server sends no number — the
+ *  page has no reason to tell those apart, since neither is counting down.
+ *  A no-narration card is safer here than a guess: the caller decides whether
+ *  the resident-memory line it is appended to renders at all.
+ *
+ *  Rounds rather than truncates and never rounds down to zero: a stream that
+ *  ends "in 0 min" reads as "already gone", which is not true while seconds
+ *  remain on the clock — hence the separate "under a minute" phrasing below
+ *  the first whole one.
+ */
+/** Parse the idle-window input field's raw text into a valid whole-minutes
+ *  value (0..1440), or `null` when it isn't one yet.
+ *
+ *  Lifted out of `AiModelsEngines.tsx`'s commit handler specifically so this
+ *  is testable: `Number("")` is `0` and `Number.isInteger(0)` is `true`, so
+ *  the ordinary intermediate state of editing a number field — select-all,
+ *  delete, click away — would otherwise parse as a valid `0` and silently
+ *  PUT "never unload". An empty or whitespace-only string is "not a value
+ *  yet", not zero, and reads the same as any other invalid input: the
+ *  caller's job is to leave the stored value alone, never to guess.
+ */
+export function parseAiIdleMinutes(value: string): number | null {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1440) return null;
+  return parsed;
+}
+
+export function unloadCountdown(unloadsInSeconds: number | null): string | null {
+  if (unloadsInSeconds === null) return null;
+  if (unloadsInSeconds < 60) return "unloads in under a minute";
+  return `unloads in ${Math.round(unloadsInSeconds / 60)} min`;
+}
+
 /** Is `code` what the registry's ordering would pick on its own?
  *
  *  The server's rows arrive in registry order and carry each runner's

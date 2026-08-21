@@ -2243,7 +2243,7 @@
     padding-left: 10px;
     margin-top: 4px;
   }
-  /* The background-task chip (buildNoticeView, D413). Sized and coloured like
+  /* The background-task chip (buildNoticeView, D415). Sized and coloured like
      the thinking summary rather than like a tool chip: it is a note about why
      the next paragraph exists, not a thing to open, so it carries no border, no
      hover and no pointer — everything a chip has that invites a click. */
@@ -12152,7 +12152,7 @@ function retryVerb(retry) {
 
 // `opts.stoppable: false` drops the stop button, and `opts.verb` fixes the word
 // instead of drawing one from the phase. Both exist for the same caller — the
-// line that reports a turn running OUTSIDE this app (D413's transcript-follow),
+// line that reports a turn running OUTSIDE this app (D415's transcript-follow),
 // which has no process to kill and no phase to read, and where a "stop · esc"
 // that quietly does nothing would be the worst control on the page.
 function addWorking(opts) {
@@ -12911,7 +12911,7 @@ function buildTextView() {
 }
 
 // A system chip: the harness woke the run because a background shell it had
-// started finished or was stopped (agent.py's `notice` segment, D413). It is
+// started finished or was stopped (agent.py's `notice` segment, D415). It is
 // the ONE line that accounts for a reply nobody asked for — without it the
 // turn underneath reads as the agent answering a message that is not there —
 // and it is deliberately not a bubble: the user did not say it, and the raw
@@ -13493,7 +13493,7 @@ async function pollLoop(run_id, gen = logGen) {
   activeWorking = w;
   setRunningUi(true);
   // A real run owns the chrome now: the transcript-follower's line (if it beat
-  // the adoption to the same turn) is a second, blinder report of it (D413).
+  // the adoption to the same turn) is a second, blinder report of it (D415).
   setExternalWorking(false);
   // `gen` is the log generation this loop is allowed to write, and it is the
   // CALLER'S sample, not one taken here (Bugbot, PR #653): sendMessage and
@@ -13633,7 +13633,7 @@ async function pollLoop(run_id, gen = logGen) {
     // When THIS page's turn ended, in the same clock the transcript stat speaks
     // (epoch seconds). The follower compares against it so the rows this run
     // just wrote — and `session_liveness`' few seconds of grace after them — are
-    // not read back as somebody else's turn (D413, followDecision).
+    // not read back as somebody else's turn (D415, followDecision).
     ownRunEndedAt = Date.now() / 1000;
     // Turn boundary either way — the tasks surfaces should hear about it even
     // when a newer loop owns the chrome (the ACTIVITY is real regardless).
@@ -13654,7 +13654,7 @@ async function pollLoop(run_id, gen = logGen) {
 // each other's poke. Best-effort — a blocked store (private mode, locked-down
 // webview) costs the poke, never the turn; the polls still cover it.
 //
-// A SECOND audience now: another copy of THIS page (D413). The stamp already
+// A SECOND audience now: another copy of THIS page (D415). The stamp already
 // says "a turn just started somewhere on this origin", which is precisely the
 // question the live watch is polling for, so the other tab's watch listens for
 // it and adopts the run in milliseconds instead of on its next lap.
@@ -14703,7 +14703,7 @@ async function adoptLiveRun(session_id, opts) {
 // that was the whole of the page's answer to "is something running that I am
 // not showing?". It covers arriving late and covers nothing after: a session
 // that becomes busy while this chat sits open lit no indicator and streamed
-// nothing, whoever started the turn (D413). The reported case is the harness's
+// nothing, whoever started the turn (D415). The reported case is the harness's
 // own — a background shell finishes, the run wakes for another turn — and it is
 // not the only one: the same chat open in a second pane, a `claude` the user
 // resumed from a terminal against a run this page never saw, a spawn from the
@@ -14777,7 +14777,7 @@ async function liveWatchTick() {
 
 // ── following a conversation this app is not driving ────────────────────────
 //
-// **The gap D413 recorded and this closes** (Akshil, 2026-08-21): an interactive
+// **The gap D415 recorded and this closes** (Akshil, 2026-08-21): an interactive
 // `claude` in a terminal, resuming the very session the chat is open on. It
 // creates NO run dir, so `live_run` is blind to it by construction — the whole
 // watch above cannot see it — and the chat showed nothing at all until the
@@ -14792,7 +14792,7 @@ async function liveWatchTick() {
 //   * **A move re-renders through `loadHistory`** — the same renderer the manual
 //     reload used, in `refresh` mode so nothing flickers and nobody's scroll
 //     jumps. Not an append: the page does not decide what is new, it re-asks
-//     what the conversation IS. That is the point D413 argued when it rejected
+//     what the conversation IS. That is the point D415 argued when it rejected
 //     the page tailing `~/.claude/projects` — turn boundaries are `_history`'s
 //     job, on the server, over rows it already knows how to read.
 //   * **`running` is the transcript's LAST MESSAGE**
@@ -14900,7 +14900,7 @@ window.addEventListener("focus", () => liveWatchTick());
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
   const retryUnknown = !!(opts && opts.retryUnknown);
-  // The standing watch's posture (D413): **print the run's message unless this
+  // The standing watch's posture (D415): **print the run's message unless this
   // transcript is already showing it.** The watch adopts turns nobody on this
   // page started, and those split two ways — a run whose message IS on screen
   // (the woken run whose first turn this frame streamed; re-printing it would
@@ -14993,7 +14993,7 @@ async function resumeRun(run_id, opts) {
         // finished between polls), or the watch found a turn made in another tab
         // that this transcript has never shown — a SHORT turn is over before the
         // watch's first look, and dropping it silently was the whole of the
-        // second tab's remaining complaint (D413). All three render the whole
+        // second tab's remaining complaint (D415). All three render the whole
         // turn — user line plus the assistant rows and their tool timeline from
         // the poll payload.
         addUser(probeMsg);
@@ -15116,7 +15116,7 @@ function renderLogSkeleton() {
 }
 
 // `opts.refresh` re-renders the SAME conversation because it grew underneath
-// this page (transcript-follow, D413) rather than replacing it with a different
+// this page (transcript-follow, D415) rather than replacing it with a different
 // one. Three differences, all of them about not making a reader feel the redraw:
 //
 //   * NO SKELETON. The turns already on screen are the right thing to look at

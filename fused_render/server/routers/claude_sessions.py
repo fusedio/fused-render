@@ -483,7 +483,7 @@ def api_claude_session_summaries():
 @router.get("/api/claude-sessions/liveness")
 def api_claude_session_liveness(path: str):
     """`(mtime, size, running)` for ONE transcript file — the cheapest possible
-    "has this conversation moved, and is it moving right now?" (D413).
+    "has this conversation moved, and is it moving right now?" (D415).
 
     **Who asks.** The claude chat template, on the lap of its live watch, for a
     session it is showing but has no run of. A turn driven from OUTSIDE this app

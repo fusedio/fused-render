@@ -2291,6 +2291,322 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
+# -- per-worker activity, for the idle reaper (AI-13) ------------------------
+
+
+def test_a_streamed_chunk_re_stamps_last_activity(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 999
+    list(supervisor.generate_text("org/chat", {"messages": []}))
+    # Every yielded chunk re-stamps, not just entry — a stream running longer
+    # than the idle window must never look idle partway through it.
+    assert time.monotonic() - worker.last_activity < 5
+
+
+def test_closing_a_partially_read_stream_frees_in_flight(fake_runner):
+    # `generate_text` is a generator: a page that stops iterating without
+    # calling `close()` is exactly the leak the `finally` in `_in_use` exists
+    # to prevent (see Key decisions).
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    stream = supervisor.generate_text("org/chat", {"messages": []})
+    next(stream)
+    assert worker.in_flight == 1
+    stream.close()
+    assert worker.in_flight == 0
+
+
+def test_in_use_nests_without_losing_track(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    with supervisor._in_use(worker):
+        with supervisor._in_use(worker):
+            assert worker.in_flight == 2
+        assert worker.in_flight == 1
+    assert worker.in_flight == 0
+
+
+# -- the idle reaper (AI-13) ------------------------------------------------
+
+
+def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
+                 capability=registry.TEXT_GENERATION, model="org/idle"):
+    """A `ready` worker planted directly in `_workers`, the same shortcut
+    `test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served` uses — no
+    process, so `_terminate` is stubbed the same way."""
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    worker = supervisor.Worker(model=model, capability=capability,
+                               runner_code="fake-text", token="t", state=state,
+                               last_activity=last_activity, in_flight=in_flight)
+    monkeypatch.setitem(supervisor._workers, capability, worker)
+    return worker
+
+
+def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, state="loading", last_activity=now - 10_000)
+    # A 40-minute `uv sync` or an 8GB pull IS activity, and killing it mid-build
+    # is hostile rather than a memory win — only `ready` is eligible.
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._workers[registry.TEXT_GENERATION] is worker
+
+
+def test_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_in_flight_with_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5, in_flight=1)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_mid_transcription_worker_is_spared_well_past_the_idle_window(monkeypatch):
+    """The bug a collapsed predicate would ship: `generate_transcript` is a
+    single blocking call, not a stream — nothing re-stamps `last_activity`
+    between the request going out and the reply coming back, which can be up
+    to `TRANSCRIBE_TIMEOUT_S` (4h) later. A 30-minute-old stamp on a
+    `SPEECH_TO_TEXT` worker with `in_flight == 1` is exactly what a real
+    90-minute transcription looks like at the 30-minute mark under a
+    10-minute window, and reaping it here is `_terminate` killing the
+    process the request is still waiting on."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 30 * 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_transcription_worker_past_its_leak_ceiling_is_reaped(monkeypatch):
+    """The other half: `in_flight` is not a permanent exemption. Past a
+    ceiling derived from `TRANSCRIBE_TIMEOUT_S` itself, the request that set
+    `in_flight` would already have raised — `_worker_request` has its own
+    timeout — so a counter still reading positive is a leaked stream
+    (an abandoned `generate_text` iterator on another capability, say),
+    never a legitimately slow answer."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    ceiling = supervisor._leak_ceiling(registry.SPEECH_TO_TEXT, 600)
+    _idle_worker(monkeypatch, last_activity=now - ceiling - 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) != []
+
+
+def test_a_slow_first_load_is_not_reaped_the_instant_it_becomes_ready(fake_runner, monkeypatch):
+    """Regression: `last_activity` used to be seeded once, in the `Worker`
+    dataclass, at CONSTRUCTION — before `_bring_up`'s venv build, pull and
+    load even start. A first-ever download that takes longer than the idle
+    window would become `ready` already past it, and the reaper's very next
+    tick would unload it before anything had used it.
+
+    Simulated without actually waiting minutes: `Worker.last_activity`'s
+    `field(default_factory=time.monotonic)` captured the REAL function at
+    class-definition time, so patching the `time` module's `monotonic`
+    attribute afterwards does not touch the construction stamp — only calls
+    made through the module attribute at RUN time are affected, which is
+    every `time.monotonic()` call `_bring_up` makes once the fake worker
+    (a ~0.1s bring-up) actually reaches `ready`. A constant offset rather
+    than a frozen value, so every deadline/elapsed computation along the way
+    still advances normally; only the ABSOLUTE reading moves, by more than
+    the idle window.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: real_monotonic() + 800)
+
+    supervisor.load("org/slow", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/slow")
+
+    # If the ready transition still left `last_activity` at its construction
+    # stamp (real time, unaffected by the patch), `now` here would read it as
+    # ~800s stale — past a 10-minute window — and this would fail.
+    assert supervisor.idle_workers(real_monotonic() + 800) == []
+    assert worker.state == "ready"
+
+
+def test_reap_decision_and_removal_share_one_lock_hold(fake_runner, monkeypatch):
+    """Regression: `reap_idle` used to call `idle_workers()` (one `_lock`
+    acquisition) and then `unload()` (a SECOND, later one) to remove what it
+    found. In the gap between those two acquisitions the table was briefly
+    unlocked, and a request racing in could call `ready_worker()`, enter
+    `_in_use()` and start a call on the very worker the reaper had already
+    condemned — `unload()` matches by model+capability alone and never
+    re-checks `in_flight`, so it would terminate the process that request is
+    now waiting on.
+
+    Driven deterministically rather than left to scheduler luck, with no
+    `sleep()` anywhere: `reap_idle` runs on its OWN thread, and `_is_idle` —
+    called from INSIDE `_claim_for_removal`'s lock hold, unconditionally, for
+    every candidate worker — is patched to pause there on an `Event`, still
+    holding `_lock`. Only once that pause is observed does a second ("racer")
+    thread start and immediately try to claim the same worker via
+    `ready_worker()`, which itself needs `_lock`. Whatever happens next, the
+    racer's call cannot complete until the reaper thread releases the lock —
+    and by then, if the fix holds, decision AND pop have both already
+    happened, so the racer can only ever observe "already gone", never a live
+    worker the reaper is about to terminate out from under it.
+    """
+    supervisor.load("org/racer", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/racer")
+    worker.last_activity = time.monotonic() - 700  # idle past a 10-min window
+
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_is_idle = supervisor._is_idle
+    paused = threading.Event()
+    release = threading.Event()
+
+    def slow_is_idle(w, now, window):
+        result = real_is_idle(w, now, window)
+        if w is worker:
+            paused.set()
+            assert release.wait(5), "the main thread never released us"
+        return result
+
+    monkeypatch.setattr(supervisor, "_is_idle", slow_is_idle)
+
+    result = {}
+
+    def run_reap():
+        result["stopped"] = supervisor.reap_idle(time.monotonic())
+
+    reaper = threading.Thread(target=run_reap)
+    reaper.start()
+    assert paused.wait(5), "reap_idle never reached its decision"
+    # `reap_idle` is now blocked INSIDE `_claim_for_removal`'s lock hold,
+    # mid-decision for this exact worker. Only now does the racer start.
+
+    def racer():
+        result["racer_saw"] = supervisor.ready_worker(registry.TEXT_GENERATION, "org/racer")
+
+    t = threading.Thread(target=racer)
+    t.start()
+    release.set()
+    reaper.join(5)
+    t.join(5)
+
+    assert result["stopped"] == ["org/racer"]
+    # The racer's lookup could only run AFTER the whole reap finished
+    # (decided AND removed) — it needed the same `_lock`, and `reap_idle`
+    # never let go of it mid-decision — so it can only ever find the worker
+    # already gone.
+    assert result["racer_saw"] is None
+
+
+def test_zero_minutes_disables_the_reaper_entirely(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 100_000)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+
+
+def test_a_weights_only_fetch_is_untouched_by_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    stub = supervisor.Worker(model="org/fetching", capability=registry.TEXT_GENERATION,
+                             runner_code="fake-text", token="t", state="downloading",
+                             last_activity=now - 100_000)
+    monkeypatch.setitem(supervisor._fetch_workers, "org/fetching", stub)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._fetch_workers["org/fetching"] is stub
+
+
+def test_the_pref_is_re_read_on_every_call(monkeypatch):
+    """No caching between calls: a preference edited mid-session, or an env
+    override that comes and goes, moves the answer on the very next tick —
+    same discipline as `ready_worker`'s live re-read of the engine choice."""
+    from fused_render.shell import prefs
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 400)
+    minutes = [10]
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: minutes[0])
+    assert supervisor.idle_workers(now) == [], "400s has not reached a 10-minute window"
+    minutes[0] = 5
+    assert supervisor.idle_workers(now) != [], "the SAME worker, a shorter window"
+
+
+def test_the_reaped_job_row_names_the_idle_reason(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, last_activity=now - 700)
+    job_id = supervisor.job_id_for(worker.model)
+    supervisor._report(job_id, title=worker.model, state="running", kind="task")
+
+    assert supervisor.reap_idle(now) == [worker.model]
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job_id)
+    assert row["detail"] == "Unloaded after 10 min idle"
+
+
+def test_describe_reports_idle_seconds_and_the_countdown(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["idleSeconds"] == pytest.approx(60, abs=3)
+    assert row["unloadsInSeconds"] == pytest.approx(540, abs=3)
+
+
+def test_describe_reports_no_countdown_when_the_window_is_disabled(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["unloadsInSeconds"] is None
+
+
+def test_describe_countdowns_a_busy_worker_against_the_leak_ceiling(monkeypatch, fake_runner):
+    """Regression: `unloadsInSeconds` used to be `window - idle age` with no
+    reference to `in_flight`, so a busy worker's card would count down to
+    "unloads in under a minute" and then sit there — the reaper's own
+    predicate (`_is_idle`) spares a busy worker until `_leak_ceiling`, well
+    past the bare window, so the card was asserting an unload that would not
+    happen for a long time yet.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+    worker.in_flight = 1
+
+    row = supervisor.describe()["loaded"][0]
+
+    ceiling = supervisor._leak_ceiling(registry.TEXT_GENERATION, 600)
+    assert row["unloadsInSeconds"] == pytest.approx(ceiling - 60, abs=3)
+    # Sanity: the leak ceiling is well past the bare 10-minute window here,
+    # so this genuinely distinguishes the fix from the old `window`-only math
+    # rather than coincidentally landing on the same number.
+    assert ceiling > 600
+
+
 # -- a worker's environment carries no Hub token of our making (D402) ------------
 
 
@@ -3073,6 +3389,54 @@ def test_an_image_needs_a_prompt(client, fake_image_runner):
         assert response.status_code == 400, body
 
 
+def test_an_unrecognised_image_option_is_a_400_naming_it(client, fake_image_runner):
+    """The bug report: `image`/`strength` render a text-to-image picture and say
+    nothing about the option that was ignored. Now the envelope is closed —
+    an option this endpoint does not have is refused rather than dropped."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "image" in message
+    assert "not an option" in message
+
+
+def test_an_unrecognised_image_option_names_BOTH_unknown_keys(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "strength": 0.6},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "image" in message and "strength" in message
+
+
+def test_the_envelope_is_checked_BEFORE_any_field_validation(client, fake_image_runner):
+    """An unknown key and a bad `steps` in the same request: the envelope error
+    wins, so the caller learns about the option it does not have first."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "x.png", "steps": "nonsense"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "'image' is not an option" in message
+    # The field error ("'steps' must be a number") never appears — the
+    # envelope check short-circuits before `steps` is ever parsed.
+    assert "must be a number" not in message
+
+
+def test_every_documented_image_option_is_still_accepted(client, fake_image_runner):
+    """The regression this change could plausibly cause: a false rejection of a
+    valid option. Assert the whole accepted set, not two of them."""
+    body = {
+        "prompt": "a fox", "model": "org/x", "width": 512, "height": 512,
+        "steps": 10, "guidance": 3.0, "seed": 7,
+    }
+    response = client.post("/api/ai/image", json=body, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
                                                         monkeypatch):
     monkeypatch.setenv("FAKE_IMAGE_FAILS", "1")
@@ -3270,6 +3634,36 @@ def test_transcribing_needs_a_file_that_actually_exists(
         assert _post_transcribe(client, **body).status_code == 400, body
     assert not [j for j in jobs.list_jobs()
                 if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_transcribe_rejects_a_caller_supplied_unknown_option(
+        client, fake_transcribe_runner, recording):
+    response = _post_transcribe(client, path=recording, image="x.png")
+    assert response.status_code == 400
+    assert "image" in response.json()["error"]
+
+
+def test_transcribe_accepts_the_bridge_injected_base(
+        client, fake_transcribe_runner, recording, tmp_path):
+    """`base` is not a caller-facing option — the bridge adds it from the
+    page's own `?path=` — but the server must still accept it, or every
+    existing `fused.ai.transcribe` call with a relative path breaks."""
+    started = _post_transcribe(client, path=recording, base=str(tmp_path / "page.html"))
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_every_documented_transcribe_option_is_still_accepted(
+        client, fake_transcribe_runner, recording):
+    """The regression this change could plausibly cause: a false rejection of
+    a valid option. Assert the whole accepted set, not two of them."""
+    body = dict(
+        path=recording, model=catalog.default_for(registry.SPEECH_TO_TEXT),
+        language="en", task="transcribe", initialPrompt="hello",
+        vad=True, diarize=False, speakers=None, words=False)
+    response = _post_transcribe(client, **body)
+    assert response.status_code == 200, response.json()
+    _wait_job(response.json()["jobId"])
 
 
 def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
@@ -3673,7 +4067,12 @@ def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
         seen["timeout"] = timeout
         return _Reply()
 
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request", fake_request)
     supervisor.generate_transcript("org/whisper", {"path": "/x"},
                                    supervisor.TRANSCRIBE_JOB_PREFIX + "t")
@@ -3743,7 +4142,12 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -3797,7 +4201,12 @@ def test_an_EVICTED_queued_row_is_rebuilt_on_DETECTION_not_on_the_next_tick(monk
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 30.0)
@@ -4048,7 +4457,12 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     it reached the worker to cancel."""
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -4098,7 +4512,12 @@ def test_the_cross_is_honoured_on_the_UNCONTENDED_path_too(monkeypatch):
     being wrong, not the optimisation.
     """
     posted = []
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         lambda *a, **k: posted.append(a) or pytest.fail(
                             "a cancelled transcription reached the worker"))
@@ -4142,7 +4561,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
 
     def spy_ready_worker(capability, model=None):
         resolved.append(model)
-        return object()
+        return types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0)
 
     monkeypatch.setattr(supervisor, "ready_worker", spy_ready_worker)
     monkeypatch.setattr(
@@ -4181,6 +4600,23 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
+def _lift_js_fn(source, marker):
+    """One named `function` lifted out of `runtime.js` by its declaration
+    text, body included. Shared by every harness below that drives a real
+    bridge function under node."""
+    start = source.index(marker)
+    return source[start:source.index("\n  }\n", start) + 4]
+
+
+def _js_fn_with_helper(source, marker):
+    """`_lift_js_fn`, plus `rejectUnknownOptions` ahead of it — `aiImage` and
+    `aiTranscribe` both call it now (D413), and it is not itself part of
+    either function's own source, so a harness that lifts only the target
+    function leaves the call unresolved."""
+    return (_lift_js_fn(source, "  function rejectUnknownOptions(")
+            + _lift_js_fn(source, marker))
+
+
 def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}',
                        extra=None):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
@@ -4206,9 +4642,7 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiTranscribe(opts)")
-    end = source.index("\n  }\n", start) + 4
-    fn = source[start:end]
+    fn = _js_fn_with_helper(source, "  function aiTranscribe(opts)")
 
     prelude = f"""
       const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
@@ -4292,7 +4726,8 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
 
 
-def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"'):
+def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"',
+                  opts='{prompt: "a fox", onProgress: (job) => progress.push(job)}'):
     """Run `aiImage` out of runtime.js under node, against stubs.
 
     `_run_ai_transcribe`'s harness for the other half of the same API: the
@@ -4311,9 +4746,7 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiImage(opts)")
-    end = source.index("\n  }\n", start) + 4
-    fn = source[start:end]
+    fn = _js_fn_with_helper(source, "  function aiImage(opts)")
 
     prelude = """
       const started = {jobId: "sys:ai-image:x", path: "/t/a.png", seed: 7,
@@ -4334,12 +4767,12 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
       const progress = [];
     """.replace("PREVIEW", preview).replace("TICKS", ticks).replace("RECORD", record)
     call = """
-      aiImage({prompt: "a fox", onProgress: (job) => progress.push(job)}).then(
+      aiImage(OPTS).then(
         (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
         (err) => console.log(JSON.stringify(
           {ok: false, message: err.message, type: err.type, progress, rows})),
       );
-    """
+    """.replace("OPTS", opts)
     # Node writes UTF-8 to stdout regardless of platform; without an explicit
     # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
     # (often cp1252), which mangles or crashes on the multibyte transcript
@@ -4411,6 +4844,130 @@ def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
     assert settled["ok"] is True, settled
     assert settled["progress"][0]["previewUrl"] is None
     assert settled["value"]["previewUrl"] is None
+
+
+def test_the_bridge_rejects_an_unrecognised_image_option_before_the_POST():
+    """The bug report itself, at the bridge layer: `image`/`strength` must not
+    reach `aiPost` at all — the caller learns about the drop instead of
+    getting a text-to-image picture back."""
+    settled = _run_ai_image(opts='{prompt: "a fox", image: "photo.png"}')
+    assert settled["ok"] is False
+    assert settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_names_BOTH_unknown_image_options():
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", image: "photo.png", strength: 0.6}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"] and "strength" in settled["message"]
+
+
+def test_onProgress_is_exempt_from_the_image_unknown_key_check():
+    """`onProgress` is a callback consumed above the whitelist loop, not a body
+    field — it must stay accepted or every existing caller that passes one
+    breaks."""
+    settled = _run_ai_image(opts='{prompt: "a fox", onProgress: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_envelope_BEFORE_the_prompt_field():
+    """Ordering, matching the server: a call with an unknown option AND no
+    `prompt` must learn about the option, not about the missing prompt —
+    "add a prompt" would "fix" the error and land the caller right back in
+    the silent-drop illusion this change exists to end."""
+    settled = _run_ai_image(opts='{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    # The field error's specific text never appears — asserting the bare
+    # word "prompt" would pass by accident, since it is in the accepted-set
+    # listing too.
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridge_names_unknown_image_options_SORTED():
+    """The server's `_reject_unknown` sorts; the bridge must match, or the
+    same two-key mistake reads in a different order depending on how the
+    caller happened to write the object literal — the two layers' messages
+    stop being comparable."""
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", strength: 0.6, image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image', 'strength'" in settled["message"]
+
+
+def _run_ai_transcribe_opts_only(opts):
+    return _run_ai_transcribe('Promise.resolve(JSON.stringify({text: "hi", segments: []}))',
+                              '{state: "done"}', opts=opts)
+
+
+def test_the_bridge_rejects_a_caller_supplied_unknown_transcribe_option():
+    settled = _run_ai_transcribe_opts_only('{path: "a.m4a", image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_refuses_a_caller_supplied_base_as_an_unknown_option():
+    """`base` is bridge-injected from the page's own `?path=` — a CALLER
+    passing it directly is passing an option that does not exist from the
+    page's point of view, even though the server accepts it once the bridge
+    adds it itself."""
+    settled = _run_ai_transcribe_opts_only('{path: "a.m4a", base: "/pages/other.html"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "base" in settled["message"]
+
+
+def test_onProgress_and_onSegment_are_exempt_from_the_transcribe_unknown_key_check():
+    settled = _run_ai_transcribe_opts_only(
+        '{path: "a.m4a", onProgress: () => {}, onSegment: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_transcribe_envelope_BEFORE_the_path_field():
+    """Same ordering fix as `aiImage`: an unknown option and a missing
+    `path` must report the option, not the missing field."""
+    settled = _run_ai_transcribe_opts_only('{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridges_accepted_image_keys_match_the_servers_constant():
+    """The drift guard: the bridge's whitelist and the server's accepted set
+    are the same fact written in two languages, which is exactly how they
+    come to disagree. Extract the JS array literal and compare it, sorted,
+    to the Python constant driving `_reject_unknown` on the server."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiImage(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const imageKeys = \[(.*?)\];', body)
+    assert match, "could not find aiImage's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._IMAGE_OPTIONS)
+
+
+def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
+    """Same drift guard for transcribe — compared against the CALLER-FACING
+    set, which must NOT include `base`: the server's set is wider because
+    the bridge injects `base` itself, and the two sets must not collapse into
+    one or a caller passing `base` stops being an error."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const transcribeKeys = \[(.*?)\];', body, re.S)
+    assert match, "could not find aiTranscribe's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._TRANSCRIBE_OPTIONS)
+    assert "base" not in ai_runtime._TRANSCRIBE_OPTIONS
+    assert "base" in ai_runtime._TRANSCRIBE_SERVER_OPTIONS
 
 
 @pytest.mark.parametrize("opts", [
@@ -4600,8 +5157,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiTranscribe(opts)")
-    fn = source[start:source.index("\n  }\n", start) + 4]
+    fn = _js_fn_with_helper(source, "  function aiTranscribe(opts)")
 
     prelude = """
       const started = {jobId: "sys:ai-transcribe:x", output: "/t/out.json",
@@ -5246,6 +5802,38 @@ def test_cancel_carries_the_guard_and_checks_the_capability(client):
     bad = client.post("/api/ai/cancel", json={"capability": "telepathy"},
                       headers={"X-Fused": "1"})
     assert bad.status_code == 400
+
+
+def test_unload_rejects_an_unrecognised_capability_like_cancel_does(client):
+    """The addendum: `unload` never validated `capability` — a typo went
+    straight to `supervisor.unload()`, which answers `{"stopped": false}` for
+    an unrecognised capability, indistinguishable from a correct request
+    against an idle machine. `cancel`, 45 lines below in the same file,
+    already refuses this; `unload` gets the same guard."""
+    bad = client.post("/api/ai/runtime/unload", json={"capability": "telepathy"},
+                      headers={"X-Fused": "1"})
+    assert bad.status_code == 400
+
+
+def test_unload_by_MODEL_ALONE_still_works_with_no_capability(client, fake_runner):
+    """The guard must stay compatible with the `model`-only form: `capability`
+    is validated only when it is not None."""
+    supervisor.load("org/bye", registry.TEXT_GENERATION)
+    _wait_ready("org/bye")
+    response = client.post("/api/ai/runtime/unload", json={"model": "org/bye"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
+
+
+def test_unload_by_a_REAL_capability_still_works(client, fake_runner):
+    supervisor.load("org/bye2", registry.TEXT_GENERATION)
+    _wait_ready("org/bye2")
+    response = client.post(
+        "/api/ai/runtime/unload", json={"capability": registry.TEXT_GENERATION},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
 
 
 def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypatch):

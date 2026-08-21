@@ -6278,6 +6278,37 @@ an AI Models page that could say what was on disk but not what was *running*.
   environment failure look like a transient race. "Unloaded" survives as the
   answer for what it actually describes: a record that never errored and was
   taken away — evicted by another model, or unloaded from the AI Models page.
+- **AI-9d** **The request envelope of a job-backed AI call is closed** (D413):
+  an option `/api/ai/image` or `/api/ai/transcribe` does not have is a 400
+  naming it, not a value silently dropped. `runners/engine_options.py`
+  already refuses an option an ENGINE cannot honour rather than ignoring it
+  — an unknown key is the same violation one layer up, and the most
+  undetectable case of it: nothing in a text-to-image reply distinguishes
+  "ignored your base image" from "there was no base image to begin with",
+  which is how `fused.ai.image({prompt, image, strength})` came to render a
+  plain text-to-image picture with no sign the edit request was dropped.
+  Checked in both the bridge (`runtime.js`'s `rejectUnknownOptions`, before
+  the POST) and the server (`ai_runtime._reject_unknown`, before any other
+  validation) — the bridge is not the only caller, since the skill documents
+  `curl` against these routes directly, and a page can `fetch` them itself.
+  Both report EVERY unknown key in one message, not just the first, and the
+  server's envelope check runs ahead of its field checks, so a request that
+  is wrong twice is told about the option it does not have rather than the
+  field it also got wrong. `base` is the one deliberate asymmetry: the
+  bridge injects it itself from the page's own `?path=`, so the SERVER's
+  accepted set for transcribe includes it while the bridge's own
+  caller-facing set does not — a caller passing `base` directly is passing
+  an option that does not exist from where it is standing, and letting the
+  two sets collapse into one would silently stop enforcing that. A drift
+  test extracts the bridge's whitelist arrays out of `runtime.js` and
+  compares them, sorted, against the server's constants, so the two
+  languages cannot restate the same fact and disagree unnoticed. The same
+  change reaches `POST /api/ai/runtime/unload`, for consistency rather than
+  a new rule: it never validated `capability`, so a typo reached
+  `supervisor.unload()` and answered `{"stopped": false}`, exactly what a
+  correct request against an idle machine also answers — the same illusion
+  as an ignored image option, fixed with the guard `cancel` already carried
+  four lines below it in the same file.
 - **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
   A runner is still a folder, but the half that is the SUPERVISOR'S contract —
   the auth header's name, the status file's shape, the state vocabulary it
@@ -7181,6 +7212,52 @@ an AI Models page that could say what was on disk but not what was *running*.
   one. The rate lives in the page's own state (not the prefs store, not the
   server): it is a what-if a reader is doing on numbers in front of them, and
   persisting it would make a guess look like a setting the app stands behind.
+- **AI-13** **A resident local model's tenancy is TIME-BOUNDED: a model
+  nothing has used for ten minutes (default) unloads itself, and the next
+  `fused.ai(...)` reloads it exactly as a cold first call already does.**
+  Before this, the one way a model's gigabytes came back was the user closing
+  the app or picking a different one — a page opened once at 9am and never
+  used again holds its weights until quit. `fused_render/ai/supervisor.py`
+  stamps `last_activity` and an `in_flight` counter on every `Worker`
+  (`_in_use`, wrapped around all three generation paths — `generate_text`,
+  `generate_image`, `generate_transcript` — and `_touch` re-stamping on every
+  yielded chunk of a stream), and a reaper thread ticks a pure `reap_idle(now)`
+  predicate against the table roughly every 30s, unloading through the
+  ordinary `unload()` (now taking a `reason`, so the job row reads "Unloaded
+  after 10 min idle" rather than looking like a crash). **Only
+  `state == "ready"` is eligible** — a `starting`/`venv`/`downloading`/
+  `loading` worker (a 40-minute `uv sync`, an 8GB pull) is not holding a
+  finished model, and killing it mid-build is hostile, not a memory win; a
+  weights-only fetch (`_fetch_workers`) is a separate table this never touches
+  for the same reason `evict_stale_engines` leaves it alone. **`in_flight`
+  exempts a worker past its own idle window, but only up to a separate LEAK
+  CEILING — one predicate cannot cover both, because the three generation
+  paths are not symmetric.** `generate_text` streams and re-stamps
+  `last_activity` on every chunk, so a genuinely live call is never stale; but
+  `generate_image` and `generate_transcript` are single BLOCKING
+  `_worker_request` calls that go quiet for their whole duration — `_in_use`
+  stamps once on entry and nothing ticks again until the reply arrives, which
+  can be `GENERATE_TIMEOUT_S` (900s) or `TRANSCRIBE_TIMEOUT_S` (4h) later. A
+  predicate that judged `in_flight` purely by `last_activity`'s age against the
+  idle window would reap a 90-minute transcription at the ten-minute mark,
+  mid-decode — `_terminate` killing the very process the request is still
+  waiting on. So `_leak_ceiling(capability, window)` derives a second, longer
+  bound from the request timeout that actually governs the call (plus a
+  margin, and never less than the idle window itself), and a busy worker is
+  spared until THAT bound: past it, the request itself would already have
+  raised, so a still-positive `in_flight` can only be a leaked stream (a page
+  that abandoned a `generate_text` iterator without closing it) rather than a
+  legitimately slow answer. The window is a preference, `ai_idle_unload_minutes`
+  (`shell/prefs.py`, default 10, `0` = never, `FUSED_RENDER_AI_IDLE_MINUTES`
+  overrides it the same way `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides call
+  retention), re-read fresh on every reaper tick and every `describe()` call —
+  never cached — so an edit or an env change applies on the very next tick. The
+  AI Models page's Engines tab gets a control for it, and each resident card's
+  memory line grows an "unloads in N min" countdown from `describe()`'s new
+  `idleSeconds`/`unloadsInSeconds` fields; **no page change is required for
+  correctness**, since an auto-unloaded model's next call raises
+  `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
+  existing `model_loading` handling already covers it.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

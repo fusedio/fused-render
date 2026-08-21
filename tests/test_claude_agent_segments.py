@@ -693,13 +693,13 @@ def test_history_of_an_unknown_session_is_still_empty(agent, tmp_path, monkeypat
     monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
     target = tmp_path / "page.html"
     target.write_text("x")
-    # `transcript` rides on every history payload now (D413's watermark); the
+    # `transcript` rides on every history payload now (D415's watermark); the
     # rule this test owns is that neither of these renders a turn.
     assert agent._history(str(target), "missing")["turns"] == []
     assert agent._history(str(target), "../escape")["turns"] == []
 
 
-# ------------------------------------------- the background-task wake (D413)
+# ------------------------------------------- the background-task wake (D415)
 
 def _wake_row(summary="Background command \"pytest -q\" completed (exit code 0)",
               status="completed"):
@@ -771,7 +771,7 @@ def test_a_message_that_merely_mentions_the_tag_is_still_the_users(
     assert [t["role"] for t in turns] == ["user"]
 
 
-# ------------------------------- the transcript watermark (D413)
+# ------------------------------- the transcript watermark (D415)
 
 def test_history_hands_back_the_file_it_read(agent, tmp_path, monkeypatch):
     """The page follows the conversation by this: it re-renders when the file

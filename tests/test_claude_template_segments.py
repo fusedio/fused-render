@@ -796,7 +796,7 @@ def test_thinking_is_a_details_rendered_as_markdown(probe):
                for n in _nodes(block))
 
 
-# --- the background-task notice (D413) ---------------------------------------
+# --- the background-task notice (D415) ---------------------------------------
 
 
 def test_a_notice_segment_is_a_plain_text_system_chip(probe):
@@ -979,7 +979,7 @@ def test_the_log_wipes_reset_the_collapse_policy(source):
     hist = _block(source, "async function loadHistory(session_id, opts) {",
                   "renderLogSkeleton();")
     assert "resetCardPolicy()" in hist
-    # ...and the transcript-follow's REFRESH is the deliberate exception (D413):
+    # ...and the transcript-follow's REFRESH is the deliberate exception (D415):
     # it re-renders the SAME conversation because it grew underneath the page,
     # so re-folding a chip the reader opened — every five seconds — would be the
     # redraw made visible. The reset sits inside the `!refresh` arm for that.

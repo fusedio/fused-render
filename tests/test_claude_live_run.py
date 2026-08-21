@@ -293,7 +293,7 @@ const fused = {
   },
 };
 const resumeRun = async (id) => { calls.push(["resume", id]); store.run = ""; };
-// The transcript-follower (D413) is the lap's SECOND, coarser reader. These
+// The transcript-follower (D415) is the lap's SECOND, coarser reader. These
 // tests are about the shape of the lap, so it records here; the real one runs
 // under its own harness further down.
 const followTranscript = async (sid) => { calls.push(["follow", sid]); };
@@ -460,7 +460,7 @@ def test_the_lookup_is_the_only_new_agent_action_the_page_calls(html_pane):
     assert html_pane.count('action: "live_run"') == 1
 
 
-# ── the standing watch: a turn nobody on this page started (D413) ────────────
+# ── the standing watch: a turn nobody on this page started (D415) ────────────
 #
 # The window version of the watch only ran around opening a chat, so a session
 # that became busy while the chat sat open lit nothing at all — the reported
@@ -489,7 +489,7 @@ def test_the_watch_asks_once_a_lap_not_eight_times(html_pane):
     """A tick that finds nothing must cost ONE lookup: this runs for the life of
     the page, where the reopen's budget is chasing a run it knows exists.
 
-    Finding nothing is also the ONLY case that reaches the transcript (D413):
+    Finding nothing is also the ONLY case that reaches the transcript (D415):
     with no run to attach, a stat is the page's one remaining way to notice a
     turn someone is driving from a terminal."""
     calls = _watch(html_pane, """
@@ -512,7 +512,7 @@ console.log(JSON.stringify(calls));
 
 
 def test_the_run_dir_is_asked_first_and_the_transcript_only_after(html_pane):
-    """RUN DIRS FIRST, ALWAYS (D413). A run this app spawned streams token by
+    """RUN DIRS FIRST, ALWAYS (D415). A run this app spawned streams token by
     token and owns the chrome; the transcript is the coarser, blinder fallback
     and only speaks for the turns no run dir can account for. So the stat is
     strictly after the lookup, and a turn already ATTACHED skips it entirely —
@@ -694,7 +694,7 @@ def _block_between(html, start_marker, end_marker):
 
 
 
-# ── following a session this app is not driving (D413) ───────────────────────
+# ── following a session this app is not driving (D415) ───────────────────────
 #
 # The gap the run-dir watch above cannot close, by construction: an interactive
 # `claude` in a terminal, or a `claude --resume`, on the very session the chat is
@@ -833,7 +833,7 @@ def test_a_moved_transcript_re_renders_through_the_reload_path(html_pane):
     """`loadHistory`, in REFRESH mode — the same renderer a manual reload used,
     which is what made the reload correct (the background-task chip included)
     and is exactly why this reuses it rather than appending rows of its own.
-    D413 rejected the page tailing ~/.claude/projects and guessing turn
+    D415 rejected the page tailing ~/.claude/projects and guessing turn
     boundaries; this is the alternative it argued for."""
     calls = _follow(html_pane, """
 await followTranscript("sess-A");

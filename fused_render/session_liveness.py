@@ -144,7 +144,7 @@ def transcript_running(path: str, now: float) -> tuple[bool, float]:
 
 def transcript_turn_open(path: str, now: float) -> bool:
     """Is a turn open in this transcript RIGHT NOW — by its last message, not a
-    window (D413).
+    window (D415).
 
     A second rule, deliberately, and the difference is the question. The 45s
     window above answers "has this session been active recently", which is the

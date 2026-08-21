@@ -88,7 +88,7 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     assert "{ neverShown: true }" in code
     done = code[code.index("if (probe.done) {"):]
     done = done[:done.index("scrollBottom();")]
-    # The CONDITION, not its exact wording: D413 added a third way into this same
+    # The CONDITION, not its exact wording: D415 added a third way into this same
     # append (the live watch finding a short turn made in another tab), so the
     # rule this test owns is that `neverShown` is one of the ways in — beside the
     # empty log — and not that it is the only one.

@@ -1464,7 +1464,7 @@ _LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
 # says afterwards is the answer to it. Nobody typed it, so it may never render as
 # a user bubble — it used to, as a screenful of raw XML — but it may not be
 # silently dropped either, because it is the only explanation on screen for a
-# reply that arrives with no message above it (D413).
+# reply that arrives with no message above it (D415).
 _TASK_NOTIFICATION_OPEN = "<task-notification>"
 _TASK_FIELD = re.compile(r"<(summary|status)>(.*?)</\1>", re.DOTALL)
 
@@ -2485,7 +2485,7 @@ def _segments_from_rows(rows: list) -> list:
                         settle(seg, orphans.pop(tool_id))
         elif t == "system" and row.get("subtype") == "task_notification":
             # The harness waking the run because a background shell it started
-            # has finished or been stopped (D413). It is not the model speaking
+            # has finished or been stopped (D415). It is not the model speaking
             # and it is not a tool call, so it is neither text nor a chip — it
             # is the REASON the turn that follows exists, and without it a reply
             # appears out of nowhere under a message the user never sent. One
@@ -2572,7 +2572,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     result_text = None
     new_session = ""
     # `done` IS PER TURN, AND A `result` ONLY ENDS ONE WHILE NOTHING FOLLOWS IT
-    # (D413). One claude process can run several turns: a turn that started a
+    # (D415). One claude process can run several turns: a turn that started a
     # background shell is woken by the harness when the command finishes — a
     # `<task-notification>` prompt this page never sent — and everything the
     # agent then says is written to this same `out.jsonl`, after the `result`
@@ -2704,7 +2704,7 @@ def _poll(run_id: str, file: str = "") -> dict:
         phase = "retrying"
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
-    # started another), or a process that is simply gone (D413).
+    # started another), or a process that is simply gone (D415).
     done = idle or not alive
 
     if not saw_result and done:
@@ -2818,7 +2818,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     # (older CLI without --include-partial-messages).
     text = "".join(text_parts)
     # `saw_result`, not `done`: the fallback is about the row that carries the
-    # text, and a run whose process is still up between turns (D413) has that
+    # text, and a run whose process is still up between turns (D415) has that
     # row already — waiting for the exit would blank a delta-less turn's reply
     # for as long as the run stays awake.
     if not text and saw_result and result_text and not error:
@@ -3332,7 +3332,7 @@ def _history(file: str, session_id: str) -> dict:
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
-    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D413). This
+    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when
     # the file moves past it — and a stat taken AFTER the read would describe
     # rows this payload may not contain, which is a turn silently swallowed. Taken
@@ -3397,7 +3397,7 @@ def _history(file: str, session_id: str) -> dict:
             # typed them and the reader has no use for their XML. Two of them
             # were named literally here; the rest — `<task-notification>` the
             # loudest, a whole notification block rendered as a message bubble —
-            # were not, so they arrived on screen verbatim (D413). One list now,
+            # were not, so they arrived on screen verbatim (D415). One list now,
             # the same `_MACHINERY_DROP` the session names are filtered by.
             # Everything filtered here falls to `stretch`, where
             # `_segments_from_rows` turns a task-notification into its chip and
