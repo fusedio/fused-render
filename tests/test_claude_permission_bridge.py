@@ -2679,6 +2679,16 @@ def test_the_drawn_tick_never_paints_the_other_rows_text_field():
     # reaches it by way of `.qopt`.
     assert ".perm .qopt .qtype {" in html
     assert not re.search(r"^\s*\.perm \.qtype\s*[,{]", html, re.M)
+    # By CLASS, never by element type. The field started as an <input> and is a
+    # <textarea> now (so a long answer wraps instead of scrolling off the side);
+    # a `textarea.qtype` or `input.qtype` anywhere would mean the next such
+    # change silently drops the styling rather than failing loudly.
+    for sel in selectors:
+        for part in sel.split(","):
+            if ".qtype" not in part:
+                continue
+            assert not re.search(r"(input|textarea)\s*(\[|\.qtype)", part), (
+                "%r ties the Other row's field to one element type" % part.strip())
 
 
 def monkey_runs(agent, tmp_path):

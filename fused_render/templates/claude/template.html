@@ -1833,16 +1833,24 @@
   }
   /* Hidden until the row is opened rather than absent from the DOM: the field
      keeps what was typed across an Esc-and-back, and there is nothing to build
-     on the click. Written as `.qopt .qtype` and not `.qtype` so it cannot lose
-     a specificity race to a rule that selects on the row's contents — which is
-     exactly how it first shipped looking like a checkbox. */
+     on the click. Written as `.qopt .qtype` and not `.qtype` — and by CLASS
+     only, never `textarea.qtype` — so it cannot lose a specificity race to a
+     rule that selects on the row's contents (which is exactly how it first
+     shipped looking like a checkbox) and so the element it dresses can change
+     without the styling quietly falling off it.
+
+     A textarea, so a long answer WRAPS inside the row: `resize: none` because a
+     drag handle is a second way to size a box that already sizes itself, and no
+     horizontal scroller at all — an answer that ran off the side could not be
+     read back before it was sent. Height is left to `autoGrow` (one line to
+     start, 200px ceiling, vertical scroll past that), so nothing here sets
+     one. */
   .perm .qopt .qtype {
     display: none;
     box-sizing: border-box;
-    appearance: auto;
-    -webkit-appearance: auto;
+    appearance: none;
+    -webkit-appearance: none;
     width: 100%;
-    height: auto;
     margin: 7px 0 0;
     padding: 6px 9px;
     font: inherit;
@@ -1853,6 +1861,11 @@
     border: 1px solid var(--border-strong);
     border-radius: 8px;
     cursor: text;
+    resize: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
   }
   .perm .qopt.qother.typing .qtype { display: block; }
   .perm .qopt .qtype::placeholder { color: var(--dim); }
@@ -11506,21 +11519,38 @@ function buildQuestionCard(p, run_id) {
     return wrap;
   }
 
-  // The one-line editor an "Other" row opens into. Enter answers, Esc gives the
-  // options back, and a blank box does nothing at all — an empty answer would
-  // reach the model as a question the user "answered" with silence, which is
-  // worse than not answering it. keydown stops here: the pane's own shortcuts
-  // must not read a user typing their answer as commands.
+  // The editor an "Other" row opens into. A TEXTAREA, not a one-line input: an
+  // answer the model did not anticipate is the one most likely to be a sentence
+  // rather than a word, and a single line scrolls it away horizontally — the
+  // user cannot read back what they are about to send. It starts exactly one
+  // line high and grows with the content, through the same `autoGrow` the
+  // composer uses (capped there at 200px, after which it scrolls vertically),
+  // so a long answer wraps inside the row instead of running off the side.
+  //
+  // Enter answers and Shift+Enter breaks the line — the composer's bargain, and
+  // the reason the newline needs a modifier at all: the commonest answer here is
+  // one line, so Enter must finish it. A blank box does nothing at all: an empty
+  // answer would reach the model as a question the user "answered" with silence,
+  // which is worse than not answering it. Esc gives the options back. keydown
+  // stops here so the pane's own shortcuts do not read a user typing their
+  // answer as commands.
   function otherField(placeholder, onEnter, onEscape) {
-    const field = document.createElement("input");
-    field.type = "text";
+    const field = document.createElement("textarea");
     field.className = "qtype";
+    field.rows = 1;
     field.placeholder = placeholder;
+    // `wrap` and the CSS below are the two halves of "never scroll sideways":
+    // this one is what the value carries, that one is what is painted.
+    field.wrap = "soft";
+    const grow = autoGrow(field);
     field.onkeydown = (ev) => {
-      if (ev.key === "Enter") {
+      // Shift+Enter is a newline and nothing else — no preventDefault, so the
+      // textarea inserts it itself, and `grow` runs off the input event.
+      if (ev.key === "Enter" && !ev.shiftKey) {
         ev.preventDefault();
-        // `|| ""` because an input that was never typed into has no value of
-        // its own to trim.
+        // `|| ""` because a field that was never typed into has no value of its
+        // own to trim. Trimmed at the ends only: the newlines a multi-line
+        // answer is made of are part of what the user wrote.
         const value = (field.value || "").trim();
         if (value) onEnter(value);
       } else if (ev.key === "Escape") {
@@ -11534,6 +11564,7 @@ function buildQuestionCard(p, run_id) {
     // unticked the row the user is typing into would be unexplainable.
     field.onclick = (ev) => { ev.stopPropagation(); };
     widgets.push(field);
+    field.grow = grow;
     return field;
   }
 
@@ -11642,7 +11673,10 @@ function buildQuestionCard(p, run_id) {
           () => { wrap.replaceWith(b); b.focus(); });
         body.appendChild(field);
         wrap.appendChild(body);
-        b.onclick = () => { b.replaceWith(wrap); field.focus(); };
+        // grow() BEFORE focus, and only now: a display:none textarea reports a
+        // scrollHeight of 0, so a height measured while the row was closed
+        // would open it flat.
+        b.onclick = () => { b.replaceWith(wrap); field.grow(); field.focus(); };
         widgets.push(b);
         list.appendChild(b);
       } else {
@@ -11668,7 +11702,7 @@ function buildQuestionCard(p, run_id) {
           if (box.checked === open) return;
           open = box.checked;
           row.classList.toggle("typing", open);
-          if (open) field.focus();
+          if (open) { field.grow(); field.focus(); }
         }
         list.addEventListener("change", sync);
         widgets.push(box);
@@ -11676,7 +11710,7 @@ function buildQuestionCard(p, run_id) {
         const own = () => (field.value || "").trim();
         typed = () => (box.checked ? own() : "");
         typing = () => box.checked && !own();
-        focusOther = () => field.focus();
+        focusOther = () => { field.grow(); field.focus(); };
       }
 
       block.appendChild(list);

@@ -18,7 +18,7 @@ markdown probes they need a DOM. `_DOM` below is a hand-built minimal one
 (the same narrow-stub approach as tests/test_claude_app_state.py's `_DOM`,
 widened to what these functions touch: createElement/createTextNode,
 append/appendChild/remove/after/replaceWith/replaceChildren, focus,
-className + classList,
+style (a bare bag) + scrollHeight, className + classList,
 textContent, innerHTML, `open`). No jsdom — the dependency task 1 was told
 not to add, and not needed: nothing here lays out, parses HTML or measures.
 Two properties of the stub are load-bearing for the assertions:
@@ -103,6 +103,10 @@ function makeEl(tag) {
     uid: ++_uid, tagName: String(tag).toUpperCase(), nodeType: 1,
     className: "", children: [], parentElement: null, open: false,
     _text: "", _html: null, attrs: {}, src: undefined, alt: undefined,
+    // autoGrow writes a height and reads a scrollHeight. Neither is measured
+    // here (there is no layout), but both have to EXIST or the shipping
+    // function throws — and it is the shipping function these probes run.
+    style: {}, scrollHeight: 0,
     appendChild(n) {
       if (n.parentElement) n.parentElement.removeChild(n);
       n.parentElement = e; e.children.push(n); return n;
@@ -1392,6 +1396,11 @@ def test_diff_colours_are_theme_variables_defined_in_both_themes(source):
 _CARD_CONSTS_START = "const WHOLE_TOOL_GRANTABLE = new Set(["
 _CARD_CONSTS_END = "const PLAN_NOTE_LIMIT = 2000;"
 _CARD_START = "function permChoices(tool, label, liveMode) {"
+# The composer's auto-growing-textarea helper, lifted verbatim rather than
+# stubbed: the "Other" row's field is a textarea that starts one line high and
+# grows, and it grows through THIS function. A stub would let the card and the
+# composer drift apart on the one behaviour they deliberately share.
+_GROW = ("function autoGrow(el) {", "  return grow;\n}")
 # buildPlanCard's last two lines — the LAST builder in the region, and unique to
 # it (the other two append their status differently), so the window closes on the
 # whole card region and an edit that moves the end is a test error, not a silent
@@ -1479,6 +1488,7 @@ class _CardProbe:
         self.consts = _block(source, _CARD_CONSTS_START, _CARD_CONSTS_END)
         self.perm = _block(source, _PERM_START, _PERM_END)
         self.cards = _block(source, _CARD_START, _CARD_END)
+        self.grow = _block(source, *_GROW)
         self._tmp_path = tmp_path
 
     def build(self, tool_input, actions="", reply=None, perm=None, params=None,
@@ -1503,8 +1513,8 @@ const before = cdump(card.el);
 })();
 """ % (json.dumps(request), json.dumps(reply if reply is not None else {}),
        json.dumps(params or {}), actions)
-        script = "\n".join([_DOM, _CARD_STUBS, self.consts, self.perm,
-                            self.cards, body])
+        script = "\n".join([_DOM, _CARD_STUBS, self.grow, self.consts,
+                            self.perm, self.cards, body])
         return _node(script, self._tmp_path)
 
 
@@ -1597,9 +1607,12 @@ def test_a_multi_select_question_submits_the_ticked_labels_joined(card):
   byClass(card.el, "qsend")[0].children[0].onclick();
   await settle();
 """, reply={"decision": "allow", "answers": {"Which libraries?": "Alpha, Gamma"}})
-    # Three options, the "Other" tick, and the box it opens into.
+    # Three options plus the "Other" tick. The box it opens into is a TEXTAREA,
+    # not a fifth input — a typed answer is the one most likely to be a sentence,
+    # and a single line scrolls it out of sight sideways.
     assert [n["type"] for n in _nodes(got["before"]) if n["tag"] == "input"] \
-        == ["checkbox"] * 4 + ["text"]
+        == ["checkbox"] * 4
+    assert [n["tag"] for n in _nodes(got["before"])].count("textarea") == 1
     assert json.loads(got["sent"][0]["answers"]) == {
         "Which libraries?": "Alpha, Gamma"}
     assert got["sent"][0]["custom"] == "{}"
@@ -1620,7 +1633,7 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
   await settle();
   extra.halfway = {sent: sent.length,
                    status: byClass(card.el, "perm-status")[0].textContent};
-  boxes[5].checked = true;         // Beta, on the second question
+  boxes[4].checked = true;         // Beta, on the second question
   submit();
   await settle();
 """, reply={"decision": "allow"})
@@ -1633,12 +1646,13 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
     # and an "Other" tick in each group, in that group's own shape, followed by
     # the text box it opens.
     inputs = [n for n in _nodes(got["before"]) if n["tag"] == "input"]
-    assert [n["type"] for n in inputs] == \
-        ["radio"] * 3 + ["text"] + ["checkbox"] * 4 + ["text"]
-    # The text boxes are in no group: an "Other" that unticked the question's
-    # options by sharing their name would be answering it by being typed into.
-    assert len({n["name"] for n in inputs if n["type"] != "text"}) == 2
-    assert all(not n["name"] for n in inputs if n["type"] == "text")
+    assert [n["type"] for n in inputs] == ["radio"] * 3 + ["checkbox"] * 4
+    assert len({n["name"] for n in inputs}) == 2
+    # One text box per question, and in no group: an "Other" that unticked the
+    # question's options by sharing their name would be answering it by being
+    # typed into.
+    areas = [n for n in _nodes(got["before"]) if n["tag"] == "textarea"]
+    assert len(areas) == 2 and all(not n["name"] for n in areas)
 
 
 def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
@@ -1659,8 +1673,8 @@ def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
                   // what to do with it.
                   label: byClass(card.el, "lbl")[2].textContent,
                   placeholder: field.placeholder,
-                  boxes: byTag(card.el, "INPUT").filter(
-                    (n) => n.type !== "text").length};
+                  tag: field.tagName, rowsAttr: field.rows,
+                  boxes: byTag(card.el, "INPUT").length};
   field.value = "  Neither — use Delta  ";
   field.onkeydown({key: "Enter", preventDefault(){}, stopPropagation(){}});
   await settle();
@@ -1674,6 +1688,7 @@ def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
     # with nowhere to type. A single-choice question has no tick anywhere on it.
     assert got["extra"]["opened"] == {
         "rows": 3, "buttons": 2, "focused": True, "boxes": 0,
+        "tag": "TEXTAREA", "rowsAttr": 1,
         "label": "Other…", "placeholder": "Type your answer, then press Enter"}
     sent = got["sent"][0]
     # Trimmed, and the SAME string on both channels: `answers` is what the model
@@ -1682,6 +1697,68 @@ def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
     assert json.loads(sent["custom"]) == {"Alpha or Beta?": "Neither — use Delta"}
     assert _by_class(got["tree"], "perm-status")[0]["text"] == \
         "✓ You chose: Neither — use Delta"
+
+
+def test_shift_enter_breaks_the_line_and_a_multi_line_answer_keeps_its_newlines(card):
+    """The composer's bargain, and for the same reason: the commonest answer here
+    is one line, so plain Enter has to finish it — which leaves Shift+Enter as
+    the way to write a second one.
+
+    Shift+Enter is not intercepted at all (no preventDefault), so the textarea
+    inserts the newline itself and `autoGrow` runs off the input event. What
+    finally leaves is trimmed at the ENDS only: the newlines a multi-line answer
+    is made of are part of what the user wrote, and an answer reflowed into one
+    line is not the one they typed.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qother")[0].onclick();
+  const field = byClass(card.el, "qtype")[0];
+  let defaulted = false;
+  const ev = (key, shift) => field.onkeydown(
+    {key, shiftKey: !!shift, preventDefault(){ defaulted = true; },
+     stopPropagation(){}});
+  field.value = "first line";
+  ev("Enter", true);          // the textarea would insert the newline itself
+  extra.shift = {sent: sent.length, prevented: defaulted};
+  field.value = "  first line\\nsecond line  ";
+  ev("Enter", false);
+  await settle();
+""", reply={"decision": "allow"})
+    # Shift+Enter sent nothing AND did not swallow the key.
+    assert got["extra"]["shift"] == {"sent": 0, "prevented": False}
+    assert json.loads(got["sent"][0]["answers"]) == {
+        "Alpha or Beta?": "first line\nsecond line"}
+    assert json.loads(got["sent"][0]["custom"]) == {
+        "Alpha or Beta?": "first line\nsecond line"}
+
+
+def test_the_other_box_grows_with_what_is_typed_into_it(card):
+    """One line to start, taller as it fills — the composer's own `autoGrow`,
+    not a second implementation of it. And it is re-measured when the row OPENS:
+    a display:none textarea reports a scrollHeight of 0, so a height taken while
+    the row was still closed would open it flat.
+
+    Driven on the multi-select card because that is the shape whose field is in
+    the DOM the whole time, closed as well as open — which is exactly the state
+    the re-measure exists for.
+    """
+    got = card.build(_MULTI, actions="""
+  const list = byClass(card.el, "qopts")[0];
+  const field = byClass(card.el, "qtype")[0];
+  extra.whileClosed = field.style.height === undefined ? null : field.style.height;
+  field.scrollHeight = 96;               // as if three lines were in it
+  byTag(card.el, "INPUT")[3].checked = true;
+  list._on.change.forEach((f) => f());
+  extra.onOpen = field.style.height;
+  field.scrollHeight = 4000;             // …and past the composer's ceiling
+  field.grow();
+  extra.capped = field.style.height;
+""")
+    # Never measured while it was closed — that is the reading that is 0.
+    assert got["extra"]["whileClosed"] is None
+    assert got["extra"]["onOpen"] == "96px"
+    # The 200px ceiling is autoGrow's, and it still applies here.
+    assert got["extra"]["capped"] == "200px"
 
 
 def test_an_empty_other_box_sends_nothing_and_escape_gives_the_options_back(card):
