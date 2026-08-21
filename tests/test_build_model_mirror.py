@@ -67,6 +67,20 @@ def _cache(tmp_path, contents, repo_id="org/m", commit=COMMIT, ref="main"):
     return str(cache)
 
 
+def _listing(*names):
+    """A stand-in for the Hub's file listing at a commit.
+
+    Injected in every test, so nothing here reaches huggingface.co — but
+    `read_manifest` requires one, because "this manifest lists the whole repo"
+    is a claim only the Hub can settle and the build machine is the right place
+    to settle it.
+    """
+    def listing(repo_id, commit):
+        return set(names)
+
+    return listing
+
+
 CONTENTS = {
     "config.json": b'{"model_type": "test"}',
     "model.safetensors": hashlib.sha256(b"weights").digest() * 6250,  # 200_000 B
@@ -82,9 +96,11 @@ def test_the_manifest_is_read_out_of_the_cache_not_transcribed(script, tmp_path)
     from the blobs. All three correct by construction, which is the point."""
     cache = _cache(tmp_path, CONTENTS)
 
-    manifest = script.read_manifest(cache, "org/m")
+    manifest = script.read_manifest(cache, "org/m",
+                                    listing=_listing(*CONTENTS))
 
     assert manifest["schema"] == 1
+    assert manifest["complete"] is True
     assert manifest["repo"] == "org/m"
     assert manifest["commit"] == COMMIT
     assert [entry["name"] for entry in manifest["files"]] == [
@@ -105,7 +121,8 @@ def test_the_commit_comes_from_the_ref_not_from_listing_snapshots(script, tmp_pa
     stale = os.path.join(cache, "models--org--m", "snapshots", "b" * 40)
     os.makedirs(stale)
 
-    assert script.read_manifest(cache, "org/m")["commit"] == COMMIT
+    assert script.read_manifest(
+        cache, "org/m", listing=_listing(*CONTENTS))["commit"] == COMMIT
 
 
 def test_two_names_for_one_blob_are_one_upload_and_two_entries(script, tmp_path):
@@ -115,7 +132,8 @@ def test_two_names_for_one_blob_are_one_upload_and_two_entries(script, tmp_path)
     body = b"shared bytes" * 100
     cache = _cache(tmp_path, {"a.bin": body, "b.bin": body})
 
-    manifest = script.read_manifest(cache, "org/m")
+    manifest = script.read_manifest(cache, "org/m",
+                                    listing=_listing("a.bin", "b.bin"))
     uploads = script.plan(cache, manifest)
 
     assert len(manifest["files"]) == 2
@@ -129,7 +147,8 @@ def test_the_manifest_is_uploaded_last(script, tmp_path):
     manifest promising bytes the mirror does not hold, which a client can only
     discover mid-download."""
     cache = _cache(tmp_path, CONTENTS)
-    uploads = script.plan(cache, script.read_manifest(cache, "org/m"))
+    uploads = script.plan(cache, script.read_manifest(
+        cache, "org/m", listing=_listing(*CONTENTS)))
 
     assert uploads[-1]["key"] == "models/org/m/manifest.json"
     assert not any(item["key"].endswith("manifest.json") for item in uploads[:-1])
@@ -146,21 +165,29 @@ def test_a_snapshot_that_is_not_a_cache_entry_is_refused(script, tmp_path):
         handle.write(b"{}")
 
     with pytest.raises(ValueError, match="not an"):
-        script.read_manifest(cache, "org/m")
+        script.read_manifest(cache, "org/m", listing=_listing(*CONTENTS))
 
 
-def test_a_repo_the_cache_does_not_hold_is_skipped_not_fatal(script, tmp_path,
-                                                             capsys):
-    """One model missing from a machine's cache must not stop the other twenty
-    from being published."""
+def test_a_repo_the_cache_does_not_hold_is_skipped_but_the_run_fails(script,
+                                                                     tmp_path,
+                                                                     monkeypatch,
+                                                                     capsys):
+    """Skipping one model must not stop the other twenty — and must not exit 0.
+
+    Publishing 19 of 20 with a green exit is how a suggested model goes missing
+    from the mirror unnoticed: its download quietly stays on the Hub, which is
+    invisible BY DESIGN, so the exit code is the only place this can be caught.
+    """
     cache = _cache(tmp_path, CONTENTS)
+    monkeypatch.setattr(script, "hub_listing", _listing(*CONTENTS))
 
     code = script.main(["--cache", cache, "--model", "org/m",
                         "--model", "org/never-downloaded"])
 
     out = capsys.readouterr().out
-    assert code == 0, "a partial run is a partial run, not a failure"
+    assert code == 1, "an incomplete publish exited green"
     assert "org/never-downloaded: SKIPPED" in out
+    # …and the loop carried on: the model that WAS there is still planned.
     assert "would upload models/org/m/manifest.json" in out
 
 
@@ -175,6 +202,7 @@ def test_nothing_is_uploaded_without_being_asked(script, tmp_path, monkeypatch,
 
     monkeypatch.setattr(script.subprocess, "run", no)
     monkeypatch.setattr(script.shutil, "which", no)
+    monkeypatch.setattr(script, "hub_listing", _listing(*CONTENTS))
 
     assert script.main(["--cache", cache, "--model", "org/m"]) == 0
     assert "would upload" in capsys.readouterr().out
@@ -186,7 +214,8 @@ def test_an_upload_skips_a_blob_whose_key_is_already_there(script, tmp_path,
     exactly the bytes it would be given. Existence is the whole check — a
     re-read of a 4.6GB shard to prove it is not."""
     cache = _cache(tmp_path, CONTENTS)
-    manifest = script.read_manifest(cache, "org/m")
+    manifest = script.read_manifest(cache, "org/m",
+                                    listing=_listing(*CONTENTS))
     uploads = script.plan(cache, manifest)
     monkeypatch.setattr(script.shutil, "which", lambda name: "/usr/bin/aws")
     calls = []
@@ -221,7 +250,8 @@ def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
     """
     mirror, base = mirror_and_base
     source = _cache(tmp_path, CONTENTS)
-    manifest = script.read_manifest(source, "org/m")
+    manifest = script.read_manifest(source, "org/m",
+                                    listing=_listing(*CONTENTS))
 
     routes = {"/models/org/m/manifest.json": json.dumps(manifest).encode()}
     for entry in manifest["files"]:
@@ -270,3 +300,107 @@ def test_the_scripts_schema_is_the_one_the_client_understands(script,
 @pytest.fixture()
 def mirror_and_base():
     return _fresh_mirror(), _fresh_base()
+
+
+# -- completeness is proven here, not assumed (review findings 3 and 4) ----------
+
+
+def test_a_snapshot_missing_a_file_the_repo_HAS_is_refused(script, tmp_path):
+    """The bug this whole check exists for, and it is not hypothetical.
+
+    `torch_image._download` fetches a GGUF-recipe image model with
+    `allow_patterns=recipe["keep"]`, so any build machine that ever LOADED one
+    holds a deliberately partial cache for it. The folder exists, so nothing
+    re-downloads, and a manifest describing only the allow-list subset gets
+    published. A client with no recipe then selects everything in that manifest,
+    fetches the subset, records it complete, and the model is permanently broken
+    — the exact class of failure this script's docstring says it exists to
+    prevent.
+
+    The Hub is the only authority on what a repo contains, and asking it HERE
+    costs nothing: this runs on a build machine, not in a user's runner.
+    """
+    cache = _cache(tmp_path, {"model.safetensors": b"weights" * 100})
+
+    with pytest.raises(ValueError, match="config.json"):
+        script.read_manifest(cache, "org/m",
+                             listing=_listing("model.safetensors", "config.json"))
+
+
+def test_a_manifest_is_only_marked_complete_when_it_was_checked(script, tmp_path):
+    """`complete` is an assertion about the Hub listing, so it is written only
+    where that comparison happened. The client refuses a manifest without it."""
+    cache = _cache(tmp_path, CONTENTS)
+
+    manifest = script.read_manifest(cache, "org/m", listing=_listing(*CONTENTS))
+
+    assert manifest["complete"] is True
+
+
+def test_hfs_own_bookkeeping_inside_a_snapshot_is_not_a_repo_file(script, tmp_path):
+    """Newer `snapshot_download` writes `.cache/huggingface/download/*.metadata`
+    INSIDE the snapshot directory.
+
+    A walk that treats those as repo files publishes entries whose realpath is
+    not a blob, which would abort every real model on a modern cache. Skipped by
+    name, because that directory is hf's private state and not repo content.
+    """
+    cache = _cache(tmp_path, CONTENTS)
+    junk = os.path.join(cache, "models--org--m", "snapshots", COMMIT,
+                        ".cache", "huggingface", "download")
+    os.makedirs(junk)
+    with open(os.path.join(junk, "config.json.metadata"), "w") as handle:
+        handle.write("not a blob")
+
+    manifest = script.read_manifest(cache, "org/m", listing=_listing(*CONTENTS))
+
+    assert [entry["name"] for entry in manifest["files"]] == sorted(CONTENTS)
+
+
+def test_fetch_missing_completes_a_cache_that_is_merely_PRESENT(script, tmp_path,
+                                                                monkeypatch,
+                                                                capsys):
+    """"The folder exists" is not "the repo is here".
+
+    That was the whole of the old condition, and a scoped download leaves a
+    folder that exists and holds a tenth of the repo. `--fetch-missing` now
+    always asks hf to complete it, which for a cache that IS complete costs one
+    etag revalidation — nothing, on a release script.
+    """
+    cache = _cache(tmp_path, CONTENTS)
+    fetched = []
+    monkeypatch.setattr(script, "fetch_missing",
+                        lambda repo_id, into: fetched.append(repo_id))
+    monkeypatch.setattr(script, "hub_listing", _listing(*CONTENTS))
+
+    script.main(["--cache", cache, "--model", "org/m", "--fetch-missing"])
+
+    assert fetched == ["org/m"], "an existing folder was assumed complete"
+
+
+def test_without_fetch_missing_nothing_is_downloaded(script, tmp_path, monkeypatch):
+    """Reading a cache is the default and stays offline apart from the listing;
+    downloading gigabytes is opt-in."""
+    cache = _cache(tmp_path, CONTENTS)
+
+    def no(*args, **kwargs):
+        raise AssertionError("a plain run downloaded a model")
+
+    monkeypatch.setattr(script, "fetch_missing", no)
+    monkeypatch.setattr(script, "hub_listing", _listing(*CONTENTS))
+
+    assert script.main(["--cache", cache, "--model", "org/m"]) == 0
+
+
+def test_a_zero_byte_file_is_published_like_any_other(script, tmp_path):
+    """An empty file is legal on the Hub. Refusing the repo over one would take
+    a whole model off the mirror because of a file with nothing in it."""
+    cache = _cache(tmp_path, {"model.safetensors": b"w" * 100, "empty.txt": b""})
+
+    manifest = script.read_manifest(cache, "org/m",
+                                    listing=_listing("model.safetensors",
+                                                     "empty.txt"))
+
+    empty = next(e for e in manifest["files"] if e["name"] == "empty.txt")
+    assert empty["size"] == 0
+    assert empty["sha256"] == hashlib.sha256(b"").hexdigest()

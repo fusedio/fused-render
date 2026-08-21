@@ -6023,9 +6023,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   "did this user download a model", with no telemetry in the app at all — one
   `manifest.json` request per download attempt, made before a single byte moves,
   and logged even on a cache hit. Two objects, not a protocol:
-  `/models/<org>/<name>/manifest.json` (mutable, short TTL — the commit, and every
-  file's name, size, etag and sha256) and `/models/<org>/<name>/<commit>/<etag>`
-  (immutable, one per distinct etag, range-fetched by the existing chunk queue).
+  `/models/<org>/<name>/manifest.json` (mutable, short TTL — the commit, every
+  file's name, size, etag and sha256, and a `complete` flag) and
+  `/models/<org>/<name>/<commit>/<etag>` (immutable, one per distinct etag,
+  range-fetched by the existing chunk queue).
   Deliberately NOT `HF_ENDPOINT`, which is a protocol switch: the mirror would owe
   `/api/models/…`, the `x-linked-etag`/`x-linked-size`/`x-repo-commit` resolve
   headers and Xet's `xet-read-token`, none of which our two shapes have. **What
@@ -6042,13 +6043,43 @@ an AI Models page that could say what was on disk but not what was *running*.
   schema version, a manifest whose fields do not hold up, a mid-download drop, a
   hash mismatch — and says which path gave up on stderr. A mirror that is down
   costs a slower download, never a failed one, and only `Cancelled` escapes (AI-5e:
-  a ✕ must never be answered by starting a download somewhere else). **The
+  a ✕ must never be answered by starting a download somewhere else). **That
+  promise does not rest on having enumerated the exceptions a URL library
+  raises**: `http.client.HTTPException` is neither an `OSError` nor a
+  `ValueError`, so `IncompleteRead` off a truncated chunked body escaped the
+  client's own guard AND the branch's, and a misbehaving mirror host FAILED a
+  download the Hub could have served — so the client names that family (as
+  `_TRANSIENT` always did) and the whole branch, manifest call included, sits
+  inside one guard. **A 401 or 403 on a mirror blob is never re-resolved against
+  the Hub.** On the Hub path a 401 means an expired presigned URL and re-resolving
+  is right; here the blob URL is commit-pinned and immutable, so there is nothing
+  to refresh and the ordinary retry budget is the whole answer. Re-resolving
+  anyway did two silent harms: a request to huggingface.co in the middle of the
+  one download that must not make one, and — because Hub metadata carries no
+  `sha256` and the replacement was wholesale — the disappearance of the hash
+  check below, with the etag/size/commit guard still passing because a mirror
+  etag IS an hf blob name. The digest is therefore fixed at plan time rather than
+  read from the live metadata at publish time, so no later reassignment can turn
+  it off again. **The
   manifest is a trust boundary and is validated field by field**, because the
   failure that matters is not a 500 but a manifest that is plausible and wrong: a
   commit that is not 40 lower-case hex names no snapshot directory, an etag that
   is not hex can name a path inside `blobs/`, a file name containing `..` writes
   outside the snapshot, and a size or digest that lies puts bad bytes under a real
-  etag. Rejection reads as NO MIRROR rather than as an error. **Blobs are hashed
+  etag. Rejection reads as NO MIRROR rather than as an error. A size of ZERO is
+  accepted, though: an empty file is legal on the Hub, hf caches it like any
+  other, and the fetcher already handles a zero-length segment — refusing the
+  manifest over one would take a whole model off the mirror because of a file
+  with nothing in it. **A manifest must also assert `complete: true`**, meaning
+  it lists every file in the repo at that commit, and the client refuses one that
+  does not. This is not ceremony: the client writes an AI-5k fetch record from
+  that file list, and a list taken from the same document being trusted would
+  make the record self-certifying — a manifest missing `config.json` downloads a
+  subset, records the subset as complete at that scope, and every later bring-up
+  is served a snapshot that cannot load, with nothing left that would refetch it.
+  The client cannot settle completeness itself (the only independent authority is
+  the Hub, and asking it defeats the feature), so the proof lives at BUILD time
+  and this flag is where it is recorded. **Blobs are hashed
   on the mirror path and not on the Hub path**, and the asymmetry is the point:
   here we are the origin, so nobody else would notice a bad byte we shipped, and a
   wrong blob under a real etag is permanent — hf's own loaders serve it out of the
@@ -6070,7 +6101,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   blobs), never transcribed — that is the one part of this that would otherwise
   fail silently and permanently — and `tests/test_build_model_mirror.py` round-trips
   the generated manifest through the client, which is what keeps the two halves
-  honest. Explicitly out of scope: `FUSED_MODEL_MIRROR` is **unset on every shipped
+  honest. **The generator proves completeness against the Hub's own listing at
+  that commit and refuses to publish a partial snapshot**, which is what earns the
+  `complete` flag; on a build machine a Hub round trip tells huggingface.co
+  nothing about any user, so the check costs only the thing it is worth. "The
+  folder exists" is explicitly NOT that proof and was the original bug:
+  `torch_image` fetches its image models with `allow_patterns=recipe["keep"]`, so
+  any build machine that ever LOADED one holds a deliberately partial cache for
+  it, and `--fetch-missing` therefore completes every model unconditionally rather
+  than only when the folder is absent. hf's own `.cache/` bookkeeping inside a
+  snapshot is skipped rather than published as repo content, and **any model
+  skipped is a non-zero exit** — the loop stays tolerant so one absent model does
+  not stop the other nineteen, but publishing 19 of 20 green is how a suggested
+  model goes missing from the mirror unnoticed, since its download quietly staying
+  on the Hub is invisible by design. Explicitly out of scope: `FUSED_MODEL_MIRROR` is **unset on every shipped
   build**, so this changes nothing until an operator points it somewhere;
   component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
   tens of megabytes and not the "downloaded a model" signal; and the mirror pins a

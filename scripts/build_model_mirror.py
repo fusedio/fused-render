@@ -88,7 +88,28 @@ def read_commit(folder: str, ref: str = "main") -> str:
     return commit
 
 
-def read_manifest(cache: str, repo_id: str, ref: str = "main") -> dict:
+#: hf's own bookkeeping, written INSIDE a snapshot directory by newer
+#: `snapshot_download` versions (`.cache/huggingface/download/*.metadata`). Not
+#: repo content, and its files do not resolve to blobs — a walk that treated
+#: them as repo files would abort every real model on a modern cache.
+_HF_PRIVATE = ".cache"
+
+
+def hub_listing(repo_id: str, commit: str) -> set:
+    """Every filename the Hub says this repo holds at `commit`.
+
+    The one authority on what a repo CONTAINS, and the reason `read_manifest`
+    can promise completeness at all. Asking it here is free of the concern that
+    governs the client: this runs on a build machine, not in a user's runner, so
+    a Hub round trip tells huggingface.co nothing about any user.
+    """
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(repo_id, revision=commit)
+    return {sibling.rfilename for sibling in getattr(info, "siblings", None) or []}
+
+
+def read_manifest(cache: str, repo_id: str, ref: str = "main", listing=None) -> dict:
     """The manifest for one repo, read entirely out of its cache directory.
 
     Every snapshot entry is a link (or a copy, on a filesystem without symlinks)
@@ -96,6 +117,18 @@ def read_manifest(cache: str, repo_id: str, ref: str = "main") -> dict:
     the basename, and the bytes to hash are right there. A repo publishing the
     same bytes under two names yields two entries sharing one etag, which is what
     the client turns back into one download and two links.
+
+    **A snapshot that is missing a file the repo HAS is refused**, checked
+    against `listing` — because a cache directory existing says nothing about it
+    being whole. `torch_image._download` fetches its image models with
+    `allow_patterns=recipe["keep"]`, so any machine that ever loaded one holds a
+    deliberately partial cache for it, and a manifest of that subset is a
+    permanently broken model on every client that installs it: the client selects
+    everything the manifest lists, gets the subset, and records it as complete.
+    Which is exactly the "fails silently and permanently" class this script
+    exists to prevent, so the check belongs here and the resulting manifest says
+    `complete: true` — the assertion the client requires before it will trust the
+    file list enough to write a fetch record from it.
     """
     folder = repo_folder(cache, repo_id)
     commit = read_commit(folder, ref)
@@ -103,7 +136,8 @@ def read_manifest(cache: str, repo_id: str, ref: str = "main") -> dict:
     if not os.path.isdir(root):
         raise ValueError(f"{repo_id}: no snapshot for {commit} in {folder}")
     files, digests = [], {}
-    for dirpath, _dirs, names in os.walk(root):
+    for dirpath, dirs, names in os.walk(root):
+        dirs[:] = [name for name in dirs if name != _HF_PRIVATE]
         for name in sorted(names):
             path = os.path.join(dirpath, name)
             relative = os.path.relpath(path, root).replace(os.sep, "/")
@@ -114,9 +148,10 @@ def read_manifest(cache: str, repo_id: str, ref: str = "main") -> dict:
                     f"{repo_id}: {relative} resolves to {etag!r}, which is not an "
                     f"etag — is this snapshot a `local_dir` copy rather than a "
                     f"cache entry?")
+            # No lower bound: an empty file is legal on the Hub, hf caches it
+            # like any other, and refusing the repo over one would take a whole
+            # model off the mirror because of a file with nothing in it.
             size = os.path.getsize(blob)
-            if size <= 0:
-                raise ValueError(f"{repo_id}: {relative} is empty")
             # Hashed once per BLOB, not once per name: two names sharing an etag
             # are the same bytes by definition.
             if etag not in digests:
@@ -126,7 +161,19 @@ def read_manifest(cache: str, repo_id: str, ref: str = "main") -> dict:
     if not files:
         raise ValueError(f"{repo_id}: the snapshot for {commit} is empty")
     files.sort(key=lambda entry: entry["name"])
-    return {"schema": SCHEMA, "repo": repo_id, "commit": commit, "files": files}
+    # Refused, never trimmed to what is there: a manifest of "whatever this
+    # machine happens to hold" is the bug, not the fix.
+    expected = (listing or hub_listing)(repo_id, commit)
+    missing = sorted(expected - {entry["name"] for entry in files})
+    if missing:
+        raise ValueError(
+            f"{repo_id}: the cached snapshot for {commit[:12]} is missing "
+            f"{len(missing)} of the {len(expected)} files the Hub lists "
+            f"({', '.join(missing[:4])}{', …' if len(missing) > 4 else ''}). "
+            f"Re-run with --fetch-missing; a partial snapshot must never be "
+            f"published, because a client cannot tell one from a whole repo.")
+    return {"schema": SCHEMA, "repo": repo_id, "commit": commit,
+            "complete": True, "files": files}
 
 
 def sha256_of(path: str) -> str:
@@ -228,7 +275,7 @@ def main(argv=None) -> int:
                         help="repo id; repeatable. Default: every suggested model")
     parser.add_argument("--ref", default="main", help="the ref to publish")
     parser.add_argument("--fetch-missing", action="store_true",
-                        help="download a model that is not in the cache yet")
+                        help="ask hf to complete each model's cache first")
     parser.add_argument("--json", default=None,
                         help="write each manifest into this directory as well")
     parser.add_argument("--upload", default=None, metavar="S3URI",
@@ -239,8 +286,14 @@ def main(argv=None) -> int:
     models = args.models or suggested_ids()
     failed = []
     for repo_id in models:
-        if args.fetch_missing and not os.path.isdir(repo_folder(cache, repo_id)):
-            print(f"{repo_id}: downloading into {cache}")
+        if args.fetch_missing:
+            # UNCONDITIONALLY, not only when the folder is absent. "The folder
+            # exists" was the old condition and it is not the same question: a
+            # scoped download (`allow_patterns`) leaves a folder that exists and
+            # holds a tenth of the repo, and the manifest built from it would be
+            # a permanently broken model. For a cache that IS complete this costs
+            # one etag revalidation, which is nothing on a release script.
+            print(f"{repo_id}: completing the cache in {cache}")
             fetch_missing(repo_id, cache)
         try:
             manifest = read_manifest(cache, repo_id, args.ref)
@@ -266,7 +319,12 @@ def main(argv=None) -> int:
         else:
             for item in uploads:
                 print(f"  would upload {item['key']}")
-    return 1 if failed and len(failed) == len(models) else 0
+    # ANY skip is a non-zero exit, not only a total wipeout. Publishing 19 of 20
+    # with a green exit is how a suggested model goes missing from the mirror
+    # unnoticed — its download quietly stays on the Hub, which is invisible by
+    # design, so the exit code is the only place it can be caught. The loop
+    # itself stays tolerant: one absent model must not stop the other nineteen.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
