@@ -282,6 +282,57 @@ def test_a_preauth_body_that_stops_early_does_not_park_the_thread(
     assert waited < 3.0, waited
 
 
+def test_an_unparseable_preauth_content_length_is_not_guessed_at(base):
+    """A length that is not a number leaves no way to know where the body
+    stops, so the drain cannot claim it read one. Refuse and close rather than
+    fall through to a zero-length read and keep the connection."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: twelve\r\n"
+                b"\r\n" + b"x" * 12)
+            data = _read_all(s)
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+
+
+def test_a_preauth_body_cut_short_by_a_close_is_not_waited_out(base, monkeypatch):
+    """The client half-closes instead of going quiet, so the read hits EOF
+    rather than the timeout. That is the same verdict — the promised bytes are
+    not there — and it must not cost the full DRAIN_TIMEOUT_S to reach, which
+    is what the generous timeout here would expose."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    monkeypatch.setattr(base, "DRAIN_TIMEOUT_S", 30.0)
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 4096\r\n"
+                b"\r\n" + b"x" * 10)   # promised 4096, sent 10...
+            s.shutdown(socket.SHUT_WR)   # ...and there will be no more
+            started = time.monotonic()
+            data = _read_all(s)
+            waited = time.monotonic() - started
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+    # EOF, not the 30s timeout.
+    assert waited < 5.0, waited
+
+
 def test_a_missing_token_is_refused_too(base):
     base.TOKEN = "secret"
     server = _serve(base, lambda body: {"ok": True})
