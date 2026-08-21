@@ -1250,10 +1250,21 @@ def _manager(name="alpha"):
 # generous ceiling here rather than a tighter one now that the agent cost is
 # gone. This is slack for "did the async op finish at all" in the common wait
 # helpers below, not a precision measurement of how FAST it had to be —
-# widening it on Windows costs nothing but wall-clock time in CI. (A couple of
-# tests below pin their own tighter timeout on purpose, to prove something
-# resolved quickly rather than merely at all; those are left alone.)
-_WAIT_TIMEOUT_S = 45 if sys.platform == "win32" else 8
+# widening it costs nothing but wall-clock time in CI. (A couple of tests below
+# pin their own tighter timeout on purpose, to prove something resolved quickly
+# rather than merely at all; those are left alone.)
+#
+# One value for every platform, not a Windows-only allowance. The Linux budget
+# used to be 8s, and test-python (3.10) failed on it with merge_seq still 0 and
+# push_state "idle" -- the watcher had not completed a SINGLE pull+merge cycle,
+# ~80 missed polls at this file's PULL_POLL_S, while 3.11/3.12/3.13 passed the
+# same commit. Locally the merge lands in well under half a second, so this is
+# an xdist worker starved of CPU (or of a contended CI disk) for the whole
+# budget, not a slow merge. Since the helpers return the instant the predicate
+# holds, a passing run pays nothing for the extra headroom -- the ceiling only
+# bounds how long a genuine failure takes to report, and 8s of it bought
+# nothing but a flake.
+_WAIT_TIMEOUT_S = 45
 
 
 def _wait_for(predicate, timeout=_WAIT_TIMEOUT_S):
