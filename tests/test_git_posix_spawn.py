@@ -637,15 +637,30 @@ def test_the_sweeps_skip_a_runner_venv(tmp_path):
     (pkg / "server" / "real.py").write_text(
         'import subprocess\nsubprocess.run(["git", "status"])\n')
 
+    # `as_posix()`, not `str()`: `_sources` hands back `pathlib.Path`s, so a
+    # relative path stringifies with the OS separator and every forward-slash
+    # literal below is `server\\real.py` on Windows. That is exactly how this
+    # test first failed — on `test-python-windows` only, with the sweep behaving
+    # perfectly and the COMPARISON wrong. Normalising the found side keeps the
+    # literals readable and keeps the set equality EXACT, which is the strictness
+    # that makes this test non-tautological; loosening it to a substring or a
+    # length check would have hidden the real bug it exists to catch.
+    #
+    # `test_subprocess_encoding.test_an_installed_runner_venv_is_skipped` is the
+    # sibling of this test and builds its expected value with `os.path.join`
+    # instead. That is not an inconsistency to tidy up: its `_py_files` yields
+    # `os.path.relpath` STRINGS, so a native-separator expectation is the
+    # same-shaped comparison there, exactly as `as_posix()` is here. Converting
+    # either one to the other's style reintroduces this bug.
     root, files = _sources(pkg)
-    found = {str(p.relative_to(root)) for p in files}
+    found = {p.relative_to(root).as_posix() for p in files}
     assert found == {"server/real.py"}, (
         "the vendored runner venv is being swept as if it were our source")
 
     # …and the exclusion has not silently eaten the package it exists to protect.
     real_root, real_files = _sources()
     assert len(real_files) > 200, "the prune is excluding first-party source"
-    rel = {str(p.relative_to(real_root)) for p in real_files}
+    rel = {p.relative_to(real_root).as_posix() for p in real_files}
     assert "server/gitignore.py" in rel        # the git gate itself
     assert "ai/runners/worker_base.py" in rel  # runner source, next to the venvs
 

@@ -129,6 +129,15 @@ def test_an_installed_runner_venv_is_skipped(tmp_path):
     (runner / "worker.py").write_text(
         "import subprocess\nsubprocess.run(['x'], text=True)\n")
 
+    # `os.path.join` for the expectation, not a "fused_render/ai/..." literal:
+    # `_py_files` yields `os.path.relpath` strings, which carry the OS separator,
+    # so a forward-slash literal here would pass on Linux and fail on Windows
+    # only. `test_git_posix_spawn.test_the_sweeps_skip_a_runner_venv` — this
+    # test's sibling — shipped exactly that bug and was caught by
+    # `test-python-windows`; it normalises with `Path.as_posix()` instead,
+    # because `_sources` there hands back `Path` objects rather than strings.
+    # Two different styles, each matching what its own walker returns. Do not
+    # unify them.
     swept = set(_py_files(str(tmp_path)))
     assert swept == {os.path.join("fused_render", "ai", "runners",
                                   "llamacpp_text", "worker.py")}
