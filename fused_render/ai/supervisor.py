@@ -217,6 +217,15 @@ class Worker:
     device: str = ""
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
+    #: `time.monotonic()` of the last thing this worker did, and how many turns
+    #: are doing it right now. Seeded at construction — not left `None` until
+    #: first use — so a model nobody has generated on yet still has a well-formed
+    #: idle age rather than a crash in `reap_idle` (AI-13). Monotonic, not
+    #: `time.time()`: see Key decisions in the AI-13 plan — wall-clock jumps
+    #: (DST, NTP, a laptop's clock stepping on wake) must not make a model look
+    #: idle for longer than it was, or fresher than it is.
+    last_activity: float = field(default_factory=time.monotonic)
+    in_flight: int = 0
     #: Set when the user cancels or a newer load evicts this one. The bring-up
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
@@ -298,6 +307,50 @@ def _health(worker: Worker) -> dict | None:
             return json.loads(response.read().decode() or "{}")
     except (OSError, ValueError):
         return None
+
+
+def _touch(worker: Worker) -> None:
+    """Re-stamp `last_activity` mid-turn, without touching `in_flight`.
+
+    For the events inside a long stream: `_in_use` alone would only mark the
+    worker busy at the START of a generation, and a transcription running
+    twenty minutes on one request would look no fresher at minute nineteen
+    than at minute one. The idle reaper (AI-13) reads only this stamp for a
+    `ready` worker with nothing in flight, so a still-busy worker never needs
+    this call to be spared — but the plan wraps every yielded chunk in it
+    anyway, since a stalled loop on the worker side (no chunks, `in_flight`
+    still 1) is exactly the leak `reap_idle`'s ceiling is for.
+    """
+    with _lock:
+        worker.last_activity = time.monotonic()
+
+
+@contextlib.contextmanager
+def _in_use(worker: Worker):
+    """Bracket one turn of generation on `worker`, for the idle reaper (AI-13).
+
+    Stamps and increments on entry, stamps and decrements in `finally` — both
+    under `_lock`, since `reap_idle` reads `last_activity` and `in_flight` from
+    the reaper thread while a generation may be mutating them from its own.
+
+    **The `finally` is what makes a client disconnect mid-stream release the
+    counter.** `generate_text` is a generator built around this context
+    manager: a page that stops iterating without calling `close()` still
+    unwinds through here when the generator is garbage-collected, because a
+    `with` block inside a generator runs its `finally` on `GeneratorExit` same
+    as on a normal return. Without it, one abandoned stream would pin
+    `in_flight` at 1 and hold the model resident forever — worse than no idle
+    unload at all (see the leak-ceiling decision).
+    """
+    with _lock:
+        worker.last_activity = time.monotonic()
+        worker.in_flight += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            worker.last_activity = time.monotonic()
+            worker.in_flight -= 1
 
 
 # ------------------------------------------------------------------- lifecycle
@@ -1223,20 +1276,23 @@ def generate_text(model: str, body: dict):
         started = load(model, registry.TEXT_GENERATION)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
-    try:
-        response = _worker_request(worker, "/generate", body=body,
-                                   timeout=GENERATE_TIMEOUT_S)
-    except (OSError, ValueError) as e:
-        raise SupervisorError(f"the model process did not answer: {e}") from e
-    with response:
-        for line in response:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line.decode())
-            except ValueError:
-                continue
+    with _in_use(worker):
+        try:
+            response = _worker_request(worker, "/generate", body=body,
+                                       timeout=GENERATE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the model process did not answer: {e}") from e
+        with response:
+            for line in response:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line.decode())
+                except ValueError:
+                    continue
+                _touch(worker)
+                yield event
 
 
 def _wait_ready(model: str, capability: str, job: str,
@@ -1323,16 +1379,17 @@ def generate_image(model: str, request: dict, job: str) -> dict:
     if worker is None:
         worker = _wait_ready(model, registry.IMAGE_GENERATION, job)
 
-    try:
-        response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                   timeout=GENERATE_TIMEOUT_S)
-    except (OSError, ValueError) as e:
-        raise SupervisorError(f"the image process did not answer: {e}") from e
-    with response:
+    with _in_use(worker):
         try:
-            payload = json.loads(response.read().decode() or "{}")
-        except ValueError as e:
-            raise SupervisorError("the image process sent a malformed reply") from e
+            response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                       timeout=GENERATE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the image process did not answer: {e}") from e
+        with response:
+            try:
+                payload = json.loads(response.read().decode() or "{}")
+            except ValueError as e:
+                raise SupervisorError("the image process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
@@ -1472,17 +1529,18 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
             # evicted row.
             worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job,
                                  row=request.get("row"))
-        try:
-            response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                       timeout=TRANSCRIBE_TIMEOUT_S)
-        except (OSError, ValueError) as e:
-            raise SupervisorError(f"the transcription process did not answer: {e}") from e
-        with response:
+        with _in_use(worker):
             try:
-                payload = json.loads(response.read().decode() or "{}")
-            except ValueError as e:
-                raise SupervisorError(
-                    "the transcription process sent a malformed reply") from e
+                response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                           timeout=TRANSCRIBE_TIMEOUT_S)
+            except (OSError, ValueError) as e:
+                raise SupervisorError(f"the transcription process did not answer: {e}") from e
+            with response:
+                try:
+                    payload = json.loads(response.read().decode() or "{}")
+                except ValueError as e:
+                    raise SupervisorError(
+                        "the transcription process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):

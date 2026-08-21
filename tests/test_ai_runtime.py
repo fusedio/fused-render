@@ -1958,6 +1958,42 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
 
 
+# -- per-worker activity, for the idle reaper (AI-13) ------------------------
+
+
+def test_a_streamed_chunk_re_stamps_last_activity(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 999
+    list(supervisor.generate_text("org/chat", {"messages": []}))
+    # Every yielded chunk re-stamps, not just entry — a stream running longer
+    # than the idle window must never look idle partway through it.
+    assert time.monotonic() - worker.last_activity < 5
+
+
+def test_closing_a_partially_read_stream_frees_in_flight(fake_runner):
+    # `generate_text` is a generator: a page that stops iterating without
+    # calling `close()` is exactly the leak the `finally` in `_in_use` exists
+    # to prevent (see Key decisions).
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    stream = supervisor.generate_text("org/chat", {"messages": []})
+    next(stream)
+    assert worker.in_flight == 1
+    stream.close()
+    assert worker.in_flight == 0
+
+
+def test_in_use_nests_without_losing_track(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    with supervisor._in_use(worker):
+        with supervisor._in_use(worker):
+            assert worker.in_flight == 2
+        assert worker.in_flight == 1
+    assert worker.in_flight == 0
+
+
 # -- a worker's environment carries no Hub token of our making (D402) ------------
 
 
@@ -3333,7 +3369,12 @@ def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
         seen["timeout"] = timeout
         return _Reply()
 
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request", fake_request)
     supervisor.generate_transcript("org/whisper", {"path": "/x"},
                                    supervisor.TRANSCRIBE_JOB_PREFIX + "t")
@@ -3403,7 +3444,12 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -3457,7 +3503,12 @@ def test_an_EVICTED_queued_row_is_rebuilt_on_DETECTION_not_on_the_next_tick(monk
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 30.0)
@@ -3708,7 +3759,12 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     it reached the worker to cancel."""
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -3758,7 +3814,12 @@ def test_the_cross_is_honoured_on_the_UNCONTENDED_path_too(monkeypatch):
     being wrong, not the optimisation.
     """
     posted = []
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         lambda *a, **k: posted.append(a) or pytest.fail(
                             "a cancelled transcription reached the worker"))
@@ -3802,7 +3863,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
 
     def spy_ready_worker(capability, model=None):
         resolved.append(model)
-        return object()
+        return types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0)
 
     monkeypatch.setattr(supervisor, "ready_worker", spy_ready_worker)
     monkeypatch.setattr(
