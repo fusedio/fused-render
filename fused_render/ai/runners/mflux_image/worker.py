@@ -137,10 +137,13 @@ def _pin_stream():
 #: variant class for.
 _VARIANTS = formats.MFLUX_VARIANTS
 
-#: …and its EDIT counterpart (`fused.ai.image({image})`, mflux-only). A second,
-#: independent table for the reason `formats.MFLUX_EDIT_VARIANTS` gives:
-#: `Flux2KleinEdit` does not subclass `Flux2Klein`, so the two variant classes
-#: for one repo id cannot share a row.
+#: …and its EDIT counterpart (`fused.ai.image({image})`, mflux-only): the
+#: variant/module half only, from `formats.MFLUX_EDIT_VARIANTS` — the
+#: `config`/`vae` half is DERIVED from `_VARIANTS` by `formats.
+#: mflux_edit_recipe`, never duplicated, since those two are facts about the
+#: checkpoint (same weights, same latent space) and not about which class
+#: denoises it. See that table's own comment for why copying them would be
+#: a drift risk rather than a convenience.
 _EDIT_VARIANTS = formats.MFLUX_EDIT_VARIANTS
 
 #: What an mflux-readable snapshot always has: component subfolders of MLX
@@ -165,14 +168,20 @@ def download(model_id):
     return worker_base.download_snapshot(model_id)
 
 
-#: `mode` -> the table `_build_variant` reads it from. `"generate"` is the
-#: untouched path every caller who never passes `image` stays on (Decision 3);
-#: `"edit"` is the one `_ensure_mode` swaps to when a request's `image` says
-#: otherwise. Keying `load()` by `(model_id, mode)` (Gate B) means, in this
-#: one-process-per-model worker, keying THIS table by mode and re-running
-#: `_build_variant` when the resident mode differs from what a request needs —
-#: there is no second worker process to route to instead.
-_MODE_TABLES = {"generate": _VARIANTS, "edit": _EDIT_VARIANTS}
+def _recipe_for(model_id, mode):
+    """The full recipe for `model_id` under `mode` ('generate' or 'edit'), or
+    None. `"generate"` reads `_VARIANTS` directly — the untouched path every
+    caller who never passes `image` stays on (Decision 3). `"edit"` goes
+    through `formats.mflux_edit_recipe`, which derives `config`/`vae` off the
+    SAME `_VARIANTS` row rather than a second copy — see that table's own
+    comment. Keying `load()` by `(model_id, mode)` (Gate B) means, in this
+    one-process-per-model worker, choosing between these two lookups and
+    re-running `_build_variant` when the resident mode differs from what a
+    request needs — there is no second worker process to route to instead.
+    """
+    if mode == "edit":
+        return formats.mflux_edit_recipe(model_id)
+    return _VARIANTS.get(model_id)
 
 
 def _build_variant(model_id, fetched, mode):
@@ -185,8 +194,7 @@ def _build_variant(model_id, fetched, mode):
     and registers the step reporter, so the two callers cannot build it two
     different ways.
     """
-    table = _MODE_TABLES[mode]
-    recipe = table.get(model_id)
+    recipe = _recipe_for(model_id, mode)
     if recipe is None:
         if mode == "edit":
             # Reached only if a model appears in `_VARIANTS` (so `load()`

@@ -114,31 +114,53 @@ MFLUX_VARIANTS = {
 #: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also
 #: supports base-image editing, keyed by the same repo id.
 #:
-#: **A second, independent table, not a nested key under the row above.**
+#: **A second, independent table, not a nested key under the row above** —
 #: `Flux2KleinEdit` does not subclass `Flux2Klein` — its own `__mro__` is
 #: `['Flux2KleinEdit', 'Module', 'dict', 'object']`, verified against mflux
 #: 0.19.0 on Apple Silicon — so the two are unrelated classes over the same
 #: snapshot, and a single row cannot hold two unrelated `variant`/`module`
 #: pairs without one of them reading as an override of the other, which it is
-#: not. `config` and `vae` repeat the plain row's values on purpose: this is
-#: the same model, the same weights, the same latent space (the fitted preview
-#: projection is unaffected) — only the denoising mechanism differs. The
-#: module path is a full dotted submodule, `mflux.models.flux2.variants.edit.
-#: flux2_klein_edit`, one level deeper than the plain row's package — do not
-#: derive one from the other by string surgery, since nothing about the
-#: nesting is guaranteed to hold for a future model.
+#: not. The module path is a full dotted submodule,
+#: `mflux.models.flux2.variants.edit.flux2_klein_edit`, one level deeper than
+#: the plain row's package — do not derive it from the plain row's by string
+#: surgery, since nothing about the nesting is guaranteed to hold for a
+#: future model.
 #:
-#: An `image_paths` request keeps `formats.MFLUX_VARIANTS`'s row's OWN key —
-#: absence here just means "no edit class known for this repo", refused with a
-#: sentence exactly the way an absent row in the table above already is.
+#: **`config` and `vae` are deliberately ABSENT here, not repeated.** They are
+#: facts about the CHECKPOINT — the model config method and the autoencoder
+#: the conversion carries — and editing changes only which class denoises it,
+#: never which weights or which latent space it denoises. Copying them into a
+#: second row would let the two rows disagree after a future edit to one of
+#: them (a config method renamed, a vae swapped for a re-fit) touches only
+#: the row someone remembered to change — a drift `mflux_edit_recipe` below
+#: makes structurally impossible by reading them off `MFLUX_VARIANTS` every
+#: time, rather than by convention. An `image_paths` request keeps
+#: `MFLUX_VARIANTS`'s row's OWN key — absence here just means "no edit class
+#: known for this repo", refused with a sentence exactly the way an absent
+#: row in the table above already is.
 MFLUX_EDIT_VARIANTS = {
     "mlx-community/FLUX.2-Klein-4B-4bit": {
         "variant": "Flux2KleinEdit",
         "module": "mflux.models.flux2.variants.edit.flux2_klein_edit",
-        "config": "flux2_klein_4b",
-        "vae": "AutoencoderKLFlux2",
     },
 }
+
+
+def mflux_edit_recipe(model_id: str) -> dict | None:
+    """The full edit-mode recipe for `model_id` — `MFLUX_EDIT_VARIANTS`'s own
+    `variant`/`module`, with `config`/`vae` DERIVED from `MFLUX_VARIANTS`'s
+    row for the same id — or None when either table has no row for it.
+
+    The one reader of both tables at once, so the two can never independently
+    say something different about a checkpoint's config or latent space; see
+    `MFLUX_EDIT_VARIANTS`'s own comment for why that would otherwise be a
+    silent drift rather than a loud one.
+    """
+    edit = MFLUX_EDIT_VARIANTS.get(model_id)
+    plain = MFLUX_VARIANTS.get(model_id)
+    if edit is None or plain is None:
+        return None
+    return {**edit, "config": plain["config"], "vae": plain["vae"]}
 
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
