@@ -56,19 +56,23 @@ MLX_WHISPER_SHARED_WEIGHTS = "model.safetensors"
 #: a stray `n_vocab` in some other config cannot claim a repo alone.
 MLX_WHISPER_CONFIG_KEYS = ("n_mels", "n_audio_ctx", "n_vocab")
 
-#: An MLX conversion of a NeMo Parakeet model — the single file `parakeet-mlx`
-#: loads. Nothing distinguishing on its own: it is the name every transformers
-#: repo on the Hub carries, which is exactly why the config below has to be
-#: read too.
+#: An MLX conversion of a NeMo Parakeet model — the single file the withdrawn
+#: `parakeet-mlx` runner used to load (D406). Nothing distinguishing on its
+#: own: it is the name every transformers repo on the Hub carries, which is
+#: exactly why the config below has to be read too. Still checked so a
+#: Parakeet snapshot is recognised as unloadable rather than mistaken for a
+#: text checkpoint — see `is_parakeet_checkpoint` and the early return in
+#: `loaders()`.
 PARAKEET_WEIGHTS = "model.safetensors"
 
 #: …and what DOES distinguish one. A Parakeet snapshot's `config.json` is
 #: NeMo's training config, not a transformers one, and it names the class the
 #: weights came out of in `target` — which is what `parakeet_mlx.from_config`
-#: dispatches on. The prefix is narrowed to `…asr.models.` deliberately: NeMo
-#: also ships TTS and LLM collections, and this runner loads neither, so a
-#: check on the word "nemo" would offer a Load button for a speech SYNTHESIS
-#: repo and fail inside a library that never had a chance.
+#: dispatched on before the runner was withdrawn (D406). The prefix is
+#: narrowed to `…asr.models.` deliberately: NeMo also ships TTS and LLM
+#: collections that no runner here loads either, so a check on the word
+#: "nemo" would offer a Load button for a speech SYNTHESIS repo and fail
+#: inside a library that never had a chance.
 NEMO_ASR_TARGET = "nemo.collections.asr.models."
 
 #: What an mflux-readable snapshot always has: component subfolders of MLX
@@ -147,15 +151,17 @@ COMPONENT_REPOS = {
     "onnx-community/silero-vad": {
         "file": "onnx/model.onnx",
         "of": None,
-        # Not "MLX Whisper" since D319: the Parakeet engine reads the same
-        # `runners/vad.py`, and a card naming one of the two engines that use
-        # it would be wrong on whichever machine is running the other.
-        "owner": "MLX transcription",
+        # D319 briefly had a second `runners/vad.py` caller (Parakeet), which
+        # is why the module lives at the runners root rather than inside
+        # `mlx_whisper/`; D406 withdrew that engine, leaving MLX Whisper as
+        # the module's sole caller, but the shared location stays (no reason
+        # to move it back for a caller count that could grow again).
+        "owner": "MLX Whisper",
         "part": "speech detector",
         "what": (
-            "The 2MB Silero detector the MLX transcription engines use to find "
-            "the speech in a recording and skip the silence — fetched with any "
-            "of their model downloads so an offline machine still has it. "
+            "The 2MB Silero detector the MLX Whisper engine uses to find "
+            "the speech in a recording and skip the silence — fetched with "
+            "its model downloads so an offline machine still has it. "
             "Deleting it costs a slower transcription, not a broken one."
         ),
     },
@@ -265,10 +271,14 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # putting "text to image" on a cached FLUX card. The TEXT variants
             # stay out for the same reason `transformers-text` is out: a
             # directory of safetensors says nothing about the modality.
-            "diffusers-image-cuda", "diffusers-image-rocm",
-            # A NeMo ASR `target` is as decisive as a `weights.npz`: the config
-            # names an ASR class, and nothing else in this app can read it.
-            "parakeet-mlx")
+            "diffusers-image-cuda", "diffusers-image-rocm")
+            # `parakeet-mlx` is gone (D406) and was never added here: the branch
+            # that recognises a NeMo ASR `target` claims no runner (see
+            # `loaders()`), so there is no code for this tuple to list. A NeMo
+            # ASR snapshot is still decisive — the config names an ASR class
+            # nothing else in this app can read — it is just decisive about
+            # matching NOTHING, which the early return in `loaders()` enforces
+            # directly rather than through this table.
 
 
 def is_mlx_checkpoint(config: dict) -> bool:
@@ -334,7 +344,10 @@ def is_ct2_whisper(names, config: dict) -> bool:
 
 
 def is_parakeet_checkpoint(config: dict) -> bool:
-    """A NeMo ASR export, which is the only thing `parakeet-mlx` can load.
+    """A NeMo ASR export — the format the withdrawn `parakeet-mlx` runner used
+    to load (D406). Kept so a cached NeMo ASR snapshot is still recognised as
+    "a speech model nothing here can load" rather than falling through to the
+    text runners below (see the early return in `loaders()`).
 
     Read off `target` rather than off the filename, because the filename is
     `model.safetensors` — shared with every transformers checkpoint on the Hub
@@ -402,12 +415,16 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
     if DIFFUSERS_INDEX in names:
         found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
-        found.append("parakeet-mlx")
-        # …and NOTHING else, which is the point of returning here. A Parakeet
-        # snapshot is a directory of safetensors, so the text branch below
-        # would claim it too and the page would offer to load a speech model
-        # as a chat model — the failure `DECISIVE` exists to prevent, arriving
-        # by a new route.
+        # D406 withdrew the `parakeet-mlx` runner (maintenance cost not
+        # justified by use), so this branch now claims NO runner rather than
+        # appending one — but it MUST keep the early return. A Parakeet/NeMo
+        # ASR snapshot is a directory of safetensors identical in shape to a
+        # transformers text checkpoint, so without this return the text
+        # branch below would claim it and the page would offer to load a
+        # speech model as a chat model. The correct answer for a cached NeMo
+        # ASR repo is "a speech model nothing here can load" — matching no
+        # runner, offered by nothing — not "matches nothing here so fall
+        # through to whatever else recognises the file layout."
         return tuple(found)
     # The two text runners read the same directory of safetensors, and which of
     # them gets it is a platform-and-preference question rather than a format

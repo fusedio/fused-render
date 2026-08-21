@@ -1,13 +1,17 @@
 """Options an ENGINE cannot honour, and the sentence each is refused with.
 
 `fused.ai.transcribe` takes `task`, `language` and `initialPrompt`, and the two
-whisper engines answer all three. Parakeet answers none of them (D319, SPEC
-AI-10g): it transcribes only, it detects its own language among the 25 its
-weights were trained on and cannot be pinned to one, and a transducer has no
-text to condition on. **Refused, never ignored** — accepting an option and
-quietly doing something else is the failure this app rates worst, because a
-page that asked for English and got French has nothing on the row telling it
-which engine decided.
+speech-to-text engines this app ships — MLX Whisper and Faster Whisper — both
+answer all three, so `UNSUPPORTED` below is currently empty. It carried one
+entry, `parakeet-mlx` (D319, SPEC AI-10g), for the engine that answered none of
+them: it transcribed only, detected its own language among the 25 its weights
+were trained on with no way to pin one, and was a transducer with no text to
+condition on. D406 withdrew that engine — maintenance cost not justified by
+use — and the table went with it, but the MECHANISM stays: the day another
+engine refuses an option, this is where the refusal is declared. **Refused,
+never ignored** — accepting an option and quietly doing something else is the
+failure this app rates worst, because a page that asked for English and got
+French has nothing on the row telling it which engine decided.
 
 **`words` (D392) does NOT belong in this table**, and it is the one option that
 does not: an ignored option is refused here because it is undetectable, and word
@@ -58,25 +62,14 @@ TRANSCRIBE = "transcribe"
 #: variant needs its own entry — an unknown code refuses nothing (see
 #: `unsupported_or_raise`), so the failure would be an accepted-and-ignored
 #: option, which is the outcome this module exists to make impossible.
-UNSUPPORTED = {
-    "parakeet-mlx": {
-        "task": (
-            "the Parakeet engine only transcribes — it has no translate task. "
-            "Ask for task: 'transcribe', or switch this capability to a "
-            "Whisper engine on the AI Models page, which translates into "
-            "English."),
-        "language": (
-            "the Parakeet engine has no 'language' option — it detects the "
-            "language itself (25 European languages on parakeet-tdt-0.6b-v3) "
-            "and cannot be pinned to one. Drop the option, or switch this "
-            "capability to a Whisper engine on the AI Models page."),
-        "initialPrompt": (
-            "the Parakeet engine has no 'initialPrompt' — a transducer decodes "
-            "audio with no text to condition on, so names and jargon cannot be "
-            "hinted the way they can on Whisper. Drop the option, or switch "
-            "this capability to a Whisper engine on the AI Models page."),
-    },
-}
+#:
+#: **Empty since D406.** No engine currently registered refuses any option —
+#: both speech-to-text runners (`mlx-whisper`, `faster-whisper`) answer `task`,
+#: `language` and `initialPrompt` in full. The table stays rather than the
+#: module going with it, because the mechanism (a declared refusal checked in
+#: two places, named in one) is exactly what the next engine that cannot honour
+#: something will need.
+UNSUPPORTED = {}
 
 
 def unsupported_or_raise(runner_code, *, task=None, language=None,

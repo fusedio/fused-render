@@ -35,10 +35,10 @@ the machine, not to the string.
 whole mechanism.** Text generation prefers MLX on Apple Silicon and uses torch
 on Windows and Linux, with torch also remaining a fallback on Apple Silicon when
 MLX is unavailable; speech to text does the same thing with MLX Whisper over
-CTranslate2, and since D319 carries a THIRD row — Parakeet, Apple Silicon only,
-registered under MLX Whisper so that the default does not move. Every row is
-registered, every one is asked whether it can run, and the first that says yes
-wins. Nothing else in the app knows there is more than
+CTranslate2 (D319 briefly added a third row, Parakeet-TDT, and D330 withdrew it
+— maintenance cost not justified by use — leaving the two rows below). Every
+row is registered, every one is asked whether it can run, and the first that
+says yes wins. Nothing else in the app knows there is more than
 one — but the CATALOG does, because what to suggest depends on which backend
 will load it (`catalog.py`), and an MLX checkpoint on a Windows machine is a
 download that cannot be used.
@@ -843,29 +843,10 @@ _RUNNERS: tuple[Runner, ...] = (
              "on the same Mac.",
         _available=_apple_silicon,
     ),
-    # …and the third, which is the first capability to have one (D319).
-    # **Below MLX Whisper deliberately**, so nothing about the default changes:
-    # Parakeet-TDT beats Whisper large-v3 on English word error rate and is
-    # several times quicker again on the same Mac, but v3 covers 25 European
-    # languages against Whisper's ~99 — so promoting it would silently break
-    # every page relying on `language` being detected, on recordings this
-    # model has never heard a word of. A user opts in per capability on the
-    # Engines tab (D302), which is exactly the machinery that case needs and
-    # is why no new plumbing came with this runner.
-    Runner(
-        code="parakeet-mlx",
-        capability=SPEECH_TO_TEXT,
-        folder=os.path.join(RUNNERS_DIR, "parakeet_mlx"),
-        label="Parakeet TDT (Apple Silicon)",
-        short_label="Parakeet TDT",
-        # ONE LINE, per the rule the transformers row states — it sits under
-        # this engine's row on the Engines tab, between one picker and the
-        # next. It describes an OPT-IN, so what it leads with is the reason to
-        # take it and the reason not to, in that order.
-        note="Quicker than Whisper and more accurate in English, but it "
-             "handles 25 European languages only.",
-        _available=_apple_silicon,
-    ),
+    # D319 briefly added a third row here, Parakeet-TDT (`parakeet-mlx`),
+    # below MLX Whisper so the default would not move. D406 withdrew it —
+    # maintenance cost not justified by use — leaving speech to text with the
+    # same two-runner shape every other capability in this table has.
     Runner(
         code="faster-whisper",
         capability=SPEECH_TO_TEXT,
