@@ -455,6 +455,11 @@ def test_a_MODE_ALTERNATION_swaps_the_resident_model_exactly_once_each_way(
     # request, which is what "exactly one rebuild per alternation" means.
     assert len(model.calls) == 2      # the two plain-mode requests
     assert len(edit_model.calls) == 2  # the two edit-mode requests
+    # A mode swap must be INVISIBLE to `fused.ai.models.list()` — it must
+    # not read as the model being unloaded and replaced. `_ensure_mode`
+    # calls neither `worker_base.set_state` nor anything else `base` would
+    # record, so the only state this fake ever saw is `load()`'s own.
+    assert base.state == {"device": "mps"}
 
 
 def test_a_mode_swap_never_touches_the_network(monkeypatch, base, tmp_path):
