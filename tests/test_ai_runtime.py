@@ -2071,6 +2071,110 @@ def test_a_transcription_worker_past_its_leak_ceiling_is_reaped(monkeypatch):
     assert supervisor.idle_workers(now) != []
 
 
+def test_a_slow_first_load_is_not_reaped_the_instant_it_becomes_ready(fake_runner, monkeypatch):
+    """Regression: `last_activity` used to be seeded once, in the `Worker`
+    dataclass, at CONSTRUCTION — before `_bring_up`'s venv build, pull and
+    load even start. A first-ever download that takes longer than the idle
+    window would become `ready` already past it, and the reaper's very next
+    tick would unload it before anything had used it.
+
+    Simulated without actually waiting minutes: `Worker.last_activity`'s
+    `field(default_factory=time.monotonic)` captured the REAL function at
+    class-definition time, so patching the `time` module's `monotonic`
+    attribute afterwards does not touch the construction stamp — only calls
+    made through the module attribute at RUN time are affected, which is
+    every `time.monotonic()` call `_bring_up` makes once the fake worker
+    (a ~0.1s bring-up) actually reaches `ready`. A constant offset rather
+    than a frozen value, so every deadline/elapsed computation along the way
+    still advances normally; only the ABSOLUTE reading moves, by more than
+    the idle window.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: real_monotonic() + 800)
+
+    supervisor.load("org/slow", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/slow")
+
+    # If the ready transition still left `last_activity` at its construction
+    # stamp (real time, unaffected by the patch), `now` here would read it as
+    # ~800s stale — past a 10-minute window — and this would fail.
+    assert supervisor.idle_workers(real_monotonic() + 800) == []
+    assert worker.state == "ready"
+
+
+def test_reap_decision_and_removal_share_one_lock_hold(fake_runner, monkeypatch):
+    """Regression: `reap_idle` used to call `idle_workers()` (one `_lock`
+    acquisition) and then `unload()` (a SECOND, later one) to remove what it
+    found. In the gap between those two acquisitions the table was briefly
+    unlocked, and a request racing in could call `ready_worker()`, enter
+    `_in_use()` and start a call on the very worker the reaper had already
+    condemned — `unload()` matches by model+capability alone and never
+    re-checks `in_flight`, so it would terminate the process that request is
+    now waiting on.
+
+    Driven deterministically rather than left to scheduler luck, with no
+    `sleep()` anywhere: `reap_idle` runs on its OWN thread, and `_is_idle` —
+    called from INSIDE `_claim_for_removal`'s lock hold, unconditionally, for
+    every candidate worker — is patched to pause there on an `Event`, still
+    holding `_lock`. Only once that pause is observed does a second ("racer")
+    thread start and immediately try to claim the same worker via
+    `ready_worker()`, which itself needs `_lock`. Whatever happens next, the
+    racer's call cannot complete until the reaper thread releases the lock —
+    and by then, if the fix holds, decision AND pop have both already
+    happened, so the racer can only ever observe "already gone", never a live
+    worker the reaper is about to terminate out from under it.
+    """
+    supervisor.load("org/racer", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/racer")
+    worker.last_activity = time.monotonic() - 700  # idle past a 10-min window
+
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_is_idle = supervisor._is_idle
+    paused = threading.Event()
+    release = threading.Event()
+
+    def slow_is_idle(w, now, window):
+        result = real_is_idle(w, now, window)
+        if w is worker:
+            paused.set()
+            assert release.wait(5), "the main thread never released us"
+        return result
+
+    monkeypatch.setattr(supervisor, "_is_idle", slow_is_idle)
+
+    result = {}
+
+    def run_reap():
+        result["stopped"] = supervisor.reap_idle(time.monotonic())
+
+    reaper = threading.Thread(target=run_reap)
+    reaper.start()
+    assert paused.wait(5), "reap_idle never reached its decision"
+    # `reap_idle` is now blocked INSIDE `_claim_for_removal`'s lock hold,
+    # mid-decision for this exact worker. Only now does the racer start.
+
+    def racer():
+        result["racer_saw"] = supervisor.ready_worker(registry.TEXT_GENERATION, "org/racer")
+
+    t = threading.Thread(target=racer)
+    t.start()
+    release.set()
+    reaper.join(5)
+    t.join(5)
+
+    assert result["stopped"] == ["org/racer"]
+    # The racer's lookup could only run AFTER the whole reap finished
+    # (decided AND removed) — it needed the same `_lock`, and `reap_idle`
+    # never let go of it mid-decision — so it can only ever find the worker
+    # already gone.
+    assert result["racer_saw"] is None
+
+
 def test_zero_minutes_disables_the_reaper_entirely(monkeypatch):
     from fused_render.shell import prefs
     monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)

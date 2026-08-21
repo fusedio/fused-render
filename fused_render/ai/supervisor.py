@@ -776,6 +776,24 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.device = str(health.get("device") or "")
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
+                    # AI-13: the idle clock starts HERE, not at construction.
+                    # `last_activity` is otherwise seeded once, in the
+                    # `Worker` dataclass, at the moment `_start_resident`
+                    # builds the object — before this loop's `uv sync`, pull
+                    # and load even begin. A first-ever multi-GB download
+                    # that takes longer than the idle window would then
+                    # become `ready` already past it, and the reaper's very
+                    # next tick (<=30s) would unload it before a single
+                    # request had used it — `generate_text` looping
+                    # ModelNotReady -> load -> ready -> reaped forever, and
+                    # the image/transcript paths worse still, since
+                    # `_wait_ready` would hand back a worker the reaper is
+                    # about to kill out from under the request. Every
+                    # generation path re-stamps on its own first touch
+                    # anyway (`_in_use`), so this only matters for the
+                    # window between becoming ready and someone asking —
+                    # which is exactly the window a slow bring-up ate.
+                    worker.last_activity = time.monotonic()
                     _report(job, state="done", detail="Model loaded")
                     return
                 if worker.state == "error":
@@ -1123,6 +1141,40 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
 
+def _claim_for_removal(match) -> list[Worker]:
+    """Atomically find-and-pop every worker `match(worker)` accepts.
+
+    The shared atomic core `unload()` and `reap_idle()` both build on: the
+    SELECTION and the POP happen inside one `_lock` hold, so whatever
+    `match` decided stays true for every worker in the returned list — no
+    caller re-scans `_workers` by name afterward, which is what would let a
+    DIFFERENT worker that has since claimed the same capability be swept up
+    by mistake, or let a worker's `in_flight`/`last_activity` change between
+    being decided and being removed (see `reap_idle`'s docstring for the
+    concrete failure that gap caused).
+
+    Deliberately does NOT terminate or report here: `_terminate` does network
+    I/O (a `/quit` POST, a process wait) and must run OUTSIDE `_lock`, or
+    reaping one idle worker would block every other table operation for as
+    long as that teardown takes.
+    """
+    with _lock:
+        targets = [w for w in _workers.values() if match(w)]
+        for worker in targets:
+            worker.stopping = True
+            _workers.pop(worker.capability, None)
+        return targets
+
+
+def _remove(targets: list[Worker], reason: str) -> None:
+    """Tear down every worker in `targets` — already popped from `_workers` by
+    `_claim_for_removal`, so this runs outside `_lock` with nothing left to
+    race: `_terminate`'s I/O and `_report`'s job-row write."""
+    for worker in targets:
+        _terminate(worker)
+        _report(job_id_for(worker.model), state="done", detail=reason)
+
+
 def unload(model: str | None = None, capability: str | None = None,
           reason: str = "Unloaded") -> bool:
     """Stop a resident worker. True if there was one to stop.
@@ -1132,18 +1184,10 @@ def unload(model: str | None = None, capability: str | None = None,
     capability, shutdown, and the idle reaper (AI-13) — can say which of them
     it was, without a parallel teardown for each.
     """
-    with _lock:
-        targets = [
-            w for w in _workers.values()
-            if (model is None or w.model == model)
-            and (capability is None or w.capability == capability)
-        ]
-        for worker in targets:
-            worker.stopping = True
-            _workers.pop(worker.capability, None)
-    for worker in targets:
-        _terminate(worker)
-        _report(job_id_for(worker.model), state="done", detail=reason)
+    targets = _claim_for_removal(
+        lambda w: (model is None or w.model == model)
+        and (capability is None or w.capability == capability))
+    _remove(targets, reason)
     return bool(targets)
 
 
@@ -1220,22 +1264,21 @@ def _leak_ceiling(capability: str, window: float) -> float:
     return max(window, timeout + _LEAK_CEILING_MARGIN_S)
 
 
-def idle_workers(now: float) -> list[Worker]:
-    """Ready workers the idle window (AI-13) says to unload, evaluated against
-    `now`.
+def _is_idle(worker: Worker, now: float, window: float) -> bool:
+    """Pure predicate: is `worker` past ITS OWN idle bound at `now`, given a
+    window already resolved to seconds?
 
-    Pure and side-effect-free: `now` is a caller-supplied `time.monotonic()`
-    reading, never read internally, so a test can drive it with a synthetic
-    clock and the reaper thread can drive it with the real one — no sleeping,
-    no clock freezing, none of the timing-dependent flakes this repo's
-    scheduling tests have a history of.
+    Shared by `idle_workers` (a read-only report over a locked snapshot) and
+    `reap_idle` (which must decide and remove in the SAME lock hold — see its
+    docstring) so the two can never quietly diverge on what "idle" means.
 
     **Only `state == "ready"` is eligible.** A `starting` / `venv` /
     `downloading` / `loading` worker is not holding a finished model yet — a
     40-minute `uv sync` or an 8GB pull is activity, holds little memory, and
     killing it mid-build is hostile, not a memory win. `_fetch_workers`
     (weights-only downloads, which never enter `_workers` at all — see its
-    docstring) are untouched for the same reason.
+    docstring) are untouched for the same reason, simply by never appearing
+    in what this is called over.
 
     **`in_flight > 0` DOES exempt a worker past its own idle window, up to a
     separate leak ceiling — this is NOT collapsible into one predicate.** The
@@ -1254,6 +1297,24 @@ def idle_workers(now: float) -> list[Worker]:
     past any legitimate call's own timeout — and only THEN does a
     still-positive `in_flight` mean a leaked stream (an abandoned
     `generate_text` iterator) rather than a slow answer.
+    """
+    if worker.state != "ready":
+        return False
+    age = now - worker.last_activity
+    bound = _leak_ceiling(worker.capability, window) if worker.in_flight > 0 else window
+    return age >= bound
+
+
+def idle_workers(now: float) -> list[Worker]:
+    """Ready workers the idle window (AI-13) says to unload, evaluated against
+    `now`. A REPORT, not a decision anything acts on directly — see
+    `reap_idle` for why the reaper does not call this and then `unload()`.
+
+    Pure and side-effect-free: `now` is a caller-supplied `time.monotonic()`
+    reading, never read internally, so a test can drive it with a synthetic
+    clock and the reaper thread can drive it with the real one — no sleeping,
+    no clock freezing, none of the timing-dependent flakes this repo's
+    scheduling tests have a history of.
 
     The preference is read fresh on every call, not cached — a window edited
     mid-session, or an env override that comes and goes, applies on the very
@@ -1266,35 +1327,55 @@ def idle_workers(now: float) -> list[Worker]:
         return []
     window = minutes * 60
     with _lock:
-        idle = []
-        for w in _workers.values():
-            if w.state != "ready":
-                continue
-            age = now - w.last_activity
-            bound = _leak_ceiling(w.capability, window) if w.in_flight > 0 else window
-            if age >= bound:
-                idle.append(w)
-        return idle
+        return [w for w in _workers.values() if _is_idle(w, now, window)]
 
 
 def reap_idle(now: float) -> list[str]:
-    """Unload every worker `idle_workers` names against `now`. Returns the
-    models stopped.
+    """Unload every worker the idle window (AI-13) names, evaluated against
+    `now`. Returns the models stopped.
 
-    Reuses `unload()` rather than a parallel teardown — the idle path is not a
-    special kind of stopping, it is just another REASON a resident model stops
-    being resident, which is exactly what `unload()`'s `reason` argument is
-    for.
+    **Decides and removes under ONE lock hold — deliberately NOT
+    `idle_workers(now)` followed by a separate `unload()`.** That two-call
+    shape has a real race: between `idle_workers` releasing `_lock` and
+    `unload()` re-acquiring it to pop, the table is briefly unlocked, and a
+    request can call `ready_worker()`, enter `_in_use()` and start a
+    90-minute transcription on the very worker the reaper just condemned.
+    `unload()` matches by model+capability alone and never re-checks
+    `in_flight` or a fresher `last_activity`, so it would terminate the
+    process that request is now waiting on — the exact failure the
+    `in_flight` exemption exists to prevent, arriving back through the gap
+    between deciding and acting rather than through the predicate itself.
+
+    Holding `_lock` across the read AND the pop closes that gap by
+    construction: `_in_use`'s entry also takes `_lock`, so nothing else can
+    change `in_flight` or `last_activity` while this loop is deciding — a
+    worker is either evaluated and removed atomically here, or a concurrent
+    `_in_use` call finished first (blocking this call until it releases the
+    lock) and this loop sees the fresh, post-increment state and spares it.
+    There is no window for a third outcome.
+
+    Built on the same `_claim_for_removal`/`_remove` pair `unload()` uses,
+    not on `unload()` ITSELF: `unload()` re-scans `_workers` by NAME
+    (model/capability), which would reopen a narrower version of the same
+    hole if called a second time after this loop's own decision — it could
+    match a DIFFERENT worker that has since claimed the same capability, and
+    pin "Unloaded after N min idle" on a model that was never idle at all.
+    `_claim_for_removal` takes a PREDICATE instead, evaluated once, atomically,
+    over the exact snapshot this loop already decided against — so the
+    workers reaped here are precisely the ones `_is_idle` said were idle,
+    never a re-lookup that could answer a different question by the time it
+    runs.
     """
     from fused_render.shell import prefs
 
     minutes = prefs.effective_ai_idle_unload_minutes()
+    if minutes <= 0:
+        return []
+    window = minutes * 60
     reason = f"Unloaded after {minutes} min idle"
-    stopped = []
-    for worker in idle_workers(now):
-        if unload(model=worker.model, capability=worker.capability, reason=reason):
-            stopped.append(worker.model)
-    return stopped
+    targets = _claim_for_removal(lambda w: _is_idle(w, now, window))
+    _remove(targets, reason)
+    return [worker.model for worker in targets]
 
 
 def start_reaper() -> None:
