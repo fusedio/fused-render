@@ -517,6 +517,10 @@ const codeEls = [
 const rootEl = {{
   querySelectorAll(sel) {{ return sel === "pre code" ? codeEls : [fakePre()]; }},
 }};
+// attachCodeCopy now also fires the chat-view mount (see mountViewCards),
+// which is NOT part of the extracted block and has no business running against
+// these fake elements — stubbed like `document` and `hljs` above.
+global.mountViewCards = () => {{}};
 {block}
 attachCodeCopy(rootEl);
 console.log(JSON.stringify({{ highlighted }}));
@@ -594,6 +598,10 @@ const pres = [diffPre, textPre, codePre];
 const rootEl = {{
   querySelectorAll: (sel) => (sel === "pre code" ? [] : pres),
 }};
+// attachCodeCopy now also fires the chat-view mount (see mountViewCards),
+// which is NOT part of the extracted block and has no business running against
+// these fake elements — stubbed like `document` and `hljs` above.
+global.mountViewCards = () => {{}};
 {block}
 attachCodeCopy(rootEl);
 buttons.forEach((b) => b.onclick());
@@ -633,6 +641,10 @@ const rootEl = {{
     return sel === "pre code" ? [fakeCodeEl("language-python hljs")] : [];
   }},
 }};
+// attachCodeCopy now also fires the chat-view mount (see mountViewCards),
+// which is NOT part of the extracted block and has no business running against
+// these fake elements — stubbed like `document` and `hljs` above.
+global.mountViewCards = () => {{}};
 {block}
 attachCodeCopy(rootEl);
 console.log(JSON.stringify({{ calls }}));

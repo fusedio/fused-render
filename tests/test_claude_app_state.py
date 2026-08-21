@@ -408,9 +408,12 @@ def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
     assert tool in allowed
-    # The only OTHER pre-allowance is reading an annotation's screenshot, and it
-    # is scoped to the one directory those live in (test_claude_shots.py).
-    assert allowed == [tool, agent._read_rule(agent.SHOTS)]
+    # The only OTHER pre-allowances are reading an annotation's screenshot and
+    # writing this target's chat views — each scoped to the one directory it is
+    # about (test_claude_shots.py, test_claude_views.py). Still an EXACT list:
+    # what this test guards is that nothing quietly joins it.
+    assert allowed == [tool, agent._read_rule(agent.SHOTS),
+                       agent._edit_rule(agent._views_dir_path(str(project)))]
     # The bridge itself stays wired: everything else still has to be answerable.
     assert "--permission-prompt-tool" in cmd
 

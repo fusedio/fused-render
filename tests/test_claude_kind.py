@@ -1110,7 +1110,14 @@ def test_the_picker_is_sourced_from_the_stat_call_the_pane_already_makes():
     (CT-12 — unresolved reads as "not offered").
     """
     page = _pane_source()
-    assert page.count("/api/fs/stat?path=") == 1
+    # Two stats in the file, and the second one is NOT the picker's: `viewExists`
+    # (D411) probes whether a chat-view link's file is still on disk before the
+    # reply frames it, which is a question about a link in a message rather than
+    # about what the pane is showing. Named here rather than loosening the count
+    # to "some", because the property under test is that the picker adds none.
+    assert page.count("/api/fs/stat?path=") == 2
+    probe = page[page.index("async function viewExists("):]
+    assert probe[:probe.index("\n}\n")].count("/api/fs/stat?path=") == 1
     assert "paneEntries = paneOfferable(st.templates);" in page
     assert "!e.conditional && !PANE_SKIP_MODES.has(e.mode)" in page
     # Named in a comment (that is where the reasoning lives), never fetched.

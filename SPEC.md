@@ -8063,3 +8063,81 @@ three platforms, one API, no field naming which one served you.
   (a browser rule), and on Wayland `displays` is always `[]` because no client
   may enumerate them without prompting — `display` is refused there with a
   sentence instead of offered as a list nothing accepts.
+
+## 46. Chat Views — a Reply That Draws (D411)
+
+A chat reply can describe a chart; it cannot be one. **A chat view is a small
+self-contained HTML page the MODEL writes, linked from the reply, that the chat
+frames inline where the link is.** There is no chart grammar to teach, nothing
+vendored and no second renderer: the page goes through `/render?path=`, the same
+URL the left pane frames, so a view has the runPython bridge and the injected
+runtime the moment it exists.
+
+- **CV-1** The mechanism is a FILE and a LINK, and deliberately nothing else. The
+  model writes `revenue.html` and puts `[Revenue by month](<abs path>)` on a line
+  of its own; the page turns that link into an iframe. Rejected: a JSON chart
+  spec (`chart`/`vega-lite` fenced blocks) — a vocabulary to invent, teach,
+  version and validate on our side, and a renderer to vendor for it, to buy less
+  than the model can already draw with the tools it has.
+- **CV-2** Views live in **`<home>/claude-views/<munged-cwd>/`** — `home_dir()`
+  from appenv, so already branch-resolved (two branches must not share one
+  namespace). NOT in the user's project, because a chat is offered on any target
+  and a conversation about `~/Downloads/report.csv` would otherwise mint a
+  dot-directory into Downloads; NOT in the run dir, because the chat REPLAYS and
+  a card whose file died with its run is a hole where the answer was. Per target
+  by the same munge `~/.claude/projects` uses (through `_workdir`, so a file and
+  its folder share one), which is what makes "reuse the filename when you revise"
+  safe: one chat's `revenue.html` is not another's.
+- **CV-3** Pruned at **30 days / 60 files per target**, generous where the
+  annotation-crop pruner is tight (SPEC §7.2): a crop is junk when its turn ends,
+  a view is what a replayed transcript draws.
+- **CV-4** The write is pre-allowed with **`Edit(//<dir>/**)`, never
+  `Write(...)`** — verified by hand against claude 2.1.238: an `Edit(...)` rule
+  admits a *Write* tool call under that directory and still refuses a sibling,
+  while a `Write(...)` rule matches nothing at all and would card every chart.
+  Scoped to THIS target's directory, not the root, and spelled through
+  `_wire_path` like every other rule here, because the CLI matches a rule as
+  TEXT. Fourth and safest of the run's pre-allowances: a directory this app owns,
+  holding nothing of the user's.
+- **CV-5** The disclosure rides EVERY target shape (file, app folder, ordinary
+  folder), because a view is a fact about the chat window rather than the target,
+  and it lands after the scoping paragraph on purpose — it is the sentence that
+  exempts one directory from it. It says WHEN (a chart, a diagram, a map or a
+  sortable table that says it better than a sentence — *not every reply*) and
+  five constraints, each guarding a real failure: the link goes on a line of its
+  own; the page is self-contained (no CDN — a fetched script is a blank card
+  offline); write the file before linking it; reuse the filename when revising;
+  and `runPython` works but the cwd is the views folder, so project data is named
+  by ABSOLUTE path. No directory (it could not be created) means no rule AND no
+  paragraph: announcing a directory that does not exist would card the model's
+  first write and leave it blamed for trying.
+- **CV-6** **Three refusals stand between a link and an iframe**, and none is
+  optional, because a replayed transcript's links are model-authored text read
+  back off disk. **SHAPE** — in marked's link renderer: an absolute `.html` under
+  a `claude-views/` directory. **ROOT** — the path must sit under the root
+  agent.py reports (`views_dir`), with `..` refused rather than resolved.
+  **EXISTENCE** — one `/api/fs/stat`; a missing file leaves the plain link and is
+  NOT marked as handled, so the whole-transcript pass at the end of a run can
+  still card a link the model wrote a moment before the file.
+- **CV-7** The path travels as **`data-view`** and the href becomes
+  `/render?path=…&_preview=1`. Both halves are load-bearing: DOMPurify drops an
+  href whose scheme it does not know, and a Windows path (`C:/Users/…`) parses as
+  scheme `c:` — so the raw path is carried by a data attribute (allowed by
+  DOMPurify's defaults, which is why the sanitizer config is untouched) while the
+  href stays a same-origin URL that also makes the link do the right thing
+  wherever no card is built. `_preview=1` because /render otherwise records an app
+  OPEN (D301), and a chart in a conversation is not the user opening an app.
+- **CV-8** A card is CHROME plus a frame: title, `expand` (only when the page
+  measures taller than its box), `pane` (only where there is a left pane — D239),
+  `reload` and `open`. **Height is clamped, not fitted**: the page is the model's
+  and a 4000px chart would bury the rest of the conversation. A link that is its
+  own paragraph REPLACES that paragraph; an inline one is left alone and the card
+  goes after its block, because splicing a figure into a sentence breaks the
+  sentence.
+- **CV-9** Cards **frame themselves near the viewport and drop the frame when
+  they leave** (one shared IntersectionObserver, 400px margin, the placeholder
+  keeping the height): a transcript can hold dozens of views and each mounted one
+  is a document running the model's own JS — the lesson D408 records about
+  preview iframes. The mount is called from `attachCodeCopy`, which is the "this
+  text is final now" pass every render site already calls, because one missed
+  site is a reply whose chart never appears.

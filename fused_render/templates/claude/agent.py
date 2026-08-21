@@ -86,6 +86,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from appenv import canvases_root as _canvases_root
 from appenv import fused_cli_dir as _fused_cli_dir
+from appenv import home_dir as _home_dir
 from appenv import origin as _origin
 from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workbench_plugin_dir as _workbench_plugin_dir
@@ -143,6 +144,16 @@ SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 # never idles long enough for the TTL to fire.
 SHOTS_TTL = 12 * 3600
 SHOTS_KEEP = 200
+
+# How long a CHAT VIEW is kept, and how many per target. Deliberately generous
+# where the crop pruner above is tight, and the asymmetry is the point: a crop is
+# junk the moment its turn ends, but a view is what a REPLAYED transcript draws
+# (see `_views_root`), so pruning one turns an answer the user scrolled back to
+# into a dead link. Thirty days is longer than any conversation anyone reopens;
+# the count is the backstop for a machine that never idles long enough for the
+# TTL to fire.
+VIEWS_TTL = 30 * 86400
+VIEWS_KEEP = 60
 
 # Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
@@ -947,6 +958,28 @@ def _read_rule(path: str) -> str:
     return "Read(//%s/**)" % _wire_path(path).lstrip("/")
 
 
+def _edit_rule(path: str) -> str:
+    """An `Edit(...)` rule scoped to everything under `path` — the pre-allowance
+    that lets the model WRITE a chat view without raising a card.
+
+    `Edit(...)`, never `Write(...)`, and this is an empirical fact the feature
+    hangs on rather than a style choice: verified by hand against claude 2.1.238,
+    `Edit(//<abs>/**)` allows a **Write** tool call under that directory and
+    still refuses a sibling, while `Write(//<abs>/**)` matches NOTHING — the
+    Write tool asks for permission exactly as if no rule had been passed. The
+    CLI keeps every file-editing tool (Write, Edit, MultiEdit) in one `Edit(...)`
+    namespace; a `Write(...)` rule is not a narrower spelling of it, it is a rule
+    about nothing, and a run that shipped one would card every view the model
+    ever tried to draw.
+
+    Double slash and `_wire_path` for the two reasons `_read_rule` gives: a rule
+    path is read as RELATIVE unless it starts with `//`, and the CLI matches the
+    rule as TEXT, so it has to name the directory in the same spelling the prompt
+    hands the model.
+    """
+    return "Edit(//%s/**)" % _wire_path(path).lstrip("/")
+
+
 def _prune_shots() -> None:
     """Drop crops nobody will read again. Best-effort throughout: this is
     housekeeping on a temp directory, and no failure here is worth refusing the
@@ -1041,6 +1074,164 @@ def _shots_dir() -> dict:
     # `_wire_path`, not the raw join: this string is what the page joins crop
     # names onto, and it has to be spelled the way the Read rule spells it.
     return {"dir": _wire_path(SHOTS)}
+
+
+# ------------------------------------------------------------- chat views
+
+def _views_root() -> str:
+    """Where every chat view on this machine lives: `~/.fused-render/claude-views`.
+
+    A view is a small HTML page the MODEL writes so the chat can render a chart,
+    a diagram or a sortable table inline instead of describing one. The file is
+    the whole mechanism — this template already frames HTML through
+    `/render?path=`, so a written page needs no chart grammar to teach the model,
+    nothing vendored, and no second renderer to keep honest.
+
+    NOT the user's project and NOT a run dir, and both halves were real choices:
+
+      * not the project, because a chat is offered on any target — a conversation
+        about `~/Downloads/report.csv` would otherwise mint a dot-directory into
+        Downloads, and a chart drawn to answer one question is conversation
+        exhaust rather than a file anyone asked to keep.
+      * not a run dir, because THE CHAT REPLAYS. Reopening a session re-renders
+        its transcript, and a card whose file died with the run that drew it is a
+        hole where the answer used to be.
+
+    `~/.fused-render` is where every other durable store this app owns already
+    lives (canvases, appfiles, logs, venvs), and it comes from `appenv.home_dir()`
+    rather than being spelled by hand: that value is already branch-resolved, and
+    two branches sharing one namespace would overwrite each other's views
+    (`_branch`).
+    """
+    return os.path.join(_home_dir(), "claude-views")
+
+
+def _views_dir_path(file: str) -> str:
+    """This target's own subdirectory of the root, keyed by the SAME cwd munge
+    `~/.claude/projects` uses.
+
+    Per target rather than one flat directory, and that is what makes the
+    prompt's "reuse the filename when you revise" instruction safe: one chat's
+    `revenue.html` is a different file from another chat's, so a model
+    overwriting its own chart (the card reloads in place, no second card) can
+    never overwrite somebody else's. Through `_workdir` like everything else
+    keyed on the cwd, so a chat about a file and a chat about its folder share a
+    directory instead of drifting into two.
+    """
+    return os.path.join(_views_root(), _munge(_workdir(os.path.abspath(file))))
+
+
+def _prune_views(path: str) -> None:
+    """Drop views nobody will scroll back to. Best-effort throughout: this is
+    housekeeping, and no failure here is worth refusing a run over."""
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return
+    now = time.time()
+    aged = []
+    for name in names:
+        full = os.path.join(path, name)
+        try:
+            mtime = os.lstat(full).st_mtime
+        except OSError:
+            continue
+        aged.append((mtime, full))
+    stale = [p for m, p in aged if now - m > VIEWS_TTL]
+    # Oldest first, so what survives the count cap is the recent conversation.
+    aged.sort()
+    excess = [p for _m, p in aged[:max(0, len(aged) - VIEWS_KEEP)]]
+    for full in set(stale) | set(excess):
+        try:
+            os.unlink(full)
+        except OSError:
+            pass
+
+
+def _ensure_views_dir(file: str) -> str:
+    """The target's views directory, created if absent — or "" if it cannot be.
+
+    Never raises, and the empty string is a real answer both callers act on: no
+    directory means `_start` passes no pre-allowance and appends no prompt
+    paragraph, so the run never learns about a feature it could not have used.
+    Announcing a directory that does not exist would card the model's first write
+    and then leave it blamed for trying.
+
+    Ordinary makedirs, no 0700: this is the user's own home dir, not the shared
+    temp root the crops need protecting in.
+    """
+    path = _views_dir_path(file)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return ""
+    _prune_views(path)
+    return path
+
+
+def _views_dir(file: str) -> dict:
+    """The page's boot call: `{"root": ..., "dir": ...}`, both `_wire_path`-spelled.
+
+    The page needs the ROOT and not just this target's directory, because the
+    check it runs before framing anything is "is this path one of OURS". A
+    transcript is replayed from disk and every link in it is model-authored text,
+    so the mount refuses a path outside the root rather than framing one because
+    it merely looks like a view. `dir` rides along because it is what this run's
+    prompt names and what its `Edit(...)` rule covers.
+
+    Errors are reported, never raised: with no root the page leaves the links
+    alone, and a plain clickable link is what the reply already rendered.
+    """
+    if not file:
+        return {"error": "missing target file (no _file param?)"}
+    path = _ensure_views_dir(file)
+    if not path:
+        return {"error": "could not prepare the chat-views directory"}
+    return {"root": _wire_path(_views_root()), "dir": _wire_path(path)}
+
+
+def _views_note(path: str) -> str:
+    """The prompt paragraph disclosing chat views, or "" when there is no
+    directory to disclose (`_ensure_views_dir` failed).
+
+    Rides EVERY target shape — file, app folder, ordinary folder — like the
+    `fused` CLI note, because a view is a fact about the chat window rather than
+    about the target. Five things it has to say, each guarding a real failure:
+    the directory is EXEMPT from the scoping paragraph above (a file target is
+    told to keep its work inside one file, which without this sentence argues
+    against the whole feature); the link goes on a LINE OF ITS OWN (the page
+    cards a link that is its own paragraph and leaves an inline one alone, since
+    a card spliced into the middle of a sentence breaks the sentence); the page
+    must be SELF-CONTAINED (a CDN script is a blank card on a machine with no
+    network, and what this app renders is local files); the filename is REUSED on
+    revision (a fresh name per edit stacks a second card under the first, both
+    live); and `runPython` works but the working directory is the views folder,
+    so project data has to be named absolutely (`_child` chdirs to the script's
+    own directory, and a relative path resolves inside claude-views and finds
+    nothing).
+
+    It says WHEN as well as how, deliberately: without "when a picture genuinely
+    says it better", the cheapest way to look helpful is a chart on every reply.
+    """
+    if not path:
+        return ""
+    wire = _wire_path(path)
+    return (
+        " You can answer with a PICTURE, not only prose: write a small "
+        "self-contained HTML page into %s and link it on a line of its own "
+        "(e.g. `[Revenue by month](%s/revenue.html)`), and the chat renders that "
+        "page inline as a card where the link is. Do that when a chart, a "
+        "diagram, a map or a sortable table genuinely says it better than a "
+        "sentence would \u2014 not on every reply. That directory is exempt from "
+        "the scoping above: writing there is pre-approved and is never work "
+        "outside your target. Keep the page self-contained (inline the data, the "
+        "CSS and the JS \u2014 no CDN, nothing fetched over the network), write the "
+        "file before you link it, and reuse the same filename when you revise a "
+        "view so the card updates in place instead of a second one appearing. "
+        "The page is served through fused-render, so `fused.runPython()` works "
+        "from it \u2014 but its working directory is that views folder, so name any "
+        "project data by ABSOLUTE path." % (wire, wire)
+    )
 
 
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
@@ -1636,6 +1827,14 @@ def _start(file: str, message: str, session_id: str, model: str,
     if pane:
         _private_dir(_state_dir(run_dir))
 
+    # This target's chat-views directory, resolved ONCE for the same reason
+    # `pane` is: three things downstream have to agree about it — the `Edit(...)`
+    # pre-allowance, the prompt paragraph that names it, and the directory the
+    # model actually writes into. "" means it could not be created, and then all
+    # three drop together (see `_ensure_views_dir`): no rule, no paragraph, no
+    # promise the run cannot keep.
+    views = _ensure_views_dir(file)
+
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
     # the user picked.
@@ -1701,10 +1900,22 @@ def _start(file: str, message: str, session_id: str, model: str,
            #     itself runs on the user's behalf elsewhere (canvases.py). A
            #     prefix rule, so only a command that IS `fused ...` matches —
            #     compounds (`cd x && fused ...`) still card.
+           #
+           #   Edit of this target's CHAT-VIEWS dir — the fourth, and the safest
+           #     of the four: a directory this app owns under its own home dir,
+           #     holding nothing of the user's, whose entire purpose is pages the
+           #     model writes for this window to draw. Carding those would put a
+           #     prompt in front of every chart, which is the same "a prompt with
+           #     no decision in it" argument the app-state tool makes. It is
+           #     `Edit(...)` and not `Write(...)` for an empirical reason worth
+           #     following the link for — see `_edit_rule`. Omitted when the
+           #     directory could not be created, alongside the prompt paragraph
+           #     that would have named it.
            "--allowed-tools",
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
-                    + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
+                    + (["Bash(fused:*)"] if _fused_cli_dir() else [])
+                    + ([_edit_rule(views)] if views else []))]
     cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different
     # ones. A FILE target gets the scoping prompt. A DIRECTORY target that is an
@@ -1722,10 +1933,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     # prompt says which, so the model never mistakes our UI for the user's code.
     # The fused CLI note rides every shape (file, app folder, ordinary
     # folder) because it is a fact about the machine, not the target — and
-    # only when the wrapper actually exists (see _fused_cli_note).
+    # only when the wrapper actually exists (see _fused_cli_note). The chat-views
+    # note rides every shape for the same kind of reason (it describes the
+    # WINDOW, not the target) and lands AFTER the scoping paragraph on purpose:
+    # it is the sentence that exempts one directory from it.
     cmd += ["--append-system-prompt",
             (_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note()]
+             else _system_prompt(file)) + _fused_cli_note() + _views_note(views)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -3366,6 +3580,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         # and destroying the only copy of what is on disk.
         return _snapshot_revert(file, version_id,
                                 confirm_unique not in ("", "0", "false"))
+    if action == "views_dir":
+        # Asked for by the page at BOOT, not lazily like `shots_dir`: the answer
+        # is what every mount checks a link against, and a transcript restore
+        # renders its whole history in one pass moments after load.
+        return _views_dir(file)
     if action == "shots_dir":
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.

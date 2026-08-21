@@ -2690,6 +2690,58 @@
   }
   .assistant a, .plan-body a { color: var(--link); text-decoration: none; }
   .assistant a:hover, .plan-body a:hover { text-decoration: underline; }
+  /* ── chat view cards ──
+     A link the model wrote into its chat-views directory is not a reference to
+     a page, it IS the answer, so it is framed where it was written rather than
+     left as a line of blue text. Chrome first, picture second: the caption
+     carries the title and the three things you can do to a live page (send it
+     to the pane, reload it after an edit, open it whole), because a bare
+     iframe in a transcript reads as a rendering accident.
+
+     Height is CLAMPED, not fitted. The page is the model's and could be any
+     height at all; a reply that hands the scrollbar a 4000px chart has buried
+     the rest of the conversation, so the frame keeps a fixed box until the
+     reader asks for the rest (`.tall`, set by the caption's expand button once
+     a measurement says there is more to see). */
+  .assistant .viewcard {
+    /* The measured full height of the framed page, written here by
+       viewCardMeasure and read by `.tall` below. Declared with the box height as
+       its value rather than left to a `var()` fallback: a token nothing defines
+       is silently inert, so the rule that reads it would do nothing and nothing
+       would say so (tests/test_theme.py). */
+    --vc-full: 320px;
+    margin: 12px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .assistant .viewcard figcaption {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 6px 5px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--dim);
+  }
+  .assistant .viewcard .vc-title {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--fg-strong);
+  }
+  .assistant .viewcard .vc-btn {
+    flex: none;
+    background: none; border: 1px solid transparent; border-radius: 4px;
+    padding: 2px 6px;
+    font: inherit; font-size: 11px; color: var(--dim);
+    text-decoration: none; cursor: pointer;
+  }
+  .assistant .viewcard .vc-btn:hover { color: var(--fg); border-color: var(--faint); }
+  /* The box the frame lives in, and the placeholder it leaves behind when it is
+     unmounted off-screen: same height either way, so scrolling past a card and
+     back does not move everything under it. */
+  .assistant .viewcard .vc-body { height: 320px; }
+  .assistant .viewcard.tall .vc-body { height: auto; }
+  .assistant .viewcard iframe { display: block; width: 100%; height: 100%; border: 0; }
+  .assistant .viewcard.tall iframe { height: var(--vc-full, 320px); }
   .cursor { color: var(--accent); animation: blink 1s step-end infinite; }
   @keyframes blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
 
@@ -11913,6 +11965,22 @@ function addWorking() {
 // only thing standing between marked's output and bodyEl.innerHTML, and
 // every render (partial or final) goes through both, never marked alone. ──
 let _md;  // configured once, lazily — marked.use() mutates shared state
+
+// The raw href of a chat-view link, or "" for every other link. Shape only:
+// an ABSOLUTE path (POSIX, or a Windows drive letter) that ends in `.html` and
+// passes through a `claude-views/` directory. Percent-encoding is undone first
+// (markdown escapes a space in a link target, and a home directory with a space
+// in it is ordinary) and a `file://` prefix is tolerated because it is the other
+// spelling a model reaches for.
+function _viewPath(href) {
+  let h = String(href || "").trim();
+  if (!h) return "";
+  h = h.replace(/^file:\/\//i, "");
+  try { h = decodeURI(h); } catch { /* a stray % is not a view path */ }
+  if (!/^(?:[A-Za-z]:)?\//.test(h)) return "";          // absolute only
+  if (!/(?:^|\/)claude-views\/[^?#]+\.html$/i.test(h)) return "";
+  return h;
+}
 function _mdSetup() {
   if (_md) return _md;
   marked.use({
@@ -11923,6 +11991,29 @@ function _mdSetup() {
       // vendor/marked.min.js; some marked docs show a token-object shape
       // that belongs to a later major version and silently no-ops here).
       link(href, title, text) {
+        // A CHAT VIEW (see mountViewCards): a `.html` under a `claude-views/`
+        // directory is a page the model wrote for this reply, and the card that
+        // frames it is built later, off the DOM. Only the SHAPE is judged here —
+        // whether the path is really one of ours is decided against agent.py's
+        // answer at mount time, because a replayed transcript's links are just
+        // model-authored text.
+        //
+        // It has to happen HERE, in marked's renderer, because this is the last
+        // place the raw href exists: DOMPurify allows an href no scheme it
+        // recognises, and a Windows path (`C:/Users/...`) parses as scheme `c:`,
+        // so the attribute is dropped outright and the page loses the path it
+        // needed. So the path travels as `data-view` (data-* attributes survive
+        // DOMPurify's defaults, which is what lets this work without touching
+        // the sanitizer config) and the href becomes the same-origin `/render`
+        // URL — which is also what makes the link do something sensible wherever
+        // no card is built: a plain click opens the page full-size.
+        const view = _viewPath(href);
+        if (view) {
+          const enc = view.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+          return `<a class="viewlink" data-view="${enc}" href="/render?path=`
+            + encodeURIComponent(view) + `&amp;_preview=1"`
+            + ` target="_blank" rel="noopener noreferrer">${text}</a>`;
+        }
         // DOMPurify.sanitize() sanitizes HTML fragments, not URLs: fed a
         // bare string like this href, it just re-serializes it (entity-
         // encoding any `&` — double-encoding on top of the escape below)
@@ -11968,6 +12059,14 @@ function renderMd(text) {
 // fence's language on every frame flickers colors as more text arrives, so
 // it only runs once a reply's text is final.
 function attachCodeCopy(rootEl) {
+  // Every "this text is final now" site already calls this function — the
+  // typer's finish, each static render, the one pass over a restored
+  // transcript — which is exactly when a chat view may be framed, so the mount
+  // rides along rather than being wired into all eight of them separately (one
+  // missed site is a reply whose chart never appears). Fire-and-forget: it is
+  // async (it asks agent.py for the views root and stats the file) and nothing
+  // here waits on a picture.
+  mountViewCards(rootEl);
   rootEl.querySelectorAll("pre code").forEach((el) => {
     if (!window.hljs || el.classList.contains("hljs")) return;  // idempotent
     // Only registered languages: the hljs "common" bundle is missing
@@ -12023,6 +12122,213 @@ function attachCodeCopy(rootEl) {
     if (pre.firstChild) pre.insertBefore(wrap, pre.firstChild);
     else pre.appendChild(wrap);
   });
+}
+
+// ── chat views: the pages the MODEL wrote, framed where it linked them ──
+//
+// A reply can describe a chart; a page can BE one. agent.py tells the model it
+// may write a small self-contained HTML page into its chat-views directory
+// (`_views_note`) and link it on a line of its own, and this is the half that
+// draws it: the link becomes an iframe over `/render?path=` — the same URL the
+// left pane frames, so a view gets the runPython bridge, the params codec and
+// the injected runtime for free, and nothing here has to know what a chart is.
+//
+// THREE rules decide whether a link is framed, and each is a refusal:
+//
+//   SHAPE, in renderMd's link renderer — only an absolute `.html` under a
+//     `claude-views/` directory is even a candidate.
+//   ROOT, here — the path must sit under the root agent.py reports. A replayed
+//     transcript's links are model-authored TEXT read back off disk, so
+//     "looks like a view" is not enough to open a frame with.
+//   EXISTENCE, here — a file the user deleted, or one the model linked before
+//     writing, leaves the plain link alone rather than framing a 404. That link
+//     is deliberately NOT marked as handled, so the whole-transcript pass at the
+//     end of the run can still card it.
+//
+// `_preview=1` on every card URL: /render records an app OPEN otherwise (D301),
+// and a chart drawn into a conversation is not the user opening an app.
+let viewsRootPromise = null;
+function viewsRootPath() {
+  if (!viewsRootPromise) {
+    viewsRootPromise = fused.runPython(AGENT, { action: "views_dir", file: FILE }, { key: null })
+      .then((r) => {
+        // No root, no cards — and no cached "no" either: a failed answer clears
+        // the promise so the next finished reply asks again, rather than a
+        // single boot-time hiccup costing the session every picture in it.
+        if (!r || !r.root) { viewsRootPromise = null; return ""; }
+        return String(r.root);
+      })
+      .catch(() => { viewsRootPromise = null; return ""; });
+  }
+  return viewsRootPromise;
+}
+
+// Both paths spelled the one way agent.py spells them (`_wire_path`: forward
+// slashes on every platform) before they are compared. Case-insensitively,
+// because the two filesystems this runs on that CAN differ in case — macOS and
+// Windows — are the two that treat the difference as meaningless; the stat
+// below is what actually decides whether a path is real.
+const viewSlash = (s) => String(s || "").replace(/\\/g, "/").replace(/\/+$/, "");
+function insideViewsRoot(path, root) {
+  const p = viewSlash(path), r = viewSlash(root);
+  if (!p || !r) return false;
+  // `..` is refused rather than resolved: nothing legitimate writes one, and
+  // resolving it here would be a second, weaker copy of the check agent.py's
+  // directory already is.
+  if (p.split("/").indexOf("..") !== -1) return false;
+  return p.toLowerCase().startsWith(r.toLowerCase() + "/");
+}
+
+const viewURL = (path) => "/render?path=" + encodeURIComponent(path) + "&_preview=1";
+
+async function viewExists(path) {
+  try {
+    const st = await fetch("/api/fs/stat?path=" + encodeURIComponent(path))
+      .then((r) => r.json());
+    return !!st && !st.error && !st.is_dir;
+  } catch { return false; }
+}
+
+// One observer for every card on the page. A transcript can hold dozens of
+// views and each mounted one is a whole document running the model's own JS, so
+// a card frames itself when it comes near the viewport and drops the frame again
+// when it leaves — the same lesson the /apps hub learned about preview iframes
+// (D408), which is that the expensive part of a listing is never the listing.
+// The placeholder keeps the card's height, so scrolling back does not shuffle
+// everything underneath.
+const viewObserver = typeof IntersectionObserver === "function"
+  ? new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) viewCardMount(e.target); else viewCardUnmount(e.target);
+      }
+    }, { rootMargin: "400px 0px" })
+  : null;
+
+function viewCardMount(card) {
+  const body = card.querySelector(".vc-body");
+  if (!body || body.querySelector("iframe")) return;
+  const frame = document.createElement("iframe");
+  frame.title = card.dataset.title || "view";
+  frame.src = viewURL(card.dataset.path);
+  frame.addEventListener("load", () => viewCardMeasure(card, frame));
+  body.textContent = "";
+  body.appendChild(frame);
+}
+
+function viewCardUnmount(card) {
+  const frame = card.querySelector(".vc-body iframe");
+  if (frame) frame.remove();
+}
+
+// How tall the page actually wants to be, when it will say. Same-origin, so the
+// document is readable — but a view is the model's page and may be cross-origin
+// by the time anyone edits this, so a throw only costs the expand button.
+function viewCardMeasure(card, frame) {
+  let full = 0;
+  try {
+    const doc = frame.contentDocument;
+    full = doc ? Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0) : 0;
+  } catch { full = 0; }
+  const btn = card.querySelector(".vc-expand");
+  if (!btn) return;
+  // Only worth offering when there is meaningfully more page than box.
+  if (full > 360) {
+    card.style.setProperty("--vc-full", Math.min(full, 1400) + "px");
+    btn.hidden = false;
+  } else {
+    btn.hidden = true;
+    card.classList.remove("tall");
+  }
+}
+
+function viewCardButton(label, title, onClick) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "vc-btn"; b.textContent = label; b.title = title;
+  b.onclick = onClick;
+  return b;
+}
+
+// The card, in place of the link. A link that is its own paragraph REPLACES that
+// paragraph — that is the shape the prompt asks for, and it is the only one
+// where the sentence around the link does not lose a word. An inline link is
+// left exactly where it is and the card goes after its block instead: splicing a
+// figure into the middle of a sentence would break the sentence.
+function buildViewCard(a, path) {
+  const title = (a.textContent || "").trim() || path.split("/").pop();
+  const card = document.createElement("figure");
+  card.className = "viewcard";
+  card.dataset.path = path;
+  card.dataset.title = title;
+
+  const cap = document.createElement("figcaption");
+  const name = document.createElement("span");
+  name.className = "vc-title"; name.textContent = title; name.title = path;
+  cap.appendChild(name);
+
+  const expand = viewCardButton("expand", "Show the whole page", () => {
+    const on = card.classList.toggle("tall");
+    expand.textContent = on ? "collapse" : "expand";
+  });
+  expand.classList.add("vc-expand");
+  expand.hidden = true;   // shown by viewCardMeasure, if there is more to see
+  cap.appendChild(expand);
+
+  // Only where there IS a pane: an ordinary folder's chat is full width (D239)
+  // and #leftframe is not in the document at all.
+  if (document.getElementById("leftframe")) {
+    cap.appendChild(viewCardButton("pane", "Show this in the left pane", () => {
+      const frame = document.getElementById("leftframe");
+      if (frame) frame.src = viewURL(path);
+    }));
+  }
+  cap.appendChild(viewCardButton("reload", "Reload after an edit", () => {
+    const frame = card.querySelector(".vc-body iframe");
+    if (frame) frame.src = viewURL(path) + "&_t=" + Date.now();
+  }));
+  const open = document.createElement("a");
+  open.className = "vc-btn"; open.textContent = "open";
+  open.title = "Open the page full size";
+  open.href = viewURL(path); open.target = "_blank"; open.rel = "noopener noreferrer";
+  cap.appendChild(open);
+
+  const body = document.createElement("div");
+  body.className = "vc-body";
+  card.appendChild(cap);
+  card.appendChild(body);
+
+  const p = a.parentElement;
+  const alone = p && p.tagName === "P"
+    && (p.textContent || "").trim() === (a.textContent || "").trim();
+  if (alone) {
+    p.replaceWith(card);
+  } else {
+    const block = a.closest("p, li, blockquote") || a;
+    block.insertAdjacentElement("afterend", card);
+  }
+  if (viewObserver) viewObserver.observe(card); else viewCardMount(card);
+  return card;
+}
+
+async function mountViewCards(rootEl) {
+  let links;
+  try {
+    links = rootEl.querySelectorAll("a.viewlink:not([data-carded])");
+  } catch { return; }   // a probe's fake element, or a detached turn
+  if (!links.length) return;
+  const root = await viewsRootPath();
+  if (!root) return;
+  for (const a of links) {
+    // Re-read the marker: the awaits above are two chances for another pass over
+    // the same reply (a poll settles a segment while the run is still streaming)
+    // to have carded this link already.
+    if (a.getAttribute("data-carded")) continue;
+    const path = a.getAttribute("data-view") || "";
+    if (!insideViewsRoot(path, root)) continue;
+    if (!await viewExists(path)) continue;
+    if (a.getAttribute("data-carded")) continue;
+    a.setAttribute("data-carded", "1");
+    buildViewCard(a, path);
+  }
 }
 
 // ── typewriter: polls fill `target`; a rAF loop drains it smoothly ──
