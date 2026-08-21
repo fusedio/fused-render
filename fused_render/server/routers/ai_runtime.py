@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import struct
 import time
 
 from fastapi import APIRouter, Body, Header
@@ -70,7 +71,7 @@ _MAX_SEED = 2**31 - 1
 # restates as its own whitelist arrays, and `test_the_bridges_accepted_*`
 # below is what stops the two from drifting apart.
 _IMAGE_OPTIONS = frozenset({
-    "prompt", "model", "width", "height", "steps", "guidance", "seed"})
+    "prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words"})
@@ -80,6 +81,11 @@ _TRANSCRIBE_OPTIONS = frozenset({
 # these two into one set would make a caller passing `base` itself stop
 # being an error.
 _TRANSCRIBE_SERVER_OPTIONS = _TRANSCRIBE_OPTIONS | {"base"}
+# `aiImage` gained the identical asymmetry the moment `image` became an
+# option: `runtime.js` injects `body.base` from the page's own `?path=`
+# exactly as `aiTranscribe` does, so a caller passing `base` directly is
+# passing an option that does not exist from where it is standing.
+_IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
 
 
 def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
@@ -110,6 +116,97 @@ def _side(value, default: int) -> int:
         side = default
     side = max(_MIN_SIDE, min(_MAX_SIDE, side))
     return side - (side % _SIDE_STEP)
+
+
+def _image_pixel_size(path: str) -> tuple[int, int] | None:
+    """`(width, height)` read off `path`'s own PNG/JPEG/WebP header, or None.
+
+    Decision 1: an edit's default size comes from the BASE IMAGE, and this
+    process has no Pillow — the app's own `pyproject.toml` does not carry it,
+    and `/api/ai/image` answers before the render, from the server rather
+    than from a worker that may not even be resident yet. So this is a small
+    stdlib reader rather than a new dependency: three formats, each read off
+    the handful of bytes at the front of the file that name its own
+    dimensions, never the pixels.
+
+    Fails toward None on anything this cannot parse — a truncated read, a
+    format not listed, a file that is not actually an image despite its
+    extension — which the caller reads as "fall back to the ordinary 1024²
+    default" rather than as an error: this is a convenience default, not a
+    validation the caller is trusted to have gotten right elsewhere (the
+    `/api/fs/*` existence/is-a-file checks already ran before this is called).
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                # IHDR is always the first chunk: 8-byte signature, then a
+                # 4-byte length, a 4-byte "IHDR", then width/height as two
+                # big-endian uint32s.
+                width, height = struct.unpack(">II", head[16:24])
+                return width, height
+            if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                # Only the EXTENDED form (`VP8X`) names its size directly;
+                # plain `VP8 `/`VP8L` bury it in the compressed bitstream,
+                # which is exactly the reading the handoff scoped this to.
+                if head[12:16] != b"VP8X":
+                    return None
+                handle.seek(24)
+                dims = handle.read(6)
+                if len(dims) < 6:
+                    return None
+                # 24-bit little-endian, minus one — VP8X's own encoding.
+                width = int.from_bytes(dims[0:3], "little") + 1
+                height = int.from_bytes(dims[3:6], "little") + 1
+                return width, height
+            if head[:2] == b"\xff\xd8":
+                # Walk JPEG markers until an SOFn (start of frame) segment,
+                # which carries height then width as big-endian uint16s.
+                # APPn/COM/etc. segments are skipped by their own length.
+                handle.seek(2)
+                while True:
+                    marker = handle.read(2)
+                    if len(marker) < 2 or marker[0] != 0xFF:
+                        return None
+                    kind = marker[1]
+                    if kind in (0xD8, 0x01) or 0xD0 <= kind <= 0xD9:
+                        continue  # no length field on these
+                    length_bytes = handle.read(2)
+                    if len(length_bytes) < 2:
+                        return None
+                    length = struct.unpack(">H", length_bytes)[0]
+                    if 0xC0 <= kind <= 0xCF and kind not in (0xC4, 0xC8, 0xCC):
+                        data = handle.read(5)
+                        if len(data) < 5:
+                            return None
+                        height, width = struct.unpack(">HH", data[1:5])
+                        return width, height
+                    handle.seek(length - 2, 1)
+    except (OSError, struct.error):
+        return None
+    return None
+
+
+def _edit_default_size(image_path: str) -> tuple[int, int] | None:
+    """An edit's default `(width, height)`, or None to fall back to 1024².
+
+    The prototype's own arithmetic (confirmed as written by the gate run —
+    see the flux2-edit handoff, Decision 1): fit the longest side to 1024
+    WITHOUT upscaling, snap down to a multiple of 16, floor 256, aspect
+    preserved. `min(1.0, …)` is what makes this a downscale-only fit — a
+    500x400 base stays 500x400-shaped (snapped), it does not get blown up to
+    fill 1024.
+    """
+    dims = _image_pixel_size(image_path)
+    if dims is None:
+        return None
+    width, height = dims
+    if width <= 0 or height <= 0:
+        return None
+    scale = min(1.0, 1024.0 / max(width, height))
+    fitted_w = max(_MIN_SIDE, int(width * scale) // _SIDE_STEP * _SIDE_STEP)
+    fitted_h = max(_MIN_SIDE, int(height * scale) // _SIDE_STEP * _SIDE_STEP)
+    return fitted_w, fitted_h
 
 
 def _images_dir() -> str:
@@ -570,8 +667,9 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         return guard
 
     # Checked first, so an unknown option is reported even when another field
-    # is also wrong — see `_reject_unknown`.
-    rejection = _reject_unknown(body, _IMAGE_OPTIONS, "/api/ai/image")
+    # is also wrong — see `_reject_unknown`. The wider, SERVER set: `base` is
+    # bridge-injected, same asymmetry as `/api/ai/transcribe`.
+    rejection = _reject_unknown(body, _IMAGE_SERVER_OPTIONS, "/api/ai/image")
     if rejection is not None:
         return rejection
 
@@ -588,12 +686,81 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _error(registry.unavailable_reason(registry.IMAGE_GENERATION)
                       or "no image model is configured", status=409)
 
+    # `image` (SPEC AI-9f): edit a base image instead of rendering from the
+    # prompt alone. mflux-only — every diffusers image code refuses it, since
+    # that pipeline's own editing signature is unverified on any machine this
+    # app has run on (D413's own failure mode, reproduced inside mflux itself
+    # during the gate run: an image argument accepted and silently ignored).
+    image = body.get("image")
+    image_path = None
+    if image is not None:
+        # Decision 4: one image, a single string. An array or any other type
+        # is a 400 rather than a guess at what the first (or last) element
+        # was meant to mean — multi-reference conditioning is unverified.
+        if not isinstance(image, str) or not image.strip():
+            return _error(
+                "'image' must be the path to one base image, as a single "
+                "string — fused.ai.image({image}) edits exactly one image, "
+                "so an array or any other type is rejected rather than "
+                "guessed at", status=400)
+        # Refused HERE, before a job row opens: `engine_options.py`'s own
+        # rule is to refuse at the endpoint AND again in the worker, and the
+        # endpoint is where the RESOLVED runner is already known — the one
+        # that will actually serve this request regardless of which model id
+        # was named, since mflux/diffusers is an Engines-tab choice, not a
+        # per-model one.
+        active_runner = registry.for_capability(registry.IMAGE_GENERATION)
+        if active_runner is not None:
+            try:
+                engine_options.unsupported_or_raise(active_runner.code, image=image)
+            except ValueError as e:
+                return _error(str(e), status=400)
+        # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
+        # (RH-1): a relative `image` resolves against the directory of
+        # `base`, the calling page's own absolute path. An absolute `image`
+        # ignores `base`, as it does there. No allowlist, for the identical
+        # reason `api_ai_transcribe` gives: `/api/fs/raw` already serves any
+        # absolute path on this machine, so the only checks are the ones a
+        # typo deserves.
+        image_path = os.path.expanduser(image.strip())
+        base = body.get("base")
+        if not os.path.isabs(image_path):
+            if not isinstance(base, str) or not os.path.isabs(base):
+                return _error(
+                    "'image' must be absolute, or relative to a page named "
+                    "by 'base'", status=400)
+            image_path = os.path.join(os.path.dirname(base), image_path)
+        image_path = os.path.abspath(image_path)
+        if not os.path.exists(image_path):
+            return _error(f"no such file: {image_path}", status=400)
+        if not os.path.isfile(image_path):
+            return _error(f"not a file: {image_path}", status=400)
+
+    # Decision 1: an edit's default size comes from the BASE IMAGE, using the
+    # prototype's own arithmetic (confirmed as written by the gate run). Any
+    # explicit `width`/`height` still wins — this only changes the DEFAULT.
+    default_width = default_height = 1024
+    if image_path is not None:
+        edit_size = _edit_default_size(image_path)
+        if edit_size is not None:
+            default_width, default_height = edit_size
+
+    # An edit's defaults are the PROTOTYPE's own (4 steps, guidance 1.0), not
+    # the 28/4.0 shared between the generate paths of both image engines
+    # (`mflux_image/worker.py:generate`'s own comment) — applying the
+    # generate defaults to an edit silently would be a real quality
+    # regression (mflux's own denoising mechanism for editing wants far
+    # fewer steps and far less guidance than a from-scratch render), and
+    # changing them for this one mode is a documented choice rather than an
+    # unnoticed one.
+    default_steps = 4 if image_path is not None else 28
+    default_guidance = 1.0 if image_path is not None else 4.0
     try:
-        steps = max(1, min(_MAX_STEPS, int(body.get("steps") or 28)))
+        steps = max(1, min(_MAX_STEPS, int(body.get("steps") or default_steps)))
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
     try:
-        guidance = max(0.0, min(20.0, float(body.get("guidance") or 4.0)))
+        guidance = max(0.0, min(20.0, float(body.get("guidance") or default_guidance)))
     except (TypeError, ValueError):
         return _error("'guidance' must be a number", status=400)
     # A seed the caller did not choose is chosen HERE and reported back, so
@@ -618,8 +785,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     request = {
         "prompt": prompt.strip(),
-        "width": _side(body.get("width"), 1024),
-        "height": _side(body.get("height"), 1024),
+        "width": _side(body.get("width"), default_width),
+        "height": _side(body.get("height"), default_height),
         "steps": steps,
         "guidance": guidance,
         "seed": seed,
@@ -639,6 +806,14 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # runner venv it cannot import has a matrix for.
         "outPreview": preview.preview_path(path),
     }
+    if image_path is not None:
+        # Absent entirely rather than `None` when there is no base image —
+        # `mflux_image/worker.py`'s `generate()` reads its presence to decide
+        # the MODE (edit vs. plain generate), and `body.get("image")` answers
+        # that identically for "the key is missing" and "the key is None",
+        # but a worker that ever grew a stricter check should not have to
+        # tell those two apart because this route always sent one.
+        request["image"] = image_path
     try:
         supervisor.start_image(model, request, job)
     except supervisor.SupervisorError as e:
@@ -649,7 +824,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # snapped, `steps` clamped, `seed` invented. A caller that echoes these back
     # gets the render it actually got, not the one it asked for. `out` is the
     # worker's field name for the same thing `path` is, so it is not repeated.
-    return {
+    reply = {
         "jobId": job,
         # Canonical, like every other path this API hands back (`previewPath`
         # below, and `/api/ai/transcribe`'s own `path`) — this goes back to a
@@ -670,6 +845,12 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "guidance": guidance,
         "seed": seed,
     }
+    if image_path is not None:
+        # Echoed beside `path`, canonical for the identical reason: a caller
+        # that passed a relative `image` can see which file it actually
+        # resolved to.
+        reply["image"] = canonical_fs_path(image_path)
+    return reply
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out

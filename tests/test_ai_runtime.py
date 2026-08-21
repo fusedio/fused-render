@@ -3573,39 +3573,53 @@ def test_an_image_needs_a_prompt(client, fake_image_runner):
 
 def test_an_unrecognised_image_option_is_a_400_naming_it(client, fake_image_runner):
     """The bug report: `image`/`strength` render a text-to-image picture and say
-    nothing about the option that was ignored. Now the envelope is closed —
-    an option this endpoint does not have is refused rather than dropped."""
+    nothing about the option that was ignored. `image` is now a real option
+    (SPEC AI-9f) — `strength` is the one Decision 2 keeps out on purpose,
+    since the edit mechanism does not use it at all — so it is what still
+    stands for "an option this endpoint does not have"."""
     response = client.post(
-        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png"},
+        "/api/ai/image", json={"prompt": "a fox", "strength": 0.6},
         headers={"X-Fused": "1"})
     assert response.status_code == 400
     message = response.json()["error"]
-    assert "image" in message
+    assert "strength" in message
     assert "not an option" in message
 
 
 def test_an_unrecognised_image_option_names_BOTH_unknown_keys(client, fake_image_runner):
     response = client.post(
         "/api/ai/image",
-        json={"prompt": "a fox", "image": "photo.png", "strength": 0.6},
+        json={"prompt": "a fox", "strength": 0.6, "bogus": 1},
         headers={"X-Fused": "1"})
     assert response.status_code == 400
     message = response.json()["error"]
-    assert "image" in message and "strength" in message
+    assert "bogus" in message and "strength" in message
 
 
 def test_the_envelope_is_checked_BEFORE_any_field_validation(client, fake_image_runner):
     """An unknown key and a bad `steps` in the same request: the envelope error
     wins, so the caller learns about the option it does not have first."""
     response = client.post(
-        "/api/ai/image", json={"prompt": "a fox", "image": "x.png", "steps": "nonsense"},
+        "/api/ai/image", json={"prompt": "a fox", "strength": 0.6, "steps": "nonsense"},
         headers={"X-Fused": "1"})
     assert response.status_code == 400
     message = response.json()["error"]
-    assert "'image' is not an option" in message
+    assert "'strength' is not an option" in message
     # The field error ("'steps' must be a number") never appears — the
     # envelope check short-circuits before `steps` is ever parsed.
     assert "must be a number" not in message
+
+
+def test_the_server_accepts_base_the_bridge_would_have_injected(
+        client, fake_image_runner):
+    """The SERVER's accepted set is the wider one on purpose (`base` is
+    bridge-injected, same asymmetry `/api/ai/transcribe` carries) — a raw
+    `curl` against this endpoint, which is what the skill documents, must be
+    able to pass it directly the way the bridge does on a caller's behalf."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "base": "/pages/other.html"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
 
 
 def test_every_documented_image_option_is_still_accepted(client, fake_image_runner):
@@ -3617,6 +3631,279 @@ def test_every_documented_image_option_is_still_accepted(client, fake_image_runn
     }
     response = client.post("/api/ai/image", json=body, headers={"X-Fused": "1"})
     assert response.status_code == 200, response.json()
+
+
+# -- editing a base image (SPEC AI-9f) -------------------------------------------
+#
+# mflux-only: `fake_image_runner`'s code is not a diffusers one, so every test
+# below that exercises the SUCCESS path runs as if mflux were resolved — the
+# refusal path (a diffusers code) has its own fixture and its own tests.
+
+
+def _png_bytes(width, height):
+    """The 24 bytes `_image_pixel_size` actually reads, plus enough padding
+    that a real PNG signature check would not choke on a short read. Not a
+    valid PNG otherwise (no IDAT, no CRCs) — this app's reader never needs
+    one, and a test that faked a full PNG would be testing Pillow's
+    decoder, not this one."""
+    import struct as _struct
+    return (b"\x89PNG\r\n\x1a\n" + _struct.pack(">I", 13) + b"IHDR"
+            + _struct.pack(">II", width, height) + b"\x00" * 5)
+
+
+@pytest.fixture()
+def base_photo(tmp_path):
+    """A `photo.png` beside a fake page, both real files on disk — the shape
+    `image`/`base` resolution actually reads. 2000x1000, deliberately not
+    already a multiple of 16 after scaling, so the snap-down arithmetic has
+    something to do."""
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "photo.png"
+    photo.write_bytes(_png_bytes(2000, 1000))
+    return str(page), str(photo)
+
+
+def test_editing_needs_a_base_image_that_EXISTS(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "/nope/nowhere.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "no such file" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.IMAGE_JOB_PREFIX)]
+
+
+def test_editing_refuses_a_relative_image_with_no_base(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'image' must be absolute" in response.json()["error"]
+
+
+def test_editing_resolves_a_RELATIVE_image_against_base(
+        client, fake_image_runner, base_photo):
+    """RH-1, restated for `image` the way `/api/ai/transcribe`'s `path`
+    already has it: a relative `image` resolves against the directory of
+    `base`, exactly what the bridge injects from the page's own `?path=`."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_an_absolute_image_ignores_base(client, fake_image_runner, base_photo):
+    _page, photo = base_photo
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": photo},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_an_ARRAY_image_is_a_400_not_a_guess(client, fake_image_runner):
+    """Decision 4: one image, a single string. mflux's own argument is a
+    list (`image_paths`), and reading that as license to accept a list HERE
+    would ship untested multi-reference conditioning inside a freshly opened
+    envelope."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": ["a.png", "b.png"]},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+
+
+def test_a_NON_STRING_image_is_a_400(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": 7},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+
+
+def test_an_EMPTY_image_is_a_400_not_an_unedited_render(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "   "},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+
+
+def test_the_request_the_WORKER_gets_carries_image_ONLY_when_asked(
+        client, fake_image_runner, base_photo, monkeypatch):
+    """`mflux_image/worker.py` derives its MODE off whether `image` is a key
+    in the request at all — this pins that the route only ever sends the key
+    when a caller actually asked for an edit, never a `None` placeholder."""
+    page, photo = base_photo
+    captured = []
+    real_start = supervisor.start_image
+
+    def spy(model, request, job):
+        captured.append(dict(request))
+        return real_start(model, request, job)
+
+    monkeypatch.setattr(supervisor, "start_image", spy)
+
+    plain = client.post("/api/ai/image", json={"prompt": "a fox"},
+                        headers={"X-Fused": "1"}).json()
+    _wait_job(plain["jobId"])
+    edit = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    _wait_job(edit["jobId"])
+
+    assert "image" not in captured[0]
+    assert os.path.isabs(captured[1]["image"])
+    assert os.path.samefile(captured[1]["image"], photo)
+
+
+def test_an_edits_DEFAULTS_are_the_PROTOTYPES_not_the_generate_defaults(
+        client, fake_image_runner, base_photo, monkeypatch):
+    """Decision 1's other half: an edit that omits `steps`/`guidance` must
+    get 4/1.0 (the prototype's own numbers), not the 28/4.0 shared between
+    both engines' plain generate path — silently applying the generate
+    defaults to an edit is a real quality regression."""
+    page, _photo = base_photo
+    captured = []
+    real_start = supervisor.start_image
+    monkeypatch.setattr(supervisor, "start_image",
+                        lambda model, request, job: (captured.append(dict(request)),
+                                                      real_start(model, request, job))[1])
+
+    edit = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    _wait_job(edit["jobId"])
+    plain = client.post("/api/ai/image", json={"prompt": "a fox"},
+                        headers={"X-Fused": "1"}).json()
+    _wait_job(plain["jobId"])
+
+    assert edit["steps"] == 4 and edit["guidance"] == 1.0
+    assert plain["steps"] == 28 and plain["guidance"] == 4.0
+    # An explicit value still wins over either default.
+    explicit = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "steps": 9},
+        headers={"X-Fused": "1"}).json()
+    _wait_job(explicit["jobId"])
+    assert explicit["steps"] == 9
+
+
+def test_an_edits_default_SIZE_comes_from_the_base_image(
+        client, fake_image_runner, base_photo):
+    """Decision 1: fit the longest side to 1024 without upscaling, snap down
+    to a multiple of 16, floor 256, aspect preserved — the prototype's own
+    arithmetic, confirmed as written by the gate run. The fixture's 2000x1000
+    scales by 1024/2000 = 0.512 -> 1024x512, both already multiples of 16."""
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (1024, 512)
+    _wait_job(started["jobId"])
+
+
+def test_an_edits_default_size_is_pinned_against_the_size_ARITHMETIC_directly(tmp_path):
+    """The arithmetic itself, off `_edit_default_size` — a fixture image
+    whose scaled sides are NOT already multiples of 16, so the snap-DOWN
+    (never up, never a round) is what the test actually exercises."""
+    photo = tmp_path / "odd.png"
+    photo.write_bytes(_png_bytes(1500, 900))
+    # scale = 1024/1500 ~ 0.6827; 1500*scale ~ 1024.0 -> //16*16 == 1024;
+    # 900*scale ~ 614.4 -> int() == 614 -> //16*16 == 608.
+    assert ai_runtime._edit_default_size(str(photo)) == (1024, 608)
+
+
+def test_an_edits_default_size_never_UPSCALES_a_small_base(tmp_path):
+    photo = tmp_path / "small.png"
+    photo.write_bytes(_png_bytes(300, 200))
+    # scale = min(1.0, 1024/300) = 1.0 -> unchanged, then snapped down.
+    assert ai_runtime._edit_default_size(str(photo)) == (288, 256)
+
+
+def test_an_explicit_width_still_wins_over_the_edit_default(
+        client, fake_image_runner, base_photo):
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "width": 512},
+        headers={"X-Fused": "1"}).json()
+    assert started["width"] == 512
+    _wait_job(started["jobId"])
+
+
+def _only_image_runner(tmp_path, monkeypatch, code):
+    """A registry whose ONLY runner renders images, under `code`, with the
+    fake worker — so the endpoint's `image` refusal can be exercised against
+    a REAL diffusers code rather than only the mechanism in isolation
+    (`test_ai_engine_options.py`)."""
+    folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_IMAGE_WORKER)
+    runner = registry.Runner(
+        code=code, capability=registry.IMAGE_GENERATION,
+        folder=str(folder), label="Fake diffusers image",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setitem(catalog.SUGGESTIONS, code, [
+        {"id": "org/fake-diffusers", "label": "Fake diffusers image",
+         "size_gb": None, "note": ""},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    return runner
+
+
+@pytest.fixture()
+def fake_diffusers_image_runner(tmp_path, monkeypatch):
+    yield _only_image_runner(tmp_path, monkeypatch, "diffusers-image")
+    supervisor.unload()
+    supervisor.reset()
+
+
+def test_the_diffusers_engine_refuses_image_BEFORE_a_job_opens(
+        client, fake_diffusers_image_runner, base_photo):
+    """`engine_options.py`'s real table, not a fake entry: the diffusers
+    image engine — resolved here as the ONLY registered runner — refuses
+    `image` with the sentence naming the way out, and no job row opens for
+    it (the same treatment `test_an_option_the_RESOLVED_engine_cannot_honour_
+    is_refused_before_a_job_opens` gives the transcribe side)."""
+    page, _photo = base_photo
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400, response.json()
+    assert "Diffusers image engine" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.IMAGE_JOB_PREFIX)]
+
+
+def test_the_diffusers_engine_still_renders_an_ORDINARY_prompt(
+        client, fake_diffusers_image_runner):
+    """The table is an exception list keyed on `image`'s presence — a plain
+    render must not be caught in the same net."""
+    started = client.post("/api/ai/image", json={"prompt": "a fox"},
+                          headers={"X-Fused": "1"}).json()
+    _wait_job(started["jobId"])
+
+
+def test_the_image_endpoint_and_the_worker_refuse_it_by_the_SAME_rule(
+        client, fake_diffusers_image_runner, base_photo):
+    """One sentence, one place — the image side of the same claim
+    `test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule`
+    already pins for transcribe."""
+    from fused_render.ai.runners import engine_options
+
+    page, _photo = base_photo
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"})
+    with pytest.raises(ValueError) as raised:
+        engine_options.unsupported_or_raise("diffusers-image", image="photo.png")
+    assert response.json()["error"] == str(raised.value)
 
 
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
@@ -5029,20 +5316,22 @@ def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
 
 
 def test_the_bridge_rejects_an_unrecognised_image_option_before_the_POST():
-    """The bug report itself, at the bridge layer: `image`/`strength` must not
-    reach `aiPost` at all — the caller learns about the drop instead of
-    getting a text-to-image picture back."""
-    settled = _run_ai_image(opts='{prompt: "a fox", image: "photo.png"}')
+    """The bug report itself, at the bridge layer: an option this API does
+    not have must not reach `aiPost` at all. `image` is now a real option
+    (SPEC AI-9f) — `strength` is the one Decision 2 keeps out on purpose,
+    since the edit mechanism never uses it — so it is what still stands for
+    "the caller learns about the drop instead of getting a picture back"."""
+    settled = _run_ai_image(opts='{prompt: "a fox", strength: 0.6}')
     assert settled["ok"] is False
     assert settled["type"] == "bad_request"
-    assert "image" in settled["message"]
+    assert "strength" in settled["message"]
 
 
 def test_the_bridge_names_BOTH_unknown_image_options():
     settled = _run_ai_image(
-        opts='{prompt: "a fox", image: "photo.png", strength: 0.6}')
+        opts='{prompt: "a fox", strength: 0.6, bogus: 1}')
     assert settled["ok"] is False and settled["type"] == "bad_request"
-    assert "image" in settled["message"] and "strength" in settled["message"]
+    assert "bogus" in settled["message"] and "strength" in settled["message"]
 
 
 def test_onProgress_is_exempt_from_the_image_unknown_key_check():
@@ -5058,9 +5347,9 @@ def test_the_bridge_checks_the_envelope_BEFORE_the_prompt_field():
     `prompt` must learn about the option, not about the missing prompt —
     "add a prompt" would "fix" the error and land the caller right back in
     the silent-drop illusion this change exists to end."""
-    settled = _run_ai_image(opts='{image: "photo.png"}')
+    settled = _run_ai_image(opts='{strength: 0.6}')
     assert settled["ok"] is False and settled["type"] == "bad_request"
-    assert "'image' is not an option" in settled["message"]
+    assert "'strength' is not an option" in settled["message"]
     # The field error's specific text never appears — asserting the bare
     # word "prompt" would pass by accident, since it is in the accepted-set
     # listing too.
@@ -5073,9 +5362,35 @@ def test_the_bridge_names_unknown_image_options_SORTED():
     caller happened to write the object literal — the two layers' messages
     stop being comparable."""
     settled = _run_ai_image(
-        opts='{prompt: "a fox", strength: 0.6, image: "photo.png"}')
+        opts='{prompt: "a fox", strength: 0.6, bogus: 1}')
     assert settled["ok"] is False and settled["type"] == "bad_request"
-    assert "'image', 'strength'" in settled["message"]
+    assert "'bogus', 'strength'" in settled["message"]
+
+
+def test_the_bridge_refuses_a_caller_supplied_base_as_an_unknown_option_TOO():
+    """`aiImage` gained the identical asymmetry `aiTranscribe` already has the
+    moment `image` became an option: `base` is injected from the page's own
+    `?path=`, never accepted from the caller's own options object, so a
+    caller passing it directly is passing an option that does not exist from
+    the page's point of view even though the server accepts it once the
+    bridge adds it."""
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", base: "/pages/other.html"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "base" in settled["message"]
+
+
+def test_the_bridge_rejects_an_image_that_is_NOT_A_STRING():
+    """Decision 4, at the bridge — reachable only when a caller managed to
+    hand the bridge a non-string despite JS having no static typing to stop
+    it. The definitive check is the server's; this pins that the bridge does
+    not itself mangle an array into something that looks like a plain
+    string by the time it reaches `aiPost`."""
+    settled = _run_ai_image(opts='{prompt: "a fox", image: ["a.png", "b.png"]}')
+    # The bridge's own whitelist loop forwards `image` verbatim — Decision 4's
+    # rejection is the SERVER's job, not restated here as a second copy of the
+    # rule; this call reaches the (stubbed) POST rather than failing early.
+    assert settled["ok"] is True, settled
 
 
 def _run_ai_transcribe_opts_only(opts):
@@ -5130,6 +5445,12 @@ def test_the_bridges_accepted_image_keys_match_the_servers_constant():
     assert match, "could not find aiImage's whitelist array in runtime.js"
     js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
     assert js_keys == sorted(ai_runtime._IMAGE_OPTIONS)
+    # Same asymmetry as transcribe's own drift guard (D413): `base` must NOT
+    # be in the caller-facing set the bridge validates against, and must be
+    # in the wider server set — collapsing the two would silently stop
+    # enforcing that a caller cannot pass `base` itself.
+    assert "base" not in ai_runtime._IMAGE_OPTIONS
+    assert "base" in ai_runtime._IMAGE_SERVER_OPTIONS
 
 
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
