@@ -693,11 +693,13 @@ def test_history_of_an_unknown_session_is_still_empty(agent, tmp_path, monkeypat
     monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
     target = tmp_path / "page.html"
     target.write_text("x")
-    assert agent._history(str(target), "missing") == {"turns": []}
-    assert agent._history(str(target), "../escape") == {"turns": []}
+    # `transcript` rides on every history payload now (D411's watermark); the
+    # rule this test owns is that neither of these renders a turn.
+    assert agent._history(str(target), "missing")["turns"] == []
+    assert agent._history(str(target), "../escape")["turns"] == []
 
 
-# ------------------------------------------- the background-task wake (D406)
+# ------------------------------------------- the background-task wake (D411)
 
 def _wake_row(summary="Background command \"pytest -q\" completed (exit code 0)",
               status="completed"):
@@ -767,3 +769,56 @@ def test_a_message_that_merely_mentions_the_tag_is_still_the_users(
         _t_user("why does <task-notification> render as XML?"),
     ])
     assert [t["role"] for t in turns] == ["user"]
+
+
+# ------------------------------- the transcript watermark (D411)
+
+def test_history_hands_back_the_file_it_read(agent, tmp_path, monkeypatch):
+    """The page follows the conversation by this: it re-renders when the file
+    moves past the watermark its last render came with. The PATH rides along
+    because resolving an id to a transcript is `_history`'s job — it is the only
+    reader that knows which folder this chat is open on — and the liveness
+    endpoint refuses to guess it."""
+    import os
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    d = projects / agent._munge(str(target.parent))
+    os.makedirs(d, exist_ok=True)
+    path = d / "sess1.jsonl"
+    path.write_text(json.dumps(_t_user("hello")) + "\n")
+
+    out = agent._history(str(target), "sess1")
+    assert out["transcript"]["path"] == str(path)
+    assert out["transcript"]["size"] == path.stat().st_size
+    assert out["transcript"]["mtime"] == path.stat().st_mtime
+
+
+def test_a_transcript_that_does_not_exist_yet_still_answers_a_watermark(
+        agent, tmp_path, monkeypatch):
+    """Zeroes, not a missing key: a chat can be open on a session whose first
+    row has not been written, and the first row written moves the watermark."""
+    import os
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
+    out = agent._history(str(target), "sess1")
+    assert out["turns"] == []
+    assert out["transcript"]["mtime"] == 0.0 and out["transcript"]["size"] == 0
+    assert out["transcript"]["path"].endswith("sess1.jsonl")
+    # ...and a refused id names no file at all rather than one it did not check.
+    bad = agent._history(str(target), "../escape")
+    assert bad["turns"] == [] and bad["transcript"]["path"] == ""
+
+
+def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
+    """Order is the guarantee: a stat taken AFTER the read would describe rows
+    the payload does not contain — a turn silently swallowed for good. Taken
+    first, a write that lands mid-read costs one redundant re-render."""
+    src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
+    body = src[src.index("def _history(file: str, session_id: str)"):]
+    body = body[:body.index("\ndef ")]
+    assert body.index("_transcript_stat(path)") < body.index("for line in open(path")

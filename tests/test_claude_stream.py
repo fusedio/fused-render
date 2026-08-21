@@ -492,7 +492,7 @@ def test_a_run_that_died_mid_retry_keeps_the_overload_story(agent, run_dir):
     assert "Your Claude plan" not in data["error"]
 
 
-# --------------------------------- when a turn ends but the run does not (D406)
+# --------------------------------- when a turn ends but the run does not (D411)
 #
 # One claude process can run several turns: a turn that started a background
 # shell is woken by the harness when the command finishes, and the reply to that

@@ -142,6 +142,78 @@ def transcript_running(path: str, now: float) -> tuple[bool, float]:
     return running, (last.timestamp() if last is not None else mtime)
 
 
+def transcript_turn_open(path: str, now: float) -> bool:
+    """Is a turn open in this transcript RIGHT NOW — by its last message, not a
+    window (D411).
+
+    A second rule, deliberately, and the difference is the question. The 45s
+    window above answers "has this session been active recently", which is the
+    right shape for a BADGE in a list of sessions: it is a summary, a little
+    lag rounds off invisibly, and the cost of being late is nothing.
+    `transcript_turn_open` answers "is a reply being written into this file
+    while I watch", for a chat that has the conversation OPEN and is showing a
+    shimmering working line under it. There a window is not lag, it is a lie
+    told for its whole length — measured with the app's own chat (Akshil,
+    2026-08-21, a `claude --resume` driven from a terminal): the reply landed
+    and the line kept shimmering for the balance of the 45 seconds, because a
+    non-interactive run writes no `turn_duration` record for `tail_activity` to
+    find and nothing else says the turn ended.
+
+    So this reads the last MESSAGE instead of the clock. Walking the tail back
+    to the newest `user`/`assistant` row:
+
+    * an **assistant** row with no `tool_use` block is a reply that finished —
+      the transcript's version of `_poll`'s `result`, and the same test that
+      makes `done` per-turn there,
+    * an **assistant** row carrying `tool_use`, or a **user** row (a prompt, or
+      a `tool_result` being fed back), is a turn still in flight,
+    * no message at all in the tail is not evidence of one running.
+
+    `now` still matters for exactly one thing: a turn that was OPEN when its
+    process died stays open in the file forever — a terminal closed mid-reply
+    leaves a user row as the last word. `STALE_TAIL_SEC` is the ceiling on how
+    long that lie may stand, and it is the same ceiling the window rule uses.
+    """
+    if not path:
+        return False
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return False
+    if now - mtime > STALE_TAIL_SEC:
+        return False   # nobody has written in a minute and a half; not mid-turn
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - TAIL_BYTES))
+            chunk = f.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    lines = [ln for ln in chunk.split("\n") if ln.strip()]
+    if size > TAIL_BYTES and lines:
+        lines = lines[1:]  # partial first line from the mid-file seek
+    for line in reversed(lines):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            # A half-written last line IS a write in flight — the one case where
+            # unparsable is itself the answer.
+            return True
+        kind = obj.get("type")
+        if kind == "user":
+            return True
+        if kind != "assistant":
+            continue   # attachments, mode records, housekeeping: not the reply
+        message = obj.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, list):
+            return any(isinstance(b, dict) and b.get("type") == "tool_use"
+                       for b in content)
+        return False   # a plain-text assistant reply is a turn that ended
+    return False
+
+
 def transcript_path(session_id: str, projects_dir: str | None = None) -> str:
     """Where a session id's transcript lives, or "" if there is not one.
 

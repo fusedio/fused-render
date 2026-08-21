@@ -293,6 +293,10 @@ const fused = {
   },
 };
 const resumeRun = async (id) => { calls.push(["resume", id]); store.run = ""; };
+// The transcript-follower (D411) is the lap's SECOND, coarser reader. These
+// tests are about the shape of the lap, so it records here; the real one runs
+// under its own harness further down.
+const followTranscript = async (sid) => { calls.push(["follow", sid]); };
 """
 
 
@@ -456,7 +460,7 @@ def test_the_lookup_is_the_only_new_agent_action_the_page_calls(html_pane):
     assert html_pane.count('action: "live_run"') == 1
 
 
-# ── the standing watch: a turn nobody on this page started (D406) ────────────
+# ── the standing watch: a turn nobody on this page started (D411) ────────────
 #
 # The window version of the watch only ran around opening a chat, so a session
 # that became busy while the chat sat open lit nothing at all — the reported
@@ -483,14 +487,19 @@ def _watch(html, call):
 
 def test_the_watch_asks_once_a_lap_not_eight_times(html_pane):
     """A tick that finds nothing must cost ONE lookup: this runs for the life of
-    the page, where the reopen's budget is chasing a run it knows exists."""
+    the page, where the reopen's budget is chasing a run it knows exists.
+
+    Finding nothing is also the ONLY case that reaches the transcript (D411):
+    with no run to attach, a stat is the page's one remaining way to notice a
+    turn someone is driving from a terminal."""
     calls = _watch(html_pane, """
 answer = { run_id: "" };
 store.session_id = "sess-A";
 await liveWatchTick();
 console.log(JSON.stringify(calls));
 """)
-    assert calls == [["ask", "live_run", "/proj/index.html", "sess-A"]]
+    assert calls == [["ask", "live_run", "/proj/index.html", "sess-A"],
+                     ["follow", "sess-A"]]
 
 
 def test_the_watch_adopts_a_run_this_frame_never_started(html_pane):
@@ -499,7 +508,23 @@ store.session_id = "sess-A";
 await liveWatchTick();
 console.log(JSON.stringify(calls));
 """)
-    assert calls[-1] == ["resume", "run-1"]
+    assert ["resume", "run-1"] in calls
+
+
+def test_the_run_dir_is_asked_first_and_the_transcript_only_after(html_pane):
+    """RUN DIRS FIRST, ALWAYS (D411). A run this app spawned streams token by
+    token and owns the chrome; the transcript is the coarser, blinder fallback
+    and only speaks for the turns no run dir can account for. So the stat is
+    strictly after the lookup, and a turn already ATTACHED skips it entirely —
+    that last part is `test_the_watch_is_quiet_while_this_frame_is_busy`, which
+    asserts a lap holding `activeRun` costs nothing at all."""
+    calls = _watch(html_pane, """
+store.session_id = "sess-A";
+await liveWatchTick();
+console.log(JSON.stringify(calls));
+""")
+    assert calls.index(["ask", "live_run", "/proj/index.html", "sess-A"]) \
+        < calls.index(["follow", "sess-A"])
 
 
 def test_the_watch_is_quiet_while_this_frame_is_busy(html_pane):
@@ -572,13 +597,20 @@ console.log(JSON.stringify(calls));
 
 
 def test_coming_back_to_a_backgrounded_tab_looks_immediately(html_pane):
-    """Both halves: returning laps at once, and leaving does not."""
+    """Both halves: returning laps at once, and leaving does not.
+
+    `drain` is the harness paying a debt the browser never has: the triggers do
+    not await the lap they start, so the `liveWatchBusy` seat is only free again
+    once the lap's own awaits have settled. Real events are milliseconds apart;
+    these are back-to-back statements, and without a turn of the event loop
+    between them the second one is refused as a burst."""
     calls = _triggers(html_pane, """
+const drain = () => new Promise((r) => setTimeout(r, 0));
 document.hidden = true;
-await handlers["doc:visibilitychange"]();
+await handlers["doc:visibilitychange"](); await drain();
 document.hidden = false;
-await handlers["doc:visibilitychange"]();
-await handlers["win:focus"]();
+await handlers["doc:visibilitychange"](); await drain();
+await handlers["win:focus"](); await drain();
 console.log(JSON.stringify(calls));
 """)
     assert len([c for c in calls if c[0] == "adopt"]) == 2
@@ -660,3 +692,241 @@ def _block_between(html, start_marker, end_marker):
     i = html.index(start_marker)
     return html[i:html.index(end_marker, i) + len(end_marker)]
 
+
+
+# ── following a session this app is not driving (D411) ───────────────────────
+#
+# The gap the run-dir watch above cannot close, by construction: an interactive
+# `claude` in a terminal, or a `claude --resume`, on the very session the chat is
+# open on. There is no run dir, so `live_run` answers nothing forever, and the
+# chat showed the conversation as it stood at page load until the reader hit
+# reload by hand — at which point the missing turns appeared correctly, because
+# the RELOAD was never the broken part.
+#
+# So the reload is what got automated, and deliberately nothing more: the server
+# stats the one transcript (`/api/claude-sessions/liveness`), and a `(mtime,
+# size)` that moved past the watermark the last render came with re-runs the
+# same `loadHistory` a manual reload ran. These pin the rule that decides that —
+# extracted from the page, so a decision the page does not actually make cannot
+# pass.
+
+def _decide(html, call):
+    """Run followDecision() — the pure half of the follower — under node."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own follow rule")
+    fn = _block_between(html, "function followDecision(mark, probe, ownEnd) {",
+                        "\n}\n")
+    out = subprocess.run(["node", "-e", fn + "\n" + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+_MARK = '{ path: "/p/s.jsonl", mtime: 100, size: 500 }'
+
+
+def test_a_transcript_that_has_not_moved_costs_nothing(html_pane):
+    """The steady state, and the whole reason this is affordable: a chat sitting
+    open on a finished conversation stats once a lap and does nothing with the
+    answer. No parse, no fetch, no re-render."""
+    got = _decide(html_pane, """
+console.log(JSON.stringify(followDecision(%s,
+  { exists: true, mtime: 100, size: 500, running: false }, 0)));
+""" % _MARK)
+    assert got == {"refresh": False, "running": False}
+
+
+def test_either_half_of_the_pair_moving_is_a_move(html_pane):
+    """The PAIR, not mtime alone: a coarse filesystem clock can land two appends
+    in one tick, and the size is what tells them apart. And mtime alone would
+    miss nothing only on a clock nobody promised us."""
+    for probe in ('{ exists: true, mtime: 101, size: 500 }',
+                  '{ exists: true, mtime: 100, size: 700 }'):
+        got = _decide(html_pane, """
+console.log(JSON.stringify(followDecision(%s, %s, 0)));
+""" % (_MARK, probe))
+        assert got["refresh"] is True, probe
+
+
+def test_a_transcript_that_is_not_there_yet_is_not_a_move(html_pane):
+    """`exists: false` is a session whose first row has not been written, not a
+    conversation that emptied — re-rendering on it would blank a chat over a
+    file the writer has not created."""
+    got = _decide(html_pane, """
+console.log(JSON.stringify(followDecision(%s,
+  { exists: false, mtime: 0, size: 0, running: true }, 0)));
+""" % _MARK)
+    assert got == {"refresh": False, "running": False}
+
+
+def test_no_watermark_yet_means_no_opinion(html_pane):
+    """Nothing has rendered, so there is nothing to compare against and no
+    honest verdict to give. The first `loadHistory` is what arms this."""
+    for mark in ("null", '{ path: "" }'):
+        got = _decide(html_pane, """
+console.log(JSON.stringify(followDecision(%s,
+  { exists: true, mtime: 900, size: 900, running: true }, 0)));
+""" % mark)
+        assert got == {"refresh": False, "running": False}, mark
+
+
+def test_this_pages_own_finished_turn_is_not_reported_back_as_somebody_elses(
+        html_pane):
+    """The transcript is at its freshest right after a run THIS frame streamed,
+    and `session_liveness` keeps calling the session running for a few seconds
+    after the last row lands (housekeeping records arrive late — the whole
+    reason that module exists). Without the `ownRunEndedAt` guard every turn
+    sent from the app would end with the app announcing it as a turn running
+    somewhere else."""
+    got = _decide(html_pane, """
+console.log(JSON.stringify(followDecision(%s,
+  { exists: true, mtime: 140, size: 900, running: true }, 150)));
+""" % _MARK)
+    # It still re-renders — the rows are real and the watermark is stale — but
+    # it does not claim anyone is mid-turn.
+    assert got == {"refresh": True, "running": False}
+
+
+def test_a_turn_that_started_after_ours_ended_does_light_the_line(html_pane):
+    got = _decide(html_pane, """
+console.log(JSON.stringify(followDecision(%s,
+  { exists: true, mtime: 160, size: 900, running: true }, 150)));
+""" % _MARK)
+    assert got == {"refresh": True, "running": True}
+
+
+# --- and what the follower does with that verdict ----------------------------
+
+def _follow(html, call):
+    """Run followTranscript() under node, over recording stubs."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own follow rule")
+    decide = _block_between(html, "function followDecision(mark, probe, ownEnd) {",
+                            "\n}\n")
+    follow = _block_between(html, "async function followTranscript(session_id) {",
+                            "\n}\n")
+    stubs = """
+const calls = [];
+let logGen = 0, activeRun = null, sending = false, ownRunEndedAt = 0;
+let transcriptMark = { path: "/p/s.jsonl", mtime: 100, size: 500 };
+let probe = { exists: true, mtime: 200, size: 900, running: true };
+let ok = true;
+// `let`, because two of these tests wrap it to change the world mid-await —
+// which is the only way to test a guard that exists precisely for that.
+let fetch = async (url) => {
+  calls.push(["stat", url]);
+  return { ok, json: async () => probe };
+};
+const loadHistory = async (sid, opts) => {
+  calls.push(["history", sid, !!(opts || {}).refresh]);
+};
+const setExternalWorking = (on) => { calls.push(["working", !!on]); };
+"""
+    script = (stubs + decide + "\n" + follow + "\n(async () => {\n" + call
+              + "\n})();")
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_a_moved_transcript_re_renders_through_the_reload_path(html_pane):
+    """`loadHistory`, in REFRESH mode — the same renderer a manual reload used,
+    which is what made the reload correct (the background-task chip included)
+    and is exactly why this reuses it rather than appending rows of its own.
+    D411 rejected the page tailing ~/.claude/projects and guessing turn
+    boundaries; this is the alternative it argued for."""
+    calls = _follow(html_pane, """
+await followTranscript("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls == [["stat", "/api/claude-sessions/liveness?path=%2Fp%2Fs.jsonl"],
+                     ["history", "sess-A", True],
+                     ["working", True]]
+
+
+def test_the_refresh_lands_before_the_line_it_announces(html_pane):
+    """Order, not taste: `loadHistory` replaces the log wholesale, so a working
+    line added first would be swept away by the very render that justifies it —
+    and the reader would watch the chrome flicker off exactly when a turn is
+    running."""
+    calls = _follow(html_pane, """
+await followTranscript("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls.index(["history", "sess-A", True]) \
+        < calls.index(["working", True])
+
+
+def test_a_failed_stat_leaves_the_conversation_exactly_as_it_rendered(html_pane):
+    """A watch that runs forever will meet a server restart, and an unreadable
+    answer is not evidence of anything. Neither a non-ok response nor a body
+    that is not a stat may re-render the log — the turns already on screen are
+    still the best thing known — and neither may claim a turn is running."""
+    for setup in ("ok = false;", "probe = null; ok = true;",
+                  "probe = { exists: false }; ok = true;"):
+        calls = _follow(html_pane, setup + """
+await followTranscript("sess-A");
+console.log(JSON.stringify(calls.filter((c) => c[0] !== "stat")));
+""")
+        assert not [c for c in calls if c[0] == "history"], setup
+        assert ["working", True] not in calls, setup
+
+
+def test_nothing_is_asked_before_the_first_render(html_pane):
+    """No watermark, no question: the page has nothing to compare an answer
+    against, so the stat would be spent on a verdict it could not reach."""
+    calls = _follow(html_pane, """
+transcriptMark = null;
+await followTranscript("sess-A");
+console.log(JSON.stringify(calls));
+""")
+    assert calls == []
+
+
+def test_a_real_run_taken_mid_stat_outranks_the_answer(html_pane):
+    """Everything can change across the await, and each of these outranks a
+    stale stat: the reader left the chat (`logGen`), a real run attached and
+    owns the chrome, or a send took the gate. Acting anyway means a re-render
+    dropped on top of a conversation that is no longer the one asked about."""
+    for setup in ("logGen = 1;", 'activeRun = "run-9";', "sending = true;"):
+        calls = _follow(html_pane, """
+const real = fetch;
+fetch = async (u) => { %s return real(u); };
+await followTranscript("sess-A");
+console.log(JSON.stringify(calls.filter((c) => c[0] !== "stat")));
+""" % setup)
+        assert calls == [], setup
+
+
+def test_a_render_that_landed_while_we_asked_wins(html_pane):
+    """The watermark is the identity of the visible render. If a `loadHistory`
+    completed during the await it wrote a NEWER one, and this probe describes a
+    file older than what is on screen — refreshing on it would be a re-render
+    justified by evidence that has already expired."""
+    calls = _follow(html_pane, """
+const real = fetch;
+fetch = async (u) => {
+  transcriptMark = { path: "/p/s.jsonl", mtime: 200, size: 900 };
+  return real(u);
+};
+await followTranscript("sess-A");
+console.log(JSON.stringify(calls.filter((c) => c[0] !== "stat")));
+""")
+    assert calls == []
+
+
+def test_a_refresh_does_not_move_the_reader(html_pane):
+    """A refresh is not a navigation. This lap can fire every five seconds under
+    a reader who is scrolled back reading an earlier turn, so it restores the
+    scroll it found — except for a reader already at the bottom, who is
+    following along and gets carried to the turn that just landed (the same
+    `nearBottom` rule the streaming output obeys). `?msg=` is a link followed
+    once, so the anchor is not re-honoured on every lap either."""
+    body = _block_between(html_pane,
+                          "async function loadHistory(session_id, opts) {",
+                          "\n}\n")
+    assert "const keepTop = refresh && !nearBottom() ? logwrap.scrollTop : null;" in body
+    assert "if (keepTop !== null) logwrap.scrollTop = keepTop;" in body
+    # ...and a failed refresh keeps the turns it has: blanking a conversation
+    # because one stat round trip lost is strictly worse than showing it stale.
+    assert "if (!refresh) log.innerHTML = \"\";" in body

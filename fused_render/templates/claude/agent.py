@@ -1424,7 +1424,7 @@ _LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
 # says afterwards is the answer to it. Nobody typed it, so it may never render as
 # a user bubble — it used to, as a screenful of raw XML — but it may not be
 # silently dropped either, because it is the only explanation on screen for a
-# reply that arrives with no message above it (D406).
+# reply that arrives with no message above it (D411).
 _TASK_NOTIFICATION_OPEN = "<task-notification>"
 _TASK_FIELD = re.compile(r"<(summary|status)>(.*?)</\1>", re.DOTALL)
 
@@ -2445,7 +2445,7 @@ def _segments_from_rows(rows: list) -> list:
                         settle(seg, orphans.pop(tool_id))
         elif t == "system" and row.get("subtype") == "task_notification":
             # The harness waking the run because a background shell it started
-            # has finished or been stopped (D406). It is not the model speaking
+            # has finished or been stopped (D411). It is not the model speaking
             # and it is not a tool call, so it is neither text nor a chip — it
             # is the REASON the turn that follows exists, and without it a reply
             # appears out of nowhere under a message the user never sent. One
@@ -2532,7 +2532,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     result_text = None
     new_session = ""
     # `done` IS PER TURN, AND A `result` ONLY ENDS ONE WHILE NOTHING FOLLOWS IT
-    # (D406). One claude process can run several turns: a turn that started a
+    # (D411). One claude process can run several turns: a turn that started a
     # background shell is woken by the harness when the command finishes — a
     # `<task-notification>` prompt this page never sent — and everything the
     # agent then says is written to this same `out.jsonl`, after the `result`
@@ -2664,7 +2664,7 @@ def _poll(run_id: str, file: str = "") -> dict:
         phase = "retrying"
 
     # Finished: a `result` with nothing after it (the turn ended and no wake has
-    # started another), or a process that is simply gone (D406).
+    # started another), or a process that is simply gone (D411).
     done = idle or not alive
 
     if not saw_result and done:
@@ -2778,7 +2778,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     # (older CLI without --include-partial-messages).
     text = "".join(text_parts)
     # `saw_result`, not `done`: the fallback is about the row that carries the
-    # text, and a run whose process is still up between turns (D406) has that
+    # text, and a run whose process is still up between turns (D411) has that
     # row already — waiting for the exit would blank a delta-less turn's reply
     # for as long as the run stays awake.
     if not text and saw_result and result_text and not error:
@@ -3247,6 +3247,22 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
     return res
 
 
+def _transcript_stat(path: str) -> dict:
+    """`{path, mtime, size}` for a session transcript — the page's watermark.
+
+    Its two readers are `_history` (which stats BEFORE it reads, see there) and
+    the page, which hands `path` to `/api/claude-sessions/liveness` on every lap
+    of its live watch and compares the pair. A missing file answers zeroes rather
+    than raising: a chat can be open on a session whose transcript does not exist
+    yet, and "0, 0" is the honest watermark for one — the first row written moves
+    it."""
+    try:
+        st = os.stat(path)
+        return {"path": path, "mtime": st.st_mtime, "size": st.st_size}
+    except OSError:
+        return {"path": path, "mtime": 0.0, "size": 0}
+
+
 def _history(file: str, session_id: str) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
@@ -3272,12 +3288,23 @@ def _history(file: str, session_id: str) -> dict:
     turn a person clicked instead of to the top of the conversation. "" on a
     record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
-        return {"turns": []}
+        return {"turns": [], "transcript": _transcript_stat("")}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
+    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D411). This
+    # is the watermark the page follows the conversation by — it re-renders when
+    # the file moves past it — and a stat taken AFTER the read would describe
+    # rows this payload may not contain, which is a turn silently swallowed. Taken
+    # first, a write that lands mid-read shows up as a watermark the very next lap
+    # disagrees with: one redundant re-render, never a missed one.
+    #
+    # The PATH rides back for `/api/claude-sessions/liveness`: resolving an id to
+    # a transcript belongs here (the line above is the only place that knows the
+    # folder this chat is open on), and the endpoint refuses to do it.
+    stat = _transcript_stat(path)
     if not os.path.isfile(path):
-        return {"turns": []}
+        return {"turns": [], "transcript": stat}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
@@ -3330,7 +3357,7 @@ def _history(file: str, session_id: str) -> dict:
             # typed them and the reader has no use for their XML. Two of them
             # were named literally here; the rest — `<task-notification>` the
             # loudest, a whole notification block rendered as a message bubble —
-            # were not, so they arrived on screen verbatim (D406). One list now,
+            # were not, so they arrived on screen verbatim (D411). One list now,
             # the same `_MACHINERY_DROP` the session names are filtered by.
             # Everything filtered here falls to `stretch`, where
             # `_segments_from_rows` turns a task-notification into its chip and
@@ -3356,7 +3383,7 @@ def _history(file: str, session_id: str) -> dict:
                 else:
                     turns.append({"role": "assistant", "text": text})
     close_stretch()
-    return {"turns": turns}
+    return {"turns": turns, "transcript": stat}
 
 
 def _cancel(run_id: str) -> dict:
