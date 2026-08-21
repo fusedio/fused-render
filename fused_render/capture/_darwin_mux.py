@@ -28,9 +28,11 @@ hard:
 
   * `"system"` — ScreenCaptureKit's audio buffers go straight to the writer.
   * `"mic"` — an `AVCaptureSession` + `AVCaptureAudioDataOutput` delivers
-    `CMSampleBuffer`s that go straight to the writer too, in whatever format
-    the device produced; the writer converts. `device` selection works here
-    exactly as `microphoneCaptureDeviceID` works on 15.
+    `CMSampleBuffer`s that go straight to the writer too, with no byte surgery.
+    The FORMAT is still requested rather than taken as it comes (`_start_mic`),
+    because most built-in microphones are mono and the writer's input is
+    stereo. `device` selection works here exactly as `microphoneCaptureDeviceID`
+    works on 15.
   * `"both"` — the only path that mixes, and the only one that forces a format
     (48 kHz float32 on both sides) so that mixing is an elementwise add. See
     `_mixdown` for the ring and the drift it corrects.
@@ -450,18 +452,28 @@ def _start_mic(handle: MuxHandle, spec: dict) -> None:
     session.addInput_(device_input)
 
     output = AVF.AVCaptureAudioDataOutput.alloc().init()
-    if handle.mixing:
-        # ONLY on the mixing path: the add needs both sides in one format.
-        # `"mic"` alone deliberately takes whatever the device produces and
-        # lets the writer convert, which is one less thing to get wrong.
-        output.setAudioSettings_({
-            AVF.AVFormatIDKey: _LPCM,
-            AVF.AVSampleRateKey: _RATE,
-            AVF.AVNumberOfChannelsKey: _CHANNELS,
-            AVF.AVLinearPCMBitDepthKey: 32,
-            AVF.AVLinearPCMIsFloatKey: True,
-            AVF.AVLinearPCMIsNonInterleaved: True,
-        })
+    # Asked for on BOTH microphone paths, not only the mixing one. `"both"`
+    # needs it because the add requires one agreed format — but `"mic"` needs
+    # it too, and for a reason that is easy to miss: most built-in microphones
+    # are MONO, the writer's audio input is stereo, and a channel-count
+    # mismatch is something `appendSampleBuffer_` can refuse on every buffer.
+    # `AVCaptureAudioDataOutput` does the conversion itself, so asking here
+    # makes the writer's input format deterministic instead of a property of
+    # whichever Mac is running.
+    settings = {
+        AVF.AVFormatIDKey: _LPCM,
+        AVF.AVSampleRateKey: _RATE,
+        AVF.AVNumberOfChannelsKey: _CHANNELS,
+        AVF.AVLinearPCMBitDepthKey: 32,
+        AVF.AVLinearPCMIsFloatKey: True,
+        AVF.AVLinearPCMIsNonInterleaved: True,
+    }
+    # Apple's own LPCM dictionaries always carry this one. Looked up rather
+    # than named so a future pyobjc that drops it costs the key, not the call.
+    big_endian = getattr(AVF, "AVLinearPCMIsBigEndianKey", None)
+    if big_endian is not None:
+        settings[big_endian] = False
+    output.setAudioSettings_(settings)
     delegate = _MicOutput.alloc().initWithRecorder_(handle)
     output.setSampleBufferDelegate_queue_(delegate, _MIC_Q)
     if not session.canAddOutput_(output):                # pragma: no cover

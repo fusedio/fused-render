@@ -8375,48 +8375,6 @@ three platforms, one API, no field naming which one served you.
   `ScreenCaptureKit.framework` does not exist below macOS 12.3, so an
   unimportable backend is `Unsupported` (a 409) rather than an ImportError (a
   500).
-- **CP-12** **On 13–14 the app is the muxer, and the three audio modes are
-  three data paths.** `SCStream` still delivers frames and system audio there;
-  only the WRITER is missing, so `_darwin_mux` supplies an `AVAssetWriter` fed
-  by an `SCStreamOutput` delegate. That reverses D409's "not one sample buffer
-  passes through Python" on this path and the reversal is stated rather than
-  hidden: buffers cross the bridge but are not READ — the delegate checks a
-  status attachment and appends — so the cost is a bridge crossing per frame,
-  not an encode. `queueDepth` is raised to 8 and every dropped frame is
-  COUNTED, because the real risk is GIL latency, not throughput. `"system"`
-  appends ScreenCaptureKit's audio as-is; `"mic"` appends
-  `AVCaptureAudioDataOutput`'s buffers as-is in whatever format the device gave
-  (a DATA output, never the `AVCaptureAudioFileOutput` whose `stopRecording`
-  deadlocked this app — D409); `"both"` is the only path that mixes, and the
-  only one that forces a format. **`SCScreenshotManager`'s absence below 14 is
-  a refusal, not a silent difference**: `CGDisplayCreateImage` cannot draw the
-  pointer, so `cursor: true` is refused there naming the version that can.
-- **CP-13** **`audio: "both"` on 13–14 corrects drift rather than tolerating
-  it.** Two sources have to become one track and below 15 nothing else will do
-  it, so `capture/_mixdown.py` mixes them: system audio is the master clock,
-  the microphone goes into a ring, and each system buffer pulls the matching
-  bytes — padded with silence on an underrun, oldest-discarded when the ring
-  runs long. There is no resampler, which is the deliberate cheap line, and the
-  property that buys is better than "some drift is acceptable" suggests: the
-  offset stays bounded by one buffer instead of accumulating, so what is
-  actually accepted is a rare faint discontinuity and never a recording that is
-  a second out by the end. Mixing is an elementwise add, which is only correct
-  if both sides agree — hence one forced format (48 kHz float32) and a mono
-  microphone upmixed by duplicating its planar block. The sum is CLIPPED, not
-  attenuated: a blanket −3 dB would make every `both` recording quieter than
-  the same content recorded either way alone. The add goes through Accelerate's
-  vDSP via ctypes because numpy is `[bundled]` and this backend is core, and a
-  capability that works only on installs that happen to have numpy is the
-  mistake `pyproject.toml`'s comments keep naming. And `sources()` cannot raise AT ALL: a failure this module did not
-  predict is still `available: false`, carrying the exception as its reason,
-  because the promise is about the shape and a page reads it while drawing a
-  record button. **No `via` field anywhere**, and that survived gaining a
-  second implementation: the two wire fields that steer the streamed path
-  (`transport`, `streamToken`) are consumed by `runtime.js` and deleted before
-  the handle exists, as is the `client` flag on `sources()`. A page reads
-  `{available, reason}` and refusal sentences; it never learns which backend it
-  got, and `tests/test_capture.py` fails if any of the three leaks.
-  Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 - **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
   that touches the mic without it is killed, not prompted) and
   `com.apple.security.device.audio-input` in the hardened-runtime entitlements
@@ -8465,3 +8423,46 @@ three platforms, one API, no field naming which one served you.
   (a browser rule), and on Wayland `displays` is always `[]` because no client
   may enumerate them without prompting — `display` is refused there with a
   sentence instead of offered as a list nothing accepts.
+- **CP-12** **On 13–14 the app is the muxer, and the three audio modes are
+  three data paths.** `SCStream` still delivers frames and system audio there;
+  only the WRITER is missing, so `_darwin_mux` supplies an `AVAssetWriter` fed
+  by an `SCStreamOutput` delegate. That reverses D409's "not one sample buffer
+  passes through Python" on this path and the reversal is stated rather than
+  hidden: buffers cross the bridge but are not READ — the delegate checks a
+  status attachment and appends — so the cost is a bridge crossing per frame,
+  not an encode. `queueDepth` is raised to 8 and every dropped frame is
+  COUNTED, because the real risk is GIL latency, not throughput. `"system"`
+  appends ScreenCaptureKit's audio as-is; `"mic"` appends
+  `AVCaptureAudioDataOutput`'s buffers with no byte surgery (a DATA output,
+  never the `AVCaptureAudioFileOutput` whose `stopRecording` deadlocked this
+  app — D409), though the FORMAT is requested on both microphone paths rather
+  than taken as it comes, because most built-in microphones are mono and the
+  writer's input is stereo; `"both"` is the only path that MIXES. **`SCScreenshotManager`'s absence below 14 is
+  a refusal, not a silent difference**: `CGDisplayCreateImage` cannot draw the
+  pointer, so `cursor: true` is refused there naming the version that can.
+- **CP-13** **`audio: "both"` on 13–14 corrects drift rather than tolerating
+  it.** Two sources have to become one track and below 15 nothing else will do
+  it, so `capture/_mixdown.py` mixes them: system audio is the master clock,
+  the microphone goes into a ring, and each system buffer pulls the matching
+  bytes — padded with silence on an underrun, oldest-discarded when the ring
+  runs long. There is no resampler, which is the deliberate cheap line, and the
+  property that buys is better than "some drift is acceptable" suggests: the
+  offset stays bounded by one buffer instead of accumulating, so what is
+  actually accepted is a rare faint discontinuity and never a recording that is
+  a second out by the end. Mixing is an elementwise add, which is only correct
+  if both sides agree — hence one forced format (48 kHz float32) and a mono
+  microphone upmixed by duplicating its planar block. The sum is CLIPPED, not
+  attenuated: a blanket −3 dB would make every `both` recording quieter than
+  the same content recorded either way alone. The add goes through Accelerate's
+  vDSP via ctypes because numpy is `[bundled]` and this backend is core, and a
+  capability that works only on installs that happen to have numpy is the
+  mistake `pyproject.toml`'s comments keep naming. And `sources()` cannot raise AT ALL: a failure this module did not
+  predict is still `available: false`, carrying the exception as its reason,
+  because the promise is about the shape and a page reads it while drawing a
+  record button. **No `via` field anywhere**, and that survived gaining a
+  second implementation: the two wire fields that steer the streamed path
+  (`transport`, `streamToken`) are consumed by `runtime.js` and deleted before
+  the handle exists, as is the `client` flag on `sources()`. A page reads
+  `{available, reason}` and refusal sentences; it never learns which backend it
+  got, and `tests/test_capture.py` fails if any of the three leaks.
+  Local only — a hosted/exported page has no capture (docs/EXPORT.md).

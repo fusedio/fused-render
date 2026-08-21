@@ -62,9 +62,12 @@ class Ring:
     delivered its first buffer yet). Neither can grow without limit, so a
     four-hour recording holds no more memory than a four-second one.
 
-    Counters, not silence: `dropped` and `padded` are read by the recorder and
-    surface on the job row, because a correction rate that is climbing is the
-    only visible symptom of a format mismatch that this module cannot detect.
+    Counters, not silence: `dropped` and `padded` record how often each
+    correction fired, because a rate that climbs is the only visible symptom of
+    a format mismatch this module cannot detect on its own. They are read by
+    the tests and by a debugger — NOT by the job row, which is deliberate for
+    now: a `both` recording's correction count is diagnostic, and the row
+    already carries the number that matters to a user (`dropped_frames`).
     """
 
     def __init__(self, high_water: int):
