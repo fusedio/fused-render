@@ -5925,7 +5925,29 @@ an AI Models page that could say what was on disk but not what was *running*.
   loses its parallelism. It was a flat refusal until this, and the refusal was
   invisible exactly where it mattered: the model mirror's only transport is this
   fetch, so a win32 client declined every time and no Windows acquisition ever
-  reached the access logs the mirror exists to produce (AI-5l). **The sidecar
+  reached the access logs the mirror exists to produce (AI-5l). **That route is
+  also the first code here to need `O_BINARY` and a LENGTH check, and it needed
+  both for the same reason.** Windows opens an `os.open` fd in the CRT's default
+  TEXT mode, so every `0x0a` written becomes `0x0d 0x0a`: a part file longer than
+  the file it describes and wrong in content, while the cursors — which count
+  what was handed to `os.write` — go on saying the download is complete. The flag
+  was missing from the segmented call site too and always had been, harmlessly,
+  because `os.pwrite` does not exist on the one platform that translates, so no
+  `os.open` here had ever written a byte there; the first route that did was
+  green on POSIX and corrupted every blob it fetched on win32. Since `_BINARY` is
+  0 on POSIX, a correct call is indistinguishable from one missing the flag by
+  any means a run on this platform has, so the rule is enforced by reading the
+  module's own AST — the same mechanism as the stdlib-only rule, and for the same
+  reason. **The length check is the other half**: on the append-only route the
+  part file's length is an INDEPENDENT witness, because the cursors count what
+  was handed to the kernel and the length is what the kernel kept, so the two
+  disagreeing is exactly the class of corruption neither a cursor nor a
+  `Content-Length` can notice. It is worth a syscall because the HUB path
+  carries no digest — the mirror's sha256 did catch the translated blob, but on
+  the Hub path the same bytes would have been published under a real etag and
+  served out of the cache forever. On the segmented route that check would be
+  theatre, the file being pre-sized before a byte arrives, which is why
+  publishing there is gated on the cursors alone. **The sidecar
   carries its own version
   number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
   list MEANS — fixed pieces rather than equal shares — so a sidecar written
@@ -6214,8 +6236,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   what Windows gives up is parallelism within one file, not the mirror. The
   generator/client round-trip test is still split in two, an agreement half and
   a fetch half, but no longer BY PLATFORM: both halves run everywhere, and the
-  fetch half is now the one test in this feature that proves a real Windows
-  download end to end. The cost of learning the old behaviour the hard way was a
+  fetch half is what exercises a real Windows download end to end. **What
+  Windows found the first time it ran one is worth recording, because it is not
+  the failure this rule used to describe**: the route ran, fetched the whole
+  repo, and was refused by its own sha256 — the part file had been opened in the
+  CRT's default TEXT mode, so every `0x0a` in the weights arrived as `0x0d 0x0a`
+  (AI-5i, `_BINARY`). A mirror declining is the degradation working exactly as
+  specified; a mirror declining *for that reason* is a bug, and the distance
+  between those two readings of one stderr line is most of what hashing on this
+  path is for. The cost of learning the old behaviour the hard way was a
   Windows CI failure reporting a 401
   from huggingface.co: the mirror declined, the download fell through to a REAL
   Hub listing, and the test had no business being able to leave the machine at
