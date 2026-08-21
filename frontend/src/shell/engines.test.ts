@@ -7,6 +7,7 @@ import {
   ignoredWarning,
   servingLine,
   switchOutcome,
+  unloadCountdown,
   wouldChangeEngine,
 } from "@shell/engines";
 
@@ -271,5 +272,30 @@ describe("capabilityLabel", () => {
     // A capability added server-side should appear here — ugly but present —
     // instead of vanishing from the only page that can configure it.
     expect(capabilityLabel("video-generation")).toBe("video-generation");
+  });
+});
+
+describe("unloadCountdown", () => {
+  it("names the minutes when there is more than one", () => {
+    expect(unloadCountdown(240)).toBe("unloads in 4 min");
+  });
+
+  it("rounds to the nearest minute rather than truncating", () => {
+    // 269s is 4:29 — closer to 4 than to 5, and truncating would say 4 anyway,
+    // so this pins ROUNDING specifically against the boundary just past it.
+    expect(unloadCountdown(271)).toBe("unloads in 5 min");
+  });
+
+  it("says 'under a minute' rather than '0 min'", () => {
+    // "0 min" reads as "already unloaded" or as a typo, neither of which is
+    // true with seconds still on the clock.
+    expect(unloadCountdown(45)).toBe("unloads in under a minute");
+  });
+
+  it("says nothing when the window is disabled or forced off", () => {
+    // `null` is what `describe()` sends for both cases (AI-13) — a page has
+    // no reason to distinguish "the user set 0" from "an env var did" here,
+    // since neither one is counting down.
+    expect(unloadCountdown(null)).toBeNull();
   });
 });

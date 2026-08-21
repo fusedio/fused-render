@@ -33,6 +33,7 @@ import AiModelsEngines from "./AiModelsEngines";
 import AiModelsUsage from "./AiModelsUsage";
 import { ModelProgress } from "./AiProgress";
 import { groupRepos, loadRefusal, noEngineReason } from "@shell/aiModelGroups";
+import { unloadCountdown } from "@shell/engines";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
@@ -279,6 +280,11 @@ function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
     // own memory still knows where it put the weights, and an early return on
     // the memory figure alone would have thrown the device away with it.
     if (!loaded.residentBytes && !loaded.device) return null;
+    // AI-13: null whenever the idle window is disabled — by the stored pref,
+    // by an env override, or (rarely) by neither on a machine with no reaper
+    // running — and the page has no reason to tell those apart, since none
+    // of them counts down.
+    const countdown = unloadCountdown(loaded.unloadsInSeconds);
     return (
       <div className="am-card-runtime am-card-runtime-ready">
         {loaded.residentBytes ? (
@@ -290,6 +296,7 @@ function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
             }
           >
             {formatSize(loaded.residentBytes)} in memory
+            {countdown ? ` — ${countdown}` : ""}
           </span>
         ) : null}
         {loaded.device && <DeviceNote device={loaded.device} />}

@@ -32,7 +32,7 @@
 // is made findable. One card per capability, one row inside it: the name, the
 // control, the reality.
 import { useEffect, useState } from "react";
-import { getPrefs, putEngineForCapability } from "@platform/lib/api";
+import { getPrefs, putAiIdleUnloadMinutes, putEngineForCapability } from "@platform/lib/api";
 import type { CapabilityEngine, Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -189,6 +189,90 @@ function CapabilityEngineRow({
   );
 }
 
+// The idle-unload window (SPEC AI-13): a resident local model this machine
+// hasn't used in a while gives its gigabytes back on its own. A card below
+// the per-capability rows rather than a fourth column inside them — it is not
+// about any one capability, it is a global number the reaper reads once per
+// tick.
+//
+// The env override gets the SAME locked-control treatment as the call log's
+// retention window (Preferences.tsx): the number shown is still the STORED
+// choice (a PUT round-trips it, and it applies once the variable is
+// removed), the field is disabled while an override is genuinely in force,
+// and the muted line names both what is actually happening and what is
+// forcing it.
+function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const idle = prefs.ai_idle;
+  const locked = idle.forced_by !== null;
+  // Local text, not `idle.minutes` directly: a bare number input has to let
+  // you clear the field and type a new one without every keystroke racing a
+  // PUT, so the value commits on blur/Enter and this only resyncs from the
+  // server after a commit actually lands (see the effect below).
+  const [value, setValue] = useState(String(idle.minutes));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setValue(String(idle.minutes));
+  }, [idle.minutes]);
+
+  const commit = async () => {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1440) {
+      setValue(String(idle.minutes));
+      return;
+    }
+    if (parsed === idle.minutes) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putAiIdleUnloadMinutes(parsed));
+    } catch (e) {
+      setError((e as Error).message);
+      setValue(String(idle.minutes));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="cc-mdcard am-engine-card">
+      <div className="am-engine-row">
+        <label className="am-engine-cap" htmlFor="ai-idle-minutes">
+          Idle unload
+        </label>
+        <input
+          id="ai-idle-minutes"
+          type="number"
+          min={0}
+          max={1440}
+          className="field-control am-engine-select"
+          value={value}
+          disabled={busy || locked}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+          }}
+        />
+        <span className="am-engine-serving">
+          {idle.effective_minutes === 0
+            ? "Never unloads on its own."
+            : `Unloads an idle model after ${idle.effective_minutes} min.`}
+        </span>
+      </div>
+      <p className="am-engine-note">Minutes a resident model may sit unused before it is unloaded automatically. 0 = never.</p>
+      {locked && (
+        <p className="am-engine-note">
+          Locked by <code>FUSED_RENDER_AI_IDLE_MINUTES={idle.forced_by}</code> for this process;
+          the value above applies once the variable is removed.
+        </p>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
+}
+
 /** The tab's whole content: one row per capability, over its own copy of prefs.
  *
  *  It fetches `/api/prefs` itself rather than being handed them, because this is
@@ -236,6 +320,7 @@ export default function AiModelsEngines({ onSwitched }: { onSwitched: () => void
               onSwitched={onSwitched}
             />
           ))}
+          <AiIdleWindowCard prefs={prefs} onChange={setPrefs} />
         </>
       )}
     </div>
