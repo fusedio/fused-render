@@ -1295,14 +1295,30 @@ button.tasks-caret,
    colour at low alpha, no fill. It is a correction to the lane, not an alarm —
    an alarm is the red ring, and a stop the user asked for has nothing to alarm
    anybody about. `currentColor` for the border so the two cannot drift apart in
-   either theme. */
+   either theme.
+
+   SIZED TO THE ID BESIDE IT, which is the whole of the second fix (Akshil,
+   2026-08-21, screenshot: "pill and task id have a size difference or they
+   aren't aligned properly"). Both containers already centre their children, so
+   the misalignment was never the layout — it was the pill's own box. `padding:
+   2px 6px` on `line-height: 1` plus two borders made it ~16px tall against the
+   id's ~13px line box, so it read as a bigger object sitting off-centre.
+
+   An explicit height instead, matched to that line box, with the text centred
+   inside by `inline-flex` rather than by padding: the pill then hugs its word,
+   the two boxes are the same height, and their centres coincide wherever they
+   are drawn — no per-view nudging. 10px text inside a 14px box against an 11px
+   id is the same optical weight, one step quieter. */
 .tasks-outcome-pill {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  color: var(--fg-muted);
   font-size: 10px;
   line-height: 1;
-  padding: 2px 6px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  color: var(--fg-muted);
   white-space: nowrap;
 }
