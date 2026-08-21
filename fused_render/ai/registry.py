@@ -35,7 +35,7 @@ the machine, not to the string.
 whole mechanism.** Text generation prefers MLX on Apple Silicon and uses torch
 on Windows and Linux, with torch also remaining a fallback on Apple Silicon when
 MLX is unavailable; speech to text does the same thing with MLX Whisper over
-CTranslate2 (D319 briefly added a third row, Parakeet-TDT, and D330 withdrew it
+CTranslate2 (D319 briefly added a third row, Parakeet-TDT, and D406 withdrew it
 — maintenance cost not justified by use — leaving the two rows below). Every
 row is registered, every one is asked whether it can run, and the first that
 says yes wins. Nothing else in the app knows there is more than
