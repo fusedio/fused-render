@@ -350,12 +350,20 @@
      run: the one thing a workflow is for was the one thing the canvas did not
      show. So a step with no outgoing edge carries its result on the canvas, in a
      card hung under the node — absolutely positioned, so the node's own box (and
-     therefore every wire endpoint) is unchanged. */
+     therefore every wire endpoint) is unchanged.
+
+     A SIBLING of the node, not a child, and placed by script rather than by
+     `top: 100%`. Two reasons, and both are about the card being 320px of live
+     content parked in the middle of the canvas. (a) `role="button"` elements
+     have presentational children per HTML-AAM, so a card INSIDE the node was
+     pruned out of the accessibility tree entirely — a screen reader got the
+     node's label and none of the result the card exists to show. (b) The auto
+     grid puts rows 150px apart, which is less than a node plus a card, so a
+     card reliably lands on top of the node in the row below and swallowed every
+     pointerdown aimed at it. Every card is inserted BEFORE every node in
+     `#nodes`, so a node always paints — and is always hit — above a card. */
   .out-card {
     position: absolute;
-    left: 0;
-    top: 100%;
-    margin-top: 10px;
     width: 320px;
     background: var(--surface);
     border: 1px solid var(--good-line);
@@ -536,6 +544,14 @@ let summaryDismissed = false;
 // re-syncs it, so any full render (a selection change, an edit) counts as drawn
 // and the poll loop only redraws on a real change. See the poll loop.
 let inspectorRunSig = "";
+// THE SAME GUARD FOR THE CANVAS. `renderNodes` also starts by emptying its
+// container, and what it throws away on a terminal step is the part of this
+// page a reader is most likely to be USING while the run is still going: the
+// output card's scroll position, a selection inside it (`user-select: text` is
+// set on it precisely so it can be selected), and focus on a `<summary>`. A
+// branch usually answers well before the run ends, so that is the normal
+// reading window, not an edge case.
+let nodesRunSig = "";
 let polling = null;
 // WHICH POLL LOOP IS THE LIVE ONE. Clearing the timer is not enough to stop a
 // loop: a tick already awaiting `runPython` resumes afterwards, overwrites the
@@ -1131,7 +1147,17 @@ function applyView() {
     "translate(" + view.x + "px," + view.y + "px) scale(" + view.z + ")";
 }
 
+// Every node's polled state, as a comparable string — the only thing a poll
+// tick can change about the canvas. Mirrors `inspectorSig`.
+function nodesSig() {
+  return JSON.stringify(runNodes);
+}
+
 function renderNodes() {
+  // Recorded on every draw, not just the poll loop's, for the same reason the
+  // inspector records its own: an edit that redraws the canvas leaves the two
+  // in step, so the next tick does not redraw on top of what is already there.
+  nodesRunSig = nodesSig();
   nodesEl.innerHTML = "";
   const hint = el("hint");
   if (!doc || !doc.nodes.length) {
@@ -1152,6 +1178,10 @@ function renderNodes() {
   // answer. A graph can have several — a branch that fans out ends in more than
   // one — so this is a set and every one of them gets a card.
   const feedsSomething = new Set(doc.edges.map((e) => e.from));
+  // Collected rather than appended in place: they go in FRONT of every node in
+  // the DOM, so the nodes paint (and take pointer events) above them. See
+  // `.out-card`.
+  const cards = [];
   doc.nodes.forEach((node) => {
     const div = text("div", "node");
     div.dataset.id = node.id;
@@ -1162,10 +1192,9 @@ function renderNodes() {
     div.setAttribute("role", "button");
     div.setAttribute("tabindex", "0");
     div.addEventListener("keydown", (event) => {
-      // ONLY THE NODE'S OWN KEYS. The output card hangs inside this element and
-      // holds focusable `<summary>` disclosures; without this guard, Space on
-      // one of them would be swallowed here and re-select the node instead of
-      // opening the branch the reader was on.
+      // ONLY THE NODE'S OWN KEYS. This element has focusable descendants — the
+      // connect plug — and without the guard their Space would be swallowed
+      // here and re-select the node instead of doing their own job.
       if (event.target !== div) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -1237,23 +1266,34 @@ function renderNodes() {
       (prompt ? "prompt step" : node.tool) +
       (state ? " (" + state.status + ")" : ""));
     if (!feedsSomething.has(node.id) && state && (state.output || state.error)) {
-      div.appendChild(outputCard(node, state));
+      cards.push(outputCard(node, state));
     }
     div.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
     nodesEl.appendChild(div);
   });
+  for (const card of cards) nodesEl.insertBefore(card, nodesEl.firstChild);
   applyView();
+  // A card's `top` is the node's measured height away, so it can only be set
+  // once the nodes are in the document — the same constraint the wire pass has.
+  for (const node of doc.nodes) placeCard(node);
   // Wires need the nodes' MEASURED heights, which only exist once they are in
   // the document — a node's height depends on how many inputs it shows. So the
   // wire pass runs after layout rather than guessing a box size.
   requestAnimationFrame(renderWires);
 }
 
-// The card a terminal step wears once it has answered. A child of the node so it
-// travels with it under a drag; absolutely positioned so the node's own box —
-// and therefore every wire endpoint — is unchanged by it.
+// The card a terminal step wears once it has answered. A SIBLING of the node
+// rather than a child — see `.out-card` for why — positioned against it by
+// `placeCard`, and absolutely positioned either way so the node's own box, and
+// therefore every wire endpoint, is unchanged by it.
 function outputCard(node, state) {
   const card = text("div", "out-card" + (state.error ? " bad" : ""));
+  card.dataset.cardFor = node.id;
+  // Named in the accessibility tree, because outside the node it is no longer
+  // covered by the node's own label — and inside it, it was covered by nothing.
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label",
+    (state.error ? "Error from " : "Output of ") + nameOf(node));
   card.appendChild(text("span", "oc-title", state.error ? "Failed with" : "Output"));
   if (!state.error && node.observedOutput) card.appendChild(shapeLine(node.observedOutput));
   renderOutput(card, state.error || state.output, {
@@ -1261,11 +1301,22 @@ function outputCard(node, state) {
     truncated: !state.error && !!state.truncated,
     path: "card:" + node.id,
   });
-  // The card is TEXT, not a handle. Without this, selecting a line of the result
-  // drags the node out from under the pointer — and a click that missed the
-  // node would fall through to the stage and start a pan.
+  // The card is TEXT, not a handle. Without this, a pointerdown on it reaches
+  // `stage`, which clears the selection and starts a pan — so selecting a line
+  // of the result would pan the canvas instead.
   card.addEventListener("pointerdown", (event) => event.stopPropagation());
   return card;
+}
+
+// Put a node's card under it. Called after a render (when the node's height is
+// finally measurable) and on every pointermove of a drag, which is what a child
+// element used to get for free.
+function placeCard(node) {
+  const card = nodesEl.querySelector('[data-card-for="' + CSS.escape(node.id) + '"]');
+  if (!card) return;
+  const div = nodesEl.querySelector('[data-id="' + CSS.escape(node.id) + '"]');
+  card.style.left = (node.x || 0) + "px";
+  card.style.top = ((node.y || 0) + (div ? div.offsetHeight : 0) + 10) + "px";
 }
 
 function shortApp(folder) {
@@ -1691,6 +1742,7 @@ stage.addEventListener("pointermove", (event) => {
       div.style.left = drag.node.x + "px";
       div.style.top = drag.node.y + "px";
     }
+    placeCard(drag.node);
     // Wires only — a full re-render per pointermove would rebuild the inspector
     // (and blur whatever input has focus) sixty times a second.
     renderWires();
@@ -1791,7 +1843,17 @@ window.addEventListener("keydown", (event) => {
 // ----------------------------------------------------------- save and run
 
 function updateButtons() {
-  const runnable = doc && doc.nodes.length && !runId && catalog && catalog.fusedCli;
+  // ONLY A TOOL NODE NEEDS `fused`. A graph of nothing but prompt steps is
+  // served entirely by `step_server.py` on the app's own interpreter, and
+  // `run.py::_start` demands the binary only when the plan actually has app
+  // servers — so gating Run on `fusedCli` alone made that relaxation
+  // unreachable. On a machine without the `[fused]` extra the palette still
+  // offers the prompt step (deliberately, catalog or no catalog), and the
+  // workflow the user could then build was one Run refused to start, citing
+  // MCP servers it never starts.
+  const needsServers = !!(doc && doc.nodes.some((n) => !isPrompt(n)));
+  const noFused = needsServers && !(catalog && catalog.fusedCli);
+  const runnable = doc && doc.nodes.length && !runId && !noFused;
   const runBtn = el("run");
   runBtn.disabled = busy || !runnable;
   // D334 / MC-5a: the reason a disabled Run is disabled goes ON the control.
@@ -1800,7 +1862,7 @@ function updateButtons() {
   // detached session is a failure nobody can see.
   runBtn.title = !doc || !doc.nodes.length
     ? "Add a step first."
-    : (catalog && !catalog.fusedCli
+    : (noFused
       ? "No `fused` command is available, so this workflow's MCP servers cannot be started."
       : "Run this workflow");
   el("cancel").hidden = !runId || runDone;
@@ -1922,7 +1984,8 @@ async function poll() {
     runSummaryTruncated = !!out.summaryTruncated;
     renderSummary();
   }
-  renderNodes();
+  // NOR IS THE CANVAS — see `nodesRunSig`. Same rule as the inspector below.
+  if (nodesSig() !== nodesRunSig) renderNodes();
   // THE INSPECTOR IS NOT REBUILT ON A TIMER. `renderInspector` starts with
   // `innerHTML = ""`, so calling it unconditionally every 1.5 s destroyed focus
   // and caret in whatever was being typed — an edge condition, a label, a
