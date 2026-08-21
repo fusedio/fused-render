@@ -7012,6 +7012,39 @@ an AI Models page that could say what was on disk but not what was *running*.
   one. The rate lives in the page's own state (not the prefs store, not the
   server): it is a what-if a reader is doing on numbers in front of them, and
   persisting it would make a guess look like a setting the app stands behind.
+- **AI-13** **A resident local model's tenancy is TIME-BOUNDED: nothing that has
+  used it for ten minutes (default) unloads itself, and the next `fused.ai(...)`
+  reloads it exactly as a cold first call already does.** Before this, the one
+  way a model's gigabytes came back was the user closing the app or picking a
+  different one — a page opened once at 9am and never used again holds its
+  weights until quit. `fused_render/ai/supervisor.py` stamps `last_activity` and
+  an `in_flight` counter on every `Worker` (`_in_use`, wrapped around all three
+  generation paths — `generate_text`, `generate_image`, `generate_transcript` —
+  and `_touch` re-stamping on every yielded chunk of a stream), and a reaper
+  thread ticks a pure `reap_idle(now)` predicate against the table roughly every
+  30s, unloading through the ordinary `unload()` (now taking a `reason`, so the
+  job row reads "Unloaded after 10 min idle" rather than looking like a crash).
+  **Only `state == "ready"` is eligible** — a `starting`/`venv`/`downloading`/
+  `loading` worker (a 40-minute `uv sync`, an 8GB pull) is not holding a
+  finished model, and killing it mid-build is hostile, not a memory win; a
+  weights-only fetch (`_fetch_workers`) is a separate table this never touches
+  for the same reason `evict_stale_engines` leaves it alone. **`in_flight` does
+  not exempt a worker past its own idle window**: every yielded chunk re-stamps
+  `last_activity`, so a genuinely live stream — a 90-minute transcription
+  included — is never stale, but a page that abandons a stream without closing
+  it would otherwise pin the counter at 1 forever, which is worse than no idle
+  unload at all. One predicate, the age of `last_activity` against the window,
+  covers both cases. The window is a preference, `ai_idle_unload_minutes`
+  (`shell/prefs.py`, default 10, `0` = never, `FUSED_RENDER_AI_IDLE_MINUTES`
+  overrides it the same way `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides call
+  retention), re-read fresh on every reaper tick and every `describe()` call —
+  never cached — so an edit or an env change applies on the very next tick. The
+  AI Models page's Engines tab gets a control for it, and each resident card's
+  memory line grows an "unloads in N min" countdown from `describe()`'s new
+  `idleSeconds`/`unloadsInSeconds` fields; **no page change is required for
+  correctness**, since an auto-unloaded model's next call raises
+  `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
+  existing `model_loading` handling already covers it.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
