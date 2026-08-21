@@ -3428,6 +3428,21 @@ def test_the_SKILL_names_every_field_an_image_resolves_with(client, fake_image_r
     _wait_job(started["jobId"])
 
 
+def test_the_SKILL_names_the_image_FIELD_TOO_when_an_edit_is_asked_for(
+        client, fake_image_runner, base_photo):
+    """The same drift guard, over the reply an EDIT resolves with — `image`
+    only ever appears on that reply, so a plain-render POST would never
+    catch the skill going stale about it."""
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/image", json={"prompt": "x", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert "image" in started
+    section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
+    assert "image" in section
+    _wait_job(started["jobId"])
+
+
 def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
                                                                fake_image_runner):
     """The preview is a promise about a path, not about a file. A model with no
