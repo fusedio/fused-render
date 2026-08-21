@@ -137,14 +137,14 @@ def _pin_stream():
 #: variant class for.
 _VARIANTS = formats.MFLUX_VARIANTS
 
-#: …and its EDIT counterpart (`fused.ai.image({image})`, mflux-only): the
-#: variant/module half only, from `formats.MFLUX_EDIT_VARIANTS` — the
-#: `config`/`vae` half is DERIVED from `_VARIANTS` by `formats.
-#: mflux_edit_recipe`, never duplicated, since those two are facts about the
-#: checkpoint (same weights, same latent space) and not about which class
-#: denoises it. See that table's own comment for why copying them would be
+#: The EDIT counterpart (`fused.ai.image({image})`, mflux-only) is read
+#: through `formats.mflux_edit_recipe`, not through a binding here — its
+#: `variant`/`module` come from `formats.MFLUX_EDIT_VARIANTS`, and its
+#: `config`/`vae` are DERIVED from `_VARIANTS`'s row for the same id rather
+#: than duplicated, since those two are facts about the checkpoint (same
+#: weights, same latent space) and not about which class denoises it. See
+#: `formats.MFLUX_EDIT_VARIANTS`'s own comment for why copying them would be
 #: a drift risk rather than a convenience.
-_EDIT_VARIANTS = formats.MFLUX_EDIT_VARIANTS
 
 #: What an mflux-readable snapshot always has: component subfolders of MLX
 #: safetensors. Checked by NAME before the import, exactly as the whisper
@@ -198,9 +198,10 @@ def _build_variant(model_id, fetched, mode):
     if recipe is None:
         if mode == "edit":
             # Reached only if a model appears in `_VARIANTS` (so `load()`
-            # accepted it for plain generation) but has no row in
-            # `_EDIT_VARIANTS` — every model this build knows about today
-            # has both, so this is a future-model gap, not today's.
+            # accepted it for plain generation) but `formats.mflux_edit_
+            # recipe` has no edit row for it — every model this build knows
+            # about today has both, so this is a future-model gap, not
+            # today's.
             raise RuntimeError(
                 f"{model_id} is not a model this runner knows how to edit an "
                 "image with — it has no edit variant class named for it, "
@@ -553,7 +554,13 @@ def generate(body):
     """
     if _loaded.get("model") is None:
         raise RuntimeError("no model is loaded")
-    image = body.get("image") or None
+    # `str(... or "")`, the same normalisation every other field out of
+    # `body` already gets (`prompt`, `out`, below) — not only for style:
+    # it is what keeps `image` a concrete `str` rather than whatever
+    # `dict.get` on an untyped request body infers to, which is what let
+    # `kwargs["image_paths"] = [image]` below type-check as `list[str]`
+    # instead of a list of an unknown, possibly-`None` element.
+    image = str(body.get("image") or "")
     mode = "edit" if image else "generate"
     _ensure_mode(mode)
     model = _loaded["model"]
@@ -592,8 +599,18 @@ def generate(body):
     # duplicate bytes. A cancel or a failure discards it too (`preview.Sink`).
     with frames:
         try:
-            kwargs = dict(seed=seed, prompt=prompt, num_inference_steps=steps,
-                          height=height, width=width, guidance=guidance)
+            # Annotated rather than left to widen from the literal's own
+            # inferred type: `dict(seed=..., ...)` alone infers
+            # `dict[str, int | str | float]`, and the `image_paths` line
+            # below is a real mismatch against THAT — a list joining a
+            # dict pyright had already decided held no lists. Untyped at
+            # the call site regardless (`model.generate_image(**kwargs)`
+            # reaches a library this module never imports at parse time),
+            # so this is the honest shape of the local variable, not a
+            # cast papering over a mismatch.
+            kwargs: "dict[str, int | str | float | list[str]]" = dict(
+                seed=seed, prompt=prompt, num_inference_steps=steps,
+                height=height, width=width, guidance=guidance)
             if mode == "edit":
                 # The library's own shape (Gate A/D): `Flux2KleinEdit` takes
                 # `image_paths`, a LIST, even though `image` here is always

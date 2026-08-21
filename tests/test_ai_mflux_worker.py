@@ -498,10 +498,10 @@ def test_omitting_image_paths_would_be_the_library_crash_gate_B_found(
 def test_editing_an_UNKNOWN_edit_model_is_refused_with_a_sentence(
         monkeypatch, base, tmp_path):
     """A model present in `_VARIANTS` (so plain generate loaded fine) but
-    absent from `_EDIT_VARIANTS` must not crash into an unrelated
-    `AttributeError` — every model this build knows about today has both
-    rows, but a future one might not, and the failure mode should read like
-    every other "this runner doesn't know how" sentence."""
+    absent from `formats.MFLUX_EDIT_VARIANTS` must not crash into an
+    unrelated `AttributeError` — every model this build knows about today
+    has both rows, but a future one might not, and the failure mode should
+    read like every other "this runner doesn't know how" sentence."""
     worker, model = load_worker(monkeypatch, base)
     worker.load(MODEL, snapshot(tmp_path))
     # `monkeypatch.delitem`, not a bare `.clear()` — the real, PROCESS-WIDE
