@@ -288,6 +288,29 @@ def _stream(body):
     return asyncio.run(go())
 
 
+# -- the local/Claude seam -------------------------------------------------
+
+
+@pytest.mark.parametrize("model,expected", [
+    ("mlx-community/Qwen3-8B-4bit", True),   # a Hugging Face repo id
+    ("unsloth/Qwen3.5-4B-GGUF", True),       # ditto, an uncurated GGUF repo (D412)
+    ("Qwen3.5-4B-Q4_K_M.gguf", True),        # a curated llamacpp-text FILENAME id
+    ("LFM2.5-1.2B-Instruct-Q4_K_M.gguf", True),
+    ("QWEN3.5-4B-Q4_K_M.GGUF", True),        # case-insensitive, like the extension check it mirrors
+    ("opus", False),
+    ("sonnet", False),
+    ("claude-haiku-4-5-20251001", False),
+])
+def test_is_local_model_recognises_both_id_shapes(model, expected):
+    """A repo id (has a `/`) and a curated llamacpp-text id (a bare GGUF
+    FILENAME, no `/` at all — `formats.GGUF_RECIPES`'s keys) both mean local
+    inference; a Claude alias is neither shape. Regression pin for the bug
+    found auditing the fused-render-ai skill: `"/" in model` alone routed
+    every curated llamacpp id to the Claude CLI path as an unrecognised
+    alias (D411/D412)."""
+    assert _server_ai._is_local_model(model) is expected
+
+
 # -- happy path -----------------------------------------------------------------
 
 

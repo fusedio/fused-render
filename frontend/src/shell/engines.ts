@@ -75,6 +75,64 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
   return `${name} is not used here — ${row.ignoredReason}.`;
 }
 
+/** The stored engine code when NO option in the list matches it — else null.
+ *
+ *  A `<select value={x}>` whose options contain no `x` does not fall back to
+ *  the first option: the DOM ignores the assignment, `selectedIndex` becomes -1,
+ *  and the control renders EMPTY. So a stored preference naming an engine this
+ *  build no longer registers turns the picker blank — the user sees a control
+ *  with nothing in it, on a page whose whole job is saying which engine is in
+ *  force. `ignoredWarning` already prints the reason underneath, which makes the
+ *  blank control worse rather than better: a sentence explaining a choice, above
+ *  a control showing no choice.
+ *
+ *  **TWO different stored values land here, and the caller's copy has to be true
+ *  of both.** `describe_engines` builds `choices` filtered by
+ *  `runner.capability == capability`, so a stored code goes missing from the list
+ *  for either of two reasons `resolve()` tells apart in prose but this function
+ *  cannot see:
+ *
+ *    - the code is not registered at all — a preference written by a newer build,
+ *      or naming an engine since withdrawn (D416 removed the three
+ *      `transformers-text*` codes, which were offered in this very picker and
+ *      stored by people who chose them);
+ *    - the code IS registered and serves a DIFFERENT capability — a hand-edited
+ *      or stale prefs.json, e.g. `{"text-generation": "mlx-whisper"}`.
+ *      `prefs._valid_engine_choice` refuses that on write but says nothing about
+ *      a file already on disk, which is the same reachability argument that
+ *      justifies handling the withdrawn case at all.
+ *
+ *  So this returns "the stored code matches no option", and NOT "the engine is
+ *  gone" — the caller must not claim a withdrawal it cannot establish. Telling
+ *  the two apart needs `registry.by_code`, which lives on the server and is not
+ *  on this payload; the DISTINCTION is already carried by `ignoredReason`, which
+ *  `ignoredWarning` prints verbatim underneath ("… is not a runner this build
+ *  knows" against "MLX Whisper does not do text-generation"). That split is
+ *  deliberate: the specific reason is the registry's sentence to write, and this
+ *  module does not paraphrase those.
+ *
+ *  Either way `prefs.json` is a file that travels — synced, copied, restored
+ *  from a backup — so an upgrade is not the only way one arrives, and the server
+ *  deliberately does NOT rewrite `selected` to match reality (a preference
+ *  silently corrected on read is one the user can neither see nor undo, see
+ *  `describe_engines`). That is the right call, and it is exactly what leaves
+ *  this case for the page to render.
+ *
+ *  The caller renders the returned code as one extra DISABLED option, so the
+ *  select shows what is stored, cannot be re-picked, and reads consistently with
+ *  the warning below it. The raw code rather than a label, because there may be
+ *  no label to be had: a withdrawn engine has none, and using the registered
+ *  label of a wrong-capability engine would dress a stale value up as a real
+ *  choice.
+ *
+ *  Null for `auto` — the caller renders that option itself, unconditionally.
+ */
+export function strandedSelection(row: CapabilityEngine, auto: string): string | null {
+  if (row.selected === auto) return null;
+  if (row.choices.some((c) => c.code === row.selected)) return null;
+  return row.selected;
+}
+
 /** Why one option cannot be picked — null when it can.
  *
  *  A disabled control with no explanation is the thing the greying-out rule
@@ -184,6 +242,44 @@ export function switchOutcome(
 ): "unloaded" | "switched" | null {
   if ((next.engines.unloaded?.length ?? 0) > 0) return "unloaded";
   return wouldChangeEngine(row, code, auto) ? "switched" : null;
+}
+
+/** "unloads in 4 min" (AI-13) — the resident-model countdown, or null when
+ *  there is none to show.
+ *
+ *  `null` covers both a disabled window (`0`, from either the stored pref or
+ *  an env override) and any other reason the server sends no number — the
+ *  page has no reason to tell those apart, since neither is counting down.
+ *  A no-narration card is safer here than a guess: the caller decides whether
+ *  the resident-memory line it is appended to renders at all.
+ *
+ *  Rounds rather than truncates and never rounds down to zero: a stream that
+ *  ends "in 0 min" reads as "already gone", which is not true while seconds
+ *  remain on the clock — hence the separate "under a minute" phrasing below
+ *  the first whole one.
+ */
+/** Parse the idle-window input field's raw text into a valid whole-minutes
+ *  value (0..1440), or `null` when it isn't one yet.
+ *
+ *  Lifted out of `AiModelsEngines.tsx`'s commit handler specifically so this
+ *  is testable: `Number("")` is `0` and `Number.isInteger(0)` is `true`, so
+ *  the ordinary intermediate state of editing a number field — select-all,
+ *  delete, click away — would otherwise parse as a valid `0` and silently
+ *  PUT "never unload". An empty or whitespace-only string is "not a value
+ *  yet", not zero, and reads the same as any other invalid input: the
+ *  caller's job is to leave the stored value alone, never to guess.
+ */
+export function parseAiIdleMinutes(value: string): number | null {
+  if (value.trim() === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1440) return null;
+  return parsed;
+}
+
+export function unloadCountdown(unloadsInSeconds: number | null): string | null {
+  if (unloadsInSeconds === null) return null;
+  if (unloadsInSeconds < 60) return "unloads in under a minute";
+  return `unloads in ${Math.round(unloadsInSeconds / 60)} min`;
 }
 
 /** Is `code` what the registry's ordering would pick on its own?

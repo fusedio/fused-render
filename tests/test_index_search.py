@@ -717,3 +717,68 @@ def test_a_package_is_never_reported_as_scanning(home, tmp_path, monkeypatch):
         "runs": [{"run_id": "r1", "root": str(tmp_path), "running": True}]})
     body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
     assert body["reason"] == "package"
+
+
+# -------------------------------------------------------- indexing disabled
+
+def test_an_uncovered_folder_reports_disabled_while_indexing_is_off(
+        home, tmp_path, monkeypatch):
+    """Highest precedence after mount/package: while the pref is off, no
+    scan will ever cover an uncovered folder — the client must not ask for
+    one, same treatment as a mount or a package."""
+    from fused_render.server.routers import index as index_routes
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank",
+                      params={"root": str(tmp_path), "q": "x"}).json()
+    assert body["covered"] is False and body["reason"] == "disabled"
+
+
+def test_ignored_still_wins_over_disabled_ordering_is_not_swapped(
+        home, tmp_path, monkeypatch):
+    """"disabled" is inserted between package and ignored — a folder the
+    ignore rules exclude is unrelated to the toggle, so this only pins that
+    the new branch did not silently become an earlier, wrong-precedence one."""
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj" / "node_modules")
+    client = _ranked_client(tmp_path, str(tmp_path / "proj"),
+                            [str(tmp_path / "proj") + "/a.txt"])
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
+    assert body["reason"] == "disabled"
+
+
+def test_a_covered_answer_is_untouched_while_indexing_is_off(home, tmp_path,
+                                                              monkeypatch):
+    """The behavior contract: a pre-existing, covered index keeps serving
+    exactly as before — the toggle only changes what happens when it is NOT
+    covered."""
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["covered"] is True and body["reason"] == ""
+    assert [h["rel"] for h in body["hits"]] == ["alpha.txt"]
+
+
+def test_scanning_is_never_reported_while_indexing_is_off(home, tmp_path,
+                                                           monkeypatch):
+    """Even if a run happens to still be listed as live (a race with the
+    toggle-off cancellation), the client must never be told to poll a scan
+    that the pref says can't be running."""
+    from fused_render.index import runner
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root, "running": True}]})
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] != "scanning"

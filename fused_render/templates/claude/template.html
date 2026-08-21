@@ -1721,6 +1721,26 @@
      "Send answer" past the bottom of the pane, so the one control that
      completes the card was the one thing the user could not see. */
   .perm.ask .qscroll { max-height: 46vh; overflow: auto; }
+  /* …except while an "Other" box is open, when the bound comes OFF and the list
+     stops being a scroller at all.
+
+     The box is a second scroller stacked on this one in the same axis, and two
+     of those cannot both be right: whichever the wheel lands on, the other one
+     is the one the user meant. Measured on a 460px-tall window — a four-option
+     card is 452px of list under a 212px cap, so the list was ALREADY scrolling
+     before a character was typed, and the box scrolled too. The open row sat
+     91px below the fold: the user was typing into something they could not see,
+     in a box whose own scrollbar hid what they had written. Sizing the box to
+     the room left over cannot fix that, because on a short window there is no
+     room left over — it only decides which of the two scrollbars is shorter.
+
+     So while the row is open there is exactly one scroller inside the card, and
+     it is the box. The list gives up its cap for as long as that lasts; the card
+     grows, the transcript takes the overflow (which is where every other card's
+     controls live anyway), `grow` keeps the row in view, and Enter still sends
+     without reaching for "Send answer". The cap comes straight back on Esc or
+     on send. */
+  .perm.ask .qscroll:has(.qopt.qother.typing) { max-height: none; overflow: visible; }
   .perm .qblock + .qblock { margin-top: 14px; }
   .perm .qhead {
     display: inline-block;
@@ -1775,8 +1795,15 @@
      highlighted. appearance: none takes that away and states both states
      explicitly: empty box = the card's own background, checked = an accent
      fill with a --surface inset punching the middle out (a dot for a radio, a
-     square for a checkbox) — no glyph font, no SVG, both themes from tokens. */
-  .perm .qopt input {
+     square for a checkbox) — no glyph font, no SVG, both themes from tokens.
+
+     Selected by TYPE, not as "any input in a .qopt". The "Other" row put a text
+     field inside one, and a bare `.perm .qopt input` (0,2,1) out-specifies
+     `.perm .qtype` (0,2,0): the field inherited the 14px square, the drawn
+     border and the background, so what shipped was an empty grey row with a
+     tiny white box in it and nowhere visible to type. */
+  .perm .qopt input[type="checkbox"],
+  .perm .qopt input[type="radio"] {
     appearance: none;
     -webkit-appearance: none;
     width: 14px;
@@ -1790,14 +1817,89 @@
     transition: background .12s ease-out, border-color .12s ease-out;
   }
   .perm .qopt input[type="radio"] { border-radius: 50%; }
-  .perm .qopt input:checked {
+  .perm .qopt input[type="checkbox"]:checked,
+  .perm .qopt input[type="radio"]:checked {
     background: var(--accent);
     border-color: var(--accent);
     box-shadow: inset 0 0 0 3px var(--surface);
   }
-  .perm .qopt input:focus-visible {
+  .perm .qopt input[type="checkbox"]:focus-visible,
+  .perm .qopt input[type="radio"]:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
     outline-offset: 2px;
+  }
+  /* The "Other" row (D407). Always present, never model-authored: two to four
+     options are Claude's guess at the answer space, and the one thing a fixed
+     list cannot express is disagreement with it.
+
+     Structurally the SAME row as an option — same box, same padding, same
+     border, same hover, same bold label over muted description — because it is
+     answered the same way and a row that looked like a different kind of
+     control read as broken rather than as considered. The only difference is
+     that the label recedes: it is the one row Claude did not write, and a muted
+     label says so without inventing a second visual language for it. (It was
+     dashed at first, which is what made it read as a stray widget rather than
+     as the fifth row of a list.) Once it is being typed into it stops being an
+     offer and becomes the answer in progress, so it takes the accent edge every
+     other focused control on this card has. */
+  .perm .qopt.qother .lbl { font-weight: 600; color: var(--dim); }
+  /* The label/description/field column has to OWN the rest of the row, or the
+     field's own width: 100% resolves against a box shrunk to the width of the
+     word "Other…". */
+  .perm .qopt.qother .qbody { flex: 1; min-width: 0; }
+  /* Neither the row nor its column ever scrolls: the box inside them sizes
+     itself and, past its ceiling, scrolls itself. A scrollbar out here would be
+     a second one for the same overflow, and the outer of two nested scrollers
+     is always the wrong one to move — it takes the row the user is typing in
+     out from under them. Stated rather than left to the initial value, because
+     this is a constraint on whatever gets added to the row next. */
+  .perm .qopt.qother,
+  .perm .qopt.qother .qbody { overflow: visible; }
+  .perm .qopt.qother.typing {
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+    cursor: default;
+  }
+  /* Hidden until the row is opened rather than absent from the DOM: the field
+     keeps what was typed across an Esc-and-back, and there is nothing to build
+     on the click. Written as `.qopt .qtype` and not `.qtype` — and by CLASS
+     only, never `textarea.qtype` — so it cannot lose a specificity race to a
+     rule that selects on the row's contents (which is exactly how it first
+     shipped looking like a checkbox) and so the element it dresses can change
+     without the styling quietly falling off it.
+
+     A textarea, so a long answer WRAPS inside the row: `resize: none` because a
+     drag handle is a second way to size a box that already sizes itself, and no
+     horizontal scroller at all — an answer that ran off the side could not be
+     read back before it was sent. Height is left to `autoGrow` (one line to
+     start, 200px ceiling, vertical scroll past that), so nothing here sets
+     one. */
+  .perm .qopt .qtype {
+    display: none;
+    box-sizing: border-box;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    margin: 7px 0 0;
+    padding: 6px 9px;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--fg);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    cursor: text;
+    resize: none;
+    overflow-x: hidden;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .perm .qopt.qother.typing .qtype { display: block; }
+  .perm .qopt .qtype::placeholder { color: var(--dim); }
+  .perm .qopt .qtype:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent) 60%, transparent);
   }
   .perm .qsend { margin-top: 12px; }
 
@@ -2141,6 +2243,17 @@
     padding-left: 10px;
     margin-top: 4px;
   }
+  /* The background-task chip (buildNoticeView, D415). Sized and coloured like
+     the thinking summary rather than like a tool chip: it is a note about why
+     the next paragraph exists, not a thing to open, so it carries no border, no
+     hover and no pointer — everything a chip has that invites a click. */
+  .seg-notice {
+    display: flex; gap: 6px; align-items: baseline;
+    color: var(--faint); font-size: 12px; margin: 6px 0;
+    white-space: normal; word-break: break-word;
+  }
+  .seg-notice-glyph { flex: none; font-size: 10px; }
+
   /* Opening a chip or a thinking block reveals its body in one short beat, so
      the eye follows what appeared instead of re-finding it after a jump.
      Opacity + 2px of travel only (no height animation: <details> has no
@@ -5619,7 +5732,9 @@ let annEditing = null;  // id of an existing pending note being edited
 let annRecOn = false;
 let annRecStartedAt = 0;     // performance.now() when the mic started
 let annRecIds = [];          // ids this recording stamped, oldest first
-let annRecorder = null, annRecChunks = [];
+// The live `fused.capture.audio` handle (SPEC §45): the APP records now, so
+// this page holds one object instead of a MediaRecorder and a growing blob.
+let annRecHandle = null;
 let annRecTimerId = null;
 
 function annLoad() {
@@ -6465,16 +6580,6 @@ function annRecPaint() {
   annRecLbl.textContent = annRecClock(secs)
     + (annRecIds.length ? " · " + annRecIds.length : "");
 }
-// The extension follows what MediaRecorder actually produced (Chromium's
-// default is webm/opus, WKWebView's is usually mp4/aac — this app ships on
-// both) rather than assuming one container the way a name like ".webm" would.
-function annRecExt(mime) {
-  if (mime && mime.includes("mp4")) return ".m4a";
-  if (mime && mime.includes("ogg")) return ".ogg";
-  if (mime && mime.includes("wav")) return ".wav";
-  return ".webm";
-}
-
 // Warm the transcriber the moment a recording STARTS, so the words are not
 // waiting on a cold model when it stops — the load runs while the reader is
 // still talking, which is exactly the dead time it fits in. Fire-and-forget
@@ -6506,20 +6611,52 @@ function annWarmTranscriber() {
   })();
 }
 
+// The seat is drawn off `sources()`, which never prompts (SPEC CP-7), so a
+// machine that cannot record at all gets no mic rather than one that could
+// only ever alert. macOS always answers `available` (the permission prompt
+// rides the first recording), so an ungranted mic never costs the seat; a
+// browser that cannot record does, and the reason names one that can (CP-11).
+(async () => {
+  try {
+    const src = await fused.capture.sources();
+    if (src && src.audio && src.audio.available === false) {
+      // Removed, not hidden: #anncta's display rule beats `hidden`, and the
+      // strip hides itself once nothing visible is left in it.
+      annRecBtn.remove();
+      console.warn("spoken walkthroughs unavailable:", src.audio.reason || "");
+    }
+  } catch (err) {
+    console.warn("capture probe skipped:", err.message);   // not a refusal
+  }
+})();
+
 async function annRecBegin() {
   if (annRecOn || !annCapable()) return;
   annWarmTranscriber();
-  // Disabled for the width of the permission prompt too, not just while a
-  // recording runs — otherwise a second click before the browser answers the
-  // first request opens two mic streams.
+  // Disabled for the width of the start request too, not just while a
+  // recording runs — otherwise a second click before the app answers the
+  // first one opens two recordings.
   annRecBtn.disabled = true;
-  let stream;
+  let rec;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // `rec.path` names the file before the first sample exists, which is why
+    // this is not a MediaRecorder any more: the stop hands
+    // fused.ai.transcribe({path}) a path instead of this page uploading a blob
+    // it had to guess a container for.
+    // NO `path` of our own — the container is the backend's to name (SPEC
+    // CP-5: .m4a natively, mp4 or WebM where the browser encodes) and a path
+    // whose extension contradicts it is refused. So the audio lands under
+    // `<home>/recordings` as a download-manager row (CP-3) rather than in the
+    // pruned crop dir: the row's ✕ is how a walkthrough is deleted now, and
+    // the row is what lets one outlive this page. Cap is the default 30 min,
+    // which STOPS and keeps (CP-4) — a mic nobody turned off still turns off.
+    rec = await fused.capture.audio({ title: "Spoken walkthrough" });
   } catch (err) {
     annRecBtn.disabled = false;
-    alert("Microphone unavailable — " + (err.message || err.name)
-          + "\n\nAllow microphone access for this app and try again.");
+    // Nothing appended: `unavailable` carries the machine's own sentence
+    // (System Settings, or a browser that can), and the fixed "allow
+    // microphone access" line this used to add was wrong for half of them.
+    alert("Cannot record — " + (err.message || err.name));
     return;
   }
   annRecBtn.disabled = false;
@@ -6527,18 +6664,12 @@ async function annRecBegin() {
   // the other way (annWireTarget's branch below) — arm it if the reader went
   // straight for the mic without sliding Comment on first.
   if (!annOn) annSetMode(true);
-  // The sink is THIS session's array, closed over — not the global name.
-  // The enders snapshot the globals and reset them before their await, and
-  // a push routed through the global would land the recorder's FINAL
-  // dataavailable in the next session's (or nobody's) array (Bugbot, PR #665).
-  const chunks = [];
-  annRecChunks = chunks;
   annRecIds = [];
-  annRecorder = new MediaRecorder(stream);
-  annRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  annRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
+  annRecHandle = rec;
+  // The handle lands when the recording is ALREADY RUNNING (CP-1), so this
+  // clock and the transcript's own timestamps differ only by the start reply's
+  // trip home — inside what annRecAssign's nearest-word match cares about.
   annRecStartedAt = performance.now();
-  annRecorder.start();
   annRecOn = true;
   // The picker usually arrived with annSetMode(true) above; this direct call
   // covers the one path where the mode was ALREADY armed when the mic was
@@ -6734,7 +6865,7 @@ function annRecAssign(ids, segments) {
 // stamped and empty, editable by hand like any other pending note — rather
 // than costing the reader the walkthrough they just did.
 async function annRecEnd() {
-  if (!annRecOn || !annRecorder) return;
+  if (!annRecOn || !annRecHandle) return;
   // Flags down BEFORE the stop's await (Bugbot, PR #665): the Discard seat
   // stays on screen exactly as long as #annrec.on does, and a discard click
   // landing inside this await used to pass its own guard, call stop() on an
@@ -6745,18 +6876,16 @@ async function annRecEnd() {
   // The WHOLE session is snapshotted synchronously here (Bugbot, PR #665):
   // the flags drop before the await, and Esc re-enables the seat, so a NEW
   // recording can begin while this one settles — every global read after
-  // the await would be the new session's. Chunks, ids, timer and epoch are
-  // captured now and the globals handed back fresh; from here down this
+  // the await would be the new session's. The handle, ids, timer and epoch
+  // are captured now and the globals handed back fresh; from here down this
   // function touches only its own session.
-  const recorder = annRecorder;
-  const chunks = annRecChunks;
+  const handle = annRecHandle;
   const ids = annRecIds;
   const armed = annArmEpoch;
   clearInterval(annRecTimerId);
   annRecTimerId = null;
-  annRecChunks = [];
   annRecIds = [];
-  annRecorder = null;
+  annRecHandle = null;
   annRecOn = false;
   // The face goes with the flags — the trash and the stop clock leave the
   // strip the moment the choice is made, not after the recorder settles.
@@ -6770,24 +6899,23 @@ async function annRecEnd() {
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
   // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
   // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
-  // long MediaRecorder.stop()'s encode takes (no timeslice — it can take a
-  // while), still wearing the stop aria-label, and a click there ran annDone
-  // and disarmed the mode before transcription ever started. Same treatment
-  // the transcription below gets: disabled, .busy (the face yields to
-  // #annreclbl), named for what is happening.
+  // long the stop takes — milliseconds where the app records natively, longer
+  // where the browser encodes and the last timeslice has to be flushed and
+  // acknowledged — still wearing the stop aria-label, and a click there ran
+  // annDone and disarmed the mode before transcription ever started. Same
+  // treatment the transcription below gets: disabled, .busy (the face yields
+  // to #annreclbl), named for what is happening.
   annBtn.disabled = true;
   annBtn.setAttribute("aria-label", "Stopping the recording");
   annBtn.title = "Stopping the recording…";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Stopping…";
-  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
-  recorder.stop();
-  await stopped;
-  // The chunks are complete here: the recorder's final dataavailable fires
-  // before its stop event resolves the await above, and it landed in THIS
-  // session's captured array — annRecBegin's sink is a closure, not the
-  // global name this function already reset.
-  const blob = new Blob(chunks, { type: recorder.mimeType || "" });
+  // The ending that KEEPS the file (CP-4) — `cancel()` is the discard. Its
+  // reply is the finished file, so nothing here uploads anything. Swallowed
+  // like the transcription below: a failed stop leaves the clicks stamped and
+  // empty, editable by hand, rather than costing the reader the walkthrough.
+  const out = await handle.stop()
+    .catch((err) => void console.warn("walkthrough stop failed:", err.message));
   // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
   // record → talk → stop is the complete gesture, and a comment layer left
   // armed after it swallows the reading clicks that usually come next. The
@@ -6797,7 +6925,11 @@ async function annRecEnd() {
   // not close. It also keeps the disarm from echoing when annSetMode's own
   // disarm called us (annOn is already false there). Nothing recorded:
   // disarm and go.
-  if (!blob.size) {   // nothing said: no transcript to fetch
+  // Nothing to transcribe: a failed stop, an empty file, or a stop that
+  // landed on the start's own beat (`seconds` is the session's wall time).
+  // SILENCE is not this branch — it reaches the transcriber and comes back
+  // wordless, and the send is gated on words landing (`spoke || intro`).
+  if (!out || !out.path || !out.bytes || (out.seconds || 0) < 0.4) {
     // The status leaves with this path's own hands — the transcription's
     // finally never runs here. The disarm below renames the seat; the
     // epoch-skipped case (someone re-armed mid-stop) is renamed by the
@@ -6837,15 +6969,11 @@ async function annRecEnd() {
     annRecLbl.textContent = "Transcribing…";
   }
   try {
-    // The same 0700 temp dir the pane crops use (shotDirPath/shotJoin/shotStamp,
-    // below) — it is already pruned by age and count (agent.py's `_prune_shots`),
-    // and a walkthrough's audio is exactly the kind of scratch file that
-    // pruning exists for. Unlike a crop this file is never handed to Claude —
+    // Already on disk, written by the app — no upload leg, and no temp dir of
+    // ours to prune. Unlike a crop the audio is never handed to Claude:
     // fused.ai.transcribe reads it locally and only the WORDS leave this
-    // function — so it needs no `Read(...)` rule of its own.
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + "-walkthrough" + annRecExt(blob.type));
-    await fused.uploadFile(path, blob);
+    // function, so it needs no `Read(...)` rule of its own.
+    const path = out.path;
     // `words: true` asks for per-word timings inside each segment (D392), which
     // is what lets a click that landed MID-sentence take only the words after
     // it (annRecAssign). Best-effort by contract, never refused: an engine
@@ -6932,19 +7060,18 @@ annRecBtn.addEventListener("click",
 // no-ops after this (annRecOn is false and the recorder is gone), so a stop
 // click racing the discard cannot resurrect the walkthrough.
 async function annRecDiscard() {
-  if (!annRecOn || !annRecorder) return;
+  if (!annRecOn || !annRecHandle) return;
   // The whole session is snapshotted synchronously, like annRecEnd's: a new
   // recording can begin while this one's stop settles, and every global read
   // after the await would be the new session's — its marks deleted, its
   // timer killed (Bugbot, PR #665).
-  const recorder = annRecorder;
+  const handle = annRecHandle;
   const ids = new Set(annRecIds);
   const armed = annArmEpoch;
   clearInterval(annRecTimerId);
   annRecTimerId = null;
-  annRecChunks = [];
   annRecIds = [];
-  annRecorder = null;
+  annRecHandle = null;
   annRecOn = false;
   // The face goes BEFORE the await, like annRecEnd's: the trash and the
   // stop clock leave the strip the moment the choice is made, and a second
@@ -6961,9 +7088,12 @@ async function annRecDiscard() {
   annBtn.title = "Discarding the recording…";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Discarding…";
-  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
-  recorder.stop();   // onstop releases the mic tracks, same as a kept stop
-  await stopped;
+  // `cancel()` STOPS AND DELETES (CP-4) — the ✕'s own meaning — where a stop
+  // would leave the file behind. It cannot lose to the stop seat either: the
+  // handle memoizes ONE ending, so a stop click landing inside this await gets
+  // this cancel's promise back instead of opening a second request.
+  await handle.cancel()
+    .catch((err) => void console.warn("walkthrough discard failed:", err.message));
   // A NEW session that began during the settle owns the seat now — leave its
   // busy state, labels and clock alone (Bugbot, PR #665).
   if (!annRecOn) {
@@ -7330,17 +7460,20 @@ if (CHAT_ONLY) {
   // reason they stopped working.
   window.addEventListener("pagehide", () => {
     annOn = false;   // gates any handler of ours the browser does still run
-    // Release the mic synchronously — DOM removal only, same rule the rest of
-    // this handler follows (see below), so no transcription is started here:
-    // this document is going away and there is no panel left to show its
-    // result in. `stop()` runs the recorder's own `onstop`, which is what
-    // actually stops the tracks.
+    // End the recording, fire-and-forget: no transcription — this document is
+    // going away and there is no panel to show one in — but the microphone
+    // must not be left on. `stop()` KEEPS the file (CP-4): a teardown nobody
+    // asked for must not throw a walkthrough away. Best-effort BY DESIGN — the
+    // request may not survive the unload, and both platforms then fail safely
+    // (the socket closing is itself a keeping ending where the browser
+    // encodes; the cap turns the mic off where the app records).
     if (annRecOn) {
       annRecOn = false;
       clearInterval(annRecTimerId);
       annRecTimerId = null;
-      try { annRecorder.stop(); } catch (err) { /* already stopping */ }
-      annRecorder = null;
+      const handle = annRecHandle;
+      annRecHandle = null;
+      if (handle) handle.stop().catch(() => {});
     }
     // The observer is disconnected EXPLICITLY, not trusted to die with us: it
     // watches the HOST's document, and a mutation over there between this
@@ -11296,6 +11429,14 @@ function buildPermCard(p, run_id, liveMode) {
   return { el, resolve };
 }
 
+// How tall the "Other" box may get: the composer's ceiling, flat, because while
+// the box is open it is the only scroller inside the card — `.qscroll` drops its
+// 46vh cap for as long as the row is open (see the `:has` rule above). Sizing
+// this to the room `.qscroll` had left was tried and does not work: on a short
+// window the question list is over the cap on its own, so there is no room to
+// give and the answer is a second scrollbar either way.
+const OTHER_MAX_H = 200;
+
 // AskUserQuestion — the model asking the USER something, parked on the same
 // bridge as an approval because the CLI routes it through the prompt tool (it is
 // gated on `requiresUserInteraction`, so `auto` and `acceptEdits` do not
@@ -11316,6 +11457,19 @@ function buildPermCard(p, run_id, liveMode) {
 // descriptions) and goes in through textContent, whole: the option labels are the
 // only thing that can be sent, so an option the user cannot read properly is an
 // answer they did not mean to give.
+//
+// …with ONE exception, and it is deliberate: every question also gets an "Other"
+// row this window adds (D407), the same entry Claude Code's own prompt appends.
+// The model's two-to-four options are its guess at the answer space, and a card
+// that can only echo that guess back forces the user to pick the nearest wrong
+// answer — the model then acts on a choice nobody made, which is the exact
+// failure the label validation exists to prevent, arriving through the front
+// door. So the typed text rides a SEPARATE `custom` param rather than being
+// smuggled in as a label: `answers` stays strictly "a string the request itself
+// offered", and `custom` is "a string the user wrote", each validated as what it
+// is (agent.py `_answers_from`). Multi-select keeps parity — a typed answer sits
+// alongside the ticked ones, joined last, because that is the order the backend
+// matches a join in.
 function buildQuestionCard(p, run_id) {
   const input = p.input && typeof p.input === "object" ? p.input : {};
   const raw = Array.isArray(input.questions) ? input.questions : [];
@@ -11374,9 +11528,12 @@ function buildQuestionCard(p, run_id) {
   }
 
   // A JSON string, not a nested object: params cross into python string-shaped,
-  // the same way app_state sends its snapshot.
-  const send = (answers) => post(
-    { decision: "allow", answers: JSON.stringify(answers) }, answers);
+  // the same way app_state sends its snapshot. `custom` is the second record —
+  // same keys, values the user TYPED — and it always goes, empty or not, so the
+  // backend never has to tell "no Other was used" from "an older page".
+  const send = (answers, custom) => post(
+    { decision: "allow", answers: JSON.stringify(answers),
+      custom: JSON.stringify(custom || {}) }, answers);
   const dismiss = () => post({ decision: "deny" }, null);
 
   let shown = "";
@@ -11429,22 +11586,110 @@ function buildQuestionCard(p, run_id) {
     return wrap;
   }
 
+  // The editor an "Other" row opens into. A TEXTAREA, not a one-line input: an
+  // answer the model did not anticipate is the one most likely to be a sentence
+  // rather than a word, and a single line scrolls it away horizontally — the
+  // user cannot read back what they are about to send. It starts exactly one
+  // line high and grows with the content, through the same `autoGrow` the
+  // composer uses (capped there at 200px, after which it scrolls vertically),
+  // so a long answer wraps inside the row instead of running off the side.
+  //
+  // Enter answers and Shift+Enter breaks the line — the composer's bargain, and
+  // the reason the newline needs a modifier at all: the commonest answer here is
+  // one line, so Enter must finish it. A blank box does nothing at all: an empty
+  // answer would reach the model as a question the user "answered" with silence,
+  // which is worse than not answering it. Esc gives the options back. keydown
+  // stops here so the pane's own shortcuts do not read a user typing their
+  // answer as commands.
+  function otherField(placeholder, onEnter, onEscape) {
+    const field = document.createElement("textarea");
+    field.className = "qtype";
+    field.rows = 1;
+    field.placeholder = placeholder;
+    // `wrap` and the CSS below are the two halves of "never scroll sideways":
+    // this one is what the value carries, that one is what is painted.
+    field.wrap = "soft";
+    // The composer's `autoGrow`, plus the two things a box that lives inside a
+    // card needs and one at the bottom of the pane does not.
+    const grow = () => {
+      // Whether the caret is at the very end, read BEFORE the height changes:
+      // setting a height re-lays-out the textarea and drops its scrollTop to 0,
+      // so once the answer is past the ceiling every keystroke scrolled the view
+      // back to the first line and the user typed blind. Measured: 812
+      // characters in, caret at 812, scrollTop 0, of 426px of content in a 75px
+      // box. Restoring the bottom is right for typing at the end, which is what
+      // an answer being written is; a caret parked in the middle keeps the
+      // offset it had, which the browser has already put on the caret.
+      const end = (field.value || "").length;
+      const atEnd = field.selectionStart === end && field.selectionEnd === end;
+      const was = field.scrollTop;
+      field.style.height = "auto";
+      // scrollHeight is padding-box: it counts this element's padding but not
+      // its border, while the height being set is border-box. Without the
+      // difference added back the box lands one border-width short of its own
+      // content and reports a two-pixel overflow — a scrollbar on a box that
+      // holds exactly one line.
+      const wanted = field.scrollHeight + (field.offsetHeight - field.clientHeight);
+      field.style.height = Math.min(OTHER_MAX_H, wanted) + "px";
+      field.scrollTop = atEnd ? field.scrollHeight : was;
+      // …and keep the row itself in view as it grows. `nearest` is the whole
+      // point: it moves whichever ancestor is scrolling by the least it can, and
+      // does nothing at all when the row is already fully visible, so it cannot
+      // yank the transcript away from someone reading it.
+      field.scrollIntoView({ block: "nearest" });
+    };
+    field.addEventListener("input", grow);
+    field.onkeydown = (ev) => {
+      // Shift+Enter is a newline and nothing else — no preventDefault, so the
+      // textarea inserts it itself, and `grow` runs off the input event.
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        // `|| ""` because a field that was never typed into has no value of its
+        // own to trim. Trimmed at the ends only: the newlines a multi-line
+        // answer is made of are part of what the user wrote.
+        const value = (field.value || "").trim();
+        if (value) onEnter(value);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        onEscape();
+      }
+      ev.stopPropagation();
+    };
+    // Inside a <label> the field is interactive content, so a click on it does
+    // not activate the tick — belt and braces, because a click that silently
+    // unticked the row the user is typing into would be unexplainable.
+    field.onclick = (ev) => { ev.stopPropagation(); };
+    widgets.push(field);
+    field.grow = grow;
+    return field;
+  }
+
   function submit() {
     const pairs = [];
+    const custom = [];
     for (const block of blocks) {
       const labels = block.picked();
       if (!labels.length) {
         status.className = "perm-status deny";
-        status.textContent = "Pick an answer for every question.";
+        // An open, empty Other box is a different mistake from an untouched
+        // question, and saying "pick an answer" to someone who has already
+        // decided not to pick one is no help.
+        status.textContent = block.typing()
+          ? "Type your own answer, or pick one of the options."
+          : "Pick an answer for every question.";
+        block.focus();
         return;
       }
       // One string per question — the chosen labels joined with ", ", which is
-      // what the CLI validates against the option list it sent.
+      // what the CLI validates against the option list it sent (plus, when the
+      // user typed one, the option this window added on their behalf).
       pairs.push([block.question, labels.join(", ")]);
+      const own = block.typed();
+      if (own) custom.push([block.question, own]);
     }
     // fromEntries, not assignment: a question whose text is "__proto__" would
     // vanish into the prototype setter, exactly as in leftoverInput (D161).
-    send(Object.fromEntries(pairs));
+    send(Object.fromEntries(pairs), Object.fromEntries(custom));
   }
 
   if (answerable) {
@@ -11493,12 +11738,91 @@ function buildQuestionCard(p, run_id) {
         ticks.push({ box, label: option.label });
         list.appendChild(row);
       });
+
+      // …and the row Claude did not write. Last, always: it is the answer for
+      // when none of the ones above are, so it reads after them, and the
+      // backend matches a multi-select join in exactly this order.
+      const other = { label: "Other…", description: "Answer in your own words" };
+      let typed = () => "";        // what is in the box, read at submit time
+      let typing = () => false;    // is the box open but empty?
+      let focusOther = () => {};
+      if (oneShot) {
+        // Each option here IS a button, so Other is one too — and clicking it
+        // swaps the button for the field in place, which keeps the row the user
+        // aimed at exactly where they aimed at it.
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "qopt qother";
+        b.appendChild(optionText(other));
+        const wrap = document.createElement("div");
+        wrap.className = "qopt qother typing";
+        // The SAME body the button carries, not a bare field: the row that
+        // appears where the button was has to still say what it is. Swapping in
+        // an unlabelled input left a grey box with nothing in it but a text
+        // cursor, and the user could not tell what they were answering.
+        const body = optionText(other);
+        body.className = "qbody";
+        const field = otherField(
+          "Type your answer, then press Enter",
+          (value) => send(Object.fromEntries([[q.question, value]]),
+                          Object.fromEntries([[q.question, value]])),
+          () => { wrap.replaceWith(b); b.focus(); });
+        body.appendChild(field);
+        wrap.appendChild(body);
+        // grow() BEFORE focus, and only now: a display:none textarea reports a
+        // scrollHeight of 0, so a height measured while the row was closed
+        // would open it flat.
+        b.onclick = () => { b.replaceWith(wrap); field.grow(); field.focus(); };
+        widgets.push(b);
+        list.appendChild(b);
+      } else {
+        const row = document.createElement("label");
+        row.className = "qopt qother";
+        const box = document.createElement("input");
+        box.type = q.multiSelect ? "checkbox" : "radio";
+        box.name = "q-" + p.id + "-" + i;   // the same group as the options
+        const body = optionText(other);
+        body.className = "qbody";
+        const field = otherField("Type your answer here",
+                                 () => submit(),
+                                 () => { box.checked = false; sync(); });
+        body.appendChild(field);
+        row.append(box, body);
+        // The tick is the switch and the field is the answer, so they move
+        // together — and the listener sits on the LIST, not on the box: a radio
+        // that another option unticks fires no event of its own, so the group
+        // has to be re-read from whichever tick did fire. Guarded on the edge,
+        // or ticking a sibling checkbox would yank focus back into the field.
+        let open = false;
+        function sync() {
+          if (box.checked === open) return;
+          open = box.checked;
+          row.classList.toggle("typing", open);
+          if (open) { field.grow(); field.focus(); }
+        }
+        list.addEventListener("change", sync);
+        widgets.push(box);
+        list.appendChild(row);
+        const own = () => (field.value || "").trim();
+        typed = () => (box.checked ? own() : "");
+        typing = () => box.checked && !own();
+        focusOther = () => { field.grow(); field.focus(); };
+      }
+
       block.appendChild(list);
       scroll.appendChild(block);
       controls.push(list);
       blocks.push({
         question: q.question,
-        picked: () => ticks.filter((t) => t.box.checked).map((t) => t.label),
+        picked: () => {
+          const chosen = ticks.filter((t) => t.box.checked).map((t) => t.label);
+          const own = typed();
+          if (own) chosen.push(own);
+          return chosen;
+        },
+        typed,
+        typing,
+        focus: focusOther,
       });
     });
     // Same rule as an approval card: no input key is invisible. `questions` is
@@ -11846,7 +12170,14 @@ function retryVerb(retry) {
   return what + " — retrying (" + retry.attempt + budget + ")";
 }
 
-function addWorking() {
+// `opts.stoppable: false` drops the stop button, and `opts.verb` fixes the word
+// instead of drawing one from the phase. Both exist for the same caller — the
+// line that reports a turn running OUTSIDE this app (D415's transcript-follow),
+// which has no process to kill and no phase to read, and where a "stop · esc"
+// that quietly does nothing would be the worst control on the page.
+function addWorking(opts) {
+  const fixedVerb = (opts && opts.verb) || "";
+  const stoppable = !(opts && opts.stoppable === false);
   const d = document.createElement("div");
   d.className = "turn working";
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
@@ -11857,16 +12188,19 @@ function addWorking() {
     // The key rides on the label, not in a hint row: same reasoning as the
     // claude template — a separate hint line grows and shrinks the chrome every
     // time a turn starts and ends, and the pane here is narrower still.
-    + '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>';
+    + (stoppable
+       ? '<button id="stopbtn" class="stop" type="button" title="Stop this turn">stop · esc</button>'
+       : "");
   const verbEl = d.querySelector(".verb");
   const meta = d.querySelector(".meta");
   const stopBtn = d.querySelector(".stop");
-  stopBtn.addEventListener("click", () => stopRun());
+  if (stopBtn) stopBtn.addEventListener("click", () => stopRun());
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
     // A live retry outranks every phase but the user's own stop: it is the only
     // one of these that explains why nothing is happening.
     verbEl.textContent = (stopping ? "Stopping" :
+                          fixedVerb ? fixedVerb :
                           stats.retry ? retryVerb(stats.retry) :
                           stats.phase === "awaiting" ? "Waiting for your approval" :
                           stats.phase === "composing" ? "Composing" :
@@ -11900,7 +12234,7 @@ function addWorking() {
     setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
-    setStopping(on) { stopping = on; stopBtn.disabled = on; draw(); },
+    setStopping(on) { stopping = on; if (stopBtn) stopBtn.disabled = on; draw(); },
     stop: () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVis); },
   };
 }
@@ -12596,9 +12930,35 @@ function buildTextView() {
   };
 }
 
+// A system chip: the harness woke the run because a background shell it had
+// started finished or was stopped (agent.py's `notice` segment, D415). It is
+// the ONE line that accounts for a reply nobody asked for — without it the
+// turn underneath reads as the agent answering a message that is not there —
+// and it is deliberately not a bubble: the user did not say it, and the raw
+// `<task-notification>` XML it replaces was a screenful of machinery quoted at
+// the person it was never addressed to.
+//
+// Plain text, never renderMd: the summary is a sentence the CLI wrote about a
+// command the user ran, and running it through markdown would let a stray
+// backtick or underscore in a command line restyle the chip.
+function buildNoticeView() {
+  const el = document.createElement("div");
+  el.className = "seg-notice";
+  const glyph = document.createElement("span");
+  glyph.className = "seg-notice-glyph";
+  glyph.textContent = "⏵";
+  const words = document.createElement("span");
+  el.append(glyph, words);
+  return {
+    kind: "notice", el, text: null,
+    render(t) { words.textContent = t; },
+  };
+}
+
 function buildSegmentView(seg, key) {
   if (seg.kind === "tool") return buildToolChip(seg, key);
   if (seg.kind === "thinking") return buildThinkingView(key);
+  if (seg.kind === "notice") return buildNoticeView();
   return buildTextView();  // "text", and anything a newer agent.py invents
 }
 
@@ -12648,7 +13008,7 @@ function renderSegments(container, segments, opts) {
     const seg = list[i] || {};
     let view = st.views[i];
     if (!view || view.kind !== (seg.kind === "tool" || seg.kind === "thinking"
-                                ? seg.kind : "text")) {
+                                || seg.kind === "notice" ? seg.kind : "text")) {
       // A settled index never changes kind (segments only grow, and same-kind
       // neighbours merge in agent.py) — but rebuilding beats rendering a tool
       // call into a prose element if that ever stops being true.
@@ -13161,6 +13521,9 @@ async function pollLoop(run_id, gen = logGen) {
   activeRun = run_id;
   activeWorking = w;
   setRunningUi(true);
+  // A real run owns the chrome now: the transcript-follower's line (if it beat
+  // the adoption to the same turn) is a second, blinder report of it (D415).
+  setExternalWorking(false);
   // `gen` is the log generation this loop is allowed to write, and it is the
   // CALLER'S sample, not one taken here (Bugbot, PR #653): sendMessage and
   // resumeRun sample it before their own awaited start/probe, so a Back that
@@ -13296,6 +13659,11 @@ async function pollLoop(run_id, gen = logGen) {
       activeSegBody = null;
       setRunningUi(false);
     }
+    // When THIS page's turn ended, in the same clock the transcript stat speaks
+    // (epoch seconds). The follower compares against it so the rows this run
+    // just wrote — and `session_liveness`' few seconds of grace after them — are
+    // not read back as somebody else's turn (D415, followDecision).
+    ownRunEndedAt = Date.now() / 1000;
     // Turn boundary either way — the tasks surfaces should hear about it even
     // when a newer loop owns the chrome (the ACTIVITY is real regardless).
     noteChatActivity();
@@ -13314,9 +13682,16 @@ async function pollLoop(run_id, gen = logGen) {
 // plus a nonce means two panes stamping in the same millisecond cannot swallow
 // each other's poke. Best-effort — a blocked store (private mode, locked-down
 // webview) costs the poke, never the turn; the polls still cover it.
+//
+// A SECOND audience now: another copy of THIS page (D415). The stamp already
+// says "a turn just started somewhere on this origin", which is precisely the
+// question the live watch is polling for, so the other tab's watch listens for
+// it and adopts the run in milliseconds instead of on its next lap.
+const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+
 function noteChatActivity() {
   try {
-    localStorage.setItem("fused-render:chat-activity",
+    localStorage.setItem(CHAT_ACTIVITY_KEY,
       Date.now() + ":" + Math.random().toString(36).slice(2));
   } catch (err) { /* the 20-30s polls remain the fallback */ }
 }
@@ -14306,12 +14681,17 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 //
 // Gen-guarded like every other loop that outlives an await: leaving the chat
 // bumps logGen and the watch dies with the transcript it was watching.
-async function adoptLiveRun(session_id) {
+// `opts.laps` is how many times to look before giving up. The default is the
+// reopen's ~3s window; the standing watch below passes 1, because it is asking
+// again in ten seconds anyway and has no spawn window to cover — a repeated
+// lookup there would be the same question asked eight times a lap forever.
+async function adoptLiveRun(session_id, opts) {
   const gen = logGen;
+  const laps = (opts && opts.laps) || 8;
   // ~3s of looking: one tick is the common case (the reopen itself), the tail
   // exists for the spawn window above. Each miss waits one poll interval, so
   // the working row appears within ~400ms of the run becoming visible.
-  for (let tries = 0; tries < 8; tries++) {
+  for (let tries = 0; tries < laps; tries++) {
     if (tries) await sleep(400);
     if (logGen !== gen) return;       // the reader left; nothing here is ours
     if (activeRun) return;            // a turn is attached — adopted, or the user's own
@@ -14337,7 +14717,7 @@ async function adoptLiveRun(session_id) {
     // resumeRun can itself bail on a gate grabbed between these two lines — the
     // loop, not this call, is the guarantee: a bailed attempt comes back around,
     // and the `activeRun` check above ends the watch once anyone has attached.
-    await resumeRun(id);
+    await resumeRun(id, { quiet: !!(opts && opts.quiet) });
     // resumeRun resolves at the END of the turn, so a completed call means the
     // run was handled — its done branch cleared the param. The one call that
     // resolves with the param still reading `id` is the bail above, and only
@@ -14346,9 +14726,226 @@ async function adoptLiveRun(session_id) {
   }
 }
 
+// ── the standing watch: a turn this frame did not start, at any moment ──────
+//
+// `adoptLiveRun` above is a WINDOW — three seconds around opening a chat — and
+// that was the whole of the page's answer to "is something running that I am
+// not showing?". It covers arriving late and covers nothing after: a session
+// that becomes busy while this chat sits open lit no indicator and streamed
+// nothing, whoever started the turn (D415). The reported case is the harness's
+// own — a background shell finishes, the run wakes for another turn — and it is
+// not the only one: the same chat open in a second pane, a `claude` the user
+// resumed from a terminal against a run this page never saw, a spawn from the
+// canvases workspace. None of them go through `sendMessage`, which is the only
+// path that used to arm the running chrome.
+//
+// So the question is asked on a timer for the life of the page, and asked of the
+// SERVER — the one party that knows a run is alive — rather than inferred from
+// what this frame happens to have sent. Cheap by construction: `live_run` reads
+// at most 60 meta.json files, and every lap that finds an attached turn
+// (`activeRun`) or a held gate returns before asking anything at all.
+//
+// **A TIMER ALONE IS A BLIND WINDOW, AND A SHORT TURN FITS INSIDE IT.** The
+// first version of this watch was a 10s interval and nothing else, and it was
+// half a fix (Akshil, 2026-08-21, two tabs on one chat): the reply appeared in
+// the second tab ten seconds late with no chrome at all — the lap that finally
+// looked found a run that had already FINISHED, so `resumeRun` took its
+// done-branch and repaired the transcript in silence. Adoption worked; the
+// turn was simply over before anyone asked. Arming mid-turn was never the
+// defect (a lap that catches a live run does light the working line and the
+// stop square), so the fix is to ask SOONER, not to arm harder.
+//
+// Three triggers, cheapest and fastest first:
+//
+//   * **A poke from the tab that started it.** `noteChatActivity` already
+//     stamps `localStorage` at the START of every turn this app runs, for the
+//     shell's tasks store — and a `storage` event fires in every OTHER document
+//     on this origin and never in the writer, which is exactly the shape needed.
+//     So the two-tab case costs no polling at all and lands in milliseconds:
+//     tab B stamps as its poll loop opens, tab A laps immediately and attaches
+//     while the turn is still streaming.
+//   * **Becoming visible / focused.** A tab that was in the background while
+//     something ran should not wait out an interval to catch up.
+//   * **The interval**, now 5s and SKIPPED while the document is hidden. It is
+//     the backstop for the one starter that pokes nothing this page can hear —
+//     a run spawned by the server (a scheduled message, the canvases
+//     workspace) — and halving it halves the worst case for that path.
+//
+// Hidden tabs give up the interval deliberately: chrome nobody is looking at is
+// worth nothing, the storage poke still reaches them (a `storage` event does not
+// care about visibility), and becoming visible laps at once. What that trades
+// away is a background tab catching a SERVER-started run while it is hidden — it
+// then catches it on return, which is the same repair it used to get.
+//
+// Every trigger goes through the one `liveWatchTick`, whose `liveWatchBusy` seat
+// makes a burst of them (a poke landing on an interval landing on a focus) one
+// lookup rather than three.
+const LIVE_WATCH_MS = 5000;
+let liveWatchBusy = false;   // one lap at a time; a lap can outlive its interval
+
+async function liveWatchTick() {
+  if (liveWatchBusy || activeRun || sending) return;
+  const session_id = fused.params.get("session_id") || "";
+  // Only with a session on screen. Without one there is no conversation to
+  // adopt a turn INTO — the landing page's own send makes the session — and
+  // `live_run` with no session matches on the target alone, which would drag a
+  // run belonging to some other chat about this folder onto this screen.
+  if (!session_id) return;
+  liveWatchBusy = true;
+  try {
+    await adoptLiveRun(session_id, { laps: 1, quiet: true });
+    // RUN DIRS FIRST, ALWAYS. A run this app spawned streams token by token and
+    // owns the chrome; the transcript is the coarser, blinder fallback and only
+    // speaks for the turns no run dir can account for. So it is asked strictly
+    // after, and only if nothing attached.
+    if (!activeRun && !sending) await followTranscript(session_id);
+  } finally {
+    liveWatchBusy = false;
+  }
+}
+
+// ── following a conversation this app is not driving ────────────────────────
+//
+// **The gap D415 recorded and this closes** (Akshil, 2026-08-21): an interactive
+// `claude` in a terminal, resuming the very session the chat is open on. It
+// creates NO run dir, so `live_run` is blind to it by construction — the whole
+// watch above cannot see it — and the chat showed nothing at all until the
+// reader hit reload, at which point the missing turns (background-task chip
+// included) appeared correctly, because the reload path was never the problem.
+//
+// So the reload is what is automated, and deliberately nothing more:
+//
+//   * **The server stats the transcript** (`/api/claude-sessions/liveness`) and
+//     the page compares `(mtime, size)` against the watermark its last render
+//     came back with. One `os.stat` per lap, no parsing, no rows on the wire.
+//   * **A move re-renders through `loadHistory`** — the same renderer the manual
+//     reload used, in `refresh` mode so nothing flickers and nobody's scroll
+//     jumps. Not an append: the page does not decide what is new, it re-asks
+//     what the conversation IS. That is the point D415 argued when it rejected
+//     the page tailing `~/.claude/projects` — turn boundaries are `_history`'s
+//     job, on the server, over rows it already knows how to read.
+//   * **`running` is the transcript's LAST MESSAGE**
+//     (`session_liveness.transcript_turn_open`): a user row, or an assistant row
+//     still calling tools, is a turn in flight; a plain assistant reply is one
+//     that ended. NOT the 45s activity window the Inbox badge uses — measured
+//     here, that window kept the line shimmering under a reply that had already
+//     landed, because a run started outside this app writes no turn-end record
+//     for it to find. What is left is one lap of lag in each direction, and the
+//     line carries NO stop button: a turn running in someone else's process is
+//     not this page's to kill, and a control that quietly does nothing is worse
+//     than no control at all.
+//
+// Granularity is a whole turn, not a token. That is the honest ceiling on
+// following a file somebody else is appending to, and it is what the reader was
+// doing by hand anyway.
+let transcriptMark = null;   // {path, mtime, size} the visible render is good to
+let ownRunEndedAt = 0;       // epoch seconds: when THIS page's last run finished
+let externalWorking = null;  // the working line for a turn this page cannot see
+
+function noteTranscript(stat) {
+  if (stat && typeof stat.path === "string") transcriptMark = stat;
+}
+
+// Pure, so the rule can be read (and tested) without a server: given what the
+// last render was good up to and what the file looks like now, does the page
+// re-render, and is somebody mid-turn in there?
+//
+// `ownRunEndedAt` is the guard that keeps this page from reporting its OWN turn
+// back to itself: the transcript is freshest right after a run this frame
+// streamed, and `session_liveness` will still call the session running for a few
+// seconds afterwards. A probe no newer than our own last turn is our own echo.
+function followDecision(mark, probe, ownEnd) {
+  if (!mark || !mark.path || !probe || !probe.exists) {
+    return { refresh: false, running: false };
+  }
+  return {
+    refresh: probe.mtime !== mark.mtime || probe.size !== mark.size,
+    running: !!probe.running && probe.mtime > (ownEnd || 0),
+  };
+}
+
+async function followTranscript(session_id) {
+  const mark = transcriptMark;
+  if (!mark || !mark.path) return;   // no render to compare against yet
+  const gen = logGen;
+  let probe = null;
+  try {
+    const res = await fetch("/api/claude-sessions/liveness?path="
+                            + encodeURIComponent(mark.path));
+    if (!res.ok) return;
+    probe = await res.json();
+  } catch (err) {
+    return;  // a failed stat leaves the transcript exactly as it rendered
+  }
+  // Everything can have changed across the await, and each of these outranks a
+  // stale answer: the reader left, or a real run attached and owns the chrome.
+  if (logGen !== gen || activeRun || sending) return;
+  if (transcriptMark !== mark) return;   // a render landed while we asked
+  const verdict = followDecision(mark, probe, ownRunEndedAt);
+  // Refresh FIRST, then the line: `loadHistory` replaces the log wholesale, so a
+  // line added before it would be swept by the very render it announces.
+  // `loadHistory` writes the new watermark itself, from its own pre-read stat —
+  // never from this probe, which is older than the rows the refetch brings.
+  if (verdict.refresh) await loadHistory(session_id, { refresh: true });
+  if (logGen === gen && !activeRun) setExternalWorking(verdict.running);
+}
+
+// The working line for a turn happening somewhere else. Reuses the one the poll
+// loop uses so a reader does not have to learn a second shape of "busy", minus
+// the two things this page cannot honestly offer: a stop button (the process is
+// not ours) and a token count (we are reading a file, not a stream).
+function setExternalWorking(on) {
+  // A log wipe (leaving the chat, a refresh render) takes the element without
+  // telling us. Drop the stale handle first, or its timer outlives the node and
+  // the seat stays taken so the line never comes back.
+  if (externalWorking && !externalWorking.el.isConnected) {
+    externalWorking.stop();
+    externalWorking = null;
+  }
+  if (on && !externalWorking) {
+    externalWorking = addWorking({ verb: "Running outside this app",
+                                   stoppable: false });
+    externalWorking.setStats(0, "external", null);
+  } else if (!on && externalWorking) {
+    externalWorking.stop();
+    externalWorking.el.remove();
+    externalWorking = null;
+  }
+}
+
+setInterval(() => { if (!document.hidden) liveWatchTick(); }, LIVE_WATCH_MS);
+// The cross-tab poke. Keyed, because every other `storage` event on this origin
+// (the queue mirror, the shell's own stores) is not news about a turn — and the
+// key is read from the one constant `noteChatActivity` writes, so a rename
+// cannot leave this listening to a key nobody sets any more.
+window.addEventListener("storage", (e) => {
+  if (e.key === CHAT_ACTIVITY_KEY) liveWatchTick();
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) liveWatchTick();
+});
+window.addEventListener("focus", () => liveWatchTick());
+
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
   const retryUnknown = !!(opts && opts.retryUnknown);
+  // The standing watch's posture (D415): **print the run's message unless this
+  // transcript is already showing it.** The watch adopts turns nobody on this
+  // page started, and those split two ways — a run whose message IS on screen
+  // (the woken run whose first turn this frame streamed; re-printing it would
+  // be the page inventing a turn) and a run whose message is NOT (a send made
+  // in another tab, whose words belong here as much as the reply does). The
+  // first version suppressed the line unconditionally and got the second case
+  // visibly wrong: the second tab showed an answer hanging under no question.
+  //
+  // `matches` below is the same question asked of the LAST bubble only, because
+  // it also decides whether to STRIP rows; this one only decides whether to
+  // print, so it may look at the whole transcript. A message the user sent twice
+  // reads as already-shown and prints nothing — the safe direction, and the same
+  // coincidence `matches` already refuses to resolve.
+  const quiet = !!(opts && opts.quiet);
+  const onScreen = (msg) => !!msg && [...log.querySelectorAll(".user .bubble")]
+    .some((b) => b.textContent === msg);
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
@@ -14418,11 +15015,16 @@ async function resumeRun(run_id, opts) {
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
-      } else if ((!users.length || neverShown) && probeMsg) {
-        // Appended, never matched: either the log is empty, or the caller has told
-        // us this run's turn was never on screen (a scheduled send that fired and
-        // finished between polls). Both render the whole turn — user line plus the
-        // assistant rows and their tool timeline from the poll payload.
+      } else if ((!users.length || neverShown
+                  || (quiet && !onScreen(probeMsg))) && probeMsg) {
+        // Appended, never matched: the log is empty, or the caller has told us
+        // this run's turn was never on screen (a scheduled send that fired and
+        // finished between polls), or the watch found a turn made in another tab
+        // that this transcript has never shown — a SHORT turn is over before the
+        // watch's first look, and dropping it silently was the whole of the
+        // second tab's remaining complaint (D415). All three render the whole
+        // turn — user line plus the assistant rows and their tool timeline from
+        // the poll payload.
         addUser(probeMsg);
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
@@ -14435,7 +15037,7 @@ async function resumeRun(run_id, opts) {
       // In flight and this turn's user line is on screen: keep it, drop the
       // partial assistant rows — pollLoop re-streams the whole turn.
       while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-    } else if (probeMsg) {
+    } else if (probeMsg && !(quiet && onScreen(probeMsg))) {
       addUser(probeMsg);
     }
     await pollLoop(run_id, gen);
@@ -14542,22 +15144,49 @@ function renderLogSkeleton() {
   log.append(user, assistant);
 }
 
-async function loadHistory(session_id) {
+// `opts.refresh` re-renders the SAME conversation because it grew underneath
+// this page (transcript-follow, D415) rather than replacing it with a different
+// one. Three differences, all of them about not making a reader feel the redraw:
+//
+//   * NO SKELETON. The turns already on screen are the right thing to look at
+//     until the new ones are ready; blanking to placeholders for the length of a
+//     round trip is a flicker that announces nothing.
+//   * SCROLL IS KEPT, not sent to the bottom — except for a reader who was
+//     already at the bottom, who is following along and gets carried with the
+//     new turn (the same `nearBottom` rule streaming output obeys).
+//   * The per-transcript records are NOT cleared. `scheduleResetForNewTranscript`
+//     re-baselines which scheduled runs may attach, so doing it here would write
+//     a run that fired seconds ago off as "already on screen", every five
+//     seconds. Same for the card-collapse overrides: a re-render that re-folds a
+//     chip the reader deliberately opened is the redraw made visible.
+//
+// Everything else is the reload path unchanged — one renderer, which is what
+// made a manual reload correct in the first place and is why this reuses it.
+async function loadHistory(session_id, opts) {
+  const refresh = !!(opts && opts.refresh);
   // Reuse the `sending` gate: a message sent during the await would be
   // appended first and the older history turns dumped after it.
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
+  const keepTop = refresh && !nearBottom() ? logwrap.scrollTop : null;
   permCards.clear();
   notedSkills.clear();
-  resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
-  // Same reason as the two clears above: this transcript is about to be REPLACED,
-  // so every per-transcript record has to go with it — including which scheduled
-  // runs are on screen (scheduleResetForNewTranscript).
-  scheduleResetForNewTranscript();
-  renderLogSkeleton();  // replace the visible conversation, don't append to it
+  if (!refresh) {
+    resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
+    // Same reason as the two clears above: this transcript is about to be REPLACED,
+    // so every per-transcript record has to go with it — including which scheduled
+    // runs are on screen (scheduleResetForNewTranscript).
+    scheduleResetForNewTranscript();
+    renderLogSkeleton();  // replace the visible conversation, don't append to it
+  }
   try {
-    const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
+    const { turns, transcript } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
+    // The watermark this render is good up to. Stat'd BEFORE the rows were read
+    // (see `_transcript_stat`), so it can only ever be too OLD — a write that
+    // landed mid-read costs one redundant re-render on the next lap, where a
+    // watermark that was too new would cost the turn.
+    noteTranscript(transcript);
     log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
       // Assistant turns carry `segments`; USER turns have no such key at all,
@@ -14594,9 +15223,16 @@ async function loadHistory(session_id) {
     // above rendered every turn there will be, synchronously. Falls through to
     // the bottom when there is no anchor, or when the anchor names a turn this
     // transcript does not contain.
-    if (!consumeAnchor()) scrollBottom();
+    // A refresh is not a navigation: a reader parked mid-conversation stays
+    // where they were reading, and only one who was already at the bottom is
+    // carried down to the turn that just landed. `?msg=` is a link the reader
+    // followed once and is not re-honoured on every lap.
+    if (refresh) {
+      if (keepTop !== null) logwrap.scrollTop = keepTop;
+      else scrollBottom();
+    } else if (!consumeAnchor()) scrollBottom();
   } catch (err) {
-    log.innerHTML = "";
+    if (!refresh) log.innerHTML = "";   // a failed REFRESH keeps the turns it has
     console.warn("history restore failed:", err.message);
   } finally {
     if (sendSeq === seat) sending = false;

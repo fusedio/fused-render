@@ -403,15 +403,20 @@ export interface IndexRankHit {
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
-// four ways the index cannot give one, and they are NOT interchangeable —
+// five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other two never (see listing/index-source, which is the only place that
-// switches on this).
+// other three never (see listing/index-source, which is the only place that
+// switches on this). `disabled` is the one of those three that can become
+// fixable again — turning the indexing preference back on — but the client
+// does not wait around for that: it walks, exactly as it does for `mount` /
+// `package` / `ignored`, because there is no server signal to poll for "the
+// user flipped a switch in Preferences".
 export type RankReason =
   | ""
   | "mount"
   | "package"
   | "ignored"
+  | "disabled"
   | "uncovered"
   | "scanning";
 
@@ -419,10 +424,10 @@ export interface IndexRankResult {
   covered: boolean;
   fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
-  // "mount" | "package" | "ignored" | "uncovered" | "scanning". The in-folder
-  // search picks its source from this (listing/index-source); the client
-  // deliberately holds no copy of the rules behind it, because the mount
-  // policy is MountGuard's and the ignore list is the scan config's.
+  // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
+  // The in-folder search picks its source from this (listing/index-source);
+  // the client deliberately holds no copy of the rules behind it, because the
+  // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
   root: string;
   hits: IndexRankHit[];
@@ -756,6 +761,26 @@ export interface Prefs {
   // from `engine` above, however similar the word: that one is /api/run's
   // executor, this one is the inference runner behind fused.ai's local models.
   engines: EnginesPrefs;
+  // How long an idle resident local model stays loaded before the reaper
+  // unloads it (SPEC AI-13). Same stored/effective/forced_by shape as `calls`.
+  ai_idle: AiIdlePrefs;
+  // Whether background file-index scanning may run at all (default ON — an
+  // opt-OUT, the opposite polarity from `reader`). Turning it off does not
+  // delete the on-disk index or stop search from answering it; only new
+  // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
+  indexing: { enabled: boolean };
+}
+
+export interface AiIdlePrefs {
+  // As STORED. 0 = never unload; the reaper is on by default at 10.
+  minutes: number;
+  // What the reaper is ACTUALLY using right now — differs from `minutes`
+  // whenever `forced_by` is not null.
+  effective_minutes: number;
+  // The raw FUSED_RENDER_AI_IDLE_MINUTES value when it is genuinely in force
+  // (never merely set — an unparsable value leaves the stored pref deciding
+  // and reports null here, same rule as the call log's retention window).
+  forced_by: string | null;
 }
 
 export interface EnginesPrefs {
@@ -899,6 +924,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
 
+export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
+}
+
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { default_model: model });
 }
@@ -921,6 +950,10 @@ export function putCallsParamsMode(mode: CallsParamsMode): Promise<Prefs> {
 
 export function putCallsRetentionDays(days: number): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { calls_retention_days: days });
+}
+
+export function putAiIdleUnloadMinutes(minutes: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ai_idle_unload_minutes: minutes });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).
@@ -2245,8 +2278,20 @@ export interface AiModelRepo {
     code: string;
     /** The FULL name, for anything that must match the Preferences picker. */
     label: string;
-    /** Without the platform qualifier — what the card's tag shows. */
+    /** Which BUILD would load this, so it is what the tag's hover and
+     *  aria-label say. Two rules, not one: a PLATFORM qualifier is dropped
+     *  ("MLX LM (Apple Silicon)" becomes "MLX LM" — it tells someone sitting
+     *  at the machine nothing), while a HARDWARE one is KEPT ("Diffusers
+     *  (CPU)" stays whole — it is the only thing telling three builds of one
+     *  library apart). */
     shortLabel: string;
+    /** The engine FAMILY, hardware qualifier and all removed — "Diffusers".
+     *  What the card's TAG shows: the tag is a format claim ("these weights
+     *  are safetensors a Diffusers pipeline opens"), all three Diffusers rows
+     *  read the identical file, so the accelerator says nothing about the file
+     *  and leaks this machine's configuration into a sentence about the model.
+     *  The hover keeps `shortLabel`, so the build is one hover away. */
+    familyLabel: string;
     available: boolean;
     reason: string | null;
   } | null;
@@ -2499,6 +2544,12 @@ export interface AiLoadedModel {
   startedAt: number;
   /** The download-manager row for this model's bring-up. */
   jobId: string;
+  /** Seconds since anything last used this worker (AI-13). */
+  idleSeconds: number;
+  /** Seconds until the reaper unloads it, or null when the idle window is
+   *  disabled — never a number that would draw a countdown that never
+   *  reaches zero. */
+  unloadsInSeconds: number | null;
 }
 
 /** A weights-only fetch in flight: on disk, not in memory. The BYTES live in the
@@ -2555,9 +2606,9 @@ export interface AiCatalogModel {
 export interface AiCatalogCapability {
   capability: string;
   runner: string | null;
-  /** The backend in words — "MLX LM (Apple Silicon)", "Transformers (CUDA)".
-   *  One capability can have more than one runner (text generation has two
-   *  since D293), so which one this machine resolved is worth naming. */
+  /** The backend in words — "MLX LM (Apple Silicon)", "Diffusers (CUDA)".
+   *  One capability can have more than one runner (text generation has three
+   *  since D416), so which one this machine resolved is worth naming. */
   runnerLabel: string | null;
   /** The same, without the platform qualifier — what the Discover heading
    *  shows ("via MLX Whisper"). That caption says which backend these

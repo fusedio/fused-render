@@ -13,7 +13,7 @@ unguarded like every other read endpoint and none of them can write.
 
 | Route | Guard | Purpose |
 |---|---|---|
-| `POST /api/index/scan` `{root?, full?}` | X-Fused | start a detached scan; `{run_id, root}`. No `root` means the first configured root (§3). A non-directory or mount-backed root is a 400. |
+| `POST /api/index/scan` `{root?, full?}` | X-Fused | start a detached scan; `{run_id, root}`. No `root` means the first configured root (§3). A non-directory or mount-backed root is a 400. A 409 with `{"error": "indexing is disabled in Preferences"}` while `indexing_enabled` is off. |
 | `POST /api/index/scan-folder` `{path}` | X-Fused | cover ONE folder because a search box asked; `{started, why, run_id, root}`, never an error (§7.2) |
 | `POST /api/index/cancel` `{run_id}` | X-Fused | touch the run's cancel flag |
 | `GET /api/index/status?run_id=&since=` | — | scan state (§2) |
@@ -124,6 +124,12 @@ the FSEvents positions, the applied-rules fingerprint and the last-scan record �
 
 `create_app` registers one startup hook. It runs off the event loop and can never
 delay serving: the scan itself is a detached worker, so the hook is a `Popen` per root.
+
+**Skipped entirely while `indexing_enabled` is off** (`shell/prefs.py`), including the
+run-dir reclaim below — nothing here runs, and the hook returns at once. The startup
+warm (§4.1) still runs regardless: it only searches the existing index, never scans, so
+search stays as snappy as the (possibly stale) index allows even with scanning turned
+off.
 
 1. **Reclaim** run directories beyond the newest `KEEP_RUNS` (`scan.md §2`).
 2. For each root: skip it if it does not exist, or if a scan **started** within
@@ -294,6 +300,7 @@ otherwise one of:
 | `mount` | mount-backed; `MountGuard` refuses to index it at all | live streamed walk |
 | `package` | a `.app`/`.photoslibrary` — recorded as one opaque row, never listed | live streamed walk |
 | `ignored` | the scan's ignore list excludes this tree (`node_modules`, …) | live streamed walk |
+| `disabled` | the `indexing_enabled` preference is off (`shell/prefs.py`) — no scan will start | live streamed walk |
 | `uncovered` | not scanned yet, and scannable | ask for a scan (§7.2), then poll |
 | `scanning` | a run covering this root is live — in EITHER direction, an ancestor root or a descendant one | poll, rendering whatever came back |
 
@@ -306,9 +313,21 @@ is asked on every ranked request — one per keystroke, in two search boxes —
 and nothing it reports can change usefully inside one poll interval.
 
 `scanning` is reported even when `covered` is true: the hits are real, and more are on
-the way. The three permanent cases are ordered before it, so a package under a root
-being scanned still says `package` rather than sending the client into a poll that never
-ends.
+the way. The four permanent-for-now cases are ordered before it, so a package under a
+root being scanned still says `package` rather than sending the client into a poll that
+never ends — and `_rank_reason` never even asks whether a scan is live while
+`indexing_enabled` is off, since nothing can be (every trigger that starts a scan is
+gated on the same pref).
+
+`disabled` differs from the other three in one way worth being explicit about: it is
+NOT permanent. The user can turn the preference back on. The client still walks rather
+than polling, though, because there is no server signal to poll FOR — "a preference
+changed in another tab" has no event, unlike a scan's own completion. Turning it back on
+just means the next uncovered answer reads `uncovered` again instead of `disabled`, and
+the ordinary on-demand-scan path (§7.2) takes over from there. Precedence: `disabled` is
+checked after `mount`/`package` and before `ignored`, so an ignored folder is still
+`ignored` regardless of the toggle — that fact is about the scan config, not about
+whether scanning can run at all.
 
 **Deciding this server-side is the point.** The mount policy is `MountGuard`'s — the
 same object `runner.start` refuses with — the ignore list is the scan config's, and the
@@ -320,10 +339,13 @@ whole rule is: walk when the server says it cannot answer AND cannot be made to
 ### 7.2 `POST /api/index/scan-folder` — cover a folder because someone searched it
 
 Body `{path}`, X-Fused guarded, answers `{ok, started, why, run_id, root}` with `why` in
-`started | joined | debounced | refused`. **Never an error, and every "no" is durable** —
-the caller is a search box, so a refusal it could read as transient becomes a
+`started | joined | debounced | refused | disabled`. **Never an error, and every "no" is
+durable** — the caller is a search box, so a refusal it could read as transient becomes a
 keystroke-rate retry loop.
 
+- **`disabled`** — the `indexing_enabled` preference is off; checked before anything else
+  in this route (cheaper than the mount/device checks below, and the same reason `_rank_reason`
+  checks it early: no amount of retrying changes the answer while the pref stays off).
 - The FOLDER is the scan root, not an enclosing configured one: a folder is uncovered
   precisely because no configured root covers it (or one does and pruned it, in which
   case rescanning that root would prune it again). Compaction keeps every row outside
@@ -377,7 +399,10 @@ Every `/api/fs` mutation reports the folder it touched (`server/index_touch.py`)
 that folder is rescanned — coalesced over a burst, outermost folder only, never a mount
 and never `/`, and deferred while a scan already covering it runs (joining that run
 would report success and fix nothing, since it may have walked past the folder
-already).
+already). `note_index_mutation` no-ops while `indexing_enabled` is off, checked before
+anything is queued — queueing a rescan `runner.start` would refuse anyway would only
+grow `_pending` and keep re-arming the coalescing timer for as long as the mutating page
+keeps touching files.
 
 Three things bound what that costs, and they are not optional. A scan ends in a
 COMPACTION, which re-sorts and rewrites every partition plus `dirs.parquet` —

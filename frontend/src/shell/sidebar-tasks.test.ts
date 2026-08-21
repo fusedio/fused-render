@@ -534,7 +534,11 @@ describe("pokeTasks", () => {
     expect(CHAT_TEMPLATE).toMatch(
       // The end stamp sits after #653's seat-guarded chrome block — outside
       // the guard, deliberately: the turn ended whichever loop owns the UI.
-      /setRunningUi\(false\);\s*\n\s*\}[\s\S]{0,300}noteChatActivity\(\);/,
+      // The window is as generous as the start stamp's above, and for the same
+      // reason: the `ownRunEndedAt` watermark and its comment (D415) now sit
+      // between the guard and the stamp. The invariant is "stamps at loop END,
+      // outside the seat guard", not "on the very next line".
+      /setRunningUi\(false\);\s*\n\s*\}[\s\S]{0,700}noteChatActivity\(\);/,
     );
     // A changed value every time, or the second of two same-millisecond turn
     // ends fires no event at all.

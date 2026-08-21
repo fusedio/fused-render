@@ -305,5 +305,16 @@ _queue = RescanQueue(start=_real_start, live_run_covers=_real_live,
 
 
 def note_index_mutation(*paths: str | None) -> None:
-    """The app changed `paths`; rescan the folders they live in, shortly."""
+    """The app changed `paths`; rescan the folders they live in, shortly.
+
+    No-ops while indexing is disabled (shell/prefs.py) — queueing a rescan
+    that `runner.start` would refuse anyway just grows `_pending` and, worse,
+    re-arms `fire()` to try again every `coalesce_s`, forever, for as long as
+    the mutating page keeps touching files. Checked here rather than only at
+    `_real_start` because THAT already having a scan to skip is the failure
+    mode this avoids."""
+    from fused_render.shell.prefs import indexing_enabled
+
+    if not indexing_enabled():
+        return
     _queue.note(*[p for p in paths if isinstance(p, str) and p])

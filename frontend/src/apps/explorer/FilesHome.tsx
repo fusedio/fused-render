@@ -4,7 +4,7 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
-import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
@@ -665,6 +665,22 @@ export function FilesSearch({
               `The file index could not be searched: ${failure}`
             ) : answer === null ? (
               "Searching…"
+            ) : !answer.covered && answer.reason === "disabled" ? (
+              // Distinct from "still building": nothing is coming, because
+              // nothing is scanning, because the user turned it off. Saying
+              // "still building" here would be a lie the user has no way to
+              // resolve by waiting.
+              <>
+                File indexing is off —{" "}
+                <button
+                  type="button"
+                  className="fh-link-button"
+                  onClick={() => navigateUrl("/preferences?tab=indexing")}
+                >
+                  enable it in Preferences
+                </button>
+                .
+              </>
             ) : !answer.covered ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.

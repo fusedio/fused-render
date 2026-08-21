@@ -88,7 +88,15 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     assert "{ neverShown: true }" in code
     done = code[code.index("if (probe.done) {"):]
     done = done[:done.index("scrollBottom();")]
-    assert "(!users.length || neverShown) && probeMsg" in done, \
+    # The CONDITION, not its exact wording: D415 added a third way into this same
+    # append (the live watch finding a short turn made in another tab), so the
+    # rule this test owns is that `neverShown` is one of the ways in — beside the
+    # empty log — and not that it is the only one.
+    repair = done[done.index("if (matches) {"):]   # past the ERROR branch's own else-if
+    append = repair[repair.index("} else if ("):]
+    append = append[:append.index("addUser(probeMsg);")]
+    assert "neverShown" in append and "!users.length" in append \
+        and "probeMsg" in append, \
         "a finished run must APPEND when the caller says the turn was never shown"
     # a failed turn needs its own user line too, or the error reads as belonging to
     # whatever the reader last said

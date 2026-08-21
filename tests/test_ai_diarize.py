@@ -207,7 +207,7 @@ def test_BOTH_models_are_configured_with_the_SAME_measured_thread_count(
     they must be; `diarizer` writes down what is and is not promised.
 
     Read off BOTH configs, because the value has to come from ONE constant:
-    `mlx_whisper` and `parakeet_mlx` both import this module, and a segmenter
+    `mlx_whisper` and `faster_whisper` both import this module, and a segmenter
     and an embedder that can be configured apart is exactly the drift a shared
     constant prevents. Asserted against the rule rather than against a number,
     because the count is the machine's — a two-core CI runner must not be told
@@ -405,10 +405,10 @@ def test_time_in_a_DROPPED_SILENCE_scores_for_nobody(diarize):
 
 
 def test_the_MASK_is_optional_and_absent_means_score_the_whole_span(diarize):
-    """The default has to be the old behaviour byte for byte: `faster_whisper`,
-    `parakeet_mlx` and a non-VAD `mlx_whisper` run all pass nothing, and none of
-    them drops any silence out of the middle of a segment — so for them a span
-    is contiguous and a mask would be a no-op with a risk attached."""
+    """The default has to be the old behaviour byte for byte: `faster_whisper`
+    and a non-VAD `mlx_whisper` run both pass nothing, and neither drops any
+    silence out of the middle of a segment — so for them a span is contiguous
+    and a mask would be a no-op with a risk attached."""
     turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
 
     assert diarize.speaker_for(3.0, 31.0, turns) == 1

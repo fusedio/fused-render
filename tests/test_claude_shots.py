@@ -1583,7 +1583,11 @@ def test_a_zero_click_walkthrough_sends_its_whole_transcript_as_the_prompt(html)
     never click, stop — everything came before the first click, so the whole
     transcript is the prompt rather than being discarded."""
     body = _between(html, "async function annRecEnd()", "\n}\n")
-    assert "if (!blob.size) {" in body, "only silence bails before transcribing"
+    # only a recording with no FILE behind it bails before transcribing — a
+    # failed stop, an empty file, or a stop that landed on the start's own beat
+    # (`fused.capture.audio` now writes the file, SPEC §45). Silence is not
+    # this branch: it goes to the transcriber and comes back wordless.
+    assert "if (!out || !out.path || !out.bytes || (out.seconds || 0) < 0.4) {" in body
     assert "!ids.length" not in body.split("transcribe")[0], \
         "a click-less recording still reaches the transcriber"
     assert "ids.length\n      ? annRecAssign(ids, rec.segments)" in body

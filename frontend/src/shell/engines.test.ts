@@ -5,8 +5,11 @@ import {
   choiceReason,
   engineNote,
   ignoredWarning,
+  parseAiIdleMinutes,
   servingLine,
+  strandedSelection,
   switchOutcome,
+  unloadCountdown,
   wouldChangeEngine,
 } from "@shell/engines";
 
@@ -148,6 +151,106 @@ describe("ignoredWarning", () => {
   });
 });
 
+describe("strandedSelection", () => {
+  // A prefs.json naming an engine this build removed — the `transformers-text`
+  // case D416 created. The server keeps `selected` as stored and reports the
+  // drop, so the row is internally consistent; what the PAGE has to notice is
+  // that no option matches, because a <select> in that state renders blank.
+  function withdrawn(): CapabilityEngine {
+    return mac({
+      capability: "text-generation",
+      selected: "transformers-text",
+      effective: "llamacpp-text",
+      effectiveLabel: "llama.cpp (CPU)",
+      effectiveShortLabel: "llama.cpp (CPU)",
+      ignoredReason: "transformers-text is not a runner this build knows",
+      choices: [
+        {
+          code: "llamacpp-text",
+          label: "llama.cpp (CPU)",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+  }
+
+  // The OTHER value that strands, and the one that caught the copy overclaiming:
+  // a code that IS registered and available, serving a different capability.
+  // `describe_engines` filters `choices` by capability, so it goes missing from
+  // the list exactly like a withdrawn code does — and `prefs._valid_engine_choice`
+  // refuses this on write but says nothing about a prefs.json already on disk,
+  // which is the same reachability argument that justifies handling the
+  // withdrawn case at all. Verified against the real registry: a stored
+  // `{"text-generation": "mlx-whisper"}` yields exactly this row.
+  function wrongCapability(): CapabilityEngine {
+    return mac({
+      capability: "text-generation",
+      selected: "mlx-whisper",
+      effective: "llamacpp-text",
+      effectiveLabel: "llama.cpp (CPU)",
+      effectiveShortLabel: "llama.cpp (CPU)",
+      ignoredReason: "MLX Whisper does not do text-generation",
+      choices: [
+        {
+          code: "llamacpp-text",
+          label: "llama.cpp (CPU)",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+  }
+
+  it("reports a stored engine that no option matches", () => {
+    expect(strandedSelection(withdrawn(), AUTO)).toBe("transformers-text");
+  });
+
+  it("also reports a registered engine that serves another capability", () => {
+    // The predicate must fire here too — otherwise the picker goes blank for
+    // this row, which is the whole bug this function exists to prevent.
+    expect(strandedSelection(wrongCapability(), AUTO)).toBe("mlx-whisper");
+  });
+
+  it("does not let the caller claim a WITHDRAWAL it cannot establish", () => {
+    // Both rows return a bare code and nothing else, so the option's copy is
+    // identical for both — which is why it may not say "no longer available in
+    // this version": `mlx-whisper` is registered, and on a Mac it is available
+    // too. What separates them is `ignoredReason`, and that is the registry's
+    // own sentence rather than anything this module composes.
+    expect(typeof strandedSelection(withdrawn(), AUTO)).toBe("string");
+    expect(typeof strandedSelection(wrongCapability(), AUTO)).toBe("string");
+    expect(ignoredWarning(withdrawn())).toContain("not a runner this build knows");
+    expect(ignoredWarning(wrongCapability())).toContain("does not do text-generation");
+  });
+
+  it("is silent for auto and for a choice that IS in the list", () => {
+    // The two cases that must not render an extra option: `auto` has one
+    // already, and an ordinary selection is one of the real choices. Neither is
+    // stranded, however the row's `ignoredReason` reads — an override that is
+    // merely unavailable HERE is still a listed option, which is the case
+    // `windows()` covers and the one this must not be confused with.
+    expect(strandedSelection(mac(), AUTO)).toBeNull();
+    expect(strandedSelection(mac({ selected: "faster-whisper" }), AUTO)).toBeNull();
+    expect(strandedSelection(windows(), AUTO)).toBeNull();
+  });
+
+  it("leaves the warning underneath saying what happened", () => {
+    // The pair is the whole answer: the option says WHAT is stored, the warning
+    // says why it is not in force. Either alone is a page that misleads — a
+    // blank control with a reason under it, or a greyed option with no reason.
+    const warning = ignoredWarning(withdrawn()) ?? "";
+    expect(warning).toContain("transformers-text");
+    expect(warning).toContain("not a runner this build knows");
+    // …and the line NAMES THE CODE rather than a label, because a withdrawn
+    // engine has no label to be had: `ignoredWarning` falls back to `selected`
+    // exactly when `strandedSelection` fires.
+    expect(warning.startsWith("transformers-text is not used here")).toBe(true);
+  });
+});
+
 describe("choiceReason", () => {
   it("always explains a disabled option", () => {
     const [mlx] = windows().choices;
@@ -271,5 +374,54 @@ describe("capabilityLabel", () => {
     // A capability added server-side should appear here — ugly but present —
     // instead of vanishing from the only page that can configure it.
     expect(capabilityLabel("video-generation")).toBe("video-generation");
+  });
+});
+
+describe("parseAiIdleMinutes", () => {
+  it("accepts an in-range integer", () => {
+    expect(parseAiIdleMinutes("45")).toBe(45);
+    expect(parseAiIdleMinutes("0")).toBe(0);
+    expect(parseAiIdleMinutes("1440")).toBe(1440);
+  });
+
+  it("rejects empty and whitespace-only input rather than reading it as zero", () => {
+    // The bug: `Number("")` is `0` and `Number.isInteger(0)` is `true`, so
+    // without this guard, clearing the field and blurring — the ordinary
+    // intermediate state of editing a number input — silently PUT
+    // `ai_idle_unload_minutes: 0` and turned the whole feature off.
+    expect(parseAiIdleMinutes("")).toBeNull();
+    expect(parseAiIdleMinutes("   ")).toBeNull();
+  });
+
+  it("rejects out-of-range and non-integer input", () => {
+    expect(parseAiIdleMinutes("-1")).toBeNull();
+    expect(parseAiIdleMinutes("1441")).toBeNull();
+    expect(parseAiIdleMinutes("4.5")).toBeNull();
+    expect(parseAiIdleMinutes("abc")).toBeNull();
+  });
+});
+
+describe("unloadCountdown", () => {
+  it("names the minutes when there is more than one", () => {
+    expect(unloadCountdown(240)).toBe("unloads in 4 min");
+  });
+
+  it("rounds to the nearest minute rather than truncating", () => {
+    // 269s is 4:29 — closer to 4 than to 5, and truncating would say 4 anyway,
+    // so this pins ROUNDING specifically against the boundary just past it.
+    expect(unloadCountdown(271)).toBe("unloads in 5 min");
+  });
+
+  it("says 'under a minute' rather than '0 min'", () => {
+    // "0 min" reads as "already unloaded" or as a typo, neither of which is
+    // true with seconds still on the clock.
+    expect(unloadCountdown(45)).toBe("unloads in under a minute");
+  });
+
+  it("says nothing when the window is disabled or forced off", () => {
+    // `null` is what `describe()` sends for both cases (AI-13) — a page has
+    // no reason to distinguish "the user set 0" from "an env var did" here,
+    // since neither one is counting down.
+    expect(unloadCountdown(null)).toBeNull();
   });
 });

@@ -16,10 +16,14 @@ than an import:
   other declaring folder gets. No new install machinery exists for AI.
 * **A wedged model cannot take the app down.** OOM, a CUDA fault, a Rust panic
   inside a loader — all of it happens in a process the supervisor can kill.
-* **Adding a backend is adding a folder.** This was written when MLX was the only
-  text runner and said "transformers for Windows tomorrow" — which turned out to
-  be exactly one new row here and one new folder (D293), with nothing else in the
-  app changed. The claim is kept because it was tested.
+* **Adding a backend is adding a folder — and REMOVING one is removing a
+  folder.** This was written when MLX was the only text runner and predicted a
+  cross-platform runner "tomorrow"; that turned out to be exactly one new row
+  here and one new folder (D293, transformers), and the llama.cpp rows below cost
+  the same (D411). D416 then took the transformers family back OUT, and the
+  reverse direction held too: three folders, three rows, and the ripple was in
+  the CATALOG and the PROSE rather than in any mechanism. The claim is kept
+  because it has now been tested in both directions.
 
 **Availability is checked, never assumed.** MLX runs on Apple Silicon and nowhere
 else, so `available()` answers with a REASON rather than a bool — "needs Apple
@@ -35,10 +39,10 @@ the machine, not to the string.
 whole mechanism.** Text generation prefers MLX on Apple Silicon and uses torch
 on Windows and Linux, with torch also remaining a fallback on Apple Silicon when
 MLX is unavailable; speech to text does the same thing with MLX Whisper over
-CTranslate2, and since D319 carries a THIRD row — Parakeet, Apple Silicon only,
-registered under MLX Whisper so that the default does not move. Every row is
-registered, every one is asked whether it can run, and the first that says yes
-wins. Nothing else in the app knows there is more than
+CTranslate2 (D319 briefly added a third row, Parakeet-TDT, and D406 withdrew it
+— maintenance cost not justified by use — leaving the two rows below). Every
+row is registered, every one is asked whether it can run, and the first that
+says yes wins. Nothing else in the app knows there is more than
 one — but the CATALOG does, because what to suggest depends on which backend
 will load it (`catalog.py`), and an MLX checkpoint on a Windows machine is a
 download that cannot be used.
@@ -131,14 +135,44 @@ class Runner:
     #: `code`, the folder, the pyproject, the catalog keys — the upstream
     #: spelling is load-bearing and must not be touched.
     short_label: str = ""
+    #: The engine FAMILY — the same name with any hardware qualifier gone
+    #: ("Diffusers" for all three Diffusers rows, "llama.cpp" for both
+    #: llama.cpp ones). For the one surface whose statement is about the FILE
+    #: rather than about this machine: the Local card's engine tag.
+    #:
+    #: **A tag that is a format claim must not carry a hardware qualifier.**
+    #: The tag says "Diffusers", meaning "these weights are safetensors a
+    #: Diffusers pipeline opens" — and all three Diffusers rows read the
+    #: identical file, so "(ROCm)" there answers nothing a reader could have
+    #: asked about a download sitting on disk, and leaks which machine happens
+    #: to be looking at it into a sentence about the model. The card keeps the
+    #: hardware-qualified `short_label` on the tag's hover and its aria-label,
+    #: so which build would actually load it is one hover away rather than
+    #: gone. Everywhere the statement IS about this machine — the loaded card,
+    #: the job row, the "Using …" line — still reads `short`.
+    #:
+    #: A FIELD, not `short_label` with a trailing parenthetical stripped, for
+    #: exactly the reason `short_label` is not `label` stripped: a regex makes
+    #: the name a side effect of how somebody punctuated another one, and the
+    #: first family whose own name contains brackets loses half of it with
+    #: nothing failing. `test_every_runner_names_its_family_with_no_hardware_in_it`
+    #: requires it on every registered row and forbids the qualifiers by name.
+    family_label: str = ""
     #: What using this backend is LIKE, for the page to say before anything is
     #: loaded. A standing fact about the runner, never a claim about this
     #: machine — the device a model actually got is the worker's to report
     #: (`worker_base.STATE["device"]`) and is not knowable until one has run.
     #:
-    #: It exists because the honest answer for `transformers-text` is "this may
-    #: be a great deal slower than you expect, and here is why". Empty for a
-    #: runner with nothing surprising to say.
+    #: It exists because for several rows the honest answer is "this may be a
+    #: great deal slower, or larger, than you expect, and here is why" — the
+    #: accelerated Diffusers rows' download, `mflux-image`'s memory ceiling,
+    #: `llamacpp-text`'s wheel provenance. Empty for a runner with nothing
+    #: surprising to say.
+    #:
+    #: **ONE LINE, and that is a hard constraint rather than a house style**: it
+    #: renders in the gap between one engine picker and the next, so anything
+    #: that wraps twice is something nobody finishes. Every row's own `note`
+    #: comment refers back to this sentence rather than restating it.
     #:
     #: **It renders under that engine's row on the AI Models page's Engines
     #: tab** (D315), beneath the select, and only for the runner actually
@@ -149,6 +183,33 @@ class Runner:
     #: that tells a 16GB Mac to go back to Diffusers — which belongs beside the
     #: control that makes that switch, not over a grid of downloads.
     note: str = ""
+    #: Extra Hub `filter=` tags a search must carry when THIS is the runner
+    #: actually serving the capability — empty for every runner whose format
+    #: needs no such narrowing (D412).
+    #:
+    #: **Why this is a runner field and not a hard-coded pair in
+    #: `hub_models.py`.** That module's whole design is "adding a runner needs
+    #: no edit here" (`supported_tags`'s own docstring, pinned by
+    #: `tests/test_hub_models.py`); a capability with two formats behind it
+    #: (`llamacpp-text`'s GGUF against `mlx-text`'s safetensors) is the first
+    #: time that has mattered, since every earlier
+    #: multi-runner capability shares one format across its variants. Reading
+    #: the filter off the ACTIVE runner rather than hard-coding "text
+    #: generation means gguf" keeps that property: a future format-specific
+    #: runner declares its own tag here, and the module stays the same.
+    #:
+    #: **Deliberately keyed to the SERVING runner, which is host-dependent —
+    #: the one exception to this module's "search does not depend on the
+    #: host" rule** (see `hub_models.py`'s own docstring), and that is a
+    #: considered exception rather than a quiet one: a search result this
+    #: engine's own picker cannot resolve is not actionable HERE regardless
+    #: of what a different machine's active engine could do with it, the
+    #: same argument `_UNRUNNABLE_LIBRARIES` already makes about FORMAT
+    #: (as opposed to hardware availability, which the rest of that
+    #: docstring's rule is actually about). Two people running the identical
+    #: query see different rows only when they made different, visible engine
+    #: choices in Preferences — never for a reason neither could see.
+    hub_filter_tags: tuple[str, ...] = ()
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
     def available(self) -> Availability:
@@ -176,6 +237,17 @@ class Runner:
         would be a blank tag.
         """
         return self.short_label or self.label
+
+    @property
+    def family(self) -> str:
+        """`family_label`, falling back to the short name.
+
+        Same fallback and same reason as `short`: a Runner built in a test has
+        no opinion about display, and a blank tag is worse than a tag with a
+        qualifier on it. A REGISTERED runner must set the field, which
+        `test_every_runner_names_its_family_with_no_hardware_in_it` requires.
+        """
+        return self.family_label or self.short
 
     @property
     def worker(self) -> str:
@@ -213,22 +285,70 @@ def _always() -> Availability:
     return Availability(True)
 
 
-def _transformers_platform() -> Availability:
-    """The transformers text runner's supported production platforms.
+def _llamacpp_platform() -> Availability:
+    """`llamacpp-text`'s supported platforms — a HARD exclusion, meaning "there
+    is no wheel to install", not a business decision about where to distribute.
 
-    MLX is preferred on Apple Silicon by registry order, but torch's MPS path is
-    a working fallback when MLX is absent or unavailable. Intel macOS is not a
-    distribution target, and availability drives the catalog and Load button,
-    so it must not be advertised merely because torch happens to publish a
-    wheel there.
+    The maintainer's CPU wheel index (`llamacpp_text/pyproject.toml`, D411)
+    publishes `py3-none` wheels for a specific, checked tag set — re-verified
+    directly against the index listing for the pinned `0.3.29` rather than
+    trusted from an earlier pass: `macosx_11_0_arm64`,
+    `manylinux2014_{x86_64,aarch64}.manylinux_2_17_*`,
+    `musllinux_1_2_{x86_64,aarch64}`, `win_amd64`, and `linux_riscv64`. **There
+    is no macOS x86_64 tag, and no `win_arm64` tag, at all.** So both are
+    excluded because `uv sync` has NOTHING to install — an immediate, total
+    failure the moment a machine reaches this row, not a slow or a degraded one.
+
+    **This function is now the widest local text engine on the two platforms
+    that are not Apple Silicon, which raises the cost of it being wrong** (D416).
+    Until the transformers rows were removed, a machine this refused still had
+    `transformers-text` — `_transformers_platform` said yes to Windows and Linux
+    on ANY architecture — so an over-strict tag set here cost a user speed, not
+    the capability. It no longer does: a Windows ARM64 box, or a Linux machine
+    outside x86_64/aarch64/riscv64, now has no local text generation at all and
+    falls back to `claude-cli`. That is the honest answer rather than a
+    regression — the transformers rows advertised those machines a Load button
+    whose `uv sync` would have had to find a torch wheel for the same
+    architecture — but it is the reason `test_every_shipped_platform_keeps_a_local_text_engine`
+    exists and enumerates the platforms this app actually ships to.
+
+    **Checked by ARCHITECTURE, not merely by OS** — `system in ("Windows",
+    "Linux")` alone (the shape this function used before) advertises a Load
+    button on a Windows ARM64 box (Surface Pro X and similar) or any Linux
+    machine outside the three architectures actually published, exactly the
+    defect this function's own macOS branch was written to avoid. `machine()`
+    spells the same architecture differently per OS — `"AMD64"` on Windows,
+    `"x86_64"` on Linux, `"arm64"` on Darwin — so each OS branch checks its own
+    OS's spelling rather than one shared tuple of names that would silently
+    stop matching the moment a branch used the wrong OS's spelling for it.
     """
     system = platform.system()
     machine = platform.machine()
-    if (
-        system in ("Windows", "Linux")
-        or (system == "Darwin" and machine == "arm64")
-    ):
+    if system == "Linux" and machine in ("x86_64", "aarch64", "riscv64"):
         return Availability(True)
+    if system == "Windows" and machine == "AMD64":
+        return Availability(True)
+    if system == "Darwin" and machine == "arm64":
+        return Availability(True)
+    if system == "Darwin":
+        return Availability(
+            False,
+            "needs Apple Silicon — the llama.cpp wheel index publishes no "
+            f"macOS x86_64 build (this is {system.lower()}/{machine})",
+        )
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 machine — the llama.cpp wheel index publishes "
+            f"win_amd64 only, no win_arm64 (this is {system.lower()}/{machine})",
+        )
+    if system == "Linux":
+        return Availability(
+            False,
+            "needs x86_64, aarch64, or riscv64 — the llama.cpp wheel index "
+            f"publishes no {machine} build for Linux (this is "
+            f"{system.lower()}/{machine})",
+        )
     return Availability(
         False,
         f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
@@ -623,6 +743,138 @@ def _cuda() -> Availability:
     )
 
 
+#: Where the Vulkan LOADER lives on Linux — a handful of fixed paths rather
+#: than one, because unlike CUDA/ROCm's kernel device nodes this is a
+#: userspace `.so` a distro installs wherever ITS libdir convention says:
+#: Debian/Ubuntu use the multiarch triplet, Fedora/RHEL/openSUSE use `lib64`,
+#: Arch/Manjaro use a flat `/usr/lib`. `ctypes.util.find_library` would answer
+#: this properly but shells out to `ldconfig` (or dlopens outright), either of
+#: which `_cuda`'s docstring already rules out for this module — a handful of
+#: `os.path.exists` checks stays inside the same "stdlib only, no subprocess,
+#: no dlopen" rule its neighbours already follow.
+VULKAN_LOADER_PATHS = (
+    "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",  # Debian / Ubuntu multiarch
+    "/usr/lib64/libvulkan.so.1",                  # Fedora / RHEL / openSUSE
+    "/usr/lib/libvulkan.so.1",                    # Arch / Manjaro
+)
+#: Where a Vulkan ICD — the GPU driver's own entry point — registers itself on
+#: Linux: the loader's own manifest search path (LunarG's Vulkan-Loader
+#: `LoaderDriverInterface.md`, "Driver Discovery on Linux", fetched and read
+#: directly rather than assumed), narrowed to the two directories a distro
+#: package or a container actually writes into. `/etc/vulkan/icd.d` is
+#: searched AHEAD of `/usr/share/vulkan/icd.d` in the real loader and is where
+#: a container image commonly bind-mounts a driver in, so both are checked
+#: rather than only the share directory a bare-metal install uses.
+VULKAN_ICD_DIRS = ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d")
+#: The Windows analogue of `NVCUDA_DLL`: the loader DLL a GPU driver installer
+#: places in `System32`, the same "hint, not proof" the CUDA gate already
+#: documents (installed by the display driver, not proof a device answers it).
+VULKAN_DLL = r"C:\Windows\System32\vulkan-1.dll"
+
+
+def _vulkan() -> Availability:
+    """`llamacpp-text-vulkan`'s supported platforms and usable devices — one
+    gate, unlike `_cuda`/`_rocm` beside it, because this row's own wheel
+    tag set (installability, `_llamacpp_platform`'s question) and its usable
+    hardware (`_cuda`/`_rocm`'s question) are BOTH narrower than anything else
+    in this table, and answering them separately would need two functions
+    that always run together.
+
+    **The published wheel exists on exactly two platforms.** The vulkan index
+    (`llamacpp_text_vulkan/pyproject.toml`) publishes `manylinux2014_x86_64`
+    and `win_amd64` for `0.3.29` and NOTHING else — no macOS build at all
+    (Apple Silicon already gets GPU acceleration through the CPU index's
+    Metal-linked wheel, which is the whole reason this variant exists only
+    for NVIDIA/AMD), no Linux aarch64, no Windows ARM64. Checked by
+    architecture per OS exactly as `_llamacpp_platform` now is, and for the
+    same reason: `system in ("Windows", "Linux")` alone would advertise a
+    Load button on a Windows ARM64 box or a Linux aarch64 one, neither of
+    which this specific index ships a wheel for.
+
+    **A wheel existing is not the same question as it being USABLE, and this
+    gate answers both because a Vulkan wheel supplies neither the loader nor
+    the driver ICD — those come from the GPU driver, not from `pip`.** Two
+    facts, established directly against the downloaded `0.3.29` wheels rather
+    than assumed, decide how strict each half of the check must be:
+
+    1. **The loader is a HARD link dependency, not a `dlopen`.** The wheel's
+       own `libggml-vulkan.so` declares `DT_NEEDED libvulkan.so.1` (read
+       straight out of its ELF `.dynamic` section), and `libggml.so` and
+       `libllama.so` both declare `DT_NEEDED libggml-vulkan.so.0` in turn — so
+       the whole chain fails to load, and `import llama_cpp` raises, the
+       moment the loader is missing, regardless of whether a GPU is even
+       asked about. The Windows DLL carries the identical dependency
+       (`ggml-vulkan.dll` imports `vulkan-1.dll`, read from its PE import
+       table), so the same hard-failure fact holds on both platforms this
+       row ships for. This is why a MISSING LOADER is refused here rather
+       than left to the worker's own error the way `_cuda`'s driver-version
+       floor is: `_cuda`/`_rocm`'s missing-device case still lets `import
+       torch` succeed and fail later inside a CUDA/HIP call, while a missing
+       Vulkan loader here fails at the very first `import`, which is a worse
+       and more confusing failure to hand back than a `Runner.available`
+       reason string that names the actual cause.
+    2. **A missing ICD (no GPU driver registered) is NOT a load failure —
+       ggml's backend loader falls back to ITS OWN bundled CPU backend**
+       (`libggml-cpu.so`/`ggml-cpu.dll`, present in both wheels alongside the
+       74MB Vulkan one) when Vulkan enumerates zero devices, so `import
+       llama_cpp` succeeds and inference still runs, just on the CPU. That
+       is not a reason to pass the gate anyway: a machine in that state gets
+       every byte of an 8x larger download (182MB vs. the CPU index's
+       22.5MB Linux wheel) for the SAME CPU-only outcome the smaller
+       `llamacpp-text` row already offers, which is exactly the "advertising
+       a claim that buys nothing" case `_cuda`/`_rocm`'s device checks
+       already exist to refuse.
+
+    Both facts were established by parsing the actual `0.3.29` wheels
+    (`zipfile` for the contents, a small ELF/PE parser for the dependency
+    tables) on 2026-08-21 — not by reading ggml's source or assuming dynamic
+    backend loading behaves like a plugin system, which it does NOT here: the
+    Vulkan backend is linked in, not `dlopen`ed at runtime.
+
+    **Not cached, for `_rocm`'s reasons exactly** — a loader package or a
+    driver installed while the app is running is a fix that must be seen
+    without a restart.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Linux" and machine == "x86_64":
+        if not any(os.path.exists(path) for path in VULKAN_LOADER_PATHS):
+            return Availability(
+                False,
+                "needs the Vulkan loader — no libvulkan.so.1 was found at any "
+                "of this distribution's usual library paths (install your "
+                "distribution's `vulkan-loader`/`libvulkan1` package)",
+            )
+        if not any(
+            os.path.isdir(d) and glob.glob(os.path.join(d, "*.json"))
+            for d in VULKAN_ICD_DIRS
+        ):
+            return Availability(
+                False,
+                "needs a Vulkan GPU driver — the loader is installed but no "
+                "driver ICD is registered under /etc/vulkan/icd.d or "
+                "/usr/share/vulkan/icd.d (install your GPU vendor's Vulkan "
+                "driver package, e.g. `mesa-vulkan-drivers` or the NVIDIA "
+                "driver's Vulkan component)",
+            )
+        return Availability(True)
+    if system == "Windows" and machine == "AMD64":
+        if not os.path.isfile(VULKAN_DLL):
+            return Availability(
+                False,
+                "needs a GPU with its Vulkan driver installed — the loader "
+                f"library is not at {VULKAN_DLL} (install your GPU vendor's "
+                "driver, which carries its own Vulkan support)",
+            )
+        return Availability(True)
+    return Availability(
+        False,
+        "needs a Windows or Linux x86_64 machine — the llama.cpp Vulkan wheel "
+        f"index publishes manylinux2014_x86_64 and win_amd64 only (this is "
+        f"{system.lower()}/{machine})",
+    )
+
+
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
 # below it serves Windows and Linux plus the Apple Silicon fallback. All three
@@ -632,27 +884,42 @@ def _cuda() -> Availability:
 # user's engine preference overrides, so a re-order silently re-decides every
 # machine set to "auto", which is all of them until somebody chooses otherwise.
 #
-# **The torch runners are split PER HARDWARE, and the CPU build is the default.**
-# One `transformers-text` row that installed whichever wheel index a manifest
-# happened to pin made the accelerator an invisible property of the build: a
-# machine got CUDA or it got the CPU and nothing on the page said which, so the
-# name was honest on exactly one class of hardware. There are now three rows per
-# torch library — CPU, CUDA, ROCm — the CPU one sits FIRST and is what every
-# "auto" machine resolves to, and the accelerated two are opt-in from the
-# Engines tab and gated on the device actually being there (`_cuda`, `_rocm`).
-# CPU-by-default is the conservative half of that decision: the accelerated
-# wheels are much larger downloads with a hardware requirement, and a default
-# that silently required one would fail on the machines least able to explain
-# why. `code` on the two original rows is UNCHANGED, so a stored preference
-# naming `transformers-text` or `diffusers-image` keeps meaning what it meant.
+# **A capability's rows are split PER HARDWARE, and the unaccelerated build is
+# the default.** One `diffusers-image` row that installed whichever wheel index
+# a manifest happened to pin made the accelerator an invisible property of the
+# build: a machine got CUDA or it got the CPU and nothing on the page said
+# which, so the name was honest on exactly one class of hardware. There are now
+# three Diffusers rows — CPU, CUDA, ROCm — and two llama.cpp ones; the
+# unaccelerated one sits FIRST in each family and is what every "auto" machine
+# resolves to, and the accelerated ones are opt-in from the Engines tab and
+# gated on the device actually being there (`_cuda`, `_rocm`, `_vulkan`).
+# Unaccelerated-by-default is the conservative half of that decision: the
+# accelerated wheels are much larger downloads with a hardware requirement, and
+# a default that silently required one would fail on the machines least able to
+# explain why. `code` on each family's original row is UNCHANGED, so a stored
+# preference naming `diffusers-image` keeps meaning what it meant.
+#
+# **A code that is REMOVED is a different matter, and `resolve()` is where it is
+# handled rather than here** (D416): the three `transformers-text*` codes were
+# registered rows until D416 and a synced prefs.json can still name one. Nothing
+# in this table pretends they exist — a stale preference is reported as unknown
+# and the ordering decides instead, which is the same path a preference written
+# by a NEWER build already took. See `resolve()`'s third bullet, and
+# `test_a_removed_engine_code_in_prefs_degrades_to_the_ordering`.
 #
 # **A hardware variant carries its accelerator in BOTH names**, so `label` and
-# `short_label` are equal on all six torch rows ("Diffusers (CUDA)"). The short
-# name is what the Local card and `servingLine` print, and three engines whose
-# short names are all "Diffusers" would render as one engine on every surface
-# but the picker. The MLX rows keep a PLATFORM qualifier on the long name only
-# — a bracketed qualifier in the SHORT name is therefore the marker of a
-# hardware variant, and the Apple-only rows stay visually distinct from them.
+# `short_label` are equal on all three Diffusers rows and both llama.cpp ones
+# ("Diffusers (CUDA)", "llama.cpp (CPU)"). The short name is what the Local card
+# and `servingLine` print, and three engines whose short names are all
+# "Diffusers" would render as one engine on every surface but the picker. The
+# qualifier names the BUILD rather than the reader's machine, which is why the
+# CPU rows keep it on a Mac that runs them on the GPU — and why naming a row
+# after its FORMAT instead does not work: "llama.cpp (GGUF)" beside "llama.cpp
+# (Vulkan)" qualified the wrong axis, since both rows read GGUF through the same
+# `runners/llama_text.py`. The MLX rows keep a PLATFORM qualifier on the long
+# name only — a bracketed qualifier in the SHORT name is therefore the marker
+# of a hardware variant, and the Apple-only rows stay visually distinct from
+# them.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -660,72 +927,120 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mlx_text"),
         label="MLX LM (Apple Silicon)",
         short_label="MLX LM",
+        family_label="MLX LM",
         _available=_apple_silicon,
     ),
+    # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
+    # local text engine on Windows and Linux, so this row is what a bare "auto"
+    # resolves to there.
+    #
+    # **That is a change of role this comment used to argue against, and the
+    # argument is worth keeping rather than deleting.** The row shipped BELOW
+    # three `transformers-text*` rows precisely so `auto` could never reach it:
+    # `llamacpp_text/pyproject.toml` records that the maintainer's wheel index
+    # is a coin-flip per release on macOS arm64 (4 of 16 sampled releases fail
+    # `testzip()`), and a capability whose INSTALL can silently fail is a poor
+    # thing to hand a machine that did not ask for it. D416 removed the rows
+    # that made "never a fallthrough" possible, on a measurement this engine won
+    # outright — 4.2x the throughput of transformers on this GPU tier, 2.4x on
+    # CPU, at a third of the download and a third of the memory — so the choice
+    # was between a default that is much better and occasionally uninstallable,
+    # and keeping an engine that lost on every axis in order to preserve a
+    # safety property. The default moved. What makes that affordable rather than
+    # reckless is that the failure is LOUD and at install time: `uv sync`
+    # reports a corrupt wheel verbatim through `envinstall` (PY-18), which is a
+    # first-run error with a message, not a wrong answer later. The pinned
+    # `0.3.29` Linux and Windows wheels were verified intact; macOS arm64 keeps
+    # `mlx-text` ahead of this row anyway, which is where the audit's failures
+    # were concentrated.
+    #
+    # `_llamacpp_platform`, not `_always`: the pin this runner declares is CPU
+    # wheels, but NOT on every platform Diffusers CPU and Faster Whisper reach —
+    # the maintainer's index publishes no macOS x86_64 tag at all, so Intel
+    # macOS is a hard exclusion (see that function).
     Runner(
-        code="transformers-text",
+        code="llamacpp-text",
         capability=TEXT_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "transformers_text"),
-        # "(CPU)" rather than the old "(PyTorch)": the library is not what
-        # distinguishes this row from its neighbours any more — all three are
-        # PyTorch — and the accelerator is, so the qualifier names the thing a
-        # reader is choosing between. Both names carry it; see the table's
-        # naming note above.
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_text"),
+        # "(CPU)" rather than the old "(GGUF)": the FORMAT is not what
+        # distinguishes this row from its neighbour — `llamacpp-text-vulkan`
+        # reads GGUF through the same shared `runners/llama_text.py` — and the
+        # wheel index is, so the qualifier names the thing a reader is choosing
+        # between. Both names carry it; see the table's naming note above.
         #
         # **"(CPU)" names the BUILD, not a prediction about the device.** It is
-        # the `whl/cpu` pin — the install with no accelerator libraries in it —
-        # and on Apple Silicon that same pin resolves to the ordinary macOS wheel
-        # with MPS compiled in, so this row runs on the GPU there. What device a
-        # model actually got is the worker's to report and AI-11b's to show; the
-        # `note` says the Mac case out loud so the two never disagree.
-        label="Transformers (CPU)",
-        short_label="Transformers (CPU)",
-        # ONE LINE, and that is a hard constraint rather than a summary: it sits
-        # under this engine's row on the Engines tab, in the space between one
-        # picker and the next, and anything that wraps twice is something nobody
-        # finishes.
+        # the maintainer's `whl/cpu` index — the wheel with no CUDA, ROCm or
+        # Vulkan backend compiled in — and on Apple Silicon that same index's
+        # wheel links `libggml-metal.dylib`, so this row runs on the GPU there.
+        # What device a model actually got is the worker's to report; the `note`
+        # says the Mac case out loud so the two never disagree. (The removed
+        # `transformers-text` row set this precedent with its own `whl/cpu`
+        # pin resolving to an MPS-capable macOS wheel, D382.)
+        label="llama.cpp (CPU)",
+        short_label="llama.cpp (CPU)",
+        family_label="llama.cpp",
+        # ONE LINE, per `note`'s own rule. Leads with the reason to pick it
+        # (current-generation Qwen at a fraction of the bf16 download) and folds
+        # the packaging caveat into the same sentence, since that is the fact
+        # this row's `_available` cannot express — `_llamacpp_platform` answers
+        # "does the wheel exist for this platform", not "was THIS release's
+        # wheel intact when it was built".
         #
-        # **It names the Apple Silicon GPU, because this row USES it** (D382).
-        # `torch_text._placement()` returns `("mps", float16)` on a Mac, which is
-        # the fallback path the `whl/cpu` pin was chosen to preserve — so the old
-        # wording ("Runs on the CPU on any machine, at a few words a second") had
-        # the Engines tab printing a CPU speed claim while the loaded card beside
-        # it reported device `mps`, one page contradicting itself. The speed
-        # figure went with it: "a few words a second" is a CPU measurement and
-        # the row is not always on a CPU, and the loaded card's tooltip is where
-        # somebody who has stopped to ask reads about speed anyway.
-        note="Runs on the CPU on any machine, or Apple Silicon's GPU — the "
-             "CUDA and ROCm engines need a matching GPU.",
-        # Deliberately BELOW the MLX row rather than instead of it. Apple Silicon
-        # therefore gets MLX when it is present and this runner's working MPS
-        # path when it is not; Windows and Linux come here directly. Intel macOS
-        # is not a distribution target.
-        _available=_transformers_platform,
+        # **"opt-in" came OUT of this sentence at D416 and the wording had to
+        # change with it.** This row is now what Windows and Linux resolve to
+        # with no preference set, so a note calling itself opt-in described the
+        # engine the reader is already using — the same class of
+        # self-contradiction D382 fixed when a CPU-speed claim sat above a card
+        # reporting device `mps`. The wheel provenance stayed, because that fact
+        # did not change and is the one thing a reader cannot discover from the
+        # page; it now reads as a statement rather than as a warning attached to
+        # a choice nobody made.
+        #
+        # **It names the Apple Silicon GPU, because this row USES it** — the
+        # same correction D382 made. `llama_text.load()` reports device "gpu"
+        # when the Metal backend takes the layers, so a note that mentioned
+        # only the download would have had the Engines tab implying a CPU engine
+        # while the loaded card beside it said `gpu`.
+        note="Runs current Qwen GGUF quantizations on the CPU or Apple "
+             "Silicon's GPU at a fraction of the unquantized download — "
+             "wheels come from the maintainer's index, not PyPI.",
+        _available=_llamacpp_platform,
+        # A text-generation search result this engine cannot resolve at all
+        # (a plain safetensors repo) is not actionable here — see
+        # `hub_filter_tags`'s own docstring for why this is a runner field.
+        hub_filter_tags=("gguf",),
     ),
-    # …and the accelerated variants, BELOW the CPU row so that nothing about the
-    # default moves: a machine set to "auto" resolves to the CPU build even with
-    # a working GPU in it (`test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR`
-    # is that decision, named). Opting in is one radio on the Engines tab, and
-    # the radio is disabled with the probe's own reason on a machine that cannot
-    # take it — which is what makes offering these rows at all safe.
+    # The Vulkan variant of the row above — GPU acceleration on NVIDIA and AMD
+    # under Windows and Linux, where `llamacpp-text`'s CPU-index pin is
+    # CPU-only (Apple Silicon already gets Metal acceleration through that
+    # same CPU-index wheel, which is why this variant does not also cover
+    # macOS). Immediately BELOW `llamacpp-text`, so reaching this row is always
+    # a CHOICE made on the Engines tab and never something `auto` falls into —
+    # the same relationship the accelerated Diffusers rows have to
+    # `diffusers-image`, and for the same reason (a much larger download with a
+    # hardware requirement). D416 moved the DEFAULT onto `llamacpp-text`; it did
+    # not move it onto this row, and must not: `_offload_schedule`'s over-commit
+    # backoff is known not to engage on AMD (radv evicts other clients instead
+    # of erroring, which took a desktop session down during testing — PR #706),
+    # so an over-large model on this row can cost a user their session rather
+    # than a slow load.
     Runner(
-        code="transformers-text-cuda",
+        code="llamacpp-text-vulkan",
         capability=TEXT_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "transformers_text_cuda"),
-        label="Transformers (CUDA)",
-        short_label="Transformers (CUDA)",
-        note="Much quicker on an NVIDIA GPU, for a much larger download.",
-        _available=_cuda,
-    ),
-    Runner(
-        code="transformers-text-rocm",
-        capability=TEXT_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "transformers_text_rocm"),
-        label="Transformers (ROCm)",
-        short_label="Transformers (ROCm)",
-        note="Much quicker on a supported AMD GPU under Linux, for a much "
-             "larger download.",
-        _available=_rocm,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
+        # Both names equal, for the reason the torch hardware variants' are
+        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY
+        # rather than a platform aside, and the short name is what the Local
+        # card and the job row print, so two rows both reading "llama.cpp"
+        # would render as one engine everywhere but the picker.
+        label="llama.cpp (Vulkan)",
+        short_label="llama.cpp (Vulkan)",
+        family_label="llama.cpp",
+        note="Much quicker on an NVIDIA or AMD GPU under Windows or Linux, "
+             "for a much larger download — see llama.cpp (CPU) for the "
+             "CPU and Apple Silicon build.",
+        _available=_vulkan,
+        hub_filter_tags=("gguf",),
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
@@ -750,7 +1065,8 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mflux_image"),
         label="MLX FLUX (Apple Silicon)",
         short_label="MLX FLUX",
-        # ONE LINE, per the rule the transformers row states. It describes the
+        family_label="MLX FLUX",
+        # ONE LINE, per `note`'s own rule. It describes the
         # DEFAULT rather than an opt-in, so the memory caveat leads: the reader
         # it exists for is someone on a small Mac deciding whether to switch
         # AWAY, not someone deciding whether to try it — and since D315 the line
@@ -763,9 +1079,12 @@ _RUNNERS: tuple[Runner, ...] = (
         code="diffusers-image",
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
-        # "(CPU)" for the reason the transformers row above states.
+        # "(CPU)" for the reason `llamacpp-text` above states about its own:
+        # the qualifier names the BUILD — the wheel with no accelerator
+        # libraries in it — never a prediction about the device.
         label="Diffusers (CPU)",
         short_label="Diffusers (CPU)",
+        family_label="Diffusers",
         # This row had no note while it was the only torch image engine and
         # there was nothing to distinguish it from. Now there is, and the thing
         # worth saying is the one that decides the choice: CPU diffusion is
@@ -786,6 +1105,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "diffusers_image_cuda"),
         label="Diffusers (CUDA)",
         short_label="Diffusers (CUDA)",
+        family_label="Diffusers",
         note="Seconds per image on an NVIDIA GPU, for a much larger download.",
         _available=_cuda,
     ),
@@ -823,6 +1143,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "diffusers_image_rocm"),
         label="Diffusers (ROCm)",
         short_label="Diffusers (ROCm)",
+        family_label="Diffusers",
         # The desktop clause is not padding — see THE SHARED RING above for the
         # kernel log that proved it. One line, so "much larger" pays for it.
         note="Seconds per image on a supported AMD GPU under Linux — larger "
@@ -839,33 +1160,15 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mlx_whisper"),
         label="MLX Whisper (Apple Silicon)",
         short_label="MLX Whisper",
+        family_label="MLX Whisper",
         note="Transcribes on the GPU. Several times quicker than the CPU path "
              "on the same Mac.",
         _available=_apple_silicon,
     ),
-    # …and the third, which is the first capability to have one (D319).
-    # **Below MLX Whisper deliberately**, so nothing about the default changes:
-    # Parakeet-TDT beats Whisper large-v3 on English word error rate and is
-    # several times quicker again on the same Mac, but v3 covers 25 European
-    # languages against Whisper's ~99 — so promoting it would silently break
-    # every page relying on `language` being detected, on recordings this
-    # model has never heard a word of. A user opts in per capability on the
-    # Engines tab (D302), which is exactly the machinery that case needs and
-    # is why no new plumbing came with this runner.
-    Runner(
-        code="parakeet-mlx",
-        capability=SPEECH_TO_TEXT,
-        folder=os.path.join(RUNNERS_DIR, "parakeet_mlx"),
-        label="Parakeet TDT (Apple Silicon)",
-        short_label="Parakeet TDT",
-        # ONE LINE, per the rule the transformers row states — it sits under
-        # this engine's row on the Engines tab, between one picker and the
-        # next. It describes an OPT-IN, so what it leads with is the reason to
-        # take it and the reason not to, in that order.
-        note="Quicker than Whisper and more accurate in English, but it "
-             "handles 25 European languages only.",
-        _available=_apple_silicon,
-    ),
+    # D319 briefly added a third row here, Parakeet-TDT (`parakeet-mlx`),
+    # below MLX Whisper so the default would not move. D406 withdrew it —
+    # maintenance cost not justified by use — leaving speech to text with the
+    # same two-runner shape every other capability in this table has.
     Runner(
         code="faster-whisper",
         capability=SPEECH_TO_TEXT,
@@ -874,6 +1177,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # product names, and `code` above still carries the exact spelling.
         label="Faster Whisper (CTranslate2)",
         short_label="Faster Whisper",
+        family_label="Faster Whisper",
         # `_always`, and that is why speech to text SHIPPED on CTranslate2
         # rather than on MLX: text generation was already Apple-Silicon-only,
         # and a second capability that existed on a Mac and nowhere else would
@@ -1101,12 +1405,12 @@ def unavailable_reason(capability: str) -> str | None:
     **Every runner's reason, not the first one's**, and with two runners per
     capability that stopped being a detail. The first cut took
     `next(r for r in _RUNNERS if r.capability == capability)`, which for text
-    generation is always `mlx-text` — so a Linux machine whose transformers
-    worker was missing (a state `Runner.available` documents, since a runner is
-    registered before its folder is written) would be told text generation
-    "needs Apple Silicon", naming the one backend that was never going to serve
-    it and hiding the one that would have. Reported by review on the PR that
-    added the second runner.
+    generation is always `mlx-text` — so a Linux machine whose cross-platform
+    text worker was missing (a state `Runner.available` documents, since a
+    runner is registered before its folder is written) would be told text
+    generation "needs Apple Silicon", naming the one backend that was never
+    going to serve it and hiding the one that would have. Reported by review on
+    the PR that added the second runner.
 
     Joined rather than picked, because there is no rule for choosing between
     them that is not a guess about which the reader meant — and a capability
@@ -1165,6 +1469,14 @@ def describe() -> list[dict]:
                 # got before — and a surface that wants the qualifier-free name
                 # asks for it. The alternative, quietly shortening `label`,
                 # would be a change no reader of the payload could see.
+                #
+                # **No `familyLabel` here, deliberately.** This payload feeds
+                # the Engines tab, where the reader is CHOOSING between builds
+                # of one library — a family name is the one thing that cannot
+                # tell "Diffusers (CUDA)" from "Diffusers (ROCm)", so the
+                # surface that would render it has no use for it. It is the
+                # Local card's tag that needs the qualifier gone, and that card
+                # reads the engine object `ai_models.py` builds per repo.
                 "label": runner.label,
                 "shortLabel": runner.short,
                 "note": runner.note or None,

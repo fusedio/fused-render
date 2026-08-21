@@ -183,23 +183,31 @@ where a first model comes from.
     loaded for its text, and its picture-reading half simply goes unused.
   - **Every kind of model runs on every supported desktop platform**, on the
     backend that suits it. On Apple Silicon that is MLX throughout — MLX LM for
-    chat, MLX FLUX for images, MLX Whisper for transcription (with Parakeet TDT
-    as an opt-in). Everywhere else, and on a Mac whose MLX backend is
-    unavailable, chat and images run on PyTorch and transcription on
-    CTranslate2. The Discover tab names which backend a suggestion will load on,
+    chat, MLX FLUX for images, MLX Whisper for transcription. Everywhere else,
+    and on a Mac whose MLX backend is unavailable, chat runs on llama.cpp,
+    images on PyTorch and transcription on CTranslate2. The Discover tab names
+    which backend a suggestion will load on,
     because the shortlists differ — an MLX checkpoint is packed for Metal and
     will not load on a PC, so you are never offered one there.
-  - **The PyTorch backends come in three builds, and the default is the CPU
-    one.** Chat and images each offer Transformers/Diffusers (CPU), (CUDA) and
-    (ROCm). The CPU build is what you get without choosing: it is a small
-    install, it runs on any machine, and nothing about it can fail on hardware
-    you do not have. The CUDA build (NVIDIA) and the ROCm build (AMD, Linux
-    only) are much larger downloads and are offered on the Engines tab **only**
-    when the app can see a matching, usable GPU — otherwise the option is
-    greyed out with the reason, such as a driver that is not loaded or a
-    `/dev/kfd` your user cannot open. Transcription has no GPU build outside
-    Apple Silicon: CTranslate2's AMD wheels are not installable the way this app
-    installs things, so AMD transcribes on the CPU.
+  - **Chat models off a Mac are GGUF files, which are much smaller than the
+    full-precision originals.** The llama.cpp backend reads a quantized copy of
+    the same model — a current Qwen at around 3GB instead of 9GB, answering
+    several times quicker — and that is what the Discover tab offers you. The
+    trade is that a plain `.safetensors` chat model from the Hub is loadable on
+    Apple Silicon only; off a Mac, take the GGUF the shortlist names instead. It
+    is the same model, not a smaller one.
+  - **The accelerated builds are opt-in, and the default is the unaccelerated
+    one.** Images offer Diffusers (CPU), (CUDA) and (ROCm); chat offers
+    llama.cpp (CPU) and (Vulkan), which reaches both NVIDIA and AMD from one
+    wheel. The unaccelerated build is what you get without choosing: it is a
+    smaller install, it runs on any machine, and nothing about it can fail on
+    hardware you do not have. The accelerated ones are much larger downloads and
+    are offered on the Engines tab **only** when the app can see a matching,
+    usable GPU — otherwise the option is greyed out with the reason, such as a
+    driver that is not loaded or a `/dev/kfd` your user cannot open.
+    Transcription has no GPU build outside Apple Silicon: CTranslate2's AMD
+    wheels are not installable the way this app installs things, so AMD
+    transcribes on the CPU.
   - **On an AMD card that also drives your screen, a long render can freeze the
     desktop.** The render and the display share one queue on a single-GPU
     machine, so a big generation can starve the compositor until the driver

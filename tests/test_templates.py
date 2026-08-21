@@ -358,8 +358,8 @@ def test_duckdb_database_files_route_to_duckdb():
 def test_builtin_zarr_directory_key():
     # a `.zarr`-named dir carries the AOI streamer and the raw member listing as
     # peer modes (the legacy `zarr` template is gone; folder-level detection for
-    # non-`.zarr` dirs is handled by the gate on the "/" key instead), and then
-    # the chat like every other key.
+    # non-`.zarr` dirs is handled by the gate on the "/" key instead), then the
+    # multidim map and the chat like every other key.
     #
     # The chat has to be spelled out in THIS key rather than inherited: matching
     # picks exactly one winning key and uses its list whole (`_match_registry`
@@ -368,7 +368,7 @@ def test_builtin_zarr_directory_key():
     # REPLACES it. Leave `claude` out of `.zarr/` and a Zarr store becomes the one
     # directory on the machine with no chat.
     assert modes("/x/store.zarr", is_dir=True) == (
-        ["zarr_aoi", "_listing", "claude"], None)
+        ["zarr_aoi", "_listing", "map", "claude"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -836,7 +836,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     # ...and its folder is deleted, so the name no longer resolves at all
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
-    assert registry[".zarr/"] == ["zarr_aoi", "_listing", "claude"]
+    assert registry[".zarr/"] == ["zarr_aoi", "_listing", "map", "claude"]
     assert registry["/"] == ["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"]
 
 
@@ -846,7 +846,7 @@ def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
     store = tmp_path / "store.zarr"
     store.mkdir()
     assert modes(str(store), is_dir=True) == (
-        ["zarr_aoi", "_listing", "claude"], None)
+        ["zarr_aoi", "_listing", "map", "claude"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     # The `.zarr/` key is its own mode list and never offers `graph`, so the only
