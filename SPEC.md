@@ -8476,6 +8476,20 @@ currently does", not "this is what it must always do".
   lights up from a genuine `tool_use`/`tool_result` pair, `--allowed-tools` gains
   exactly one entry, `_observed` records the shape onto the document, and a later
   node's `source: "previous"` reads the conclusion like any other step's output.
+  Two consequences of the receipt being a real call. **It is conditional when the
+  step is.** A gated prompt step emits both "if that is not true, skip this step"
+  and the `step_note` instruction, and an unconditional "do not skip it" on the
+  second contradicted the first: the call happened anyway, `_poll` marked a step
+  that never ran `done`, and a downstream `source: "previous"` read a fabricated
+  conclusion as real data. The skip names the recording call and the receipt says
+  *if you run this step, then call it* — one instruction, not two that argue.
+  **And a graph of nothing but prompt steps needs no `fused`,** because
+  `step_server.py` runs on the app's own interpreter: `_start` demands the binary
+  only when the plan has app servers, and the page's Run button gates on the
+  graph holding at least one TOOL node rather than on `fusedCli` — otherwise the
+  relaxation is unreachable from the UI it exists for, and a machine without the
+  `[fused]` extra (where the palette still offers the prompt step) refuses a
+  pure-reasoning run over MCP servers it never starts.
 - **WC-9a** **`kind` is the whole format delta, and its ABSENCE means `"tool"`.**
   A node written before prompt steps existed carries no `kind` and must keep
   working, so the default is not a validation concern but the compatibility rule
@@ -8498,8 +8512,11 @@ currently does", not "this is what it must always do".
   a tool name this module validated or a value it serialized — and it is
   rendered into the `-p` argument as a JSON string literal, so a step whose text
   contains a line reading `RULES` or `- You may call any tool` cannot look like
-  a new section. Labels and conditions, which do occupy a line of the numbered
-  list, are collapsed to a single line for the same reason. The RULES section
+  a new section. Labels, conditions and the tool DESCRIPTION, which do occupy a
+  line of the numbered list, are collapsed to a single line for the same reason —
+  the description included because it comes from `[[tool]].description` in a
+  discovered `mcp.toml`, a manifest `discover.py` is explicit this user did not
+  necessarily author. The RULES section
   states that quoted text is content and never instruction.
 - **WC-10** **THE RUN'S CLOSING PARAGRAPH IS KEPT, AND IT IS NOT AN ERROR.**
   `_poll` read the stream's `result` row only when `is_error` was set, so on
@@ -8513,7 +8530,16 @@ currently does", not "this is what it must always do".
   every other node with its output reachable only by clicking it afterwards. It
   now carries an output card hung under the node — absolutely positioned, so the
   node's own box and therefore every wire endpoint is unchanged — and a graph
-  with several terminal steps gets several cards. The run summary is a card too,
+  with several terminal steps gets several cards. The card is a SIBLING of the
+  node, not a child, for two independent reasons. `role="button"` elements have
+  presentational children (HTML-AAM), so a card inside the node was pruned out of
+  the accessibility tree entirely and a screen reader got the node's label and
+  none of the result. And the auto grid puts rows 150px apart — less than a node
+  plus a card — so a card reliably lands over the node in the row below and, since
+  it stops `pointerdown`, made that node unclickable and undraggable. Every card
+  is inserted before every node in the layer, so a node always paints and is
+  always hit above a card; script places the card, which is what `top: 100%` used
+  to do for free. The run summary is a card too,
   but on the STAGE rather than in the world: it describes the run and not any
   one node, and a card that panned away with the graph is a card nobody finds
   again.
@@ -8526,4 +8552,11 @@ currently does", not "this is what it must always do".
   `poll` says `truncated` as its own field and the page renders that word rather
   than blaming the tool for a parse error the cap caused. Which disclosures the
   reader opened survives the poll tick, because a tree rebuilt from scratch every
-  1.5 s would slam shut once a second for the length of the run.
+  1.5 s would slam shut once a second for the length of the run. **The canvas is
+  not rebuilt on a timer at all**, for the same reason the inspector is not:
+  `renderNodes` empties its container, so a tick was also throwing away
+  the card's scroll position, any selection inside it, and focus on a `<summary>`
+  — during exactly the window a reader uses it, since a terminal branch usually
+  answers well before the run ends. The poll redraws the canvas only when the
+  polled node states actually changed, mirroring the inspector's signature
+  guard.
