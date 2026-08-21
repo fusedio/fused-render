@@ -468,9 +468,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # one would hand the user the exact failure `worker.py` had to write an
     # error message about.
     #
-    # Sizes use the same full-snapshot Hub metadata estimate as the Transformers
-    # list above (2026-08-14; tiny.en re-checked 2026-08-21), including
-    # model.bin plus tokenizer and configs.
+    # Sizes use the same full-snapshot Hub metadata estimate every list in this
+    # file uses (2026-08-14; tiny.en re-checked 2026-08-21), including model.bin
+    # plus tokenizer and configs. It was stated as "the same estimate as the
+    # Transformers list above" until D413 removed that list — the METHOD is
+    # what the sentence is about, and it is unchanged, so it now names the method
+    # rather than a neighbour that has to keep existing for this to parse.
     #
     # **No medium.** large-v3 turbo weighs about the same 1.6GB and is better at
     # every language, so a medium row would be an entry that is never the right
@@ -509,17 +512,21 @@ SUGGESTIONS: dict[str, list[dict]] = {
 #: **This file is keyed by runner because a repo belongs to a BACKEND** — the
 #: docstring's argument is about weights formats, `mlx-community/…` against
 #: `Qwen/…`, and two lists exist because neither backend can open the other's
-#: files. A CUDA build of Transformers reads byte for byte what the CPU build
+#: files. A CUDA build of Diffusers reads byte for byte what the CPU build
 #: reads; the split between them is which wheel gets installed, and nothing
 #: about which repos are loadable. So their lists must be identical BY
-#: CONSTRUCTION. Four copied literals would be identical only until somebody
-#: edited one of them, and the failure that produces — a curated model offered
-#: on the CPU engine and missing on the CUDA one, or worse, sized for a
-#: different budget — is silent on the page.
+#: CONSTRUCTION. Three copied literals — one per Diffusers row — would be
+#: identical only until somebody edited one of them, and the failure that
+#: produces is silent on the page: a curated model offered on the CPU engine and
+#: missing on the CUDA one, or worse, sized for a different budget. (Transformers
+#: was this paragraph's example until D413 withdrew it; Diffusers is the
+#: surviving three-row family and the argument is the same one.)
 #:
 #: An alias also keeps two invariants this file states elsewhere true: every id
 #: still appears in exactly ONE list (`capability_of` reads that), and
-#: `all_suggested_ids()` is not four copies deduplicated by luck.
+#: `all_suggested_ids()` is not a pile of copies deduplicated by luck. Left
+#: count-free deliberately: the number of literals aliasing avoids is the number
+#: of rows in the table, which is a thing that changes.
 #:
 #: What must NOT be aliased is a runner that reads a different format. That is
 #: the whole keying rule, and it is why this table names the specific pairs
@@ -604,7 +611,7 @@ def capability_of(repo_id: str) -> str | None:
 
     **That one-list-per-id invariant survives the hardware variants only because
     they are ALIASED rather than copied** (`_SHARED_SUGGESTIONS`): a CUDA
-    Transformers row shares the CPU row's entries instead of holding its own,
+    Diffusers row shares the CPU row's entries instead of holding its own,
     so no id appears under two keys and this loop cannot see the same repo
     twice. Copying the lists would not have broken the ANSWER — the variants of
     one backend share a capability, so first-match-wins returns the same string
@@ -641,7 +648,7 @@ def describe() -> list[dict]:
             {
                 "capability": capability,
                 "runner": runner.code if runner else None,
-                # The backend in words ("Transformers (CUDA)"), because with
+                # The backend in words ("Diffusers (CUDA)"), because with
                 # two runners per capability the code alone stopped being
                 # something a page could show a person.
                 "runnerLabel": runner.label if runner else None,

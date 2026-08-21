@@ -135,15 +135,25 @@ function CapabilityEngineRow({
         >
           {/* First, and the only option with no engine behind it. */}
           <option value={auto}>Automatic</option>
-          {/* A stored engine this build no longer registers, shown so the
-              control is not BLANK: a <select> whose value matches no option
-              renders empty, not as its first row. Disabled, because it cannot
-              be re-picked — and it sits above the real choices rather than
-              among them, since it is the current value and not an alternative.
-              See `strandedSelection` for why this is reachable at all. */}
+          {/* A stored engine that is not one of this capability's options,
+              shown so the control is not BLANK: a <select> whose value matches
+              no option renders empty, not as its first row. Disabled, because it
+              cannot be re-picked — and above the real choices rather than among
+              them, since it is the current value and not an alternative.
+
+              The copy says only what `strandedSelection` can establish. It read
+              "no longer available in this version", which is a claim about a
+              WITHDRAWN engine and is false for the other value that lands here:
+              a registered engine belonging to a different capability
+              (`{"text-generation": "mlx-whisper"}` in a hand-edited prefs.json)
+              is neither withdrawn nor unavailable, and the page cannot tell the
+              two apart from this payload. WHICH of the two it is comes from
+              `ignoredReason`, printed verbatim by `ignoredWarning` on the line
+              below — so the pair still says everything, with each half saying
+              only what it knows. */}
           {stranded && (
             <option value={stranded} disabled>
-              {stranded} — no longer available in this version
+              {stranded} — not one of this capability's engines
             </option>
           )}
           {row.choices.map((choice) => {

@@ -86,20 +86,44 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
  *  blank control worse rather than better: a sentence explaining a choice, above
  *  a control showing no choice.
  *
- *  It became reachable at D413, which removed the three `transformers-text*`
- *  engines. Those were offered in this very picker and stored by people who
- *  chose them, and `prefs.json` is a file that travels — synced, copied,
- *  restored from a backup — so an upgrade is not the only way one arrives. The
- *  server deliberately does NOT rewrite `selected` to match reality (a
- *  preference silently corrected on read is one the user can neither see nor
- *  undo, see `describe_engines`), which is the right call and is exactly what
- *  leaves this case for the page to render.
+ *  **TWO different stored values land here, and the caller's copy has to be true
+ *  of both.** `describe_engines` builds `choices` filtered by
+ *  `runner.capability == capability`, so a stored code goes missing from the list
+ *  for either of two reasons `resolve()` tells apart in prose but this function
+ *  cannot see:
+ *
+ *    - the code is not registered at all — a preference written by a newer build,
+ *      or naming an engine since withdrawn (D413 removed the three
+ *      `transformers-text*` codes, which were offered in this very picker and
+ *      stored by people who chose them);
+ *    - the code IS registered and serves a DIFFERENT capability — a hand-edited
+ *      or stale prefs.json, e.g. `{"text-generation": "mlx-whisper"}`.
+ *      `prefs._valid_engine_choice` refuses that on write but says nothing about
+ *      a file already on disk, which is the same reachability argument that
+ *      justifies handling the withdrawn case at all.
+ *
+ *  So this returns "the stored code matches no option", and NOT "the engine is
+ *  gone" — the caller must not claim a withdrawal it cannot establish. Telling
+ *  the two apart needs `registry.by_code`, which lives on the server and is not
+ *  on this payload; the DISTINCTION is already carried by `ignoredReason`, which
+ *  `ignoredWarning` prints verbatim underneath ("… is not a runner this build
+ *  knows" against "MLX Whisper does not do text-generation"). That split is
+ *  deliberate: the specific reason is the registry's sentence to write, and this
+ *  module does not paraphrase those.
+ *
+ *  Either way `prefs.json` is a file that travels — synced, copied, restored
+ *  from a backup — so an upgrade is not the only way one arrives, and the server
+ *  deliberately does NOT rewrite `selected` to match reality (a preference
+ *  silently corrected on read is one the user can neither see nor undo, see
+ *  `describe_engines`). That is the right call, and it is exactly what leaves
+ *  this case for the page to render.
  *
  *  The caller renders the returned code as one extra DISABLED option, so the
  *  select shows what is stored, cannot be re-picked, and reads consistently with
- *  the warning below it. The raw code rather than a label, because there is no
- *  label to be had: the engine is gone, and inventing a pretty name for it would
- *  be the page claiming knowledge it does not have.
+ *  the warning below it. The raw code rather than a label, because there may be
+ *  no label to be had: a withdrawn engine has none, and using the registered
+ *  label of a wrong-capability engine would dress a stale value up as a real
+ *  choice.
  *
  *  Null for `auto` — the caller renders that option itself, unconditionally.
  */

@@ -1169,8 +1169,8 @@ class CachedModel(NamedTuple):
     to a BACKEND, and the capability's two or three backends read mutually
     unloadable formats. `openai/whisper-large-v3` is a speech model that NEITHER
     shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit` is a text model
-    that the Transformers runner cannot open, so on a Mac switched to Transformers
-    it is an unusable download. Both have a perfectly good `capability`. The
+    that llama.cpp cannot open, so on a Mac switched to llama.cpp it is an
+    unusable download. Both have a perfectly good `capability`. The
     format's own answer — which runner codes would accept this snapshot, straight
     from `ai/runners/formats.py`, the same evidence each worker checks before it
     imports anything — is the half that settles it, so it travels with the row.

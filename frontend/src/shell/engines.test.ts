@@ -174,8 +174,54 @@ describe("strandedSelection", () => {
     });
   }
 
+  // The OTHER value that strands, and the one that caught the copy overclaiming:
+  // a code that IS registered and available, serving a different capability.
+  // `describe_engines` filters `choices` by capability, so it goes missing from
+  // the list exactly like a withdrawn code does — and `prefs._valid_engine_choice`
+  // refuses this on write but says nothing about a prefs.json already on disk,
+  // which is the same reachability argument that justifies handling the
+  // withdrawn case at all. Verified against the real registry: a stored
+  // `{"text-generation": "mlx-whisper"}` yields exactly this row.
+  function wrongCapability(): CapabilityEngine {
+    return mac({
+      capability: "text-generation",
+      selected: "mlx-whisper",
+      effective: "llamacpp-text",
+      effectiveLabel: "llama.cpp (CPU)",
+      effectiveShortLabel: "llama.cpp (CPU)",
+      ignoredReason: "MLX Whisper does not do text-generation",
+      choices: [
+        {
+          code: "llamacpp-text",
+          label: "llama.cpp (CPU)",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+  }
+
   it("reports a stored engine that no option matches", () => {
     expect(strandedSelection(withdrawn(), AUTO)).toBe("transformers-text");
+  });
+
+  it("also reports a registered engine that serves another capability", () => {
+    // The predicate must fire here too — otherwise the picker goes blank for
+    // this row, which is the whole bug this function exists to prevent.
+    expect(strandedSelection(wrongCapability(), AUTO)).toBe("mlx-whisper");
+  });
+
+  it("does not let the caller claim a WITHDRAWAL it cannot establish", () => {
+    // Both rows return a bare code and nothing else, so the option's copy is
+    // identical for both — which is why it may not say "no longer available in
+    // this version": `mlx-whisper` is registered, and on a Mac it is available
+    // too. What separates them is `ignoredReason`, and that is the registry's
+    // own sentence rather than anything this module composes.
+    expect(typeof strandedSelection(withdrawn(), AUTO)).toBe("string");
+    expect(typeof strandedSelection(wrongCapability(), AUTO)).toBe("string");
+    expect(ignoredWarning(withdrawn())).toContain("not a runner this build knows");
+    expect(ignoredWarning(wrongCapability())).toContain("does not do text-generation");
   });
 
   it("is silent for auto and for a choice that IS in the list", () => {

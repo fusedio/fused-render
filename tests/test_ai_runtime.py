@@ -1086,7 +1086,9 @@ def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch):
     **The remaining coverage is thin, and the test says so rather than implying
     otherwise.** Apple Silicon holds `mlx-text` and `llamacpp-text` both; Windows
     and Linux hold `llamacpp-text` alone, with `llamacpp-text-vulkan` as an
-    opt-in above it and no second FAMILY behind either. So on those two
+    opt-in registered BELOW it — which is why `auto` never reaches the Vulkan row
+    and why it does not widen this coverage — and no second FAMILY behind
+    either. So on those two
     platforms this assertion is one runner deep, and `_llamacpp_platform`'s own
     docstring carries what that costs (a Windows ARM64 box, or a Linux machine
     outside the three architectures its wheel index publishes, has no local text
@@ -1132,23 +1134,43 @@ def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch)
 def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypatch):
     """`_llamacpp_platform`, pinned directly rather than only through
     `for_capability` — the maintainer's CPU index publishes wheels for
-    Windows (any arch it runs on), Linux (any arch), and macOS arm64 ONLY;
-    there is no macOS x86_64 tag (verified against the index listing, D411).
+    `win_amd64`, Linux x86_64/aarch64/riscv64, and macOS arm64, and NOTHING
+    else (verified against the index listing for the pinned 0.3.29, D411).
+
+    **The gate is checked by ARCHITECTURE, and the refusals are asserted, not
+    just the admissions.** This docstring used to say "Windows (any arch it runs
+    on), Linux (any arch)", which contradicted both `_llamacpp_platform` and the
+    loop two lines below it — and a half-checked gate is what
+    `test_the_hardware_probes_stop_refusing_machines_that_work`'s whole family
+    exists to prevent. D413 makes it load-bearing rather than cosmetic: this row
+    is now the ONLY local text engine on Windows and Linux, so an arch this gate
+    wrongly ADMITS gets a Load button whose `uv sync` has nothing to install, and
+    one it wrongly REFUSES has no local text generation at all —
+    `_llamacpp_platform`'s own docstring cites this test for exactly that reason.
     """
     for system, machine in (
         ("Windows", "AMD64"), ("Linux", "x86_64"), ("Linux", "aarch64"),
-        ("Darwin", "arm64"),
+        ("Linux", "riscv64"), ("Darwin", "arm64"),
     ):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         status = registry.by_code("llamacpp-text").available()
         assert status.ok is True, (system, machine, status.reason)
 
-    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
-    status = registry.by_code("llamacpp-text").available()
-    assert status.ok is False
-    assert "macOS x86_64" in status.reason
+    # …and every architecture the index does NOT publish, refused with a reason
+    # that names the missing tag rather than the OS. Each `needle` is checked
+    # because "ok is False" alone would pass on a gate that refused for the
+    # wrong reason, which is the failure mode a user reads off the disabled row.
+    for system, machine, needle in (
+        ("Windows", "ARM64", "no win_arm64"),
+        ("Linux", "ppc64le", "no ppc64le build for Linux"),
+        ("Darwin", "x86_64", "macOS x86_64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text").available()
+        assert status.ok is False, (system, machine)
+        assert needle in status.reason, (system, machine, status.reason)
 
 
 def test_apple_silicon_falls_back_to_llamacpp_when_mlx_is_unavailable(

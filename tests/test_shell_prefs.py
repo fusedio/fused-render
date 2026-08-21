@@ -12,6 +12,7 @@ import os
 from fastapi.testclient import TestClient
 
 import fused_render.shell.prefs as prefs_mod
+from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
 
 
@@ -734,7 +735,21 @@ def test_a_prefs_file_naming_a_WITHDRAWN_engine_still_serves_the_capability(
     reason. `registry.resolve()` is where that happens and
     `test_a_removed_engine_code_in_prefs_degrades_to_the_ordering` pins it at
     that level; this is the end-to-end half, over a real file.
+
+    **The platform is PINNED, and on this branch that is load-bearing rather
+    than tidiness.** "A live effective engine" is not true everywhere any more:
+    since D413 the only local text engines are `mlx-text` (Apple Silicon) and
+    `llamacpp-text` (whose wheel index publishes no macOS x86_64 build and only
+    three Linux architectures), so `effective is None` is the CORRECT answer on
+    Intel macOS, Windows ARM64 and a Linux machine outside
+    x86_64/aarch64/riscv64 — and this test would fail there on right behaviour.
+    Linux/x86_64 is the same pin its registry-level sibling uses, and for the
+    same reason. What is under test here is the DEGRADATION, not the coverage;
+    the coverage invariant is
+    `test_ai_runtime.test_every_shipped_platform_keeps_a_local_text_engine`.
     """
+    monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
     (home / "prefs.json").write_text(
@@ -744,11 +759,51 @@ def test_a_prefs_file_naming_a_WITHDRAWN_engine_still_serves_the_capability(
     row = next(r for r in body["engines"]["capabilities"]
                if r["capability"] == "text-generation")
     assert row["selected"] == "transformers-text"
-    assert row["effective"] is not None and row["effective"] != "transformers-text"
-    assert row["ignoredReason"]
+    assert row["effective"] == "llamacpp-text"
+    assert "not a runner this build knows" in row["ignoredReason"]
+    # The stranded value is absent from `choices`, which is what sends the page
+    # down `engines.strandedSelection` — asserted here so the frontend fixture
+    # in `engines.test.ts` cannot drift away from what the server really sends.
+    assert "transformers-text" not in {c["code"] for c in row["choices"]}
     # …and the file is untouched by having been read.
     assert json.loads((home / "prefs.json").read_text())["engines"] == {
         "text-generation": "transformers-text"}
+
+
+def test_a_prefs_file_naming_ANOTHER_capabilitys_engine_degrades_the_same_way(
+        tmp_path, monkeypatch):
+    """The second value that strands the Engines picker, and it is not withdrawn.
+
+    `resolve()` documents this branch separately from the unknown-code one — "the
+    runner does not serve this capability (a stale prefs.json, or one
+    hand-edited)" — and `_valid_engine_choice` refuses it on write while saying
+    nothing about a file already on disk, exactly as with a withdrawn code. So it
+    reaches the page the same way and, because `describe_engines` filters
+    `choices` by capability, it goes missing from the list the same way too.
+
+    It is pinned here because the two are NOT interchangeable to a reader:
+    `mlx-whisper` is registered and, on a Mac, available — so copy claiming the
+    stored engine is gone or unavailable would be false of this row. That is the
+    overclaim `AiModelsEngines.tsx` was carrying, and this is the server-side
+    half of its fix; `engines.test.ts` covers the rendering half.
+    """
+    monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"engines": {"text-generation": "mlx-whisper"}}))
+
+    # The premise: a code this build DOES know, just not for this capability.
+    assert ai_registry.by_code("mlx-whisper") is not None
+
+    body = client.get("/api/prefs").json()
+    row = next(r for r in body["engines"]["capabilities"]
+               if r["capability"] == "text-generation")
+    assert row["selected"] == "mlx-whisper"
+    assert row["effective"] == "llamacpp-text"
+    assert "does not do text-generation" in row["ignoredReason"]
+    assert "mlx-whisper" not in {c["code"] for c in row["choices"]}
 
 
 def test_auto_is_a_value_you_can_write_BACK(tmp_path, monkeypatch):
