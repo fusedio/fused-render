@@ -1651,10 +1651,12 @@ def test_the_hub_path_still_sends_the_token_when_the_hub_serves_the_blob(
 
 # -- the model mirror: our own codepath for a suggested model --------------------
 #
-# `download_snapshot` is the ONE decision point, below every runner call
-# site, so nothing in a runner changes. What lands on disk is a normal hf cache
-# entry either way — which is the whole design — so these tests assert on the
-# LAYOUT and on which host was asked, never on an internal flag.
+# `download_snapshot` is the decision point for a REPO, below every runner call
+# site, so nothing in a runner changes. (A one-FILE download has its own branch
+# and its own object — see the AI-5m section further down; this one is about the
+# per-repo manifest and its completeness claim.) What lands on disk is a normal
+# hf cache entry either way — which is the whole design — so these tests assert
+# on the LAYOUT and on which host was asked, never on an internal flag.
 
 MIRROR_COMMIT = "a1b2c3d4" * 5
 

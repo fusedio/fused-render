@@ -1780,8 +1780,10 @@ def _fallback(model_id, error, source="segmented fetch"):
 # A suggested model can come off a distribution WE run instead of off
 # huggingface.co — see `mirror.py` for the protocol, the two environment
 # variables and why the permission is per-model. Everything below is the hook:
-# one branch inside `download_snapshot`, so every runner call site is
-# untouched, and any failure lands on the Hub path unchanged.
+# one branch inside `download_snapshot` for a repo and one inside `download_file`
+# for a single file (AI-5m — a different object with a weaker claim, not the same
+# manifest read loosely), so every runner call site is untouched and any failure
+# lands on the Hub path unchanged.
 
 #: The loaded `mirror` module, or False for "there is no usable one here".
 #: Cached because the answer cannot change within a process, and False rather
