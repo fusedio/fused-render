@@ -25,8 +25,9 @@
 //           the only source there is.
 //
 // Note what the client does NOT do: it never decides that a folder is
-// mount-backed, ignored or a package. It walks when the server has said it
-// cannot answer AND cannot be made to — one rule, in one direction.
+// mount-backed, ignored, a package, or that indexing has been turned off in
+// Preferences. It walks when the server has said it cannot answer AND
+// cannot be made to — one rule, in one direction.
 
 import type { RankReason } from "@platform/lib/api";
 
@@ -76,7 +77,16 @@ export interface SourceInput {
 export function nextStep(input: SourceInput): SearchStep {
   const { reason, asked, sinceAsk, polls, covered } = input;
   // Permanently uncoverable, each for its own reason, all one condition here.
-  if (reason === "mount" || reason === "package" || reason === "ignored") {
+  // `disabled` belongs in this set even though it is not permanent the way
+  // the other three are — the user can flip the preference back on — because
+  // there is no server signal to poll for that, so a scan is exactly as
+  // unaskable-for as it is for a mount, a package, or an ignored folder.
+  if (
+    reason === "mount" ||
+    reason === "package" ||
+    reason === "ignored" ||
+    reason === "disabled"
+  ) {
     return "walk";
   }
   if (reason === "scanning") {

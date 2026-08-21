@@ -36,7 +36,7 @@
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
-import type { IndexRankResult } from "@platform/lib/api";
+import type { IndexRankResult, RankReason } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
@@ -93,6 +93,14 @@ export interface HomeAnswer {
    * is a statement about the app, not about the user's files.
    */
   covered: boolean;
+  /**
+   * WHY, when `covered` is false — carried through verbatim from the
+   * server's `reason` (platform/lib/api.ts's `RankReason`). FilesHome reads
+   * this only to say "indexing is off" instead of the generic "still
+   * building" when `reason === "disabled"`; every other value renders the
+   * same not-covered message it always has.
+   */
+  reason: RankReason;
 }
 
 /** A ranked response as an answer: absolutized, capped, and highlighted. */
@@ -113,6 +121,7 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
     truncated: res.truncated,
     total: res.total,
     covered: res.covered,
+    reason: res.reason,
   };
 }
 
