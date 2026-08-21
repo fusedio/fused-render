@@ -410,8 +410,8 @@ def test_a_curated_llamacpp_filename_id_dispatches_local_not_to_claude(monkeypat
     FILENAME (`formats.GGUF_RECIPES`), never a repo id, so
     `"Qwen3.5-4B-Q5_K_M.gguf"` has no `/` at all. `"/" in model` alone sent
     it down the CLAUDE path as an unrecognised alias — a bug shipped with
-    `llamacpp-text` itself (D406), found and fixed while auditing the
-    fused-render-ai skill for what this branch invalidated (D407). If this
+    `llamacpp-text` itself (D411), found and fixed while auditing the
+    fused-render-ai skill for what this branch invalidated (D412). If this
     regresses, this test fails as a CLAUDE-tier 502 (an unknown alias),
     not silently."""
     _local(monkeypatch, [{"type": "done", "ok": True, "tokens": 5, "seconds": 0.2}])
