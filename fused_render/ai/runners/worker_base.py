@@ -470,6 +470,24 @@ _RETIRED_MAX_SEGMENTS_PER_FILE = 4
 #: hf could tell, and `_clear_parts` deletes them before the fallback runs
 #: rather than offering hf a file whose meaning depends on the platform.
 PART_SUFFIX = ".fusedpart"
+#: `os.O_BINARY` where the platform has one, and 0 where the question does not
+#: arise. **Windows only, and load-bearing exactly there.** A bare `os.open`
+#: there gets the CRT's default translation mode, which is TEXT, so every `\n`
+#: in a write becomes `\r\n` on the way to the disk. A weights blob is not text
+#: — 0x0a is about one byte in 256 of one — so a part file written without this
+#: flag is both LONGER than the file it describes and wrong in content, while
+#: the cursors go on saying the download is complete: they count what was handed
+#: to `os.write`, and the translation happens below that. The mirror path's
+#: sha256 then declines a repo the Hub could serve, and the Hub path, which has
+#: no digest, would publish a corrupt blob under a real etag — permanent, since
+#: hf serves it from cache forever (`finish`). The stdlib does exactly this for
+#: exactly this reason: `tempfile` ORs it into every one of its own flag sets.
+#:
+#: **Latent until the append-only route existed, and exposed rather than
+#: introduced by it.** `os.pwrite` does not exist on the one platform where the
+#: flag matters, so before `_appends_only` no `os.open` in this file had ever
+#: written a byte there. Windows CI found it the first time one did.
+_BINARY = getattr(os, "O_BINARY", 0)
 READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
 #: block, small enough that paying for it on one is nothing.
@@ -808,7 +826,8 @@ def _sparse_ok(folder):
     blocks = None
     try:
         os.makedirs(folder, exist_ok=True)
-        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC | _BINARY,
+                     0o644)
         try:
             os.ftruncate(fd, SPARSE_PROBE_BYTES)
             blocks = getattr(os.fstat(fd), "st_blocks", None)
@@ -1034,7 +1053,7 @@ class _FileFetch:
                 self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
-        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
+        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT | _BINARY, 0o644)
         os.ftruncate(self.fd, self.size)
         self.flush(force=True)
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
@@ -1087,7 +1106,8 @@ class _FileFetch:
             _remove(self.part)
             _remove(self.sidecar)
         self.fd = os.open(self.part,
-                          os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | _BINARY,
+                          0o644)
         os.ftruncate(self.fd, self.segments[0]["done"])
         self.flush(force=True)
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
@@ -1423,7 +1443,17 @@ class _FileFetch:
                     # `offset` is deliberately not consulted: see
                     # `_plan_append`. Still one syscall per write and no
                     # userspace buffer, which is the property that matters.
-                    written += os.write(self.fd, chunk[written:])
+                    moved = os.write(self.fd, chunk[written:])
+                    if not moved:
+                        # A loop that trusts a syscall to make progress is a
+                        # HANG rather than an error, and this one would spin on
+                        # a non-empty buffer forever, burning a core with the
+                        # download frozen and nothing in any log. Raising hands
+                        # it to `_TRANSIENT` like any other write failure, which
+                        # retries and then falls back.
+                        raise OSError(f"{self.filename}: a write of "
+                                      f"{len(chunk) - written} bytes moved none")
+                    written += moved
                 else:
                     written += os.pwrite(self.fd, chunk[written:],
                                          offset + written)
@@ -1479,6 +1509,27 @@ class _FileFetch:
                 raise RuntimeError(
                     f"{self.filename}: {landed} of {self.size} bytes landed, "
                     f"{len(missing)} segment(s) short")
+            if self.append and _file_size(self.part) != self.size:
+                # **On this route the length is an INDEPENDENT witness, so it is
+                # worth one syscall.** The cursors count what was handed to
+                # `os.write`; the length is what the kernel actually kept, and
+                # the two can only disagree if something between them rewrote
+                # the bytes — which is precisely what a text-mode fd does
+                # (`_BINARY`), and what no cursor and no `Content-Length` can
+                # notice. It is not a duplicate of the check above: there the
+                # question is whether every segment finished, here whether the
+                # file those segments claim to have written is the size they
+                # claim. On the SEGMENTED route the same check would be
+                # theatre, since the file is `ftruncate`d to its final size
+                # before a byte arrives — which is exactly why AI-5i gates
+                # publishing on the cursors and says a length proves nothing
+                # there. The Hub path carries no digest, so without this a
+                # translated blob would be published under a real etag and hf
+                # would serve it forever; with it, that download falls back.
+                raise RuntimeError(
+                    f"{self.filename}: {self.size} bytes were counted into a "
+                    f"part file of {_file_size(self.part)} — something between "
+                    f"this process and the disk rewrote them")
             os.close(self.fd)
             self.fd = None
             digest = self.verify

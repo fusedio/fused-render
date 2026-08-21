@@ -26,6 +26,7 @@ is imported from `test_ai_hub_fetch` rather than copied, for the reason that
 module's own imports give: a second set of CDN misbehaviours would be a second
 set to keep in step with the first.
 """
+import hashlib
 import json
 import os
 import threading
@@ -48,6 +49,34 @@ def no_pwrite(monkeypatch):
     point: the tests below do not care which of the two they got.
     """
     monkeypatch.delattr(os, "pwrite", raising=False)
+
+
+def _holds(path, expected):
+    """Assert a file's bytes WITHOUT ever handing pytest a large diff.
+
+    `assert open(path, "rb").read() == payload` is the obvious line and, on
+    failure, a catastrophe. pytest builds an assertion explanation for the two
+    objects; the payload here is 200_000 bytes containing 12_500 `\n`s, so
+    `difflib` gets ~12_500 "lines" per side and runs quadratically in them. That
+    is not a hypothesis: it is what the Windows lane did with the very first
+    test in this module. The bytes were wrong (the part file was opened in text
+    mode — see `worker_base._BINARY`), the comparison failed, and pytest then
+    spent **28 minutes** building the diff before CI killed the job. The log
+    showed a bare nodeid with no result line, the xdist worker's whole remaining
+    chunk never ran, and the run still summarised as "1 failed" — a hang wearing
+    a red test's clothes, and eight tests in this file that had never executed
+    at all reading as if they had.
+
+    Length and digest make the same claim in 64 characters and fail in
+    microseconds. Reproduced locally before writing this: the bare comparison
+    alone, in an otherwise empty test file, does not finish in 120 seconds.
+    """
+    got = open(path, "rb").read()
+    assert len(got) == len(expected), (
+        f"{path}: {len(got)} bytes on disk, {len(expected)} expected")
+    assert (hashlib.sha256(got).hexdigest()
+            == hashlib.sha256(expected).hexdigest()), (
+        f"{path}: the right LENGTH and the wrong bytes")
 
 
 def _part(folder):
@@ -74,7 +103,7 @@ def test_a_file_is_fetched_on_one_append_only_stream(base, monkeypatch, tmp_path
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
-    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
     assert state["log"] == [None], "a single sequential fetch asked for a range"
 
 
@@ -102,7 +131,7 @@ def test_the_part_file_is_not_pre_sized_so_its_length_is_the_progress(
     landed = recorded["segments"][0]["done"]
     assert 0 < landed < len(payload), recorded
     assert os.path.getsize(_part(folder)) == landed
-    assert open(_part(folder), "rb").read() == payload[:landed]
+    _holds(_part(folder), payload[:landed])
     # …and the bar reads that, rather than a pre-sized 200_000 (AI-5b). The
     # sidecar's own few hundred bytes are counted too, as they always were.
     on_disk = base.bytes_on_disk(folder)
@@ -132,7 +161,7 @@ def test_an_interrupted_fetch_resumes_by_appending_at_the_length_it_has(
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
-    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
     assert _offsets(state["log"]) == [landed], "the resume re-fetched what it had"
     assert not os.path.exists(_part(folder))
     assert not os.path.exists(_sidecar(folder))
@@ -167,7 +196,7 @@ def test_a_server_that_ignores_range_on_a_resume_rewinds_the_FILE(base, monkeypa
 
     blob = os.path.join(folder, "blobs", "e7ag")
     assert os.path.getsize(blob) == len(payload), "the body was appended, not rewound"
-    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
 
 
 def test_a_sidecar_from_the_SEGMENTED_path_is_never_appended_into(base, monkeypatch,
@@ -197,17 +226,23 @@ def test_a_sidecar_from_the_SEGMENTED_path_is_never_appended_into(base, monkeypa
         handle.write(payload[:50_000])
         handle.seek(100_000)
         handle.write(payload[100_000:150_000])
-    json.dump({"version": base.SIDECAR_VERSION, "etag": "e7ag",
-               "size": len(payload),
-               "segments": [{"start": 0, "end": 49_999, "done": 50_000},
-                            {"start": 50_000, "end": 99_999, "done": 0},
-                            {"start": 100_000, "end": 149_999, "done": 50_000},
-                            {"start": 150_000, "end": 199_999, "done": 0}]},
-              open(_sidecar(folder), "w"))
+    # A `with`, not `json.dump(..., open(...))`: on Windows an unclosed handle
+    # to this file makes the `os.unlink` the code under test performs on it
+    # raise PermissionError, which would be a failure of the TEST, in the one
+    # place this module exists to be trusted.
+    with open(_sidecar(folder), "w") as handle:
+        json.dump({"version": base.SIDECAR_VERSION, "etag": "e7ag",
+                   "size": len(payload),
+                   "segments": [{"start": 0, "end": 49_999, "done": 50_000},
+                                {"start": 50_000, "end": 99_999, "done": 0},
+                                {"start": 100_000, "end": 149_999,
+                                 "done": 50_000},
+                                {"start": 150_000, "end": 199_999, "done": 0}]},
+                  handle)
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
-    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
     assert _ranges(state["log"]) == [], "it resumed into a segmented part file"
 
 
@@ -227,7 +262,7 @@ def test_a_filesystem_that_cannot_hold_a_sparse_file_is_no_longer_a_reason_to_fa
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
-    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
 
 
 # -- several files still move at once ------------------------------------------
@@ -266,7 +301,73 @@ def test_the_serialization_is_per_file_not_repo_wide(base, monkeypatch, tmp_path
     thread.join(timeout=30.0)
     assert done, "the fetch did not finish"
     for name in metas:
-        assert open(os.path.join(done[0], name), "rb").read() == payload
+        _holds(os.path.join(done[0], name), payload)
+
+
+# -- the platform difference a deleted `os.pwrite` does NOT simulate ------------
+
+
+def test_the_payload_these_tests_move_would_notice_newline_translation(payload):
+    """These tests are the real platform check on win32, so the bytes they move
+    have to contain the byte a text-mode fd rewrites.
+
+    Asserted rather than assumed: a fixture quietly changed to, say, `b"x" *
+    200_000` would leave every test in this file green on Windows while the one
+    platform bug this route has ever had walked straight through them.
+    """
+    assert payload.count(b"\n") > 1_000, "these bytes cannot detect text mode"
+
+
+def test_the_part_file_is_opened_with_the_platforms_BINARY_flag(base, monkeypatch,
+                                                                tmp_path, payload):
+    """`_BINARY` reaches every `os.open` of a part file, and the bytes survive a
+    platform that would translate without it.
+
+    **This is the test that was missing, and its absence is why a false claim
+    reached the docs.** POSIX has no text mode, so `_BINARY` is 0 here and no
+    ordinary run can tell a correct `os.open` from one missing the flag — which
+    is exactly how the append route shipped without it, green on macOS and
+    silently corrupting every blob on win32.
+
+    So the platform is emulated rather than the flag: `_BINARY` is replaced with
+    a sentinel bit, `os.open` strips it before the real call and records which
+    fds carried it, and `os.write` translates `\n` to `\r\n` for exactly the
+    fds that did NOT — a stand-in for the CRT that is faithful in the one respect
+    that matters. With the flag in place nothing is translated and the file is
+    right; drop the `| _BINARY` from `_plan_append` and this fails on the length,
+    in milliseconds, on any platform.
+    """
+    sentinel = 1 << 30  # not a real open flag anywhere; stripped before the call
+    monkeypatch.setattr(base, "_BINARY", sentinel)
+    real_open, real_write = os.open, os.write
+    binary, opened = {}, []
+
+    def fake_open(path, flags, mode=0o777, **kw):
+        fd = real_open(path, flags & ~sentinel, mode, **kw)
+        binary[fd] = bool(flags & sentinel)
+        opened.append((str(path), binary[fd]))
+        return fd
+
+    def fake_write(fd, data):
+        if binary.get(fd, True):
+            return real_write(fd, data)
+        # A text-mode fd: what lands is longer than what was handed over, and
+        # the count returned describes the input rather than the disk.
+        real_write(fd, bytes(data).replace(b"\n", b"\r\n"))
+        return len(data)
+
+    monkeypatch.setattr(os, "open", fake_open)
+    monkeypatch.setattr(os, "write", fake_write)
+
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    parts = [(path, flag) for path, flag in opened if path.endswith(".fusedpart")]
+    assert parts, "the part file was never opened through the wrapper"
+    assert all(flag for _path, flag in parts), parts
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
+    _holds(os.path.join(folder, "blobs", "e7ag"), payload)
 
 
 # -- the mirror, which is the reason this matters -------------------------------
@@ -291,7 +392,7 @@ def test_the_mirror_serves_the_repo_without_pwrite(base, monkeypatch, tmp_path,
     snapshot = base.download_snapshot("org/m")
 
     assert snapshot == os.path.join(folder, "snapshots", MIRROR_COMMIT)
-    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    _holds(os.path.join(snapshot, "model.safetensors"), payload)
     assert open(os.path.join(folder, "refs", "main")).read() == MIRROR_COMMIT
     paths = [r["path"] for r in state["requests"]]
     assert paths[0] == MANIFEST_PATH and paths.count(MANIFEST_PATH) == 1
