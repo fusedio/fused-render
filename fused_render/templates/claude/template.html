@@ -5732,7 +5732,9 @@ let annEditing = null;  // id of an existing pending note being edited
 let annRecOn = false;
 let annRecStartedAt = 0;     // performance.now() when the mic started
 let annRecIds = [];          // ids this recording stamped, oldest first
-let annRecorder = null, annRecChunks = [];
+// The live `fused.capture.audio` handle (SPEC §45): the APP records now, so
+// this page holds one object instead of a MediaRecorder and a growing blob.
+let annRecHandle = null;
 let annRecTimerId = null;
 
 function annLoad() {
@@ -6578,16 +6580,6 @@ function annRecPaint() {
   annRecLbl.textContent = annRecClock(secs)
     + (annRecIds.length ? " · " + annRecIds.length : "");
 }
-// The extension follows what MediaRecorder actually produced (Chromium's
-// default is webm/opus, WKWebView's is usually mp4/aac — this app ships on
-// both) rather than assuming one container the way a name like ".webm" would.
-function annRecExt(mime) {
-  if (mime && mime.includes("mp4")) return ".m4a";
-  if (mime && mime.includes("ogg")) return ".ogg";
-  if (mime && mime.includes("wav")) return ".wav";
-  return ".webm";
-}
-
 // Warm the transcriber the moment a recording STARTS, so the words are not
 // waiting on a cold model when it stops — the load runs while the reader is
 // still talking, which is exactly the dead time it fits in. Fire-and-forget
@@ -6619,20 +6611,52 @@ function annWarmTranscriber() {
   })();
 }
 
+// The seat is drawn off `sources()`, which never prompts (SPEC CP-7), so a
+// machine that cannot record at all gets no mic rather than one that could
+// only ever alert. macOS always answers `available` (the permission prompt
+// rides the first recording), so an ungranted mic never costs the seat; a
+// browser that cannot record does, and the reason names one that can (CP-11).
+(async () => {
+  try {
+    const src = await fused.capture.sources();
+    if (src && src.audio && src.audio.available === false) {
+      // Removed, not hidden: #anncta's display rule beats `hidden`, and the
+      // strip hides itself once nothing visible is left in it.
+      annRecBtn.remove();
+      console.warn("spoken walkthroughs unavailable:", src.audio.reason || "");
+    }
+  } catch (err) {
+    console.warn("capture probe skipped:", err.message);   // not a refusal
+  }
+})();
+
 async function annRecBegin() {
   if (annRecOn || !annCapable()) return;
   annWarmTranscriber();
-  // Disabled for the width of the permission prompt too, not just while a
-  // recording runs — otherwise a second click before the browser answers the
-  // first request opens two mic streams.
+  // Disabled for the width of the start request too, not just while a
+  // recording runs — otherwise a second click before the app answers the
+  // first one opens two recordings.
   annRecBtn.disabled = true;
-  let stream;
+  let rec;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // `rec.path` names the file before the first sample exists, which is why
+    // this is not a MediaRecorder any more: the stop hands
+    // fused.ai.transcribe({path}) a path instead of this page uploading a blob
+    // it had to guess a container for.
+    // NO `path` of our own — the container is the backend's to name (SPEC
+    // CP-5: .m4a natively, mp4 or WebM where the browser encodes) and a path
+    // whose extension contradicts it is refused. So the audio lands under
+    // `<home>/recordings` as a download-manager row (CP-3) rather than in the
+    // pruned crop dir: the row's ✕ is how a walkthrough is deleted now, and
+    // the row is what lets one outlive this page. Cap is the default 30 min,
+    // which STOPS and keeps (CP-4) — a mic nobody turned off still turns off.
+    rec = await fused.capture.audio({ title: "Spoken walkthrough" });
   } catch (err) {
     annRecBtn.disabled = false;
-    alert("Microphone unavailable — " + (err.message || err.name)
-          + "\n\nAllow microphone access for this app and try again.");
+    // Nothing appended: `unavailable` carries the machine's own sentence
+    // (System Settings, or a browser that can), and the fixed "allow
+    // microphone access" line this used to add was wrong for half of them.
+    alert("Cannot record — " + (err.message || err.name));
     return;
   }
   annRecBtn.disabled = false;
@@ -6640,18 +6664,12 @@ async function annRecBegin() {
   // the other way (annWireTarget's branch below) — arm it if the reader went
   // straight for the mic without sliding Comment on first.
   if (!annOn) annSetMode(true);
-  // The sink is THIS session's array, closed over — not the global name.
-  // The enders snapshot the globals and reset them before their await, and
-  // a push routed through the global would land the recorder's FINAL
-  // dataavailable in the next session's (or nobody's) array (Bugbot, PR #665).
-  const chunks = [];
-  annRecChunks = chunks;
   annRecIds = [];
-  annRecorder = new MediaRecorder(stream);
-  annRecorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-  annRecorder.onstop = () => stream.getTracks().forEach((t) => t.stop());
+  annRecHandle = rec;
+  // The handle lands when the recording is ALREADY RUNNING (CP-1), so this
+  // clock and the transcript's own timestamps differ only by the start reply's
+  // trip home — inside what annRecAssign's nearest-word match cares about.
   annRecStartedAt = performance.now();
-  annRecorder.start();
   annRecOn = true;
   // The picker usually arrived with annSetMode(true) above; this direct call
   // covers the one path where the mode was ALREADY armed when the mic was
@@ -6847,7 +6865,7 @@ function annRecAssign(ids, segments) {
 // stamped and empty, editable by hand like any other pending note — rather
 // than costing the reader the walkthrough they just did.
 async function annRecEnd() {
-  if (!annRecOn || !annRecorder) return;
+  if (!annRecOn || !annRecHandle) return;
   // Flags down BEFORE the stop's await (Bugbot, PR #665): the Discard seat
   // stays on screen exactly as long as #annrec.on does, and a discard click
   // landing inside this await used to pass its own guard, call stop() on an
@@ -6858,18 +6876,16 @@ async function annRecEnd() {
   // The WHOLE session is snapshotted synchronously here (Bugbot, PR #665):
   // the flags drop before the await, and Esc re-enables the seat, so a NEW
   // recording can begin while this one settles — every global read after
-  // the await would be the new session's. Chunks, ids, timer and epoch are
-  // captured now and the globals handed back fresh; from here down this
+  // the await would be the new session's. The handle, ids, timer and epoch
+  // are captured now and the globals handed back fresh; from here down this
   // function touches only its own session.
-  const recorder = annRecorder;
-  const chunks = annRecChunks;
+  const handle = annRecHandle;
   const ids = annRecIds;
   const armed = annArmEpoch;
   clearInterval(annRecTimerId);
   annRecTimerId = null;
-  annRecChunks = [];
   annRecIds = [];
-  annRecorder = null;
+  annRecHandle = null;
   annRecOn = false;
   // The face goes with the flags — the trash and the stop clock leave the
   // strip the moment the choice is made, not after the recorder settles.
@@ -6883,24 +6899,23 @@ async function annRecEnd() {
   annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
   // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
   // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
-  // long MediaRecorder.stop()'s encode takes (no timeslice — it can take a
-  // while), still wearing the stop aria-label, and a click there ran annDone
-  // and disarmed the mode before transcription ever started. Same treatment
-  // the transcription below gets: disabled, .busy (the face yields to
-  // #annreclbl), named for what is happening.
+  // long the stop takes — milliseconds where the app records natively, longer
+  // where the browser encodes and the last timeslice has to be flushed and
+  // acknowledged — still wearing the stop aria-label, and a click there ran
+  // annDone and disarmed the mode before transcription ever started. Same
+  // treatment the transcription below gets: disabled, .busy (the face yields
+  // to #annreclbl), named for what is happening.
   annBtn.disabled = true;
   annBtn.setAttribute("aria-label", "Stopping the recording");
   annBtn.title = "Stopping the recording…";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Stopping…";
-  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
-  recorder.stop();
-  await stopped;
-  // The chunks are complete here: the recorder's final dataavailable fires
-  // before its stop event resolves the await above, and it landed in THIS
-  // session's captured array — annRecBegin's sink is a closure, not the
-  // global name this function already reset.
-  const blob = new Blob(chunks, { type: recorder.mimeType || "" });
+  // The ending that KEEPS the file (CP-4) — `cancel()` is the discard. Its
+  // reply is the finished file, so nothing here uploads anything. Swallowed
+  // like the transcription below: a failed stop leaves the clicks stamped and
+  // empty, editable by hand, rather than costing the reader the walkthrough.
+  const out = await handle.stop()
+    .catch((err) => void console.warn("walkthrough stop failed:", err.message));
   // Ending a walkthrough puts the whole mode away (Akshil, 2026-08-19):
   // record → talk → stop is the complete gesture, and a comment layer left
   // armed after it swallows the reading clicks that usually come next. The
@@ -6910,7 +6925,11 @@ async function annRecEnd() {
   // not close. It also keeps the disarm from echoing when annSetMode's own
   // disarm called us (annOn is already false there). Nothing recorded:
   // disarm and go.
-  if (!blob.size) {   // nothing said: no transcript to fetch
+  // Nothing to transcribe: a failed stop, an empty file, or a stop that
+  // landed on the start's own beat (`seconds` is the session's wall time).
+  // SILENCE is not this branch — it reaches the transcriber and comes back
+  // wordless, and the send is gated on words landing (`spoke || intro`).
+  if (!out || !out.path || !out.bytes || (out.seconds || 0) < 0.4) {
     // The status leaves with this path's own hands — the transcription's
     // finally never runs here. The disarm below renames the seat; the
     // epoch-skipped case (someone re-armed mid-stop) is renamed by the
@@ -6950,15 +6969,11 @@ async function annRecEnd() {
     annRecLbl.textContent = "Transcribing…";
   }
   try {
-    // The same 0700 temp dir the pane crops use (shotDirPath/shotJoin/shotStamp,
-    // below) — it is already pruned by age and count (agent.py's `_prune_shots`),
-    // and a walkthrough's audio is exactly the kind of scratch file that
-    // pruning exists for. Unlike a crop this file is never handed to Claude —
+    // Already on disk, written by the app — no upload leg, and no temp dir of
+    // ours to prune. Unlike a crop the audio is never handed to Claude:
     // fused.ai.transcribe reads it locally and only the WORDS leave this
-    // function — so it needs no `Read(...)` rule of its own.
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + "-walkthrough" + annRecExt(blob.type));
-    await fused.uploadFile(path, blob);
+    // function, so it needs no `Read(...)` rule of its own.
+    const path = out.path;
     // `words: true` asks for per-word timings inside each segment (D392), which
     // is what lets a click that landed MID-sentence take only the words after
     // it (annRecAssign). Best-effort by contract, never refused: an engine
@@ -7045,19 +7060,18 @@ annRecBtn.addEventListener("click",
 // no-ops after this (annRecOn is false and the recorder is gone), so a stop
 // click racing the discard cannot resurrect the walkthrough.
 async function annRecDiscard() {
-  if (!annRecOn || !annRecorder) return;
+  if (!annRecOn || !annRecHandle) return;
   // The whole session is snapshotted synchronously, like annRecEnd's: a new
   // recording can begin while this one's stop settles, and every global read
   // after the await would be the new session's — its marks deleted, its
   // timer killed (Bugbot, PR #665).
-  const recorder = annRecorder;
+  const handle = annRecHandle;
   const ids = new Set(annRecIds);
   const armed = annArmEpoch;
   clearInterval(annRecTimerId);
   annRecTimerId = null;
-  annRecChunks = [];
   annRecIds = [];
-  annRecorder = null;
+  annRecHandle = null;
   annRecOn = false;
   // The face goes BEFORE the await, like annRecEnd's: the trash and the
   // stop clock leave the strip the moment the choice is made, and a second
@@ -7074,9 +7088,12 @@ async function annRecDiscard() {
   annBtn.title = "Discarding the recording…";
   annCta.classList.add("busy");
   annRecLbl.textContent = "Discarding…";
-  const stopped = new Promise((resolve) => recorder.addEventListener("stop", resolve, { once: true }));
-  recorder.stop();   // onstop releases the mic tracks, same as a kept stop
-  await stopped;
+  // `cancel()` STOPS AND DELETES (CP-4) — the ✕'s own meaning — where a stop
+  // would leave the file behind. It cannot lose to the stop seat either: the
+  // handle memoizes ONE ending, so a stop click landing inside this await gets
+  // this cancel's promise back instead of opening a second request.
+  await handle.cancel()
+    .catch((err) => void console.warn("walkthrough discard failed:", err.message));
   // A NEW session that began during the settle owns the seat now — leave its
   // busy state, labels and clock alone (Bugbot, PR #665).
   if (!annRecOn) {
@@ -7443,17 +7460,20 @@ if (CHAT_ONLY) {
   // reason they stopped working.
   window.addEventListener("pagehide", () => {
     annOn = false;   // gates any handler of ours the browser does still run
-    // Release the mic synchronously — DOM removal only, same rule the rest of
-    // this handler follows (see below), so no transcription is started here:
-    // this document is going away and there is no panel left to show its
-    // result in. `stop()` runs the recorder's own `onstop`, which is what
-    // actually stops the tracks.
+    // End the recording, fire-and-forget: no transcription — this document is
+    // going away and there is no panel to show one in — but the microphone
+    // must not be left on. `stop()` KEEPS the file (CP-4): a teardown nobody
+    // asked for must not throw a walkthrough away. Best-effort BY DESIGN — the
+    // request may not survive the unload, and both platforms then fail safely
+    // (the socket closing is itself a keeping ending where the browser
+    // encodes; the cap turns the mic off where the app records).
     if (annRecOn) {
       annRecOn = false;
       clearInterval(annRecTimerId);
       annRecTimerId = null;
-      try { annRecorder.stop(); } catch (err) { /* already stopping */ }
-      annRecorder = null;
+      const handle = annRecHandle;
+      annRecHandle = null;
+      if (handle) handle.stop().catch(() => {});
     }
     // The observer is disconnected EXPLICITLY, not trusted to die with us: it
     // watches the HOST's document, and a mutation over there between this
