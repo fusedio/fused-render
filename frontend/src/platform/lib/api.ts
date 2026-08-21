@@ -2572,6 +2572,11 @@ export function getAiRuntime(): Promise<AiRuntime> {
 export interface AiCatalogModel {
   id: string;
   label: string;
+  /** The short human name the Playground sidebar shows — the model without its
+   *  quantization/engine qualifier. A curated field beside `label`, never a
+   *  stripped copy of it (catalog.py states why); absent on a cached entry,
+   *  where the fallback is `label`. */
+  nickname?: string | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;

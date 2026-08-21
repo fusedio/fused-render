@@ -29,6 +29,7 @@
 // the size figure, the Explore link, the revision drawer, and the tab strip.
 import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
+import AiModelsPlayground from "./AiModelsPlayground";
 import AiModelsEngines from "./AiModelsEngines";
 import AiModelsUsage from "./AiModelsUsage";
 import { ModelProgress } from "./AiProgress";
@@ -89,14 +90,21 @@ type Load =
 // Claude tier, which no other tab mentions, because `fused.ai` is one door
 // (AI-1) and a graph that counted only half of it would be the wrong number
 // under the right label.
-export type AiModelsTab = "local" | "discover" | "engines" | "usage";
+// Playground is the fifth tab and the DEFAULT: bare /ai-models lands on it.
+// That completes HF-8's own argument — the sidebar entry is unconditional so
+// an empty machine has a door, and the door now opens on "pick a model and
+// try it, the smallest is one Download away" rather than on an empty cache
+// listing. `?tab=local` names the inventory explicitly now.
+export type AiModelsTab = "playground" | "local" | "discover" | "engines" | "usage";
 
 /** The tab the URL asks for. An unknown value falls back to the default
  *  silently, the same forgiving posture the shell takes for an unknown `_mode`
  *  (PT-9): a stale link should open the page, not an error. */
 function tabFromUrl(): AiModelsTab {
   const asked = new URLSearchParams(location.search).get("tab");
-  return asked === "discover" || asked === "engines" || asked === "usage" ? asked : "local";
+  return asked === "local" || asked === "discover" || asked === "engines" || asked === "usage"
+    ? asked
+    : "playground";
 }
 
 // What the confirmation is about. Every destructive action becomes one of these
@@ -792,8 +800,8 @@ export default function AiModels() {
     if (next === tab) return;
     const params = new URLSearchParams(location.search);
     // The default is the ABSENCE of the param, so /ai-models stays the URL for
-    // the page rather than becoming a redirect to /ai-models?tab=local.
-    if (next === "local") params.delete("tab");
+    // the page rather than becoming a redirect to /ai-models?tab=playground.
+    if (next === "playground") params.delete("tab");
     else params.set("tab", next);
     const search = params.toString();
     navigateUrl(location.pathname + (search ? "?" + search : ""));
@@ -1053,7 +1061,11 @@ export default function AiModels() {
                 that one sentence look like a filesystem fact next to the other
                 that does not. */}
             <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
-              {tab === "discover" ? (
+              {tab === "playground" ? (
+                // What the tab is FOR: trying a model, not managing one — the
+                // other four tabs are the managing.
+                "Pick a local model and try it — chat, images, transcription"
+              ) : tab === "discover" ? (
                 // What the tab is FOR, and the constraint in the same breath.
                 // It said "Models on the Hugging Face Hub", which was true of a
                 // search returning fill-mask models nothing here could load —
@@ -1122,6 +1134,16 @@ export default function AiModels() {
               <button
                 type="button"
                 role="tab"
+                aria-selected={tab === "playground"}
+                className={"am-tab" + (tab === "playground" ? " active" : "")}
+                onClick={() => setTab("playground")}
+                title="Try a local model — chat, images, transcription"
+              >
+                Playground
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={tab === "local"}
                 className={"am-tab" + (tab === "local" ? " active" : "")}
                 onClick={() => setTab("local")}
@@ -1162,6 +1184,10 @@ export default function AiModels() {
             </div>
           </div>
         </div>
+        {/* Mounted only while selected, like the rest: the playground reads
+            the catalog and subscribes to the runtime poll, and neither belongs
+            behind a tab nobody is looking at. */}
+        {tab === "playground" && <AiModelsPlayground />}
         {tab === "discover" && (
           // The cache answer comes from the PAGE's walk, not from a second one
           // Discover runs for itself: one listing, one definition of "on this
