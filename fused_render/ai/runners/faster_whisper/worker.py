@@ -110,8 +110,12 @@ def load(model_id, fetched):
         raise RuntimeError(
             f"{model_id} has no {_CT2_WEIGHTS} — this looks like a "
             "transformers-format Whisper repo, and this runner loads "
-            "CTranslate2 conversions. Try Systran/faster-whisper-large-v3 or "
-            "deepdml/faster-whisper-large-v3-turbo-ct2.")
+            "CTranslate2 conversions. Try "
+            # Named models a refusal points at, and they must be models the
+            # CATALOG actually offers (see torch_text._TRY_INSTEAD) — update
+            # this pair if SUGGESTIONS["faster-whisper"] moves.
+            "deepdml/faster-whisper-large-v3-turbo-ct2 or "
+            "Systran/faster-whisper-small.")
 
     from faster_whisper import WhisperModel
 

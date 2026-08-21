@@ -239,7 +239,10 @@ def load(model_id, fetched):
             "(CTranslate2 repos carry model.bin; transformers repos carry "
             "model.safetensors with a transformers config). Try "
             "mlx-community/whisper-large-v3-turbo or "
-            "mlx-community/whisper-medium-mlx.")
+            # Named models a refusal points at, and they must be models the
+            # CATALOG actually offers (see torch_text._TRY_INSTEAD) — update
+            # this pair if SUGGESTIONS["mlx-whisper"] moves.
+            "mlx-community/whisper-large-v3-mlx.")
 
     # The RELEASED library (0.4.x) looks for `weights.safetensors` then
     # `weights.npz` — `model.safetensors` support exists only on mlx-examples

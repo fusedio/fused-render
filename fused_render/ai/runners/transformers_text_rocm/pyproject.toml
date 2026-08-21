@@ -50,7 +50,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.13,<3",
     "triton-rocm; sys_platform == 'linux'",
-    "transformers>=4.51,<6",
+    "transformers>=5.15,<6",
     "accelerate>=1.14,<2",
     "sentencepiece",
     "protobuf",

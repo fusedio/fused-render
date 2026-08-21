@@ -507,8 +507,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
-        "tonera/FLUX.2-klein-4B-int8-diffusers",
-        "black-forest-labs/FLUX.2-klein-4B"]
+        "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
     for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
@@ -1590,12 +1589,12 @@ def test_no_hardware_variant_holds_its_own_suggestion_list():
 
 def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
     expected = {
-        "Qwen/Qwen3-4B-Instruct-2507": 8.1,
-        "microsoft/Phi-4-mini-instruct": 7.7,
-        "Qwen/Qwen3-1.7B": 4.1,
-        "Qwen/Qwen3-8B": 16.4,
+        "Qwen/Qwen3.5-4B": 9.3,
+        "allenai/Olmo-3-7B-Instruct": 14.6,
+        "ibm-granite/granite-4.1-8b": 17.6,
+        "Qwen/Qwen3.5-9B": 19.3,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
-        "Systran/faster-whisper-medium": 1.5,
+        "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
     }
     actual = {
@@ -1610,7 +1609,7 @@ def test_every_suggestion_list_is_ordered_smallest_first():
     """One ordering rule, and the default is whatever it puts at position 0.
 
     The user was shown the trade — a bare `fused.ai.transcribe()` now loads
-    `Systran/faster-whisper-small` rather than the turbo model — and chose one
+    `Systran/faster-whisper-tiny.en` rather than the turbo model — and chose one
     rule over a separate default field. So this is the rule, asserted rather
     than left to the eye: sorted by ascending `size_gb`, with an entry that has
     no size sorting LAST (an unknown download must never lead a list, since
@@ -1641,9 +1640,9 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3-1.7B"
+    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3.5-4B"
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
-        "Systran/faster-whisper-small"
+        "Systran/faster-whisper-tiny.en"
 
 
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
@@ -5525,7 +5524,7 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
     **The no-suggestions condition is CONSTRUCTED, and the construction is asserted.**
     The first version of this test emptied `SUGGESTIONS["mlx-text"]` by name, which
     is the runner a Mac resolves — so on Linux it emptied a list nobody was reading,
-    `transformers-text` answered with `Qwen/Qwen3-1.7B` at position 0, and the test
+    `transformers-text` answered with its own position 0 (`Qwen/Qwen3.5-4B`), and the test
     failed on its conclusion for a premise that was never true. Both resolutions now
     run, the list emptied is the one the row actually resolved, and the premise is
     checked before the conclusion so a future change to resolution fails loudly on
