@@ -1994,6 +1994,137 @@ def test_in_use_nests_without_losing_track(fake_runner):
     assert worker.in_flight == 0
 
 
+# -- the idle reaper (AI-13) ------------------------------------------------
+
+
+def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
+                 capability=registry.TEXT_GENERATION, model="org/idle"):
+    """A `ready` worker planted directly in `_workers`, the same shortcut
+    `test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served` uses — no
+    process, so `_terminate` is stubbed the same way."""
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    worker = supervisor.Worker(model=model, capability=capability,
+                               runner_code="fake-text", token="t", state=state,
+                               last_activity=last_activity, in_flight=in_flight)
+    monkeypatch.setitem(supervisor._workers, capability, worker)
+    return worker
+
+
+def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, state="loading", last_activity=now - 10_000)
+    # A 40-minute `uv sync` or an 8GB pull IS activity, and killing it mid-build
+    # is hostile rather than a memory win — only `ready` is eligible.
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._workers[registry.TEXT_GENERATION] is worker
+
+
+def test_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_in_flight_with_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5, in_flight=1)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_in_flight_past_the_window_is_reaped_anyway(monkeypatch):
+    """The leak the `in_flight` counter could introduce: a page that abandons a
+    stream without closing it pins the counter at 1 forever. `_touch` re-stamps
+    on every real chunk, so a genuinely live stream is never stale — only a
+    leaked one is, and the SAME window that would idle-unload a quiet worker is
+    what stops a leaked one holding the model forever."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 700, in_flight=1)
+    assert supervisor.idle_workers(now) != []
+
+
+def test_zero_minutes_disables_the_reaper_entirely(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 100_000)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+
+
+def test_a_weights_only_fetch_is_untouched_by_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    stub = supervisor.Worker(model="org/fetching", capability=registry.TEXT_GENERATION,
+                             runner_code="fake-text", token="t", state="downloading",
+                             last_activity=now - 100_000)
+    monkeypatch.setitem(supervisor._fetch_workers, "org/fetching", stub)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._fetch_workers["org/fetching"] is stub
+
+
+def test_the_pref_is_re_read_on_every_call(monkeypatch):
+    """No caching between calls: a preference edited mid-session, or an env
+    override that comes and goes, moves the answer on the very next tick —
+    same discipline as `ready_worker`'s live re-read of the engine choice."""
+    from fused_render.shell import prefs
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 400)
+    minutes = [10]
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: minutes[0])
+    assert supervisor.idle_workers(now) == [], "400s has not reached a 10-minute window"
+    minutes[0] = 5
+    assert supervisor.idle_workers(now) != [], "the SAME worker, a shorter window"
+
+
+def test_the_reaped_job_row_names_the_idle_reason(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, last_activity=now - 700)
+    job_id = supervisor.job_id_for(worker.model)
+    supervisor._report(job_id, title=worker.model, state="running", kind="task")
+
+    assert supervisor.reap_idle(now) == [worker.model]
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job_id)
+    assert row["detail"] == "Unloaded after 10 min idle"
+
+
+def test_describe_reports_idle_seconds_and_the_countdown(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["idleSeconds"] == pytest.approx(60, abs=3)
+    assert row["unloadsInSeconds"] == pytest.approx(540, abs=3)
+
+
+def test_describe_reports_no_countdown_when_the_window_is_disabled(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["unloadsInSeconds"] is None
+
+
 # -- a worker's environment carries no Hub token of our making (D402) ------------
 
 

@@ -1123,8 +1123,15 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
 
-def unload(model: str | None = None, capability: str | None = None) -> bool:
-    """Stop a resident worker. True if there was one to stop."""
+def unload(model: str | None = None, capability: str | None = None,
+          reason: str = "Unloaded") -> bool:
+    """Stop a resident worker. True if there was one to stop.
+
+    `reason` lands verbatim in the job row's `detail`, so every caller — a
+    page's explicit unload, `evict_stale_engines`, a newer load claiming the
+    capability, shutdown, and the idle reaper (AI-13) — can say which of them
+    it was, without a parallel teardown for each.
+    """
     with _lock:
         targets = [
             w for w in _workers.values()
@@ -1136,7 +1143,7 @@ def unload(model: str | None = None, capability: str | None = None) -> bool:
             _workers.pop(worker.capability, None)
     for worker in targets:
         _terminate(worker)
-        _report(job_id_for(worker.model), state="done", detail="Unloaded")
+        _report(job_id_for(worker.model), state="done", detail=reason)
     return bool(targets)
 
 
@@ -1173,6 +1180,108 @@ def evict_stale_engines() -> list[str]:
     for worker in stale:
         unload(model=worker.model, capability=worker.capability)
     return [worker.model for worker in stale]
+
+
+#: How often the reaper thread wakes up to evaluate `reap_idle` (AI-13). The
+#: promise is "about ten minutes", not a deadline, so a coarse tick is the
+#: right trade: worst case is one tick of overshoot, and the job row's
+#: "Unloaded after N min idle" detail is worded so an overshoot never reads as
+#: a crash. Kept well under any plausible idle window so a `1`-minute window
+#: does not wait half its own length to fire.
+_REAPER_TICK_S = 30.0
+
+_reaper_thread: threading.Thread | None = None
+
+
+def idle_workers(now: float) -> list[Worker]:
+    """Ready workers the idle window (AI-13) says to unload, evaluated against
+    `now`.
+
+    Pure and side-effect-free: `now` is a caller-supplied `time.monotonic()`
+    reading, never read internally, so a test can drive it with a synthetic
+    clock and the reaper thread can drive it with the real one — no sleeping,
+    no clock freezing, none of the timing-dependent flakes this repo's
+    scheduling tests have a history of.
+
+    **Only `state == "ready"` is eligible.** A `starting` / `venv` /
+    `downloading` / `loading` worker is not holding a finished model yet — a
+    40-minute `uv sync` or an 8GB pull is activity, holds little memory, and
+    killing it mid-build is hostile, not a memory win. `_fetch_workers`
+    (weights-only downloads, which never enter `_workers` at all — see its
+    docstring) are untouched for the same reason.
+
+    **`in_flight` does not exempt a worker past its own idle window.** Every
+    yielded chunk re-stamps `last_activity` (`_touch`), so a genuinely live
+    stream is never stale — but a page that abandoned a stream without
+    closing it would otherwise pin `in_flight` at 1 forever, worse than no
+    idle unload at all (the leak the counter could introduce). One predicate,
+    the age of `last_activity` against the window, covers both a
+    busy-and-fresh worker (spared) and a leaked-and-stale one (reaped): no
+    separate "but it's busy" exemption to get wrong.
+
+    The preference is read fresh on every call, not cached — a window edited
+    mid-session, or an env override that comes and goes, applies on the very
+    next tick.
+    """
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    if minutes <= 0:
+        return []
+    window = minutes * 60
+    with _lock:
+        return [w for w in _workers.values()
+                if w.state == "ready" and now - w.last_activity >= window]
+
+
+def reap_idle(now: float) -> list[str]:
+    """Unload every worker `idle_workers` names against `now`. Returns the
+    models stopped.
+
+    Reuses `unload()` rather than a parallel teardown — the idle path is not a
+    special kind of stopping, it is just another REASON a resident model stops
+    being resident, which is exactly what `unload()`'s `reason` argument is
+    for.
+    """
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    reason = f"Unloaded after {minutes} min idle"
+    stopped = []
+    for worker in idle_workers(now):
+        if unload(model=worker.model, capability=worker.capability, reason=reason):
+            stopped.append(worker.model)
+    return stopped
+
+
+def start_reaper() -> None:
+    """Start the idle-reaper thread, once per process.
+
+    Idempotent via a module-level handle rather than a lock-guarded flag: the
+    startup hook that calls this (server/app.py) can run more than once across
+    the test suite's many `create_app` calls in one process, and a second
+    thread ticking the same table is pure waste, not a correctness bug — but
+    a waste that compounds by one thread per app instance created in a long
+    test session.
+
+    The body is `sleep` then `reap_idle(time.monotonic())` — no wall clock, so
+    a laptop that sleeps mid-tick loses no window (Key decisions: the whole
+    feature is built on the monotonic clock never advancing across a suspend).
+    """
+    global _reaper_thread
+    if _reaper_thread is not None and _reaper_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            time.sleep(_REAPER_TICK_S)
+            try:
+                reap_idle(time.monotonic())
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("idle-reaper tick failed")
+
+    _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
+    _reaper_thread.start()
 
 
 def unload_all() -> None:
@@ -1615,6 +1724,14 @@ def resident_models() -> set[str]:
 def describe() -> dict:
     """The runtime as the API reports it."""
     refresh_memory()
+    # Read once for the whole snapshot rather than per row: the reaper's own
+    # window (AI-13), so "unloads in…" on the page is the same countdown that
+    # actually fires, not a second copy of the precedence rule.
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    window = minutes * 60 if minutes > 0 else None
+    now = time.monotonic()
     with _lock:
         loaded = [
             {
@@ -1632,6 +1749,14 @@ def describe() -> dict:
                 "loadedAt": w.loaded_at,
                 "startedAt": w.started_at,
                 "jobId": job_id_for(w.model),
+                # How long since anything used this worker, and — when the idle
+                # window is on — how much longer it has. Null rather than a
+                # number that never counts down: a page must not draw a
+                # countdown for a window that is disabled.
+                "idleSeconds": max(0.0, now - w.last_activity),
+                "unloadsInSeconds": (
+                    None if window is None else max(0.0, window - (now - w.last_activity))
+                ),
             }
             for w in _workers.values()
         ]
