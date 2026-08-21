@@ -108,12 +108,22 @@ def _start_server(payload, **flags):
       chunk_cap=N         at most N bytes per response, then hang up — a slow
                           link that keeps needing another connection
       probe_fail_first=N  the first N one-byte probes get a 503
+      routes={path: …}    serve a DIFFERENT body per path instead of `payload`
+                          everywhere: `bytes` is that path's body, an `int` is
+                          the status to answer with, and a path not in the map
+                          is a 404. This is what lets the model-mirror tests
+                          drive one server that answers a manifest at one URL
+                          and blobs at others — the mirror's whole protocol is
+                          two object shapes on one host, and a second harness
+                          would be a second set of CDN misbehaviours to keep in
+                          step with this one.
 
     `state["requests"]` records the path, `Range` and `Authorization` of every
     request, which is how the CDN-credential test can assert on a header that
     must NOT be there.
     """
     state = {"log": [], "requests": [], "served": 0, "broken": 0, "real": 0,
+             "routes": None,
              "probes": 0, "lock": threading.Lock(),
              "ranges": True, "lie_after_probe": False, "clamp": False,
              "budget": None, "unauthorized": 0, "unauthorized_on": (),
@@ -138,6 +148,18 @@ def _start_server(payload, **flags):
             header = self.headers.get("Range")
             probe = header == "bytes=0-0"
             failed_probe = expired = hold = False  # bound on every branch
+            # `whole` is what THIS path serves, and `status` a status to answer
+            # with instead of a body. Without `routes` every path serves the one
+            # `payload`, exactly as before.
+            whole, status = payload, None
+            if state["routes"] is not None:
+                served = state["routes"].get(self.path)
+                if served is None:
+                    status = 404
+                elif isinstance(served, int):
+                    status = served
+                else:
+                    whole = served
             with state["lock"]:
                 state["log"].append(header)
                 state["requests"].append({
@@ -159,6 +181,13 @@ def _start_server(payload, **flags):
             if hold:
                 state["release"].wait(timeout=10.0)
 
+            if status is not None:
+                # Logged first, above: a test that asserts the mirror was
+                # PROBED and got a 404 needs the request on the log either way.
+                self.send_response(status)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if failed_probe:
                 self.send_response(503)
                 self.send_header("Content-Length", "0")
@@ -185,11 +214,11 @@ def _start_server(payload, **flags):
                         at = int(first)
                         self.send_header(
                             "Content-Range",
-                            f"bytes {at}-{last or len(payload) - 1}"
-                            f"/{len(payload)}")
+                            f"bytes {at}-{last or len(whole) - 1}"
+                            f"/{len(whole)}")
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
-                    keep = payload[at:at + state["break_bytes"]]
+                    keep = whole[at:at + state["break_bytes"]]
                     if keep:
                         # One valid chunk the client keeps, and only THEN the
                         # garbage — bytes on disk under an exception, which is
@@ -200,16 +229,16 @@ def _start_server(payload, **flags):
                     self.close_connection = True
                     return
 
-            start, end, partial = 0, len(payload) - 1, False
+            start, end, partial = 0, len(whole) - 1, False
             if header and state["ranges"] and (probe or not state["lie_after_probe"]):
                 spec = header.split("=", 1)[1]
                 first, _, last = spec.partition("-")
                 start = int(first)
-                end = int(last) if last else len(payload) - 1
+                end = int(last) if last else len(whole) - 1
                 partial = True
             if partial and not probe and state["clamp"]:
                 start = 0  # the range is answered, but not the one that was asked
-            body = payload[start:end + 1]
+            body = whole[start:end + 1]
 
             allowed = len(body)
             if state["chunk_cap"] is not None and not probe:
@@ -223,7 +252,7 @@ def _start_server(payload, **flags):
             self.send_header("Content-Length", str(len(body)))
             if partial:
                 self.send_header("Content-Range",
-                                 f"bytes {start}-{end}/{len(payload)}")
+                                 f"bytes {start}-{end}/{len(whole)}")
             self.end_headers()
             self.wfile.write(body[:allowed])
             if allowed < len(body):
@@ -235,7 +264,10 @@ def _start_server(payload, **flags):
     server = _Threaded(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     state["server"] = server
-    return f"http://127.0.0.1:{server.server_address[1]}/weights", state
+    # The origin as well as the one URL: a `routes` server is addressed by
+    # several paths, and the mirror's base URL is one of them.
+    state["origin"] = f"http://127.0.0.1:{server.server_address[1]}"
+    return state["origin"] + "/weights", state
 
 
 @pytest.fixture()
