@@ -1280,18 +1280,29 @@ button.tasks-caret,
    A run the user stopped settles in Done — the stop was asked for, so it is an
    outcome and not a fault — and the lane's ring is then the same green ring a
    completed run wears. This is the word that closes that gap
-   (tasks-lib.outcomeTag), on the List row and in the Board card's foot.
+   (tasks-lib.outcomeTag), beside the task id on both the List row and the Board
+   card.
 
-   Deliberately the SAME register as the next-run chip above: 11px, muted, one
-   word, no border and no background. A pill would make it the loudest thing on
-   a row whose point is the title, and the three arrangements of an unread mark
-   this page has already been through all ended the same way — the card has room
-   for words, not for another badge. The upright figures are irrelevant here but
-   inherited by sitting in the same rule, which is the point: one register. */
-.tasks-row-outcome {
+   THE ONLY PILL ON THIS PAGE, and the reason is the failure that produced it.
+   It shipped as bare 11px muted text in the card's foot, in the same register as
+   the folder chip and the next-run chip beside it — and read as part of the
+   folder's name: "Fused Stopped" (Akshil, 2026-08-21, screenshot). Words in a
+   row of words join into a phrase; a bordered object cannot. Everything else
+   here stays argued down to a ring, a weight or bare text, because those all
+   compete with the title for one glance — this one has to interrupt.
+
+   Quiet FOR a pill, though: the muted foreground, a hairline border of the same
+   colour at low alpha, no fill. It is a correction to the lane, not an alarm —
+   an alarm is the red ring, and a stop the user asked for has nothing to alarm
+   anybody about. `currentColor` for the border so the two cannot drift apart in
+   either theme. */
+.tasks-outcome-pill {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   color: var(--fg-muted);
   white-space: nowrap;
-  opacity: 0.85;
 }

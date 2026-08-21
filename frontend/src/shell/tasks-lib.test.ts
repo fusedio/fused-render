@@ -4210,11 +4210,13 @@ describe("the folder chip on a row and a card", () => {
   });
 
   it("takes the whole chip away, not the name inside it", () => {
-    // On the card the foot holds the chip, the run ahead and the outcome word,
-    // so it is drawn when ANY of the three has something to say and goes
-    // entirely when none of them does — rather than leaving a line of padding.
+    // On the card the foot holds the chip and the run ahead, so it goes
+    // entirely when neither has anything to say rather than leaving a line of
+    // padding. The outcome pill is deliberately NOT among them: it sits beside
+    // the id, where marks about the task live — in the foot it read as part of
+    // the folder's name (Akshil, 2026-08-21).
     expect(CARD).toMatch(
-      /\{\(showProject \|\| soon \|\| outcome\) && \(\s*<span className="schedule-tv-card-foot">/,
+      /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
     // The path is still on the row itself, so nothing is unreachable: the row's
     // `title` is the task's own, and the chip's tooltip was never the only copy.
@@ -6324,6 +6326,45 @@ describe("sortByLane", () => {
 });
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
+
+describe("the outcome pill, beside the id in both views", () => {
+  /** The two markups this pill has to appear in, sliced the same way the ring
+   *  and chevron tests slice them. */
+  const CARD = VIEWS.slice(
+    VIEWS.indexOf('<span className="schedule-tv-card-head">'),
+    VIEWS.indexOf('className="tasks-card-acts"'),
+  );
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
+
+  it("is one component, used in the same place on the row and the card", () => {
+    // §1: same element, same behaviour in every view. The pill shipped as bare
+    // text in the card's FOOT, where it ran together with the folder chip into
+    // one phrase — "Fused Stopped" (Akshil, 2026-08-21). Beside the id it cannot
+    // be read as part of anything else, and one component in both views is what
+    // keeps the two from drifting back apart.
+    expect(VIEWS).toContain("function OutcomePill(");
+    expect((VIEWS.match(/<OutcomePill outcome=\{outcome\} \/>/g) ?? []).length).toBe(2);
+    // Directly after the task id, in both.
+    expect(ROW).toMatch(/<IdChip id=\{task\.task_id\} kind="task" \/>[\s\S]{0,400}?<OutcomePill/);
+    expect(CARD).toMatch(/<IdChip id=\{task\.task_id\} kind="task" \/>\s*\{outcome && <OutcomePill/);
+    // ...and nowhere near the foot, which is the arrangement that failed.
+    expect(CARD).not.toMatch(/schedule-tv-card-foot"[\s\S]*?<OutcomePill/);
+  });
+
+  it("is a bordered pill, not another line of muted text", () => {
+    // The border IS the fix: words in a row of words join into a phrase, a
+    // bordered object cannot. Quiet for a pill — muted foreground, hairline
+    // border, no fill — because it corrects the lane rather than raising an
+    // alarm (the red ring is the alarm).
+    expect(TASKS_CSS).toContain(".tasks-outcome-pill");
+    const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-outcome-pill"));
+    expect(rule).toMatch(/border-radius: 999px/);
+    expect(rule).toMatch(/border: 1px solid/);
+  });
+});
 
 describe("outcomeTag: the word the Done lane cannot say", () => {
   const AT = Math.floor(Date.parse("2026-08-16T09:00:00") / 1000);

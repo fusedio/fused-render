@@ -108,6 +108,7 @@ import type {
   LaneChoices,
   ListMemory,
   OpenThreadIntent,
+  OutcomeTag,
   TaskFilters,
   TaskRunIntent,
 } from "./tasks-lib";
@@ -382,6 +383,31 @@ export function IdentityChip({ name, title }: { name: string; title?: string }) 
  * out loud and searched for. Monospaced, because a column of them is scanned. */
 function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
+}
+
+/* The one word a lane cannot say about the run it is showing — today only
+   "Stopped", for a run the user ended (tasks-lib.outcomeTag).
+
+   A PILL, and the only one on this page. Every other mark here has been argued
+   down to a ring, a weight, or bare text, because they all competed with the
+   title for the same glance. This one is different in kind: it is not a status
+   the lane already carries (that is the ring's job) but a CORRECTION to what the
+   lane implies — Done, but it did not finish — and it has to survive being read
+   beside whatever else is on the line. Bare text did not: in the card's foot
+   next to the folder chip, "Fused Stopped" read as the name of the folder
+   (Akshil, 2026-08-21, screenshot). A border is what makes it a separate object
+   rather than the next word in a phrase.
+
+   BESIDE THE ID, in both views. The id line is where marks ABOUT the task live
+   (the off-lane status ring is already there), the title line is for the work's
+   own words, and the foot is for the run's circumstances — the folder it ran in,
+   the run ahead. This is a fact about the task, so it goes with the id. */
+function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
+  return (
+    <span className="tasks-outcome-pill" title={outcome.title}>
+      {outcome.text}
+    </span>
+  );
 }
 
 /* There is no `UnreadDot` any more (2026-08-18). It was a 7px grey dot trailing a
@@ -1919,6 +1945,10 @@ function TaskNode({
           )}
         </span>
         <IdChip id={task.task_id} kind="task" />
+        {/* Beside the id, the same component in the same place as on the card
+            (design-principles §1): a tag that moved between the two views would
+            be two different marks to learn. */}
+        {outcome && <OutcomePill outcome={outcome} />}
         {/* Greyed while the work is still ahead of it (tasks-lib.isUpcomingTask):
             a list is mostly history, and the rows that have not happened yet are
             the ones a reader is not being asked to read. The TITLE only — the id,
@@ -2069,14 +2099,6 @@ function TaskNode({
             one time slot and this is a different question, so it is marked
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
-        {/* The stop, in the same quiet register as the chip beside it. Before
-            the next-run chip and the time, so the row reads outcome-then-future:
-            "Stopped · next in 2h · 4m ago". */}
-        {outcome && (
-          <span className="tasks-row-outcome" title={outcome.title}>
-            {outcome.text}
-          </span>
-        )}
         {soon && (
           <span className="tasks-row-next" title={soon.title}>
             {soon.text}
@@ -2879,6 +2901,7 @@ function TaskCard({
         <span className="schedule-tv-card-head">
           {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
+          {outcome && <OutcomePill outcome={outcome} />}
         </span>
         {/* Nothing trails the title any more (2026-08-18). Three arrangements of
             an unread mark lived in this slot and each one was a fix for the last:
@@ -2935,18 +2958,10 @@ function TaskCard({
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
             goes rather than leaving an empty row of padding. */}
-        {(showProject || soon || outcome) && (
+        {(showProject || soon) && (
           <span className="schedule-tv-card-foot">
             {showProject && (
               <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
-            )}
-            {/* The stop. In the foot rather than the head, because it is a fact
-                about the run this card just did — like the folder it ran in and
-                the run ahead — and not another symbol competing with the title. */}
-            {outcome && (
-              <span className="tasks-row-outcome" title={outcome.title}>
-                {outcome.text}
-              </span>
             )}
             {/* Same fact, same function, same words as the List row's
                 (tasks-lib.nextRunChip): a settled card whose task is due again
