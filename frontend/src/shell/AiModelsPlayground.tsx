@@ -54,6 +54,15 @@ const GROUP_LABELS: Record<string, string> = {
   "automatic-speech-recognition": "Transcription",
 };
 
+// One plain sentence under each group title, for the reader this tab exists
+// for — someone with no AI vocabulary at all. It says what the models DO, in
+// the words of the task, never of the technology.
+const GROUP_BLURBS: Record<string, string> = {
+  "text-generation": "Ask questions, write and rewrite text.",
+  "text-to-image": "Turn a description into a picture.",
+  "automatic-speech-recognition": "Turn speech into written words.",
+};
+
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
 }
@@ -250,50 +259,74 @@ export default function AiModelsPlayground() {
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
-        {capabilities.map((row) => (
-          <section key={row.capability} className="pg-group">
-            <h4 className="pg-group-title">{groupLabel(row.capability)}</h4>
-            {!row.available && (
-              // Visible with its reason, never hidden: an absent group and a
-              // ruled-out group look identical, and HF-8 already paid for that
-              // lesson once.
-              <p className="pg-group-off">{row.reason || "Not available on this machine."}</p>
-            )}
-            {row.available && !row.models.length && (
-              <p className="pg-group-off">Nothing to suggest yet.</p>
-            )}
-            {row.available &&
-              row.models.map((model) => {
-                const active = selected?.model.id === model.id;
-                const resident = runtime.loaded.some(
-                  (m) => m.model === model.id && m.state === "ready",
-                );
-                return (
-                  <button
-                    type="button"
-                    key={model.id}
-                    className={"pg-model" + (active ? " active" : "")}
-                    aria-pressed={active}
-                    onClick={() => select(model.id)}
-                    title={model.note ? `${model.label} — ${model.note}` : model.label}
-                  >
-                    <span className="pg-model-name">
-                      {resident ? (
-                        <span className="pg-dot loaded" aria-hidden="true" />
-                      ) : model.downloaded ? (
-                        <span className="pg-dot disk" aria-hidden="true" />
-                      ) : null}
-                      {modelName(model)}
-                    </span>
-                    <span className="pg-model-meta">
-                      <span>{resident ? "Loaded" : model.downloaded ? "Downloaded" : ""}</span>
-                      <span>{model.size_gb != null ? `${model.size_gb} GB` : "—"}</span>
-                    </span>
-                  </button>
-                );
-              })}
-          </section>
-        ))}
+        {capabilities.map((row) => {
+          // The same recommendation foundation Discover's "Suggested models"
+          // grid renders: the catalog's CURATED half, in the catalog's own
+          // smallest-first order, notes and all. The uncurated repos this disk
+          // happens to hold (D323's union) are still playable but sit apart
+          // under their own quiet caption — they have no curator and no note,
+          // and mixed in they read as recommendations nobody made.
+          const curated = row.models.filter((m) => m.source === "curated");
+          const cached = row.models.filter((m) => m.source !== "curated");
+          const draw = (model: AiCatalogModel) => {
+            const active = selected?.model.id === model.id;
+            const resident = runtime.loaded.some(
+              (m) => m.model === model.id && m.state === "ready",
+            );
+            return (
+              <button
+                type="button"
+                key={model.id}
+                className={"pg-model" + (active ? " active" : "")}
+                aria-pressed={active}
+                onClick={() => select(model.id)}
+                title={model.label}
+              >
+                <span className="pg-model-name">
+                  {resident ? (
+                    <span className="pg-dot loaded" aria-hidden="true" />
+                  ) : model.downloaded ? (
+                    <span className="pg-dot disk" aria-hidden="true" />
+                  ) : null}
+                  {modelName(model)}
+                </span>
+                {/* The curator's sentence — why you would pick this one. The
+                    same `note` Discover prints on its suggestion cards; for
+                    the reader with no AI vocabulary it is the only line here
+                    that answers "which one do I click". */}
+                {model.note && <span className="pg-model-note">{model.note}</span>}
+                <span className="pg-model-meta">
+                  <span>{resident ? "Loaded" : model.downloaded ? "On this machine" : ""}</span>
+                  <span>{model.size_gb != null ? `${model.size_gb} GB` : "—"}</span>
+                </span>
+              </button>
+            );
+          };
+          return (
+            <section key={row.capability} className="pg-group">
+              <h4 className="pg-group-title">{groupLabel(row.capability)}</h4>
+              {GROUP_BLURBS[row.capability] && (
+                <p className="pg-group-blurb">{GROUP_BLURBS[row.capability]}</p>
+              )}
+              {!row.available && (
+                // Visible with its reason, never hidden: an absent group and a
+                // ruled-out group look identical, and HF-8 already paid for
+                // that lesson once.
+                <p className="pg-group-off">{row.reason || "Not available on this machine."}</p>
+              )}
+              {row.available && !row.models.length && (
+                <p className="pg-group-off">Nothing to suggest yet.</p>
+              )}
+              {row.available && curated.map(draw)}
+              {row.available && cached.length > 0 && (
+                <>
+                  <p className="pg-side-cap">Your downloads</p>
+                  {cached.map(draw)}
+                </>
+              )}
+            </section>
+          );
+        })}
       </aside>
 
       <div className="pg-stage">
@@ -310,6 +343,11 @@ export default function AiModelsPlayground() {
                   {modelName(selected.model)}
                   <span className="pg-stage-kind"> · {groupLabel(selected.row.capability)}</span>
                 </h3>
+                {/* The curator's sentence, in full — the sidebar clamps it.
+                    For the zero-jargon reader this is the model introducing
+                    itself; the mechanics (loaded, downloading) stay on the
+                    quieter line below it. */}
+                {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
                 <p className="pg-stage-state">
                   {stateLine}
                   {evicts ? ` ${evicts}` : ""}

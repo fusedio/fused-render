@@ -20,7 +20,7 @@
 /* -- the model sidebar ------------------------------------------------------ */
 
 .pg-side {
-  flex: 0 0 232px;
+  flex: 0 0 264px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -50,6 +50,37 @@
   font-size: 12px;
   line-height: 1.45;
   color: var(--fg-muted);
+}
+
+/* What this group of models DOES, in task words — the zero-jargon reader's
+ * anchor before any model name means anything. */
+.pg-group-blurb {
+  margin: -2px 0 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+/* The quiet divider over the uncurated tail: models this disk holds that the
+ * curation never heard of — playable, but not recommendations. */
+.pg-side-cap {
+  margin: 8px 0 2px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* The curator's one-liner on a sidebar row — clamped to two lines; the stage
+ * header carries it in full. */
+.pg-model-note {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* A row, not a card: LM Studio / Jan style — quiet until hovered, the active
@@ -142,6 +173,15 @@
 .pg-stage-kind {
   color: var(--fg-muted);
   font-weight: 400;
+}
+
+/* The model introducing itself — the catalog note, unclamped. */
+.pg-stage-note {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  max-width: 64ch;
 }
 
 .pg-stage-state {
@@ -995,6 +1035,18 @@
 
 .pg-segment-text {
   min-width: 0;
+}
+
+/* The joined transcript, when a finished run has no segment view to draw. */
+.pg-transcript-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.pg-transcript-empty {
+  color: var(--fg-muted);
 }
 
 /* -- narrow windows -------------------------------------------------------------- */

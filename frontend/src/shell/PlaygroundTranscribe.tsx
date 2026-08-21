@@ -142,12 +142,32 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
       setPhase({ step: "idle" });
       return;
     }
+    // The final words come from the final `.json` — NOT another read of the
+    // partial file: the Sink DELETES the partial on a clean exit (a finished
+    // run's partial is duplicate bytes, its docstring says so), so on a short
+    // clip that finishes before the first tail tick the partial never renders
+    // and a re-read here finds nothing. The settled record has the same
+    // segments, plus the joined text.
+    try {
+      const res = await fetch(rawUrl(started.output) + "&t=" + Date.now());
+      if (res.ok) {
+        const record = (await res.json()) as { segments?: TranscriptSegment[]; text?: string };
+        if (Array.isArray(record.segments) && record.segments.length) {
+          setSegments(record.segments);
+        }
+        setPhase({
+          step: "done",
+          started,
+          text: typeof record.text === "string" ? record.text : "",
+        });
+        return;
+      }
+    } catch {
+      // Fall through to the .txt below.
+    }
     try {
       const res = await fetch(rawUrl(started.outputText) + "&t=" + Date.now());
-      const text = res.ok ? await res.text() : "";
-      const rows = await readPartialTranscript(started.outputPartial);
-      if (rows.length) setSegments(rows);
-      setPhase({ step: "done", started, text });
+      setPhase({ step: "done", started, text: res.ok ? await res.text() : "" });
     } catch {
       setPhase({ step: "done", started, text: "" });
     }
@@ -316,7 +336,7 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
         )}
         {error && <p className="pg-error">{error}</p>}
 
-        {segments.length > 0 && (
+        {segments.length > 0 ? (
           <div className="pg-segments">
             {segments.map((segment, index) => (
               <div key={index} className="pg-segment">
@@ -328,7 +348,20 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
               </div>
             ))}
           </div>
-        )}
+        ) : phase.step === "done" ? (
+          // A finished run must always SHOW its words, even when no segment
+          // view exists (the joined text is the fallback artefact) — and an
+          // empty transcript is said out loud, not left as a blank pane.
+          <div className="pg-segments">
+            {phase.text.trim() ? (
+              <p className="pg-transcript-text">{phase.text.trim()}</p>
+            ) : (
+              <p className="pg-transcript-text pg-transcript-empty">
+                No speech was detected in this recording.
+              </p>
+            )}
+          </div>
+        ) : null}
 
         <div className="pg-under">
           <button type="button" className="pg-ghost-btn pg-rail-toggle" onClick={() => setRailOpen((v) => !v)}>
