@@ -1414,7 +1414,12 @@ def _settle(key: str, claim: dict, result: dict) -> bool:
             _report_running(wf, current)
             return True
 
-        if result.get("ok") and stale_generation:
+        if stale_generation and (result.get("ok") or spawn_unknown):
+            # REVOCATION WINS OVER UNCERTAINTY. `ok` means the session is
+            # certainly away; `spawn_unknown` means it may be. Both get the
+            # cancel, because the cost of cancelling a run that never existed is
+            # a refusal nobody reads, and the cost of not cancelling one that
+            # did is the unattended session a person just revoked.
             outcome = ("cancelled",
                        "the workflow was disarmed while this run was starting")
         elif spawn_unknown:

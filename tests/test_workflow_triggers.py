@@ -1111,3 +1111,24 @@ def test_a_tick_that_changes_something_does_write(doc, runner, monkeypatch):
                                                      real_write(flows))[1])
     wt.tick()
     assert writes
+
+
+def test_a_disarm_during_an_unanswered_start_still_cancels(doc, runner):
+    """Revocation wins over uncertainty: the session may be away, and the cost
+    of cancelling one that never existed is a refusal nobody reads."""
+    wt.arm(doc, tools=["mcp__mail__search_mail"], triggers=_cron_every_minute())
+    wt.enqueue(doc, {"a": 1})
+
+    def both_happen_now():
+        wt.disarm(doc)
+        runner.start_raises = True
+
+    runner.on_start = both_happen_now
+    assert wt.tick() == []
+    wf = wt.get(doc)
+    assert wf["current"] is None
+    assert wf["runs"][-1]["state"] == "cancelled"
+    assert wf["consecutive_errors"] == 0
+    # The cancel was attempted against the id core chose, whatever became of the
+    # start call.
+    assert runner.cancels == [wf["runs"][-1]["runId"]]
