@@ -173,6 +173,11 @@
   }
   .pal-tool:hover { border-color: var(--line-hover); }
   .pal-tool .d { color: var(--ink-3); font-size: 11px; display: block; }
+  /* The prompt step is not discovered from any `mcp.toml` — it is this editor's
+     own primitive — so it is a FIXED entry and says so by wearing the same note
+     palette its node does. */
+  .pal-tool.pal-prompt { border-color: var(--note-line); background: var(--note-bg); color: var(--note-fg); }
+  .pal-tool.pal-prompt .d { color: var(--note-fg); opacity: .8; }
 
   /* ---- the canvas ---- */
   #stage {
@@ -208,6 +213,27 @@
     padding: 6px 8px 7px;
     cursor: grab;
     user-select: none;
+  }
+  /* A PROMPT STEP READS AS A DIFFERENT KIND OF THING, not as a tool node with an
+     odd label. It calls nothing the user curated and its content is a SENTENCE
+     rather than a set of arguments, so it borrows the note palette and a dashed
+     edge — the same pair a conditional wire uses to say "this part is prose".
+     Placed BEFORE `.sel` and the `.st-*` rules so selection and run state still
+     win on the border colour; only the dash and the fill are the kind's. */
+  .node.prompt { border-color: var(--note-line); border-style: dashed; background: var(--note-bg); }
+  .node.prompt .n-label { color: var(--note-fg); }
+  .node .n-prompt {
+    font-size: 11px;
+    color: var(--ink-2);
+    margin-top: 4px;
+    border-top: 1px solid var(--line);
+    padding-top: 3px;
+    /* Three lines of the author's text, clipped. The node is a glance; the
+       whole prompt is one click away in the inspector. */
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
   .node.sel { border-color: var(--accent); }
   .node.dragging { cursor: grabbing; }
@@ -482,10 +508,28 @@ function nodeById(id) {
   return (doc.nodes || []).find((n) => n.id === id) || null;
 }
 
+// A node with no `kind` is a TOOL node. Every document written before prompt
+// steps existed is exactly that, so the absent value has to mean the old
+// behaviour — the discriminator is the whole format delta (run.py agrees).
+function isPrompt(node) {
+  return !!node && node.kind === "prompt";
+}
+
+// What to call a node in prose. A prompt step has no `tool` to fall back on, so
+// a bare `label || tool` reads as "undefined" the moment its label is cleared.
+function nameOf(node) {
+  return (node && (node.label || node.tool)) || (isPrompt(node) ? "prompt step" : "step");
+}
+
 // The catalog entry for a node, or null when the tool has gone. Matched on the
 // same (app folder, tool name) pair `run.py` compiles against, so a node the
 // canvas draws as unresolved is exactly a node Run would refuse.
 function toolOf(node) {
+  // A prompt step has no catalog entry by construction: the tool behind it is
+  // the run's own `step_note`, which no `mcp.toml` declares. Answered here
+  // rather than falling through to the loop, so "null" cannot be read as "the
+  // tool has gone" by a caller that draws a warning for that.
+  if (isPrompt(node)) return null;
   if (!catalog) return null;
   for (const app of catalog.apps || []) {
     if (app.folder !== node.app) continue;
@@ -601,6 +645,29 @@ async function load() {
 function renderPalette() {
   const body = el("palette-body");
   body.innerHTML = "";
+  body.className = "";
+  // THE FIXED ENTRY FIRST, AND BEFORE THE CATALOG CHECK. A prompt step is this
+  // editor's own primitive rather than something discovered on the machine, so
+  // it is available even when the tool list could not be read at all — which is
+  // exactly when a graph of pure reasoning steps is still buildable.
+  const fixed = document.createElement("div");
+  fixed.className = "app-group";
+  fixed.appendChild(text("div", "app-title", "Steps"));
+  const promptBtn = document.createElement("button");
+  promptBtn.className = "pal-tool pal-prompt";
+  promptBtn.draggable = true;
+  promptBtn.appendChild(text("span", "", "Prompt step"));
+  promptBtn.appendChild(text("span", "d",
+    "A sentence for Claude to work out between tool calls."));
+  promptBtn.title = "Adds a reasoning step. It calls no app tool; its conclusion " +
+    "becomes this step's output.";
+  promptBtn.addEventListener("click", () => addPromptNode(null));
+  promptBtn.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/plain", JSON.stringify({ kind: "prompt" }));
+    e.dataTransfer.effectAllowed = "copy";
+  });
+  fixed.appendChild(promptBtn);
+  body.appendChild(fixed);
   if (!catalog) {
     body.appendChild(note(catalogError ||
       "The tool list could not be read.", true, "retry", () => guard(reloadCatalog)));
@@ -669,25 +736,49 @@ async function rescan() {
 
 // -------------------------------------------------------------- editing ops
 
+// Where a new node lands: the drop point when there is one, otherwise the next
+// cell of a four-wide grid so a run of clicks does not stack every node on one
+// spot. Shared by both kinds — placement is not a property of what a step is.
+function spotFor(at) {
+  if (at) return { x: Math.round(at.x), y: Math.round(at.y) };
+  return { x: 40 + (doc.nodes.length % 4) * 250,
+           y: 40 + Math.floor(doc.nodes.length / 4) * 150 };
+}
+
+function place(node) {
+  doc.nodes.push(node);
+  select(node.id);
+  mark();
+  renderAll();
+}
+
+// A PROMPT STEP — a sentence, with no app tool behind it. It compiles to "do
+// this, then call `step_note` with your conclusion" (run.py), so it is observed
+// from a real tool call like every other step and its conclusion flows into a
+// downstream node's "from previous" input like every other step's output.
+// It carries no `inputs`: there is no signature to expose parameters from.
+function addPromptNode(at) {
+  const spot = spotFor(at);
+  place({ id: uid("n"), kind: "prompt", prompt: "", label: "Prompt",
+          x: spot.x, y: spot.y });
+}
+
 function addNode(app, tool, at) {
   // A fresh node exposes NOTHING. That is the whole point of the `inputs` list:
   // `send_mail` has 22 parameters and every one of them has a default, so a
   // node that pre-exposed them would be a 22-row form nobody fills in. The
   // author picks the two or three this step is actually about, in the
   // inspector, and everything unpicked keeps the tool's own default.
-  const node = {
+  const spot = spotFor(at);
+  place({
     id: uid("n"),
     app: app.folder,
     tool: tool.name,
     label: tool.name,
-    x: at ? Math.round(at.x) : 40 + (doc.nodes.length % 4) * 250,
-    y: at ? Math.round(at.y) : 40 + Math.floor(doc.nodes.length / 4) * 150,
+    x: spot.x,
+    y: spot.y,
     inputs: [],
-  };
-  doc.nodes.push(node);
-  select(node.id);
-  mark();
-  renderAll();
+  });
 }
 
 function removeNode(id) {
@@ -792,35 +883,46 @@ function renderNodes() {
       const pill = text("span", "pill " + state.status, state.status);
       div.appendChild(pill);
     }
+    const prompt = isPrompt(node);
+    if (prompt) div.classList.add("prompt");
     const tool = toolOf(node);
-    div.appendChild(text("div", "n-label", node.label || node.tool));
-    const sub = text("div", "n-tool",
-      (tool ? "" : "⚠ ") + shortApp(node.app) + " · " + node.tool);
-    if (!tool) sub.title = "This tool is no longer declared in that app's mcp.toml.";
-    div.appendChild(sub);
-
-    const shown = inputsOf(node).filter((i) => i && i.name);
-    if (shown.length) {
-      const list = text("div", "n-inputs");
-      for (const input of shown.slice(0, 6)) {
-        const row = text("div", "n-in" + (input.source === "previous" ? " prev" : ""));
-        row.appendChild(text("b", "", input.name));
-        row.appendChild(text("span", "",
-          input.source === "previous" ? "← previous step" : String(input.value ?? "")));
-        list.appendChild(row);
-      }
-      if (shown.length > 6) {
-        list.appendChild(text("div", "n-in", "+" + (shown.length - 6) + " more"));
-      }
-      div.appendChild(list);
+    div.appendChild(text("div", "n-label",
+      node.label || (prompt ? "Prompt" : node.tool)));
+    if (prompt) {
+      div.appendChild(text("div", "n-tool", "prompt step · no tool"));
+      const written = String(node.prompt || "").trim();
+      div.appendChild(written
+        ? text("div", "n-prompt", written)
+        : text("div", "n-none", "nothing written yet"));
     } else {
-      div.appendChild(text("div", "n-none", "defaults only"));
+      const sub = text("div", "n-tool",
+        (tool ? "" : "⚠ ") + shortApp(node.app) + " · " + node.tool);
+      if (!tool) sub.title = "This tool is no longer declared in that app's mcp.toml.";
+      div.appendChild(sub);
+
+      const shown = inputsOf(node).filter((i) => i && i.name);
+      if (shown.length) {
+        const list = text("div", "n-inputs");
+        for (const input of shown.slice(0, 6)) {
+          const row = text("div", "n-in" + (input.source === "previous" ? " prev" : ""));
+          row.appendChild(text("b", "", input.name));
+          row.appendChild(text("span", "",
+            input.source === "previous" ? "← previous step" : String(input.value ?? "")));
+          list.appendChild(row);
+        }
+        if (shown.length > 6) {
+          list.appendChild(text("div", "n-in", "+" + (shown.length - 6) + " more"));
+        }
+        div.appendChild(list);
+      } else {
+        div.appendChild(text("div", "n-none", "defaults only"));
+      }
     }
 
     const plug = text("div", "plug", "→");
     plug.title = "Drag to the next step";
     plug.setAttribute("role", "button");
-    plug.setAttribute("aria-label", "Connect " + (node.label || node.tool) +
+    plug.setAttribute("aria-label", "Connect " + (node.label || node.tool || "step") +
       " to the next step");
     plug.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
@@ -829,7 +931,8 @@ function renderNodes() {
     div.appendChild(plug);
 
     div.setAttribute("aria-label", "Step " + (step + 1) + ": " +
-      (node.label || node.tool) + " — " + node.tool +
+      (node.label || node.tool || "Prompt") + " — " +
+      (prompt ? "prompt step" : node.tool) +
       (state ? " (" + state.status + ")" : ""));
     div.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
     nodesEl.appendChild(div);
@@ -897,8 +1000,8 @@ function renderWires() {
     // accessibility tree naming it. Same treatment as a node, and for the same
     // reason.
     const from = nodeById(edge.from), to = nodeById(edge.to);
-    const label = (from ? (from.label || from.tool) : edge.from) + " to " +
-      (to ? (to.label || to.tool) : edge.to) +
+    const label = (from ? nameOf(from) : edge.from) + " to " +
+      (to ? nameOf(to) : edge.to) +
       ((edge.condition || "").trim() ? ", conditional" : "");
     hit.setAttribute("role", "button");
     hit.setAttribute("tabindex", "0");
@@ -967,84 +1070,16 @@ function inspectorSig() {
   return JSON.stringify((selected && runNodes[selected]) || null);
 }
 
-function renderInspector() {
-  const body = el("inspector-body");
-  // Recorded on every draw, not just the poll loop's, so a selection change or
-  // an edit leaves the two in step and the next tick does not redraw on top of
-  // a panel that is already current.
-  inspectorRunSig = inspectorSig();
-  body.innerHTML = "";
-  const node = selected ? nodeById(selected) : null;
-  if (!node) {
-    body.appendChild(text("div", "empty", doc && doc.nodes.length
-      ? "Select a step to set its inputs." : "Nothing selected."));
-    return;
-  }
-  const tool = toolOf(node);
-
-  const label = text("div", "field");
-  label.appendChild(text("label", "", "Label"));
-  const labelInput = document.createElement("input");
-  labelInput.value = node.label || "";
-  labelInput.addEventListener("input", () => {
-    node.label = labelInput.value;
-    mark();
-    renderNodes();
-  });
-  label.appendChild(labelInput);
-  body.appendChild(label);
-
-  const where = text("div", "field");
-  where.appendChild(text("label", "", "Tool"));
-  where.appendChild(text("div", "n-tool", node.tool + "  ·  " + node.app));
-  body.appendChild(where);
-
-  if (!tool) {
-    body.appendChild(note(
-      "That app folder no longer declares a tool called " + node.tool +
-      ". Re-curate it in the app's MCP panel, or delete this step — a run will " +
-      "refuse the whole workflow while it is here.", true));
-  }
-
-  // Incoming edges, with their conditions. They live here rather than on the
-  // canvas because a condition is a SENTENCE and a canvas has nowhere to put
-  // one; the edge shows dashed once there is one, which is the part a reader
-  // needs at a glance.
-  const incoming = edgesInto(node.id);
-  if (incoming.length) {
-    const box = text("div", "edge-row");
-    box.appendChild(text("label", "", "Runs after"));
-    for (const edge of incoming) {
-      const from = nodeById(edge.from);
-      const row = text("div", "field");
-      row.appendChild(text("label", "", (from ? (from.label || from.tool) : edge.from) +
-        " → this step, only if:"));
-      const input = document.createElement("input");
-      input.value = edge.condition || "";
-      input.placeholder = "always (leave empty — Claude decides)";
-      input.addEventListener("input", () => {
-        edge.condition = input.value;
-        mark();
-        renderNodes();
-      });
-      row.appendChild(input);
-      const drop = text("button", "btn", "disconnect");
-      drop.addEventListener("click", () => {
-        doc.edges = doc.edges.filter((e) => e !== edge);
-        mark();
-        renderAll();
-      });
-      row.appendChild(drop);
-      box.appendChild(row);
-    }
-    body.appendChild(box);
-  }
-
-  // THE PARAMETER PICKER — the reason the document has an `inputs` list at all.
-  // Every parameter of a dispatcher entrypoint has a default, so the tool's own
-  // schema says "22 optional properties" and nothing more; the author's choice
-  // of which ones this step is about is information that exists nowhere else,
-  // and this is where it is made. A filter box, because 22 rows is a scroll.
+// THE PARAMETER PICKER — the reason the document has an `inputs` list at all.
+// Every parameter of a dispatcher entrypoint has a default, so the tool's own
+// schema says "22 optional properties" and nothing more; the author's choice
+// of which ones this step is about is information that exists nowhere else,
+// and this is where it is made. A filter box, because 22 rows is a scroll.
+//
+// Its own function only so the inspector reads as the four things a step has —
+// a name, what it does, what feeds it, what it returned — with this one of them
+// absent for a prompt step.
+function renderParamPicker(body, node, tool) {
   const params = tool ? tool.params || [] : [];
   const picker = text("div", "params");
   picker.appendChild(text("label", "", "Inputs (" + inputsOf(node).length +
@@ -1134,6 +1169,109 @@ function renderInspector() {
     draw();
   }
   body.appendChild(picker);
+}
+
+function renderInspector() {
+  const body = el("inspector-body");
+  // Recorded on every draw, not just the poll loop's, so a selection change or
+  // an edit leaves the two in step and the next tick does not redraw on top of
+  // a panel that is already current.
+  inspectorRunSig = inspectorSig();
+  body.innerHTML = "";
+  const node = selected ? nodeById(selected) : null;
+  if (!node) {
+    body.appendChild(text("div", "empty", doc && doc.nodes.length
+      ? "Select a step to set its inputs." : "Nothing selected."));
+    return;
+  }
+  const prompt = isPrompt(node);
+  const tool = toolOf(node);
+
+  const label = text("div", "field");
+  label.appendChild(text("label", "", "Label"));
+  const labelInput = document.createElement("input");
+  labelInput.value = node.label || "";
+  labelInput.addEventListener("input", () => {
+    node.label = labelInput.value;
+    mark();
+    renderNodes();
+  });
+  label.appendChild(labelInput);
+  body.appendChild(label);
+
+  if (prompt) {
+    // THE PROMPT ITSELF, in place of the tool line and the parameter picker.
+    // There is nothing to pick: this step's whole content is the sentence, and
+    // the only structure it has is the one `run.py` wraps around it.
+    const box = text("div", "field");
+    box.appendChild(text("label", "", "Prompt"));
+    const area = document.createElement("textarea");
+    area.rows = 7;
+    area.value = node.prompt || "";
+    area.placeholder = "Summarise which accounts have unread mail.";
+    area.addEventListener("input", () => {
+      node.prompt = area.value;
+      mark();
+      renderNodes();
+    });
+    box.appendChild(area);
+    body.appendChild(box);
+    body.appendChild(text("div", "n-tool",
+      "Claude does this, then records its conclusion with the run's own " +
+      "step_note tool — which is what makes the step show progress, and what " +
+      "later steps read as this step's output."));
+  } else {
+    const where = text("div", "field");
+    where.appendChild(text("label", "", "Tool"));
+    where.appendChild(text("div", "n-tool", node.tool + "  ·  " + node.app));
+    body.appendChild(where);
+
+    if (!tool) {
+      body.appendChild(note(
+        "That app folder no longer declares a tool called " + node.tool +
+        ". Re-curate it in the app's MCP panel, or delete this step — a run will " +
+        "refuse the whole workflow while it is here.", true));
+    }
+  }
+
+  // Incoming edges, with their conditions. They live here rather than on the
+  // canvas because a condition is a SENTENCE and a canvas has nowhere to put
+  // one; the edge shows dashed once there is one, which is the part a reader
+  // needs at a glance.
+  const incoming = edgesInto(node.id);
+  if (incoming.length) {
+    const box = text("div", "edge-row");
+    box.appendChild(text("label", "", "Runs after"));
+    for (const edge of incoming) {
+      const from = nodeById(edge.from);
+      const row = text("div", "field");
+      row.appendChild(text("label", "", (from ? nameOf(from) : edge.from) +
+        " → this step, only if:"));
+      const input = document.createElement("input");
+      input.value = edge.condition || "";
+      input.placeholder = "always (leave empty — Claude decides)";
+      input.addEventListener("input", () => {
+        edge.condition = input.value;
+        mark();
+        renderNodes();
+      });
+      row.appendChild(input);
+      const drop = text("button", "btn", "disconnect");
+      drop.addEventListener("click", () => {
+        doc.edges = doc.edges.filter((e) => e !== edge);
+        mark();
+        renderAll();
+      });
+      row.appendChild(drop);
+      box.appendChild(row);
+    }
+    body.appendChild(box);
+  }
+
+  // The parameter picker (below). A prompt step has no signature and therefore
+  // nothing to pick: skipped entirely rather than drawn empty, which would read
+  // as "this tool takes no parameters" about a step that has no tool.
+  if (!prompt) renderParamPicker(body, node, tool);
 
   // What the step ACTUALLY returned, once a run has said so. This is the fact
   // nothing else on this surface has: an MCP tool declares its inputs and says
@@ -1297,7 +1435,13 @@ stage.addEventListener("drop", (event) => {
   try {
     payload = JSON.parse(event.dataTransfer.getData("text/plain") || "");
   } catch (err) { return; }
-  if (!payload || !catalog) return;
+  if (!payload) return;
+  const at0 = stagePoint(event);
+  if (payload.kind === "prompt") {
+    addPromptNode({ x: at0.x - 100, y: at0.y - 24 });
+    return;
+  }
+  if (!catalog) return;
   const app = (catalog.apps || []).find((a) => a.folder === payload.folder);
   const tool = app && (app.tools || []).find((t) => t.name === payload.tool);
   if (!app || !tool) return;
