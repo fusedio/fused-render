@@ -840,8 +840,16 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image": "(CPU)",
     "diffusers-image-cuda": "(CUDA)",
     "diffusers-image-rocm": "(ROCm)",
+    "llamacpp-text": "(CPU)",
     "llamacpp-text-vulkan": "(Vulkan)",
 }
+
+#: Every qualifier this app uses to name a BUILD rather than a platform.
+#:
+#: The vocabulary is closed on purpose: it is what
+#: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
+#: name against, and what Task B's family test forbids in a family name.
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -871,6 +879,45 @@ def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
         if row["effective"]:
             runner = registry.by_code(row["effective"])
             assert row["effectiveShortLabel"] == runner.short
+
+
+def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
+    """Sibling rows of one library are told apart by HARDWARE, never by format.
+
+    The regression this locks out shipped once: the first llama.cpp row was
+    called "llama.cpp (GGUF)" beside "llama.cpp (Vulkan)", and GGUF is not what
+    tells those two apart — both load it through the same
+    `runners/llama_text.py`. A qualifier naming something a sibling also does is
+    a qualifier that answers nothing, and it cost that row a hardware name it
+    needed: the Vulkan row's own note has to point at "the CPU build", which
+    only reads as a cross-reference once the row is CALLED that.
+
+    So the rule, per library: where two rows share a `label` stem, each
+    qualifier must come from `_HARDWARE_QUALIFIERS`, they must differ, and no
+    name may repeat a format tag both rows declare in `hub_filter_tags`.
+    """
+    families: dict[str, list] = {}
+    for runner in registry.all_runners():
+        families.setdefault(runner.label.split(" (")[0], []).append(runner)
+    siblings = {stem: rows for stem, rows in families.items() if len(rows) > 1}
+    # If this is ever empty the test has stopped testing anything — every
+    # hardware-variant family could have been renamed out from under it.
+    assert "llama.cpp" in siblings, sorted(families)
+    for stem, rows in siblings.items():
+        qualifiers = [runner.label[len(stem):].strip() for runner in rows]
+        assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
+        for runner, qualifier in zip(rows, qualifiers):
+            assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
+            # And the hardware is in BOTH names, the shape the torch rows set:
+            # the short name is what the Local card and the job row print, so a
+            # family whose short names collide renders as one engine there.
+            assert runner.short_label == runner.label, runner.code
+        shared = set.intersection(*(set(r.hub_filter_tags) for r in rows))
+        for runner in rows:
+            for tag in shared:
+                assert tag.lower() not in runner.label.lower(), (
+                    f"{runner.code}: {runner.label!r} names {tag!r}, which "
+                    f"every {stem} row reads — it distinguishes nothing")
 
 
 def test_every_suggested_model_names_a_runner_that_exists():

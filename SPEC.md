@@ -5660,11 +5660,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   ("(CTranslate2)") are both that second kind of fact and drop. "(CUDA)" is not:
   it is the engine's IDENTITY, and dropping it makes three rows print one name on
   every surface but the picker. So `label` and `short_label` are EQUAL on all
-  six torch rows ("Diffusers (CUDA)"), and a bracketed qualifier in the SHORT
-  name is therefore the marker of a hardware variant, which leaves the
-  Apple-only rows visually distinct from them. `(PyTorch)` is gone from the
-  family: the library stopped being what distinguishes these rows from each
-  other, and the accelerator is what does. **A qualifier names the BUILD, not a
+  six torch rows and on both llama.cpp rows ("Diffusers (CUDA)", "llama.cpp
+  (CPU)"), and a bracketed qualifier in the SHORT name is therefore the marker
+  of a hardware variant, which leaves the Apple-only rows visually distinct from
+  them. `(PyTorch)` is gone from the family: the library stopped being what
+  distinguishes these rows from each other, and the accelerator is what does.
+  **The qualifier axis is HARDWARE, never format**: "llama.cpp (GGUF)" beside
+  "llama.cpp (Vulkan)" qualified the wrong axis and was renamed to "llama.cpp
+  (CPU)", because both rows read GGUF through the same
+  `runners/llama_text.py` — a qualifier naming something the sibling row also
+  does distinguishes nothing, and it cost that row the hardware name its
+  sibling's `note` has to cross-reference. **A qualifier names the BUILD, not a
   prediction about the reader's device** (D382): "(CPU)" is the `whl/cpu` pin —
   the install with no accelerator libraries in it — and that same pin runs on the
   GPU on Apple Silicon, so the row keeps its name there and its `note` carries the

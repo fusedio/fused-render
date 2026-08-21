@@ -865,12 +865,18 @@ def _vulkan() -> Availability:
 # naming `transformers-text` or `diffusers-image` keeps meaning what it meant.
 #
 # **A hardware variant carries its accelerator in BOTH names**, so `label` and
-# `short_label` are equal on all six torch rows ("Diffusers (CUDA)"). The short
-# name is what the Local card and `servingLine` print, and three engines whose
-# short names are all "Diffusers" would render as one engine on every surface
-# but the picker. The MLX rows keep a PLATFORM qualifier on the long name only
-# — a bracketed qualifier in the SHORT name is therefore the marker of a
-# hardware variant, and the Apple-only rows stay visually distinct from them.
+# `short_label` are equal on all six torch rows and both llama.cpp ones
+# ("Diffusers (CUDA)", "llama.cpp (CPU)"). The short name is what the Local card
+# and `servingLine` print, and three engines whose short names are all
+# "Diffusers" would render as one engine on every surface but the picker. The
+# qualifier names the BUILD rather than the reader's machine, which is why the
+# CPU rows keep it on a Mac that runs them on the GPU — and why naming a row
+# after its FORMAT instead does not work: "llama.cpp (GGUF)" beside "llama.cpp
+# (Vulkan)" qualified the wrong axis, since both rows read GGUF through the same
+# `runners/llama_text.py`. The MLX rows keep a PLATFORM qualifier on the long
+# name only — a bracketed qualifier in the SHORT name is therefore the marker
+# of a hardware variant, and the Apple-only rows stay visually distinct from
+# them.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -966,17 +972,38 @@ _RUNNERS: tuple[Runner, ...] = (
         code="llamacpp-text",
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "llamacpp_text"),
-        label="llama.cpp (GGUF)",
-        short_label="llama.cpp",
+        # "(CPU)" rather than the old "(GGUF)", for the reason the transformers
+        # row states about "(PyTorch)": the FORMAT is not what distinguishes
+        # this row from its neighbour — `llamacpp-text-vulkan` reads GGUF
+        # through the same shared `runners/llama_text.py` — and the wheel index
+        # is, so the qualifier names the thing a reader is choosing between.
+        # Both names carry it; see the table's naming note above.
+        #
+        # **"(CPU)" names the BUILD, not a prediction about the device**, the
+        # precedent `transformers-text` set with its own `whl/cpu` pin. Here it
+        # is the maintainer's `whl/cpu` index — the wheel with no CUDA, ROCm or
+        # Vulkan backend compiled in — and on Apple Silicon that same index's
+        # wheel links `libggml-metal.dylib`, so this row runs on the GPU there.
+        # What device a model actually got is the worker's to report; the `note`
+        # says the Mac case out loud so the two never disagree.
+        label="llama.cpp (CPU)",
+        short_label="llama.cpp (CPU)",
         # ONE LINE, per the rule the transformers row states. Leads with the
         # reason to pick it (current-generation Qwen at a fraction of the bf16
         # download) and folds the packaging caveat into the same sentence,
         # since that is the fact this row's `_available` cannot express —
         # `_llamacpp_platform` answers "does the wheel exist for this
         # platform", not "was THIS release's wheel intact when it was built".
-        note="Runs current Qwen GGUF quantizations at a fraction of the "
-             "unquantized download — opt-in because its wheels come from the "
-             "maintainer's own index rather than PyPI.",
+        #
+        # **It names the Apple Silicon GPU, because this row USES it** — the
+        # same correction D382 made to the two torch notes. `llama_text.load()`
+        # reports device "gpu" when the Metal backend takes the layers, so a
+        # note that mentioned only the download would have had the Engines tab
+        # implying a CPU engine while the loaded card beside it said `gpu`, one
+        # page contradicting itself.
+        note="Runs current Qwen GGUF quantizations on the CPU or Apple "
+             "Silicon's GPU at a fraction of the unquantized download — "
+             "opt-in: wheels from the maintainer's index, not PyPI.",
         _available=_llamacpp_platform,
         # A text-generation search result this engine cannot resolve at all
         # (a plain safetensors repo) is not actionable here — see
@@ -995,17 +1022,16 @@ _RUNNERS: tuple[Runner, ...] = (
         code="llamacpp-text-vulkan",
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
-        # Both names equal, the same shape the torch hardware variants use
-        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY,
-        # not a platform aside, so it belongs in the short name the Local
-        # card and job row print too — unlike `llamacpp-text`'s own "(GGUF)",
-        # which is dropped from ITS short name because format is not what
-        # tells these two rows apart, hardware is.
+        # Both names equal, for the reason the torch hardware variants' are
+        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY
+        # rather than a platform aside, and the short name is what the Local
+        # card and the job row print, so two rows both reading "llama.cpp"
+        # would render as one engine everywhere but the picker.
         label="llama.cpp (Vulkan)",
         short_label="llama.cpp (Vulkan)",
         note="Much quicker on an NVIDIA or AMD GPU under Windows or Linux, "
-             "for a much larger download — see llama.cpp (GGUF) for the "
-             "CPU/Apple Silicon build.",
+             "for a much larger download — see llama.cpp (CPU) for the "
+             "CPU and Apple Silicon build.",
         _available=_vulkan,
         hub_filter_tags=("gguf",),
     ),
