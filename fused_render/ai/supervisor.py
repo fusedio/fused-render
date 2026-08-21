@@ -1539,6 +1539,46 @@ def generate_text(model: str, body: dict):
                 yield event
 
 
+def generate_embed(model: str, body: dict) -> dict:
+    """One `{vectors, dim, model}` reply from the resident embedding model.
+
+    The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
+    `generate_image` and `_wait_ready` use: an embed call answers in
+    milliseconds once the model is resident, so there is no job for a cold load
+    to hide inside the way a multi-minute render has one already. A cold model
+    therefore raises `ModelNotReady` — the load STARTS, its job id comes back on
+    the exception, and the caller is meant to watch it and ask again, exactly as
+    `/api/ai` already does for text.
+
+    Blocking, and cheap to block on: unlike an image or a transcription this is
+    one forward pass through a small tower, so holding the request open for it
+    costs nothing the caller was not already waiting on.
+    """
+    worker = ready_worker(registry.EMBEDDINGS, model)
+    if worker is None:
+        with _lock:
+            current = _workers.get(registry.EMBEDDINGS)
+        if current is not None and current.model == model:
+            raise ModelNotReady(
+                f"{model} is still loading ({current.state})", job_id_for(model))
+        started = load(model, registry.EMBEDDINGS)
+        raise ModelNotReady(f"{model} is loading now", started["jobId"])
+
+    try:
+        response = _worker_request(worker, "/generate", body=body,
+                                   timeout=GENERATE_TIMEOUT_S)
+    except (OSError, ValueError) as e:
+        raise SupervisorError(f"the model process did not answer: {e}") from e
+    with response:
+        try:
+            payload = json.loads(response.read().decode() or "{}")
+        except ValueError as e:
+            raise SupervisorError("the model process sent a malformed reply") from e
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or "the embedding failed"))
+    return payload.get("result") or {}
+
+
 def _wait_ready(model: str, capability: str, job: str,
                 row: dict | None = None) -> Worker:
     """Make `model` resident, reporting the wait to `job`. Blocking.

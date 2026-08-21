@@ -114,6 +114,28 @@ MFLUX_VARIANTS = {
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
 
+#: The `model_type`s of the DUAL ENCODERS the embedding runners read — one
+#: checkpoint holding a text tower and a vision tower that project into one
+#: space, which is what `get_text_features` / `get_image_features` are.
+#:
+#: **`siglip` covers SigLIP AND SigLIP2**: `google/siglip2-base-patch16-384`
+#: declares `"model_type": "siglip"` (checked 2026-08-21, and it is what makes
+#: the MLX runner able to read it at all — mlx-embeddings 0.1.x ships a `siglip`
+#: module and no `siglip2` one, and dispatches on this very field). There is no
+#: separate spelling to add.
+#:
+#: Read off the config rather than the repo id, for `is_parakeet_checkpoint`'s
+#: reason: a fine-tune under somebody's own account is the same format and
+#: deserves the same tag.
+EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
+
+#: …and the subset MLX reads. Same field, shorter list: mlx-embeddings has a
+#: SigLIP port and no CLIP one, so a CLIP repo is loadable by the torch runner
+#: and by nothing else here. Split rather than shared because this is exactly
+#: what `loaders()` answers — a Mac that resolved to MLX must not be offered a
+#: Load for a checkpoint its engine has no module for.
+MLX_EMBED_MODEL_TYPES = frozenset({"siglip"})
+
 #: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
 #:
 #: **Repos the user never chose.** They land in the Hub cache because a runner
@@ -779,7 +801,15 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # tuple (like `DIFFUSERS_RUNNERS`) is defined further down this
             # module, alongside `loaders()` — the same order this file already
             # keeps for the diffusers pair just above.
-            "llamacpp-text", "llamacpp-text-vulkan")
+            "llamacpp-text", "llamacpp-text-vulkan",
+            # A `siglip`/`clip` model_type is decisive too, and it has to be: a
+            # dual encoder is a directory of safetensors, so without this the
+            # text branch would claim it and a cached SigLIP card would offer to
+            # load a vision-text encoder as a chat model. Both codes appear for
+            # `DIFFUSERS_RUNNERS`' reason — membership is a statement about the
+            # FORMAT, and a config saying `siglip` says the same thing whichever
+            # of the two engines opens it.
+            "mlx-embed", "transformers-embed")
 
 
 def unloadable_quant(config: dict) -> str | None:
@@ -862,6 +892,19 @@ def is_parakeet_checkpoint(config: dict) -> bool:
     """
     target = config.get("target")
     return isinstance(target, str) and target.startswith(NEMO_ASR_TARGET)
+
+
+def embed_model_type(config: dict) -> str | None:
+    """The dual-encoder family this config declares, or None.
+
+    Lowercased, because `model_type` is written by whoever exported the
+    checkpoint and a `SigLIP` would otherwise read as an unknown family.
+    """
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str):
+        return None
+    model_type = model_type.strip().lower()
+    return model_type if model_type in EMBED_MODEL_TYPES else None
 
 
 def has_mflux_components(dirnames) -> bool:
@@ -955,6 +998,15 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # ASR repo is "a speech model nothing here can load" — matching no
         # runner, offered by nothing — not "matches nothing here so fall
         # through to whatever else recognises the file layout."
+        return tuple(found)
+    family = embed_model_type(config)
+    if family and torch_weights:
+        if family in MLX_EMBED_MODEL_TYPES:
+            found.append("mlx-embed")
+        found.append("transformers-embed")
+        # …and NOTHING else, for the `.gguf` branch's reason: this snapshot is
+        # a directory of safetensors, so the text branch below would claim it
+        # and the page would offer to load a dual encoder as a chat model.
         return tuple(found)
     # A directory of safetensors, which since D416 exactly one engine here
     # reads: `mlx-text`. This branch used to fork — an MLX-packed checkpoint

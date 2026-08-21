@@ -104,6 +104,12 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={"model.gguf"}, dirnames=set(), config={},
         torch_weights=False, gguf_architecture="qwen35"))
+    # `mlx-embed`/`transformers-embed` short-circuit too (see `loaders()`'s own
+    # comment on the branch), so — like the MLX whisper and Parakeet cases
+    # above — a code reachable only from below it would otherwise look absent.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(), dirnames=set(),
+        config={"model_type": "siglip"}, torch_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -556,3 +562,76 @@ def test_the_vad_reads_its_file_from_the_registry():
 
     assert module.REPO in formats.COMPONENT_REPOS
     assert formats.COMPONENT_REPOS[module.REPO]["file"] == module.FILE
+
+
+# -- embeddings ------------------------------------------------------------------
+
+
+def _siglip_config():
+    return {"model_type": "siglip"}
+
+
+def _clip_config():
+    return {"model_type": "clip"}
+
+
+def test_a_siglip_snapshot_resolves_to_both_embedding_runners():
+    codes = formats.loaders(
+        repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
+        dirnames=set(), config=_siglip_config(), torch_weights=True)
+    assert set(codes) == {"mlx-embed", "transformers-embed"}
+
+
+def test_a_clip_snapshot_resolves_to_transformers_embed_only():
+    """mlx-embeddings 0.1.x has a `siglip` module and no `clip` one
+    (`MLX_EMBED_MODEL_TYPES`) — the one difference between the two families
+    this app treats identically everywhere else."""
+    codes = formats.loaders(
+        repo_id="openai/clip-vit-base-patch32", names={"model.safetensors"},
+        dirnames=set(), config=_clip_config(), torch_weights=True)
+    assert codes == ("transformers-embed",)
+
+
+def test_an_embed_config_with_no_torch_weights_loads_nowhere():
+    """A `model_type: siglip` config with nothing but a README is not a
+    loadable snapshot — `torch_weights` is what tells the two apart, the same
+    guard the text branch at the bottom of `loaders()` has."""
+    codes = formats.loaders(
+        repo_id="x/y", names=set(), dirnames=set(),
+        config=_siglip_config(), torch_weights=False)
+    assert codes == ()
+
+
+def test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners():
+    """The `DECISIVE`/short-circuit rule `is_parakeet_checkpoint` and
+    `is_mlx_whisper_snapshot` both rely on: a dual encoder is a directory of
+    safetensors, so without the early `return` the text branch below would
+    claim it too and the page would offer a Load button for a chat model that
+    can never generate a token."""
+    codes = formats.loaders(
+        repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
+        dirnames=set(), config=_siglip_config(), torch_weights=True)
+    # `mlx-text` spelled literally, per `_TEXT`'s own note above: since D416 it
+    # is the one runner left that reads a bare directory of safetensors, so a
+    # family tuple would have nothing to hold together.
+    assert "mlx-text" not in codes
+    assert set(codes) == {"mlx-embed", "transformers-embed"}
+
+
+def test_embed_model_type_is_case_and_whitespace_tolerant():
+    assert formats.embed_model_type({"model_type": " SigLIP "}) == "siglip"
+    assert formats.embed_model_type({"model_type": "CLIP"}) == "clip"
+
+
+def test_embed_model_type_rejects_anything_else():
+    assert formats.embed_model_type({"model_type": "llama"}) is None
+    assert formats.embed_model_type({}) is None
+    assert formats.embed_model_type({"model_type": 123}) is None
+
+
+def test_the_embed_codes_are_decisive():
+    """A directory of safetensors says nothing about the modality on its own
+    (`DECISIVE`'s own comment) — a `siglip`/`clip` config is what settles it,
+    exactly like a Parakeet NeMo target or an MLX whisper weights file."""
+    assert "mlx-embed" in formats.DECISIVE
+    assert "transformers-embed" in formats.DECISIVE

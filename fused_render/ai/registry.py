@@ -77,6 +77,14 @@ IMAGE_GENERATION = "text-to-image"
 #: `pipeline_tag` on a Whisper repo and the capability a card asks to load are
 #: one string rather than three that have to be kept in step.
 SPEECH_TO_TEXT = "automatic-speech-recognition"
+#: Vectors, not words: one dual-encoder model that turns a piece of text OR an
+#: image into a point in the same space, so a page can compare them. The plain
+#: English name rather than the Hub's `feature-extraction`, unlike
+#: `SPEECH_TO_TEXT` above — the tag a SigLIP repo actually carries is
+#: `zero-shot-image-classification`, which describes one thing you can DO with
+#: those vectors and not what the runner returns, so borrowing it would have
+#: named the capability after a use case it does not implement.
+EMBEDDINGS = "embeddings"
 
 RUNNERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runners")
 
@@ -283,6 +291,32 @@ def _always() -> Availability:
     case it is.
     """
     return Availability(True)
+
+
+def _torch_platform() -> Availability:
+    """`transformers-embed`'s supported production platforms.
+
+    This is the probe the withdrawn `transformers-text` family used (D416),
+    kept alive because the embed runner installs the same torch from the same
+    `whl/cpu` index — the withdrawal was about maintaining three TEXT rows
+    llama.cpp had obsoleted, not about torch ceasing to run anywhere. MLX is
+    preferred on Apple Silicon by registry order, but torch's MPS path is a
+    working fallback when the MLX runner is unavailable. Intel macOS is not a
+    distribution target, and availability drives the catalog and Load button,
+    so it must not be advertised merely because torch happens to publish a
+    wheel there.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if (
+        system in ("Windows", "Linux")
+        or (system == "Darwin" and machine == "arm64")
+    ):
+        return Availability(True)
+    return Availability(
+        False,
+        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
+    )
 
 
 def _llamacpp_platform() -> Availability:
@@ -877,9 +911,9 @@ def _vulkan() -> Availability:
 
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
-# below it serves Windows and Linux plus the Apple Silicon fallback. All three
-# multi-runner capabilities (text generation, image generation, speech to text)
-# are arranged that way. The ordering is the whole mechanism, so the rows are
+# below it serves Windows and Linux plus the Apple Silicon fallback. All four
+# multi-runner capabilities (text generation, image generation, speech to text,
+# embeddings) are arranged that way. The ordering is the whole mechanism, so the rows are
 # not sorted alphabetically and must not be — it is also the DEFAULT that a
 # user's engine preference overrides, so a re-order silently re-decides every
 # machine set to "auto", which is all of them until somebody chooses otherwise.
@@ -1187,6 +1221,56 @@ _RUNNERS: tuple[Runner, ...] = (
         # here, and no user loses a capability to it.
         _available=_always,
     ),
+    # Embeddings, the fourth capability, arranged like the other three: MLX takes
+    # the Macs and the torch row below it keeps every other platform — plus the
+    # Macs whenever the MLX folder is not built yet or its package cannot run.
+    #
+    # **The two runners share an embedding SPACE, which no other pair here
+    # does.** mlx-embeddings reads the same `google/siglip2-*` safetensors
+    # transformers reads, through its own port of the same architecture, and the
+    # cosine similarities the two produce for the same texts and images agree to
+    # about three decimals (measured on `siglip2-base-patch16-384`). So a page
+    # that embedded a folder of images on one engine and searches it from the
+    # other gets sensible answers, which is a promise the whisper and text pairs
+    # explicitly cannot make about their weights. It is not a promise this app
+    # relies on anywhere — vectors are the caller's to store, and a switch is
+    # still a switch — but it is why the engine choice here is genuinely free.
+    Runner(
+        code="mlx-embed",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "mlx_embed"),
+        label="MLX Embeddings (Apple Silicon)",
+        short_label="MLX Embeddings",
+        # The format claim with the hardware taken out: these weights are the
+        # safetensors mlx-embeddings' own SigLIP port opens.
+        family_label="MLX Embeddings",
+        # ONE LINE, per the naming note above the table. It describes the
+        # DEFAULT on a Mac, so what it leads with is what the reader gets.
+        note="Embeds on the GPU, in the same vector space the Transformers "
+             "engine produces.",
+        _available=_apple_silicon,
+    ),
+    Runner(
+        code="transformers-embed",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "transformers_embed"),
+        # No qualifier on either name, and that is the decision rather than an
+        # omission: the naming note above the table makes a bracketed SHORT name
+        # the marker of a per-hardware variant, and this row has none. There is
+        # one torch embedding engine, it installs the `whl/cpu` build (D416
+        # withdrew the transformers TEXT family, not the wheel index its
+        # manifest borrows), and CUDA and ROCm variants are deliberately not
+        # offered — a text encoder and a vision tower are milliseconds of work
+        # per item on a CPU, which is the case an accelerated variant would be
+        # paying several gigabytes of wheels to improve. Adding one later is
+        # one folder and one row, exactly as it was for text.
+        label="Transformers Embeddings",
+        short_label="Transformers Embeddings",
+        family_label="Transformers Embeddings",
+        note="Runs on the CPU on any machine, or Apple Silicon's GPU — quick "
+             "either way, since one item is a single forward pass.",
+        _available=_torch_platform,
+    ),
 )
 
 
@@ -1208,6 +1292,17 @@ _TASK_CAPABILITIES = {
     "text to image": IMAGE_GENERATION,
     "image generation": IMAGE_GENERATION,
     "speech recognition": SPEECH_TO_TEXT,
+    # **"zero-shot image classification" IS the embedding capability**, and that
+    # is the pairing a reader is most likely to think is a mistake. It is the tag
+    # every SigLIP, SigLIP2 and CLIP repo carries — including both entries in
+    # this app's own embedding catalog — and what it describes is a DUAL ENCODER:
+    # the "classification" is done by embedding the labels, embedding the image
+    # and comparing, which is exactly the two calls the embedding runners
+    # expose. A repo with that tag is therefore loadable here, and leaving the
+    # label in `NO_RUNNER_YET` (where it sat until the capability existed) would
+    # have taken the Load button off the very models the Discover tab suggests —
+    # the gemma bug that table's own comment describes, in a new modality.
+    "zero-shot image classification": EMBEDDINGS,
 }
 
 #: The other half of the same decision: labels nothing here serves, listed
@@ -1219,11 +1314,28 @@ _TASK_CAPABILITIES = {
 #: every label the listing can produce to appear in one of these two, which turns
 #: "we forgot" into a failing test instead of a missing button.
 NO_RUNNER_YET = frozenset({
-    # Nothing here generates embeddings, classifies, or segments — these are
-    # real jobs with no local runner in this cut.
-    "embeddings", "sentence embeddings", "fill mask", "text classification",
+    # Nothing here classifies or segments — these are real jobs with no local
+    # runner in this cut. ("zero-shot image classification" was here until the
+    # embedding runners shipped; it is in the table above now, which is the
+    # direction this list is meant to shrink in.)
+    "fill mask", "text classification",
     "token classification", "question answering", "summarization", "translation",
-    "image classification", "zero-shot image classification",
+    "image classification",
+    # **The two labels the embedding capability does NOT claim, despite being
+    # the capability's own name.** "embeddings" is the Hub's
+    # `feature-extraction` and "sentence embeddings" its `sentence-similarity`,
+    # and what wears those tags is overwhelmingly a sentence-transformers
+    # checkpoint: a plain text encoder plus a pooling configuration, with no
+    # vision tower and no `get_text_features`/`get_image_features` for the
+    # embedding runners to call. Mapping them would put a Load button on
+    # `sentence-transformers/all-MiniLM-L6-v2` — a download that then refuses,
+    # which is the gemma bug this table's own comment describes, and which
+    # `test_a_result_is_never_something_this_app_cannot_run` pins by that exact
+    # repo id. The tag that actually rides on a dual encoder is
+    # `zero-shot-image-classification`, and that is the one mapped above.
+    # Mean-pooling a text-only encoder is a different load path and a different
+    # catalog; when it ships, these two move.
+    "embeddings", "sentence embeddings",
     "zero-shot text classification", "image segmentation", "object detection",
     "depth estimation", "image to image", "image to text", "audio classification",
     "video generation",
