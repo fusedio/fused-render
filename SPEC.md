@@ -8012,7 +8012,14 @@ and it says so through `sources()` rather than by being absent.
   is 15+ and `SCScreenshotManager` 14+, against `LSMinimumSystemVersion` 11.0,
   so a 12–14 Mac gets `available: false, reason: "needs macOS 15"` and a start
   rejects `"unavailable"` with the same sentence. Windows and Linux get the same
-  shape with their own reason. No `via` field anywhere: there is one
+  shape with their own reason. **That holds for a backend that will not IMPORT
+  too** — the macOS module loads its frameworks at module top and
+  `ScreenCaptureKit.framework` does not exist below macOS 12.3, so an
+  unimportable backend is `Unsupported` (a 409) rather than an ImportError (a
+  500). And `sources()` cannot raise AT ALL: a failure this module did not
+  predict is still `available: false`, carrying the exception as its reason,
+  because the promise is about the shape and a page reads it while drawing a
+  record button. No `via` field anywhere: there is one
   implementation, so a page must never branch on which one served it.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 - **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app

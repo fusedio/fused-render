@@ -28,6 +28,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import platform
 import sys
 import threading
 import time
@@ -77,7 +78,20 @@ def _backend():
             "native capture is macOS-only today — this machine runs "
             f"{sys.platform}"
         )
-    from fused_render.capture import _darwin
+    try:
+        from fused_render.capture import _darwin
+    except ImportError as e:
+        # `Unsupported`, not the raw ImportError: the backend imports its Apple
+        # frameworks at module top, and `ScreenCaptureKit.framework` does not
+        # exist before macOS 12.3 — against `LSMinimumSystemVersion` 11.0, so
+        # this is a machine inside the supported range, not only a broken
+        # build. Both read the same from here, and both must answer like a
+        # machine that cannot capture: an ImportError reaching a route is a
+        # 500, and CP-8 promises a 409 naming the reason.
+        raise Unsupported(
+            "native capture could not load its macOS frameworks on macOS "
+            f"{platform.mac_ver()[0] or '?'} — ScreenCaptureKit arrives in "
+            f"macOS 12.3 and recording needs 15 ({e})") from e
 
     return _darwin
 
@@ -93,22 +107,38 @@ def sources() -> dict:
     separate booleans rather than one.
     """
     try:
-        backend = _backend()
+        return _backend().probe()
     except Unsupported as e:
-        reason = str(e)
-        return {
-            "video": {"available": False, "granted": False, "reason": reason},
-            "audio": {"available": False, "granted": False, "reason": reason},
-            "systemAudio": {"available": False, "reason": reason},
-            # Shape-identical to the real probe, every key included: a page that
-            # reads `sources().screenshot.available` must not throw on the
-            # platform where the answer is "no".
-            "screenshot": {"available": False, "granted": False,
-                           "reason": reason},
-            "displays": [],
-            "microphones": [],
-        }
-    return backend.probe()
+        return _unavailable(str(e))
+    except Exception as e:                       # noqa: BLE001 - see below
+        # A PROBE MAY NOT RAISE. Every other caller here is allowed to fail a
+        # request, but this one is read while a page is drawing a record button
+        # — `available: false` with a reason is an answer it can render, and a
+        # 500 is not. The named `Unsupported` above covers what this module
+        # predicts; this covers what it does not (a framework call refusing on
+        # a machine nobody tested), because the promise CP-8 makes is about the
+        # SHAPE, and a promise with an unenumerated hole in it is not one.
+        logger.warning("probing native capture failed", exc_info=True)
+        return _unavailable(
+            "native capture could not be probed on this machine — "
+            f"{e.__class__.__name__}: {e}".rstrip(" -:"))
+
+
+def _unavailable(reason: str) -> dict:
+    """`sources()` for a machine that cannot capture — the same shape, always.
+
+    Shape-identical to the real probe, every key included: a page that reads
+    `sources().screenshot.available` must not throw on the platform where the
+    answer is "no".
+    """
+    return {
+        "video": {"available": False, "granted": False, "reason": reason},
+        "audio": {"available": False, "granted": False, "reason": reason},
+        "systemAudio": {"available": False, "reason": reason},
+        "screenshot": {"available": False, "granted": False, "reason": reason},
+        "displays": [],
+        "microphones": [],
+    }
 
 
 # --------------------------------------------------------------- the registry

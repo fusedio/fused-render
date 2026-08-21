@@ -12,6 +12,7 @@ row in the manager — and the cap STOPS AND KEEPS, because a page can be closed
 mid-recording and then the ✕ is the only control left, so if the cap discarded
 too there would be no ending that kept the file.
 """
+import builtins
 import os
 import sys
 import time
@@ -119,6 +120,53 @@ def test_starting_on_an_unsupported_platform_is_a_409_not_a_500(monkeypatch,
     res = client.post("/api/capture/start", json={"mode": "screen"}, headers=H)
     assert res.status_code == 409
     assert "macOS" in res.json()["error"]
+
+
+def test_a_backend_that_will_not_import_is_a_reason_not_a_500(monkeypatch,
+                                                              client):
+    """The backend imports its Apple frameworks at module top, and
+    `ScreenCaptureKit.framework` does not exist before macOS 12.3 — under an
+    `LSMinimumSystemVersion` of 11.0. So this is a machine inside the supported
+    range, and CP-8 promises it an answer: `available: false` with a reason on
+    the read, a 409 on a start. An ImportError reaching either is a 500."""
+    monkeypatch.setattr(capture.sys, "platform", "darwin")
+    real_import = builtins.__import__
+
+    def no_framework(name, globs=None, locs=None, fromlist=(), level=0):
+        # Scoped to the backend import alone — `_backend()` reaches it as
+        # `from fused_render.capture import _darwin`, i.e. a fromlist entry.
+        if "_darwin" in (fromlist or ()):
+            raise ImportError("No module named 'ScreenCaptureKit'")
+        return real_import(name, globs, locs, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", no_framework)
+    payload = capture.sources()
+    assert payload["video"]["available"] is False
+    assert "ScreenCaptureKit" in payload["video"]["reason"]
+    assert set(payload) == set(FakeBackend().probe())
+    res = client.post("/api/capture/start", json={"mode": "screen"}, headers=H)
+    assert res.status_code == 409, res.json()
+
+
+def test_a_probe_that_raises_is_still_an_answer(monkeypatch, client):
+    """A PROBE MAY NOT RAISE: it is read while a page is drawing a record
+    button, and `available: false` is something that page can render where a
+    500 is not. The promise is about the SHAPE, so it cannot hold only for the
+    failures this module predicted."""
+    class Exploding:
+        def probe(self):
+            raise OSError("CoreGraphics said no")
+
+    monkeypatch.setattr(capture, "_backend", lambda: Exploding())
+    payload = capture.sources()
+    assert set(payload) == set(FakeBackend().probe())
+    for key in ("video", "audio", "systemAudio", "screenshot"):
+        assert payload[key]["available"] is False
+        assert "CoreGraphics said no" in payload[key]["reason"]
+    # And through the route the page actually calls.
+    res = client.get("/api/capture")
+    assert res.status_code == 200
+    assert res.json()["sources"]["video"]["available"] is False
 
 
 @pytest.mark.parametrize("body,expected", [
