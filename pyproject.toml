@@ -88,6 +88,38 @@ dependencies = [
     # Windows it resolves to nothing and those backends use their own tools
     # (xclip/wl-clipboard, ctypes) with no new requirement.
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+    # Native capture (SPEC §45): `fused.capture` records the screen through
+    # ScreenCaptureKit and the microphone through AVFoundation. Core with a
+    # darwin marker, for the same reason as the pasteboard bridge above rather
+    # than in `[app]`: a source install on a Mac runs the same shell and the same
+    # pages, and a capability that silently only exists in the DMG is the shape
+    # of mistake that comment describes. `[app]` is macOS-only too but is
+    # installed by the packaged build alone.
+    #
+    # Measured against D276's size budget before being added: 3 MB installed for
+    # both, transitives (Quartz, CoreMedia, CoreAudio) included — pyobjc
+    # framework wheels are bindings, and pyobjc-core is already here.
+    "pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'",
+    "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
+    # The other two capture backends (SPEC §45, CP-10/CP-11). Recording on
+    # Windows and Linux goes through the page's own encoder and needs nothing
+    # here; the STILL is native on both and these are what it needs:
+    #   * pillow encodes what `BitBlt` copied on Windows, and crops or converts
+    #     to JPEG what the desktop portal wrote on Linux. It is already in
+    #     `[bundled]` and in both desktop extras (for the tray icon) — declared
+    #     HERE too because those are the wrong reasons: a `pip install
+    #     fused-render` on Windows with no extras is a shell that runs the same
+    #     pages, and `fused.capture.screenshot` reporting `available: false`
+    #     forever on it is the exact mistake the Cocoa comment above describes.
+    #   * dbus-fast carries the `org.freedesktop.portal.Screenshot` call. There
+    #     is no reading the framebuffer on Wayland, so the portal is the only
+    #     interface that works on both display servers — and dbus-fast is pure
+    #     Python with manylinux wheels, so this pulls in no GTK, no PyGObject
+    #     and no system package. The Linux tray already uses it over the same
+    #     bus; same promotion argument as pillow.
+    "pillow; sys_platform == 'win32'",
+    "pillow; sys_platform == 'linux'",
+    "dbus-fast; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]

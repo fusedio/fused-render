@@ -266,9 +266,24 @@ _UNRUNNABLE_LIBRARIES = frozenset({
     # Graph formats for other runtimes entirely. No runner imports any of them.
     "litert", "tflite", "coreml", "onnx", "openvino", "unity-sentis",
     "keras", "tf-keras",
-    # Speech stacks that are not the three this app has: a `.nemo` archive is
-    # the case worth naming, since `parakeet-mlx` reads the MLX CONVERSION of
-    # one (`library_name: "mlx"`) and never the archive itself.
+    # Speech stacks that are not the two this app has. `nemo` used to need a
+    # caveat here — `parakeet-mlx` read the MLX CONVERSION of a NeMo export
+    # (`library_name: "mlx"`), never the archive itself — but D406 withdrew
+    # that runner, so a raw `.nemo` archive (`library_name: "nemo"`) is
+    # unloadable with no exception now.
+    #
+    # **Known, accepted gap left by that withdrawal (D406):** an MLX
+    # CONVERSION of a Parakeet checkpoint reports `library_name: "mlx"`, which
+    # is a format this app DOES run other things on (MLX LM, MLX FLUX, MLX
+    # Whisper) — so it is not in this denylist and cannot be, without also
+    # hiding every repo those runners actually load. Such a repo still passes
+    # `supported_tags()` and appears in Hub search with a Download button;
+    # `formats.py`'s trap catches it only AFTER download, once `config.json`
+    # is on disk to read `target` from — the card then shows no engine tag and
+    # no Load button, same as any other unloadable cached repo, but the
+    # Download button upstream of that is honest-looking and wrong. Fixing it
+    # would need a per-repo config fetch inside search results, which this
+    # filter deliberately does not do (see "What this claims" above).
     "nemo", "espnet", "speechbrain", "k2",
     # Classical NLP toolkits, which publish under supported pipeline tags.
     "spacy", "fasttext", "flair", "stanza", "allennlp", "sklearn", "paddlenlp",

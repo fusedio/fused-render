@@ -552,41 +552,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "twice turbo's disk and several times its decoding.",
         },
     ],
-    # NeMo Parakeet exports ONLY, and the FOURTH mutually unloadable speech
-    # list in the app (D319). These carry `model.safetensors` — the same
-    # filename a transformers checkpoint has — beside a `config.json` naming a
-    # NeMo ASR class, which is what tells the two apart (`formats.py`). A
-    # Whisper repo suggested here would fail inside `from_config` with "Model
-    # is not supported yet!", and a Parakeet repo suggested to a whisper runner
-    # fails the other way; the split is per RUNNER for exactly this reason.
+    # A fourth speech list here, `parakeet-mlx` (NeMo Parakeet exports), lived
+    # briefly under D319 and was removed by D406 along with the runner that
+    # read it — maintenance cost not justified by use.
     #
-    # These are the repos a Mac sees only after CHOOSING this engine on the
-    # Engines tab — the registry keeps Whisper as the default (see the runner
-    # row). Sizes are the same full-snapshot Hub metadata estimate as the lists
-    # above (2026-08-17). **One line each**, per the rule the transformers list
-    # states: a shortlist is read by sweeping it.
-    #
-    # **Both entries are English only, and that is a property of this list
-    # rather than an oversight** — a recording in another language belongs on a
-    # Whisper runner, which the Engines tab is how a user gets back to.
-    "parakeet-mlx": [
-        {
-            "id": "mlx-community/parakeet-tdt_ctc-110m",
-            "label": "Parakeet TDT-CTC 110M",
-            "size_gb": 0.5,
-            "note": "The smallest here, and what a bare transcribe call loads — "
-                    "English only, and it drops the punctuation the 0.6B "
-                    "model gets right.",
-        },
-        {
-            "id": "mlx-community/parakeet-tdt-0.6b-v2",
-            "label": "Parakeet TDT 0.6B v2",
-            "size_gb": 2.5,
-            "note": "The most accurate here, English only — five times the "
-                    "download of the 110M, for the punctuation and names it "
-                    "gets right.",
-        },
-    ],
     # CTranslate2 conversions ONLY. `openai/whisper-large-v3` is the repo
     # everyone reaches for and it does not load here — the runner reads
     # CTranslate2's `model.bin`, not transformers' safetensors — so suggesting

@@ -47,7 +47,15 @@ function rankResult(over: Partial<IndexRankResult> = {}): IndexRankResult {
 }
 
 function answer(over: Partial<HomeAnswer> = {}): HomeAnswer {
-  return { query: "a", hits: [], truncated: false, total: 0, covered: true, ...over };
+  return {
+    query: "a",
+    hits: [],
+    truncated: false,
+    total: 0,
+    covered: true,
+    reason: "",
+    ...over,
+  };
 }
 
 describe("pathShortcut", () => {
@@ -117,6 +125,15 @@ describe("answerFrom", () => {
     const out = answerFrom(rankResult({ covered: false, hits: [], total: 0 }), "x", HOME);
     expect(out.covered).toBe(false);
     expect(out.hits).toEqual([]);
+  });
+
+  it("carries the server's reason through, for the disabled-indexing message", () => {
+    const out = answerFrom(
+      rankResult({ covered: false, reason: "disabled", hits: [], total: 0 }),
+      "x",
+      HOME,
+    );
+    expect(out.reason).toBe("disabled");
   });
 });
 

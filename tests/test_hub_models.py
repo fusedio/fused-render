@@ -683,8 +683,9 @@ def test_a_result_in_a_format_no_runner_reads_is_dropped(client, hub_cache, monk
     monkeypatch.setattr(httpx, "get", _reply([
         {"id": "litert-community/FLUX.2-klein-4B-LiteRT",
          "pipeline_tag": "text-to-image", "library_name": "litert"},
-        # A raw NeMo archive is the same shape of mistake in the audio column:
-        # `parakeet-mlx` reads the MLX CONVERSION of one, never the `.nemo`.
+        # A raw NeMo archive is the same shape of mistake in the audio column,
+        # and unloadable outright since D406 withdrew `parakeet-mlx` — no
+        # runner here reads a `.nemo` archive or an MLX conversion of one.
         {"id": "nvidia/parakeet-tdt-0.6b-v3",
          "pipeline_tag": "automatic-speech-recognition", "library_name": "nemo"},
         _hit("org/known"),

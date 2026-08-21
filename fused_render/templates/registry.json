@@ -426,10 +426,12 @@
   ],
   ".nc": [
     "netcdf",
+    "map",
     "claude"
   ],
   ".nc4": [
     "netcdf",
+    "map",
     "claude"
   ],
   ".cdf": [
@@ -448,6 +450,7 @@
   ".zarr/": [
     "zarr_aoi",
     "_listing",
+    "map",
     "claude"
   ],
   ".shp": [
@@ -661,6 +664,22 @@
   ],
   ".pickle": [
     "joblib_model",
+    "claude"
+  ],
+  ".h5": [
+    "map",
+    "claude"
+  ],
+  ".hdf5": [
+    "map",
+    "claude"
+  ],
+  ".he5": [
+    "map",
+    "claude"
+  ],
+  ".hdf": [
+    "map",
     "claude"
   ],
   ".fused": [
