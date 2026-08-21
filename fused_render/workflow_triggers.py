@@ -156,6 +156,19 @@ _RUN_MAX_AGE_S = 6 * 3600
 # and a hang here would hang the tick thread.
 _RUNNER_TIMEOUT_S = 120
 
+# How long a claim whose SPAWN OUTCOME IS UNKNOWN is held before it is released.
+#
+# `run.py::_start` spawns with `start_new_session`, so the `claude` process
+# outlives its parent. If the executor call is killed after that `Popen`
+# succeeded — a timeout, a crash — the run is alive and the answer never came
+# back. Treating that as "the run failed" cleared the claim and the next tick
+# started a SECOND session alongside the first, which is exactly what WC-13
+# forbids. So core names the run before it asks for it (`_new_run_id`), and a
+# start whose outcome is unknown keeps its claim for at least one further tick,
+# during which `poll` gets to answer for the id we chose. Past this, with the
+# run dir still absent, the spawn provably never happened and the claim goes.
+_SPAWN_GRACE_S = 2 * POLL_INTERVAL_S
+
 # Bounded event ring, exactly the shape `schedule.py` established: a running
 # narration for the shell to toast, never the record. The store is the record.
 _EVENTS_MAX = 100
@@ -165,8 +178,14 @@ EVENT_DISARMED = "disarmed"
 EVENT_REFUSED = "refused"
 EVENT_KINDS = (EVENT_RAN, EVENT_FAILED, EVENT_DISARMED, EVENT_REFUSED)
 
-# `sys:` marks a job this process owns (jobs.OWNER_SERVER), so the manager's ✕ is
-# a real cancel. One id per workflow, so a re-report re-attaches to the same row.
+# `sys:` marks a job this process owns, which is what lets the manager's ✕ be a
+# real cancel (jobs.OWNER_SERVER). One id per WORKFLOW — keyed off the document
+# path and NOT off the fingerprint, which is a fact about the TOOL SET: two
+# workflows built over the same two tools would otherwise share one row, so the
+# second's report would overwrite the first's, the manager's ✕ would cancel
+# whichever happened to be displayed, and one document's completion would be
+# attributed to the other. Hashed, because a path is neither bounded nor in the
+# id charset.
 _JOB_PREFIX = "sys:workflow:"
 
 # Names a watched folder produces that are never the arrival anybody meant.
@@ -215,6 +234,12 @@ def _ok(**extra) -> dict:
     return out
 
 
+def _job_id(wf: dict) -> str:
+    """The job-registry id for a workflow: `sys:workflow:<hash of its path>`."""
+    key = key_for(wf.get("path") or "")
+    return _JOB_PREFIX + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def key_for(path: str) -> str:
     """The store key for a workflow document: its resolved, case-normalized path.
 
@@ -229,15 +254,44 @@ def key_for(path: str) -> str:
         return os.path.normcase(os.path.abspath(str(path)))
 
 
-def fingerprint(tools) -> str:
-    """The fingerprint of an authorized tool set.
+def authorization_of(compiled: dict) -> dict:
+    """`{tools, servers}` out of a `plan` (or `start`) payload.
 
-    Over the SORTED, DEDUPED names, so it is a fact about the SET and not about
-    the order a compile happened to produce — a reordered graph is not a new
-    approval. `\\0`-joined so no two different sets can splice into one string.
+    Both halves, because a tool NAME is only half a tool.
+    `run.py::_server_names` assigns `mail`, `mail-2`, … over the graph's app
+    folders IN NODE ORDER, so two folders whose basenames collide
+    (`~/showcase/mail` and `~/work/mail`) swap names when the nodes are
+    reordered — and the tool-name set is then byte-identical across a document
+    that now reaches the other account. The server map is what pins which
+    folder is behind each name.
     """
+    return {
+        "tools": sorted({str(t) for t in (compiled.get("tools") or [])}),
+        "servers": {str(k): str(v)
+                    for k, v in (compiled.get("servers") or {}).items()},
+    }
+
+
+def fingerprint(tools, servers=None) -> str:
+    """The fingerprint of an authorization.
+
+    Over the SORTED, DEDUPED tool names AND the server map, so it is a fact
+    about what a run may reach rather than about the order a compile happened to
+    produce: a reordered graph is not a new approval, but a graph whose `mail`
+    server now points at a different folder IS one. `\\0`-joined, with the two
+    sections split by a marker, so no two different authorizations can splice
+    into one string.
+
+    `tools` may be a whole authorization dict (`{tools, servers}`), which is how
+    every caller inside this module passes it; the two-argument form is what the
+    tests and a caller holding only names use.
+    """
+    if isinstance(tools, dict) and servers is None:
+        tools, servers = tools.get("tools"), tools.get("servers")
     names = sorted({str(t) for t in (tools or [])})
-    digest = hashlib.sha256("\0".join(names).encode("utf-8")).hexdigest()
+    pairs = sorted("%s=%s" % (k, v) for k, v in (servers or {}).items())
+    blob = "\0".join(names) + "\0\x01servers\x01\0" + "\0".join(pairs)
+    digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
     return "sha256:" + digest[:32]
 
 
@@ -280,6 +334,23 @@ def ack_events(event_id: int) -> int:
 
 
 # --------------------------------------------------------------- the store
+
+
+def _row_sig(wf: dict) -> str:
+    """A cheap, order-stable digest of one workflow row.
+
+    Used to decide whether a tick needs to write at all. Hashing one row is far
+    less work than re-serialising every row and atomically replacing the file,
+    which is what an unconditional write costs — and `seen` alone can hold
+    SEEN_MAX markers per workflow.
+    """
+    try:
+        blob = json.dumps(wf, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        # Unserialisable means "assume changed": the write below is what would
+        # have raised anyway, and it will say so properly.
+        return ""
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _read() -> dict:
@@ -393,8 +464,13 @@ def _clean_triggers(raw) -> tuple[list, str]:
         if kind not in KINDS:
             return [], ("trigger %d has kind %r; the kinds are %s"
                         % (i + 1, kind, " and ".join(KINDS)))
-        clean = {"id": str(item.get("id") or "t%d" % (i + 1))[:64], "kind": kind,
-                 "label": str(item.get("label") or "")[:200]}
+        # Annotated, because the literal below infers `dict[str, str]` and the
+        # branches then assign a rule dict and a bool into it. No runtime
+        # consequence — this is a type error only — but a wrong annotation on
+        # the structure the loop reads is a bad thing to leave lying around.
+        clean: dict[str, object] = {
+            "id": str(item.get("id") or "t%d" % (i + 1))[:64], "kind": kind,
+            "label": str(item.get("label") or "")[:200]}
         if kind == KIND_SCHEDULE:
             expr = str(item.get("cron") or "").strip()
             rule = item.get("rule")
@@ -406,9 +482,19 @@ def _clean_triggers(raw) -> tuple[list, str]:
                 clean["cron"] = expr
             elif isinstance(rule, dict):
                 try:
-                    clean["rule"] = recur.validate_rule(rule)
+                    checked = recur.validate_rule(rule)
                 except ValueError as exc:
                     return [], "trigger %d: %s" % (i + 1, exc)
+                clean["rule"] = checked
+                # `count` is THE STORE'S TO ENFORCE — `recur`'s own docstring
+                # says so, and `schedule.py` enforces it against its `made`
+                # tally. So this one does too, in `_evaluate`, and the count is
+                # surfaced here so a reader of the store can see the bound
+                # without re-deriving it. Left unenforced, a rule reading
+                # "3 times" fired daily forever, which is the worst kind of
+                # wrong for an unattended feature: it looks configured.
+                if checked.get("count"):
+                    clean["count"] = int(checked["count"])
                 anchor = str(item.get("anchor") or "")
                 clean["anchor"] = anchor
             else:
@@ -547,7 +633,13 @@ def _sweep(trigger: dict, seen: dict, now_ts: float) -> list[dict]:
     while stack and budget > 0:
         current, depth = stack.pop()
         try:
-            entries = list(os.scandir(current))
+            # SORTED, so the sweep is deterministic. `scandir` yields in
+            # filesystem order, which meant that when arrivals outnumbered the
+            # budget, WHICH ones a tick processed was a coin toss — and a test
+            # for the budget could pass or fail on the same code. Sorting costs
+            # nothing on a drop folder and makes "the first N by name" a
+            # statable rule; the rest are picked up on the next tick.
+            entries = sorted(os.scandir(current), key=lambda e: e.name)
         except OSError:
             continue
         for entry in entries:
@@ -578,17 +670,33 @@ def _sweep(trigger: dict, seen: dict, now_ts: float) -> list[dict]:
                 st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
-            if not st.st_size and now_ts - st.st_mtime < SETTLE_S:
-                # Zero bytes and brand new: `open(path, "w")` has happened and
-                # the write has not. Nothing to act on yet.
+            if not st.st_size:
+                # ZERO BYTES IS NEVER AN ARRIVAL, however old the file is.
+                #
+                # This was a settle-window test, which made it dead code — the
+                # window test below already covered every case it did — while
+                # leaving the case it was written for wide open: a writer that
+                # creates a file and then stalls (a slow copy, a crashed
+                # exporter, a bare `touch`) leaves zero bytes behind, and two
+                # seconds later a full unattended run started on an empty file.
+                # Size only, and stated as a rule rather than as a delay: a
+                # workflow triggered by a file wants the file, and an empty one
+                # is a placeholder for a file that has not arrived yet. It fires
+                # the moment there are bytes in it, because that is a changed
+                # marker like any other.
                 continue
             if now_ts - st.st_mtime < SETTLE_S:
                 continue
-            budget -= 1
             path = os.path.abspath(entry.path)
             marker = "%d:%d" % (st.st_mtime_ns, st.st_size)
             if seen.get(path) == marker:
                 continue
+            # DECREMENTED FOR AN ARRIVAL, NOT FOR A LOOK. Spending the budget
+            # above this check meant a folder holding SWEEP_MAX_FILES already
+            # processed files exhausted it on known names every tick — and a new
+            # file landing behind them was not delayed, it was never swept at
+            # all. The cap exists to bound the work an arrival costs.
+            budget -= 1
             seen[path] = marker
             found.append({
                 "path": path,
@@ -630,7 +738,16 @@ def _blank(path: str) -> dict:
         "armed": False,
         "armed_at": "",
         "tools": [],
+        # The whole approval as compared data, beside the fingerprint that
+        # summarises it: `{tools, servers}`. This is what travels to `run.py`
+        # on every unattended start, and the fingerprint is what the surfaces
+        # show.
+        "authorization": {"tools": [], "servers": {}},
         "fingerprint": "",
+        # Bumped by every arm and every disarm. A claim records the generation
+        # it was made under, so work decided before a revocation cannot land
+        # after it — see `_settle`.
+        "generation": 0,
         "needs_rearm": False,
         "needs_rearm_reason": "",
         "triggers": [],
@@ -644,6 +761,8 @@ def _blank(path: str) -> dict:
         "runs": [],
         "seen": {},
         "next_due": {},
+        # Occurrences fired per schedule trigger, for a rule carrying `count`.
+        "made": {},
         "rate_window": [],
     }
 
@@ -694,7 +813,8 @@ def arm(path: str, *, tools=None, triggers=(), max_runs_per_hour=None,
     compiled = plan(target)
     if not compiled.get("ok"):
         return compiled
-    actual = sorted({str(t) for t in compiled.get("tools") or []})
+    authorization = authorization_of(compiled)
+    actual = authorization["tools"]
     if tools is None:
         return _refuse(
             "no_tool_list",
@@ -708,6 +828,12 @@ def arm(path: str, *, tools=None, triggers=(), max_runs_per_hour=None,
             "calls %s. Nothing was armed — read the new list and arm again."
             % (", ".join(actual) or "no tools"))
 
+    # A trigger input no trigger can fill is refused HERE, with the key named,
+    # rather than three failed unattended runs from now with nothing named.
+    problem = _unsatisfiable(compiled, clean)
+    if problem:
+        return _refuse("unsatisfiable_input", problem)
+
     now = _now()
     key = key_for(target)
     with _lock:
@@ -718,7 +844,9 @@ def arm(path: str, *, tools=None, triggers=(), max_runs_per_hour=None,
         wf["armed"] = True
         wf["armed_at"] = _iso(now)
         wf["tools"] = actual
-        wf["fingerprint"] = fingerprint(actual)
+        wf["authorization"] = authorization
+        wf["fingerprint"] = fingerprint(authorization)
+        wf["generation"] = int(wf.get("generation") or 0) + 1
         wf["needs_rearm"] = False
         wf["needs_rearm_reason"] = ""
         wf["triggers"] = clean
@@ -732,6 +860,9 @@ def arm(path: str, *, tools=None, triggers=(), max_runs_per_hour=None,
         wf.setdefault("seen", {})
         wf.setdefault("runs", [])
         wf.setdefault("rate_window", [])
+        # A fresh approval restarts a bounded recurrence: "three times" said
+        # again means three more, not zero.
+        wf["made"] = {}
         # Seeding is inside the lock and BEFORE the first due time is computed,
         # so no tick can see an armed file trigger with an empty marker map.
         _seed_seen(clean, wf["seen"], time.time())
@@ -743,6 +874,52 @@ def arm(path: str, *, tools=None, triggers=(), max_runs_per_hour=None,
         flows[key] = wf
         _write(flows)
     return _ok(workflow=dict(wf))
+
+
+# The keys each kind of trigger puts in the payload it starts a run with. Kept
+# beside the two `_evaluate` branches that build those payloads; a key added
+# there and not here makes `arm` refuse something that would have worked, which
+# is the safe direction to be stale in.
+_PAYLOAD_KEYS = {
+    KIND_SCHEDULE: frozenset({"trigger", "due", "kind"}),
+    KIND_FILE: frozenset({"path", "name", "dir", "ext", "size", "mtime",
+                          "trigger", "kind"}),
+}
+
+
+def _unsatisfiable(compiled: dict, triggers: list) -> str:
+    """A sentence naming a `source: "trigger"` key no trigger can supply, or "".
+
+    Checked AT ARM TIME, because the alternative is what the first version did:
+    arming succeeded, every fire refused `missing_trigger_input` inside a
+    detached run, and after three of those the workflow disarmed itself saying
+    "3 runs in a row failed — fix what is failing", which names nothing and
+    points at the wrong thing. The information needed to say it properly is all
+    here — the compile lists the keys the document reads, and the trigger list
+    says what will be supplied — so it is said here.
+
+    A key must be supplied by EVERY trigger, not by one of them: a workflow
+    armed on both a file watch and a cron line runs from either, and a key only
+    the file watch carries is a run that refuses every time the cron fires.
+    """
+    wanted = compiled.get("triggerInputs") or []
+    if not wanted:
+        return ""
+    for trigger in triggers:
+        kind = str(trigger.get("kind") or "")
+        keys = _PAYLOAD_KEYS.get(kind, frozenset())
+        for item in wanted:
+            key = str(item.get("key") or item.get("name") or "")
+            if key and key not in keys:
+                return (
+                    "Step %r reads its %r argument from the run's input under "
+                    "the key %r, and a %s trigger supplies only %s. Nothing was "
+                    "armed — point that input at one of those keys, or give it "
+                    "a fixed value."
+                    % (item.get("label") or item.get("step"),
+                       item.get("name"), key, kind,
+                       ", ".join(sorted(keys))))
+    return ""
 
 
 def _positive(value, default: int) -> int:
@@ -773,10 +950,13 @@ def disarm(path: str, reason: str = "", by: str = "user") -> dict:
         if wf is None:
             return _refuse("unknown_workflow",
                            "%r has never been armed." % (os.path.abspath(path),))
-        wf["armed"] = False
-        wf["queue"] = []
+        # THE GENERATION BUMP IS WHAT MAKES THIS IMMEDIATE, and it is inside
+        # `_disarm_in_place` so no path that stops a workflow can forget it.
+        # Clearing the queue stops work that has not been decided yet; the bump
+        # stops work that was decided before the click and has not landed yet —
+        # a claim taken a moment ago whose spawn is still in flight (`_settle`).
+        _disarm_in_place(wf)
         wf["dropped"] = 0
-        wf["next_due"] = {}
         if by != "user":
             wf["needs_rearm"] = True
             wf["needs_rearm_reason"] = str(reason)[:400]
@@ -871,10 +1051,11 @@ def _record_finish(wf: dict, state: str, detail: str) -> None:
     # evidence the workflow is broken, and disarming on it would punish a temp
     # dir being swept.
     try:
-        jobs.upsert({"id": _JOB_PREFIX + wf.get("fingerprint", "x"),
+        jobs.upsert({"id": _job_id(wf),
                      "title": "Workflow: %s" % (wf.get("name") or "run"),
                      "kind": "task",
-                     "state": {"done": "done", "error": "error"}.get(state, "done"),
+                     "state": {"done": "done", "error": "error",
+                               "cancelled": "cancelled"}.get(state, "done"),
                      "message": entry["detail"]}, server=True)
     except Exception:  # noqa: BLE001 — reporting is best-effort, never the record
         logger.debug("workflow trigger job report failed", exc_info=True)
@@ -891,12 +1072,25 @@ def _poll_outcome(current: dict) -> tuple[str, str] | None:
     run_id = str(current.get("runId") or "")
     started = current.get("started_ts") or 0
     if not run_id:
-        # Claimed but never spawned — the process died between the claim and the
-        # spawn. Safe to release: nothing is running.
+        # Claimed but never named — only reachable for a row written by an
+        # older build, since `_drain` now names every claim. Safe to release:
+        # nothing that has no id can be found, and nothing was reported started.
         return "lost", "the run was claimed but never started"
     out = _template_run({"action": "poll", "runId": run_id})
-    stale = time.time() - started > _RUN_MAX_AGE_S
+    age = time.time() - started
+    stale = age > _RUN_MAX_AGE_S
     if not out.get("ok"):
+        # THE UNKNOWN-SPAWN CASE. `_settle` left this claim in place because the
+        # start call never answered and `run.py` detaches before it does, so the
+        # session may well be alive. `poll` cannot find it, which means one of
+        # two things — the spawn never happened, or the run dir is not there yet
+        # — and only time separates them. Past the grace, with still nothing to
+        # poll, the spawn provably never happened.
+        if current.get("spawn_unknown") and age > _SPAWN_GRACE_S:
+            return "lost", ("the call that started this run never answered, and "
+                            "no run by that name exists — it never started")
+        if current.get("spawn_unknown"):
+            return None
         return ("lost", out.get("message", "the run was lost")) if stale else None
     if not out.get("done"):
         return ("lost", "the run did not finish within 6 hours") if stale else None
@@ -932,9 +1126,19 @@ def _evaluate(wf: dict, now: datetime) -> None:
     already coming.
     """
     due_map = wf.setdefault("next_due", {})
+    made = wf.setdefault("made", {})
     for trigger in wf.get("triggers") or []:
         if trigger.get("kind") == KIND_SCHEDULE:
             tid = trigger.get("id")
+            # A BOUNDED RECURRENCE STOPS. `recur` computes occurrences and says
+            # in its own docstring that `count` is the store's to enforce;
+            # `schedule.py` enforces it against its `made` tally and so does
+            # this, against ours. Checked before the due time is even read, so
+            # an exhausted trigger stops costing recurrence arithmetic too.
+            cap = trigger.get("count")
+            if cap and int(made.get(tid) or 0) >= int(cap):
+                due_map.pop(tid, None)
+                continue
             stamp = due_map.get(tid)
             if not stamp:
                 nxt = _next_due(trigger, now)
@@ -953,6 +1157,14 @@ def _evaluate(wf: dict, now: datetime) -> None:
             _enqueue(wf, {"trigger": tid, "due": _iso(due),
                           "kind": KIND_SCHEDULE},
                      "%s:%s" % (KIND_SCHEDULE, tid))
+            # Counted per FIRED OCCURRENCE, not per completed run: coalescing
+            # already means one event stands for a backlog, and a rule that
+            # said "three times" should not be extended by three runs that
+            # happened to fail.
+            made[tid] = int(made.get(tid) or 0) + 1
+            if cap and int(made[tid]) >= int(cap):
+                due_map.pop(tid, None)
+                continue
             nxt = _next_due(trigger, now)
             if nxt is None:
                 due_map.pop(tid, None)
@@ -966,30 +1178,15 @@ def _evaluate(wf: dict, now: datetime) -> None:
                          "%s:%s" % (KIND_FILE, trigger.get("id")))
 
 
-def _authorized(wf: dict) -> tuple[dict | None, dict | None]:
-    """`(compiled, refusal)` — the document as it stands NOW, checked against
-    what was armed.
+def _new_run_id() -> str:
+    """A run id, chosen by CORE and handed to `run.py` to use.
 
-    This is the safety property the whole module exists for, and it is checked
-    per RUN rather than per arm: the document is a file, and the window between
-    arming and firing is however long the user leaves it. A tool set that no
-    longer matches the fingerprint is refused AND the workflow is disarmed, so
-    the next tick does not ask again — the answer will not have changed, and a
-    workflow that quietly refuses forever is indistinguishable from one that is
-    working.
+    In `run.py::_run_dir`'s alphabet (`[0-9a-zA-Z-]+`) because that module
+    validates it as a basename before building a path out of it. Named here
+    rather than there so a start call whose answer never arrives still leaves
+    something pollable — see `_SPAWN_GRACE_S`.
     """
-    compiled = plan(wf["path"])
-    if not compiled.get("ok"):
-        return None, compiled
-    actual = sorted({str(t) for t in compiled.get("tools") or []})
-    if fingerprint(actual) != wf.get("fingerprint"):
-        return None, _refuse(
-            "tools_changed",
-            "This workflow now calls %s, and what was armed was %s. Nothing "
-            "ran — arm it again to approve the new list."
-            % (", ".join(actual) or "no tools",
-               ", ".join(wf.get("tools") or []) or "no tools"))
-    return compiled, None
+    return time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(4).hex()
 
 
 def _drain(wf: dict, now: datetime) -> dict | None:
@@ -1010,10 +1207,22 @@ def _drain(wf: dict, now: datetime) -> dict | None:
         # without limit, and it counts what it drops.
         return None
     event = wf["queue"].pop(0)
-    wf["current"] = {"runId": "", "source": event.get("source", ""),
-                     "payload": event.get("payload") or {},
-                     "queued_at": event.get("at", ""),
-                     "started": _iso(now), "started_ts": time.time()}
+    wf["current"] = {
+        # NAMED BEFORE IT IS ASKED FOR. The claim is pollable from this moment,
+        # whatever becomes of the call that starts it.
+        "runId": _new_run_id(),
+        "source": event.get("source", ""),
+        "payload": event.get("payload") or {},
+        "queued_at": event.get("at", ""),
+        "started": _iso(now), "started_ts": time.time(),
+        # The approval this run is being started under, and the generation it
+        # was decided in. Both travel with the claim so `_settle` can tell
+        # whether the world changed underneath it.
+        "approved": dict(wf.get("authorization") or {}),
+        "gen": int(wf.get("generation") or 0),
+        # Cleared by `_settle` once the spawn's outcome is known either way.
+        "spawn_unknown": False,
+    }
     wf.setdefault("rate_window", []).append(time.time())
     return dict(wf["current"])
 
@@ -1028,7 +1237,13 @@ def tick(now: datetime | None = None) -> list[dict]:
 
     Every spawn happens OUTSIDE the store lock and AFTER the claim has been
     written, so a crash mid-spawn leaves a claimed run (which the next tick
-    releases as `lost`) and never an unclaimed one (which it would start twice).
+    resolves) and never an unclaimed one (which it would start twice).
+
+    **The authorization travels WITH the start call.** It is not checked here
+    and then acted on there: `run.py` compares the approved set against the very
+    compile whose tool set becomes `--allowed-tools`, so there is no window in
+    which a document save can slip between the check and the thing it guards.
+    See `_settle` for what happens to the answer.
     """
     now = now or _now()
     started: list[dict] = []
@@ -1042,26 +1257,40 @@ def tick(now: datetime | None = None) -> list[dict]:
             continue
         if claim is None:
             continue
-        result = _template_run({"action": "start", "path": claim["path"],
-                                "model": claim.get("model") or "",
-                                "payload": claim.get("payload") or {}})
-        _settle(key, result)
-        if result.get("ok"):
-            started.append({"path": claim["path"], "runId": result.get("runId"),
+        result = _template_run({
+            "action": "start",
+            "path": claim["path"],
+            "model": claim.get("model") or "",
+            "payload": claim.get("payload") or {},
+            # THE APPROVAL, handed to the process that will act on it.
+            "approved": claim.get("approved") or {},
+            # THE RUN'S NAME, chosen before the call so the claim stays
+            # pollable even if this call never answers.
+            "runId": claim.get("runId") or "",
+        })
+        if _settle(key, claim, result):
+            started.append({"path": claim["path"],
+                            "runId": result.get("runId") or claim.get("runId"),
                             "source": claim.get("source", ""),
                             "payload": claim.get("payload") or {}})
     return started
 
 
 def _prepare(key: str, now: datetime) -> dict | None:
-    """One workflow's whole tick: poll, evaluate, authorize, claim.
+    """One workflow's whole tick up to the claim: poll, sweep, evaluate, claim.
 
-    Interleaved deliberately — the two calls into the runner (`poll` and the
-    `plan` behind `_authorized`) happen with the store lock RELEASED, and only
-    the read-modify-writes take it. `_lock` is also what serialises every HTTP
-    request that touches the store, and `plan` compiles a document by spawning
-    discovery over its app folders: holding the lock across that would make
-    Arm and Disarm on a busy machine wait seconds on a tick.
+    The one call into the runner (`poll`) happens with the store lock RELEASED,
+    and only the read-modify-writes take it. `_lock` also serialises every HTTP
+    request that touches the store, so holding it across a subprocess would make
+    Arm and Disarm wait on a tick.
+
+    There is deliberately NO compile here any more. The authorization check used
+    to live in this function, as a `plan` subprocess whose answer was then acted
+    on by a SECOND subprocess that compiled the document again — so the set that
+    was checked and the set that became `--allowed-tools` were two different
+    readings of a file, with a save able to land between them. The check moved
+    into `run.py`, where there is only one reading. What is left here is the
+    claim, which is what stops two ticks racing into the same run.
 
     Returns the claim to spawn, or None.
     """
@@ -1081,6 +1310,7 @@ def _prepare(key: str, now: datetime) -> dict | None:
         wf = flows.get(key)
         if wf is None:
             return None
+        before = _row_sig(wf)
         if outcome is not None and isinstance(wf.get("current"), dict) \
                 and str(wf["current"].get("runId") or "") == \
                 str((current or {}).get("runId") or ""):
@@ -1088,9 +1318,7 @@ def _prepare(key: str, now: datetime) -> dict | None:
         limit = _positive(wf.get("error_limit"), DEFAULT_ERROR_LIMIT)
         disarmed_for_errors = False
         if wf.get("armed") and int(wf.get("consecutive_errors") or 0) >= limit:
-            wf["armed"] = False
-            wf["queue"] = []
-            wf["next_due"] = {}
+            _disarm_in_place(wf)
             wf["needs_rearm"] = True
             wf["needs_rearm_reason"] = (
                 "%d runs in a row failed, so this workflow disarmed itself. Fix "
@@ -1100,72 +1328,140 @@ def _prepare(key: str, now: datetime) -> dict | None:
             _evaluate(wf, now)
         claim = _drain(wf, now) if wf.get("armed") else None
         flows[key] = wf
-        _write(flows)
+        # WRITTEN ONLY WHEN SOMETHING CHANGED. A tick over an idle armed
+        # workflow used to re-serialise and atomically replace the whole store
+        # every 30 seconds forever — and `seen` holds up to SEEN_MAX markers per
+        # workflow, so "the whole store" is megabytes for a couple of busy
+        # watched folders.
+        if _row_sig(wf) != before:
+            _write(flows)
         payload = dict(claim) if claim else None
         if payload is not None:
             payload["path"] = wf["path"]
             payload["model"] = wf.get("model") or ""
     if disarmed_for_errors:
         _emit(EVENT_DISARMED, wf, wf["needs_rearm_reason"])
-    if payload is None:
-        return None
+    return payload
 
-    # (3) THE AUTHORIZATION CHECK, outside the lock and AFTER the claim.
-    #
-    # After, and that ordering is on purpose: the claim is what stops a second
-    # tick racing this one into the same run, so it has to be held while the
-    # document is compiled. A refusal then UNDOES it — the claim is released,
-    # the rate-window slot given back, and the workflow disarmed with the queue.
-    # Undone rather than recorded as a failed run: nothing ran, and counting it
-    # as an error would be a second, wrong, reason to disarm.
-    _compiled, refusal = _authorized(wf)
-    if refusal is None:
-        return payload
+
+def _disarm_in_place(wf: dict) -> None:
+    """Disarm a row already held under the lock, bumping its generation.
+
+    One definition, because every path that stops a workflow has to stop it the
+    same way — and the generation bump is the half that is easy to leave out.
+    """
+    wf["armed"] = False
+    wf["queue"] = []
+    wf["next_due"] = {}
+    wf["generation"] = int(wf.get("generation") or 0) + 1
+
+
+def _release_claim(wf: dict) -> None:
+    """Undo a claim that never became a run: the slot goes back too."""
+    wf["current"] = None
+    window = wf.get("rate_window") or []
+    wf["rate_window"] = window[:-1]
+
+
+def _settle(key: str, claim: dict, result: dict) -> bool:
+    """Write the spawn's outcome onto the claim it belongs to.
+
+    Returns whether a run is now genuinely in flight. Four answers, and the
+    three unhappy ones are the point:
+
+    * **`tools_changed`** — `run.py` refused because the document no longer
+      matches what was approved. The claim is UNDONE (slot and all) rather than
+      recorded as a failed run, because nothing ran, and the workflow disarms so
+      the next tick does not ask a question whose answer will not have changed.
+    * **the generation moved** — somebody disarmed (or re-armed) while this
+      start was in flight, so the decision behind it has been revoked. The run
+      IS spawned by now, so it is CANCELLED rather than wished away, and
+      recorded as cancelled. WC-12d says nothing starts behind a disarm; this is
+      what makes that true of the moment either side of the click.
+    * **`runner_failed`** — the executor call died (a timeout, an exception) and
+      the spawn's outcome is genuinely unknown, because `run.py` detaches the
+      session before it answers. Held, with the id core chose, for
+      `_SPAWN_GRACE_S`, during which `poll` can find the run if it exists. This
+      is the one case where doing nothing is right.
+
+    Every other refusal is a real answer from `run.py` (`bad_payload`,
+    `missing_trigger_input`, `spawn_failed`, `no_claude_cli`): nothing is
+    running, and it is recorded as a failed run so the error counter — which is
+    the brake for a workflow that is simply broken — sees it.
+    """
+    reason = str(result.get("reason") or "")
+    spawn_unknown = (not result.get("ok")) and reason == "runner_failed"
     with _lock:
         flows = _read()
         wf = flows.get(key)
         if wf is None:
-            return None
-        wf["current"] = None
-        wf["rate_window"] = (wf.get("rate_window") or [])[:-1]
-        wf["armed"] = False
-        wf["queue"] = []
-        wf["next_due"] = {}
-        wf["needs_rearm"] = True
-        wf["needs_rearm_reason"] = refusal["message"]
-        flows[key] = wf
-        _write(flows)
-    _emit(EVENT_REFUSED, wf, refusal["message"])
-    return None
-
-
-def _settle(key: str, result: dict) -> None:
-    """Write the spawn's outcome onto the claim it belongs to."""
-    with _lock:
-        flows = _read()
-        wf = flows.get(key)
-        if wf is None:
-            return
+            return False
         current = wf.get("current")
-        if not isinstance(current, dict):
-            return
-        if result.get("ok"):
-            current["runId"] = str(result.get("runId") or "")
-            try:
-                jobs.upsert({"id": _JOB_PREFIX + wf.get("fingerprint", "x"),
-                             "title": "Workflow: %s" % (wf.get("name") or "run"),
-                             "kind": "task", "state": "running",
-                             "message": "started by %s"
-                                        % (current.get("source") or "a trigger")},
-                            server=True)
-            except Exception:  # noqa: BLE001 — best-effort
-                logger.debug("workflow trigger job report failed", exc_info=True)
+        if not isinstance(current, dict) or \
+                str(current.get("runId") or "") != str(claim.get("runId") or ""):
+            # The claim we started is not the claim on the row any more: a
+            # restart, a forget, or a poll that already resolved it. Nothing of
+            # ours to write.
+            return False
+        stale_generation = int(current.get("gen") or 0) != \
+            int(wf.get("generation") or 0)
+
+        if result.get("ok") and not stale_generation:
+            current["spawn_unknown"] = False
+            current["runId"] = str(result.get("runId") or claim.get("runId") or "")
+            flows[key] = wf
+            _write(flows)
+            _report_running(wf, current)
+            return True
+
+        if result.get("ok") and stale_generation:
+            outcome = ("cancelled",
+                       "the workflow was disarmed while this run was starting")
+        elif spawn_unknown:
+            current["spawn_unknown"] = True
+            flows[key] = wf
+            _write(flows)
+            logger.warning(
+                "workflow %s: the start call did not answer; holding run %s for "
+                "one tick in case it spawned", key, current.get("runId"))
+            return False
+        elif reason == "tools_changed":
+            _release_claim(wf)
+            _disarm_in_place(wf)
+            wf["needs_rearm"] = True
+            wf["needs_rearm_reason"] = str(result.get("message") or "")[:400]
+            flows[key] = wf
+            _write(flows)
+            _emit(EVENT_REFUSED, wf, wf["needs_rearm_reason"])
+            return False
         else:
-            _record_finish(wf, "error", result.get("message", "the run did not start"))
+            outcome = ("error", str(result.get("message")
+                                    or "the run did not start"))
         flows[key] = wf
+        run_id = str(current.get("runId") or "")
+        _record_finish(wf, outcome[0], outcome[1])
         _write(flows)
-    if not result.get("ok"):
-        _emit(EVENT_FAILED, wf, result.get("message", ""))
+    if outcome[0] == "cancelled":
+        # Outside the lock: this is a subprocess, and the row is already
+        # consistent without it. Best-effort by nature — the session may have
+        # finished on its own — but it is the difference between "we stopped it"
+        # and "we hoped".
+        _template_run({"action": "cancel", "runId": run_id})
+    else:
+        _emit(EVENT_FAILED, wf, outcome[1])
+    return False
+
+
+def _report_running(wf: dict, current: dict) -> None:
+    try:
+        jobs.upsert({"id": _job_id(wf),
+                     "title": "Workflow: %s" % (wf.get("name") or "run"),
+                     "kind": "task", "state": "running",
+                     "message": "started by %s"
+                                % (current.get("source") or "a trigger")},
+                    server=True)
+    except Exception:  # noqa: BLE001 — best-effort
+        logger.debug("workflow trigger job report failed", exc_info=True)
 
 
 # --------------------------------------------------------------- the loop

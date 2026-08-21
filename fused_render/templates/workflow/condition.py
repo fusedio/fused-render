@@ -133,6 +133,14 @@ D166), but because an approval stored in the file the user edits would be an
 approval the user could edit, and the fingerprint check exists precisely because
 this file changes under an armed workflow (WC-12b).
 
+That check is made by `run.py` and not by the store, and the reason is worth
+knowing before editing either: the approved set is handed to `run.py` on the
+start call, and it is compared against the same compile whose steps become
+`--allowed-tools`. A caller that compiled this file itself, compared, and then
+asked for a start would be checking one reading of it and authorizing another —
+and this file is hand-editable and saved by a canvas, so a save fits comfortably
+in between (WC-12a-i).
+
 Self-contained apart from `../shared/appenv.py`; nothing here imports
 fused_render (SPEC PY-15 / D166).
 """

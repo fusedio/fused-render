@@ -551,6 +551,26 @@ def _payload(raw):
     return out, None
 
 
+def _approved(raw):
+    """The caller's approved authorization, parsed. `None` when there is none.
+
+    A JSON string is accepted for the same reason `_payload` accepts one: the
+    executor's parameter binding is not the only route in, and a caller handing
+    over exactly what it stored is the shape least likely to be mangled on the
+    way. Anything unreadable answers with a value that CANNOT match — an empty
+    authorization — rather than with `None`, because `None` means "interactive,
+    check nothing" and a parse slip must never quietly mean that.
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _payload_literal(value) -> str:
     """One payload value, as a bounded JSON literal safe to put on a line.
 
@@ -1103,7 +1123,69 @@ def _fused_bin(cli_dir_bin: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _start(path: str, model: str, payload=None) -> dict:
+def _authorization(plan: dict) -> dict:
+    """What a compiled plan would AUTHORIZE, as plain comparable data.
+
+    Two fields, and the second one is the one that is easy to forget. The tool
+    NAMES are the obvious half. The SERVER MAP is the other half, because a
+    name is only half a tool: `_server_names` assigns `mail`, `mail-2`, … over
+    the graph's app folders IN NODE ORDER, so two folders whose basenames
+    collide (`~/showcase/mail` and `~/work/mail`) swap names when the nodes are
+    reordered — and `{mcp__mail__send_mail, mcp__mail-2__send_mail}` is then
+    byte-identical across a document that now sends from the other account.
+    Comparing the names alone would call that unchanged.
+    """
+    return {
+        "tools": sorted({s["mcpName"] for s in plan["steps"]}),
+        # {server name: app folder}, which is exactly what the config's
+        # blast radius is keyed by.
+        "servers": dict(plan["servers"]),
+    }
+
+
+def _authorization_refusal(actual: dict, approved) -> dict | None:
+    """A refusal when `actual` is not what `approved` says was authorized.
+
+    `approved is None` means an interactive run — a person clicked Run, and
+    WC-4a's approval is that click, so there is nothing to compare against.
+    An UNATTENDED caller always passes one, and this is the only place the
+    comparison happens: it is made against the very compile whose tool set is
+    about to become `--allowed-tools` twenty lines below, so nothing can change
+    between the check and the authorization it guards.
+    """
+    if approved is None:
+        return None
+    if not isinstance(approved, dict):
+        return _refuse(
+            "bad_authorization",
+            "The approved tool set for this run is not readable, so the run "
+            "cannot be shown to match it.")
+    want_tools = sorted({str(t) for t in (approved.get("tools") or [])})
+    want_servers = {str(k): str(v) for k, v in
+                    (approved.get("servers") or {}).items()}
+    if actual["tools"] == want_tools and actual["servers"] == want_servers:
+        return None
+    if actual["tools"] != want_tools:
+        return _refuse(
+            "tools_changed",
+            "This workflow now calls %s, and what was approved was %s. Nothing "
+            "ran — arm it again to approve the new list."
+            % (", ".join(actual["tools"]) or "no tools",
+               ", ".join(want_tools) or "no tools"))
+    moved = sorted(
+        "%s now serves %s (approved: %s)"
+        % (name, folder, want_servers.get(name, "nothing"))
+        for name, folder in actual["servers"].items()
+        if want_servers.get(name) != folder)
+    return _refuse(
+        "tools_changed",
+        "This workflow's tools have the same names but a different app folder "
+        "behind them: %s. Nothing ran — arm it again to approve them."
+        % "; ".join(moved))
+
+
+def _start(path: str, model: str, payload=None, approved=None,
+           run_id: str = "") -> dict:
     payload, refusal = _payload(payload)
     if payload is None:
         return refusal or _refuse(
@@ -1121,6 +1203,19 @@ def _start(path: str, model: str, payload=None) -> dict:
     if plan is None:
         return refusal or _refuse(
             "unresolved", "This workflow could not be compiled into a run.")
+
+    # THE AUTHORIZATION CHECK, AGAINST THIS COMPILE AND NO OTHER.
+    #
+    # It lives here rather than in the caller because of what sits twenty lines
+    # below: `--allowed-tools` is built from `plan["steps"]`. A caller that
+    # compiled the document in its own subprocess and then asked this one to
+    # start it would be checking one reading of the file and authorizing
+    # another, with a document save (a canvas Save, an editor, a sync client)
+    # fitting comfortably in between. One compile, one decision.
+    authorization = _authorization(plan)
+    refusal = _authorization_refusal(authorization, approved)
+    if refusal is not None:
+        return refusal
 
     fused_bin = _fused_bin(plan["fusedCli"])
     # Only when the graph actually has an app server to start. A workflow of
@@ -1143,8 +1238,26 @@ def _start(path: str, model: str, payload=None) -> dict:
             "this machine's PATH. Install Claude Code, or set "
             "FUSED_RENDER_CLAUDE_BIN to its full path.")
 
-    run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
-    run_dir = os.path.join(RUNS, run_id)
+    # THE CALLER MAY NAME THE RUN, and an unattended one always does.
+    #
+    # `run.py` generating the id means the id only exists once this function
+    # RETURNS — and a caller whose call is killed after `Popen` succeeded (an
+    # executor timeout; the session is detached, so it outlives its parent) is
+    # then left with a run it cannot name, cannot poll and cannot cancel. It
+    # would start a second one alongside it on the next tick. An id chosen
+    # before the call closes that: the caller can always find the run it asked
+    # for, whatever happened to the call. Validated through `_run_dir`, which is
+    # the same basename guard every other id from outside this module gets.
+    run_id = str(run_id or "").strip()
+    if run_id:
+        if not _run_dir(run_id):
+            return _refuse("bad_run_id", "%r is not a usable run id." % (run_id,))
+        if os.path.exists(_run_dir(run_id)):
+            return _refuse("bad_run_id",
+                           "a run called %r already exists." % (run_id,))
+    else:
+        run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
+    run_dir = _run_dir(run_id)
     _private_dir(run_dir)
 
     config_path = os.path.join(run_dir, "mcp.json")
@@ -1214,10 +1327,11 @@ def _start(path: str, model: str, payload=None) -> dict:
     return _ok(runId=run_id,
                nodes=[{"id": s["id"], "label": s["label"], "tool": s["tool"]}
                       for s in plan["steps"]],
-               # The authorized tool set, echoed back at the caller that started
-               # the run. `workflow_triggers.py` compares it against the set a
-               # human armed; every other caller can ignore it.
-               tools=sorted({s["mcpName"] for s in plan["steps"]}),
+               # The authorization this run actually spawned under. Reported
+               # for the record and for a caller that wants to show it — NOT as
+               # something to check, because the check already happened above,
+               # against this same compile.
+               tools=authorization["tools"],
                servers=plan["servers"])
 
 
@@ -1571,9 +1685,10 @@ def _plan(path: str) -> dict:
     if plan is None:
         return refusal or _refuse(
             "unresolved", "This workflow could not be compiled into a run.")
+    authorization = _authorization(plan)
     return _ok(name=plan["name"],
-               tools=sorted({s["mcpName"] for s in plan["steps"]}),
-               servers=plan["servers"],
+               tools=authorization["tools"],
+               servers=authorization["servers"],
                triggerInputs=plan["triggerInputs"],
                steps=[{"id": s["id"], "label": s["label"], "tool": s["tool"],
                        "app": s["app"], "kind": s.get("kind") or "tool",
@@ -1582,7 +1697,7 @@ def _plan(path: str) -> dict:
 
 
 def main(action: str = "start", path: str = "", runId: str = "",
-         model: str = "", payload=None) -> dict:
+         model: str = "", payload=None, approved=None) -> dict:
     """Start, watch, stop, or merely describe a workflow run.
 
     Anything wrong is a refusal payload (`{ok: false, reason, message}`), never
@@ -1591,7 +1706,9 @@ def main(action: str = "start", path: str = "", runId: str = "",
     """
     try:
         if action == "start":
-            return _start(path, model, payload)
+            # `runId` is the run to CREATE here and the run to READ everywhere
+            # else — one parameter, because it names the same thing either way.
+            return _start(path, model, payload, _approved(approved), runId)
         if action == "plan":
             return _plan(path)
         if action == "poll":

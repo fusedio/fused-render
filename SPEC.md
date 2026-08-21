@@ -8607,22 +8607,44 @@ what replaces it.
   human arms a workflow once; at that moment the sheet shows **the exact
   `mcp__server__tool` names** the future unattended runs will be allowed to call,
   framed as the thing being agreed to rather than as a caption. Arming is
-  explicit, revocable, and recorded with a **fingerprint of the authorized set**
-  (sha256 over the sorted, deduped, `\0`-joined names — a fact about the SET, so
-  a reordered graph is not a new approval, and no two sets can splice into one
-  string).
-- **WC-12a** **THE FINGERPRINT IS CHECKED BEFORE EVERY UNATTENDED RUN, and a
-  mismatch refuses, disarms, and says why.** This is the core safety property and
-  the reason the rest of the design is shaped as it is. The document is a file
-  the user edits, and the window between arming and firing is however long they
-  leave it: adding a `send_mail` node to an armed workflow must not silently buy
-  `send_mail` the authorization a person gave to `search_mail`. The workflow is
-  DISARMED rather than merely refused, because the answer will not change on the
-  next tick and a workflow that quietly refuses forever is indistinguishable from
-  one that is working. A **smaller** set is also a mismatch: the approval was for
-  a list, and "fewer is fine" would make the fingerprint an inequality nobody
-  reviewed — including the case where one tool is swapped for another. The
-  refused event is **not** counted as a failed run: nothing ran.
+  explicit, revocable, and recorded with a **fingerprint of the authorization**
+  — sha256 over the sorted, deduped, `\0`-joined tool names AND the server map,
+  so it is a fact about what a run may REACH rather than about the order a
+  compile produced. A reordered graph is not a new approval; a graph whose
+  `mail` server now points at a different folder is. **The server map is not
+  optional**, and leaving it out was a real hole: `run.py::_server_names`
+  assigns `mail`, `mail-2`, … over the graph's app folders in NODE ORDER, so two
+  folders sharing a basename (`~/showcase/mail`, `~/work/mail`) swap names when
+  the nodes are reordered — and `{mcp__mail__send_mail, mcp__mail-2__send_mail}`
+  is then byte-identical across a document that now sends from the other
+  account.
+- **WC-12a** **THE CHECK HAPPENS INSIDE THE COMPILE THAT BUILDS
+  `--allowed-tools`, and a mismatch refuses, disarms, and says why.** This is the
+  core safety property and the reason the rest of the design is shaped as it is.
+  The document is a file the user edits, and the window between arming and firing
+  is however long they leave it: adding a `send_mail` node to an armed workflow
+  must not silently buy `send_mail` the authorization a person gave to
+  `search_mail`. The workflow is DISARMED rather than merely refused, because the
+  answer will not change on the next tick and a workflow that quietly refuses
+  forever is indistinguishable from one that is working. A **smaller** set is
+  also a mismatch: the approval was for a list, and "fewer is fine" would make
+  the fingerprint an inequality nobody reviewed — including the case where one
+  tool is swapped for another. The refused event is **not** counted as a failed
+  run: nothing ran.
+- **WC-12a-i** **ONE COMPILE, ONE DECISION — the check may not live in the
+  caller.** The first version of this had core run `plan` in one subprocess,
+  compare the fingerprint, and then ask a SECOND subprocess to `start`, which
+  loaded the document again and built `--allowed-tools` from that second
+  reading. Nothing joined the two. A save landing in between — a canvas Save, an
+  editor, a sync client, in a window two interpreter startups and an `mcp.toml`
+  discovery scan wide — produced an unattended run whose `--allowed-tools` held a
+  tool no human had seen, which is precisely what this section claims is
+  impossible. So the approved authorization **travels with the start call**
+  (`approved={tools, servers}`) and `run.py::_start` compares it against the plan
+  whose steps become `--allowed-tools`, twenty lines below the comparison. Core
+  no longer compiles for this purpose at all; it acts on the runner's
+  `tools_changed` refusal. A checker that is not the authorizer is not a
+  checker.
 - **WC-12b** **THE APPROVAL IS NOT IN THE DOCUMENT.** It lives in a durable store
   owned by `fused_render/workflow_triggers.py`, not in the `.workflow.json`. The
   import rule (SPEC PY-15 / D166) forces the firing loop out of the template
@@ -8635,11 +8657,20 @@ what replaces it.
   dialog shows the tool list" is a convention; with it, it is a guarantee, and a
   document edited in a second window between the plan and the click cannot arm a
   list nobody read.
-- **WC-12d** **Disarm is immediate and takes the queue with it.** A disarm that
-  left twenty queued events to run on re-arm would not have stopped anything. A
-  run already in flight is a detached process and is left to finish and be
-  recorded — killing a session mid-tool-call is a worse outcome than one more run
-  — but nothing starts behind it.
+- **WC-12d** **Disarm is immediate, takes the queue with it, and stops work
+  already decided.** A disarm that left twenty queued events to run on re-arm
+  would not have stopped anything. A run already in flight when the click lands
+  is a detached process and is left to finish and be recorded — killing a session
+  mid-tool-call is a worse outcome than one more run — but **nothing starts
+  behind it**, and that clause needs machinery rather than good intentions:
+  clearing the queue only stops work nobody has decided yet, while a claim taken
+  a moment earlier is already on its way to a spawn. So every arm and every
+  disarm bumps a **generation** counter, a claim records the generation it was
+  decided under, and a spawn that lands under a newer one is **cancelled** and
+  recorded as `cancelled` (not as a failure — it is a revocation by the owner,
+  not a fault of the workflow). Without it a user watched a run misbehave,
+  clicked Disarm, was told "Disarmed. Queued work was dropped." — and a fresh
+  session started a second later.
 - **WC-12e** **Two automatic brakes, because "nobody is watching" is the
   premise.** A **rate cap** (runs per rolling hour, default 12) bounds a trigger
   that fires far more often than its author expected; a capped event is HELD in
@@ -8654,6 +8685,27 @@ what replaces it.
   payload, its outcome and its run id, and the arming sheet lists the recent ones
   — so an unattended run is never mistaken for one the reader started.
 
+- **WC-12g** **Arming refuses a workflow that could never run.** A
+  `source: "trigger"` input names a payload key, and each trigger kind supplies a
+  fixed set: a schedule fire carries `{trigger, due, kind}`, a file arrival
+  `{path, name, dir, ext, size, mtime, trigger, kind}`. An input wired to a key
+  its triggers do not carry was accepted at arm time and then refused
+  `missing_trigger_input` on every fire, until three of those disarmed the
+  workflow with "3 runs in a row failed — fix what is failing", which names
+  nothing and points at the wrong thing. The compile already lists the keys the
+  document reads and the trigger list already says what will be supplied, so the
+  refusal happens at arm time with the key named. The key must be supplied by
+  EVERY trigger, not by one: a workflow armed on both a file watch and a cron
+  line runs from either.
+- **WC-12h** **A recurrence's `count` is enforced, because it is the store's to
+  enforce.** `recur.py` computes occurrences and says in its own docstring that
+  the bound belongs to the caller; `schedule.py` enforces it against its `made`
+  tally, and so does this against ours. Counted per fired OCCURRENCE, not per
+  completed run — coalescing already means one event stands for a backlog, and a
+  rule that said "three times" should not be extended by three runs that failed.
+  A fresh approval restarts the tally: "three times" said again means three more.
+  Unenforced, `{"freq": "day", "count": 3}` fired daily forever, which is the
+  worst kind of wrong for unattended work — it looks configured.
 - **WC-13** **ONE RUN AT A TIME PER WORKFLOW; FURTHER EVENTS QUEUE.** A workflow
   never runs concurrently with itself, whoever started the runs. The queue is
   bounded (20); past the bound the **OLDEST** event is dropped — the newest file
@@ -8668,6 +8720,22 @@ what replaces it.
   that dies between the two leaves a claimed run — which the next tick releases
   as `lost` — and never an unclaimed one, which it would start twice. Same order
   and same reasoning as `schedule.py`'s.
+- **WC-13b** **CORE NAMES THE RUN, and a start whose answer never came back is
+  held rather than forgotten.** `run.py::_start` spawns with
+  `start_new_session`, so the `claude` process outlives its parent — which means
+  an executor timeout can kill the CALL after the spawn succeeded. Treating that
+  as "the run failed" cleared the claim, and the next tick put a second session
+  beside the first, breaking WC-13 in exactly the case nobody is watching. So the
+  run id is chosen by core BEFORE the call and honoured by `run.py`, which makes
+  an unanswered start still pollable; the claim is held for a grace of two ticks
+  while `poll` is asked about that id. If the run turns out to exist it completes
+  as an ordinary run; if it still does not exist past the grace, the spawn
+  provably never happened and the claim is released as `lost` — which is counted
+  as neither success nor failure, because "we could not tell" is not evidence a
+  workflow is broken. Only `tools_changed` disarms; every other refusal is a real
+  answer and feeds the error counter (WC-12e), and an infrastructure failure —
+  a starved executor, a template mid-upgrade — must never disarm every armed
+  workflow on the machine.
 
 - **WC-14** **THE TRIGGER LOOP IS NOT A `schedule.py` ENTRY, and the parts that
   transfer are reused rather than reimplemented.** `cron.py` and `recur.py`
@@ -8715,7 +8783,19 @@ what replaces it.
   `.goutputstream-*` in one rule) and the half-written suffixes (`.tmp`,
   `.part`, `.crdownload`, `~`). A file whose mtime is inside a small settle
   window waits a tick, because a file being copied in is visible to `scandir`
-  long before it is complete.
+  long before it is complete. **Zero bytes is never an arrival**, however old the
+  file is: a writer that creates a file and then stalls leaves one behind, and a
+  workflow triggered by a file wants the file. It fires the moment there are
+  bytes in it, because that is a changed marker like any other.
+- **WC-15d** **The sweep is SORTED, and its budget is spent on arrivals rather
+  than on looking.** Two small rules that only matter together. Decrementing the
+  per-tick cap before the processed-marker check meant a folder holding more
+  known files than the cap exhausted it on names it had already handled — and a
+  new file behind them was not delayed by a tick, it was never swept at all.
+  And walking in `scandir` order made *which* arrivals a capped tick reached a
+  property of the filesystem, so the same code could pass or fail the same test.
+  Sorted by name, "the first N by name, and the rest next tick" is a rule that
+  can be stated and tested.
 - **WC-16** **CORE STARTS RUNS THROUGH THE TEMPLATE'S OWN `run.py`.** It calls
   `executor.run_python(<workflow template>/run.py, …)` — resolved through the
   same name resolution `fused.runPython("./run.py")` reaches, so a user override
@@ -8724,7 +8804,10 @@ what replaces it.
   runner and the trigger loop runs another would be a machine where arming
   approves the wrong tools. The dependency points core → template only, so PY-15
   still holds, and the seam is a single function, which is also what lets the
-  core tests exist without executing the untested prototype.
+  core tests exist without executing the untested prototype. It is also why
+  WC-12a-i's check could move: the runner is already the one place that reads the
+  document for a run, so putting the comparison there added no coupling that was
+  not there.
 - **WC-16a** **The core is tested; the template is not.** §46 records that the
   canvas ships untested while its shape is being learned, and that stands for
   `template.html` and `run.py`. Arming, the fingerprint refusal, the queue and
