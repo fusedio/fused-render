@@ -65,20 +65,26 @@ name a component swapped into an otherwise ordinary pipeline, not a whole
 model a bare id could mean, so no picker generalizes them the way this one
 generalizes `GGUF_RECIPES`.
 
-**No external tokenizer/config download, and that is a fact about THESE
-repos, not a general rule.** unsloth's GGUF conversions — the ones
-`formats.GGUF_RECIPES` curates — ship no `tokenizer_config.json` or
-`config.json` at their root: checked directly against the Hub API on
-2026-08-21, the only non-GGUF files in `unsloth/Qwen3.5-4B-GGUF` and
-`unsloth/Qwen3.5-9B-GGUF` are `.gitattributes`, `README.md` and an imatrix
-calibration file, none of them a tokenizer. That is not an oversight on
-unsloth's part — it is the point of the GGUF format: the vocabulary, the
-architecture and (since llama.cpp's chat template support landed) the chat
-template all live inside the ONE file's own key-value metadata, which is
-exactly what `llama_cpp.Llama` reads at load time into `.metadata`. So
-`download()` fetches exactly one file (`worker_base.download_file`) and
-nothing else — there is no `download_snapshot(..., allow_patterns=…)` call
-here, because there is nothing at those repos' roots for it to fetch.
+**No external tokenizer/config download, and the reason is the FORMAT rather
+than the repos.** The vocabulary, the architecture and (since llama.cpp's
+chat template support landed) the chat template all live inside the ONE
+file's own key-value metadata, which is exactly what `llama_cpp.Llama` reads
+at load time into `.metadata`. So `download()` fetches exactly one file
+(`worker_base.download_file`) and nothing else — there is no
+`download_snapshot(..., allow_patterns=…)` call here, because a GGUF needs no
+companion.
+
+**This used to be argued the other way round — "those repos happen to ship
+nothing but GGUFs" — and that argument expired.** It was true of the three
+unsloth Qwen repos the table curated on 2026-08-21, whose only non-GGUF files
+were `.gitattributes`, `README.md` and an imatrix calibration file. The
+shortlist has since gained repos where it is plainly false:
+`unsloth/gemma-4-E4B-it-GGUF` carries a root `config.json` and an `MTP/`
+folder, and `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` a `leap/` directory of
+runtime manifests. None of it is fetched and none of it is missed, which is
+the proof that the format was always doing the work. Stating it as a property
+of the repos would have made a correct implementation look like a lucky one,
+and would have argued against curating either of them.
 
 Five things are true of this runner and of no other text runner here, and all
 five are llama.cpp's doing. Three of them are stated as contrasts with the

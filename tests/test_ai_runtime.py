@@ -1876,12 +1876,16 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
     9.3 to 19.3GB — and now reads `llamacpp-text`, whose figures are the single
     GGUF file each id resolves to. That the numbers are a quarter to a third of
     what they replaced is the measurement D416 rests on, sitting here as data.
+
+    The llamacpp figures moved again with the four-family refresh, and the one
+    worth reading twice is position 0: 0.7GB, against the 9.3GB a bare call
+    fetched two changes ago.
     """
     expected = {
-        "Qwen3.5-4B-Q5_K_M.gguf": 3.1,
-        "Qwen3.5-4B-Q8_0.gguf": 4.5,
-        "Qwen3.5-9B-Q4_K_M.gguf": 5.7,
-        "Qwen3.5-9B-Q8_0.gguf": 9.5,
+        "LFM2.5-1.2B-Instruct-Q4_K_M.gguf": 0.7,
+        "Qwen3.5-4B-Q4_K_M.gguf": 2.7,
+        "gemma-4-E4B-it-Q4_K_M.gguf": 5.0,
+        "LFM2.5-8B-A1B-Q4_K_M.gguf": 5.2,
         "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
@@ -1921,7 +1925,7 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     assert catalog.default_for(registry.TEXT_GENERATION) == \
-        "mlx-community/Qwen3.5-2B-MLX-4bit"
+        "mlx-community/LFM2.5-1.2B-Instruct-4bit"
     # tiny.en is English-only, and it still leads: the one-rule trade above was
     # chosen with its cost in view, and an entry is added to the list because
     # it is worth OFFERING, not because it should be default-proof.
@@ -1930,7 +1934,8 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen3.5-4B-Q5_K_M.gguf"
+    assert catalog.default_for(registry.TEXT_GENERATION) == \
+        "LFM2.5-1.2B-Instruct-Q4_K_M.gguf"
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
         "Systran/faster-whisper-tiny.en"
 
@@ -1965,7 +1970,14 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["runner"] == "mlx-text"
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/")) for m in text["models"])
+    # The namespace set is a PROXY for "these are MLX conversions", and it
+    # grows: `prism-ml/` was added with the Bonsai row and `LiquidAI/` with the
+    # 8B-A1B, both because no `mlx-community/` conversion of them exists. What
+    # the assertion is really pinning is the Windows half above — that the two
+    # lists are disjoint — so a new publisher belongs here rather than being a
+    # reason to weaken it.
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
+               for m in text["models"])
 
 
 def test_the_cpu_warning_reaches_the_page(monkeypatch):
@@ -6452,11 +6464,11 @@ def test_a_llamacpp_curated_id_is_marked_downloaded_and_not_duplicated(
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
 
-    entry_id = "Qwen3.5-9B-Q4_K_M.gguf"
+    entry_id = "gemma-4-E4B-it-Q4_K_M.gguf"
     recipe = formats.GGUF_RECIPES[entry_id]
     repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
     (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
-        _gguf_bytes("qwen35"))
+        _gguf_bytes("gemma4"))
 
     row = _catalog(client)[registry.TEXT_GENERATION]
     curated_match = next(m for m in row["models"] if m["id"] == entry_id)
@@ -6468,16 +6480,38 @@ def test_a_llamacpp_curated_id_is_marked_downloaded_and_not_duplicated(
 
 def test_a_llamacpp_curated_id_with_a_sibling_quant_not_downloaded_is_told_apart(
         client, hub, monkeypatch):
-    """`unsloth/Qwen3.5-4B-GGUF` curates TWO catalog entries (Q5_K_M and
-    Q8_0) — downloading one must not mark the OTHER "downloaded" too, since
-    `CachedModel.files` is checked per FILE, not per repo."""
+    """Two curated entries sharing ONE repo: downloading one must not mark the
+    OTHER "downloaded" too, since `CachedModel.files` is checked per FILE, not
+    per repo.
+
+    The pair is SYNTHESISED — appended to the shortlist and the recipe table
+    for the duration of this test — rather than taken from the shipped
+    curation. It used to be the real Qwen 4B's Q5_K_M and Q8_0 rows; the
+    2026-08-21 refresh left exactly one quantization per repo, which would
+    have turned this guard vacuous rather than red. The per-file rule has to
+    hold for the day a repo carries two entries again, so the test supplies
+    that day itself.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
 
-    downloaded_id = "Qwen3.5-4B-Q5_K_M.gguf"
-    other_id = "Qwen3.5-4B-Q8_0.gguf"
-    recipe = formats.GGUF_RECIPES[downloaded_id]
+    downloaded_id = "Model-Q4_K_M.gguf"
+    other_id = "Model-Q8_0.gguf"
+    recipes = dict(formats.GGUF_RECIPES)
+    for name in (downloaded_id, other_id):
+        recipes[name] = {"repo": "org/Model-GGUF", "file": name}
+    monkeypatch.setattr(formats, "GGUF_RECIPES", recipes)
+    monkeypatch.setitem(
+        catalog.SUGGESTIONS, "llamacpp-text",
+        catalog.SUGGESTIONS["llamacpp-text"] + [
+            {"id": downloaded_id, "label": "Model (Q4_K_M)", "size_gb": 1.0,
+             "note": "synthetic"},
+            {"id": other_id, "label": "Model (Q8_0)", "size_gb": 2.0,
+             "note": "synthetic"},
+        ])
+
+    recipe = recipes[downloaded_id]
     repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
     (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
         _gguf_bytes("qwen35"))

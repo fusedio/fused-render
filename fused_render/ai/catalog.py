@@ -120,8 +120,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # Refreshed 2026-08-16, and the refresh brought one fact this list has not
     # had to state before.
     #
-    # **EVERY CURRENT CHECKPOINT HERE IS MULTIMODAL, AND HALF OF IT IS DEAD
-    # WEIGHT.** Qwen3.5, Qwen3.6 and gemma-4 all ship as
+    # **EVERY QWEN AND GEMMA CHECKPOINT HERE IS MULTIMODAL, AND HALF OF IT IS
+    # DEAD WEIGHT** — the LFM2.5 entry at position 0 is the exception, and it
+    # is the first entry this list has ever had that pays none of this cost:
+    # `Lfm2ForCausalLM`, no `vision_config`, every byte fetched is a byte the
+    # language model uses. Qwen3.5, Qwen3.6 and gemma-4 all ship as
     # `…ForConditionalGeneration` with a `vision_config` (gemma-4 adds an
     # `audio_config`), and mlx-lm loads the LANGUAGE TOWER and nothing else —
     # the vision and audio weights sit in the snapshot, downloaded and unused,
@@ -167,20 +170,39 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # supported." The `e4b`/`e2b` siblings below are `gemma4` and do load.
     # Recheck when mlx-lm is next bumped.
     #
-    # Ordered SMALLEST FIRST, like every list in this file, which means the 1.8GB
-    # 2B leads and is what a no-model chat call loads — see the module docstring
-    # for why that trade was taken deliberately. Sizes are the whole-snapshot Hub
-    # byte sum on 2026-08-16 (D295), and every entry is ungated. **One line
-    # each**, and each note names the entry it compares itself to rather than
-    # saying "above"/"below", so a future size correction that moves a row does
-    # not quietly falsify the prose.
+    # Ordered SMALLEST FIRST, like every list in this file, which means the
+    # 0.7GB LFM2.5 1.2B leads and is what a no-model chat call loads — see the
+    # module docstring for why that trade was taken deliberately. Sizes are the
+    # whole-snapshot Hub byte sum on 2026-08-16 (D295), the LFM2.5 row's
+    # re-measured on 2026-08-21, and every entry is ungated. **One line each**,
+    # and each note names the entry it compares itself to rather than saying
+    # "above"/"below", so a future size correction that moves a row does not
+    # quietly falsify the prose.
     "mlx-text": [
+        # Position 0, replacing `mlx-community/Qwen3.5-2B-MLX-4bit` (1.7GB),
+        # and it is a straight win rather than a trade: 2.6x less to fetch,
+        # text-only where the Qwen 2B spent part of that on a vision tower
+        # mlx-lm drops, and the same model the `llamacpp-text` list leads with
+        # — so the two platforms now start a bare `fused.ai()` on the SAME
+        # model rather than on two different compromises.
+        #
+        # **Loadable by the mechanism, not by a load** — this repo could not
+        # be tried here, because MLX does not install off Apple Silicon and
+        # the refresh that added it was done on Linux. What WAS checked is the
+        # exact resolution step the `gemma4_unified` paragraph above turns on:
+        # `model_type` is `lfm2`, mlx-lm resolves a checkpoint by importing
+        # `mlx_lm.models.<model_type>`, and 0.31.3's wheel ships `lfm2.py`
+        # (read out of the published wheel, not assumed). Its `quantization`
+        # block is a plain uniform `{group_size: 64, bits: 4, mode: affine}`
+        # with no `quant_method`, so `formats.unloadable_quant` passes it the
+        # same way it passes every other row here. Someone on a Mac should
+        # still load it once.
         {
-            "id": "mlx-community/Qwen3.5-2B-MLX-4bit",
-            "label": "Qwen3.5 2B (MLX 4-bit)",
-            "size_gb": 1.8,
-            "note": "The smallest here and the one a bare call loads — weaker "
-                    "than the rest, and it runs anywhere MLX does.",
+            "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+            "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
+            "size_gb": 0.7,
+            "note": "The smallest here and the one a bare call loads — quick "
+                    "to fetch and to answer, and weaker than every other row.",
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
@@ -188,6 +210,34 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 4.0,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
+        },
+        # The only MIXTURE-OF-EXPERTS row in this file, and it is here because
+        # the router changes what a size means: 8B of weights resident, ~1B of
+        # them multiplied per token, so it answers at roughly the speed of the
+        # 1.2B at the head of this list while knowing what an 8B knows. That
+        # is a different axis from every other row, which is why it earns a
+        # line 0.35GB from the Gemma below rather than duplicating it.
+        #
+        # **Nothing special is needed to load it, and that is worth stating
+        # because it is easy to assume otherwise.** MoE experts are ordinary
+        # tensors in the checkpoint; what is conditional is the COMPUTE, which
+        # the router does inside the model. There is no "load only the active
+        # experts" mode to miss — the whole 4.9GB is fetched and resident, and
+        # the win is arithmetic per token, not bytes.
+        #
+        # `LiquidAI/`, not `mlx-community/`: the publisher's own conversion is
+        # the only one (checked 2026-08-21), which is the same reason the
+        # prism-ml Bonsai row below is not an `mlx-community` id either.
+        # Mechanism-checked like the LFM2.5 row at position 0 and NOT loaded,
+        # for the same reason — `model_type` is `lfm2_moe`, and 0.31.3's wheel
+        # ships `lfm2_moe.py`, read out of it.
+        {
+            "id": "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
+            "label": "LFM2.5 8B-A1B (MLX 4-bit)",
+            "size_gb": 4.9,
+            "note": "8B of knowledge answering at about a 1B's speed — a "
+                    "mixture of experts, so only a fraction of it runs per "
+                    "token.",
         },
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
@@ -271,32 +321,82 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # load — the same limitation `formats.COMPONENT_REPOS`'s repos already
     # have, for the same reason.
     #
-    # **`gguf.architecture = "qwen35"` on every entry here, which is worth
-    # spelling out because it is the whole reason this list can offer
-    # CURRENT-GENERATION Qwen at all.** llama.cpp converts and runs the TEXT
-    # TOWER of the `Qwen3_5ForConditionalGeneration` family — the same
+    # **Every entry's `general.architecture` is checked against
+    # `formats.GGUF_TEXT_ARCHITECTURES` BEFORE it is listed, and then the file
+    # is actually LOADED.** The metadata check is cheap and catches the wrong
+    # class of model; it does not prove that the June 2026 llama.cpp this
+    # runner vendors can build an August 2026 checkpoint of a family whose
+    # NAME it knows. That gap is exactly the trap the `mlx-text` list above
+    # documents for `gemma4_unified`, so every entry ADDED here was loaded
+    # through `llamacpp_text/.venv`'s own `llama_cpp.Llama` and asked for a
+    # token before it went in (2026-08-21, llama-cpp-python 0.3.29): LFM2.5
+    # 1.2B (`lfm2`), Qwen3.5 4B Q4_K_M (`qwen35`), Gemma 4 E4B (`gemma4`) and
+    # LFM2.5 8B-A1B (`lfm2moe`) each answered. The 27B row carries over from the previous shortlist
+    # UNCHANGED and was not re-loaded for this refresh — 13GB to re-verify a
+    # file that was already shipping. Redo the loads when the pin in
+    # `llamacpp_text/pyproject.toml` moves; an arch name in the table is a
+    # necessary condition, never a sufficient one.
+    #
+    # **Three publishers over five rows, and that is a REQUIREMENT of the list
+    # rather than a coincidence of what was newest.** This list was five Qwen
+    # entries over three Qwen repos: two of them the same 4B at two
+    # quantizations, two of them the same 9B. A shortlist whose every row
+    # shares a tokenizer, a training mix and a failure mode gives a user
+    # nothing to try when the first answer is bad — "measure it against a
+    # model you already trust" is advice the MLX list can give because it has
+    # Gemma beside Qwen, and this one could not. Now: Liquid, Qwen and Google.
+    #
+    # **Liquid appears twice, and the second one is not a duplicate.** The
+    # 1.2B at position 0 and the 8B-A1B below it are a dense model and a
+    # mixture of experts — the same publisher, and nothing else in common that
+    # matters to a picker. Where a repeated Qwen 4B at two quantizations gave
+    # a reader one choice wearing two labels, these two answer different
+    # questions ("the smallest thing that works" and "8B answers at 1B
+    # speed"), which is the test a row has to pass to be here.
+    #
+    # **And that requirement is load-bearing precisely BECAUSE of D416.** Since
+    # the transformers family was withdrawn, this list is what a bare "auto"
+    # reaches on Windows and Linux rather than an opt-in a user had to go
+    # looking for — so these four entries are no longer an alternative
+    # shortlist beside a safetensors one, they are the whole of what text
+    # generation suggests on those platforms. A monoculture was a thin
+    # shortlist when it was the second list; it is the only list now.
+    #
+    # **The Qwen entries are still current-generation, which is the thing that
+    # made the old monoculture defensible.** llama.cpp converts and runs the
+    # TEXT TOWER of the `Qwen3_5ForConditionalGeneration` family — the same
     # language model the removed `transformers-text` list served in full bf16
     # precision, at 19.3GB for the 9B (D416) — so a machine too small for that
-    # download can still run the same model's answers at a fraction of the
-    # size, not a smaller model wearing the same name. Since D416 this list is
-    # also what a bare "auto" reaches on Windows and Linux rather than an opt-in
-    # a user had to find, which raises what these five entries have to be: they
-    # are no longer an alternative shortlist beside a safetensors one, they are
-    # the whole of what text generation suggests on those platforms.
+    # download still runs the same model's answers at a fraction of the size,
+    # not a smaller model wearing the same name.
     #
     # Sizes verified against the Hub's `?blobs=true` metadata on 2026-08-21,
     # summing ONLY the one GGUF file `download_file` fetches (never the whole
-    # repo) plus nothing else — these unsloth repos ship no external
-    # tokenizer/config files at their root, so there is no second download to
-    # add in (see `runners/llama_text.py`). Every file checked is a single
+    # repo) plus nothing else — a GGUF carries its own vocabulary, config and
+    # chat template inside the one file, so there is no second download to add
+    # in whatever else sits beside it in the repo (the LFM2.5 repo ships a
+    # `leap/` directory of runtime manifests and the gemma repo a `config.json`
+    # and an `MTP/` folder; none of it is fetched, see
+    # `runners/llama_text.py`). Every file checked is a single
     # root-level `.gguf`, not a `-00001-of-0000N` shard — `download_file` takes
     # one filename, so a sharded tier would have been silently unloadable and
     # was excluded before it could ship (the 27B repo's own BF16 tier IS
     # sharded, which is one reason its shortlist entry is the aggressively
     # quantized UD-Q3_K_XL rather than anything closer to full precision).
-    # Every repo checked `gated: false`. **No sub-4B entries** — the user's own
-    # standing rule that a text model under 4B parameters is not worth using,
-    # and every model here is a Qwen3.5-or-newer 4B, 9B or 27B.
+    # Every repo checked `gated: false`.
+    #
+    # **The "no text model under 4B" rule is deliberately broken at position 0,
+    # and only there.** That rule was written against 2025-era 1-3B models and
+    # it is the right default still — but position 0 is not a recommendation,
+    # it is what a bare `fused.ai()` loads on a machine whose owner never
+    # opened this page, and on the CPU wheel that is most non-Apple machines.
+    # A 2.7GB download that answers at a few tokens a second is a worse first
+    # experience than a 0.7GB one that answers immediately, and LFM2.5 is not a
+    # small transformer — Liquid's hybrid short-convolution stack is built for
+    # CPU decode, which is the case this engine actually defaults into. The
+    # `mlx-text` list above leads with the SAME model for the same reason, so
+    # the two platforms now start a no-model call on one model rather than on
+    # two different compromises. Every OTHER row here obeys the rule.
     #
     # **One line each** and hardware-neutral, per `SUGGESTIONS`' own rules:
     # this list
@@ -304,50 +404,68 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # `llamacpp-text-vulkan` to this same key), so a note naming one build's
     # device would be wrong on the other.
     "llamacpp-text": [
+        # The two Q8_0 rows this list used to carry (the 4B at 4.5GB and the 9B
+        # at 9.5GB) are gone, and not for length: Q8_0 is roughly twice
+        # Q4_K_M's arithmetic per token for a quality gain that is small next
+        # to moving up a size class, and this engine's default build has no
+        # GPU to hide that behind. A row that is never the right pick fails
+        # this file's own "every line is somebody's answer" test.
         {
-            "id": "Qwen3.5-4B-Q5_K_M.gguf",
-            "label": "Qwen3.5 4B (Q5_K_M)",
-            "size_gb": 3.1,
-            "note": "The smallest here and the one a bare call loads — Qwen3.5 "
-                    "4B (Q8_0) below is the same model at higher fidelity for "
-                    "1.3GB more.",
+            "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+            "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
+            "size_gb": 0.7,
+            "note": "The smallest here and the one a bare call loads — a "
+                    "hybrid architecture built for CPU decode, so it answers "
+                    "immediately where a 4B thinks.",
         },
         {
-            "id": "Qwen3.5-4B-Q8_0.gguf",
-            "label": "Qwen3.5 4B (Q8_0)",
-            "size_gb": 4.5,
-            "note": "The same 4B near full precision, for a third more "
-                    "download than Q5_K_M above.",
+            "id": "Qwen3.5-4B-Q4_K_M.gguf",
+            "label": "Qwen3.5 4B (Q4_K_M)",
+            "size_gb": 2.7,
+            "note": "The first row here strong enough for real work: current-"
+                    "gen Qwen, and a fifth of the unquantized 4B's download.",
         },
         {
-            "id": "Qwen3.5-9B-Q4_K_M.gguf",
-            "label": "Qwen3.5 9B (Q4_K_M)",
-            "size_gb": 5.7,
-            # Named the removed `transformers-text` engine until D416. A note
-            # citing an engine the page no longer lists is a dead reference the
-            # reader cannot resolve, so the comparison is to the FORMAT — which
-            # is the fact that actually earns the entry, and is true whatever
-            # engines happen to be registered.
-            "note": "Current-gen Qwen at under a third of what the same 9B "
-                    "weighs unquantized — the strongest pick here for the "
-                    "size.",
+            "id": "gemma-4-E4B-it-Q4_K_M.gguf",
+            "label": "Gemma 4 E4B (Q4_K_M)",
+            "size_gb": 5.0,
+            "note": "A second family, worth trying on a prompt the Qwen 4B "
+                    "above handles badly — it answers above its size class "
+                    "for the download.",
         },
+        # The mixture-of-experts row, and it matters MORE here than its MLX
+        # twin does: this list's default build has no GPU, and a router that
+        # multiplies ~1B of an 8B model per token is the one architecture that
+        # turns a CPU into a reasonable place to run an 8B at all. Nothing in
+        # the runner has to know — MoE experts are ordinary tensors, only the
+        # COMPUTE is conditional, and llama.cpp does that inside the graph.
+        #
+        # **What we CANNOT do for it is placement**, and that is a binding
+        # limit rather than an oversight: llama.cpp's `--n-cpu-moe` (keep the
+        # expert tensors on the CPU, put attention on the GPU) is backed by
+        # `llama_model_params.tensor_buft_overrides`, which llama-cpp-python
+        # 0.3.29 exposes in the ctypes struct and NOT as a `Llama.__init__`
+        # keyword — checked against the installed signature, which offers only
+        # `n_gpu_layers`, `split_mode`, `main_gpu` and `tensor_split`. So on
+        # the Vulkan build this row is offloaded by whole layers like any
+        # dense model, leaving the trick unused. On the CPU build, which is
+        # what most machines resolve to, there is nothing left on the table.
         {
-            "id": "Qwen3.5-9B-Q8_0.gguf",
-            "label": "Qwen3.5 9B (Q8_0)",
-            "size_gb": 9.5,
-            "note": "The 9B at higher fidelity than Q4_K_M above, for nearly "
-                    "double the download — bigger than most laptop GPUs' "
-                    "VRAM, so expect a slower partial or CPU load there.",
+            "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+            "label": "LFM2.5 8B-A1B (Q4_K_M)",
+            "size_gb": 5.2,
+            "note": "8B of knowledge answering at about a 1B's speed — a "
+                    "mixture of experts, so only a fraction of it runs per "
+                    "token.",
         },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
-                    "the download — expect a bigger quality hit than the 9B "
-                    "above, and a laptop GPU to run it mostly or entirely on "
-                    "the CPU rather than resident in VRAM.",
+                    "the download — expect a bigger quality hit than the "
+                    "LFM2.5 8B-A1B above, and a laptop GPU to run it mostly "
+                    "or entirely on the CPU rather than resident in VRAM.",
         },
     ],
     "diffusers-image": [
