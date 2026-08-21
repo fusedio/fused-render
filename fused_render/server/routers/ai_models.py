@@ -173,19 +173,16 @@ def _scan_repo(root: str) -> _RepoScan:
                 # emptied repo would still report "just now".
                 stack.append(entry.path)
                 continue
-            if st.st_mtime > newest:
-                newest = st.st_mtime
             if stat.S_ISLNK(st.st_mode):
-                continue  # points back into this repo's blobs/ — already counted
-            # Only real files carry a meaningful atime: loading a model through
-            # a snapshot symlink touches the blob, not the link.
-            if st.st_atime > used:
-                used = st.st_atime
-            # Oldest real file ≈ when this repo first landed here. The Hub's
-            # release date is NOT on disk (see _repo's "added"), so this is the
-            # only date about a model this machine actually knows.
-            if oldest == 0.0 or st.st_mtime < oldest:
-                oldest = st.st_mtime
+                # Points back into this repo's blobs/ — its target is already
+                # counted, so a link contributes to `newest` and to nothing
+                # else. (Deliberate, and unchanged: a link still dates the
+                # repo, but only real files carry a meaningful atime — loading
+                # a model through a snapshot symlink touches the blob, not the
+                # link — and counting the link's size would double-count.)
+                if st.st_mtime > newest:
+                    newest = st.st_mtime
+                continue
             if sys.platform == "win32":
                 # entry.stat() above is DirEntry.stat(): on Windows it is built
                 # from the cached FindFirstFile/FindNextFile data, which has no
@@ -209,6 +206,26 @@ def _scan_repo(root: str) -> _RepoScan:
                     st = os.stat(entry.path, follow_symlinks=False)
                 except OSError:
                     continue
+            # EVERY accumulator below reads the FINAL `st`, and none of them run
+            # before the re-stat above can rule the file out. A file that
+            # vanishes in that window has to count for nothing at all: dating
+            # the repo from a blob whose size we then refuse to count is not a
+            # partial answer, it is a wrong one. `lastUsed` is the field that
+            # makes it concrete — it drives prune selection in the client, so a
+            # deleted blob's atime leaking in here marks a stale repo as
+            # recently used and protects it from the very cleanup that removed
+            # the blob. (On win32 these now read the fresh stat rather than the
+            # cached DirEntry one, which is also the stat that size and st_nlink
+            # come from — one consistent view of the file, not two.)
+            if st.st_mtime > newest:
+                newest = st.st_mtime
+            if st.st_atime > used:
+                used = st.st_atime
+            # Oldest real file ≈ when this repo first landed here. The Hub's
+            # release date is NOT on disk (see _repo's "added"), so this is the
+            # only date about a model this machine actually knows.
+            if oldest == 0.0 or st.st_mtime < oldest:
+                oldest = st.st_mtime
             if st.st_nlink > 1:
                 key = (st.st_dev, st.st_ino)
                 if key in seen:

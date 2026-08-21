@@ -99,6 +99,15 @@ CANCEL = threading.Event()
 GENERATE_LOCK = threading.Lock()
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+
+#: Bounds on the PRE-AUTH body drain (Handler._drain). 64 KiB is far above any
+#: real request this worker takes — they are small JSON objects — and the point
+#: is only to stop an unauthenticated caller from naming a size that makes us
+#: wait on it. 2s is generous for a body already in flight on loopback, and it
+#: is the only read timeout on this connection at all (`_Server` sets none).
+DRAIN_MAX_BYTES = 64 * 1024
+DRAIN_TIMEOUT_S = 2.0
+
 JOB_ID = ""
 JOB_URL = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs"
 
@@ -2126,24 +2135,56 @@ def _handler(generate, streaming):
             pass  # the supervisor captures stderr; per-request noise is not useful
 
         def _drain(self):
-            """Read and discard the request body.
+            """Read and discard the request body. True if it was fully drained.
 
-            Mandatory before answering a request WITHOUT reading its body. This
-            handler is HTTP/1.1, so the connection is kept alive and the next
-            request is parsed off the same socket — an undrained body is still
-            queued there and its bytes get read as that request's request-line.
-            And closing a socket that still holds unread data makes Windows
-            send an RST instead of a FIN, which reaches the client as
-            [WinError 10053] ConnectionAbortedError rather than the clean 403
-            this path exists to deliver. (Both halves are real: the desync bites
-            on every platform, the RST is Windows-specific.)
+            Draining at all is mandatory before answering a request WITHOUT
+            reading its body. This handler is HTTP/1.1, so the connection is
+            kept alive and the next request is parsed off the same socket — an
+            undrained body is still queued there and its bytes get read as that
+            request's request-line. And closing a socket that still holds
+            unread data makes Windows send an RST instead of a FIN, which
+            reaches the client as [WinError 10053] ConnectionAbortedError
+            rather than the clean 403 this path exists to deliver. (Both halves
+            are real: the desync bites on every platform, the RST is
+            Windows-specific.)
+
+            BOUNDED on both axes, because the only caller runs BEFORE
+            authentication and Content-Length is the caller's to claim.
+            Unbounded, a client with a wrong token could announce a huge body
+            and then send nothing, holding one of this ThreadingTCPServer's
+            threads for as long as it pleased — and `_Server` sets no socket
+            timeout, so "as long as it pleased" is forever. Enough of those and
+            the worker stops answering /health, which is how the supervisor
+            decides it is alive. So: a length over DRAIN_MAX_BYTES is not read
+            at all, and what is read gets DRAIN_TIMEOUT_S to arrive.
+
+            Returning False means the connection is NOT safe to keep alive —
+            an over-long, half-sent or unparseable body is still in the socket,
+            and the next request read off it would consume that as its
+            request-line. The caller closes instead.
             """
-            remaining = int(self.headers.get("Content-Length") or 0)
-            while remaining > 0:
-                chunk = self.rfile.read(min(remaining, 64 * 1024))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
+            raw = self.headers.get("Content-Length")
+            try:
+                remaining = int(raw) if raw else 0
+            except ValueError:
+                return False          # unparseable: cannot know where it ends
+            if remaining < 0 or remaining > DRAIN_MAX_BYTES:
+                return False
+            if remaining == 0:
+                return True
+            previous = self.connection.gettimeout()
+            self.connection.settimeout(DRAIN_TIMEOUT_S)
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 16 * 1024))
+                    if not chunk:
+                        return False  # client stopped short of what it claimed
+                    remaining -= len(chunk)
+                return True
+            except OSError:           # includes the socket timeout
+                return False
+            finally:
+                self.connection.settimeout(previous)
 
         def _authorized(self):
             # The token is a header the supervisor generated and passed in this
@@ -2152,12 +2193,20 @@ def _handler(generate, streaming):
             # log line or a Referer.
             if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
                 return True
-            # Before the refusal, not after: see _drain. A rejected POST still
-            # arrived with a body, and leaving it unread turns a 403 into a
-            # dropped connection.
-            self._drain()
+            # Drain BEFORE the refusal, not after: see _drain. A rejected POST
+            # still arrived with a body, and leaving it unread turns a 403 into
+            # a dropped connection. When it cannot be drained safely, the
+            # refusal still goes out — but this connection ends with it, rather
+            # than being reused with someone else's bytes queued on it.
+            drained = self._drain()
             self.send_response(403)
             self.send_header("Content-Length", "0")
+            if not drained:
+                # Announced, not just done: the client is owed the reason its
+                # connection is about to end. send_header's own side effect
+                # sets close_connection, which is what actually stops this
+                # socket being reused with those undrained bytes still on it.
+                self.send_header("Connection", "close")
             self.end_headers()
             return False
 

@@ -260,9 +260,24 @@ def test_a_file_that_vanishes_between_the_two_stats_is_skipped(
     silently disable hardlink dedup). That is another trip to the filesystem,
     so the same mid-download deletion the test above covers can land in this
     narrower window instead — and must be skipped like any other, not abort
-    the whole listing."""
+    the whole listing.
+
+    Skipped means counting for NOTHING — the timestamps too, not just
+    size/files. They are asserted here because they used to be accumulated
+    before the re-stat could rule the file out, so a vanished blob still dated
+    the repo. `lastUsed` is the one with teeth: it drives prune selection in
+    the client, so a deleted blob's atime leaking in marks a stale repo as
+    recently used and shields it from the cleanup that removed the blob.
+    """
     repo = _repo(hub, "models--org--m", blobs={"stays": 100, "vanishes": 50})
     gone = str(repo / "blobs" / "vanishes")
+
+    # Distinctive, far-apart stamps so a leak cannot hide inside a max()/min():
+    # the doomed blob is BOTH the newest and the most recently used AND the
+    # oldest, so if any of the three accumulators still sees it, one of the
+    # assertions below reads its number instead of the survivor's.
+    os.utime(repo / "blobs" / "stays", (5_000_000, 5_000_000))
+    os.utime(gone, (9_000_000, 1_000_000))
     real_stat = os.stat
 
     def fake_stat(path, *args, **kwargs):
@@ -277,6 +292,10 @@ def test_a_file_that_vanishes_between_the_two_stats_is_skipped(
     (out,) = _get(client)["repos"]
     assert out["size"] == 100
     assert out["files"] == 1
+    # Every field describes the surviving blob alone.
+    assert out["mtime"] == 5_000_000       # not the vanished 1_000_000 mtime
+    assert out["lastUsed"] == 5_000_000    # not its 9_000_000 atime
+    assert out["added"] == 5_000_000       # not its 1_000_000 mtime as "oldest"
 
 
 # -- no cache at all -----------------------------------------------------------

@@ -140,6 +140,76 @@ def test_a_refused_post_does_not_desync_the_keep_alive_connection(base):
     assert b"200" in statuses[1:], data
 
 
+def _read_all(s, timeout=5.0):
+    s.settimeout(timeout)
+    data = b""
+    try:
+        while len(data) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    except (TimeoutError, socket.timeout):
+        pass
+    return data
+
+
+def test_an_oversized_preauth_body_is_refused_without_reading_it(base):
+    """The drain runs BEFORE auth on a length the caller chose, so it is
+    capped. Unbounded, this request — 100 MB announced, not one byte sent —
+    parks one of the ThreadingTCPServer's threads forever (`_Server` sets no
+    socket timeout), and enough of them stop the worker answering /health,
+    which is how the supervisor decides it is alive.
+
+    The refusal still goes out; the connection just ends with it, since those
+    unsent bytes would otherwise be read as the next request's request-line.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 100000000\r\n"
+                b"\r\n")
+            data = _read_all(s)
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+
+
+def test_a_preauth_body_that_stops_early_does_not_park_the_thread(
+        base, monkeypatch):
+    """The other axis: a length UNDER the cap, so it is read — but the client
+    sends less than it promised and then goes quiet. Without a read timeout
+    that wait is unbounded too."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    monkeypatch.setattr(base, "DRAIN_TIMEOUT_S", 0.3)
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 4096\r\n"
+                b"\r\n" + b"x" * 10)     # promised 4096, sent 10
+            started = time.monotonic()
+            data = _read_all(s)
+            waited = time.monotonic() - started
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+    # Bounded by the drain timeout, not by the client's silence.
+    assert waited < 3.0, waited
+
+
 def test_a_missing_token_is_refused_too(base):
     base.TOKEN = "secret"
     server = _serve(base, lambda body: {"ok": True})
