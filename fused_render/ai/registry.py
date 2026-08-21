@@ -149,6 +149,33 @@ class Runner:
     #: that tells a 16GB Mac to go back to Diffusers — which belongs beside the
     #: control that makes that switch, not over a grid of downloads.
     note: str = ""
+    #: Extra Hub `filter=` tags a search must carry when THIS is the runner
+    #: actually serving the capability — empty for every runner whose format
+    #: needs no such narrowing (D407).
+    #:
+    #: **Why this is a runner field and not a hard-coded pair in
+    #: `hub_models.py`.** That module's whole design is "adding a runner needs
+    #: no edit here" (`supported_tags`'s own docstring, pinned by
+    #: `tests/test_hub_models.py`); a capability with two formats behind it
+    #: (`llamacpp-text`'s GGUF against `transformers-text`/`mlx-text`'s
+    #: safetensors) is the first time that has mattered, since every earlier
+    #: multi-runner capability shares one format across its variants. Reading
+    #: the filter off the ACTIVE runner rather than hard-coding "text
+    #: generation means gguf" keeps that property: a future format-specific
+    #: runner declares its own tag here, and the module stays the same.
+    #:
+    #: **Deliberately keyed to the SERVING runner, which is host-dependent —
+    #: the one exception to this module's "search does not depend on the
+    #: host" rule** (see `hub_models.py`'s own docstring), and that is a
+    #: considered exception rather than a quiet one: a search result this
+    #: engine's own picker cannot resolve is not actionable HERE regardless
+    #: of what a different machine's active engine could do with it, the
+    #: same argument `_UNRUNNABLE_LIBRARIES` already makes about FORMAT
+    #: (as opposed to hardware availability, which the rest of that
+    #: docstring's rule is actually about). Two people running the identical
+    #: query see different rows only when they made different, visible engine
+    #: choices in Preferences — never for a reason neither could see.
+    hub_filter_tags: tuple[str, ...] = ()
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
     def available(self) -> Availability:
@@ -951,6 +978,10 @@ _RUNNERS: tuple[Runner, ...] = (
              "unquantized download — opt-in because its wheels come from the "
              "maintainer's own index rather than PyPI.",
         _available=_llamacpp_platform,
+        # A text-generation search result this engine cannot resolve at all
+        # (a plain safetensors repo) is not actionable here — see
+        # `hub_filter_tags`'s own docstring for why this is a runner field.
+        hub_filter_tags=("gguf",),
     ),
     # The Vulkan variant of the row above — GPU acceleration on NVIDIA and AMD
     # under Windows and Linux, where `llamacpp-text`'s CPU-index pin is
@@ -976,6 +1007,7 @@ _RUNNERS: tuple[Runner, ...] = (
              "for a much larger download — see llama.cpp (GGUF) for the "
              "CPU/Apple Silicon build.",
         _available=_vulkan,
+        hub_filter_tags=("gguf",),
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch
