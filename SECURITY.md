@@ -136,6 +136,20 @@ deliberate v1 trade-off (D78), not an oversight.
 
 ## Secrets at rest
 
+**Hugging Face**: this app stores no Hub token. The **Log in to Hugging Face**
+button in Preferences drives `huggingface_hub`'s own browser login (OAuth device
+code) and *`huggingface_hub`* persists the result — the same files a
+`hf auth login` in a terminal writes, `~/.cache/huggingface/token` and
+`~/.cache/huggingface/stored_tokens`, owner-only (`0600`, with the directory at
+`0700`) as of `huggingface_hub` 1.28's `utils/_auth.py`. They are not encrypted;
+neither is any other CLI's token file. Three consequences worth knowing: the
+token is **never sent to the browser** — the Preferences page is told only
+whether you are signed in and under what account name — it is **not written into
+model-download processes** (they call hf and find it themselves), and **Log out
+removes the active login from that shared store**, so it signs the machine out
+of Hugging Face rather than only out of this app. Grant the login read access if
+you only intend to download models.
+
 Cloud storage mounts (`shell/mounts.py`) store no credentials of their own —
 access keys live exclusively in rclone's own config file, subject to
 rclone's default (reversible) obfuscation rather than strong encryption

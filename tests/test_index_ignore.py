@@ -11,6 +11,7 @@ from fused_render.index.ignore import (
     clean_patterns,
     default_ignore,
     ignore_sig,
+    norm,
 )
 
 
@@ -64,7 +65,11 @@ def test_keep_subdirs_drops_ignored_and_hardcoded_skips():
 
 def test_expanduser_applies_to_path_patterns():
     r = IgnoreRules(["~/Library/Caches"])
-    assert r.is_ignored(os.path.expanduser("~/Library/Caches"))
+    # `IgnoreRules.__init__` compiles the pattern through `norm(expanduser(...))`
+    # (forward-slashed even on Windows, where `expanduser` itself hands back
+    # `C:\Users\...`); the path being tested against that regex has to make
+    # the same trip or a native separator never matches at all.
+    assert r.is_ignored(norm(os.path.expanduser("~/Library/Caches")))
 
 
 def test_ignore_sig_is_order_sensitive_and_stable():
@@ -78,10 +83,13 @@ def test_default_ignore_covers_the_mounts_dir_under_the_current_home(monkeypatch
     and walking a mount means kernel I/O on an rclone NFS path."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     r = IgnoreRules(default_ignore())
-    assert r.is_ignored(str(tmp_path / "home" / "mounts"))
-    assert r.is_ignored_tree(str(tmp_path / "home" / "mounts" / "s3" / "deep"))
+    # `default_ignore()` compiles a `**/mounts` GLOB that is already `norm`ed
+    # (ignore.py) — the paths tested against it need the same forward-slash
+    # form, not the native (backslash, on Windows) spelling `str(Path)` gives.
+    assert r.is_ignored(norm(str(tmp_path / "home" / "mounts")))
+    assert r.is_ignored_tree(norm(str(tmp_path / "home" / "mounts" / "s3" / "deep")))
     # branch-nested checkouts get their own mounts folder
-    assert r.is_ignored(str(tmp_path / "home" / "branches" / "featureX" / "mounts"))
+    assert r.is_ignored(norm(str(tmp_path / "home" / "branches" / "featureX" / "mounts")))
 
 
 def test_the_walk_and_the_index_share_one_ignore_floor():

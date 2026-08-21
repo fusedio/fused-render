@@ -266,7 +266,13 @@ def test_the_listing_happens_once(gate, tmp_path, monkeypatch):
         calls.append(args[0] if args else None)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(os, "scandir", counted)
+    # Thread-scoped, like the `open` trap above. os.scandir is process-global,
+    # and the suite leaves daemon threads running from earlier tests -- an
+    # openfused invoke watcher polling its requests dir scanned during this
+    # window and made `calls` 2, failing an assertion about what THE GATE did.
+    # What is under test is the gate's listing on this thread, not every
+    # scandir in the process.
+    monkeypatch.setattr(os, "scandir", this_thread_only(real, counted))
     assert gate(app) is True
     assert len(calls) == 1
 

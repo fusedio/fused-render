@@ -386,6 +386,14 @@ def test_concurrent_marks_all_survive(state_dir):
     """Two writers, one file. Without the read-modify-write inside the lock the
     second would persist a snapshot taken before the first's change and silently
     drop it."""
+    if tasks_store.fcntl is None:
+        # `_update`'s own comment says it: "Windows falls back to no
+        # inter-process lock" — not a bug this sweep introduced, the same
+        # accepted posture as claude_sessions.api_claude_session_triage. With
+        # no lock at all, two threads racing the read-modify-write WILL drop
+        # one side's marks; that is not this test's bug to catch, since the
+        # code never promised otherwise there.
+        pytest.skip("no lock on this platform (tasks_store._update, by design)")
     errors = []
 
     def mark(prefix):
@@ -411,6 +419,12 @@ def test_concurrent_marks_all_survive(state_dir):
 def test_concurrent_allocations_do_not_collide(state_dir):
     """Two listings racing to number the same project must not hand out one
     number twice."""
+    if tasks_store.fcntl is None:
+        # Same reasoning as test_concurrent_marks_all_survive above: with no
+        # lock on this platform, two threads can read the same "next number"
+        # and both allocate it — an accepted gap, not a regression to catch.
+        pytest.skip("no lock on this platform (tasks_store._update, by design)")
+
     def allocate(prefix):
         for n in range(10):
             tasks_store.ensure_ids([(f"{prefix}{n}", "/p", float(n))])

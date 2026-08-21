@@ -339,7 +339,10 @@ def test_an_attributed_run_is_logged_with_its_detail(app_client):
     assert len(records) == 1
     got = records[0]
     assert got["call_id"] == "known-id"          # the client's id is honoured
-    assert got["page"] == str(d / "p.html")
+    # canonical_fs_path(...): the store always holds the shell's forward-slash
+    # canonical form (calls.py's _canonicalize_paths), so on Windows a raw
+    # str(path) (backslashed) never equals it — see _view_url_codec.py.
+    assert got["page"] == canonical_fs_path(str(d / "p.html"))
     assert got["route"] == "/api/run"
     assert got["outcome"] == "ok"
     assert got["entrypoint_name"] == "ok.py"
@@ -442,7 +445,8 @@ def test_an_upload_records_size_and_path_but_never_the_bytes(app_client):
     assert drain()
     got = calls.query(limit=10)["records"][0]
     assert got["route"] == "/api/fs/upload"
-    assert got["entrypoint"] == str(target)
+    # canonical_fs_path(...): see test_an_attributed_run_is_logged_with_its_detail.
+    assert got["entrypoint"] == canonical_fs_path(str(target))
     assert got["entrypoint_name"] == "pasted.png"
     # The byte count is the blob's own length: there is no encoding step for a
     # binary body, unlike the UTF-8 round trip a text write measures.
@@ -1540,6 +1544,21 @@ def appended(cid, when, **over):
     return json.dumps(dict(calls._prune(rec(call_id=cid, **over)), recorded_at=when))
 
 
+def cli_page(raw):
+    """The absolute, canonical form cli.py's own `--page` filter resolves a raw
+    argument to (`canonical_fs_path(os.path.abspath(os.path.expanduser(...)))`).
+
+    A record's `page` field must be built through this SAME transform to stay
+    comparable with the filter the CLI computes from the identical raw string —
+    on POSIX a "/..."-rooted literal is already absolute, so this is a no-op,
+    but on Windows `os.path.abspath` prepends the CWD's drive to a driveless
+    "/..." path (there is no such thing as a real Windows absolute path
+    without one), so a fixture that skips this and hardcodes the bare literal
+    into a record silently stops matching the filter the CLI actually applies.
+    """
+    return canonical_fs_path(os.path.abspath(os.path.expanduser(raw)))
+
+
 def test_same_day_files_from_two_servers_merge_newest_first(store):
     """Name order is date, then pid, then part — and pid order says NOTHING about
     time. Worse, it is lexical, so pid 8000 sorts AFTER pid 12345. Reading one
@@ -1624,6 +1643,16 @@ def test_a_page_satisfied_by_today_never_opens_an_older_day(store, monkeypatch):
     assert os.path.basename(old) not in opened, "yesterday must stay unopened"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fds() reads /proc/self/fd (Linux procfs) purely as a test-side probe "
+           "of how many file handles this process holds open — it names no app "
+           "behavior, just counts descriptors the way `lsof`/`ls /proc/self/fd` "
+           "would. Windows has no /proc: there is no bare-stdlib equivalent (the "
+           "nearest real one, enumerating HANDLEs via a Windows API, needs a new "
+           "dependency this repo doesn't otherwise carry), so the probe itself — "
+           "not the merge-closes-its-files guarantee it's checking — is Linux-only.",
+)
 def test_an_abandoned_merge_closes_the_day_s_files(store):
     """A full page or an exhausted budget abandons the walk mid-merge; the day's
     other file handles must not be left to the garbage collector."""
@@ -1956,7 +1985,10 @@ def test_follow_answers_at_once_when_a_foreign_cursor_does_have_records(
     now = time.time()
     with open(app_current_file(), "w") as fh:
         fh.write(appended("other-5", now - 300, page="/app/other.html") + "\n")
-        fh.write(appended("mine-9", now - 30, page="/app/mine.html") + "\n")
+        # cli_page(...), not the bare literal: the CLI resolves --page through
+        # os.path.abspath before comparing, and a record's page must be built
+        # the same way to stay comparable (see cli_page's docstring).
+        fh.write(appended("mine-9", now - 30, page=cli_page("/app/mine.html")) + "\n")
 
     started = time.monotonic()
     out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "other-5",
@@ -2276,8 +2308,15 @@ def test_windows_entrypoint_substring_filter_matches(store):
 
 
 def test_posix_page_filter_still_works_through_the_cli(store, monkeypatch, capsys):
-    """Guard on the ordinary path: the canonicalization must be a no-op here."""
-    write_records([calls._prune(rec(call_id="posix", page="/app/p.html",
+    """Guard on the ordinary path: the canonicalization must be a no-op here.
+
+    "Ordinary" means what a real caller's absolute path resolves to on ITS
+    platform — a no-op on POSIX, but on Windows os.path.abspath prepends the
+    CWD's drive to a driveless "/..." literal (no real Windows absolute path
+    lacks one), so the record has to be built through cli_page() too or it
+    silently stops matching what the CLI's own --page filter computes.
+    """
+    write_records([calls._prune(rec(call_id="posix", page=cli_page("/app/p.html"),
                                     entrypoint="/app/d.py", entrypoint_name="d.py"))])
     out = run_cli(monkeypatch, capsys, "--page", "/app/p.html", "--since", "all")
     assert "d.py" in out

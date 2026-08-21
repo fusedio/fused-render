@@ -231,7 +231,7 @@ GGUF_EXTENSION = ".gguf"
 #: llama.cpp's own architecture identifiers (`general.architecture` in a
 #: GGUF's metadata) that denote a CAUSAL TEXT model — read directly off
 #: `LLM_ARCH_NAMES` in llama.cpp's `src/llama-arch.cpp` at the commit this
-#: runner vendors (SPEC AI-11, D402: llama-cpp-python 0.3.29 -> llama.cpp
+#: runner vendors (SPEC AI-11, D404: llama-cpp-python 0.3.29 -> llama.cpp
 #: `f05cf467`, 2026-06-13), MINUS the entries in that same table that are not
 #: causal text generation: the BERT/T5 families (encoders and
 #: encoder-decoders), `wavtokenizer-dec` (an audio codec), the embedding

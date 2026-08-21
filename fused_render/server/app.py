@@ -55,6 +55,7 @@ from fused_render.server.routers.git_show import router as git_show_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.render import router as render_router
@@ -420,6 +421,12 @@ def create_app(start_dir: str) -> FastAPI:
     # my disk" and "what is on the network" fail differently and share nothing
     # but the join.
     app.include_router(hub_models_router)
+    # Signing this machine in to the Hub (routers/hf_auth.py, D402). The app
+    # stores no token: the button drives huggingface_hub's own browser login and
+    # hf persists what comes back, so this router holds a device flow and
+    # nothing else. The read is unguarded and carries no credential — not even
+    # the value of an environment variable that may be overriding hf's store.
+    app.include_router(hf_auth_router)
     # Local inference (routers/ai_runtime.py, SPEC §40): which models this
     # machine is holding in memory, what they cost, and the load/unload/download
     # that change that. Reads unguarded; the three POSTs start processes and

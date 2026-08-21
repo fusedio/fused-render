@@ -34,6 +34,54 @@ class FusedCli:
     external: bool
 
 
+def _split_override(override: str) -> list[str]:
+    """FUSED_RENDER_FUSED_BIN as an argv list, honouring quotes.
+
+    Splitting is the point — a compound command ("uv run fused") is documented
+    and supported. But a PLAIN whitespace split cannot express the single most
+    common interpreter location on Windows: `C:\\Program Files\\...` came apart
+    into `C:\\Program` + `Files\\...`, so the override either "wasn't found" or
+    ran something else entirely, with nothing in the failure pointing at the
+    space as the cause. Quoting that component now works:
+
+        FUSED_RENDER_FUSED_BIN='"C:\\Program Files\\Python\\python.exe" -m fused'
+
+    `posix=` is chosen per platform and BOTH halves matter:
+
+      * posix=True on Windows treats `\\` as an escape and EATS it —
+        `C:\\Python\\python.exe` parses to `C:Pythonpython.exe`, which is not a
+        path at all. So Windows must use the non-posix lexer.
+      * posix=False on POSIX loses backslash escapes, so `/opt/my\\ app/py`
+        would stop working there.
+
+    Each platform therefore gets the lexer matching its own quoting rules. The
+    non-posix lexer KEEPS the quote characters inside the token it returns, so
+    they are stripped here; the posix lexer already removes them.
+
+    An unbalanced quote makes shlex raise. That is a malformed env var, not a
+    reason to take down every caller (fused_cli() is on the canvases request
+    path), so it degrades to the historical whitespace split and says so.
+
+    Still not expressible, on either platform: an UNQUOTED path containing a
+    space. That is ambiguous by construction — a shell cannot read it either —
+    and it is why the quoting above is the fix rather than some heuristic that
+    tries to guess where the path ends.
+    """
+    nt = os.name == "nt"
+    try:
+        parts = shlex.split(override, posix=not nt)
+    except ValueError:
+        logger.warning(
+            "FUSED_RENDER_FUSED_BIN is not parseable as a command line (%r) — "
+            "unbalanced quote? Falling back to a plain whitespace split, which "
+            "cannot handle a path containing spaces.", override)
+        return override.split()
+    if nt:
+        parts = [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'" else p
+                 for p in parts]
+    return parts
+
+
 def fused_cli() -> FusedCli | None:
     """Resolve the fused CLI, or None when there is none.
 
@@ -42,8 +90,9 @@ def fused_cli() -> FusedCli | None:
     this server didn't get from its own interpreter runs only because the
     user explicitly configured it):
 
-      1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split on whitespace so a
-         compound command works (e.g. "uv run fused"). Mirrors the flow app's
+      1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split into an argv so a
+         compound command works (e.g. "uv run fused"); quote a component that
+         contains spaces (see _split_override). Mirrors the flow app's
          OPENFUSED_BIN seam; also how tests substitute a stub CLI.
       2. the `fused` package importable in THIS interpreter — run as
          ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
@@ -55,7 +104,7 @@ def fused_cli() -> FusedCli | None:
     """
     override = os.environ.get("FUSED_RENDER_FUSED_BIN")
     if override:
-        parts = override.split()
+        parts = _split_override(override)
         return FusedCli(command=parts, external=True) if parts else None
     try:
         importable = importlib.util.find_spec("fused") is not None

@@ -155,7 +155,7 @@ def test_there_are_runner_folders_to_check():
 
 @pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)
 def test_a_non_pypi_index_is_explicit(folder):
-    """AI-2a's wheels-only rule, amended (D402): a non-PyPI index is
+    """AI-2a's wheels-only rule, amended (D404): a non-PyPI index is
     admissible ONLY confined to the one distribution it exists for.
 
     `uv sync` runs bare, with no `--index`/`--extra` a caller could supply

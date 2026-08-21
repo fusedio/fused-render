@@ -129,12 +129,34 @@ def _write_target(src, target, dest_root, readonly):
             shutil.copyfileobj(src, dst)
         return os.path.realpath(target)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or dest_root)
+    prior_mode = None  # the stale target's mode, for the failure path below
     try:
         with src, os.fdopen(fd, "wb") as dst:
             shutil.copyfileobj(src, dst)
         os.chmod(tmp, 0o444)
+        # Clear the read-only bit on a STALE target before the swap — see
+        # zip/reader.py's `_extract_one`, the identical pattern: POSIX's
+        # rename(2) doesn't care about the destination file's own mode, but
+        # Windows' MoveFileExW (os.replace there) refuses to replace a
+        # read-only ATTRIBUTE'd file, which would fail every re-preview of a
+        # changed member on Windows once the first preview had landed. A
+        # no-op on POSIX and on a first preview (target doesn't exist yet).
+        try:
+            prior_mode = os.stat(target).st_mode & 0o777
+            os.chmod(target, 0o644)
+        except OSError:
+            prior_mode = None
         os.replace(tmp, target)
     except BaseException:
+        # Restore the stale target's read-only bit when the swap fails — the
+        # same reasoning as zip/reader.py's `_extract_one`: that copy is still
+        # the live preview, so leaving it 0644 drops the guarantee
+        # `readonly=True` is for.
+        if prior_mode is not None:
+            try:
+                os.chmod(target, prior_mode)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:

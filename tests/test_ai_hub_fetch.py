@@ -20,9 +20,14 @@ What is pinned, and why each one is a bug that has to stay fixed:
   - a failure anywhere falls back to today's `snapshot_download`, because a
     download that got faster and sometimes broken is worse than a slow one.
 
-`huggingface_hub` is not installed here (nor on CI), which is the point of
-`worker_base` being stdlib-only. The Hub is therefore reached through exactly
-two seams — `_hub_file_meta` and `repo_folder` — and both are monkeypatched.
+The Hub is reached through exactly two seams — `_hub_file_meta` and
+`repo_folder` — and both are monkeypatched.
+
+`worker_base` is stdlib-only, and its being so is NOT enforced by hf's absence
+from this environment — hf ships with the app (D402), so an accidental
+module-scope import of it would pass unnoticed here.
+`test_ai_worker_base.py::test_worker_base_imports_nothing_but_the_stdlib` is what
+enforces the rule, by reading the module's own imports out of its source.
 """
 import hashlib
 import http.server
@@ -34,6 +39,17 @@ import threading
 import types
 
 import pytest
+
+# worker_base.py:_segmented_fetch itself refuses to run without os.pwrite (see
+# its own comment there) and every test in this file drives _segmented_fetch
+# directly — there is no fallback path to fall back to here, only the
+# platform this module's whole subject does not run on. The fallback IS
+# tested, just not in this file.
+pytestmark = pytest.mark.skipif(
+    not hasattr(os, "pwrite"),
+    reason="_segmented_fetch requires os.pwrite (POSIX); Windows always takes "
+           "the plain snapshot_download fallback instead.",
+)
 
 BASE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

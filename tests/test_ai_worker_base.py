@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -85,6 +86,251 @@ def test_every_route_refuses_a_wrong_token(base):
             assert caught.value.code == 403, path
     finally:
         server.shutdown()
+
+
+def test_a_refused_post_does_not_desync_the_keep_alive_connection(base):
+    """The 403 path has to READ the body it is refusing.
+
+    This handler is HTTP/1.1, so the connection is kept alive and the NEXT
+    request is parsed off the same socket. Leave the refused request's body
+    unread and those bytes are consumed as that next request's request-line,
+    which is what this asserts. The same omission also made the eventual close
+    send an RST rather than a FIN on Windows, so the client got
+    ConnectionAbortedError ([WinError 10053]) instead of the 403 — that half is
+    not observable off-Windows, but it is the same missing read, and it flaked
+    this file on the runner.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        body = b'{"prompt": "x"}'
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            # (1) refused POST, WITH a body.
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"\r\n" + body)
+            # (2) a VALID request down the same connection.
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"\r\n")
+            s.settimeout(3.0)
+            data = b""
+            try:
+                while len(data) < 65536:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+            except (TimeoutError, socket.timeout):
+                pass
+    finally:
+        server.shutdown()
+
+    statuses = re.findall(rb"HTTP/1\.[01] (\d{3})", data)
+    # The refusal, then the second request UNDERSTOOD — not a 400 off the
+    # leftover body, and not a dropped connection.
+    assert statuses[:1] == [b"403"], data
+    assert b"200" in statuses[1:], data
+
+
+def _read_all(s, timeout=5.0):
+    s.settimeout(timeout)
+    data = b""
+    try:
+        while len(data) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    except (TimeoutError, socket.timeout):
+        pass
+    return data
+
+
+def test_an_oversized_preauth_body_is_refused_without_reading_it(base):
+    """The drain runs BEFORE auth on a length the caller chose, so it is
+    capped. Unbounded, this request — 100 MB announced, not one byte sent —
+    parks one of the ThreadingTCPServer's threads forever (`_Server` sets no
+    socket timeout), and enough of them stop the worker answering /health,
+    which is how the supervisor decides it is alive.
+
+    The refusal still goes out; the connection just ends with it, since those
+    unsent bytes would otherwise be read as the next request's request-line.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 100000000\r\n"
+                b"\r\n")
+            data = _read_all(s)
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+
+
+@pytest.mark.parametrize("framing", [
+    # The plain case: chunked, no Content-Length at all.
+    pytest.param(b"Transfer-Encoding: chunked\r\n", id="chunked"),
+    # Malformed-but-present, which a truthiness check on the header would read
+    # as absent and then drain zero bytes of.
+    pytest.param(b"Transfer-Encoding:\r\n", id="empty-transfer-encoding"),
+    # Both framings at once — the smuggling shape. Transfer-Encoding wins, so
+    # a Content-Length read would stop 4 bytes in and leave the rest queued.
+    pytest.param(b"Transfer-Encoding: chunked\r\nContent-Length: 4\r\n",
+                 id="transfer-encoding-and-content-length"),
+])
+def test_a_refused_body_this_cannot_frame_ends_the_connection(base, framing):
+    """A chunked body sends NO Content-Length, so "nothing to drain" is the
+    wrong reading of its absence.
+
+    BaseHTTPRequestHandler hands us the raw socket; it does not decode chunked
+    request bodies. So the chunk framing is still queued after the 403, and on
+    a kept-alive connection the next request-line read off that socket is the
+    chunk-size line — `2` — which answers the client's real request with a 400.
+    The drain cannot follow that framing, so it must not claim it did: the
+    refusal goes out with Connection: close and the client reconnects.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            # (1) refused POST. `hi` in one chunk, then the terminator.
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Type: application/json\r\n"
+                + framing +
+                b"\r\n"
+                b"2\r\nhi\r\n"
+                b"0\r\n\r\n")
+            # (2) a VALID request behind it, as a keep-alive client would send.
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"\r\n")
+            data = _read_all(s)
+
+        # ...and the worker is still serving: the close is this connection
+        # ending, not the handler thread wedged on a body it cannot read.
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"Connection: close\r\n"
+                b"\r\n")
+            again = _read_all(s)
+    finally:
+        server.shutdown()
+
+    statuses = re.findall(rb"HTTP/1\.[01] (\d{3})", data)
+    assert statuses[:1] == [b"403"], data
+    assert b"close" in data.lower(), data
+    # The bug, named: `2` read as the next request-line. That reply carries no
+    # status line of its own — a request-line this malformed leaves
+    # request_version unset, so BaseHTTPRequestHandler answers HTTP/0.9-style
+    # with the error page alone — which is why it has to be matched on text.
+    assert b"Bad request syntax" not in data, data
+    # And the request the client actually sent went unanswered: one response on
+    # this connection, not two.
+    assert len(statuses) == 1, data
+    assert b"200" in re.findall(rb"HTTP/1\.[01] (\d{3})", again), again
+
+
+def test_a_preauth_body_that_stops_early_does_not_park_the_thread(
+        base, monkeypatch):
+    """The other axis: a length UNDER the cap, so it is read — but the client
+    sends less than it promised and then goes quiet. Without a read timeout
+    that wait is unbounded too."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    monkeypatch.setattr(base, "DRAIN_TIMEOUT_S", 0.3)
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 4096\r\n"
+                b"\r\n" + b"x" * 10)     # promised 4096, sent 10
+            started = time.monotonic()
+            data = _read_all(s)
+            waited = time.monotonic() - started
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+    # Bounded by the drain timeout, not by the client's silence.
+    assert waited < 3.0, waited
+
+
+def test_an_unparseable_preauth_content_length_is_not_guessed_at(base):
+    """A length that is not a number leaves no way to know where the body
+    stops, so the drain cannot claim it read one. Refuse and close rather than
+    fall through to a zero-length read and keep the connection."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: twelve\r\n"
+                b"\r\n" + b"x" * 12)
+            data = _read_all(s)
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+
+
+def test_a_preauth_body_cut_short_by_a_close_is_not_waited_out(base, monkeypatch):
+    """The client half-closes instead of going quiet, so the read hits EOF
+    rather than the timeout. That is the same verdict — the promised bytes are
+    not there — and it must not cost the full DRAIN_TIMEOUT_S to reach, which
+    is what the generous timeout here would expose."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    monkeypatch.setattr(base, "DRAIN_TIMEOUT_S", 30.0)
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 4096\r\n"
+                b"\r\n" + b"x" * 10)   # promised 4096, sent 10...
+            s.shutdown(socket.SHUT_WR)   # ...and there will be no more
+            started = time.monotonic()
+            data = _read_all(s)
+            waited = time.monotonic() - started
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+    # EOF, not the 30s timeout.
+    assert waited < 5.0, waited
 
 
 def test_a_missing_token_is_refused_too(base):
@@ -1754,3 +2000,32 @@ def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
 
     assert "email.mime" in error
     assert "STANDARD LIBRARY" in error
+
+
+def test_worker_base_imports_nothing_but_the_stdlib():
+    """`worker_base` is stdlib-only at module scope, and this is what enforces it.
+
+    Absence does not enforce it: `huggingface_hub` ships with the app (D402), so
+    an accidental module-scope import of it would resolve here and in CI and the
+    rule would rot silently. And the rule has not changed — every runner's
+    interpreter imports this module, so anything imported here becomes a
+    dependency of every backend forever, and the contract has to stay importable
+    by tests that cannot install mlx or torch.
+
+    Read out of the SOURCE rather than by importing under a blocked meta-path
+    hook: the question is what the file declares at module scope, and the lazy
+    `from huggingface_hub import ...` calls inside functions are correct and must
+    keep working.
+    """
+    import ast
+
+    tree = ast.parse(open(BASE_PATH, encoding="utf-8").read())
+    imported = set()
+    for node in tree.body:  # module scope ONLY — function-level imports are the design
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported, "the file surely imports something — did BASE_PATH stop resolving?"
+    outside = sorted(name for name in imported if name not in sys.stdlib_module_names)
+    assert outside == [], f"worker_base gained a non-stdlib module-scope import: {outside}"

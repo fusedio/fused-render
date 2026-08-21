@@ -259,7 +259,24 @@ def test_walk_stream_same_entries_as_plain(tmp_path):
     plain = client.get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     lines = _stream_lines(client, str(tmp_path))
     streamed = [e for line in lines if "entries" in line for e in line["entries"]]
-    assert streamed == plain["entries"]  # same content, same (BFS) order
+    # Same content, same (BFS) order, and — mtime aside — same values. These are
+    # two INDEPENDENT requests (that is the point: confirming the streamed and
+    # plain responses agree), each running its OWN full call to _walk_bfs a
+    # moment apart; both go through the exact same generator, so there is no
+    # code path here that could disagree about what a directory's mtime is.
+    # What CAN legitimately differ by a sub-millisecond amount between two live
+    # re-stats of the same just-created directory is the filesystem's own
+    # metadata write-back settling — on a real Windows/NTFS runner a `sub` dir
+    # whose creation is still being committed when the first request's
+    # FindNextFile-backed DirEntry.stat() captures it can read back a mtime a
+    # fraction of a millisecond earlier than the second request's, moments
+    # later, does. That is filesystem timing noise between two reads, not a
+    # disagreement to pin exactly.
+    assert [{**e, "mtime": None} for e in streamed] \
+        == [{**e, "mtime": None} for e in plain["entries"]]
+    assert len(streamed) == len(plain["entries"])
+    for s, p in zip(streamed, plain["entries"]):
+        assert abs(s["mtime"] - p["mtime"]) < 0.01
 
 
 def test_walk_stream_truncation(tmp_path, monkeypatch):

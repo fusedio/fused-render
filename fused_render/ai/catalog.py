@@ -309,7 +309,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "of the pick above it.",
         },
     ],
-    # llama.cpp / GGUF (SPEC AI-11, D402) — opt-in, and the only runner here
+    # llama.cpp / GGUF (SPEC AI-11, D404) — opt-in, and the only runner here
     # whose ids are NOT Hub repo ids: a GGUF repo publishes two dozen
     # quantizations of one model (`unsloth/Qwen3.5-9B-GGUF` alone sums to
     # 147.81GB across every file it holds), so the id is the curated key

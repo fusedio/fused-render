@@ -182,7 +182,23 @@ def test_compact_backfills_depth_onto_a_pre_depth_index(tmp_path):
     assert sorted(pq.read_table(cfg.dirs_parquet).column("depth").to_pylist()) == [1, 1]
 
 
-@pytest.mark.parametrize("awkward", ["Dave's stuff", "brack[et]s", "star*dir"])
+@pytest.mark.parametrize("awkward", [
+    "Dave's stuff",
+    "brack[et]s",
+    pytest.param(
+        "star*dir",
+        marks=pytest.mark.skipif(
+            os.name == "nt",
+            reason="`*` is one of NTFS's categorically-illegal filename "
+                   "characters (< > : \" / \\ | ? *) — `home.mkdir()` below "
+                   "cannot create this directory on Windows at all, so there "
+                   "is no code fix and nothing to skip AROUND: the SQL/glob "
+                   "escaping this test exists to prove (store.parquet_src, "
+                   "shard_files) is still exercised end to end by the other "
+                   "two params, whose characters (apostrophe, brackets) are "
+                   "legal on NTFS."),
+    ),
+])
 def test_compact_survives_a_store_path_with_sql_or_glob_metachars(tmp_path, awkward):
     """The store dir is the USER's path (FUSED_RENDER_HOME under their home),
     so it can hold anything a filename can. An apostrophe closed the SQL
