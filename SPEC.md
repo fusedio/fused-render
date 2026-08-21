@@ -6018,6 +6018,65 @@ an AI Models page that could say what was on disk but not what was *running*.
   step reads the local cache or a module constant. An explicitly passed
   capability is validated and used unchanged, so this governs only the omitted
   case.
+- **AI-5l** **A SUGGESTED model may be fetched from OUR OWN distribution, and any
+  doubt goes to the Hub** (D406). CloudFront's access logs are then the answer to
+  "did this user download a model", with no telemetry in the app at all — one
+  `manifest.json` request per download attempt, made before a single byte moves,
+  and logged even on a cache hit. Two objects, not a protocol:
+  `/models/<org>/<name>/manifest.json` (mutable, short TTL — the commit, and every
+  file's name, size, etag and sha256) and `/models/<org>/<name>/<commit>/<etag>`
+  (immutable, one per distinct etag, range-fetched by the existing chunk queue).
+  Deliberately NOT `HF_ENDPOINT`, which is a protocol switch: the mirror would owe
+  `/api/models/…`, the `x-linked-etag`/`x-linked-size`/`x-repo-commit` resolve
+  headers and Xet's `xet-read-token`, none of which our two shapes have. **What
+  lands on disk is hf's cache layout, byte for byte** — blob under its etag, a
+  relative symlink from `snapshots/<commit>/`, `refs/main`, and this app's own
+  `.fused-fetch-<commit>.json` record — which is the whole design: the loaders,
+  the Local tab's inventory, disk usage, deletion and the AI-5k fast path all keep
+  working untouched, because what they read is a normal hf cache entry.
+  **The branch lives in `download_snapshot` alone**, below all nine runner call
+  sites, so no runner changed and none can forget it; it is skipped under
+  `**kwargs` for AI-5k's reason, that an argument the function does not know about
+  changes what a download IS. **Every failure degrades to today's Hub path** — a
+  404, a 5xx, a host that does not answer, a body that is not JSON, an unknown
+  schema version, a manifest whose fields do not hold up, a mid-download drop, a
+  hash mismatch — and says which path gave up on stderr. A mirror that is down
+  costs a slower download, never a failed one, and only `Cancelled` escapes (AI-5e:
+  a ✕ must never be answered by starting a download somewhere else). **The
+  manifest is a trust boundary and is validated field by field**, because the
+  failure that matters is not a 500 but a manifest that is plausible and wrong: a
+  commit that is not 40 lower-case hex names no snapshot directory, an etag that
+  is not hex can name a path inside `blobs/`, a file name containing `..` writes
+  outside the snapshot, and a size or digest that lies puts bad bytes under a real
+  etag. Rejection reads as NO MIRROR rather than as an error. **Blobs are hashed
+  on the mirror path and not on the Hub path**, and the asymmetry is the point:
+  here we are the origin, so nobody else would notice a bad byte we shipped, and a
+  wrong blob under a real etag is permanent — hf's own loaders serve it out of the
+  cache forever and no later download refetches it. One read of the finished part
+  file, before `os.replace` publishes anything, so a mismatch leaves nothing in
+  the cache and takes the repo to the Hub; the part file and sidecar go too, or the
+  next run resumes into bytes already known to be wrong. **The permission is
+  PER-MODEL and arrives from the supervisor**, which sets `FUSED_MODEL_MIRROR_OK`
+  to the repo id only when `catalog.all_suggested_ids()` contains it, at BOTH spawn
+  sites (a serving worker and a download-only worker), and strips an inherited one
+  rather than passing it on. That is a privacy choice rather than an optimisation:
+  probing for an arbitrary id would tell us which models a user downloads, and
+  gating it to the curated list is what means we never learn that. `catalog` is
+  also unreachable from a runner's interpreter, which imports `worker_base` and
+  `mirror` as bare modules with no `fused_render` package on `sys.path` — so both
+  are **stdlib-only**, enforced by reading their own source. **The manifest is
+  GENERATED from a real hf cache directory** (`scripts/build_model_mirror.py`:
+  commit from `refs/main`, etags from the blob filenames, sizes and sha256 from the
+  blobs), never transcribed — that is the one part of this that would otherwise
+  fail silently and permanently — and `tests/test_build_model_mirror.py` round-trips
+  the generated manifest through the client, which is what keeps the two halves
+  honest. Explicitly out of scope: `FUSED_MODEL_MIRROR` is **unset on every shipped
+  build**, so this changes nothing until an operator points it somewhere;
+  component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
+  tens of megabytes and not the "downloaded a model" signal; and the mirror pins a
+  commit, so a suggested model updated upstream keeps installing the pinned one
+  until the build script reruns — reproducibility, at the cost of lagging a
+  fix.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was

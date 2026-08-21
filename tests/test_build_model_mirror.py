@@ -1,0 +1,272 @@
+"""The build script and the client, checked against each other (SPEC AI-5l).
+
+The mirror has two halves written months apart in different languages of thought:
+a script that reads an hf cache directory and emits a manifest, and a stdlib
+client in a runner venv that reads that manifest and reproduces the cache
+directory. Nothing else keeps them honest — a transcribed etag, a commit read
+from the wrong place, a size measured on the symlink rather than the blob would
+all produce a manifest that looks right, downloads bytes, and files them under a
+name hf never uses, so every later load misses the cache while the download
+reports success.
+
+So the test that matters here is a ROUND TRIP: build a manifest from a fixture
+cache directory, serve it and its blobs over the same local HTTP harness the
+other mirror tests use, download it through `worker_base.download_snapshot`, and
+compare what lands against what we started from. Nothing reaches huggingface.co,
+S3 or CloudFront.
+"""
+import hashlib
+import importlib.util
+import json
+import os
+
+import pytest
+from test_ai_hub_fetch import _fresh_base, _start_server
+from test_ai_model_mirror import _fresh_mirror
+
+SCRIPT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "build_model_mirror.py",
+)
+
+COMMIT = "a1b2c3d4" * 5
+
+
+def _load_script():
+    spec = importlib.util.spec_from_file_location("build_model_mirror", SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture()
+def script():
+    return _load_script()
+
+
+def _cache(tmp_path, contents, repo_id="org/m", commit=COMMIT, ref="main"):
+    """An hf cache directory, built the way hf builds one.
+
+    Blobs named by their etag, snapshot entries as RELATIVE symlinks into
+    `blobs/`, and `refs/<ref>` naming the commit — because "the layout hf
+    produced" is the whole input to the script, and a fixture that took a
+    shortcut would test a layout nothing produces.
+    """
+    cache = tmp_path / "hub"
+    folder = cache / ("models--" + repo_id.replace("/", "--"))
+    (folder / "blobs").mkdir(parents=True)
+    (folder / "refs").mkdir(parents=True)
+    (folder / "refs" / ref).write_text(commit)
+    snapshot = folder / "snapshots" / commit
+    for name, body in contents.items():
+        etag = hashlib.sha256(body).hexdigest()
+        (folder / "blobs" / etag).write_bytes(body)
+        entry = snapshot / name
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(os.path.relpath(folder / "blobs" / etag, entry.parent), entry)
+    return str(cache)
+
+
+CONTENTS = {
+    "config.json": b'{"model_type": "test"}',
+    "model.safetensors": hashlib.sha256(b"weights").digest() * 6250,  # 200_000 B
+    "tokenizer/vocab.json": b'{"a": 1}',
+}
+
+
+# -- what the script reads out of a cache ----------------------------------------
+
+
+def test_the_manifest_is_read_out_of_the_cache_not_transcribed(script, tmp_path):
+    """Commit from `refs/main`, etags from the blob FILENAMES, sizes and digests
+    from the blobs. All three correct by construction, which is the point."""
+    cache = _cache(tmp_path, CONTENTS)
+
+    manifest = script.read_manifest(cache, "org/m")
+
+    assert manifest["schema"] == 1
+    assert manifest["repo"] == "org/m"
+    assert manifest["commit"] == COMMIT
+    assert [entry["name"] for entry in manifest["files"]] == [
+        "config.json", "model.safetensors", "tokenizer/vocab.json"]
+    for entry in manifest["files"]:
+        body = CONTENTS[entry["name"]]
+        assert entry["size"] == len(body)
+        assert entry["sha256"] == hashlib.sha256(body).hexdigest()
+        # The etag is the blob's own filename, which is what makes the layout the
+        # client writes the layout hf reads.
+        assert entry["etag"] == hashlib.sha256(body).hexdigest()
+
+
+def test_the_commit_comes_from_the_ref_not_from_listing_snapshots(script, tmp_path):
+    """A cache holding two revisions has two snapshot directories, and picking
+    one by listing order publishes a commit nobody asked for."""
+    cache = _cache(tmp_path, CONTENTS)
+    stale = os.path.join(cache, "models--org--m", "snapshots", "b" * 40)
+    os.makedirs(stale)
+
+    assert script.read_manifest(cache, "org/m")["commit"] == COMMIT
+
+
+def test_two_names_for_one_blob_are_one_upload_and_two_entries(script, tmp_path):
+    """A repo really does publish the same bytes twice. One etag is one blob, so
+    it is uploaded once and the manifest names it twice — which is exactly what
+    the client turns back into one download and two links."""
+    body = b"shared bytes" * 100
+    cache = _cache(tmp_path, {"a.bin": body, "b.bin": body})
+
+    manifest = script.read_manifest(cache, "org/m")
+    uploads = script.plan(cache, manifest)
+
+    assert len(manifest["files"]) == 2
+    assert len({entry["etag"] for entry in manifest["files"]}) == 1
+    blobs = [item for item in uploads if item["immutable"]]
+    assert len(blobs) == 1, [item["key"] for item in uploads]
+
+
+def test_the_manifest_is_uploaded_last(script, tmp_path):
+    """Published first, it would advertise blobs that are not there yet — a
+    manifest promising bytes the mirror does not hold, which a client can only
+    discover mid-download."""
+    cache = _cache(tmp_path, CONTENTS)
+    uploads = script.plan(cache, script.read_manifest(cache, "org/m"))
+
+    assert uploads[-1]["key"] == "models/org/m/manifest.json"
+    assert not any(item["key"].endswith("manifest.json") for item in uploads[:-1])
+
+
+def test_a_snapshot_that_is_not_a_cache_entry_is_refused(script, tmp_path):
+    """A `local_dir` download is real files, not links into `blobs/`, so there
+    are no etags to read. Refused loudly rather than published with a filename
+    where an etag belongs."""
+    cache = _cache(tmp_path, CONTENTS)
+    entry = os.path.join(cache, "models--org--m", "snapshots", COMMIT, "config.json")
+    os.unlink(entry)
+    with open(entry, "wb") as handle:
+        handle.write(b"{}")
+
+    with pytest.raises(ValueError, match="not an"):
+        script.read_manifest(cache, "org/m")
+
+
+def test_a_repo_the_cache_does_not_hold_is_skipped_not_fatal(script, tmp_path,
+                                                             capsys):
+    """One model missing from a machine's cache must not stop the other twenty
+    from being published."""
+    cache = _cache(tmp_path, CONTENTS)
+
+    code = script.main(["--cache", cache, "--model", "org/m",
+                        "--model", "org/never-downloaded"])
+
+    out = capsys.readouterr().out
+    assert code == 0, "a partial run is a partial run, not a failure"
+    assert "org/never-downloaded: SKIPPED" in out
+    assert "would upload models/org/m/manifest.json" in out
+
+
+def test_nothing_is_uploaded_without_being_asked(script, tmp_path, monkeypatch,
+                                                 capsys):
+    """Dry run is the default, because the normal use of this script is to see
+    what a release WOULD publish."""
+    cache = _cache(tmp_path, CONTENTS)
+
+    def no(*args, **kwargs):
+        raise AssertionError("a dry run shelled out to something")
+
+    monkeypatch.setattr(script.subprocess, "run", no)
+    monkeypatch.setattr(script.shutil, "which", no)
+
+    assert script.main(["--cache", cache, "--model", "org/m"]) == 0
+    assert "would upload" in capsys.readouterr().out
+
+
+def test_an_upload_skips_a_blob_whose_key_is_already_there(script, tmp_path,
+                                                           monkeypatch):
+    """A blob's key names the commit AND the etag, so a key that exists holds
+    exactly the bytes it would be given. Existence is the whole check — a
+    re-read of a 4.6GB shard to prove it is not."""
+    cache = _cache(tmp_path, CONTENTS)
+    manifest = script.read_manifest(cache, "org/m")
+    uploads = script.plan(cache, manifest)
+    monkeypatch.setattr(script.shutil, "which", lambda name: "/usr/bin/aws")
+    calls = []
+
+    class _Done:
+        returncode = 0
+        stdout = b"2026-08-21 12:00:00  12 object\n"
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return _Done()
+
+    written = script.upload(uploads, "s3://bucket/prefix", manifest, run=run)
+
+    assert written == ["models/org/m/manifest.json"], written
+    copies = [args for args in calls if args[:3] == ["aws", "s3", "cp"]]
+    assert len(copies) == 1, copies
+    assert copies[0][4].endswith("/models/org/m/manifest.json")
+
+
+# -- the round trip, which is what keeps the two halves honest -------------------
+
+
+def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
+        script, mirror_and_base, tmp_path, monkeypatch):
+    """Build it here, download it there, and compare the two cache directories.
+
+    This is the only test in the feature that exercises BOTH halves. Each on its
+    own can be self-consistently wrong: a script that reports the symlink's size
+    and a client that trusts it would agree perfectly and produce a truncated
+    blob under a real etag.
+    """
+    mirror, base = mirror_and_base
+    source = _cache(tmp_path, CONTENTS)
+    manifest = script.read_manifest(source, "org/m")
+
+    routes = {"/models/org/m/manifest.json": json.dumps(manifest).encode()}
+    for entry in manifest["files"]:
+        routes[f"/models/org/m/{COMMIT}/{entry['etag']}"] = CONTENTS[entry["name"]]
+    _url, state = _start_server(b"", routes=routes)
+
+    # The client accepts what the script wrote, field for field…
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"])
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
+    read = mirror.manifest("org/m")
+    assert read is not None, "the client rejected a manifest the script wrote"
+    assert read["commit"] == manifest["commit"]
+    assert read["files"] == manifest["files"]
+
+    # …and downloading it reproduces the cache directory it was built from.
+    landed = str(tmp_path / "downloaded" / "models--org--m")
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": landed)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "SEGMENT_MIN_BYTES", 20_000)
+    monkeypatch.setattr(base, "CHUNK_BYTES", 50_000)
+
+    snapshot = base.download_snapshot("org/m")
+
+    assert snapshot == os.path.join(landed, "snapshots", COMMIT)
+    for name, body in CONTENTS.items():
+        assert open(os.path.join(snapshot, name), "rb").read() == body
+    # The blob NAMES are the assertion that matters: hf's loaders find a file by
+    # its etag, so a download that got the bytes right and the names wrong is
+    # cache-invisible and re-downloads forever.
+    origin = os.path.join(source, "models--org--m", "blobs")
+    assert sorted(os.listdir(os.path.join(landed, "blobs"))) == sorted(
+        os.listdir(origin))
+    assert open(os.path.join(landed, "refs", "main")).read() == COMMIT
+
+
+def test_the_scripts_schema_is_the_one_the_client_understands(script,
+                                                             mirror_and_base):
+    """Two constants, two files, one meaning. A bump on one side alone is a
+    manifest every client reads as "no mirror", which is a silent
+    un-deployment."""
+    mirror, _base = mirror_and_base
+    assert script.SCHEMA == mirror.SCHEMA
+
+
+@pytest.fixture()
+def mirror_and_base():
+    return _fresh_mirror(), _fresh_base()
