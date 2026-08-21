@@ -452,7 +452,18 @@ def _app_report(folder: str) -> dict:
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or "").strip()
-        if not name:
+        # THE WRITER'S RULE, ENFORCED AT THE READER. `mcp/manifest.py` refuses a
+        # tool name that is not a Python identifier when IT writes a manifest —
+        # but this module is built to read hand-written ones too, and every name
+        # it hands back ends up inside `mcp__<server>__<name>` in `run.py`'s
+        # `--allowed-tools`, which the CLI splits on commas. A folder declaring
+        # `name = "search,Bash"` would therefore pre-approve `Bash` for a
+        # detached headless session. The folders come from the file index and
+        # `registered_apps.json`, i.e. not necessarily ones this user authored,
+        # so "the manifest is trusted" is not an assumption available here.
+        # Skipped rather than refused: one bad table must not hide the folder's
+        # other, valid tools.
+        if not name.isidentifier():
             continue
         rel = str(entry.get("file") or "").strip()
         entrypoint = str(entry.get("entrypoint") or _DEFAULT_ENTRYPOINT).strip()

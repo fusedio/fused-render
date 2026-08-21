@@ -108,6 +108,10 @@ _OUTPUT_CAP = 8000
 # is. Generous enough that a whole ordinary run fits.
 _LOG_CAP = 8 * 1024 * 1024
 
+# Bytes read from the END of an oversized log, purely to find the `result` row
+# that says the run finished. Small: it is one line, and it is the last one.
+_RESULT_TAIL = 256 * 1024
+
 # Caps on the compiled plan. A prompt is a finite thing and a canvas is not a
 # programming language: a graph past this is not a workflow, and stuffing it into
 # one `-p` argument would blow past what the session can act on reliably.
@@ -360,9 +364,18 @@ def _compile(doc: dict):
     if catalog is None:
         return None, refusal
 
+    # IDS ARE NORMALIZED TO STRINGS ONCE, HERE, before anything is derived from
+    # them. The document is hand-editable and this module's own refusals tell
+    # people to edit it by hand, so `"id": 3` is reachable — and a node id that
+    # is an int while `by_id` is keyed by `str(id)` does not raise, it silently
+    # drops every step from the compiled plan (and from the cycle check, which
+    # reads the raw edge endpoints). The run would then spawn with an empty
+    # STEPS list and report ok. Normalizing on COPIES, so nothing is written
+    # back into the caller's document.
     raw_nodes = doc.get("nodes")
     raw_nodes = raw_nodes if isinstance(raw_nodes, list) else []
-    nodes = [n for n in raw_nodes if isinstance(n, dict) and n.get("id")]
+    nodes = [dict(n, id=str(n["id"])) for n in raw_nodes
+             if isinstance(n, dict) and n.get("id")]
     if not nodes:
         return None, _refuse(
             "empty", "This workflow has no steps yet — add a tool from the palette.")
@@ -372,8 +385,9 @@ def _compile(doc: dict):
             "This workflow has %d steps; %d is the most one run can describe."
             % (len(nodes), _MAX_NODES))
     raw_edges = doc.get("edges")
-    edges = [e for e in (raw_edges if isinstance(raw_edges, list) else [])
-             if isinstance(e, dict)]
+    edges = [dict(e, **{"from": str(e.get("from")), "to": str(e.get("to"))})
+             for e in (raw_edges if isinstance(raw_edges, list) else [])
+             if isinstance(e, dict) and e.get("from") and e.get("to")]
     if len(edges) > _MAX_EDGES:
         return None, _refuse(
             "too_big", "This workflow has %d connections; %d is the maximum."
@@ -399,6 +413,16 @@ def _compile(doc: dict):
             key = (os.path.normcase(os.path.realpath(folder)), tool_name)
         except OSError:
             key = (folder, tool_name)
+        # Belt and braces over `discover.py`'s own check. This name becomes
+        # `mcp__<server>__<name>` in a comma-separated `--allowed-tools`, and a
+        # name carrying a comma would pre-approve a second, unrelated tool for a
+        # detached session. The reader already refuses one; a second check here
+        # is cheap and this is the line where the consequence actually lands.
+        if not tool_name.isidentifier():
+            return None, _refuse(
+                "unresolved",
+                "Step %r names the tool %r, which is not a valid tool name."
+                % (node.get("label") or node["id"], tool_name))
         tool = catalog["tools"].get(key)
         if tool is None:
             return None, _refuse(
@@ -464,9 +488,21 @@ def _compile(doc: dict):
             and str(e.get("condition") or "").strip()
         ]
 
+    ordered = [by_id[i] for i in order if i in by_id]
+    # A plan with no steps must never reach `_start`: it would write a prompt
+    # with an empty STEPS list and an empty `--allowed-tools`, spawn claude
+    # anyway, and answer ok — a run the canvas then draws as touching nothing.
+    # Unreachable now that ids are normalized above, which is exactly why it is
+    # worth asserting: this is the invariant that normalization exists for.
+    if not ordered:
+        return None, _refuse(
+            "empty",
+            "None of this workflow's steps could be placed in an order — the "
+            "document's node ids and edge endpoints do not line up.")
+
     return {
         "name": str(doc.get("name") or "").strip(),
-        "steps": [by_id[i] for i in order if i in by_id],
+        "steps": ordered,
         "servers": {servers[f]: f for f in folders},
         "fusedCli": catalog["fusedCli"],
     }, None
@@ -784,6 +820,47 @@ def _observed(text: str) -> dict:
             "sample": _cap(stripped, _SAMPLE_CAP)}
 
 
+def _read_log(run_dir: str) -> tuple:
+    """`(text, truncated)` for the run's stream-json log.
+
+    THE HEAD, DELIBERATELY, not the tail — and this is the opposite of what a
+    log reader usually wants. The per-node attribution joins a `tool_result` to
+    the `tool_use` that produced it, and the `tool_use` always comes FIRST, so a
+    tail read would hand back results with no calls to attach them to and report
+    every node as never having started.
+
+    The cost is that the `result` row, which is the last line in the file, falls
+    off the end of an oversized log — and reading that as "the run never
+    reported a result" would show a run that fully succeeded as a crashed one.
+    So when the file is over the cap, the LAST `_RESULT_TAIL` bytes are read as
+    well, purely to find that row. Two bounded reads rather than one unbounded
+    one: `out.jsonl` embeds whole tool payloads (`_OUTPUT_CAP`'s note about a
+    megabyte of mail bodies applies to what goes IN as much as what comes out),
+    so an uncapped read is not something a poll on a timer can do.
+
+    `truncated` travels with the text because the caller's verdict depends on
+    it: a missing `result` row means something different when the reason might
+    simply be that the log outgrew what was read.
+    """
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_LOG_CAP)
+            if size <= len(head.encode("utf-8", "replace")):
+                return head, False
+            # A byte seek into a text handle is not allowed past a plain
+            # `tell()` offset, so the tail is read as bytes and decoded here.
+            # The first line of the tail is almost certainly a partial one; the
+            # parse loop already skips unparseable lines, so it costs nothing.
+            with open(path, "rb") as raw:
+                raw.seek(max(0, size - _RESULT_TAIL))
+                tail = raw.read().decode("utf-8", "replace")
+            return head + "\n" + tail, True
+    except OSError:
+        return "", False
+
+
 def _alive(run_dir: str) -> bool:
     """Whether the run's process is still around."""
     try:
@@ -810,12 +887,13 @@ def _poll(run_id: str) -> dict:
                        "observedOutput": None, "error": ""}
              for s in steps}
 
-    try:
-        with open(os.path.join(run_dir, "out.jsonl"), "r", encoding="utf-8",
-                  errors="replace") as fh:
-            log = fh.read(_LOG_CAP)
-    except OSError:
-        log = ""
+    # Liveness is sampled BEFORE the log is read, not after. A run that writes
+    # its `result` row and exits inside the window between the two reads as
+    # "gone with no result", i.e. as a crash — and the honest ordering is the
+    # one where "still alive" can only be stale in the safe direction (another
+    # poll follows in a second).
+    alive = _alive(run_dir)
+    log, log_truncated = _read_log(run_dir)
 
     # tool_use id -> node id. The join to the result is by `tool_use_id` and
     # never by position: tools can answer out of call order, and a positional
@@ -882,7 +960,7 @@ def _poll(run_id: str) -> dict:
                     node["output"] = _cap(text, _OUTPUT_CAP)
                     node["observedOutput"] = _observed(text)
 
-    if not done and not _alive(run_dir):
+    if not done and not alive:
         # The process is gone with no `result` row: it died rather than
         # finished. Said as its own sentence, because "done with nothing to
         # show" and "crashed" look identical on the readout otherwise.
@@ -894,7 +972,14 @@ def _poll(run_id: str) -> dict:
                     stderr = fh.read(_OUTPUT_CAP).strip()
             except OSError:
                 stderr = ""
-            error = stderr or "the run ended without reporting a result"
+            # A log too big to read fully is a REASON the result row is missing,
+            # so it is said instead of the crash sentence. Claiming a run failed
+            # because this reader could not see the end of its log is the one
+            # answer here that is actively misleading.
+            error = stderr or ("the run's log was too large to read in full, so "
+                               "its outcome could not be confirmed"
+                               if log_truncated
+                               else "the run ended without reporting a result")
     if done:
         # A node left `running` when the run is over never got its result.
         for node in state.values():

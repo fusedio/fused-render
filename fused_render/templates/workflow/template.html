@@ -418,6 +418,14 @@ let runDone = false;
 // user then has to Save.
 let runLearned = false;
 let polling = null;
+// WHICH POLL LOOP IS THE LIVE ONE. Clearing the timer is not enough to stop a
+// loop: a tick already awaiting `runPython` resumes afterwards, overwrites the
+// status line, and re-arms itself. Start a new run before that lands and there
+// are two chains both re-arming through one `polling` handle, so the next Stop
+// can only ever clear one of them and the survivor polls forever. A generation
+// counter is the whole guard — `run` and `cancel` bump it, and a tick that
+// comes back holding a stale one drops out silently.
+let pollGen = 0;
 let busy = false;
 
 // The canvas transform. Plain numbers, applied to one element.
@@ -529,7 +537,14 @@ async function loadDocument() {
       () => guard(load));
     return false;
   }
+  // EVERY KEY THIS EDITOR DOES NOT OWN IS PRESERVED. `.workflow.json` is a
+  // plain file the user may hand-edit and other tooling may share, so
+  // re-serializing only the four keys understood here would silently delete a
+  // `description`, a `$schema`, or somebody's annotations on the first Save.
+  // Same rule as `mcp/manifest.py`'s write, which replaces the `[[tool]]` array
+  // and nothing else; the spread goes FIRST so the owned keys below win.
   doc = {
+    ...parsed,
     version: parsed.version || 1,
     name: typeof parsed.name === "string" ? parsed.name : "",
     nodes: Array.isArray(parsed.nodes) ? parsed.nodes.filter((n) => n && n.id) : [],
@@ -1111,9 +1126,38 @@ function onNodePointerDown(event, node) {
   select(node.id);
   const start = stagePoint(event);
   drag = { node: node, dx: start.x - (node.x || 0), dy: start.y - (node.y || 0), moved: false };
-  event.target.closest(".node").classList.add("dragging");
-  event.target.setPointerCapture && event.target.setPointerCapture(event.pointerId);
   renderAll();
+  // CAPTURE ON `stage`, NOT ON THE NODE. `renderAll()` above rebuilds the node
+  // list from scratch, which detaches whatever element the pointer was captured
+  // on — and removing a capture element releases the capture implicitly. The
+  // drag then only tracked while the pointer stayed inside `#stage`: moving
+  // toward the inspector, the palette or off the window stopped the node dead
+  // and committed wherever it was when the pointer left. `stage` survives every
+  // re-render, so it is the only element here that can hold a capture for the
+  // length of a gesture. Set AFTER the paint for the same reason.
+  captureOn(event.pointerId);
+  const div = nodesEl.querySelector('[data-id="' + CSS.escape(node.id) + '"]');
+  if (div) div.classList.add("dragging");
+}
+
+// One place owns the pointer capture, because one element does. Guarded: a
+// synthetic event (a test driver, an assistive tool) may carry a pointerId no
+// capture was ever opened for, and `setPointerCapture` throws on one.
+let captured = null;
+
+function captureOn(pointerId) {
+  try {
+    stage.setPointerCapture(pointerId);
+    captured = pointerId;
+  } catch (err) {
+    captured = null;
+  }
+}
+
+function releaseCapture() {
+  if (captured === null) return;
+  try { stage.releasePointerCapture(captured); } catch (err) { /* already gone */ }
+  captured = null;
 }
 
 stage.addEventListener("pointermove", (event) => {
@@ -1159,12 +1203,16 @@ stage.addEventListener("pointerdown", (event) => {
   if (selected) { select(""); renderAll(); }
   pan = { x0: view.x, y0: view.y, cx: event.clientX, cy: event.clientY };
   stage.classList.add("panning");
+  // A pan needs the capture as much as a node drag does — without it the
+  // gesture dies the moment the pointer crosses into a side panel.
+  captureOn(event.pointerId);
 });
 
 window.addEventListener("pointerup", () => {
   endDrag();
   pan = null;
   stage.classList.remove("panning");
+  releaseCapture();
 });
 
 stage.addEventListener("wheel", (event) => {
@@ -1275,6 +1323,11 @@ async function run() {
   runNodes = {};
   runDone = false;
   runLearned = false;
+  // Retire any loop still in flight from a previous run before starting this
+  // one's — the timer AND the generation, since an awaiting tick has no timer
+  // to clear.
+  pollGen += 1;
+  if (polling) clearTimeout(polling);
   updateButtons();
   poll();
 }
@@ -1286,6 +1339,7 @@ async function run() {
 // try/catch and its own re-arm.
 async function poll() {
   if (!runId) return;
+  const gen = pollGen;
   let out;
   try {
     // `key: null` opts out of the stale-request cancellation runPython applies
@@ -1297,10 +1351,15 @@ async function poll() {
     // One failed tick is not a failed run — the executor is a subprocess and
     // can lose a race. Keep polling and say so; the run itself is detached and
     // carries on regardless of whether this page can see it.
+    if (gen !== pollGen) return;
     say("Lost contact with the run (" + (err.message || err) + ") — retrying…", true);
     polling = setTimeout(poll, 1500);
     return;
   }
+  // The await is over; anything that happened while it ran wins. A Stop or a
+  // fresh Run bumped the generation, and this tick's answer describes a run
+  // nobody is watching any more.
+  if (gen !== pollGen || !runId || !doc) return;
   if (!out.ok) {
     say(out.message, true);
     runId = "";
@@ -1347,6 +1406,7 @@ async function cancel() {
   const id = runId;
   runId = "";
   runDone = true;
+  pollGen += 1;
   if (polling) clearTimeout(polling);
   updateButtons();
   const out = await fused.runPython("./run.py", { action: "cancel", runId: id });
