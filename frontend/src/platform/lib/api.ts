@@ -2582,6 +2582,11 @@ export interface AiCatalogModel {
    *  cached entries and on models nobody has measured; the consumer keeps the
    *  server's default then. */
   defaults?: { steps?: number } | null;
+  /** Will this model sit comfortably on THIS machine — the server's judgement
+   *  over the size and the machine's RAM ("easy" | "tight" | "no"), or null
+   *  when either half is unknown. A judgement, not a measurement; the page
+   *  words it as one. */
+  fit?: "easy" | "tight" | "no" | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;

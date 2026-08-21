@@ -131,6 +131,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The fit verdict rides the size figure: quiet colour, no chip chrome — it is
+ * metadata that answers "will this melt my laptop", not a state light. */
+.pg-fit.easy {
+  color: var(--success-soft);
+}
+
+.pg-fit.tight {
+  color: var(--warning-soft);
+}
+
+.pg-fit.no {
+  color: var(--error);
+}
+
 .pg-dot {
   flex: none;
   width: 7px;

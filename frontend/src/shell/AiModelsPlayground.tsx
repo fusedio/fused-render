@@ -245,7 +245,14 @@ export default function AiModelsPlayground() {
         : selected.model.downloaded
           ? "Downloaded — loads on first use."
           : selected.model.size_gb != null
-            ? `Not downloaded — ${selected.model.size_gb} GB to fetch.`
+            ? `Not downloaded — ${selected.model.size_gb} GB to fetch.` +
+              // The fit verdict, spelled out where the Download decision is
+              // being made — the badge says "too big here", this says why.
+              (selected.model.fit === "no"
+                ? " This one is likely too big for this machine's memory — it may crawl or fail to load."
+                : selected.model.fit === "tight"
+                  ? " A tight fit for this machine — close other heavy apps while it runs."
+                  : "")
             : "Not downloaded.";
 
   // Eviction is reversible, so it is a sentence rather than a modal — but it
@@ -296,8 +303,27 @@ export default function AiModelsPlayground() {
                     that answers "which one do I click". */}
                 {model.note && <span className="pg-model-note">{model.note}</span>}
                 <span className="pg-model-meta">
-                  <span>{resident ? "Loaded" : model.downloaded ? "On this machine" : ""}</span>
-                  <span>{model.size_gb != null ? `${model.size_gb} GB` : "—"}</span>
+                  <span>{resident ? "Ready" : model.downloaded ? "On this machine" : ""}</span>
+                  {/* The size, translated: "will this melt my laptop" is the
+                      question a newcomer is actually asking of a GB figure,
+                      so the verdict leads and the number stays for hover. */}
+                  <span
+                    className={"pg-fit" + (model.fit ? " " + model.fit : "")}
+                    title={
+                      model.size_gb != null
+                        ? `${model.size_gb} GB download — judged against this machine's memory`
+                        : undefined
+                    }
+                  >
+                    {model.size_gb != null ? `${model.size_gb} GB` : "—"}
+                    {model.fit === "easy"
+                      ? " · runs easily"
+                      : model.fit === "tight"
+                        ? " · tight fit"
+                        : model.fit === "no"
+                          ? " · too big here"
+                          : ""}
+                  </span>
                 </span>
               </button>
             );
