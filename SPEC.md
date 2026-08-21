@@ -6599,11 +6599,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   0.8-second region buys a full encoder window. faster-whisper never had the
   defect (its own `vad_filter` calls `collect_chunks`, which concatenates and
   remaps), and two engines sitting 2.8x apart on one flag is precisely what this
-  clause exists to prevent. **`parakeet_mlx` deliberately does not pack**: it is
-  a transducer with no fixed window (it chunks only above `chunk_duration =
-  60.0`), so its cost is proportional to the audio it is given and packing would
-  add a second timestamp mapping for no measured gain — same meaning of the
-  flag, different batching, which is the distinction the clause draws. A single
+  clause exists to prevent. **The withdrawn `parakeet_mlx` engine (D406)
+  deliberately did not pack**: it was a transducer with no fixed window (it
+  chunked only above `chunk_duration = 60.0`), so its cost was proportional to
+  the audio it was given and packing would have added a second timestamp
+  mapping for no measured gain — same meaning of the flag, different batching,
+  which is the distinction the clause draws. A single
   region longer than the budget passes through whole and is never split: cutting
   mid-speech loses words, and Whisper's own seeking chunks a long input better.
   What is still lost is conditioning ACROSS a CALL
@@ -6659,47 +6660,26 @@ an AI Models page that could say what was on disk but not what was *running*.
   rows are uneven, and here that is information: this engine has a caveat, that
   one does not. The field stays on `catalog.describe()` regardless; it answers
   a question about the catalog, not about where a page prints it.
-- **AI-10g** **A THIRD engine serves transcription — `parakeet_mlx`, Apple
-  Silicon only — registered UNDER MLX Whisper so the default does not move,
-  and refusing what it cannot do rather than pretending** (D319). Parakeet-TDT
-  beats Whisper large-v3 on English word error rate, decodes several times
-  quicker again on the same Metal, is CC-BY-4.0 and does not hallucinate over
-  silence. It is still **not** the default, and that is the requirement rather
-  than a caution: v3 handles 25 European languages against Whisper's ~99, so
-  promoting it would silently regress every page relying on language detection,
-  producing a confident transcript in the wrong language instead of an error.
-  The row sits directly below `mlx-whisper`, and a user opts in per capability
-  on the Engines tab — AI-10e's machinery serving the case it was built for,
-  with no new plumbing. **The waveform reaches the library by borrowing its
-  loader.** `parakeet_mlx.transcribe` takes a path and calls `load_audio`,
-  which spawns ffmpeg (AI-10's rule again, at its sharpest — without ffmpeg the
-  library raises rather than degrading), so the runner decodes with `av` and
-  swaps the module's `load_audio` binding for the duration of one call. That
-  keeps the library's chunking AND its overlap token merge, which reimplementing
-  around `get_logmel`/`generate` would have cost; it is the same reach into
-  another package's globals AI-10c already makes for `tqdm`, guarded and
-  restored the same way, and a MISSING binding raises rather than falling
-  through to ffmpeg. Progress is the library's `chunk_callback`, which fires
-  before each chunk — so the reported position is that chunk's start: behind
-  reality, never ahead of it. **Three options are REFUSED by name**:
-  `task: "translate"`, `language` and `initialPrompt`, none of which this model
-  has an answer for. That is a deliberate, visible crack in AI-10c's "a page
-  cannot tell which engine ran", and it is the right place to put one — a loud
-  refusal naming the engine and the way out beats a silent substitution the
-  page cannot see. **`vad` still means one thing** (AI-10f): `runners/vad.py`
-  moved out of `mlx_whisper/` on its second caller and is now shared by the two
-  MLX engines, with a `vad.py` inside any runner folder a failing test. The CT2
-  engine is unchanged and does NOT read it — faster-whisper carries its own
-  Silero and is asked for it through `vad_filter`, which is what AI-10f settled
-  and why the flag already meant one thing across those two. On this engine it
-  is a wall-clock saving rather than a correctness fix, which changes why it is
-  wanted and not what it does. **The format check is on the CONFIG**: a Parakeet snapshot
-  carries `model.safetensors` like every transformers repo, so what identifies
-  it is a `nemo.collections.asr.models.…` class in `config.json` — and a match
-  claims the snapshot alone, or the text runners would offer to load a speech
-  model as a chat model. **Nothing here has transcribed real audio under test**;
-  AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
-  API.
+- **AI-10g** **REMOVED (D406) — engine withdrawn, maintenance cost not
+  justified by use.** This clause originally added a THIRD transcription
+  engine, `parakeet_mlx` (Parakeet-TDT, Apple Silicon only, registered under
+  MLX Whisper so the default would not move) and documented its refusal of
+  `task: "translate"`, `language` and `initialPrompt`. All of that is gone: the
+  runner folder, its registry row, its catalog shortlist, and its three
+  refusal entries in `engine_options.UNSUPPORTED` (now empty — see AI-10's
+  engine-options module, which stays for the next engine that needs it).
+  Speech to text is back to the two engines AI-10e describes, MLX Whisper then
+  CTranslate2. **What survives, deliberately:** the format check. A Parakeet /
+  NeMo ASR snapshot (`model.safetensors` beside a `nemo.collections.asr.models.…`
+  `config.json` target) is still recognised by `formats.is_parakeet_checkpoint`,
+  and the branch that recognises it still returns early — it now claims NO
+  runner rather than `parakeet-mlx`, so a cached NeMo ASR repo reads as "a
+  speech model nothing here can load" rather than falling through to the text
+  branch and being offered as a chat model, which is the exact regression this
+  branch has existed to prevent since D319. `runners/vad.py` also stays at the
+  runners root rather than moving back into `mlx_whisper/`: the shared location
+  cost nothing with one caller and saves a second move if a second ASR engine
+  is ever added again.
 - **AI-10h** **`words: true` times each WORD inside a segment — on MLX Whisper
   only, and DECLINED rather than refused where an engine has none** (D392). A
   segment is a sentence or several, so `{start, end, text}` cannot drive a
@@ -6718,9 +6698,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   declining leaves the key off, so `segment.words || []` is the whole contract
   and one page runs unchanged on every machine. Refusing would do the opposite of
   what AI-10c is for, making a page work on a Mac and 400 on a CTranslate2 box.
-  The other two engines could carry it — faster-whisper for a mapping, since it
-  returns the same DTW-aligned words; Parakeet for more, its native times being
-  per SUBWORD on an 80ms grid. **`task:
+  The other engine could carry it too — faster-whisper for a mapping, since it
+  returns the same DTW-aligned words. **`task:
   "translate"` carries no words on any engine**: word timings are positions in
   the audio and a translation's words were never spoken in it, so there is
   nothing to align them to, and the library's warn-and-return-anyway reaches a
@@ -7939,7 +7918,7 @@ manifest is the entire contract between them.
   direction before the answer was in would be asserting the opposite of what
   might be true.
 
-## 45. Native Capture — Recording the Screen, the Mic and a Still (D406, D407)
+## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
 
 `fused.capture` lets a page record the screen, record the microphone, and grab
 a single still — and the result is a FILE on this machine, at a path known before
@@ -8008,7 +7987,7 @@ three platforms, one API, no field naming which one served you.
   Windows and through the PipeWire portal on Linux. Audio-only on macOS records
   the system's current input and **refuses** `device` rather than ignoring it,
   naming where a specific microphone can be chosen (a screen recording's
-  `audio: "mic"`) — see D406 for why the API that could do both deadlocked. On
+  `audio: "mic"`) — see D409 for why the API that could do both deadlocked. On
   the streamed platforms both paths are `getUserMedia`, so `device` is honoured
   on `audio()` too; that asymmetry is a refusal sentence on one platform, never
   a flag a page reads.

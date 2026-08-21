@@ -42,6 +42,9 @@ def test_every_runner_code_named_here_is_a_registered_runner():
         repo_id="x/y", names={formats.CT2_WEIGHTS, formats.MLX_WHISPER_WEIGHTS[0],
                               formats.DIFFUSERS_INDEX},
         dirnames=set(), config={}, torch_weights=True))
+    # A NeMo ASR snapshot deliberately names no code (D406 withdrew the
+    # runner that used to claim it) — included anyway so a future change that
+    # made it name one would be caught by this same assertion.
     named |= set(formats.loaders(
         repo_id="x/y", names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
         config={"target": formats.NEMO_ASR_TARGET + "rnnt_bpe_models.X"},
@@ -68,9 +71,11 @@ def test_every_registered_runner_appears_in_loaders():
     rather than four assertions.
 
     A runner is exercised by throwing the union of every format signal at
-    `loaders()` — the same trick the test above uses — plus the two returns that
-    short-circuit (an MLX whisper snapshot and a Parakeet one), because a code
-    reachable only from a branch below one of those would otherwise look absent.
+    `loaders()` — the same trick the test above uses — plus the return that
+    short-circuits (an MLX whisper snapshot), because a code reachable only
+    from a branch below it would otherwise look absent. The NeMo ASR branch
+    also short-circuits but, since D406, names no code — so it contributes
+    nothing to `seen` and is exercised by the dedicated tests below instead.
     """
     seen = set()
     for repo_id in formats.MFLUX_VARIANTS:
@@ -83,10 +88,6 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={formats.MLX_WHISPER_WEIGHTS[0]}, dirnames=set(),
         config={}, torch_weights=False))
-    seen |= set(formats.loaders(
-        repo_id="x/y", names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
-        config={"target": formats.NEMO_ASR_TARGET + "rnnt_bpe_models.X"},
-        torch_weights=True))
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
         config={"quantization": {"group_size": 64, "bits": 4}}, torch_weights=True))
@@ -162,26 +163,22 @@ _PARAKEET_CONFIG = {"target": "nemo.collections.asr.models.rnnt_bpe_models."
                               "EncDecRNNTBPEModel"}
 
 
-def test_a_parakeet_snapshot_is_recognised_by_its_NEMO_config():
+def test_a_parakeet_snapshot_is_recognised_by_its_NEMO_config_and_matches_no_runner():
     """`model.safetensors` alone says nothing — it is the file every
-    transformers repo carries. What settles it is the `target` in config.json,
-    which names the NeMo class the weights were exported from and which no text
-    checkpoint has."""
-    assert set(formats.loaders(
-        repo_id="mlx-community/parakeet-tdt-0.6b-v3",
-        names={formats.PARAKEET_WEIGHTS, "config.json"}, dirnames=set(),
-        config=_PARAKEET_CONFIG, torch_weights=True)) == {"parakeet-mlx"}
-
-
-def test_a_parakeet_snapshot_is_NOT_offered_to_the_text_runners():
-    """The trap this guards: a directory of safetensors is normally both text
-    runners', so without the exclusion the AI Models page would put a Load
-    button on Parakeet for `mlx-text`, which would try to read a speech model
-    as a chat model and fail several frames inside mlx-lm."""
+    transformers repo carries. The `target` in config.json names the NeMo
+    class the weights were exported from, which no text checkpoint has —
+    and since D406 withdrew the `parakeet-mlx` runner that used to claim
+    this format, recognising it now means matching NO runner at all rather
+    than claiming a runner. THE TRAP (see the module's docstring and
+    `loaders()`'s early return): a directory of safetensors is otherwise
+    every text runner's format, so without the early return this snapshot
+    would fall through and the AI Models page would offer to load a speech
+    model as a chat model."""
     codes = formats.loaders(
         repo_id="mlx-community/parakeet-tdt-0.6b-v3",
-        names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
+        names={formats.PARAKEET_WEIGHTS, "config.json"}, dirnames=set(),
         config=_PARAKEET_CONFIG, torch_weights=True)
+    assert codes == ()
     assert not (_TEXT & set(codes)), codes
 
 
@@ -192,21 +189,24 @@ def test_a_nemo_config_with_no_weights_beside_it_loads_nowhere():
                            config=_PARAKEET_CONFIG, torch_weights=False) == ()
 
 
-def test_a_NON_asr_nemo_target_is_not_a_parakeet_repo():
-    """NeMo covers TTS and LLMs too, and this runner loads neither — the ASR
-    prefix is what the check is on, not the word "nemo"."""
+def test_a_NON_asr_nemo_target_falls_through_to_the_text_runners():
+    """NeMo covers TTS and LLMs too, and no runner here loads either — the ASR
+    prefix is what the check is on, not the word "nemo". Unlike an ASR target,
+    a non-ASR one does NOT trip the early return, so a directory of
+    safetensors beside it is business as usual: every text runner's."""
     codes = formats.loaders(
         repo_id="org/m", names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
         config={"target": "nemo.collections.tts.models.FastPitchModel"},
         torch_weights=True)
-    assert "parakeet-mlx" not in codes
+    assert set(codes) == _TEXT
 
 
-def test_a_parakeet_repo_SETTLES_what_the_model_is():
-    """`DECISIVE` is the list of formats whose evidence also names the
-    modality, and a NeMo ASR config does: it cannot be anything but speech
-    recognition, so the page's tag does not have to hedge."""
-    assert "parakeet-mlx" in formats.DECISIVE
+def test_a_parakeet_repo_is_no_longer_in_DECISIVE():
+    """`parakeet-mlx` was withdrawn (D406) and was never re-added to
+    `DECISIVE` — there is no code left for that table to name. The NeMo ASR
+    format is still decisive about matching nothing, but `loaders()`'s early
+    return enforces that directly rather than through this table."""
+    assert "parakeet-mlx" not in formats.DECISIVE
 
 
 def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():

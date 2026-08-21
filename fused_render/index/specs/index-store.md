@@ -138,6 +138,12 @@ the compaction runs inside a niced scan worker nobody is waiting on, while
 `/api/index/rank` is a keystroke, and an all-cores merge starved it for seconds
 (`scan.md §4`, scheduling priority).
 
+The compaction's reads of old parquet generations and its `COPY ... TO` writes of
+new ones also run under the worker's background disk I/O policy
+(`worker._set_background_io_policy`, `scan.md` scheduling priority) — capping
+threads alone bounds CPU, not disk queue position, and an interactive rank's
+`read_parquet` (`query.md`) must not queue behind either.
+
 ## Non-goals
 
 - **Queries over these files** — `query.md`.

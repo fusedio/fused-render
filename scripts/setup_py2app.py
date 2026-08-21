@@ -291,10 +291,11 @@ _PREVIEWABLE_EXTENSIONS = [
     "mp4", "mov", "m4v", "webm", "mp3", "wav", "m4a", "ogg", "flac",
     "tif", "tiff", "geotiff",  # GeoTIFF rasters (server.py "geotiff" template)
     "nc", "nc4", "cdf",  # NetCDF (server.py "netcdf" template)
+    "h5", "hdf5", "he5", "hdf",  # HDF (server.py "map" template)
     # geo/sci formats with no built-in template key — bindable via the
     # runtime template registry:
     "gpkg", "shp", "fgb", "kml", "kmz", "gpx", "las", "laz",
-    "pmtiles", "mbtiles", "zarr", "h5", "grib2", "jp2",
+    "pmtiles", "mbtiles", "zarr", "grib2", "jp2",
 ]
 
 DOCUMENT_TYPES = [

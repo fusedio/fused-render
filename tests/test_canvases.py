@@ -6,6 +6,7 @@ invocations logged — so the tests exercise the real subprocess seam without a
 network or a fused install. The `fused login` credential store is pointed at a
 tmp file via FUSED_RENDER_FUSED_CREDENTIALS.
 """
+import contextlib
 import json
 import os
 import subprocess
@@ -1224,6 +1225,44 @@ def _manager(name="alpha"):
     return canvases_mod._syncs[name]
 
 
+@contextlib.contextmanager
+def _staged(name="alpha"):
+    """Stage a local edit AND a remote move without the watcher observing a
+    half-staged world.
+
+    Every "remote moved while the clone was dirty" test has to set up two sides
+    at once, and the remote side alone takes three separate writes (the bundle
+    files, then the manifest that is the change signal, sometimes a scenario
+    file too). The watcher is ticking through all of it, and the intermediate
+    state "clone dirty, remote NOT moved yet" is one the product handles
+    correctly and the test does not want: the debounced push fires, its
+    pre-push probe truthfully finds an unmoved remote, so there is nothing to
+    merge — and the push it then runs leaves the clone CLEAN, so when the
+    manifest finally lands the poll takes the clean-clone wholesale force pull.
+    `merge_seq` stays 0 for the rest of the test, because the remote never
+    moves again.
+
+    That is not a hypothetical. It is the flake that failed
+    test_sync_merges_remote_changes_while_dirty on every CI run of one branch
+    (push_seq 1, pull_seq 1, merge_seq 0), reproduced exactly by sleeping 0.8s
+    between the local edit and set_manifest. DEBOUNCE_S is 0.3s in these tests
+    and the staging is plain tmpdir I/O, so a 4-worker runner only has to stall
+    the test thread for a third of a second to get there.
+
+    Pausing is the fix rather than a longer DEBOUNCE_S: it is exact (no tick
+    can land mid-staging at any load) and costs no wall-clock. `pause()` also
+    waits out any op already in flight, and rebaseline=False is required — the
+    default would adopt the local edit we just staged as the clean sync point,
+    which is the very thing under test.
+    """
+    manager = _manager(name)
+    manager.pause()
+    try:
+        yield manager
+    finally:
+        manager.resume(rebaseline=False)
+
+
 def _watcher_diag(name="alpha"):
     """Why the watcher is not making progress, for a wait that timed out.
 
@@ -1322,9 +1361,10 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
-    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
-    shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
-    shims.set_manifest("t2")
+    with _staged():  # see _staged: a tick mid-staging pushes instead of merging
+        (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+        shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
+        shims.set_manifest("t2")
 
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1 and s["push_seq"] >= 1)
     assert status and status["merge_seq"] >= 1 and status["push_seq"] >= 1, (
@@ -1351,9 +1391,10 @@ def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agen
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
-    (harness.root / "alpha" / "b.py").unlink()
-    shims.set_remote_files({**_BASE_FILES, "a.py": "a2-remote\n"})
-    shims.set_manifest("t2")
+    with _staged():  # see _staged: a tick mid-staging pushes instead of merging
+        (harness.root / "alpha" / "b.py").unlink()
+        shims.set_remote_files({**_BASE_FILES, "a.py": "a2-remote\n"})
+        shims.set_manifest("t2")
 
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1 and s["push_seq"] >= 1)
     assert status and status["merge_seq"] >= 1, status
@@ -1378,13 +1419,14 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
-    (harness.root / "alpha" / "canvas.toml").write_text(
-        'type = "canvas"\nlocal = true\n', encoding="utf-8"
-    )
-    remote = dict(_BASE_FILES)
-    del remote["b.py"]
-    shims.set_remote_files(remote)
-    shims.set_manifest("t2")
+    with _staged():  # see _staged: a tick mid-staging pushes instead of merging
+        (harness.root / "alpha" / "canvas.toml").write_text(
+            'type = "canvas"\nlocal = true\n', encoding="utf-8"
+        )
+        remote = dict(_BASE_FILES)
+        del remote["b.py"]
+        shims.set_remote_files(remote)
+        shims.set_manifest("t2")
 
     status = _wait_status(harness, lambda s: s["merge_seq"] >= 1 and s["push_seq"] >= 1)
     assert status and status["merge_seq"] >= 1, status
@@ -1563,10 +1605,11 @@ def test_sync_merge_rolls_back_when_it_breaks_validation(harness, tmp_path, monk
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
 
-    (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
-    shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
-    shims.set_manifest("t2")
-    harness.set_scenario({"pull_files": _BASE_FILES, "validate_fail": True})
+    with _staged():  # see _staged: a tick mid-staging pushes instead of merging
+        (harness.root / "alpha" / "a.py").write_text("a-local\n", encoding="utf-8")
+        shims.set_remote_files({**_BASE_FILES, "b.py": "b2-remote\n"})
+        shims.set_manifest("t2")
+        harness.set_scenario({"pull_files": _BASE_FILES, "validate_fail": True})
 
     status = _wait_status(
         harness, lambda s: s["merge_rollback_seq"] >= 1 and s["push_seq"] >= 1

@@ -62,19 +62,14 @@
  *     `segments` has, `speaker` included when diarizing.
  *     Which engine transcribes depends on the machine and on the user's
  *     preference (SPEC AI-10e) — MLX Whisper on Apple Silicon, CTranslate2
- *     elsewhere, and Parakeet TDT if a Mac's owner chose it on the Engines tab
- *     — and the reply is the same shape whichever ran, so a page never has to
- *     ask. `vad` (default true) runs the same Silero speech detector on all
- *     three, and timestamps are always positions in the ORIGINAL file even
- *     though the silence between them was never transcribed. Two things do
- *     differ. The RESOLUTION of the progress: MLX Whisper reports once per
- *     decoded window (up to 30s of audio) and Parakeet once per 60s chunk
- *     rather than per segment, so `done` can sit still and then jump — it is
- *     always a real position in the recording and never ahead of one. And
- *     Parakeet REFUSES three options rather than ignoring them —
- *     task: "translate", `language` (it detects its own, among 25 European
- *     languages) and `initialPrompt` — each rejecting .type "bad_request"
- *     BEFORE a job opens, with a message naming the engine and the way out.
+ *     elsewhere — and the reply is the same shape whichever ran, so a page
+ *     never has to ask. `vad` (default true) runs the same Silero speech
+ *     detector on both, and timestamps are always positions in the ORIGINAL
+ *     file even though the silence between them was never transcribed. The
+ *     RESOLUTION of the progress does differ: MLX Whisper reports once per
+ *     decoded window (up to 30s of audio) rather than per segment, so `done`
+ *     can sit still and then jump — it is always a real position in the
+ *     recording and never ahead of one.
  *     The MODEL is not interchangeable between them — each engine loads its own
  *     format — so pick a repo from fused.ai.models.catalog() rather than
  *     hardcoding one.

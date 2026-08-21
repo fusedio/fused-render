@@ -54,6 +54,7 @@ from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.index_gitignore import filter_corpus
+from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -111,6 +112,12 @@ def run_startup_scan(start_dir: str | None = None) -> None:
     Records each started run in `_startup_runs` for `run_startup_warm`, which
     warms only after the run covering its root has finished."""
     _startup_runs.clear()
+    if not indexing_enabled():
+        # No scan ever starts while the pref is off (shell/prefs.py). The
+        # warm still runs — it only searches the existing index, never
+        # scans — so search stays as snappy as the stale index allows.
+        logger.info("index: startup scan skipped (indexing is disabled)")
+        return
     try:
         cfg = load_config()
         runner.prune_runs(cfg, keep=KEEP_RUNS)
@@ -358,9 +365,19 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
             return "mount"
         if out.get("reason") == "package":
             return "package"
+        # Highest precedence after mount/package: while the pref is off, no
+        # scan will ever fix an uncovered folder, which is exactly the claim
+        # `mount`/`package` make too — it just comes from a toggle rather
+        # than from the filesystem's shape.
+        if not indexing_enabled():
+            return "disabled"
         if ignored_for_index(cfg.rules, norm(os.path.abspath(root)), tree=True):
             return "ignored"
-    if _scan_in_flight(cfg, root):
+    # Never claim a scan is in flight while the pref is off — nothing can be
+    # in flight (every trigger that starts one is gated), and a stale
+    # `scanning` report would send the client into a poll loop for a scan
+    # that will never end.
+    if indexing_enabled() and _scan_in_flight(cfg, root):
         return "scanning"
     return str(out.get("reason") or "")
 
@@ -614,7 +631,14 @@ def note_folder_opened(path: str) -> bool:
 
     Returns whether a check was started. Called from /api/fs/list — the folder
     the user is looking at is the one whose search must not be stale, and the
-    listing request is the only signal that says so on every platform."""
+    listing request is the only signal that says so on every platform.
+
+    Returns immediately, starting nothing, while indexing is disabled — this
+    is the ONE gate for every caller of this function (fs_read.py,
+    git_repos.py, exported_apps.py), so a rescan-if-stale check never turns
+    into a scan behind the pref's back."""
+    if not indexing_enabled():
+        return False
     if not _freshness_slot.acquire(blocking=False):
         return False
     try:
@@ -634,6 +658,9 @@ def api_index_scan(body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    if not indexing_enabled():
+        return JSONResponse({"error": "indexing is disabled in Preferences"},
+                            status_code=409)
     cfg = load_config()
     full = bool(body.get("full"))
     root = body.get("root") or ""
@@ -700,6 +727,12 @@ def api_index_scan_folder(body: dict = Body(default={}),
 
     cfg = load_config()
     root = runner.canonical_root(path)
+    if not indexing_enabled():
+        # A durable "no", same as every other refusal here: the search box
+        # polls this on a retry loop, and "disabled" says as plainly as
+        # `refused` does that asking again will not change the answer.
+        return {"ok": True, "started": False, "why": "disabled",
+                "run_id": None, "root": root}
     # THE MOUNT GUARD FIRST, and the order is the point rather than a
     # preference: `blocks` is pure string work against the mount records,
     # while `foreign_device` stats the path — and a stat under a wedged rclone
@@ -737,6 +770,37 @@ def api_index_scan_folder(body: dict = Body(default={}),
     return {"ok": True, "started": True,
             "why": "joined" if started.get("already_running") else "started",
             "run_id": started.get("run_id"), "root": root}
+
+
+def cancel_all_scans() -> list:
+    """Cancel every scan run currently in flight, for any root.
+
+    The one caller is `shell/prefs.py`'s `PUT /api/prefs`, when the indexing
+    toggle flips to off: the contract is that a scan running at the moment of
+    toggle-off is cancelled outright, not merely refused going forward. Lives
+    here rather than in the index layer because it needs `_live_runs`'
+    request-scoped cache and the same live-run enumeration `_scan_in_flight`
+    uses, and the index package cannot import the server (this module
+    already owns that seam for scan/cancel/status).
+
+    Returns the run ids actually cancelled — a run already told to stop is
+    skipped, same as `active_run`'s own liveness rule."""
+    cfg = load_config()
+    cancelled = []
+    for r in _live_runs(cfg):
+        if not r.get("running"):
+            continue
+        rid = r.get("run_id")
+        if not rid:
+            continue
+        if os.path.exists(os.path.join(cfg.runs_dir, str(rid), "cancel")):
+            continue
+        try:
+            runner.cancel(cfg, str(rid))
+            cancelled.append(str(rid))
+        except ValueError:
+            pass
+    return cancelled
 
 
 @router.post("/api/index/cancel")

@@ -102,6 +102,28 @@ invariant: an interactive `/api/index/rank` keystroke wins the scheduler against
 scan. Without it a full scan of a big home starved the lock-free rank read path for
 seconds at a time.
 
+`os.nice` only lowers CPU priority — it does nothing about disk I/O scheduling, so
+the scan's stat pool and compaction reads/writes could still queue ahead of
+`/api/index/rank`'s `read_parquet` at the disk layer even while niced. The worker
+also calls `worker._set_background_io_policy()`, right after the nice call, and
+again from `_child_init` as insurance for the mp-spawn pool children. It is
+per-platform and always best-effort — a failure never takes the scan down:
+
+- **macOS**: `setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_PROCESS, IOPOL_THROTTLE)`
+  puts the process in the same background I/O class Spotlight/Time Machine use.
+- **Linux**: `ioprio_set` (a raw syscall, arch-specific number, no libc wrapper) at
+  `IOPRIO_CLASS_IDLE`. Only honored under I/O schedulers that implement priority
+  classes (BFQ); a harmless no-op under mq-deadline/none.
+- **Windows**: `SetPriorityClass(..., PROCESS_MODE_BACKGROUND_BEGIN)`. Since
+  `os.nice` does not exist on Windows at all, this is that platform's *only* scan
+  mitigation, covering CPU, I/O, and memory priority together — not just the I/O
+  half the other two platforms get on top of `nice`. Background mode is not
+  inherited by child processes there, which is why `_child_init` calls it again
+  rather than relying on inheritance.
+
+The invariant, completed: an interactive keystroke wins both the CPU scheduler and
+the disk queue.
+
 **Device ids** are collected during the walk — a root spanning more than one volume
 disqualifies the FSEvents fast path (`scan-incremental.md §3`).
 
