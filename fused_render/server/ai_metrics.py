@@ -59,7 +59,7 @@ from fused_render.ai.runners import formats
 def _is_local_model(model: str) -> bool:
     """The same LOCAL/CLAUDE seam `ai.py`'s own `_is_local_model` decides,
     duplicated rather than imported (importing `ai.py` here would cycle back
-    through it) — a Hugging Face repo id always has a `/`, and, since D407,
+    through it) — a Hugging Face repo id always has a `/`, and, since D411,
     a curated `llamacpp-text` id is the GGUF's own FILENAME instead and has
     none. Kept identical on purpose: this module's whole point is that the
     TIER a call is counted under must never disagree with which one actually

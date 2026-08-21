@@ -1692,9 +1692,11 @@ def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch)
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     assert _engine(client, "mlx-community/Qwen3-8B-4bit")["code"] == "mlx-text"
 
-    # The same checkpoint off a Mac: still MLX's, and torch will not read it —
-    # which is exactly what the transformers runner's `_refuse_unloadable`
-    # raises about a `quantization` block with a `group_size` in it.
+    # The same checkpoint off a Mac: still MLX's, and nothing else here reads
+    # it — an MLX `quantization` block with a `group_size` in it is bit-packed
+    # for Metal kernels, which is what the removed transformers runner's
+    # `_refuse_unloadable` raised about and why `loaders()` never offered it to
+    # anything but `mlx-text`.
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
@@ -1736,7 +1738,7 @@ def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
     # the ones `_engine` makes about the candidate — otherwise this test would be
     # counting the resolution's probes too and would pass for the wrong reason.
     monkeypatch.setattr(_ai_registry, "for_capability",
-                        lambda capability: _ai_registry.by_code("transformers-text"))
+                        lambda capability: _ai_registry.by_code("llamacpp-text"))
 
     # An MLX text checkpoint on Linux: the only runner that reads it is the one
     # that cannot run here, which is the branch that does the double probe.
@@ -1752,7 +1754,20 @@ def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
 
 
 @requires_symlinks
-def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, hub, monkeypatch):
+def test_a_plain_safetensors_causal_lm_is_MLXS_AND_UNAVAILABLE_off_a_mac(client, hub, monkeypatch):
+    """A cached bf16 causal LM off a Mac names `mlx-text` and says it cannot run.
+
+    This asserted `transformers-text` and `available: True` until D416, and the
+    change of answer is the one user-visible cost of removing that family rather
+    than an accident of the test: `formats.loaders()` maps a directory of plain
+    safetensors to exactly one engine now, and that engine is Apple-only. So a
+    Linux user with a bf16 Qwen already on disk gets a card that names the
+    engine which reads the format and the registry's own sentence about why this
+    machine is not it — which is the honest answer, and is what the card is for.
+    What that user CAN run is a GGUF of the same model through `llamacpp-text`;
+    `catalog.SUGGESTIONS["llamacpp-text"]` is what the Discover tab offers them,
+    and its 9B entry's note makes the size comparison to exactly this download.
+    """
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     repo = _repo(hub, "models--Qwen--Qwen3-8B", blobs={"w": 10},
@@ -1761,7 +1776,8 @@ def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, h
                    json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}))
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     engine = _engine(client, "Qwen/Qwen3-8B")
-    assert engine["code"] == "transformers-text" and engine["available"] is True
+    assert engine["code"] == "mlx-text" and engine["available"] is False
+    assert "Apple Silicon" in engine["reason"]
 
 
 # -- and the same reading answers a load that omitted one (D321) -----------------

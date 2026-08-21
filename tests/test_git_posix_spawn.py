@@ -396,11 +396,40 @@ def test_no_module_imports_a_spawner_by_bare_name():
     assert not offenders, "\n  ".join(offenders)
 
 
-def _sources():
+# Directory names whose `*.py` is not this repo's source, so neither sweep above
+# has any business reading it. `.venv` is the load-bearing entry and it is not
+# hypothetical: `projectenv` uv-syncs every AI runner environment IN PLACE, at
+# `fused_render/ai/runners/<runner>/.venv` (see `ai/runners/*/pyproject.toml` and
+# `projectenv.state_digest`), so the moment a developer loads one local model the
+# shipped tree gains tens of thousands of third-party files INSIDE the package
+# these sweeps walk. Several of them break the rules on purpose — sympy's
+# `printing/preview.py` and torch's `distributed/elastic/.../subprocess_handler.py`
+# both `from subprocess import ...` — and the sweeps duly reported them as
+# offenders in code nobody here can fix. CI has no runner venv and never saw it,
+# so the failure was developer-only, which is exactly the shape that gets
+# dismissed as a local quirk instead of a missing exclusion.
+#
+# Same set and same reasoning as `test_subprocess_encoding.SKIP_DIRS`. Kept
+# duplicated rather than shared: each sweep is meant to be readable end to end on
+# its own, the way that file already re-implements claude_config's narrower check
+# rather than importing it.
+_NOT_OUR_SOURCE = {".venv", "__pycache__", "node_modules", "vendor", "shell-dist"}
+
+
+def _sources(root=None):
+    """(root, every first-party `*.py` under it) with `_NOT_OUR_SOURCE` pruned.
+
+    `root` is a parameter for exactly one reason: so the pruning can be pointed
+    at a synthetic tree by `test_the_sweeps_skip_a_runner_venv` — a silent
+    exclusion is only safe while something proves it still excludes the right
+    thing. Every production caller means the package.
+    """
     import pathlib
 
-    root = pathlib.Path(__file__).resolve().parent.parent / "fused_render"
-    return root, sorted(root.rglob("*.py"))
+    if root is None:
+        root = pathlib.Path(__file__).resolve().parent.parent / "fused_render"
+    return root, [p for p in sorted(root.rglob("*.py"))
+                  if not set(p.relative_to(root).parts[:-1]) & _NOT_OUR_SOURCE]
 
 
 def test_every_git_spawn_in_the_repo_can_posix_spawn():
@@ -584,6 +613,56 @@ def test_the_sweep_resolves_a_kwargs_helper():
     kwargs_bad, unresolved_bad = _spawn_keywords(tree_bad, call_bad)
     assert not unresolved_bad
     assert "close_fds" not in kwargs_bad
+
+
+def test_the_sweeps_skip_a_runner_venv(tmp_path):
+    """An installed runner venv is not swept; first-party source still is.
+
+    Both halves are asserted because only the pair is safe. An exclusion that
+    stops matching would put the sweeps back to flagging sympy and torch; an
+    exclusion that grew too broad would quietly stop checking real modules, and
+    that failure is invisible — the suite goes green either way. So the synthetic
+    tree carries one file the sweeps must never see and one they must, and both
+    are written as REAL violations, so a mis-pruned sweep cannot pass by finding
+    nothing anywhere.
+    """
+    pkg = tmp_path / "fused_render"
+    vendored = (pkg / "ai" / "runners" / "llamacpp_text" / ".venv" / "lib"
+                / "python3.13" / "site-packages" / "sympy" / "printing")
+    vendored.mkdir(parents=True)
+    (vendored / "preview.py").write_text(
+        'from subprocess import check_output\n'
+        'check_output(["git", "status"])\n')
+    (pkg / "server").mkdir(parents=True)
+    (pkg / "server" / "real.py").write_text(
+        'import subprocess\nsubprocess.run(["git", "status"])\n')
+
+    # `as_posix()`, not `str()`: `_sources` hands back `pathlib.Path`s, so a
+    # relative path stringifies with the OS separator and every forward-slash
+    # literal below is `server\\real.py` on Windows. That is exactly how this
+    # test first failed — on `test-python-windows` only, with the sweep behaving
+    # perfectly and the COMPARISON wrong. Normalising the found side keeps the
+    # literals readable and keeps the set equality EXACT, which is the strictness
+    # that makes this test non-tautological; loosening it to a substring or a
+    # length check would have hidden the real bug it exists to catch.
+    #
+    # `test_subprocess_encoding.test_an_installed_runner_venv_is_skipped` is the
+    # sibling of this test and builds its expected value with `os.path.join`
+    # instead. That is not an inconsistency to tidy up: its `_py_files` yields
+    # `os.path.relpath` STRINGS, so a native-separator expectation is the
+    # same-shaped comparison there, exactly as `as_posix()` is here. Converting
+    # either one to the other's style reintroduces this bug.
+    root, files = _sources(pkg)
+    found = {p.relative_to(root).as_posix() for p in files}
+    assert found == {"server/real.py"}, (
+        "the vendored runner venv is being swept as if it were our source")
+
+    # …and the exclusion has not silently eaten the package it exists to protect.
+    real_root, real_files = _sources()
+    assert len(real_files) > 200, "the prune is excluding first-party source"
+    rel = {p.relative_to(real_root).as_posix() for p in real_files}
+    assert "server/gitignore.py" in rel        # the git gate itself
+    assert "ai/runners/worker_base.py" in rel  # runner source, next to the venvs
 
 
 def test_git_bin_is_absolute_and_cached():

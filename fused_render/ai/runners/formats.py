@@ -204,8 +204,14 @@ def component(repo_id: str) -> dict | None:
     """What `repo_id` is a component of, or None for an ordinary repo."""
     return COMPONENT_REPOS.get(repo_id)
 
-#: What torch can open. `.bin` and `.pt` are pickles: readable, but with no
-#: cheap header, which is why the page counts parameters only from safetensors.
+#: What a safetensors-reading engine can open. `.bin` and `.pt` are pickles:
+#: readable, but with no cheap header, which is why the page counts parameters
+#: only from safetensors.
+#:
+#: The name is torch's because the extensions are torch's conventions and
+#: `ai_models.py` reads it to decide whether a snapshot holds weights at all —
+#: a question about the FILES, which did not change when D416 removed the torch
+#: text runners. `diffusers-image*` and `mlx-text` still read every one of them.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 
 #: llama.cpp's single-file weights format (SPEC AI-11, `runners/llama_text.py`).
@@ -213,10 +219,10 @@ TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 #: config to identify — the vocabulary, the architecture and the model's own
 #: chat template all live inside the one file's key-value metadata, which is
 #: the reason GGUF is one file at all. So the presence check is the
-#: extension, at the SNAPSHOT ROOT: `torch_text.py`'s own refusal already
-#: treats "nothing but GGUF here" as the wrong-format case for transformers,
-#: and this is that same evidence read the other way round, by the engine
-#: that actually wants it.
+#: extension, at the SNAPSHOT ROOT. (The removed `torch_text.py` read the same
+#: evidence the other way round — "nothing but GGUF here" was its
+#: wrong-format refusal, and it pointed the user at this engine. Since D416
+#: only the engine that WANTS a GGUF reads this.)
 #:
 #: **Presence is not enough to call it TEXT, and that is a real bug this
 #: module used to have.** GGUF is a container format, not a modality —
@@ -238,7 +244,7 @@ GGUF_EXTENSION = ".gguf"
 #: llama.cpp's own architecture identifiers (`general.architecture` in a
 #: GGUF's metadata) that denote a CAUSAL TEXT model — read directly off
 #: `LLM_ARCH_NAMES` in llama.cpp's `src/llama-arch.cpp` at the commit this
-#: runner vendors (SPEC AI-11, D406: llama-cpp-python 0.3.29 -> llama.cpp
+#: runner vendors (SPEC AI-11, D411: llama-cpp-python 0.3.29 -> llama.cpp
 #: `f05cf467`, 2026-06-13), MINUS the entries in that same table that are not
 #: causal text generation: the BERT/T5 families (encoders and
 #: encoder-decoders), `wavtokenizer-dec` (an audio codec), the embedding
@@ -463,7 +469,7 @@ GGUF_RECIPES = {
 
 
 # ---------------------------------------------------------------------------
-# Picking ONE GGUF file out of an arbitrary repo's own listing (D407).
+# Picking ONE GGUF file out of an arbitrary repo's own listing (D412).
 #
 # `GGUF_RECIPES` above is 5 keys over 3 repos — a hand-curated shortcut, not
 # a limit llama.cpp itself imposes. Any Hub repo that carries a root-level
@@ -639,7 +645,7 @@ def pick_gguf_file(filenames) -> str | None:
     """The one GGUF file `filenames` (a repo's own listing, root-relative)
     means as a chat model — or None when nothing here qualifies.
 
-    **This is the whole of Piece 1** (D407): given ANY Hub repo's file
+    **This is the whole of Piece 1** (D412): given ANY Hub repo's file
     listing, decide which single `.gguf` a bare repo id resolves to, the same
     question `GGUF_RECIPES` answers by hand for 5 curated filenames. Three
     passes:
@@ -683,61 +689,60 @@ def pick_gguf_file(filenames) -> str | None:
     return None
 
 
-#: Quantizations `runners/torch_text.py` refuses BY NAME, each with the
-#: sentence it refuses them with: what transformers raises for an AWQ repo with
-#: no autoawq installed is a bare ImportError several frames inside a loader,
-#: and the user reading it cannot tell that their repo was the wrong kind
-#: rather than their download broken.
-UNLOADABLE_QUANT = {
-    "awq": "an AWQ checkpoint, which needs a package this runner does not ship",
-    "gptq": "a GPTQ checkpoint, which needs a package this runner does not ship",
-    # **The reason here was rewritten on 2026-08-21 because the old one had
-    # stopped being true, and the replacement is a MEASUREMENT rather than a
-    # guess.** It used to say "needs bitsandbytes and an NVIDIA GPU — this
-    # runner ships neither", and the GPU half is simply wrong now: bitsandbytes
-    # 0.50.1 is MIT, publishes wheels and NO sdist for macos arm64,
-    # manylinux x86_64 and aarch64, win_amd64 and win_arm64 (checked against
-    # PyPI 2026-08-21, so AI-2a's wheels-only rule would NOT block it), and it
-    # documents a dedicated CPU build. So "we cannot install it" is no longer
-    # the obstacle — which left the only question that decides this: is 4-bit
-    # NF4 fast enough on a CPU to be worth offering, given the default
-    # resolution of all three folders installing this worker is a CPU torch?
-    #
-    # It was measured, not argued. `unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit`
-    # LOADS on `device_map="cpu"` and generates correct, coherent text — 219
-    # `Linear4bit` modules, no error — and it halves resident memory (4.16GB
-    # peak RSS against bf16's 8.55GB). It is also 3.6x SLOWER per token than
-    # the bf16 checkpoint it would replace: 0.65 tok/s against 2.33 tok/s,
-    # uncontended, same prompt and same 4B base model. Quantization here buys
-    # memory and spends the one resource a CPU path has least of, and 0.65
-    # tok/s is not a thing to put behind a Download button.
-    #
-    # **The caveat that keeps this open: that was an Apple Silicon M-series
-    # (Mac17,3, 10 cores, 34GB), and this runner's bnb users would be Windows
-    # and Linux x86.** bitsandbytes' optimized CPU path targets x86 AVX512/AMX,
-    # none of which exists on arm64 — so an x86 box could plausibly land
-    # somewhere very different, and this measurement CANNOT be generalised to
-    # it. What it does establish is that the refusal is no longer about the
-    # licence, the wheels or the card. Re-measure on x86 before reversing this;
-    # the dependency is deliberately still absent from the three
-    # `transformers_text*/pyproject.toml` files, so the refusal below is also
-    # literally true — an unlisted package cannot be imported.
-    "bitsandbytes": (
-        "a bitsandbytes checkpoint, which needs bitsandbytes — a package this "
-        "runner does not install, because 4-bit inference on the CPU it "
-        "defaults to runs several times slower than the unquantized weights"
-    ),
-    "compressed-tensors": (
-        "a compressed-tensors checkpoint, which needs a package this runner "
-        "does not ship"
-    ),
-}
+#: Quantization methods NO engine in this app can read, so a repo declaring one
+#: is not offered a Load button (`loaders()` below) whatever else its snapshot
+#: contains. AWQ, GPTQ and compressed-tensors each need a package no runner
+#: here installs; bitsandbytes is the one with a story.
+#:
+#: **This was a dict of refusal SENTENCES until D416, and the sentences went
+#: with the runner that printed them.** `runners/torch_text.py` raised
+#: "`<repo>` is an AWQ checkpoint, which needs a package this runner does not
+#: ship" so that a user reading a bare `ImportError` several frames inside a
+#: transformers loader could tell a wrong-format repo from a broken download.
+#: With that runner removed, the only consumer left is `unloadable_quant()`,
+#: which reads the KEYS — so the values were inert prose and are gone rather
+#: than kept warm for a runner that may never exist. `mlx-text` is now the only
+#: engine this gate protects, and it needs no per-method sentence: mlx-lm reads
+#: MLX-packed or plain safetensors and nothing else, so "not one of these four"
+#: is the whole of the question here.
+#:
+#: **The bitsandbytes entry carries a measurement that has now been asked and
+#: answered twice, and the second answer is why this comment survived the
+#: deletion.** It first said "needs bitsandbytes and an NVIDIA GPU — this
+#: runner ships neither", which stopped being true: bitsandbytes 0.50.1 is MIT,
+#: publishes wheels and no sdist for macos arm64, manylinux x86_64 and aarch64,
+#: win_amd64 and win_arm64 (checked 2026-08-21, so AI-2a's wheels-only rule
+#: would not have blocked it), and documents a dedicated CPU build. So the
+#: question became whether 4-bit NF4 is fast enough on a CPU to be worth
+#: offering, and it was MEASURED rather than argued:
+#: `unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit` loads on
+#: `device_map="cpu"` and generates correct, coherent text (219 `Linear4bit`
+#: modules, no error) at half the resident memory of bf16 (4.16GB peak RSS
+#: against 8.55GB) — and 3.6x SLOWER per token, 0.65 tok/s against 2.33,
+#: uncontended, same prompt and same 4B base. Quantization there bought memory
+#: and spent the one resource a CPU path has least of.
+#:
+#: **That measurement was on Apple Silicon and it explicitly asked for an x86
+#: re-measurement before anyone reversed the refusal. D416 is that
+#: re-measurement, and it removed the engine instead.** On Linux x86_64 (Ryzen
+#: 5 9600X, Radeon RX 9060 XT), same prompt, same 128-token cap, back to back:
+#: transformers managed 12.6 tok/s on the ROCm GPU and 2.7 on the CPU, while
+#: llama.cpp reading a Q5_K_M GGUF of the same model managed 53.4 and 6.4 — 4.2x
+#: and 2.4x, at a third of the download and a third of the peak RSS. So the open
+#: question ("is quantized CPU inference on x86 worth installing bitsandbytes
+#: for?") is settled in a way that makes the original framing obsolete: the
+#: quantized path this app offers is GGUF through llama.cpp, which needs no
+#: extra package and beats the unquantized transformers path it would have been
+#: competing with. There is nothing left here to re-measure.
+UNLOADABLE_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "compressed-tensors"})
 
 #: The runners whose format evidence also settles WHAT THE MODEL IS. A
 #: `weights.npz` is a Whisper conversion and nothing else; a `model_index.json`
-#: is a diffusion pipeline. The two text runners are the opposite case — a
+#: is a diffusion pipeline. The safetensors text runner is the opposite case — a
 #: directory of safetensors says nothing about the modality — so a match there
-#: never implies a capability.
+#: never implies a capability. (It was "the two text runners" until D416 removed
+#: the transformers family; one runner reads that format now, and the reason it
+#: is not decisive is unchanged, because the reason was about the FORMAT.)
 #:
 #: `parakeet-mlx` is gone (D406) and was never added here: the branch that
 #: recognises a NeMo ASR `target` claims no runner (see `loaders()`), so there
@@ -752,9 +757,10 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # machine. Listing only the CPU row would make capability inference
             # depend on which build happens to be registered, so a build that
             # ever shipped the accelerated rows alone would silently stop
-            # putting "text to image" on a cached FLUX card. The TEXT variants
-            # stay out for the same reason `transformers-text` is out: a
-            # directory of safetensors says nothing about the modality.
+            # putting "text to image" on a cached FLUX card. `mlx-text` is
+            # the counter-case and stays OUT, for the reason the removed
+            # `transformers-text*` rows also did: a directory of safetensors
+            # says nothing about the modality, whichever engine opens it.
             "diffusers-image-cuda", "diffusers-image-rocm",
             # A root-level `.gguf` is llama.cpp's format and nothing else in
             # this app reads one for TEXT (SPEC AI-11) — the diffusers image
@@ -770,16 +776,8 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             "llamacpp-text", "llamacpp-text-vulkan")
 
 
-def is_mlx_checkpoint(config: dict) -> bool:
-    """MLX's own quantization: bit-packed for Metal kernels, and meaningless to
-    torch. The `group_size` is what distinguishes it from every other
-    `quantization` block — the same test `torch_text` raises on."""
-    block = config.get("quantization")
-    return isinstance(block, dict) and "group_size" in block
-
-
 def unloadable_quant(config: dict) -> str | None:
-    """The quant method torch cannot read here, or None."""
+    """The quant method nothing here can read, or None — see `UNLOADABLE_QUANT`."""
     block = config.get("quantization_config")
     method = block.get("quant_method") if isinstance(block, dict) else None
     if isinstance(method, str) and method.lower() in UNLOADABLE_QUANT:
@@ -884,8 +882,6 @@ def missing_mflux_components(snapshot_dir: str) -> list[str]:
 #: variants read the same files by definition — the wheel differs, the format
 #: does not — so a branch that could name three of them is a branch that can
 #: forget one.
-TRANSFORMERS_RUNNERS = ("transformers-text", "transformers-text-cuda",
-                        "transformers-text-rocm")
 DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
                      "diffusers-image-rocm")
 #: Both llama.cpp builds — CPU/Metal and Vulkan — for the identical reason:
@@ -954,13 +950,14 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # runner, offered by nothing — not "matches nothing here so fall
         # through to whatever else recognises the file layout."
         return tuple(found)
-    # The two text runners read the same directory of safetensors, and which of
-    # them gets it is a platform-and-preference question rather than a format
-    # one — with the one exception torch states itself: an MLX checkpoint is
-    # packed for Metal and torch cannot read it at all.
+    # A directory of safetensors, which since D416 exactly one engine here
+    # reads: `mlx-text`. This branch used to fork — an MLX-packed checkpoint
+    # went to `mlx-text` alone, anything else to `mlx-text` plus all three
+    # `transformers-text*` rows — and with the transformers family gone both
+    # arms answered the same thing, so the fork (and `is_mlx_checkpoint`, whose
+    # only caller it was) went with it. Deliberately NOT replaced by a
+    # `.gguf`-style DECISIVE claim: safetensors says nothing about the modality,
+    # which is why this branch sits last, after every check that does.
     if torch_weights and not unloadable_quant(config):
-        if is_mlx_checkpoint(config):
-            found.append("mlx-text")
-        else:
-            found.extend(("mlx-text", *TRANSFORMERS_RUNNERS))
+        found.append("mlx-text")
     return tuple(found)

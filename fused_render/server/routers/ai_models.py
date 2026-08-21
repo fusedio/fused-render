@@ -632,12 +632,14 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
 
 
 def _has_torch_weights(snapshot_dir: str) -> bool:
-    """Is there anything in this revision torch could open?
+    """Is there anything in this revision a safetensors reader could open?
 
     A WALK, like `_weight_files`, and for the same reason: a diffusers pipeline
     keeps its weights per component. The suffixes are `formats.TORCH_WEIGHTS`
-    rather than a list spelled here — this is the page's copy of the question
-    `runners/torch_text.py` asks before it refuses a repo.
+    rather than a list spelled here, so the page and `formats.loaders()` cannot
+    come to disagree about what counts as weights — this was the page's copy of
+    the question the removed `runners/torch_text.py` asked before refusing a
+    repo (D416), and `mlx-text` and the Diffusers rows still ask it.
     """
     for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
         if any(name.endswith(formats.TORCH_WEIGHTS) for name in filenames):
@@ -1167,8 +1169,8 @@ class CachedModel(NamedTuple):
     to a BACKEND, and the capability's two or three backends read mutually
     unloadable formats. `openai/whisper-large-v3` is a speech model that NEITHER
     shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit` is a text model
-    that the Transformers runner cannot open, so on a Mac switched to Transformers
-    it is an unusable download. Both have a perfectly good `capability`. The
+    that llama.cpp cannot open, so on a Mac switched to llama.cpp it is an
+    unusable download. Both have a perfectly good `capability`. The
     format's own answer — which runner codes would accept this snapshot, straight
     from `ai/runners/formats.py`, the same evidence each worker checks before it
     imports anything — is the half that settles it, so it travels with the row.

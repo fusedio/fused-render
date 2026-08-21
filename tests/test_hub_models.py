@@ -63,6 +63,26 @@ def _no_token(monkeypatch, tmp_path):
     monkeypatch.setattr(constants, "HF_STORED_TOKENS_PATH", str(home / "stored_tokens"))
 
 
+@pytest.fixture(autouse=True)
+def _no_format_filter(monkeypatch):
+    """Every test here starts with an active text engine that filters no format,
+    and the handful that care about the format filter override it.
+
+    Without this the module's assertions depend on the HOST, and D416 is what
+    made that bite. `hub._model_row` narrows a text-generation search by the
+    active runner's `hub_filter_tags` (D412), and until D416 the runner a
+    non-Apple machine resolved to was `transformers-text`, which declares none —
+    so every safetensors fixture in this file survived the filter by accident of
+    what the developer's laptop happened to be. With the transformers rows gone,
+    Linux and Windows resolve to `llamacpp-text` and its `("gguf",)` tag, which
+    dropped 30 tests here while the code under test was behaving exactly as
+    designed. Pinning it makes the DEFAULT explicit and the format-filter tests
+    the deliberate exception they already read as (`_gguf_runner` below), and it
+    is the same reasoning `_no_token` above applies to a developer's Hub login.
+    """
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+
+
 @pytest.fixture()
 def hub_cache(tmp_path, monkeypatch):
     cache = tmp_path / "hub"
@@ -250,7 +270,7 @@ def test_a_row_with_no_id_is_dropped(client, hub_cache, monkeypatch):
     assert [m["id"] for m in models] == ["org/real"]
 
 
-# -- D407: the GGUF pick, only when the active runner needs one -------------
+# -- D412: the GGUF pick, only when the active runner needs one -------------
 #
 # `siblings` is a NEW `_EXPAND` field, so every hit in this section carries
 # it — verified live that the Hub returns the full filename list in the LIST
@@ -280,7 +300,7 @@ def test_a_gguf_repo_resolves_to_the_pickers_choice_when_llamacpp_is_active(
 
 def test_a_gguf_repo_with_nothing_loadable_is_dropped_when_llamacpp_is_active(
         client, hub_cache, monkeypatch):
-    """The fifth drop reason (D407): a repo whose ONLY GGUF is auxiliary
+    """The fifth drop reason (D412): a repo whose ONLY GGUF is auxiliary
     (here, a projector) is not actionable by the active engine, so it is
     dropped exactly like a `.tflite` repo already is for a different
     reason — never offered with a Download button that cannot resolve."""
@@ -295,9 +315,9 @@ def test_a_gguf_repo_with_nothing_loadable_is_dropped_when_llamacpp_is_active(
 def test_a_gguf_row_carries_no_file_when_the_active_engine_is_not_llamacpp(
         client, hub_cache, monkeypatch):
     """When the capability's active runner declares no format tag at all —
-    the mlx-text/transformers-text case — a repo is not resolved or dropped
+    the `mlx-text` case — a repo is not resolved or dropped
     by the picker, whatever its `siblings` look like: `file` is simply
-    absent from the answer, the same as it always was before D407."""
+    absent from the answer, the same as it always was before D412."""
     monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
     monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever", siblings=[
         {"rfilename": "m-mmproj-F16.gguf"},
@@ -413,7 +433,7 @@ def test_the_endpoint_override_must_be_an_http_url(monkeypatch, endpoint, expect
     assert hub.hub_endpoint() == expected
 
 
-# -- D407: the runner-declared filter tag, ANDed onto the task filter -------
+# -- D412: the runner-declared filter tag, ANDed onto the task filter -------
 
 
 def test_the_gguf_tag_is_anded_onto_the_hub_request_when_llamacpp_is_active(
