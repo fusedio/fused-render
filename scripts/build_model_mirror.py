@@ -95,6 +95,25 @@ def read_commit(folder: str, ref: str = "main") -> str:
 _HF_PRIVATE = ".cache"
 
 
+def wire_name(path: str, root: str) -> str:
+    r"""`path`, relative to `root`, as a MANIFEST name.
+
+    **The one boundary where a filesystem path becomes a name on the wire**, and
+    the only place in this script that converts separators. A manifest name is
+    `/`-separated on every platform, because it is consumed as both a URL path
+    segment and a filesystem path, and the client validates it as `/`-only —
+    a `\` there is a traversal character and gets the whole manifest rejected.
+
+    So on Windows this conversion is load-bearing: `os.path.relpath` returns
+    `tokenizer\vocab.json`, and publishing that would produce a manifest the
+    generator's own client refuses. Nothing downstream converts back,
+    deliberately: both POSIX and Windows accept `/` in every filesystem call the
+    client makes, so one conversion here is the whole story rather than a
+    per-call `normpath` sprinkled through the fetcher.
+    """
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
 def hub_listing(repo_id: str, commit: str) -> set:
     """Every filename the Hub says this repo holds at `commit`.
 
@@ -140,7 +159,7 @@ def read_manifest(cache: str, repo_id: str, ref: str = "main", listing=None) -> 
         dirs[:] = [name for name in dirs if name != _HF_PRIVATE]
         for name in sorted(names):
             path = os.path.join(dirpath, name)
-            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            relative = wire_name(path, root)
             blob = os.path.realpath(path)
             etag = os.path.basename(blob)
             if not _HEX.match(etag):

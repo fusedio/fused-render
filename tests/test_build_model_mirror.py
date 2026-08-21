@@ -21,7 +21,12 @@ import json
 import os
 
 import pytest
-from test_ai_hub_fetch import _fresh_base, _start_server
+# `no_egress` is imported for its SIDE EFFECT — it is an autouse fixture, and
+# binding the name here installs it for every test in this file. THIS is the
+# file that needed it: its round-trip test drove `download_snapshot`, whose Hub
+# fallback is real `huggingface_hub`, and on Windows (where the mirror cannot
+# run at all) that made a real request to huggingface.co and failed on its 401.
+from test_ai_hub_fetch import _fresh_base, _start_server, no_egress  # noqa: F401
 from test_ai_model_mirror import _fresh_mirror
 
 SCRIPT_PATH = os.path.join(
@@ -239,34 +244,67 @@ def test_an_upload_skips_a_blob_whose_key_is_already_there(script, tmp_path,
 # -- the round trip, which is what keeps the two halves honest -------------------
 
 
-def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
-        script, mirror_and_base, tmp_path, monkeypatch):
-    """Build it here, download it there, and compare the two cache directories.
+def _served(script, mirror, tmp_path, monkeypatch):
+    """A generated manifest, served over HTTP, with the client pointed at it.
 
-    This is the only test in the feature that exercises BOTH halves. Each on its
-    own can be self-consistently wrong: a script that reports the symlink's size
-    and a client that trusts it would agree perfectly and produce a truncated
-    blob under a real etag.
+    Returns `(source cache, manifest, state)`.
     """
-    mirror, base = mirror_and_base
     source = _cache(tmp_path, CONTENTS)
-    manifest = script.read_manifest(source, "org/m",
-                                    listing=_listing(*CONTENTS))
-
+    manifest = script.read_manifest(source, "org/m", listing=_listing(*CONTENTS))
     routes = {"/models/org/m/manifest.json": json.dumps(manifest).encode()}
     for entry in manifest["files"]:
         routes[f"/models/org/m/{COMMIT}/{entry['etag']}"] = CONTENTS[entry["name"]]
     _url, state = _start_server(b"", routes=routes)
-
-    # The client accepts what the script wrote, field for field…
     monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"])
     monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
+    return source, manifest, state
+
+
+def test_the_client_accepts_what_the_script_wrote_field_for_field(
+        script, mirror_and_base, tmp_path, monkeypatch):
+    """Half one of the round trip, and the half that runs EVERYWHERE.
+
+    Split out from the download below because the two have different platform
+    requirements: this is the agreement between a generator and a parser, which
+    is true on every OS, while fetching needs `os.pwrite`. Keeping them in one
+    test meant Windows either skipped the agreement check too, or — as it did —
+    ran the fetch half on a platform that cannot fetch.
+    """
+    mirror, _base = mirror_and_base
+    _source, manifest, state = _served(script, mirror, tmp_path, monkeypatch)
+
     read = mirror.manifest("org/m")
+
     assert read is not None, "the client rejected a manifest the script wrote"
     assert read["commit"] == manifest["commit"]
     assert read["files"] == manifest["files"]
+    # Nested names survive the trip as `/`-separated wire names, which is the
+    # boundary `script.wire_name` owns — on Windows the generator's own
+    # `os.path.relpath` produces `\` and the client rejects that as traversal.
+    assert "tokenizer/vocab.json" in [entry["name"] for entry in read["files"]]
+    assert [r["path"] for r in state["requests"]] == [
+        "/models/org/m/manifest.json"]
 
-    # …and downloading it reproduces the cache directory it was built from.
+
+@pytest.mark.skipif(
+    not hasattr(os, "pwrite"),
+    reason="the mirror's only transport is _segmented_fetch, which requires "
+           "os.pwrite (POSIX) — see AI-5i. On Windows a mirrored download takes "
+           "the plain snapshot_download path, which is tested in "
+           "test_ai_hub_fetch.py without leaving the machine.",
+)
+def test_a_manifest_built_from_a_cache_round_trips_through_the_client(
+        script, mirror_and_base, tmp_path, monkeypatch):
+    """Half two: download it and compare the two cache directories.
+
+    This is the only test in the feature that exercises BOTH halves against real
+    bytes. Each on its own can be self-consistently wrong: a script that reports
+    the symlink's size and a client that trusts it would agree perfectly and
+    produce a truncated blob under a real etag.
+    """
+    mirror, base = mirror_and_base
+    source, _manifest, _state = _served(script, mirror, tmp_path, monkeypatch)
+
     landed = str(tmp_path / "downloaded" / "models--org--m")
     monkeypatch.setattr(base, "repo_folder",
                         lambda model_id, repo_type="model": landed)
@@ -404,3 +442,44 @@ def test_a_zero_byte_file_is_published_like_any_other(script, tmp_path):
     empty = next(e for e in manifest["files"] if e["name"] == "empty.txt")
     assert empty["size"] == 0
     assert empty["sha256"] == hashlib.sha256(b"").hexdigest()
+
+
+# -- the one boundary where a path becomes a name (and back) ---------------------
+
+
+def test_a_platform_separator_never_reaches_the_wire(script, monkeypatch):
+    """`wire_name` is the ONE place a filesystem path becomes a manifest name.
+
+    Exercised directly rather than through a walk, because the bug it prevents
+    cannot happen on this machine: `os.sep` is `/` here, so a nested name comes
+    out right by accident. On Windows `os.path.relpath` returns
+    `tokenizer\\vocab.json`, and the client rejects a `\\` outright — it is a
+    traversal character there — so the generator would publish a manifest its own
+    client refuses. Nothing downstream converts separators, deliberately: a wire
+    name is `/`-separated everywhere, and both POSIX and Windows accept `/` in
+    every filesystem call the client makes.
+    """
+    monkeypatch.setattr(script.os, "sep", "\\")
+    monkeypatch.setattr(script.os.path, "relpath",
+                        lambda path, root: "tokenizer\\vocab.json")
+
+    assert script.wire_name("ignored", "ignored") == "tokenizer/vocab.json"
+
+
+def test_a_wire_name_is_left_alone_when_it_is_already_one(script):
+    """The POSIX case, which must stay a no-op."""
+    root = os.path.join("a", "b")
+    assert script.wire_name(os.path.join(root, "t", "v.json"), root) == "t/v.json"
+
+
+def test_these_tests_cannot_reach_the_network():
+    """The imported guard, asserted here too — see the import comment.
+
+    This is the file where it mattered: Windows CI failed here on a 401 from
+    huggingface.co, and on a machine with an `HF_TOKEN` it would have PASSED by
+    downloading a real repo instead.
+    """
+    import socket
+
+    with pytest.raises(AssertionError, match="tried to resolve"):
+        socket.getaddrinfo("huggingface.co", 443)

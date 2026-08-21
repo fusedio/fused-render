@@ -18,7 +18,11 @@ import json
 import os
 
 import pytest
-from test_ai_hub_fetch import _start_server
+# `no_egress` is imported for its SIDE EFFECT: it is an autouse fixture, so
+# binding the name in this module installs it for every test here. See its
+# docstring — Windows CI proved that "every test stubs the Hub" is not the same
+# claim as "no test reaches the network".
+from test_ai_hub_fetch import _start_server, no_egress  # noqa: F401
 
 MIRROR_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -443,3 +447,11 @@ def test_a_manifest_response_that_falls_apart_reads_as_no_mirror(mirror,
 
     assert mirror.manifest("org/m") is None
     assert len(state["requests"]) == 1
+
+
+def test_these_tests_cannot_reach_the_network():
+    """The imported guard, asserted here too — see the import comment."""
+    import socket
+
+    with pytest.raises(AssertionError, match="tried to resolve"):
+        socket.getaddrinfo("huggingface.co", 443)

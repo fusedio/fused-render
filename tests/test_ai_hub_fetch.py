@@ -34,6 +34,7 @@ import http.server
 import importlib.util
 import json
 import os
+import socket
 import socketserver
 import threading
 import time
@@ -51,6 +52,67 @@ pytestmark = pytest.mark.skipif(
     reason="_segmented_fetch requires os.pwrite (POSIX); Windows always takes "
            "the plain snapshot_download fallback instead.",
 )
+
+#: The only addresses these tests may talk to. Everything here drives a local
+#: `http.server` on 127.0.0.1; nothing may reach huggingface.co.
+_LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0"})
+
+
+@pytest.fixture(autouse=True)
+def no_egress(monkeypatch):
+    """Make leaving this machine impossible, for every test in this module.
+
+    **By construction, not by remembering.** Every one of these tests stubs the
+    Hub — and the claim that they therefore reach no network was FALSE, proven by
+    Windows CI: the mirror path cannot run without `os.pwrite`, so on win32 the
+    branch degraded to the Hub listing, which is real `huggingface_hub`, which
+    made a real HTTPS request and failed on a 401 from huggingface.co. On a
+    machine with a valid `HF_TOKEN` that test would have PASSED by downloading a
+    repo called `org/m`; on an air-gapped runner it would fail for a third
+    unrelated reason. Neither is a test.
+
+    The fix cannot be "stub the Hub in every test", because the escape appears
+    exactly where a test did not anticipate falling back. So this refuses the
+    socket instead: any test whose mirror path breaks now fails saying so,
+    naming the address it tried to reach, rather than reporting somebody else's
+    status code.
+
+    `getaddrinfo` as well as `connect`, so the refusal happens before a DNS
+    lookup rather than after one.
+
+    **Measured, not assumed.** Running this feature's three test files with
+    `os.pwrite` removed (the win32 condition) and the platform skips disabled,
+    FOUR tests try to resolve huggingface.co — the round-trip test that failed in
+    CI, the two `_401_on_a_mirror_blob` tests here, and
+    `test_download_file_returns_the_path_to_the_one_file`, which predates this
+    feature: it stubs `_repo_files` but not `snapshot_download`, so
+    `download_file`'s own fallback would have gone to the real Hub. That one was
+    protected only by the module-level skip above and by the segmented path
+    happening to work on POSIX. It is left as it is, because a stub there would
+    change what an unrelated test asserts; this fixture is the right fix for all
+    four.
+    """
+    connect = socket.socket.connect
+    getaddrinfo = socket.getaddrinfo
+
+    def guarded_connect(self, address):
+        host = address[0] if isinstance(address, tuple) else None
+        if host is not None and host not in _LOOPBACK:
+            raise AssertionError(
+                f"this test tried to reach {address!r}. Every test here drives a "
+                f"local server; a request leaving the machine means a code path "
+                f"fell back to the real Hub, which is the bug, not the network.")
+        return connect(self, address)
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if host is not None and host not in _LOOPBACK:
+            raise AssertionError(
+                f"this test tried to resolve {host!r}; see `no_egress`.")
+        return getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+
 
 BASE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -2254,3 +2316,49 @@ def test_a_zero_byte_file_in_a_manifest_is_fetched_and_filed(base, monkeypatch,
 
     assert open(os.path.join(snapshot, "empty.txt"), "rb").read() == b""
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+# -- the guard above, asserted rather than assumed -------------------------------
+
+
+def test_these_tests_cannot_reach_the_network():
+    """`no_egress` is only worth having if it is really installed.
+
+    Asserted in each file that relies on it, because the fixture is IMPORTED into
+    two of them — and an import that silently stops resolving would disable the
+    guard everywhere without a single test turning red.
+    """
+    with pytest.raises(AssertionError, match="tried to resolve"):
+        socket.getaddrinfo("huggingface.co", 443)
+    with pytest.raises(AssertionError, match="tried to reach"):
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).connect(("1.1.1.1", 80))
+
+
+# -- Windows has no `os.pwrite`, so it has no mirror either ----------------------
+
+
+def test_without_pwrite_the_mirror_declines_and_the_hub_serves_the_repo(
+        base, monkeypatch, tmp_path, payload):
+    """What win32 really does, exercised on a platform that has `os.pwrite` by
+    taking it away.
+
+    `_segmented_fetch` is the mirror's only transport and it refuses outright
+    without `os.pwrite` (AI-5i: buffered seek-and-write would break the
+    guarantee that a counted byte is a written byte). So on Windows the mirror
+    NEVER fetches — every download goes to the Hub, mirrored model or not. That
+    is inherited behaviour rather than a defect of this feature, but it has to be
+    a test rather than a deduction, and it is why the round-trip test in
+    `test_build_model_mirror.py` needs the same platform guard this module
+    carries at its top.
+    """
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.delattr(os, "pwrite", raising=False)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+    # The manifest was still fetched — the decline happens after it, in the
+    # transport — so a Windows box does make the one manifest request and then
+    # takes the Hub path. Worth knowing for what the access logs mean.
+    assert [r["path"] for r in state["requests"]] == [MANIFEST_PATH]

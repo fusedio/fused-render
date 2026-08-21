@@ -6098,8 +6098,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   are **stdlib-only**, enforced by reading their own source. **The manifest is
   GENERATED from a real hf cache directory** (`scripts/build_model_mirror.py`:
   commit from `refs/main`, etags from the blob filenames, sizes and sha256 from the
-  blobs), never transcribed — that is the one part of this that would otherwise
-  fail silently and permanently — and `tests/test_build_model_mirror.py` round-trips
+  blobs, names through the single `wire_name` boundary that makes a manifest name
+  `/`-separated on every platform), never transcribed — that is the one part of
+  this that would otherwise fail silently and permanently — and `tests/test_build_model_mirror.py` round-trips
   the generated manifest through the client, which is what keeps the two halves
   honest. **The generator proves completeness against the Hub's own listing at
   that commit and refuses to publish a partial snapshot**, which is what earns the
@@ -6114,7 +6115,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   skipped is a non-zero exit** — the loop stays tolerant so one absent model does
   not stop the other nineteen, but publishing 19 of 20 green is how a suggested
   model goes missing from the mirror unnoticed, since its download quietly staying
-  on the Hub is invisible by design. Explicitly out of scope: `FUSED_MODEL_MIRROR` is **unset on every shipped
+  on the Hub is invisible by design. **On Windows the mirror never fetches.** Its only transport is
+  `_segmented_fetch`, which refuses without `os.pwrite` (AI-5i: buffered
+  seek-and-write would break the guarantee that a counted byte is a written
+  byte), so a win32 client makes the one manifest request, declines, and takes
+  the Hub path like any other download. That is inherited rather than new, but it
+  decides what the access logs MEAN — Windows acquisitions are invisible to them
+  — and it is why the generator/client round-trip test is split in two, an
+  agreement half that runs everywhere and a fetch half gated on `os.pwrite`. The
+  cost of learning this the hard way was a Windows CI failure reporting a 401
+  from huggingface.co: the mirror declined, the download fell through to a REAL
+  Hub listing, and the test had no business being able to leave the machine at
+  all. Every test in this feature now runs under a fixture that refuses a
+  non-loopback `connect` or `getaddrinfo`, so a broken mirror path fails saying
+  so instead of reporting somebody else's status code — and on a machine with a
+  valid `HF_TOKEN` that same test would have PASSED by downloading a real repo.
+  Explicitly out of scope: `FUSED_MODEL_MIRROR` is **unset on every shipped
   build**, so this changes nothing until an operator points it somewhere;
   component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
   tens of megabytes and not the "downloaded a model" signal; and the mirror pins a
