@@ -162,11 +162,12 @@ def _bundled_distributions():
     them). Reading only the extra is how an earlier version of this change
     silently dropped them from the bundle.
     """
-    # tomllib is 3.11+ stdlib; `tomli` is the same parser and is a dependency on
-    # 3.10 (see pyproject). The fallback stays because requires-python is still
-    # >=3.10, so a source install on 3.10 imports this module -- NOT because CI
-    # exercises it: the matrix starts at 3.11 now, so nothing here proves the
-    # `tomli` branch still works.
+    # tomllib is 3.11+ stdlib, and requires-python is now >=3.11, so the `tomli`
+    # arm below cannot be reached and `tomli` is no longer a declared dependency.
+    # Kept as a one-failed-import fallback rather than deleted: this module is
+    # imported by tests/test_bundle_contents.py and by the py2app build, and a
+    # bare `import tomllib` at module scope is the shape that errored a whole
+    # test module out once already.
     try:
         import tomllib
     except ImportError:

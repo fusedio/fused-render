@@ -123,29 +123,26 @@ def _fused_cli() -> str:
 
 
 def _toml():
-    """The TOML parser, or None: stdlib `tomllib` on 3.11+, else `tomli`.
+    """The TOML parser, or None if this interpreter has no `tomllib`.
 
-    `requires-python` is >=3.10 and `tomllib` only became stdlib in 3.11, so on
-    3.10 the `tomli` dependency supplies it — the same two-name lookup
-    `fused_render/projectenv.py::_load_manifest` does, and for the same reason a
-    template cannot just import the package's copy (SPEC PY-15).
+    `requires-python` is >=3.11, where `tomllib` is stdlib, so this normally just
+    succeeds. The `tomli` fallback that used to sit here is GONE, and not merely
+    because it became unreachable: `tests/test_engine_requirements.py` forbids a
+    template importing a distribution no packaged app ships, and dropping the
+    `tomli` dependency turned that import into exactly such a violation. A
+    template cannot import the package's own copy either (SPEC PY-15).
 
-    None rather than a raise, because a template backend may also be running in a
-    PROJECT venv (SPEC PY-16), which declares its own dependencies and need not
-    carry `tomli`. Every caller has a payload for "no parser" — the module's
-    contract is that no exception escapes `main`.
+    None rather than a raise, because a template backend may be running in a
+    PROJECT venv (SPEC PY-16) or some interpreter this file did not choose. Every
+    caller has a payload for "no parser" — the module's contract is that no
+    exception escapes `main`.
     """
     try:
         import tomllib
 
         return tomllib
     except ImportError:
-        try:
-            import tomli
-
-            return tomli
-        except ImportError:
-            return None
+        return None
 
 
 def _refuse(reason: str, message: str) -> dict:
@@ -389,7 +386,7 @@ def _page_report(folder: str) -> dict:
 def _manifest_report(folder: str) -> dict:
     """The current `mcp.toml`'s `[[tool]]` tables, or the reason there are none.
 
-    Read with the stdlib TOML parser (or `tomli` on 3.10) — the same parser the
+    Read with the stdlib TOML parser — the same parser the
     server uses — so the panel's idea
     of what is curated cannot diverge from what `fused app serve` will load. An
     unparseable manifest is reported as an error on this sub-object rather than
@@ -402,8 +399,8 @@ def _manifest_report(folder: str) -> dict:
         return out
     toml = _toml()
     if toml is None:
-        out["error"] = ("no TOML parser is available: tomllib needs Python 3.11+, "
-                        "and tomli is not installed in this folder's environment")
+        out["error"] = ("no TOML parser is available: reading this manifest needs "
+                        "tomllib, which is stdlib from Python 3.11")
         return out
     try:
         with open(path, "rb") as fh:
