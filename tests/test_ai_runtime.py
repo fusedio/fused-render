@@ -1924,7 +1924,7 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     assert catalog.default_for(registry.TEXT_GENERATION) == \
-        "mlx-community/Qwen3.5-2B-MLX-4bit"
+        "mlx-community/LFM2.5-1.2B-Instruct-4bit"
     # tiny.en is English-only, and it still leads: the one-rule trade above was
     # chosen with its cost in view, and an entry is added to the list because
     # it is worth OFFERING, not because it should be default-proof.

@@ -120,8 +120,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # Refreshed 2026-08-16, and the refresh brought one fact this list has not
     # had to state before.
     #
-    # **EVERY CURRENT CHECKPOINT HERE IS MULTIMODAL, AND HALF OF IT IS DEAD
-    # WEIGHT.** Qwen3.5, Qwen3.6 and gemma-4 all ship as
+    # **EVERY QWEN AND GEMMA CHECKPOINT HERE IS MULTIMODAL, AND HALF OF IT IS
+    # DEAD WEIGHT** — the LFM2.5 entry at position 0 is the exception, and it
+    # is the first entry this list has ever had that pays none of this cost:
+    # `Lfm2ForCausalLM`, no `vision_config`, every byte fetched is a byte the
+    # language model uses. Qwen3.5, Qwen3.6 and gemma-4 all ship as
     # `…ForConditionalGeneration` with a `vision_config` (gemma-4 adds an
     # `audio_config`), and mlx-lm loads the LANGUAGE TOWER and nothing else —
     # the vision and audio weights sit in the snapshot, downloaded and unused,
@@ -167,20 +170,39 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # supported." The `e4b`/`e2b` siblings below are `gemma4` and do load.
     # Recheck when mlx-lm is next bumped.
     #
-    # Ordered SMALLEST FIRST, like every list in this file, which means the 1.8GB
-    # 2B leads and is what a no-model chat call loads — see the module docstring
-    # for why that trade was taken deliberately. Sizes are the whole-snapshot Hub
-    # byte sum on 2026-08-16 (D295), and every entry is ungated. **One line
-    # each**, and each note names the entry it compares itself to rather than
-    # saying "above"/"below", so a future size correction that moves a row does
-    # not quietly falsify the prose.
+    # Ordered SMALLEST FIRST, like every list in this file, which means the
+    # 0.7GB LFM2.5 1.2B leads and is what a no-model chat call loads — see the
+    # module docstring for why that trade was taken deliberately. Sizes are the
+    # whole-snapshot Hub byte sum on 2026-08-16 (D295), the LFM2.5 row's
+    # re-measured on 2026-08-21, and every entry is ungated. **One line each**,
+    # and each note names the entry it compares itself to rather than saying
+    # "above"/"below", so a future size correction that moves a row does not
+    # quietly falsify the prose.
     "mlx-text": [
+        # Position 0, replacing `mlx-community/Qwen3.5-2B-MLX-4bit` (1.7GB),
+        # and it is a straight win rather than a trade: 2.6x less to fetch,
+        # text-only where the Qwen 2B spent part of that on a vision tower
+        # mlx-lm drops, and the same model the `llamacpp-text` list leads with
+        # — so the two platforms now start a bare `fused.ai()` on the SAME
+        # model rather than on two different compromises.
+        #
+        # **Loadable by the mechanism, not by a load** — this repo could not
+        # be tried here, because MLX does not install off Apple Silicon and
+        # the refresh that added it was done on Linux. What WAS checked is the
+        # exact resolution step the `gemma4_unified` paragraph above turns on:
+        # `model_type` is `lfm2`, mlx-lm resolves a checkpoint by importing
+        # `mlx_lm.models.<model_type>`, and 0.31.3's wheel ships `lfm2.py`
+        # (read out of the published wheel, not assumed). Its `quantization`
+        # block is a plain uniform `{group_size: 64, bits: 4, mode: affine}`
+        # with no `quant_method`, so `formats.unloadable_quant` passes it the
+        # same way it passes every other row here. Someone on a Mac should
+        # still load it once.
         {
-            "id": "mlx-community/Qwen3.5-2B-MLX-4bit",
-            "label": "Qwen3.5 2B (MLX 4-bit)",
-            "size_gb": 1.8,
-            "note": "The smallest here and the one a bare call loads — weaker "
-                    "than the rest, and it runs anywhere MLX does.",
+            "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+            "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
+            "size_gb": 0.7,
+            "note": "The smallest here and the one a bare call loads — quick "
+                    "to fetch and to answer, and weaker than every other row.",
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
@@ -337,9 +359,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # experience than a 0.7GB one that answers immediately, and LFM2.5 is not a
     # small transformer — Liquid's hybrid short-convolution stack is built for
     # CPU decode, which is the case this engine actually defaults into. The
-    # `mlx-text` list above already leads with a 2B for the same reason, so
-    # this makes the two platforms agree rather than inventing an exception.
-    # Every OTHER row here obeys the rule.
+    # `mlx-text` list above leads with the SAME model for the same reason, so
+    # the two platforms now start a no-model call on one model rather than on
+    # two different compromises. Every OTHER row here obeys the rule.
     #
     # **One line each** and hardware-neutral, per `SUGGESTIONS`' own rules:
     # this list
