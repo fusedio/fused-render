@@ -61,7 +61,8 @@ rather than as a parse error, which is what makes that path work.
       "inputs": [
         {"name": "query", "source": "literal",  "value": "is:unread"},
         {"name": "limit", "source": "literal",  "value": "20"},
-        {"name": "folder", "source": "previous", "value": ""}
+        {"name": "folder", "source": "previous", "value": ""},
+        {"name": "attachment", "source": "trigger", "key": "path"}
       ],
       "observedOutput": {"kind": "object", "keys": ["messages", "total"]}
     },
@@ -101,13 +102,44 @@ MCP input schema reports `required: []` and — measured on `open-mail`'s
 `send_mail` — **22 properties**. Rendering 22 rows per node is not a canvas, it
 is a form nobody fills in. So the AUTHOR chooses which parameters this node
 exposes and the document records that choice; everything unlisted is left to the
-tool's own default. `source` is `"literal"` (use `value`) or `"previous"` (Claude
-fills it from the upstream node's output at run time).
+tool's own default. 
+`source` has THREE values, and the third is what makes a workflow runnable by
+something other than a person (SPEC WC-11):
+
+* **`"literal"`** — use `value`.
+* **`"previous"`** — Claude fills it from the upstream node's output at run time.
+* **`"trigger"`** — read it out of the JSON object the RUN WAS STARTED WITH.
+  `key` names which key (defaulting to the parameter's own name, because a file
+  trigger's `path` landing on a parameter called `path` is the common case and
+  writing it twice would be ceremony), and `value` is unused. A run started with
+  no matching key is REFUSED at compile time naming the step and the key — never
+  run with an empty string, which is how "reply to the invoice that arrived"
+  quietly becomes "reply to ''" inside a detached session. The payload comes from
+  the panel's "Run with input…" sheet or from a trigger armed against this
+  document, and `run.py` renders every value of it as a JSON literal because its
+  author may be whoever dropped a file in a watched folder (WC-11b).
 
 An edge with a `condition` is a branch the runner states as a rule; an edge with
 none is a plain "then", left to Claude's judgement. `observedOutput` is written
 by `run.py` after a run — see its docstring for why it lands here rather than in
 the app's `mcp.toml`.
+
+**The document does NOT record whether this workflow is armed.** Arming — the
+approval that lets a trigger start a run with nobody watching, and the tool-set
+fingerprint that approval is made of — lives in a durable store owned by
+`fused_render/workflow_triggers.py`, reached over `/api/workflow-triggers`. Not
+merely because a template imports nothing from `fused_render` (SPEC PY-15 /
+D166), but because an approval stored in the file the user edits would be an
+approval the user could edit, and the fingerprint check exists precisely because
+this file changes under an armed workflow (WC-12b).
+
+That check is made by `run.py` and not by the store, and the reason is worth
+knowing before editing either: the approved set is handed to `run.py` on the
+start call, and it is compared against the same compile whose steps become
+`--allowed-tools`. A caller that compiled this file itself, compared, and then
+asked for a start would be checking one reading of it and authorizing another —
+and this file is hand-editable and saved by a canvas, so a save fits comfortably
+in between (WC-12a-i).
 
 Self-contained apart from `../shared/appenv.py`; nothing here imports
 fused_render (SPEC PY-15 / D166).
