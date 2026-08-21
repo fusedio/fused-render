@@ -48,6 +48,7 @@ TIER_ONE_TEMPLATES = (
     "text",
     "tree",
     "vector",
+    "workflow",
     "xlsx",
     "zip",
 )

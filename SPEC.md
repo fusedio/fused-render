@@ -8330,3 +8330,135 @@ three platforms, one API, no field naming which one served you.
   (a browser rule), and on Wayland `displays` is always `[]` because no client
   may enumerate them without prompting — `display` is refused there with a
   sentence instead of offered as a list nothing accepts.
+
+## 46. Workflow Canvas — Chaining MCP Tools Into One Run (D401, PROTOTYPE)
+
+§44 makes an app's entrypoints callable by Claude. It does not make two of them
+compose: `search_mail` and `send_mail` are both curated, both reachable, and
+nothing on this machine says "do the first, then the second, but only if there
+was anything to reply to". The `workflow` mode is that missing sentence, written
+down as a file the user owns and can run.
+
+**This section describes a prototype.** It is built, it works end to end on the
+two curated showcase apps, and it deliberately has no tests — the shape is still
+being learned. What is settled enough to write down is the file format and the
+division of labour; everything else in here should be read as "this is what it
+currently does", not "this is what it must always do".
+
+- **WC-1** **The unit is a FILE, `<name>.workflow.json`, not a folder**
+  (`templates/workflow/condition.py`). Unlike `mcp`, which is folder-only
+  because a manifest covers a folder, a workflow spans folders by definition —
+  its whole reason to exist is a step in `open-mail` feeding a step in
+  `disk-usage`. So it is an ordinary user file, opened from the explorer,
+  version-controlled with whatever it sits in. Registered on the COMPOUND key
+  `.workflow.json`, which `_match_registry` ranks above `.json` (CT-3) — the
+  same mechanism `.calls.jsonl` uses to claim `log_studio` — so the plain
+  `.json` list is untouched and needs no reordering.
+- **WC-1a** **An EMPTY file is a valid new workflow, and that is the entire
+  creation path.** The explorer's generic New File… prompt creates a zero-byte
+  file with whatever name is typed, so `triage.workflow.json` there is how one
+  comes into existence. No workflow-specific "new document" affordance was
+  added: the generic one already works, and a second one would be a surface
+  that exists only to be discovered. The panel therefore reads empty content as
+  `{nodes: [], edges: []}` rather than as a parse error — and a file that does
+  NOT parse keeps the mode (the gate does not read content), because the owner
+  of a broken workflow is exactly who needs the editor, and the panel renders
+  the parse error with Save left disabled so nothing can clobber it.
+- **WC-2** **THE DOCUMENT RECORDS WHICH PARAMETERS EACH NODE EXPOSES, and this
+  is the whole reason the format is not just a list of tool names.** An MCP
+  input schema is too weak to drive a canvas: every parameter of a dispatcher
+  entrypoint has a default, so `fused app serve` reports `required: []`, and
+  `open-mail`'s `send_mail` reports **22 properties**. A node rendering that is
+  a 22-row form nobody fills in, and a node rendering none is a step whose
+  inputs cannot be set. So the AUTHOR picks — a checkbox per parameter in the
+  inspector, with a filter box, and an already-exposed one stays visible through
+  a filter — and `nodes[].inputs` records the choice. Everything unlisted keeps
+  the tool's own default. Each entry is `source: "literal"` (with a `value`) or
+  `source: "previous"`; picking the latter HIDES the value box, because a stale
+  literal written into a document that does not use it is a lie the next reader
+  believes.
+- **WC-3** **The graph is a chain WITH BRANCHING, and a condition is a
+  sentence.** An edge may carry a `condition` over the previous node's output;
+  an edge with none is a plain "then", left to Claude's judgement. Conditions
+  are typed in the inspector rather than on the canvas — a canvas has nowhere to
+  put a sentence — and a conditional edge draws DASHED, which is the part a
+  reader needs at a glance. A cycle is refused at compile time: "run these in
+  this order" is not a claim one can make about a graph that has no order.
+- **WC-4** **THE GRAPH IS THE PLAN; CLAUDE IS THE RUNTIME**
+  (`templates/workflow/run.py`). There is no step engine. `start` compiles the
+  document into an `--mcp-config` naming one `fused app serve <folder>` server
+  per distinct app folder — the same command `mcp` registers with the user's
+  host (MC-5), pointed at a run-local config instead of `~/.claude.json` — and a
+  prompt stating the steps, their fixed inputs, their from-previous inputs and
+  their conditions; then spawns one detached headless `claude -p`. The
+  interesting part of chaining two tools is never the sequencing, it is the
+  RESHAPING — `search_mail` answers messages and `send_mail` wants a `to` and a
+  `body`, and no edge annotation a user could draw specifies that mapping. A
+  model is the right thing to put in that gap, so the graph pins down everything
+  a model should not improvise and leaves the gap itself.
+- **WC-4a** **A human clicking Run is the entire approval model**, which is
+  MC-6's argument unchanged: every tool in the graph is one this user curated
+  and then wired and then started. A headless session has nobody to answer a
+  permission prompt, so `--allowed-tools` names each tool the plan calls —
+  narrow by construction, never a wildcard, so the session cannot reach a tool
+  the workflow does not contain even where its server offers one.
+- **WC-4b** **The `fused` path is `appenv.fused_cli_dir()`, never a PATH
+  lookup** (D334 / MC-5a): the config is executed later by another process with
+  nobody watching, which is the exact case that rule exists for. Run is refused
+  with the reason stated when there is none. `claude` itself IS a PATH lookup —
+  it is spawned here and now, where a wrong answer surfaces instantly.
+- **WC-5** **PROGRESS COMES FROM TOOL RECORDS, NOT FROM NARRATION.** `poll`
+  derives each node's state from the run's real `tool_use` / `tool_result`
+  records, joined by `tool_use_id` and never by position. A model saying "step 2
+  complete" is a claim; a `tool_result` for `mcp__open-mail__search_mail` is a
+  fact about what the machine did, and the prompt explicitly tells the model not
+  to narrate progress. The one heuristic is which NODE owns a call when two
+  nodes call the same tool — matched in plan order against the not-yet-started
+  nodes for that tool — and it is stated in the source rather than hidden,
+  because the alternative (asking the model to tag its calls) would put
+  narration back in charge of the one thing this readout exists to not trust.
+- **WC-5a** **`poll` reads a PLAN SNAPSHOT written at start, never the live
+  document.** The user can edit and Save while a run is in flight, and a readout
+  that re-derived its node list from the file would start attributing a running
+  call to whatever now sits at that index.
+- **WC-6** **Observed output shapes land on the DOCUMENT, and the page is what
+  writes them.** An MCP tool declares its inputs and says nothing at all about
+  its output, and `search_mail` and `send_mail` share one entrypoint while
+  returning different things — so what a step actually returned is a fact
+  nothing else on this surface has. `poll` returns it as a shape summary
+  (`{kind, keys, count, sample}`), the page merges it into `nodes[].observedOutput`
+  and marks the document dirty, and Save is the deliberate step. It was designed
+  to go into each app's `mcp.toml` as a per-`[[tool]]` output schema and does
+  not: `mcp/manifest.py` is that file's single writer with a
+  validate-render-reparse-verify contract, a second writer for a file whose
+  failure mode is silent corruption of the user's own file is not worth it, and
+  a workflow legitimately touches folders the user never opened (they came out
+  of the file index) where a run rewriting a manifest unasked is not a thing to
+  do. Keeping the page as the document's only writer also means a backend cannot
+  race whatever is open in the inspector.
+- **WC-7** **The palette's three sources exist because one of them is stale.**
+  `discover.py` finds app folders via the file index (`SELECT dir FROM files
+  WHERE name = 'mcp.toml'` — following `partitions.json`, never a
+  `files/*.parquet` glob, which double-counts old generations), the `~/Fused`
+  workspace at its two levels, and `registered_apps.json`. The index is the only
+  source that can find a folder somewhere nobody thought to look; the other two
+  are a listing and a small JSON file read at the moment of the call, so they
+  are authoritative and never stale — which is what makes the index's lag
+  survivable. Measured on the machine this was built on: the index reported
+  **zero** `mcp.toml` rows while two folders on disk held one.
+- **WC-7a** **"No index" and "no tools" are different answers and the payload
+  keeps them apart** — the readiness rule the whole index surface is built
+  around. The gap is reported as a MEASURED count of folders the index did not
+  know about rather than as an inference, and a rescan is OFFERED rather than
+  fired: a full scan is minutes of the user's disk, and nobody asked for one by
+  opening a canvas.
+- **WC-8** **Parameters come from the manifest's `signature` snapshot minus the
+  pins, never from the served schema.** The snapshot at least carries each
+  parameter's annotation and default, which is what the inspector shows; the
+  served schema carries neither and reports every parameter as optional. A
+  hand-written manifest with no snapshot (MC-4's `unknown` verdict) falls back to
+  one bounded AST read of the file it names — by AST and never by importing, for
+  MC-2's reason. A parameter that has since vanished from a signature is DROPPED
+  from a saved node rather than refused: that is MC-4's situation, the served
+  tool keeps working, and sending a name the schema does not carry is what would
+  actually fail the call.
