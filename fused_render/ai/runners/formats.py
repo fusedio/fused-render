@@ -475,8 +475,14 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # this app reads one for TEXT (SPEC AI-11) — the diffusers image
             # runner's own GGUF use is a swapped-in COMPONENT of an otherwise
             # ordinary pipeline (`COMPONENT_REPOS`), not a snapshot whose root
-            # is a bare `.gguf`, so the two cannot collide.
-            "llamacpp-text")
+            # is a bare `.gguf`, so the two cannot collide. Both llama.cpp
+            # builds, for the same reason the diffusers hardware variants are
+            # both listed above: format evidence, not a fact about a machine.
+            # Spelled literally rather than via `LLAMACPP_RUNNERS` because that
+            # tuple (like `DIFFUSERS_RUNNERS`) is defined further down this
+            # module, alongside `loaders()` — the same order this file already
+            # keeps for the diffusers pair just above.
+            "llamacpp-text", "llamacpp-text-vulkan")
 
 
 def is_mlx_checkpoint(config: dict) -> bool:
@@ -594,6 +600,11 @@ TRANSFORMERS_RUNNERS = ("transformers-text", "transformers-text-cuda",
                         "transformers-text-rocm")
 DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
                      "diffusers-image-rocm")
+#: Both llama.cpp builds — CPU/Metal and Vulkan — for the identical reason:
+#: a root `.gguf` is the same FORMAT whichever wheel opens it, and naming only
+#: `llamacpp-text` here is exactly the trap this comment already describes for
+#: the other two families (see `test_every_registered_runner_appears_in_loaders`).
+LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
@@ -628,7 +639,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # exists to keep out.
     if (has_gguf_weights(names)
             and gguf_architecture in GGUF_TEXT_ARCHITECTURES):
-        found.append("llamacpp-text")
+        found.extend(LLAMACPP_RUNNERS)
         return tuple(found)
     if is_mlx_whisper_snapshot(names, config):
         found.append("mlx-whisper")

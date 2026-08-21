@@ -240,28 +240,53 @@ def _llamacpp_platform() -> Availability:
     shape as `_transformers_platform`'s Intel-macOS business decision.
 
     The maintainer's CPU wheel index (`llamacpp_text/pyproject.toml`, D406)
-    publishes `py3-none` wheels for a specific, checked tag set:
-    `macosx_11_0_arm64`, `manylinux2014_{x86_64,aarch64}.manylinux_2_17_*`,
-    `musllinux_1_2_{x86_64,aarch64}`, `win_amd64`, `linux_riscv64`, and a wasm
-    target. **There is no macOS x86_64 tag at all.** Where
+    publishes `py3-none` wheels for a specific, checked tag set — re-verified
+    directly against the index listing for the pinned `0.3.29` rather than
+    trusted from an earlier pass: `macosx_11_0_arm64`,
+    `manylinux2014_{x86_64,aarch64}.manylinux_2_17_*`,
+    `musllinux_1_2_{x86_64,aarch64}`, `win_amd64`, and `linux_riscv64`. **There
+    is no macOS x86_64 tag, and no `win_arm64` tag, at all.** Where
     `_transformers_platform` excludes Intel macOS because torch's wheel there
-    is not a platform this app chooses to distribute to, this excludes it
-    because `uv sync` has NOTHING to install — an immediate, total failure
-    the moment a machine reaches this row, not a slow or a degraded one. Kept
-    to the same `(Windows or Linux) or (Darwin and arm64)` shape
-    `_transformers_platform` already uses — a real check against the tags
-    above, not a new mechanism — so the next person widening one accidentally
-    widens both, or neither, but has to look at both to widen just one.
+    is not a platform this app chooses to distribute to, this excludes both
+    because `uv sync` has NOTHING to install — an immediate, total failure the
+    moment a machine reaches this row, not a slow or a degraded one.
+
+    **Checked by ARCHITECTURE, not merely by OS** — `system in ("Windows",
+    "Linux")` alone (the shape this function used before) advertises a Load
+    button on a Windows ARM64 box (Surface Pro X and similar) or any Linux
+    machine outside the three architectures actually published, exactly the
+    defect this function's own macOS branch was written to avoid. `machine()`
+    spells the same architecture differently per OS — `"AMD64"` on Windows,
+    `"x86_64"` on Linux, `"arm64"` on Darwin — so each OS branch checks its own
+    OS's spelling rather than one shared tuple of names that would silently
+    stop matching the moment a branch used the wrong OS's spelling for it.
     """
     system = platform.system()
     machine = platform.machine()
-    if system in ("Windows", "Linux") or (system == "Darwin" and machine == "arm64"):
+    if system == "Linux" and machine in ("x86_64", "aarch64", "riscv64"):
+        return Availability(True)
+    if system == "Windows" and machine == "AMD64":
+        return Availability(True)
+    if system == "Darwin" and machine == "arm64":
         return Availability(True)
     if system == "Darwin":
         return Availability(
             False,
             "needs Apple Silicon — the llama.cpp wheel index publishes no "
             f"macOS x86_64 build (this is {system.lower()}/{machine})",
+        )
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 machine — the llama.cpp wheel index publishes "
+            f"win_amd64 only, no win_arm64 (this is {system.lower()}/{machine})",
+        )
+    if system == "Linux":
+        return Availability(
+            False,
+            "needs x86_64, aarch64, or riscv64 — the llama.cpp wheel index "
+            f"publishes no {machine} build for Linux (this is "
+            f"{system.lower()}/{machine})",
         )
     return Availability(
         False,
@@ -657,6 +682,138 @@ def _cuda() -> Availability:
     )
 
 
+#: Where the Vulkan LOADER lives on Linux — a handful of fixed paths rather
+#: than one, because unlike CUDA/ROCm's kernel device nodes this is a
+#: userspace `.so` a distro installs wherever ITS libdir convention says:
+#: Debian/Ubuntu use the multiarch triplet, Fedora/RHEL/openSUSE use `lib64`,
+#: Arch/Manjaro use a flat `/usr/lib`. `ctypes.util.find_library` would answer
+#: this properly but shells out to `ldconfig` (or dlopens outright), either of
+#: which `_cuda`'s docstring already rules out for this module — a handful of
+#: `os.path.exists` checks stays inside the same "stdlib only, no subprocess,
+#: no dlopen" rule its neighbours already follow.
+VULKAN_LOADER_PATHS = (
+    "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",  # Debian / Ubuntu multiarch
+    "/usr/lib64/libvulkan.so.1",                  # Fedora / RHEL / openSUSE
+    "/usr/lib/libvulkan.so.1",                    # Arch / Manjaro
+)
+#: Where a Vulkan ICD — the GPU driver's own entry point — registers itself on
+#: Linux: the loader's own manifest search path (LunarG's Vulkan-Loader
+#: `LoaderDriverInterface.md`, "Driver Discovery on Linux", fetched and read
+#: directly rather than assumed), narrowed to the two directories a distro
+#: package or a container actually writes into. `/etc/vulkan/icd.d` is
+#: searched AHEAD of `/usr/share/vulkan/icd.d` in the real loader and is where
+#: a container image commonly bind-mounts a driver in, so both are checked
+#: rather than only the share directory a bare-metal install uses.
+VULKAN_ICD_DIRS = ("/etc/vulkan/icd.d", "/usr/share/vulkan/icd.d")
+#: The Windows analogue of `NVCUDA_DLL`: the loader DLL a GPU driver installer
+#: places in `System32`, the same "hint, not proof" the CUDA gate already
+#: documents (installed by the display driver, not proof a device answers it).
+VULKAN_DLL = r"C:\Windows\System32\vulkan-1.dll"
+
+
+def _vulkan() -> Availability:
+    """`llamacpp-text-vulkan`'s supported platforms and usable devices — one
+    gate, unlike the transformers accelerators, because this row's own wheel
+    tag set (installability, `_llamacpp_platform`'s question) and its usable
+    hardware (`_cuda`/`_rocm`'s question) are BOTH narrower than anything else
+    in this table, and answering them separately would need two functions
+    that always run together.
+
+    **The published wheel exists on exactly two platforms.** The vulkan index
+    (`llamacpp_text_vulkan/pyproject.toml`) publishes `manylinux2014_x86_64`
+    and `win_amd64` for `0.3.29` and NOTHING else — no macOS build at all
+    (Apple Silicon already gets GPU acceleration through the CPU index's
+    Metal-linked wheel, which is the whole reason this variant exists only
+    for NVIDIA/AMD), no Linux aarch64, no Windows ARM64. Checked by
+    architecture per OS exactly as `_llamacpp_platform` now is, and for the
+    same reason: `system in ("Windows", "Linux")` alone would advertise a
+    Load button on a Windows ARM64 box or a Linux aarch64 one, neither of
+    which this specific index ships a wheel for.
+
+    **A wheel existing is not the same question as it being USABLE, and this
+    gate answers both because a Vulkan wheel supplies neither the loader nor
+    the driver ICD — those come from the GPU driver, not from `pip`.** Two
+    facts, established directly against the downloaded `0.3.29` wheels rather
+    than assumed, decide how strict each half of the check must be:
+
+    1. **The loader is a HARD link dependency, not a `dlopen`.** The wheel's
+       own `libggml-vulkan.so` declares `DT_NEEDED libvulkan.so.1` (read
+       straight out of its ELF `.dynamic` section), and `libggml.so` and
+       `libllama.so` both declare `DT_NEEDED libggml-vulkan.so.0` in turn — so
+       the whole chain fails to load, and `import llama_cpp` raises, the
+       moment the loader is missing, regardless of whether a GPU is even
+       asked about. The Windows DLL carries the identical dependency
+       (`ggml-vulkan.dll` imports `vulkan-1.dll`, read from its PE import
+       table), so the same hard-failure fact holds on both platforms this
+       row ships for. This is why a MISSING LOADER is refused here rather
+       than left to the worker's own error the way `_cuda`'s driver-version
+       floor is: `_cuda`/`_rocm`'s missing-device case still lets `import
+       torch` succeed and fail later inside a CUDA/HIP call, while a missing
+       Vulkan loader here fails at the very first `import`, which is a worse
+       and more confusing failure to hand back than a `Runner.available`
+       reason string that names the actual cause.
+    2. **A missing ICD (no GPU driver registered) is NOT a load failure —
+       ggml's backend loader falls back to ITS OWN bundled CPU backend**
+       (`libggml-cpu.so`/`ggml-cpu.dll`, present in both wheels alongside the
+       74MB Vulkan one) when Vulkan enumerates zero devices, so `import
+       llama_cpp` succeeds and inference still runs, just on the CPU. That
+       is not a reason to pass the gate anyway: a machine in that state gets
+       every byte of an 8x larger download (182MB vs. the CPU index's
+       22.5MB Linux wheel) for the SAME CPU-only outcome the smaller
+       `llamacpp-text` row already offers, which is exactly the "advertising
+       a claim that buys nothing" case `_cuda`/`_rocm`'s device checks
+       already exist to refuse.
+
+    Both facts were established by parsing the actual `0.3.29` wheels
+    (`zipfile` for the contents, a small ELF/PE parser for the dependency
+    tables) on 2026-08-21 — not by reading ggml's source or assuming dynamic
+    backend loading behaves like a plugin system, which it does NOT here: the
+    Vulkan backend is linked in, not `dlopen`ed at runtime.
+
+    **Not cached, for `_rocm`'s reasons exactly** — a loader package or a
+    driver installed while the app is running is a fix that must be seen
+    without a restart.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Linux" and machine == "x86_64":
+        if not any(os.path.exists(path) for path in VULKAN_LOADER_PATHS):
+            return Availability(
+                False,
+                "needs the Vulkan loader — no libvulkan.so.1 was found at any "
+                "of this distribution's usual library paths (install your "
+                "distribution's `vulkan-loader`/`libvulkan1` package)",
+            )
+        if not any(
+            os.path.isdir(d) and glob.glob(os.path.join(d, "*.json"))
+            for d in VULKAN_ICD_DIRS
+        ):
+            return Availability(
+                False,
+                "needs a Vulkan GPU driver — the loader is installed but no "
+                "driver ICD is registered under /etc/vulkan/icd.d or "
+                "/usr/share/vulkan/icd.d (install your GPU vendor's Vulkan "
+                "driver package, e.g. `mesa-vulkan-drivers` or the NVIDIA "
+                "driver's Vulkan component)",
+            )
+        return Availability(True)
+    if system == "Windows" and machine == "AMD64":
+        if not os.path.isfile(VULKAN_DLL):
+            return Availability(
+                False,
+                "needs a GPU with its Vulkan driver installed — the loader "
+                f"library is not at {VULKAN_DLL} (install your GPU vendor's "
+                "driver, which carries its own Vulkan support)",
+            )
+        return Availability(True)
+    return Availability(
+        False,
+        "needs a Windows or Linux x86_64 machine — the llama.cpp Vulkan wheel "
+        f"index publishes manylinux2014_x86_64 and win_amd64 only (this is "
+        f"{system.lower()}/{machine})",
+    )
+
+
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
 # below it serves Windows and Linux plus the Apple Silicon fallback. All three
@@ -794,6 +951,31 @@ _RUNNERS: tuple[Runner, ...] = (
              "unquantized download — opt-in because its wheels come from the "
              "maintainer's own index rather than PyPI.",
         _available=_llamacpp_platform,
+    ),
+    # The Vulkan variant of the row above — GPU acceleration on NVIDIA and AMD
+    # under Windows and Linux, where `llamacpp-text`'s CPU-index pin is
+    # CPU-only (Apple Silicon already gets Metal acceleration through that
+    # same CPU-index wheel, which is why this variant does not also cover
+    # macOS). Immediately BELOW `llamacpp-text` and still below every
+    # transformers row, for the identical reason `llamacpp-text` itself sits
+    # there: reaching this row is always a Load-button CHOICE, never
+    # something `auto` falls into.
+    Runner(
+        code="llamacpp-text-vulkan",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_text_vulkan"),
+        # Both names equal, the same shape the torch hardware variants use
+        # (see the table's naming note): "(Vulkan)" is this row's IDENTITY,
+        # not a platform aside, so it belongs in the short name the Local
+        # card and job row print too — unlike `llamacpp-text`'s own "(GGUF)",
+        # which is dropped from ITS short name because format is not what
+        # tells these two rows apart, hardware is.
+        label="llama.cpp (Vulkan)",
+        short_label="llama.cpp (Vulkan)",
+        note="Much quicker on an NVIDIA or AMD GPU under Windows or Linux, "
+             "for a much larger download — see llama.cpp (GGUF) for the "
+             "CPU/Apple Silicon build.",
+        _available=_vulkan,
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
     # (D310). One 4.6GB repo against the ~10.1GB two-repo split the torch

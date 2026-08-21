@@ -398,8 +398,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # and every model here is a Qwen3.5-or-newer 4B, 9B or 27B.
     #
     # **One line each**, per the rule the transformers list above states, and
-    # hardware-neutral for the same reason: this runner is CPU-only in this
-    # change, but a note should not need rewriting the day that changes.
+    # hardware-neutral for the same reason the transformers list is: this list
+    # is shared by BOTH llama.cpp builds (`_SHARED_SUGGESTIONS` aliases
+    # `llamacpp-text-vulkan` to this same key), so a note naming one build's
+    # device would be wrong on the other.
     "llamacpp-text": [
         {
             "id": "Qwen3.5-4B-Q5_K_M.gguf",
@@ -650,6 +652,7 @@ _SHARED_SUGGESTIONS = {
     "transformers-text-rocm": "transformers-text",
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
+    "llamacpp-text-vulkan": "llamacpp-text",
 }
 
 
