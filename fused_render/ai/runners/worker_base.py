@@ -40,6 +40,7 @@ import contextlib
 import fnmatch
 import http.client
 import http.server
+import importlib.util
 import json
 import os
 import re
@@ -1507,14 +1508,118 @@ def _clear_parts(folder):
                 _remove(os.path.join(dirpath, name))
 
 
-def _fallback(model_id, error):
+def _fallback(model_id, error, source="segmented fetch"):
     """Say why we are back on hf's downloader. The supervisor captures stderr,
     so a fallback that happens in the field is diagnosable rather than merely
-    slow."""
+    slow.
+
+    `source` names WHICH path gave up — the segmented Hub fetch or the model
+    mirror. One line saying "segmented fetch" for a mirror that 404s sends a
+    reader to the wrong half of the feature, and the two fail for entirely
+    different reasons.
+    """
     sys.stderr.write(
-        f"[fused] segmented fetch of {model_id} unavailable, falling back to "
+        f"[fused] {source} of {model_id} unavailable, falling back to "
         f"huggingface_hub: {error.__class__.__name__}: {error}\n")
     _clear_parts(repo_folder(model_id))
+
+
+# --------------------------------------------------------------- the mirror path
+#
+# A suggested model can come off a distribution WE run instead of off
+# huggingface.co — see `mirror.py` for the protocol, the two environment
+# variables and why the permission is per-model. Everything below is the hook:
+# one branch inside `download_snapshot`, so all nine runner call sites are
+# untouched, and any failure lands on the Hub path unchanged.
+
+#: The loaded `mirror` module, or False for "there is no usable one here".
+#: Cached because the answer cannot change within a process, and False rather
+#: than None so a failed load is not retried on every call.
+_MIRROR = None
+
+
+def _mirror_module():
+    """`mirror.py` from beside this file, or None.
+
+    Loaded LAZILY and BY PATH, both deliberately. `worker_base` is imported two
+    ways — as a bare module by a worker, which puts `runners/` on `sys.path`, and
+    by absolute path from the tests, which does not — so a plain `import mirror`
+    resolves in one and not the other. And loading it here rather than at module
+    scope keeps this file's module-scope imports stdlib-only, the rule
+    `test_ai_worker_base` enforces by reading this source.
+
+    None for a missing or broken file, because a runner venv that somehow lacks
+    it should download from the Hub, not fail.
+    """
+    global _MIRROR
+    if _MIRROR is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mirror.py")
+        try:
+            spec = importlib.util.spec_from_file_location("fused_model_mirror", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _MIRROR = module
+        except Exception as error:  # noqa: BLE001 - no mirror is a slower download
+            sys.stderr.write(f"[fused] the model mirror client is unavailable: "
+                             f"{error.__class__.__name__}: {error}\n")
+            _MIRROR = False
+    return _MIRROR or None
+
+
+def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+    """The repo off our own mirror, or None to say "take the Hub path".
+
+    None for every way of not having a mirror — not configured, not permitted
+    for this model, no manifest, a manifest that does not hold up, a 404, a 5xx,
+    a mid-download drop, a hash that does not match. A mirror that is down must
+    cost a slower download and never a failed one, so the ONLY thing that
+    escapes here is `Cancelled`: a ✕ must not be answered by starting the
+    download again somewhere else.
+
+    The manifest is filtered by the SAME `selects` the Hub listing goes through,
+    so a scoped download (`torch_image` passes an allow-list) measures and
+    fetches the same subset on both paths — and the fetch record is written with
+    that scope, which is what makes the second download of a mirrored model come
+    back off the fast path.
+    """
+    mirror = _mirror_module()
+    if mirror is None or not mirror.allowed(model_id):
+        return None
+    manifest = mirror.manifest(model_id)
+    if manifest is None:
+        return None
+    files = [(entry["name"], entry["size"]) for entry in manifest["files"]
+             if selects(entry["name"], allow=allow_patterns,
+                        ignore=ignore_patterns)]
+    if not files:
+        # A manifest that selects nothing at this scope is not a mirror hit; the
+        # Hub listing is the authority on what the scope was supposed to match.
+        return None
+    names = [name for name, _size in files]
+    try:
+        fetched = fetch_with_progress(
+            model_id,
+            lambda: _segmented_fetch(
+                model_id, names, manifest["commit"],
+                meta=mirror.file_meta(model_id, manifest),
+                # Anonymous, always. The blob URL is the metadata URL here, so
+                # `_cdn_token` would otherwise hand a user's Hub token to
+                # whatever host `FUSED_MODEL_MIRROR` names.
+                token=None),
+            total=_total_bytes(files))
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to the Hub
+        _fallback(model_id, error, source="the model mirror")
+        return None
+    # Recorded exactly as the Hub path records it, and for the same reason: what
+    # landed is a normal hf cache entry, so the cached-model fast path, the Local
+    # tab's inventory and deletion all read it without knowing where it came
+    # from. `_record_fetch` verifies the names are really there and writes
+    # nothing if they are not.
+    _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
+                  allow=allow_patterns, ignore=ignore_patterns)
+    return fetched
 
 
 class _HubByteTicker:
@@ -2265,6 +2370,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
                               ignore=ignore_patterns)
         if cached:
             return cached
+
+        # Our own mirror, for a suggested model, BEFORE the Hub is consulted at
+        # all — the point of the feature is a download that involves
+        # huggingface.co nowhere, so a listing call here would defeat it. Excluded
+        # under `kwargs` for the same reason the fast path above is: an argument
+        # this function does not know about changes what a download IS, and a
+        # manifest describes the whole repo at one commit and nothing else.
+        mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns)
+        if mirrored:
+            return mirrored
 
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;

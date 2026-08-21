@@ -1569,3 +1569,324 @@ def test_the_hub_path_still_sends_the_token_when_the_hub_serves_the_blob(
     base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert any(r["auth"] == "Bearer hf_secret" for r in state["requests"])
+
+
+# -- the model mirror: our own codepath for a suggested model --------------------
+#
+# `download_snapshot` is the ONE decision point, below all nine runner call
+# sites, so nothing in a runner changes. What lands on disk is a normal hf cache
+# entry either way — which is the whole design — so these tests assert on the
+# LAYOUT and on which host was asked, never on an internal flag.
+
+MIRROR_COMMIT = "a1b2c3d4" * 5
+
+
+def _mirror_manifest(payload, name="model.safetensors", **overrides):
+    entry = {"name": name, "etag": "beef" * 10, "size": len(payload),
+             "sha256": hashlib.sha256(payload).hexdigest()}
+    manifest = {"schema": 1, "repo": "org/m", "commit": MIRROR_COMMIT,
+                "files": [entry]}
+    manifest.update(overrides)
+    return manifest
+
+
+def _mirror_server(payload, manifest=None, manifest_status=None, blob=True,
+                   **flags):
+    """A mirror serving one manifest and one blob, on one local port.
+
+    `manifest_status` replaces the manifest with a status code (404 for a model
+    nobody mirrored, 503 for a distribution having a bad day). `blob=False`
+    leaves the blob URL a 404 — a manifest that promises bytes the mirror does
+    not hold, which is the mid-download failure.
+    """
+    manifest = _mirror_manifest(payload) if manifest is None else manifest
+    body = manifest_status if manifest_status else json.dumps(manifest).encode()
+    routes = {"/models/org/m/manifest.json": body}
+    if blob and manifest.get("files"):
+        etag = manifest["files"][0].get("etag", "")
+        routes[f"/models/org/m/{manifest.get('commit')}/{etag}"] = payload
+    _url, state = _start_server(b"", routes=routes, **flags)
+    return state
+
+
+def _mirror_wire(base, monkeypatch, tmp_path, state, model_id="org/m",
+                 permitted=True):
+    """Point `worker_base` at that mirror and make the Hub FATAL.
+
+    Fatal rather than merely counted: "no request to huggingface.co" is the
+    property the whole feature exists for, and a path that quietly listed the
+    repo anyway would still produce the right files.
+    """
+    folder = str(tmp_path / "models--org--m")
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": folder)
+    monkeypatch.setattr(base, "SEGMENT_MIN_BYTES", 20_000)
+    monkeypatch.setattr(base, "CHUNK_BYTES", 50_000)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"])
+    if permitted:
+        monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", model_id)
+    else:
+        monkeypatch.delenv("FUSED_MODEL_MIRROR_OK", raising=False)
+    return folder
+
+
+def _hub_is_fatal(base, monkeypatch):
+    def listing(*args, **kwargs):
+        raise AssertionError("the Hub was listed for a mirrored model")
+
+    def meta(*args, **kwargs):
+        raise AssertionError("the Hub was asked to resolve a mirrored file")
+
+    monkeypatch.setattr(base, "_repo_files", listing)
+    monkeypatch.setattr(base, "_hub_file_meta", meta)
+    _fake_hub(monkeypatch, snapshot_download=listing,
+              HfApi=listing, try_to_load_from_cache=listing)
+
+
+def _hub_answers(base, monkeypatch, payload, name="model.safetensors"):
+    """The Hub path, wired to succeed — what every failure must land on."""
+    fell_back = []
+
+    def snapshot_download(model_id, **kwargs):
+        fell_back.append(model_id)
+        return "/cache/snapshots/from-the-hub"
+
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, allow=None, ignore=None,
+                        revision="main": (None, [(name, len(payload))]))
+    _fake_hub(monkeypatch, snapshot_download=snapshot_download,
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+    return fell_back
+
+
+def test_a_mirrored_model_is_fetched_from_our_own_distribution(base, monkeypatch,
+                                                               tmp_path, payload):
+    """The feature, end to end: no request to the Hub, and an hf cache entry.
+
+    Byte-for-byte the layout hf itself would have produced — blob under its etag,
+    a relative symlink from the snapshot, `refs/main` pointing at the commit —
+    because everything downstream (the loaders, the Local tab's inventory, disk
+    usage, deletion) reads that layout and knows nothing about this feature.
+    """
+    state = _mirror_server(payload)
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal(base, monkeypatch)
+
+    snapshot = base.download_snapshot("org/m")
+
+    assert snapshot == os.path.join(folder, "snapshots", MIRROR_COMMIT)
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert os.path.islink(os.path.join(snapshot, "model.safetensors"))
+    assert not os.path.isabs(os.readlink(os.path.join(snapshot,
+                                                      "model.safetensors")))
+    assert open(os.path.join(folder, "refs", "main")).read() == MIRROR_COMMIT
+    # One manifest request, before any bytes: the counting key.
+    paths = [r["path"] for r in state["requests"]]
+    assert paths.count("/models/org/m/manifest.json") == 1
+    assert paths[0] == "/models/org/m/manifest.json"
+    # …and the bytes came off the commit-pinned blob URL, range-fetched by the
+    # existing chunk queue rather than by anything new.
+    etag = "beef" * 10
+    assert all(p == f"/models/org/m/{MIRROR_COMMIT}/{etag}"
+               for p in paths[1:]), paths
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+    # No credential offered to a host that was never granted one.
+    assert [r["auth"] for r in state["requests"]] == [None] * len(paths)
+
+
+def test_a_mirrored_download_is_then_served_from_the_cache(base, monkeypatch,
+                                                           tmp_path, payload):
+    """A second download returns instantly, with no network at all.
+
+    The fast path is keyed off this app's own fetch RECORD, so the mirror path
+    has to write one — otherwise a mirrored model is cold forever and every
+    load re-resolves over the network.
+    """
+    state = _mirror_server(payload)
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal(base, monkeypatch)
+
+    snapshot = base.download_snapshot("org/m")
+    served = len(state["requests"])
+
+    # `local()` is hf's `snapshot_download(local_files_only=True)`, which reads
+    # the cache the mirror just filled; stubbed to the path it would resolve.
+    _fake_hub(monkeypatch, snapshot_download=lambda *a, **k: snapshot)
+
+    assert base.download_snapshot("org/m") == snapshot
+    assert len(state["requests"]) == served, "the mirror was asked again"
+    assert base._recorded_files(folder, MIRROR_COMMIT, None, None) == [
+        "model.safetensors"]
+
+
+@pytest.mark.parametrize("kind, kwargs", [
+    ("404", {"manifest_status": 404}),
+    ("5xx", {"manifest_status": 503}),
+    ("malformed", {"manifest": {"schema": 1, "repo": "org/m",
+                                "commit": "not-a-sha", "files": []}}),
+    ("not json", {"manifest": None}),
+])
+def test_a_mirror_that_cannot_answer_lands_on_the_hub_path(base, monkeypatch,
+                                                           tmp_path, payload,
+                                                           kind, kwargs, capsys):
+    """Four ways for the mirror to be useless, one outcome: today's download.
+
+    This is the property the whole feature is allowed to exist on. A mirror that
+    is down, half-deployed or serving junk costs a slower download; it never
+    costs a failed one.
+    """
+    if kind == "not json":
+        state = _mirror_server(payload)
+        state["routes"]["/models/org/m/manifest.json"] = b"<html>NoSuchKey</html>"
+    else:
+        state = _mirror_server(payload, **kwargs)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+
+
+def test_a_mirror_that_drops_mid_download_lands_on_the_hub_path(base, monkeypatch,
+                                                                tmp_path, payload,
+                                                                capsys):
+    """A good manifest and a blob that hangs up halfway.
+
+    The bytes that landed stay on disk as a resumable part file for a LATER run,
+    but this attempt hands the repo to hf — and says on stderr that it was the
+    MIRROR that gave up, not the segmented Hub fetch, because the two fail for
+    completely different reasons.
+    """
+    state = _mirror_server(payload, budget=60_000)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+    assert "the model mirror of org/m unavailable" in capsys.readouterr().err
+
+
+def test_a_manifest_promising_a_blob_the_mirror_does_not_hold(base, monkeypatch,
+                                                              tmp_path, payload):
+    """The manifest and the objects can disagree — a half-finished upload — and
+    that is a 404 on the blob, mid-download."""
+    state = _mirror_server(payload, blob=False)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+
+
+def test_an_unmirrored_model_never_touches_the_mirror(base, monkeypatch, tmp_path,
+                                                     payload):
+    """The privacy rule at the level it matters: a model the supervisor did not
+    permit is never NAMED to our distribution, so we cannot learn that this user
+    downloaded it."""
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state, permitted=False)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+    assert state["requests"] == [], "an unpermitted model was named to the mirror"
+
+
+def test_no_mirror_configured_leaves_every_download_exactly_where_it_was(
+        base, monkeypatch, tmp_path, payload):
+    """The shipped default. With no base URL there is no mirror code in the
+    path at all — the same download, byte for byte, that shipped before this."""
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.delenv("FUSED_MODEL_MIRROR", raising=False)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+    assert state["requests"] == []
+
+
+def test_an_extra_argument_skips_the_mirror_outright(base, monkeypatch, tmp_path,
+                                                     payload):
+    """Same rule as the cached fast path: an argument this function does not know
+    about changes what a download IS, and a manifest describes the whole repo at
+    one commit and nothing else."""
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot(
+        "org/m", revision="refs/pr/3") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+    assert state["requests"] == []
+
+
+def test_a_scoped_download_fetches_the_scope_off_the_mirror_too(base, monkeypatch,
+                                                                tmp_path, payload):
+    """`torch_image` passes an allow-list, so the mirror path has to honour it.
+
+    Filtered with the same `selects` the Hub listing goes through — a manifest
+    describes the whole repo, and fetching all of it behind a bar priced at the
+    scope is the AI-5b trap the allow-list exists to avoid. The record is written
+    at that scope too, or the next download re-fetches.
+    """
+    manifest = _mirror_manifest(payload)
+    manifest["files"].append({"name": "unwanted.bin", "etag": "b" * 40,
+                              "size": 999_999,
+                              "sha256": hashlib.sha256(b"nope").hexdigest()})
+    state = _mirror_server(payload, manifest=manifest)
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal(base, monkeypatch)
+
+    snapshot = base.download_snapshot("org/m",
+                                      allow_patterns=["model.safetensors"])
+
+    assert sorted(os.listdir(snapshot)) == ["model.safetensors"]
+    assert base._recorded_files(folder, MIRROR_COMMIT,
+                                ["model.safetensors"], None) == [
+        "model.safetensors"]
+    assert not any("unwanted" in r["path"] for r in state["requests"])
+
+
+def test_a_manifest_that_selects_nothing_at_this_scope_is_not_a_mirror_hit(
+        base, monkeypatch, tmp_path, payload):
+    """An allow-list matching nothing in the manifest means the mirror does not
+    hold what was asked for. The Hub listing is the authority on that, not a
+    manifest that happens to be missing a file."""
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot(
+        "org/m", allow_patterns=["nothing-like-this/*"]) == (
+        "/cache/snapshots/from-the-hub")
+    assert fell_back == ["org/m"]
+
+
+def test_a_cancel_during_a_mirror_fetch_is_never_swallowed(base, monkeypatch,
+                                                           tmp_path, payload):
+    """The one failure that must not be answered by starting a download
+    somewhere else."""
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    started = []
+
+    def cancelled(*args, **kwargs):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "_segmented_fetch", cancelled)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **k: started.append(1) or (None, []))
+    _fake_hub(monkeypatch,
+              snapshot_download=lambda *a, **k: started.append(1) or "/never")
+
+    with pytest.raises(base.Cancelled):
+        base.download_snapshot("org/m")
+
+    assert started == [], "pressing Stop started a download instead"
