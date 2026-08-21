@@ -714,6 +714,42 @@ def all_suggested_ids() -> set[str]:
     return {entry["id"] for entries in SUGGESTIONS.values() for entry in entries}
 
 
+def mirror_id(model_id: str) -> str:
+    """The repo id to name to the model mirror for `model_id`, or `""` (AI-5m).
+
+    A translation, and it is what keeps the mirror reachable for llama.cpp at
+    all. Every other runner's suggested ids ARE repo ids and come back
+    unchanged, but `llamacpp-text`'s are bare `.gguf` FILENAMES — one repo
+    publishes many quantizations, so the page keys the curation by file — while
+    the worker names the recipe's REPO to the mirror
+    (`llama_text.download` -> `worker_base.download_file(recipe["repo"], …)`).
+    Handed the filename, `mirror.allowed` refuses it against `_REPO_ID`
+    (`org/name`) and the whole feature is off for every model in that list,
+    silently: no manifest request is a download that looks perfectly normal.
+
+    **The privacy rule is unchanged and this cannot widen it.** `""` for
+    anything not in `all_suggested_ids()`, so a model the user found in Discover
+    is never named to our distribution, and the lookup is in the CURATED recipe
+    table — an uncurated GGUF filename has no row and gets nothing. What the
+    worker learns is still the answer for ONE model.
+
+    It lives here rather than in `mirror.py` because that file is imported by a
+    runner's interpreter as a bare module with no `fused_render` package on
+    `sys.path`: neither this file nor `formats` is reachable from there, and the
+    decision has to be made in the server process anyway (see
+    `supervisor._mirror_ok`).
+    """
+    if not model_id or model_id not in all_suggested_ids():
+        return ""
+    from fused_render.ai.runners import formats
+
+    recipe = formats.GGUF_RECIPES.get(model_id)
+    # A suggested id with no recipe row is already a repo id (every other
+    # runner's list), so it is handed down as it is. Imported lazily to keep this
+    # module free of a runner import at load time.
+    return recipe["repo"] if recipe else model_id
+
+
 def capability_of(repo_id: str) -> str | None:
     """The capability a SUGGESTED repo belongs to, or None for anything not here.
 

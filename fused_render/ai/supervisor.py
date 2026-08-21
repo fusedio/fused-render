@@ -490,8 +490,15 @@ def _terminate(worker: Worker) -> None:
     _cleanup_files(worker)
 
 
-def _mirror_ok(model: str) -> bool:
-    """Whether `model` is one of OUR suggested models (SPEC AI-5l).
+def _mirror_ok(model: str) -> str:
+    """The repo id `model` may name to the mirror, or `""` (SPEC AI-5l, AI-5m).
+
+    A repo id rather than a yes/no, because the two are not the same answer for
+    every runner: `llamacpp-text`'s catalog ids are bare `.gguf` filenames and
+    the worker names the recipe's REPO, which is what `mirror.allowed` compares
+    against. `catalog.mirror_id` does that translation; a permission carrying the
+    filename would be refused by the client and the mirror would be off for every
+    llama.cpp model without a single symptom.
 
     The decision has to happen HERE, in the server process, because `catalog` is
     unreachable from a runner's interpreter — a worker imports `worker_base` and
@@ -505,13 +512,13 @@ def _mirror_ok(model: str) -> bool:
     the download on the Hub path exactly as it is today.
     """
     if not model:
-        return False
+        return ""
     try:
         from fused_render.ai import catalog
 
-        return model in catalog.all_suggested_ids()
+        return catalog.mirror_id(model)
     except Exception:  # noqa: BLE001 - no answer means the Hub, which always works
-        return False
+        return ""
 
 
 def _child_env(token: str, model: str = "") -> dict:
@@ -532,8 +539,11 @@ def _child_env(token: str, model: str = "") -> dict:
     environment the caller was asked nothing about.
 
     **`FUSED_MODEL_MIRROR_OK` is the model mirror's permission** and carries the
-    repo id rather than a bare flag, so a value that arrived some other way
-    cannot licence a probe for whatever the next download happens to be. It is
+    repo id the worker will NAME to the mirror rather than a bare flag, so a
+    value that arrived some other way cannot licence a probe for whatever the
+    next download happens to be. That id is not always what this app calls the
+    model — a curated GGUF is a filename here and a repo id there (AI-5m) — and
+    `_mirror_ok` is what translates it. It is
     also POPPED when the answer is no, because this environment is a copy of the
     server's: an operator (or a parent process) exporting it would otherwise hand
     every worker permission for every model. `FUSED_MODEL_MIRROR` itself is left
@@ -544,8 +554,11 @@ def _child_env(token: str, model: str = "") -> dict:
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
         env.pop(name, None)
     env["FUSED_AI_WORKER_TOKEN"] = token
-    if _mirror_ok(model):
-        env["FUSED_MODEL_MIRROR_OK"] = model
+    permitted = _mirror_ok(model)
+    if permitted:
+        # The id the WORKER will name to the mirror, which is not always the id
+        # this app calls the model — see `_mirror_ok` and `catalog.mirror_id`.
+        env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
     return env
