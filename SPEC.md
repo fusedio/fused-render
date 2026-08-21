@@ -7034,6 +7034,24 @@ an AI Models page that could say what was on disk but not what was *running*.
   registered is not a load failure (the wheel also bundles ggml's ordinary
   CPU backend, which answers instead), so that half is refused only for
   buying nothing over the cheaper CPU-index wheel, not for being broken.
+  **Correction to the paragraph above (2026-08-21): "the CPU index's
+  acceleration story is Apple-only" was true of the WHEEL and false of the
+  RUNNER — `load()` never passed `n_gpu_layers`, which `llama-cpp-python`
+  defaults to `0`, so the Metal-linked macOS wheel was also CPU-only in
+  practice until this was fixed.** `load()` now asks
+  `llama_cpp.llama_supports_gpu_offload()` — a real llama.cpp API that
+  queries ggml's backend registry for an actual `GPU`/`IGPU` device, true on
+  Metal and a working Vulkan install alike, false otherwise — and, when true,
+  tries a shrinking sequence of `n_gpu_layers` (sized against the model's own
+  layer count, read off its GGUF header) rather than either hardcoding `0` or
+  guessing a fixed number that could overcommit a small laptop GPU's VRAM;
+  neither the binding nor llama.cpp itself can check available VRAM before
+  allocating, so sizing is done by catching a failed allocation and retrying
+  smaller, down to `0` (CPU) as the guaranteed floor, rather than letting an
+  oversized request fail the Load outright. `worker_base.STATE["device"]`
+  reports `"cpu"`, `"gpu"`, or `"gpu (partial)"` accordingly — a measurement
+  of which attempt succeeded, not a name for which backend served it, since
+  the bound API cannot distinguish Vulkan from Metal.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
