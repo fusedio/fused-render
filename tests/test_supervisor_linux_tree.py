@@ -12,7 +12,6 @@ process that holds an exclusive lock on a shared file is alive; once the kernel
 releases that lock (because the process died), the test can take it — this works
 identically across pid namespaces because the mount namespace is shared.
 """
-import fcntl
 import os
 import shutil
 import signal
@@ -22,6 +21,12 @@ import time
 from pathlib import Path
 
 import pytest
+
+# importorskip, not a bare `import fcntl`: fcntl is POSIX-only, and a bare
+# import blows up at COLLECTION time on Windows, before the pytestmark below
+# ever gets a chance to skip the module (mirrors tests/test_supervisor_job.py's
+# `pytest.importorskip("win32job")` for the same reason on the other platform).
+fcntl = pytest.importorskip("fcntl")
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"),

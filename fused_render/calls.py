@@ -641,7 +641,17 @@ def mark_superseded(call_ids: list) -> int:
     now = time.monotonic()
     with _superseded_lock:
         for known, seen in list(_SUPERSEDED.items()):
-            if now - seen > _SUPERSEDED_TTL_S:
+            # >=, not >: a TTL of exactly 0.0 (tests use this to mean "already
+            # expired") must evict on the very next sweep. time.monotonic() on
+            # Windows is GetTickCount64-backed (~15.6ms resolution, tied to the
+            # system timer) rather than the sub-microsecond POSIX
+            # clock_gettime(CLOCK_MONOTONIC), so two calls a few Python
+            # bytecodes apart routinely read back the identical tick — a
+            # strict `>` then never fires and a mark meant to be immediately
+            # stale lingers for a full TTL. >= evicts on that tie without
+            # changing anything at the real 300s TTL, where the boundary
+            # instant is never observable.
+            if now - seen >= _SUPERSEDED_TTL_S:
                 del _SUPERSEDED[known]
         added = 0
         for call_id in call_ids:

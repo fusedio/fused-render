@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import claude_artifacts as claude_artifacts_mod
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 
 URL_A = "https://claude.ai/code/artifact/aaaaaaaa-0000-0000-0000-000000000000"
@@ -71,7 +72,9 @@ def test_lists_publish_with_tool_call_metadata_merged(client, projects_dir, tmp_
     artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
     assert len(artifacts) == 1
     entry = artifacts[0]
-    assert entry["file_path"] == str(page)
+    # file_path comes back in the shell's canonical (forward-slash) form, not
+    # whatever separator str(Path) uses on this OS.
+    assert entry["file_path"] == canonical_fs_path(str(page))
     assert entry["remote_url"] == URL_A
     assert entry["title"] == "Bali Open Water"
     assert entry["description"] == "Course picker."
@@ -119,8 +122,9 @@ def test_exists_reports_whether_the_published_file_is_still_there(
         _frame_link("s1", gone, URL_B, "Gone", "2026-07-16T09:00:00.000Z"),
     ])
     artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
+    # file_path is the canonical (forward-slash) form; only the key needs it.
     assert {a["file_path"]: a["exists"] for a in artifacts} == {
-        str(here): True, str(gone): False}
+        canonical_fs_path(str(here)): True, canonical_fs_path(str(gone)): False}
 
 
 def test_missing_projects_dir_is_empty_not_an_error(client, projects_dir):
@@ -182,7 +186,7 @@ def test_same_url_published_from_two_sessions_collapses_to_one_row(
     # is now being worked on from; created_at is still the first publish.
     assert entry["title"] == "Updated"
     assert entry["description"] == "updated elsewhere"
-    assert entry["file_path"] == str(second)
+    assert entry["file_path"] == canonical_fs_path(str(second))
     assert entry["session_id"] == "new"
     assert entry["cwd"] == "/tmp/b"
     assert entry["created_at"] == pytest.approx(1784192400.0)

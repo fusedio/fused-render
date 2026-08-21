@@ -22,7 +22,21 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import time
+
+import pytest
+
+# dev.sh is a contributor tool run under a real POSIX shell (Linux/macOS); it
+# is never shipped to a Windows user. Git Bash is often on PATH on a Windows
+# runner, but the process-tree and signal semantics these tests drive
+# (SIGTERM traps, process groups, `ps -o lstart=`) are what Git Bash does NOT
+# faithfully emulate, so this whole file tests a shell environment Windows
+# does not have rather than a Windows incompatibility to fix.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="dev.sh is a POSIX-shell contributor script; not run on Windows",
+)
 
 # realpath, NOT abspath: dev.sh derives $REPO_ROOT with `pwd -P` and compares the
 # recorded root to it as a plain string. abspath leaves symlinks in place, so on

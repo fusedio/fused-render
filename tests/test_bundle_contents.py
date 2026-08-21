@@ -839,6 +839,21 @@ def test_the_stdlib_split_puts_packages_and_modules_in_the_right_list():
             f"{name} is a package and must be forced whole, not traced")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="setup_py2app._stdlib_split() derives STDLIB_PACKAGES/INCLUDES from "
+           "what THIS HOST can importlib.util.find_spec() — that is exactly "
+           "what keeps msvcrt/winreg/winsound out of a real macOS build (they "
+           "raise ImportError there), but it also means the derivation is "
+           "host-relative by design, not macOS-relative. Run on an actual "
+           "Windows host, winsound is a real importable extension module "
+           "(not a builtin like nt/msvcrt/winreg/_winapi, which are compiled "
+           "into the interpreter and already skipped via "
+           "sys.builtin_module_names) and correctly reaches STDLIB_INCLUDES "
+           "— proving nothing about the macOS build this test is about. The "
+           "production build only ever runs setup_py2app.py ON macOS "
+           "(scripts/build_dmg.sh), where this holds; ubuntu/macos CI already "
+           "cover it")
 def test_no_windows_only_stdlib_module_reaches_a_macos_build():
     """py2app fails on an `includes` entry it cannot resolve, so the derivation
     has to filter by what this host can actually find."""

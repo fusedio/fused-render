@@ -35,6 +35,17 @@ READER = os.path.join(
 
 pytestmark = pytest.mark.skipif(not git_available(), reason="git binary not installed")
 
+# Windows has no POSIX permission-bit model: os.chmod() on a DIRECTORY there
+# only flips the cosmetic FILE_ATTRIBUTE_READONLY flag, which does not stop
+# writes inside it the way a missing POSIX write-bit does — so
+# `os.chmod(holder, 0o555)` below cannot actually make `holder` refuse a
+# write on Windows, and the "readonly" refusal these two tests pin can never
+# fire there.
+skip_windows_dir_perms = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows ignores chmod() on directories (no POSIX write-bit), so "
+           "a chmod'd-read-only holder still accepts the write")
+
 
 @pytest.fixture(scope="module")
 def reader():
@@ -290,6 +301,7 @@ def test_cloning_a_thin_bundle_is_refused_with_a_reason(reader, thin_bundle):
     assert not os.path.exists(os.path.join(os.path.dirname(thin_bundle), "increment"))
 
 
+@skip_windows_dir_perms
 def test_cloning_into_a_read_only_directory_is_refused(reader, repo, tmp_path):
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("read-only bits are ignored when running as root")
@@ -385,6 +397,7 @@ def test_a_dest_whose_parent_is_a_file_is_refused(reader, bundle, tmp_path):
     assert out["reason"] == "missing-parent"
 
 
+@skip_windows_dir_perms
 def test_a_dest_in_a_read_only_parent_is_refused(reader, bundle, tmp_path):
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("read-only bits are ignored when running as root")
@@ -675,7 +688,12 @@ def test_every_git_call_is_an_argv_list_with_no_shell_and_a_timeout(
         # basename alone would pass a regression to a bare "git".
         assert isinstance(cmd, list)
         assert os.path.isabs(cmd[0])
-        assert os.path.basename(cmd[0]) in ("git", "git.exe")
+        # Case-insensitive: shutil.which() builds the candidate by appending
+        # PATHEXT's own casing (Windows' default PATHEXT is uppercase,
+        # ".COM;.EXE;..."), so the resolved path is literally "...\\git.EXE"
+        # there — not a different executable, just Windows' case-insensitive
+        # filesystem letting a case this test never chose survive unchanged.
+        assert os.path.basename(cmd[0]).lower() in ("git", "git.exe")
         # The other two thirds of the same rule — this module forked until
         # they were added, and this test passed the whole time.
         assert kw.get("close_fds") is False

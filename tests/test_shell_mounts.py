@@ -36,6 +36,21 @@ def _warm_https_opener():
         _u._opener = _u.build_opener()
 
 
+@pytest.fixture(autouse=True)
+def _winfsp_present_by_default(monkeypatch):
+    """Assume WinFsp is installed unless a test says otherwise.
+
+    `_winfsp_available()` is vacuously True off win32 — which is what let every
+    generic (not-about-WinFsp) test in this file run unpatched as long as CI
+    was Linux/macOS only. Running for real on win32 makes that vacuous default
+    into a real filesystem probe against a driver DLL this CI runner does not
+    have installed, so it has to be stated explicitly instead of inherited for
+    free. The handful of tests that exercise the missing-driver path set their
+    own `monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)`
+    afterwards, which wins over this one."""
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+
+
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
@@ -295,7 +310,11 @@ def test_mountpoint_derives_from_branch_aware_home(home):
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
     assert mp.startswith(str(home))
-    assert mp.endswith("/mounts/data")
+    # mounts_dir() deliberately os.path.normpath's — a mountpoint has to
+    # string-match what rcd itself reports, which is OS-native (backslashed
+    # on Windows), unlike the rest of the app's forward-slash canonical form
+    # (store.py's mounts_dir docstring). So the suffix is OS-native too.
+    assert mp.endswith(mounts_mod.os.path.join("mounts", "data"))
 
 
 
@@ -3071,22 +3090,47 @@ def _make_mount(home, rcd, name="data", remote="remote:bucket", served=True):
 # test in this file ever runs the real predicate; these must, or the swallowed
 # OSError (the whole bug) stays invisible.
 def _wedge(monkeypatch, mp, *, also_mounted=None):
-    """Make `mp` stat like a mount whose backend process is gone. Restores the
-    genuine os.path.ismount (optionally OR'd with the stub rcd's mount table, so
-    a remount later in the same test can still be seen) and fails lstat/stat on
-    `mp` alone. Returns a {"v": True} flag a test flips to un-wedge the path
-    once its umount has "succeeded"."""
-    # Bound before patching: os.path IS posixpath, so a lambda that referenced
-    # posixpath.ismount by attribute would call the patched name — itself.
-    real_ismount = posixpath.ismount
+    """Make `mp` stat like a mount whose backend process is gone: ismount
+    answers deterministically, and lstat/stat on `mp` alone raise ENOTCONN.
+    Returns a {"v": True} flag a test flips to un-wedge the path once its
+    umount has "succeeded".
+
+    ismount is ANSWERED HERE rather than delegated to the real
+    posixpath.ismount, which is what this used to do. That delegation made the
+    fixture depend on the host filesystem, and it misfires on a Windows runner:
+    posixpath decides "mountpoint" by comparing a path's (st_dev, st_ino)
+    against its parent's and returning True when the inodes match, and Windows
+    reports st_ino as 0 for these paths — 0 == 0, so an ORDINARY TEMP DIRECTORY
+    came back True. That single wrong answer is the whole of both Windows
+    failures this file had: the healthy-path assertion in
+    test_mount_wedged_false_for_missing_and_healthy_paths, and the
+    post-umount "still mounted" check in
+    test_reconnect_force_unmounts_enotconn_mount_that_ismount_cannot_see.
+    (Verifiable off-Windows: force st_ino to 0 for a dir and its parent, and
+    posixpath.ismount calls it a mountpoint.)
+
+    The three answers below are the scenario's own definition, so they are
+    stated instead of derived:
+      * the wedged path is NOT a mountpoint to ismount — that is the very
+        thing being modeled, "a mount ismount cannot see", and
+        test_mount_wedged_detects_enotconn asserts it directly;
+      * a path in `also_mounted` IS one, so a remount later in the same test
+        is visible (that is what the stub rcd's table is passed in for);
+      * nothing else is — these tests only ever hand it tmp_path dirs.
+    On POSIX this is the same set of answers the real predicate already gave,
+    so the Linux suite is unaffected; it just no longer asks the host.
+    """
     # The wedge being modeled is the POSIX FUSE one (ENOTCONN stats); pin the
     # platform so _mount_wedged's win32 branch never bypasses these mocks.
     monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
-    monkeypatch.setattr(
-        mounts_mod.os.path, "ismount",
-        real_ismount if also_mounted is None
-        else lambda p: real_ismount(p) or p in also_mounted)
     wedged = {"v": True}
+
+    def fake_ismount(p):
+        if wedged["v"] and p == mp:
+            return False
+        return also_mounted is not None and p in also_mounted
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", fake_ismount)
 
     def stub(real):
         def probe(path, *a, **kw):
@@ -3101,6 +3145,50 @@ def _wedge(monkeypatch, mp, *, also_mounted=None):
     monkeypatch.setattr(mounts_mod.os, "lstat", stub(_os.lstat))
     monkeypatch.setattr(mounts_mod.os, "stat", stub(_os.stat))
     return wedged
+
+
+def test_the_wedge_fixture_never_asks_the_host_what_a_mountpoint_is(
+        tmp_path, monkeypatch):
+    """Regression guard for both Windows failures this file used to have.
+
+    `_wedge` used to delegate to the real posixpath.ismount, which decides
+    "mountpoint" by comparing a path's (st_dev, st_ino) with its parent's and
+    saying yes when the inodes match. Windows reports st_ino as 0 for these
+    paths, so 0 == 0 made an ORDINARY TEMP DIR answer True — which is the
+    entire cause of the two failures (the healthy-path assertion below, and
+    reconnect's post-umount "still mounted" check).
+
+    Reproduced off-Windows by forcing st_ino to 0, since that zero is the whole
+    of the platform difference: under the old fixture these assertions fail
+    here exactly as they did on the runner, and under the current one they hold
+    because ismount is answered from the scenario instead of the filesystem.
+    """
+    healthy = str(tmp_path / "plain")
+    _os.makedirs(healthy)
+    wedged_path = str(tmp_path / "mnt")
+    _os.makedirs(wedged_path, exist_ok=True)
+
+    real_lstat = _os.lstat
+
+    class _ZeroIno:
+        """A stat_result whose st_ino is 0, as Windows reports it here."""
+
+        def __init__(self, s):
+            self._s = s
+
+        st_ino = 0
+
+        def __getattr__(self, name):
+            return getattr(self._s, name)
+
+    monkeypatch.setattr(_os, "lstat", lambda p, *a, **k: _ZeroIno(real_lstat(p)))
+
+    _wedge(monkeypatch, wedged_path)
+    # A plain directory is not a mount, whatever the host's inodes say.
+    assert mounts_mod.os.path.ismount(healthy) is False
+    assert mounts_mod._is_mounted(healthy) is False
+    # And the wedged path stays invisible to ismount — the modeled scenario.
+    assert mounts_mod.os.path.ismount(wedged_path) is False
 
 
 def test_mount_wedged_detects_enotconn(tmp_path, monkeypatch):
@@ -4975,16 +5063,42 @@ def test_env_session_token_remote_gets_short_link_ttl(home, rcd, fresh_upstream,
     assert 240 < expiry - before < mounts_mod._SESSION_TOKEN_LINK_TTL_S + 60
 
 
-def test_no_session_token_remote_keeps_default_link_ttl(home, rcd, fresh_upstream):
+def test_no_session_token_remote_keeps_default_link_ttl(
+        home, rcd, fresh_upstream, monkeypatch):
     import os
 
+    # config/get MUST be stubbed for this test to test its own name. Without
+    # it `_rc` raises, `_remote_config` returns None, and `_link_ttl` takes its
+    # documented "cannot rule out a session token" clamp — the SAME 300s this
+    # test exists to prove is NOT used. It passed anyway for as long as it has
+    # existed, on nothing but float noise: the old `> _SESSION_TOKEN_LINK_TTL_S`
+    # saw (now + 300.0) - now land at 300.00009 on Linux and 299.99999999999977
+    # on Windows, so the identical wrong behaviour passed on one platform and
+    # failed on the other.
+    #
+    # Static keys and no AWS_SESSION_TOKEN: a remote whose credentials
+    # genuinely carry no STS token, which is the case the default ttl is for.
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    rcd.responses["config/get"] = {"type": "s3", "access_key_id": "AK",
+                                   "secret_access_key": "SK"}
     rcd.responses["operations/publiclink"] = {"url": "https://signed.example/x?sig=1"}
     c = mounts_mod.add_mount("data", "remote:bucket")
     f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
     before = time.monotonic()
     mounts_mod.upstream_url_for(f)
     _url, expiry = mounts_mod._upstream_links[("remote:bucket", "a.parquet")]
-    assert expiry - before > mounts_mod._SESSION_TOKEN_LINK_TTL_S
+    # Pinned against the DEFAULT ttl itself, not merely "> the clamp". The
+    # weaker form is what this line used to be, and it is a trap: the failure
+    # mode in practice is the clamp being applied when it should not be, and
+    # `> clamp` / `>= clamp` both let a run that took the clamp slip through on
+    # nothing but floating-point noise ((now + 300.0) - now lands a few ULPs
+    # either side of 300.0 at monotonic values in the thousands, so the same
+    # wrong behaviour passes or fails at random).
+    #
+    # abs=1.0 absorbs the tick between probe.py's own time.monotonic() and
+    # `before` here; the two ttls are 1800 vs 300, so no tolerance this small
+    # can confuse them.
+    assert expiry - before == pytest.approx(mounts_mod._LINK_TTL_S, abs=1.0)
 
 
 def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstream):
