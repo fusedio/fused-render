@@ -6,6 +6,7 @@ import {
   engineNote,
   ignoredWarning,
   servingLine,
+  strandedSelection,
   switchOutcome,
   wouldChangeEngine,
 } from "@shell/engines";
@@ -145,6 +146,60 @@ describe("ignoredWarning", () => {
       "MLX Whisper (Apple Silicon) is not used here — needs Apple Silicon — MLX runs on"
       + " Metal only (this is windows/amd64).",
     );
+  });
+});
+
+describe("strandedSelection", () => {
+  // A prefs.json naming an engine this build removed — the `transformers-text`
+  // case D413 created. The server keeps `selected` as stored and reports the
+  // drop, so the row is internally consistent; what the PAGE has to notice is
+  // that no option matches, because a <select> in that state renders blank.
+  function withdrawn(): CapabilityEngine {
+    return mac({
+      capability: "text-generation",
+      selected: "transformers-text",
+      effective: "llamacpp-text",
+      effectiveLabel: "llama.cpp (CPU)",
+      effectiveShortLabel: "llama.cpp (CPU)",
+      ignoredReason: "transformers-text is not a runner this build knows",
+      choices: [
+        {
+          code: "llamacpp-text",
+          label: "llama.cpp (CPU)",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+  }
+
+  it("reports a stored engine that no option matches", () => {
+    expect(strandedSelection(withdrawn(), AUTO)).toBe("transformers-text");
+  });
+
+  it("is silent for auto and for a choice that IS in the list", () => {
+    // The two cases that must not render an extra option: `auto` has one
+    // already, and an ordinary selection is one of the real choices. Neither is
+    // stranded, however the row's `ignoredReason` reads — an override that is
+    // merely unavailable HERE is still a listed option, which is the case
+    // `windows()` covers and the one this must not be confused with.
+    expect(strandedSelection(mac(), AUTO)).toBeNull();
+    expect(strandedSelection(mac({ selected: "faster-whisper" }), AUTO)).toBeNull();
+    expect(strandedSelection(windows(), AUTO)).toBeNull();
+  });
+
+  it("leaves the warning underneath saying what happened", () => {
+    // The pair is the whole answer: the option says WHAT is stored, the warning
+    // says why it is not in force. Either alone is a page that misleads — a
+    // blank control with a reason under it, or a greyed option with no reason.
+    const warning = ignoredWarning(withdrawn()) ?? "";
+    expect(warning).toContain("transformers-text");
+    expect(warning).toContain("not a runner this build knows");
+    // …and the line NAMES THE CODE rather than a label, because a withdrawn
+    // engine has no label to be had: `ignoredWarning` falls back to `selected`
+    // exactly when `strandedSelection` fires.
+    expect(warning.startsWith("transformers-text is not used here")).toBe(true);
   });
 });
 

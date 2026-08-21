@@ -42,6 +42,7 @@ import {
   engineNote,
   ignoredWarning,
   servingLine,
+  strandedSelection,
   switchOutcome,
 } from "@shell/engines";
 
@@ -84,6 +85,7 @@ function CapabilityEngineRow({
   const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
   const warning = ignoredWarning(row);
   const note = engineNote(row);
+  const stranded = strandedSelection(row, auto);
   const label = capabilityLabel(row.capability);
 
   const choose = async (code: string) => {
@@ -133,6 +135,17 @@ function CapabilityEngineRow({
         >
           {/* First, and the only option with no engine behind it. */}
           <option value={auto}>Automatic</option>
+          {/* A stored engine this build no longer registers, shown so the
+              control is not BLANK: a <select> whose value matches no option
+              renders empty, not as its first row. Disabled, because it cannot
+              be re-picked — and it sits above the real choices rather than
+              among them, since it is the current value and not an alternative.
+              See `strandedSelection` for why this is reachable at all. */}
+          {stranded && (
+            <option value={stranded} disabled>
+              {stranded} — no longer available in this version
+            </option>
+          )}
           {row.choices.map((choice) => {
             // Null for an engine that CAN be picked, which is the whole of what
             // this adds to a label: what a backend is LIKE ("transcribes on the

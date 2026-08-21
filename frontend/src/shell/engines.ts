@@ -75,6 +75,40 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
   return `${name} is not used here — ${row.ignoredReason}.`;
 }
 
+/** The stored engine code when NO option in the list matches it — else null.
+ *
+ *  A `<select value={x}>` whose options contain no `x` does not fall back to
+ *  the first option: the DOM ignores the assignment, `selectedIndex` becomes -1,
+ *  and the control renders EMPTY. So a stored preference naming an engine this
+ *  build no longer registers turns the picker blank — the user sees a control
+ *  with nothing in it, on a page whose whole job is saying which engine is in
+ *  force. `ignoredWarning` already prints the reason underneath, which makes the
+ *  blank control worse rather than better: a sentence explaining a choice, above
+ *  a control showing no choice.
+ *
+ *  It became reachable at D413, which removed the three `transformers-text*`
+ *  engines. Those were offered in this very picker and stored by people who
+ *  chose them, and `prefs.json` is a file that travels — synced, copied,
+ *  restored from a backup — so an upgrade is not the only way one arrives. The
+ *  server deliberately does NOT rewrite `selected` to match reality (a
+ *  preference silently corrected on read is one the user can neither see nor
+ *  undo, see `describe_engines`), which is the right call and is exactly what
+ *  leaves this case for the page to render.
+ *
+ *  The caller renders the returned code as one extra DISABLED option, so the
+ *  select shows what is stored, cannot be re-picked, and reads consistently with
+ *  the warning below it. The raw code rather than a label, because there is no
+ *  label to be had: the engine is gone, and inventing a pretty name for it would
+ *  be the page claiming knowledge it does not have.
+ *
+ *  Null for `auto` — the caller renders that option itself, unconditionally.
+ */
+export function strandedSelection(row: CapabilityEngine, auto: string): string | null {
+  if (row.selected === auto) return null;
+  if (row.choices.some((c) => c.code === row.selected)) return null;
+  return row.selected;
+}
+
 /** Why one option cannot be picked — null when it can.
  *
  *  A disabled control with no explanation is the thing the greying-out rule
