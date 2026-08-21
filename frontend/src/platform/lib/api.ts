@@ -403,15 +403,20 @@ export interface IndexRankHit {
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
-// four ways the index cannot give one, and they are NOT interchangeable —
+// five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other two never (see listing/index-source, which is the only place that
-// switches on this).
+// other three never (see listing/index-source, which is the only place that
+// switches on this). `disabled` is the one of those three that can become
+// fixable again — turning the indexing preference back on — but the client
+// does not wait around for that: it walks, exactly as it does for `mount` /
+// `package` / `ignored`, because there is no server signal to poll for "the
+// user flipped a switch in Preferences".
 export type RankReason =
   | ""
   | "mount"
   | "package"
   | "ignored"
+  | "disabled"
   | "uncovered"
   | "scanning";
 
@@ -419,10 +424,10 @@ export interface IndexRankResult {
   covered: boolean;
   fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
-  // "mount" | "package" | "ignored" | "uncovered" | "scanning". The in-folder
-  // search picks its source from this (listing/index-source); the client
-  // deliberately holds no copy of the rules behind it, because the mount
-  // policy is MountGuard's and the ignore list is the scan config's.
+  // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
+  // The in-folder search picks its source from this (listing/index-source);
+  // the client deliberately holds no copy of the rules behind it, because the
+  // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
   root: string;
   hits: IndexRankHit[];
@@ -756,6 +761,11 @@ export interface Prefs {
   // from `engine` above, however similar the word: that one is /api/run's
   // executor, this one is the inference runner behind fused.ai's local models.
   engines: EnginesPrefs;
+  // Whether background file-index scanning may run at all (default ON — an
+  // opt-OUT, the opposite polarity from `reader`). Turning it off does not
+  // delete the on-disk index or stop search from answering it; only new
+  // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
+  indexing: { enabled: boolean };
 }
 
 export interface EnginesPrefs {
@@ -897,6 +907,10 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {

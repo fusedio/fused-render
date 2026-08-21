@@ -268,9 +268,9 @@ def test_a_JOIN_SPANNING_segment_is_labelled_the_same_LIVE_as_it_is_finally(
 
 
 def test_NO_spans_scores_the_whole_span_exactly_as_before(partial, tmp_path):
-    """The default every other engine keeps: `faster_whisper`, `parakeet_mlx` and
-    a non-VAD `mlx_whisper` run drop no silence out of the middle of a segment,
-    pass no mask, and must label exactly as they did before `spans` existed."""
+    """The default every other engine keeps: `faster_whisper` and a non-VAD
+    `mlx_whisper` run drop no silence out of the middle of a segment, pass no
+    mask, and must label exactly as they did before `spans` existed."""
     out = str(tmp_path / "t.partial.jsonl")
     turns = [(0.0, 5.0, 0), (10.0, 20.0, 1), (30.0, 35.0, 0)]
 

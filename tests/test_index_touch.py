@@ -306,6 +306,35 @@ def test_a_folder_the_scan_rules_exclude_is_never_rescanned():
     assert f.started == []
 
 
+# ------------------------------------------------ the module-level entry
+#
+# `note_index_mutation` itself, not the injectable `RescanQueue` the tests
+# above exercise directly — the toggle is checked at this one entry point.
+
+def test_note_index_mutation_no_ops_while_indexing_is_off(monkeypatch, tmp_path):
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: False)
+    noted = []
+    monkeypatch.setattr(index_touch._queue, "note", lambda *p: noted.append(p))
+    index_touch.note_index_mutation(str(tmp_path / "a.txt"))
+    assert noted == []
+
+
+def test_note_index_mutation_queues_normally_while_indexing_is_on(monkeypatch,
+                                                                   tmp_path):
+    import fused_render.shell.prefs as prefs_mod
+    from fused_render.server import index_touch
+
+    monkeypatch.setattr(prefs_mod, "indexing_enabled", lambda: True)
+    noted = []
+    monkeypatch.setattr(index_touch._queue, "note", lambda *p: noted.append(p))
+    path = str(tmp_path / "a.txt")
+    index_touch.note_index_mutation(path)
+    assert noted == [(path,)]
+
+
 # ------------------------------------------------- what a write is worth
 #
 # The route half of the same argument.

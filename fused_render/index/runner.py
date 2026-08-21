@@ -134,6 +134,17 @@ def start(cfg: IndexConfig, root: str, full: bool = False) -> dict:
     over the post-edit run's, leaving the root stale indefinitely. The store
     lock serializes the two compactions; none of that is what it protects."""
     root = canonical_root(root)
+    # Defensive insurance, not the primary gate: every caller in the server
+    # layer (routers/index.py, index_touch.py, freshness.py) already checks
+    # `indexing_enabled()` before reaching here, each for its own error shape
+    # (409, a "disabled" outcome, a silent no-op). This catches anything that
+    # calls `start` directly without going through one of those — cheap
+    # because prefs.json is a small local file, and `shell.prefs` imports
+    # nothing from `index` at module scope, so this is not a cycle.
+    from fused_render.shell.prefs import indexing_enabled
+
+    if not indexing_enabled():
+        raise ValueError("indexing is disabled in Preferences")
     # The guard runs BEFORE any kernel syscall on the caller's path: it is
     # pure string work against the mount records, while os.path.isdir on a
     # path under a wedged NFS mount blocks the request thread indefinitely

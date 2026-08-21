@@ -45,6 +45,7 @@ from fused_render.server.routers.claude_health import router as claude_health_ro
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.clipboard import router as clipboard_router
+from fused_render.server.routers.capture import router as capture_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -277,6 +278,18 @@ def create_app(start_dir: str) -> FastAPI:
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.
+    # Live native recordings are finalised on the way out (SPEC §45/CP-4): a
+    # .mov whose `moov` atom was never written does not play, so a server that
+    # stops while one is running must not just vanish. This covers the plain
+    # `fused-render` server (Ctrl-C, uvicorn's own shutdown); the packaged app
+    # never gets here — it exits via `os._exit` — so `app.quit_teardown` has a
+    # "capture" rung of its own.
+    @app.on_event("shutdown")
+    async def _shutdown_captures():
+        from fused_render import capture
+
+        capture.stop_all()
+
     @app.on_event("shutdown")
     async def _shutdown_ai_workers():
         from fused_render.ai import supervisor
@@ -373,6 +386,10 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Native screen / microphone / still capture (routers/capture.py, SPEC §45):
+    # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
+    # than by the routes being absent — a page must be able to ask.
+    app.include_router(capture_router)
     # Self-update triggers (routers/update.py) — POSTs that kick a manifest
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.
