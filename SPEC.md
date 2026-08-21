@@ -7121,7 +7121,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   of which attempt succeeded, not a name for which backend served it, since
   the bound API cannot distinguish Vulkan from Metal.
 - **AI-11g** **Any Hub repo with a loadable root-level GGUF resolves, not
-  only the 4 curated filenames in `formats.GGUF_RECIPES`** (D412).
+  only the 5 curated filenames in `formats.GGUF_RECIPES`** (D412).
   `formats.pick_gguf_file()` ranks an arbitrary repo's own file listing —
   excluding subdirectories, multi-part shards, and auxiliary weights
   (`mmproj`/`mtp`/`draft`/`projector`, widened past one observed file to a

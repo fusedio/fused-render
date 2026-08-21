@@ -1885,6 +1885,7 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "LFM2.5-1.2B-Instruct-Q4_K_M.gguf": 0.7,
         "Qwen3.5-4B-Q4_K_M.gguf": 2.7,
         "gemma-4-E4B-it-Q4_K_M.gguf": 5.0,
+        "LFM2.5-8B-A1B-Q4_K_M.gguf": 5.2,
         "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
@@ -1969,7 +1970,14 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["runner"] == "mlx-text"
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/")) for m in text["models"])
+    # The namespace set is a PROXY for "these are MLX conversions", and it
+    # grows: `prism-ml/` was added with the Bonsai row and `LiquidAI/` with the
+    # 8B-A1B, both because no `mlx-community/` conversion of them exists. What
+    # the assertion is really pinning is the Windows half above — that the two
+    # lists are disjoint — so a new publisher belongs here rather than being a
+    # reason to weaken it.
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
+               for m in text["models"])
 
 
 def test_the_cpu_warning_reaches_the_page(monkeypatch):

@@ -211,6 +211,34 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
         },
+        # The only MIXTURE-OF-EXPERTS row in this file, and it is here because
+        # the router changes what a size means: 8B of weights resident, ~1B of
+        # them multiplied per token, so it answers at roughly the speed of the
+        # 1.2B at the head of this list while knowing what an 8B knows. That
+        # is a different axis from every other row, which is why it earns a
+        # line 0.35GB from the Gemma below rather than duplicating it.
+        #
+        # **Nothing special is needed to load it, and that is worth stating
+        # because it is easy to assume otherwise.** MoE experts are ordinary
+        # tensors in the checkpoint; what is conditional is the COMPUTE, which
+        # the router does inside the model. There is no "load only the active
+        # experts" mode to miss — the whole 4.9GB is fetched and resident, and
+        # the win is arithmetic per token, not bytes.
+        #
+        # `LiquidAI/`, not `mlx-community/`: the publisher's own conversion is
+        # the only one (checked 2026-08-21), which is the same reason the
+        # prism-ml Bonsai row below is not an `mlx-community` id either.
+        # Mechanism-checked like the LFM2.5 row at position 0 and NOT loaded,
+        # for the same reason — `model_type` is `lfm2_moe`, and 0.31.3's wheel
+        # ships `lfm2_moe.py`, read out of it.
+        {
+            "id": "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
+            "label": "LFM2.5 8B-A1B (MLX 4-bit)",
+            "size_gb": 4.9,
+            "note": "8B of knowledge answering at about a 1B's speed — a "
+                    "mixture of experts, so only a fraction of it runs per "
+                    "token.",
+        },
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
             "label": "Gemma 4 E4B (4-bit)",
@@ -302,22 +330,29 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # documents for `gemma4_unified`, so every entry ADDED here was loaded
     # through `llamacpp_text/.venv`'s own `llama_cpp.Llama` and asked for a
     # token before it went in (2026-08-21, llama-cpp-python 0.3.29): LFM2.5
-    # 1.2B (`lfm2`), Qwen3.5 4B Q4_K_M (`qwen35`) and Gemma 4 E4B (`gemma4`)
-    # each answered. The 27B row carries over from the previous shortlist
+    # 1.2B (`lfm2`), Qwen3.5 4B Q4_K_M (`qwen35`), Gemma 4 E4B (`gemma4`) and
+    # LFM2.5 8B-A1B (`lfm2moe`) each answered. The 27B row carries over from the previous shortlist
     # UNCHANGED and was not re-loaded for this refresh — 13GB to re-verify a
     # file that was already shipping. Redo the loads when the pin in
     # `llamacpp_text/pyproject.toml` moves; an arch name in the table is a
     # necessary condition, never a sufficient one.
     #
-    # **Four families, and that is a REQUIREMENT of the list rather than a
-    # coincidence of what was newest.** This list was five Qwen entries over
-    # three Qwen repos: two of them the same 4B at two quantizations, two of
-    # them the same 9B. A shortlist whose every row shares a tokenizer, a
-    # training mix and a failure mode gives a user nothing to try when the
-    # first answer is bad — "measure it against a model you already trust" is
-    # advice the MLX list can give because it has Gemma beside Qwen, and this
-    # one could not. Each row here is a different family: LFM2.5 (Liquid),
-    # Qwen3.5, Gemma 4, Qwen3.8 at the top end.
+    # **Three publishers over five rows, and that is a REQUIREMENT of the list
+    # rather than a coincidence of what was newest.** This list was five Qwen
+    # entries over three Qwen repos: two of them the same 4B at two
+    # quantizations, two of them the same 9B. A shortlist whose every row
+    # shares a tokenizer, a training mix and a failure mode gives a user
+    # nothing to try when the first answer is bad — "measure it against a
+    # model you already trust" is advice the MLX list can give because it has
+    # Gemma beside Qwen, and this one could not. Now: Liquid, Qwen and Google.
+    #
+    # **Liquid appears twice, and the second one is not a duplicate.** The
+    # 1.2B at position 0 and the 8B-A1B below it are a dense model and a
+    # mixture of experts — the same publisher, and nothing else in common that
+    # matters to a picker. Where a repeated Qwen 4B at two quantizations gave
+    # a reader one choice wearing two labels, these two answer different
+    # questions ("the smallest thing that works" and "8B answers at 1B
+    # speed"), which is the test a row has to pass to be here.
     #
     # **And that requirement is load-bearing precisely BECAUSE of D416.** Since
     # the transformers family was withdrawn, this list is what a bare "auto"
@@ -398,14 +433,39 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "above handles badly — it answers above its size class "
                     "for the download.",
         },
+        # The mixture-of-experts row, and it matters MORE here than its MLX
+        # twin does: this list's default build has no GPU, and a router that
+        # multiplies ~1B of an 8B model per token is the one architecture that
+        # turns a CPU into a reasonable place to run an 8B at all. Nothing in
+        # the runner has to know — MoE experts are ordinary tensors, only the
+        # COMPUTE is conditional, and llama.cpp does that inside the graph.
+        #
+        # **What we CANNOT do for it is placement**, and that is a binding
+        # limit rather than an oversight: llama.cpp's `--n-cpu-moe` (keep the
+        # expert tensors on the CPU, put attention on the GPU) is backed by
+        # `llama_model_params.tensor_buft_overrides`, which llama-cpp-python
+        # 0.3.29 exposes in the ctypes struct and NOT as a `Llama.__init__`
+        # keyword — checked against the installed signature, which offers only
+        # `n_gpu_layers`, `split_mode`, `main_gpu` and `tensor_split`. So on
+        # the Vulkan build this row is offloaded by whole layers like any
+        # dense model, leaving the trick unused. On the CPU build, which is
+        # what most machines resolve to, there is nothing left on the table.
+        {
+            "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+            "label": "LFM2.5 8B-A1B (Q4_K_M)",
+            "size_gb": 5.2,
+            "note": "8B of knowledge answering at about a 1B's speed — a "
+                    "mixture of experts, so only a fraction of it runs per "
+                    "token.",
+        },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
-                    "the download — expect a bigger quality hit than the Gemma "
-                    "above, and a laptop GPU to run it mostly or entirely on "
-                    "the CPU rather than resident in VRAM.",
+                    "the download — expect a bigger quality hit than the "
+                    "LFM2.5 8B-A1B above, and a laptop GPU to run it mostly "
+                    "or entirely on the CPU rather than resident in VRAM.",
         },
     ],
     "diffusers-image": [

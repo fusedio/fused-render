@@ -463,6 +463,10 @@ GGUF_RECIPES = {
         "repo": "unsloth/gemma-4-E4B-it-GGUF",
         "file": "gemma-4-E4B-it-Q4_K_M.gguf",
     },
+    "LFM2.5-8B-A1B-Q4_K_M.gguf": {
+        "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
+        "file": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+    },
     "Qwen3.8-27B-UD-Q3_K_XL.gguf": {
         "repo": "unsloth/Qwen3.8-27B-GGUF",
         "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
@@ -649,7 +653,7 @@ def pick_gguf_file(filenames) -> str | None:
 
     **This is the whole of Piece 1** (D412): given ANY Hub repo's file
     listing, decide which single `.gguf` a bare repo id resolves to, the same
-    question `GGUF_RECIPES` answers by hand for 4 curated filenames. Three
+    question `GGUF_RECIPES` answers by hand for 5 curated filenames. Three
     passes:
 
     1. Exclude by SHAPE — a subdirectory entry (`BF16/model.gguf`, sidesteps
