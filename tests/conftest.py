@@ -499,7 +499,7 @@ def _no_startup_engine_warm(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_ai_idle_reaper_thread(monkeypatch):
-    """`create_app` starts the AI idle-unload reaper thread (SPEC AI-13, D411);
+    """`create_app` starts the AI idle-unload reaper thread (SPEC AI-13, D413);
     no test may let it run.
 
     Same hazard as `_no_schedule_loop_thread`/`_no_background_mount_threads`/
