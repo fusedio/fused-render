@@ -444,22 +444,24 @@ def gguf_block_count(path: str) -> int | None:
 #: fetched it, `llama_text._resolve_model_id`, for the id shape the page's
 #: cache scan hands back). `test_ai_formats.py` asserts every id here also
 #: appears in `catalog.SUGGESTIONS["llamacpp-text"]`, so the two cannot drift.
+#:
+#: **`unsloth` is not a rule, and this table stopped pretending it was.** The
+#: shortlist's smallest entry comes out of `LiquidAI/…`, the publisher's own
+#: repo, because that is where LFM2.5 is published — nothing here reads the
+#: owner, and a curated `(repo, file)` pair is as loadable from one namespace
+#: as another.
 GGUF_RECIPES = {
-    "Qwen3.5-4B-Q5_K_M.gguf": {
+    "LFM2.5-1.2B-Instruct-Q4_K_M.gguf": {
+        "repo": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+        "file": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+    },
+    "Qwen3.5-4B-Q4_K_M.gguf": {
         "repo": "unsloth/Qwen3.5-4B-GGUF",
-        "file": "Qwen3.5-4B-Q5_K_M.gguf",
+        "file": "Qwen3.5-4B-Q4_K_M.gguf",
     },
-    "Qwen3.5-4B-Q8_0.gguf": {
-        "repo": "unsloth/Qwen3.5-4B-GGUF",
-        "file": "Qwen3.5-4B-Q8_0.gguf",
-    },
-    "Qwen3.5-9B-Q4_K_M.gguf": {
-        "repo": "unsloth/Qwen3.5-9B-GGUF",
-        "file": "Qwen3.5-9B-Q4_K_M.gguf",
-    },
-    "Qwen3.5-9B-Q8_0.gguf": {
-        "repo": "unsloth/Qwen3.5-9B-GGUF",
-        "file": "Qwen3.5-9B-Q8_0.gguf",
+    "gemma-4-E4B-it-Q4_K_M.gguf": {
+        "repo": "unsloth/gemma-4-E4B-it-GGUF",
+        "file": "gemma-4-E4B-it-Q4_K_M.gguf",
     },
     "Qwen3.8-27B-UD-Q3_K_XL.gguf": {
         "repo": "unsloth/Qwen3.8-27B-GGUF",
@@ -647,7 +649,7 @@ def pick_gguf_file(filenames) -> str | None:
 
     **This is the whole of Piece 1** (D412): given ANY Hub repo's file
     listing, decide which single `.gguf` a bare repo id resolves to, the same
-    question `GGUF_RECIPES` answers by hand for 5 curated filenames. Three
+    question `GGUF_RECIPES` answers by hand for 4 curated filenames. Three
     passes:
 
     1. Exclude by SHAPE — a subdirectory entry (`BF16/model.gguf`, sidesteps

@@ -428,7 +428,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Rendering only `catalog()`'s curated entries** → the model the user just downloaded is missing from your picker. Render every entry; mark them.
 - **Assuming a capability's runner from the platform** → every capability has more than one and a user preference can pick any. Read `active` from `fused.ai.models.list()`.
 - **Hard-coding a repo id, or carrying one between engines** → formats are backend-specific; a repo that works on one engine is an unusable download on the other.
-- **Assuming a model id is always `org/name`** → `llamacpp-text`'s curated ids are the GGUF's own filename (`Qwen3.5-4B-Q5_K_M.gguf`, no slash). Splitting on `/` or building a Hub URL from `id` breaks on one; treat it as opaque.
+- **Assuming a model id is always `org/name`** → `llamacpp-text`'s curated ids are the GGUF's own filename (`Qwen3.5-4B-Q4_K_M.gguf`, no slash). Splitting on `/` or building a Hub URL from `id` breaks on one; treat it as opaque.
 
 **Images**
 

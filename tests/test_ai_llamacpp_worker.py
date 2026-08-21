@@ -97,8 +97,8 @@ def test_download_fetches_exactly_the_one_curated_file(worker):
     """No snapshot call, and no second repo — `worker_base.download_file` is
     the whole of it (see the module docstring on why there is no external
     tokenizer/config fetch for these repos)."""
-    path = worker.download("Qwen3.5-9B-Q4_K_M.gguf")
-    assert path == "/blobs/unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf"
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
 
 
 def test_download_resolves_an_uncurated_repo_via_the_picker(worker, monkeypatch):
@@ -176,16 +176,16 @@ def test_load_refuses_an_uncurated_repo_with_nothing_loadable_before_importing_l
 
 
 def test_a_repo_id_resolves_to_its_already_cached_recipe(worker):
-    """The regression code review found: `unsloth/Qwen3.5-9B-GGUF` downloaded
-    through the filename id `Qwen3.5-9B-Q4_K_M.gguf` is what the AI Models
+    """The regression code review found: `unsloth/gemma-4-E4B-it-GGUF` downloaded
+    through the filename id `gemma-4-E4B-it-Q4_K_M.gguf` is what the AI Models
     page then offers a Load button for UNDER ITS REPO ID (the local cache is
     keyed by repo, not by this table's filenames) — and before this fix that
     second Load died with the "not curated" refusal for the exact model a
     user just fetched through this engine."""
     worker.worker_base.cached_files.add(
-        ("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf"))
-    path = worker.download("unsloth/Qwen3.5-9B-GGUF")
-    assert path == "/blobs/unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf"
+        ("unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q4_K_M.gguf"))
+    path = worker.download("unsloth/gemma-4-E4B-it-GGUF")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
 
 
 def test_a_repo_id_with_exactly_one_recipe_resolves_even_cold(worker):
@@ -196,13 +196,28 @@ def test_a_repo_id_with_exactly_one_recipe_resolves_even_cold(worker):
                     "Qwen3.8-27B-UD-Q3_K_XL.gguf")
 
 
-def test_a_repo_id_with_two_recipes_and_nothing_cached_is_refused_by_name(worker):
-    """`unsloth/Qwen3.5-4B-GGUF` curates TWO quantizations
-    (Q5_K_M and Q8_0) — with neither on disk yet, a bare repo id is genuinely
-    ambiguous, and guessing would risk a multi-gigabyte download of the wrong
-    one rather than a `FileNotFoundError`."""
+def test_a_repo_id_with_two_recipes_and_nothing_cached_is_refused_by_name(
+        worker, monkeypatch):
+    """Two curated quantizations of ONE repo, with neither on disk yet: the
+    bare repo id is genuinely ambiguous, and guessing would risk a
+    multi-gigabyte download of the wrong one rather than a `FileNotFoundError`.
+
+    The recipe table is PATCHED rather than read, and that is the point. The
+    shipped shortlist happens to curate exactly one quantization per repo
+    today — it curated two of the Qwen 4B until the 2026-08-21 refresh — so a
+    test that reached into the real table for its ambiguous pair would go
+    quietly vacuous the moment the curation stopped supplying one, which is
+    precisely what happened. This branch of `_resolve_model_id` must keep
+    working for the day a repo gains a second entry again.
+    """
+    monkeypatch.setattr(worker, "_GGUF_RECIPES", {
+        "Model-Q4_K_M.gguf": {"repo": "org/Model-GGUF",
+                              "file": "Model-Q4_K_M.gguf"},
+        "Model-Q8_0.gguf": {"repo": "org/Model-GGUF",
+                            "file": "Model-Q8_0.gguf"},
+    })
     with pytest.raises(RuntimeError, match="ambiguous"):
-        worker.download("unsloth/Qwen3.5-4B-GGUF")
+        worker.download("org/Model-GGUF")
 
 
 def test_load_also_resolves_a_repo_id_the_same_way(worker, monkeypatch):
@@ -563,7 +578,7 @@ def test_load_reports_cpu_when_the_build_has_no_gpu_backend_at_all(worker, monke
     — no retry loop to enter, since there is no smaller candidate than CPU."""
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=False)
 
-    worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
     assert worker.worker_base.recorded == {"device": "cpu"}
     assert worker._loaded["llm"].kwargs["model_path"] == "/blobs/model.gguf"
     assert fake.calls == [0]
@@ -578,7 +593,7 @@ def test_load_offloads_to_the_gpu_when_the_build_supports_it(worker, monkeypatch
     layers" sentinel) succeeds outright."""
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True)
 
-    worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
     assert fake.calls == [-1]
     assert worker._loaded["llm"].kwargs["n_gpu_layers"] == -1
     assert worker.worker_base.recorded == {"device": "gpu"}
@@ -593,7 +608,7 @@ def test_load_backs_off_to_cpu_when_full_offload_does_not_fit(worker, monkeypatc
     an OOM'd Load" policy in its plainest form."""
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={-1})
 
-    worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
     assert fake.calls == [-1, 0]
     assert worker.worker_base.recorded == {"device": "cpu"}
 
@@ -625,7 +640,7 @@ def test_load_reports_partial_offload_when_fewer_than_all_layers_fit(
 
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={32})
 
-    worker.load("Qwen3.5-9B-Q4_K_M.gguf", str(gguf_path))
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", str(gguf_path))
     # 32 (all) fails, the next step in the schedule (2/3 of 32 = 21) succeeds.
     assert fake.calls == [32, 21]
     assert worker.worker_base.recorded == {"device": "gpu (partial)"}
@@ -638,7 +653,7 @@ def test_load_does_not_swallow_a_failure_no_smaller_offload_can_fix(worker, monk
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={-1, 0})
 
     with pytest.raises(ValueError, match="Failed to load model"):
-        worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+        worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
     assert fake.calls == [-1, 0]
 
 

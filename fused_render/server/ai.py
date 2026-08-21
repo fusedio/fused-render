@@ -109,7 +109,7 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # **The seam gained a second shape (D411) and this is the one place it has to
 # be spelled out, because it is genuinely not a slash-shaped id.**
 # `llamacpp-text`'s curated ids (`formats.GGUF_RECIPES`) are the GGUF's own
-# FILENAME, never a repo id — `"Qwen3.5-4B-Q5_K_M.gguf"` has no `/` at all —
+# FILENAME, never a repo id — `"Qwen3.5-4B-Q4_K_M.gguf"` has no `/` at all —
 # because a GGUF repo commonly ships two dozen quantizations of one model and
 # the filename is what tells them apart (see `llama_text.py`'s own docstring).
 # `"/" in model` alone therefore sent every curated llamacpp id down the

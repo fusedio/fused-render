@@ -294,9 +294,9 @@ def _stream(body):
 @pytest.mark.parametrize("model,expected", [
     ("mlx-community/Qwen3-8B-4bit", True),   # a Hugging Face repo id
     ("unsloth/Qwen3.5-4B-GGUF", True),       # ditto, an uncurated GGUF repo (D412)
-    ("Qwen3.5-4B-Q5_K_M.gguf", True),        # a curated llamacpp-text FILENAME id
-    ("Qwen3.5-9B-Q4_K_M.gguf", True),
-    ("QWEN3.5-4B-Q5_K_M.GGUF", True),        # case-insensitive, like the extension check it mirrors
+    ("Qwen3.5-4B-Q4_K_M.gguf", True),        # a curated llamacpp-text FILENAME id
+    ("LFM2.5-1.2B-Instruct-Q4_K_M.gguf", True),
+    ("QWEN3.5-4B-Q4_K_M.GGUF", True),        # case-insensitive, like the extension check it mirrors
     ("opus", False),
     ("sonnet", False),
     ("claude-haiku-4-5-20251001", False),
