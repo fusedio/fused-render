@@ -6442,7 +6442,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   what tells the two apart. The image itself is never swept at any age.
 - **AI-9f** **`fused.ai.image({image})` edits a base image instead of
   rendering from the prompt alone — mflux-only, and the diffusers image
-  engine refuses the option rather than answering best-effort** (D418).
+  engine refuses the option rather than answering best-effort** (D419).
   `image` is a page-relative PATH, resolved exactly as `/api/ai/transcribe`'s
   `path` is (RH-1): the bridge injects `base` from the page's own `?path=`,
   and the server 400s a missing or non-file result before a job row opens.
@@ -6472,7 +6472,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   `image` stays on the untouched plain-generate path for the life of the
   process. **mflux renders are not byte-reproducible at a fixed seed** —
   true of the engine as it ships today, not a fact this feature introduces
-  — so nothing here, in a test or in D418, claims otherwise; any check on an
+  — so nothing here, in a test or in D419, claims otherwise; any check on an
   edit's output is visual, never a byte or hash comparison.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one

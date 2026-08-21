@@ -207,7 +207,7 @@ el.dataset.seed = img.seed;
 
 Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that will actually happen, not the one you asked for.
 
-### Editing a base image: `{image}` — mflux only (D418)
+### Editing a base image: `{image}` — mflux only (D419)
 
 ```js
 const edited = await fused.ai.image({
