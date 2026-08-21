@@ -6278,6 +6278,37 @@ an AI Models page that could say what was on disk but not what was *running*.
   environment failure look like a transient race. "Unloaded" survives as the
   answer for what it actually describes: a record that never errored and was
   taken away — evicted by another model, or unloaded from the AI Models page.
+- **AI-9d** **The request envelope of a job-backed AI call is closed** (D413):
+  an option `/api/ai/image` or `/api/ai/transcribe` does not have is a 400
+  naming it, not a value silently dropped. `runners/engine_options.py`
+  already refuses an option an ENGINE cannot honour rather than ignoring it
+  — an unknown key is the same violation one layer up, and the most
+  undetectable case of it: nothing in a text-to-image reply distinguishes
+  "ignored your base image" from "there was no base image to begin with",
+  which is how `fused.ai.image({prompt, image, strength})` came to render a
+  plain text-to-image picture with no sign the edit request was dropped.
+  Checked in both the bridge (`runtime.js`'s `rejectUnknownOptions`, before
+  the POST) and the server (`ai_runtime._reject_unknown`, before any other
+  validation) — the bridge is not the only caller, since the skill documents
+  `curl` against these routes directly, and a page can `fetch` them itself.
+  Both report EVERY unknown key in one message, not just the first, and the
+  server's envelope check runs ahead of its field checks, so a request that
+  is wrong twice is told about the option it does not have rather than the
+  field it also got wrong. `base` is the one deliberate asymmetry: the
+  bridge injects it itself from the page's own `?path=`, so the SERVER's
+  accepted set for transcribe includes it while the bridge's own
+  caller-facing set does not — a caller passing `base` directly is passing
+  an option that does not exist from where it is standing, and letting the
+  two sets collapse into one would silently stop enforcing that. A drift
+  test extracts the bridge's whitelist arrays out of `runtime.js` and
+  compares them, sorted, against the server's constants, so the two
+  languages cannot restate the same fact and disagree unnoticed. The same
+  change reaches `POST /api/ai/runtime/unload`, for consistency rather than
+  a new rule: it never validated `capability`, so a typo reached
+  `supervisor.unload()` and answered `{"stopped": false}`, exactly what a
+  correct request against an idle machine also answers — the same illusion
+  as an ignored image option, fixed with the guard `cancel` already carried
+  four lines below it in the same file.
 - **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
   A runner is still a folder, but the half that is the SUPERVISOR'S contract —
   the auth header's name, the status file's shape, the state vocabulary it
