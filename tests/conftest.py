@@ -497,6 +497,39 @@ def _no_startup_engine_warm(monkeypatch):
     engine._available_cached = None
 
 
+@pytest.fixture(autouse=True)
+def _no_ai_idle_reaper_thread(monkeypatch):
+    """`create_app` starts the AI idle-unload reaper thread (SPEC AI-13, D411);
+    no test may let it run.
+
+    Same hazard as `_no_schedule_loop_thread`/`_no_background_mount_threads`/
+    `_no_startup_index_scan` above, same root cause: `supervisor.start_reaper()`
+    runs from the app's STARTUP event, so any test that enters
+    `with TestClient(create_app(...))` spawns a daemon that is never joined and
+    ticks every `_REAPER_TICK_S` for the REST OF THE WORKER PROCESS, calling
+    `prefs.effective_ai_idle_unload_minutes()` -> `read_prefs()`, which reads
+    `FUSED_RENDER_HOME` AFRESH on every tick. A later test's tmp home is
+    whatever is current when a tick lands, not the one that started the
+    thread — confirmed directly (a standalone repro before this fixture
+    existed: a thread started against one `FUSED_RENDER_HOME` keeps opening
+    `prefs.json` under whatever a LATER, unrelated `FUSED_RENDER_HOME` has
+    moved on to, for as long as the process lives).
+
+    In real usage this is exactly right — `create_app()` runs once per process,
+    so the reaper SHOULD outlive the app for the process's whole life — and
+    that is also why this is fixed the same way as its three siblings, at the
+    test boundary, rather than by giving the thread a shutdown-time stop: there
+    is nothing to stop in production, only a thread this SUITE spawns hundreds
+    of times in one process.
+
+    No test asserts `start_reaper` spawns a thread; the tests that are ABOUT
+    the reaper (`tests/test_ai_runtime.py`) drive `reap_idle(now)` /
+    `idle_workers(now)` directly with a synthetic clock, never the thread."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_reaper", lambda: None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_rcd_spawn():
     """Make spawning a REAL rclone rcd from the suite impossible, loudly.
