@@ -880,39 +880,45 @@ def _record_finish(wf: dict, state: str, detail: str) -> None:
         logger.debug("workflow trigger job report failed", exc_info=True)
 
 
-def _poll_current(wf: dict, now: datetime) -> None:
-    """Ask the runner whether the in-flight run has ended, and record it if so."""
-    current = wf.get("current")
-    if not isinstance(current, dict):
-        return
+def _poll_outcome(current: dict) -> tuple[str, str] | None:
+    """`(state, detail)` for a claim that has ended, or `None` while it runs.
+
+    OUTSIDE THE STORE LOCK — this is the half of the poll that talks to the
+    runner, and `_apply_poll` is the half that writes. The split is not
+    cosmetic: `_lock` also serialises every HTTP request that touches the store,
+    so holding it across a subprocess would make Arm and Disarm wait on a poll.
+    """
     run_id = str(current.get("runId") or "")
     started = current.get("started_ts") or 0
     if not run_id:
         # Claimed but never spawned — the process died between the claim and the
         # spawn. Safe to release: nothing is running.
-        _record_finish(wf, "lost", "the run was claimed but never started")
-        return
+        return "lost", "the run was claimed but never started"
     out = _template_run({"action": "poll", "runId": run_id})
+    stale = time.time() - started > _RUN_MAX_AGE_S
     if not out.get("ok"):
-        if time.time() - started > _RUN_MAX_AGE_S:
-            _record_finish(wf, "lost", out.get("message", "the run was lost"))
-        return
+        return ("lost", out.get("message", "the run was lost")) if stale else None
     if not out.get("done"):
-        if time.time() - started > _RUN_MAX_AGE_S:
-            _record_finish(wf, "lost", "the run did not finish within 6 hours")
-        return
+        return ("lost", "the run did not finish within 6 hours") if stale else None
     failed_nodes = [n for n in (out.get("nodes") or [])
                     if isinstance(n, dict) and n.get("status") == "error"]
     error = str(out.get("error") or "")
     if error or failed_nodes:
-        detail = error or ("step %r failed: %s"
-                           % (failed_nodes[0].get("label"),
-                              failed_nodes[0].get("error")))
-        _record_finish(wf, "error", detail)
+        return "error", (error or "step %r failed: %s"
+                         % (failed_nodes[0].get("label"),
+                            failed_nodes[0].get("error")))
+    return "done", str(out.get("summary") or "")[:400]
+
+
+def _apply_poll(wf: dict, outcome: tuple[str, str]) -> None:
+    """Write a finished claim into the history. Under the lock."""
+    state, detail = outcome
+    source = (wf.get("current") or {}).get("source", "")
+    _record_finish(wf, state, detail)
+    if state == "error":
         _emit(EVENT_FAILED, wf, detail)
-    else:
-        _record_finish(wf, "done", str(out.get("summary") or "")[:400])
-        _emit(EVENT_RAN, wf, current.get("source", ""))
+    elif state == "done":
+        _emit(EVENT_RAN, wf, source)
 
 
 def _evaluate(wf: dict, now: datetime) -> None:
@@ -1048,14 +1054,37 @@ def tick(now: datetime | None = None) -> list[dict]:
 
 
 def _prepare(key: str, now: datetime) -> dict | None:
-    """Everything for one workflow that happens under the lock: poll, evaluate,
-    authorize, claim. Returns the claim to spawn, or None."""
+    """One workflow's whole tick: poll, evaluate, authorize, claim.
+
+    Interleaved deliberately — the two calls into the runner (`poll` and the
+    `plan` behind `_authorized`) happen with the store lock RELEASED, and only
+    the read-modify-writes take it. `_lock` is also what serialises every HTTP
+    request that touches the store, and `plan` compiles a document by spawning
+    discovery over its app folders: holding the lock across that would make
+    Arm and Disarm on a busy machine wait seconds on a tick.
+
+    Returns the claim to spawn, or None.
+    """
+    # (1) poll, outside the lock, against a snapshot of the claim.
+    with _lock:
+        wf = _read().get(key)
+        current = (wf or {}).get("current")
+    if wf is None:
+        return None
+    outcome = _poll_outcome(current) if isinstance(current, dict) else None
+
+    # (2) apply, evaluate, claim — under the lock, re-reading rather than
+    # writing back the snapshot above, so a disarm that landed during the poll
+    # is not undone by it.
     with _lock:
         flows = _read()
         wf = flows.get(key)
         if wf is None:
             return None
-        _poll_current(wf, now)
+        if outcome is not None and isinstance(wf.get("current"), dict) \
+                and str(wf["current"].get("runId") or "") == \
+                str((current or {}).get("runId") or ""):
+            _apply_poll(wf, outcome)
         limit = _positive(wf.get("error_limit"), DEFAULT_ERROR_LIMIT)
         disarmed_for_errors = False
         if wf.get("armed") and int(wf.get("consecutive_errors") or 0) >= limit:
@@ -1069,23 +1098,7 @@ def _prepare(key: str, now: datetime) -> dict | None:
             disarmed_for_errors = True
         if wf.get("armed"):
             _evaluate(wf, now)
-        refusal = None
         claim = _drain(wf, now) if wf.get("armed") else None
-        if claim is not None:
-            _compiled, refusal = _authorized(wf)
-            if refusal is not None:
-                # The claim is undone, the workflow disarms, and the queue goes
-                # with it. Undone rather than recorded as a failed run: nothing
-                # ran, and counting it as an error would be a second, wrong,
-                # reason to disarm.
-                wf["current"] = None
-                wf["rate_window"] = (wf.get("rate_window") or [])[:-1]
-                wf["armed"] = False
-                wf["queue"] = []
-                wf["next_due"] = {}
-                wf["needs_rearm"] = True
-                wf["needs_rearm_reason"] = refusal["message"]
-                claim = None
         flows[key] = wf
         _write(flows)
         payload = dict(claim) if claim else None
@@ -1094,9 +1107,36 @@ def _prepare(key: str, now: datetime) -> dict | None:
             payload["model"] = wf.get("model") or ""
     if disarmed_for_errors:
         _emit(EVENT_DISARMED, wf, wf["needs_rearm_reason"])
-    if refusal is not None:
-        _emit(EVENT_REFUSED, wf, refusal["message"])
-    return payload
+    if payload is None:
+        return None
+
+    # (3) THE AUTHORIZATION CHECK, outside the lock and AFTER the claim.
+    #
+    # After, and that ordering is on purpose: the claim is what stops a second
+    # tick racing this one into the same run, so it has to be held while the
+    # document is compiled. A refusal then UNDOES it — the claim is released,
+    # the rate-window slot given back, and the workflow disarmed with the queue.
+    # Undone rather than recorded as a failed run: nothing ran, and counting it
+    # as an error would be a second, wrong, reason to disarm.
+    _compiled, refusal = _authorized(wf)
+    if refusal is None:
+        return payload
+    with _lock:
+        flows = _read()
+        wf = flows.get(key)
+        if wf is None:
+            return None
+        wf["current"] = None
+        wf["rate_window"] = (wf.get("rate_window") or [])[:-1]
+        wf["armed"] = False
+        wf["queue"] = []
+        wf["next_due"] = {}
+        wf["needs_rearm"] = True
+        wf["needs_rearm_reason"] = refusal["message"]
+        flows[key] = wf
+        _write(flows)
+    _emit(EVENT_REFUSED, wf, refusal["message"])
+    return None
 
 
 def _settle(key: str, result: dict) -> None:
