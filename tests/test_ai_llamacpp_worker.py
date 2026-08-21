@@ -545,7 +545,8 @@ def test_a_disconnected_write_propagates_with_nothing_left_running(worker):
 # -- device and memory --------------------------------------------------------
 
 
-def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=()):
+def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=(),
+                    expert_offload=True):
     """A fake `llama_cpp` module good enough for the offload-decision tests.
 
     `gpu_offload` stands in for `llama_supports_gpu_offload()` — the real
@@ -553,10 +554,34 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=()):
     is the set of `n_gpu_layers` values this fake's `Llama` refuses to
     construct with (raising, the same shape a real too-large GPU buffer
     allocation raises) — everything else succeeds.
+
+    The nested `llama_cpp.llama_cpp` submodule is not padding: `_experts_on_cpu`
+    patches `llama_model_default_params` THERE rather than on the package,
+    because that is where `llama.py` reads it from, and a fake that only had
+    the package attribute would let a regression to the wrong target pass.
+    `expert_offload=False` removes the ggml symbol instead, standing in for a
+    binding that has moved out from under the override.
     """
     fake_llama_cpp = types.ModuleType("llama_cpp")
     fake_llama_cpp.llama_supports_gpu_offload = lambda: gpu_offload
     calls = []
+
+    class Params:
+        def __init__(self):
+            self.tensor_buft_overrides = None
+
+    inner = types.ModuleType("llama_cpp.llama_cpp")
+    inner.llama_model_default_params = Params
+
+    class Lib:
+        """Stands in for the ctypes handle the binding already has open."""
+        if expert_offload:
+            @staticmethod
+            def ggml_backend_cpu_buffer_type():
+                return 0xB0F7
+
+    inner._lib = Lib()
+    fake_llama_cpp.llama_cpp = inner
 
     class Llama:
         def __init__(self, **kwargs):
@@ -565,11 +590,36 @@ def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=()):
                 raise ValueError("Failed to load model from file: test")
             self.kwargs = kwargs
             self.metadata = {}
+            # Ask the factory the way the real `Llama.__init__` does — which
+            # is the only thing `_experts_on_cpu`'s patch can act on — and keep
+            # what it filled in, so a test can tell "the override was
+            # installed" from "the rung merely ran".
+            self.overrides = inner.llama_model_default_params().tensor_buft_overrides
 
     fake_llama_cpp.Llama = Llama
     fake_llama_cpp.calls = calls
     monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+    monkeypatch.setitem(sys.modules, "llama_cpp.llama_cpp", inner)
     return fake_llama_cpp
+
+
+def _make_gguf(pairs):
+    """A minimal but REAL GGUF header — `formats` parses these bytes for real.
+
+    Only the two value types these tests need: 8 (string) and 4 (uint32).
+    """
+    import struct
+
+    buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
+        struct.pack("<Q", len(pairs))
+    for key, value_type, value in pairs:
+        buf += struct.pack("<Q", len(key.encode())) + key.encode()
+        buf += struct.pack("<I", value_type)
+        if value_type == 8:
+            buf += struct.pack("<Q", len(value.encode())) + value.encode()
+        else:
+            buf += struct.pack("<I", value)
+    return buf
 
 
 def test_load_reports_cpu_when_the_build_has_no_gpu_backend_at_all(worker, monkeypatch):
@@ -588,9 +638,9 @@ def test_load_offloads_to_the_gpu_when_the_build_supports_it(worker, monkeypatch
     """The blocking defect this test guards against: `n_gpu_layers` used to
     never be passed at all, which `llama-cpp-python` defaults to `0` — a
     182MB Vulkan wheel that only ever ran on the CPU. A fake nonexistent path
-    means `formats.gguf_block_count` cannot read a header, so the schedule is
-    the two-tier `(-1, 0)` and the first attempt (`-1`, llama.cpp's own "all
-    layers" sentinel) succeeds outright."""
+    means `formats.gguf_block_count` cannot read a header, so the schedule
+    collapses to `(-1, False)` then `(0, False)` and the first attempt (`-1`,
+    llama.cpp's own "all layers" sentinel) succeeds outright."""
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True)
 
     worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
@@ -618,22 +668,8 @@ def test_load_reports_partial_offload_when_fewer_than_all_layers_fit(
     """A real GGUF header this time (32 layers, `qwen35.block_count`), so the
     schedule has an intermediate step between "all" and "0" — and landing on
     it must say so rather than claiming a full GPU load."""
-    import struct
-
-    def make_gguf(pairs):
-        buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
-            struct.pack("<Q", len(pairs))
-        for key, value_type, value in pairs:
-            buf += struct.pack("<Q", len(key.encode())) + key.encode()
-            buf += struct.pack("<I", value_type)
-            if value_type == 8:  # string
-                buf += struct.pack("<Q", len(value.encode())) + value.encode()
-            else:  # uint32
-                buf += struct.pack("<I", value)
-        return buf
-
     gguf_path = tmp_path / "model.gguf"
-    gguf_path.write_bytes(make_gguf([
+    gguf_path.write_bytes(_make_gguf([
         ("general.architecture", 8, "qwen35"),
         ("qwen35.block_count", 4, 32),
     ]))
@@ -655,6 +691,118 @@ def test_load_does_not_swallow_a_failure_no_smaller_offload_can_fix(worker, monk
     with pytest.raises(ValueError, match="Failed to load model"):
         worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/model.gguf")
     assert fake.calls == [-1, 0]
+
+
+def test_the_offload_schedule_adds_an_expert_rung_only_for_a_mixture_of_experts_model(
+        worker):
+    """Position is the whole point, so it is asserted rather than described.
+
+    The expert rung goes directly ABOVE pure CPU and below every dense step:
+    full offload is roughly three times faster than any split and must be
+    tried first, and the fractional steps beat it whenever they fit — it earns
+    its place only against the bottom rung, which it beats on VRAM and
+    throughput at once. See `_offload_schedule`'s docstring for the numbers.
+    """
+    dense = worker._offload_schedule(24, False)
+    experts = worker._offload_schedule(24, True)
+
+    assert dense == ((24, False), (16, False), (8, False), (0, False))
+    assert experts == ((24, False), (16, False), (8, False), (-1, True), (0, False))
+    # ...directly above CPU, and CPU still last whatever else changes.
+    assert experts[-2:] == ((-1, True), (0, False))
+    assert all(not park for _count, park in dense)
+
+
+def test_the_expert_rung_is_offered_even_when_the_header_gave_no_layer_count(worker):
+    """The rung needs no layer count — it moves TENSORS, not layers — so an
+    unreadable header costs the fractional steps but not this one."""
+    assert worker._offload_schedule(None, True) == (
+        (-1, False), (-1, True), (0, False))
+    assert worker._offload_schedule(None, False) == ((-1, False), (0, False))
+
+
+def test_load_parks_the_experts_on_the_cpu_when_no_dense_split_fits(
+        worker, monkeypatch, tmp_path):
+    """The rung's reason for existing: rather than fall from the smallest
+    dense split straight to pure CPU, a MoE model keeps every layer on the GPU
+    and puts only its expert tensors in system RAM."""
+    # The id is the real curated mixture-of-experts row, but it is the header
+    # written below — not the id — that makes this test a MoE one. The id only
+    # has to be CURATED: an uncurated one resolves by asking the Hub, and a
+    # test must never reach the network. (It did, once, when `main` retired the
+    # id this originally used.)
+    gguf_path = tmp_path / "moe.gguf"
+    gguf_path.write_bytes(_make_gguf([
+        ("general.architecture", 8, "lfm2moe"),
+        ("lfm2moe.block_count", 4, 24),
+        ("lfm2moe.expert_count", 4, 32),
+    ]))
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={24, 16, 8})
+
+    worker.load("LFM2.5-8B-A1B-Q4_K_M.gguf", str(gguf_path))
+
+    assert fake.calls == [24, 16, 8, -1]
+    assert worker.worker_base.recorded == {"device": "gpu (experts on cpu)"}
+    # The override was actually installed, not merely attempted — this is what
+    # separates the rung working from the rung silently doing nothing.
+    assert worker._loaded["llm"].overrides is not None
+
+
+def test_load_restores_the_params_factory_it_patched(worker, monkeypatch, tmp_path):
+    """`_experts_on_cpu` patches a module global, so a leak would silently
+    give expert placement to the NEXT model this process loads — including a
+    dense one, where the pattern matches nothing but the patch is still wrong."""
+    gguf_path = tmp_path / "moe.gguf"
+    gguf_path.write_bytes(_make_gguf([
+        ("general.architecture", 8, "lfm2moe"),
+        ("lfm2moe.block_count", 4, 24),
+        ("lfm2moe.expert_count", 4, 32),
+    ]))
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={24, 16, 8})
+    before = fake.llama_cpp.llama_model_default_params
+
+    worker.load("LFM2.5-8B-A1B-Q4_K_M.gguf", str(gguf_path))
+
+    assert fake.llama_cpp.llama_model_default_params is before
+
+
+def test_load_never_parks_experts_for_a_dense_model(worker, monkeypatch, tmp_path):
+    """A dense GGUF has no `expert_count` key at all, so the rung must not
+    appear — there is nothing to park, and a pattern matching no tensor would
+    buy an extra failed load attempt for nothing."""
+    gguf_path = tmp_path / "dense.gguf"
+    gguf_path.write_bytes(_make_gguf([
+        ("general.architecture", 8, "qwen35"),
+        ("qwen35.block_count", 4, 32),
+    ]))
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={32, 21})
+
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", str(gguf_path))
+
+    assert fake.calls == [32, 21, 10]
+    assert worker.worker_base.recorded == {"device": "gpu (partial)"}
+    assert worker._loaded["llm"].overrides is None
+
+
+def test_expert_offload_the_binding_cannot_supply_still_loads_the_model(
+        worker, monkeypatch, tmp_path):
+    """Losing the ggml symbol costs throughput, never correctness — so the
+    load proceeds without the override. The device must then NOT claim the
+    experts are on the CPU, since they are not."""
+    gguf_path = tmp_path / "moe.gguf"
+    gguf_path.write_bytes(_make_gguf([
+        ("general.architecture", 8, "lfm2moe"),
+        ("lfm2moe.block_count", 4, 24),
+        ("lfm2moe.expert_count", 4, 32),
+    ]))
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={24, 16, 8},
+                           expert_offload=False)
+
+    worker.load("LFM2.5-8B-A1B-Q4_K_M.gguf", str(gguf_path))
+
+    assert fake.calls == [24, 16, 8, -1]
+    assert worker._loaded["llm"].overrides is None
+    assert worker.worker_base.recorded == {"device": "gpu"}
 
 
 def test_memory_defers_entirely_to_rss(worker):
