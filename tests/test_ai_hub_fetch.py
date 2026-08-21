@@ -108,6 +108,14 @@ def _start_server(payload, **flags):
       chunk_cap=N         at most N bytes per response, then hang up — a slow
                           link that keeps needing another connection
       probe_fail_first=N  the first N one-byte probes get a 503
+      plain={path, …}     these paths answer NORMALLY, ignoring every
+                          misbehaviour flag above (they are still logged). What
+                          it is for: the model mirror serves a manifest and its
+                          blobs on ONE host, and "the manifest arrives and then
+                          the BLOB 401s" is a different test from "the manifest
+                          401s" — without this, a flag aimed at the blobs hits
+                          the manifest first, because the manifest is the first
+                          request of the download.
       routes={path: …}    serve a DIFFERENT body per path instead of `payload`
                           everywhere: `bytes` is that path's body, an `int` is
                           the status to answer with, and a path not in the map
@@ -123,7 +131,7 @@ def _start_server(payload, **flags):
     must NOT be there.
     """
     state = {"log": [], "requests": [], "served": 0, "broken": 0, "real": 0,
-             "routes": None,
+             "routes": None, "plain": (),
              "probes": 0, "lock": threading.Lock(),
              "ranges": True, "lie_after_probe": False, "clamp": False,
              "budget": None, "unauthorized": 0, "unauthorized_on": (),
@@ -152,6 +160,7 @@ def _start_server(payload, **flags):
             # with instead of a body. Without `routes` every path serves the one
             # `payload`, exactly as before.
             whole, status = payload, None
+            plain = self.path in state["plain"]
             if state["routes"] is not None:
                 served = state["routes"].get(self.path)
                 if served is None:
@@ -167,14 +176,15 @@ def _start_server(payload, **flags):
                     "auth": self.headers.get("Authorization")})
                 if probe:
                     state["probes"] += 1
-                    failed_probe = state["probes"] <= state["probe_fail_first"]
+                    failed_probe = (not plain
+                                    and state["probes"] <= state["probe_fail_first"])
                 else:
                     state["real"] += 1
-                    expired = (state["unauthorized"] > 0
-                               or state["real"] in state["unauthorized_on"])
-                    if state["unauthorized"] > 0:
+                    expired = not plain and (state["unauthorized"] > 0
+                                             or state["real"] in state["unauthorized_on"])
+                    if state["unauthorized"] > 0 and not plain:
                         state["unauthorized"] -= 1
-                    if state["hold_first_real"] and not state["_held"]:
+                    if state["hold_first_real"] and not state["_held"] and not plain:
                         state["_held"] = True
                         hold = True
 
@@ -198,7 +208,7 @@ def _start_server(payload, **flags):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            if not probe and state["break_first"]:
+            if not probe and state["break_first"] and not plain:
                 with state["lock"]:
                     broken = state["broken"] < state["break_first"]
                     state["broken"] += 1 if broken else 0
@@ -241,9 +251,9 @@ def _start_server(payload, **flags):
             body = whole[start:end + 1]
 
             allowed = len(body)
-            if state["chunk_cap"] is not None and not probe:
+            if state["chunk_cap"] is not None and not probe and not plain:
                 allowed = min(allowed, state["chunk_cap"])
-            if state["budget"] is not None and not probe:
+            if state["budget"] is not None and not probe and not plain:
                 with state["lock"]:
                     allowed = max(0, min(allowed, state["budget"] - state["served"]))
                     state["served"] += allowed
@@ -1585,23 +1595,30 @@ def _mirror_manifest(payload, name="model.safetensors", **overrides):
     entry = {"name": name, "etag": "beef" * 10, "size": len(payload),
              "sha256": hashlib.sha256(payload).hexdigest()}
     manifest = {"schema": 1, "repo": "org/m", "commit": MIRROR_COMMIT,
-                "files": [entry]}
+                "complete": True, "files": [entry]}
     manifest.update(overrides)
     return manifest
 
 
+MANIFEST_PATH = "/models/org/m/manifest.json"
+
+
 def _mirror_server(payload, manifest=None, manifest_status=None, blob=True,
-                   **flags):
+                   plain_manifest=False, **flags):
     """A mirror serving one manifest and one blob, on one local port.
 
     `manifest_status` replaces the manifest with a status code (404 for a model
     nobody mirrored, 503 for a distribution having a bad day). `blob=False`
     leaves the blob URL a 404 — a manifest that promises bytes the mirror does
-    not hold, which is the mid-download failure.
+    not hold, which is the mid-download failure. `plain_manifest` exempts the
+    manifest from the misbehaviour flags, so a flag can be aimed at the BLOBS —
+    the manifest is the download's first request and would otherwise absorb it.
     """
     manifest = _mirror_manifest(payload) if manifest is None else manifest
     body = manifest_status if manifest_status else json.dumps(manifest).encode()
-    routes = {"/models/org/m/manifest.json": body}
+    routes = {MANIFEST_PATH: body}
+    if plain_manifest:
+        flags["plain"] = (MANIFEST_PATH,)
     if blob and manifest.get("files"):
         etag = manifest["files"][0].get("etag", "")
         routes[f"/models/org/m/{manifest.get('commit')}/{etag}"] = payload
@@ -1724,7 +1741,7 @@ def test_a_mirrored_download_is_then_served_from_the_cache(base, monkeypatch,
 @pytest.mark.parametrize("kind, kwargs", [
     ("404", {"manifest_status": 404}),
     ("5xx", {"manifest_status": 503}),
-    ("malformed", {"manifest": {"schema": 1, "repo": "org/m",
+    ("malformed", {"manifest": {"schema": 1, "repo": "org/m", "complete": True,
                                 "commit": "not-a-sha", "files": []}}),
     ("not json", {"manifest": None}),
 ])
@@ -2018,3 +2035,222 @@ def test_a_mismatch_does_not_leave_bytes_a_later_run_would_resume_into(
     leftovers = [name for _d, _s, files in os.walk(folder) for name in files
                  if base.PART_SUFFIX in name]
     assert leftovers == [], leftovers
+
+
+# -- the mirror path has no presigned URL to refresh (review finding 1) ----------
+
+
+def _hub_meta_recorder(base, monkeypatch, state, payload, name="model.safetensors"):
+    """Record `_hub_file_meta` calls, answering the way the HUB really would.
+
+    Realistic on purpose. The etag, size and commit match, because they are what
+    `_re_resolve`'s guard compares and a mismatching stub would abort for the
+    wrong reason — and there is NO `sha256`, because the Hub has none. That
+    absence is the bug this pins: it used to switch the mirror path's hash check
+    off silently. And RECORDED rather than raised, because the retry loop catches
+    a re-resolve's own exception by design, so a stub that raises makes the test
+    pass while the request is still being made.
+    """
+    asked = []
+    etag = _mirror_manifest(payload)["files"][0]["etag"]
+    url = f"{state['origin']}/models/org/m/{MIRROR_COMMIT}/{etag}"
+
+    def meta(repo_id, filename, revision):
+        asked.append((repo_id, filename))
+        return {"url": url, "location": url, "etag": etag,
+                "commit": MIRROR_COMMIT, "size": len(payload)}
+
+    monkeypatch.setattr(base, "_hub_file_meta", meta)
+    return asked
+
+
+def test_a_401_on_a_mirror_blob_is_retried_without_ever_asking_the_hub(base,
+                                                                       monkeypatch,
+                                                                       tmp_path,
+                                                                       payload):
+    """A 401/403 mid-download must not send us to huggingface.co.
+
+    On the Hub path a 401 means the presigned CDN URL expired, and re-resolving
+    is right. On the mirror path there IS no presigned URL — the blob URL is
+    commit-pinned and immutable — so a re-resolve has nothing to refresh, and
+    doing it anyway makes a request to the one host this whole feature exists to
+    keep out of the conversation. A 403 from a CDN for a misconfigured object is
+    the common case, not an exotic one.
+    """
+    state = _mirror_server(payload, unauthorized=1, plain_manifest=True)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    asked = _hub_meta_recorder(base, monkeypatch, state, payload)
+
+    snapshot = base.download_snapshot("org/m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert asked == [], "a mirror download made a metadata call to the Hub"
+    assert all(r["path"].startswith("/models/org/m/") for r in state["requests"])
+
+
+def test_a_401_on_a_mirror_blob_never_costs_the_hash_check(base, monkeypatch,
+                                                           tmp_path, payload):
+    """…and the digest survives it, which is the half that was silent.
+
+    A re-resolve replaced `self.meta` wholesale with the Hub's version, and Hub
+    metadata has no `sha256` — so `finish()`'s gate went falsy and the
+    verification simply disappeared, with the etag/size/commit guard still
+    passing because a mirror etag IS an hf blob name. The check vanished exactly
+    in the failure mode it exists for, and the resulting blob is published under
+    a real etag forever.
+    """
+    state = _mirror_server(payload, unauthorized=1, plain_manifest=True)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    # A REALISTIC Hub answer, which is the whole point: same etag, same size,
+    # same commit — every field the re-resolve guard checks — and no `sha256`,
+    # because the Hub has none to give. A stub that raised instead would be
+    # swallowed by the retry loop and this test would pass without the fix.
+    asked = _hub_meta_recorder(base, monkeypatch, state, payload)
+    hashed = []
+    real = base._blob_sha256
+    monkeypatch.setattr(base, "_blob_sha256",
+                        lambda path: hashed.append(path) or real(path))
+
+    base.download_snapshot("org/m")
+
+    assert asked == [], "a mirror download made a metadata call to the Hub"
+    assert len(hashed) == 1, "the 401 cost the file its hash check"
+
+
+def test_a_mirror_blob_that_keeps_401ing_falls_back_rather_than_re_resolving(
+        base, monkeypatch, tmp_path, payload):
+    """Exhausting the retries hands the repo to hf, as any other failure does.
+
+    What must not happen in between is a metadata call to the Hub — the segment
+    loop's own retry budget is the whole answer here.
+    """
+    state = _mirror_server(payload, unauthorized=99, plain_manifest=True)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 2)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    # RECORDED, not raised. A raise here is swallowed by the retry loop's own
+    # `except Exception as again`, so the test would pass while the request was
+    # being made — the exact hole this finding is about.
+    asked = _hub_meta_recorder(base, monkeypatch, state, payload)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+    assert asked == [], "the Hub was asked to re-resolve a mirror blob"
+
+
+def test_the_hub_path_still_re_resolves_an_expired_presigned_url(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """The other side of the same rule, unchanged: a Hub fetch whose presigned
+    URL expires mid-download still gets a fresh one, because there it really has
+    expired and the budget must not be spent on 401s."""
+    url, state = _start_server(payload, unauthorized=1)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    resolved = []
+    monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: (
+        resolved.append(name) or {"url": url, "location": url, "etag": "e7ag",
+                                  "commit": "c0m", "size": len(payload)}))
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert len(resolved) >= 2, "the Hub path stopped re-resolving"
+
+
+def test_a_replaced_meta_cannot_erase_the_hash_check(base, tmp_path, payload):
+    """The structural half of the same fix.
+
+    Whether a blob is verified is decided ONCE, from the metadata the fetch was
+    planned with, and is not re-read out of `self.meta` at publish time — so no
+    later reassignment of that dict, for any reason anybody invents next, can
+    turn the check off. `_re_resolve` is only the way it happened to happen.
+    """
+    url, _state = _start_server(payload)
+    folder = str(tmp_path / "models--org--m")
+    digest = hashlib.sha256(payload).hexdigest()
+    fetch = base._FileFetch(
+        folder, "org/m", "model.safetensors", "main",
+        {"url": url, "location": url, "etag": "beef" * 10, "commit": "c0m",
+         "size": len(payload), "sha256": digest},
+        None, threading.Event())
+    fetch.plan()
+    for seg in fetch.segments:  # pretend every byte arrived, but write nothing
+        seg["done"] = seg["end"] - seg["start"] + 1
+    fetch.meta = dict(fetch.meta)
+    del fetch.meta["sha256"]  # exactly what a re-resolve used to do
+
+    with pytest.raises(RuntimeError, match="the mirror served"):
+        fetch.finish()
+
+    assert not os.path.exists(os.path.join(folder, "blobs", "beef" * 10))
+
+
+# -- a mirror host that misbehaves at the HTTP level (review finding 2) ----------
+
+
+def test_a_manifest_response_that_falls_apart_lands_on_the_hub_path(base,
+                                                                    monkeypatch,
+                                                                    tmp_path,
+                                                                    payload):
+    """`IncompleteRead` is an `HTTPException`, not an `OSError`.
+
+    So it escaped the client's guard AND `_mirror_snapshot`'s, since the manifest
+    was fetched before the `try` — and the download FAILED where the Hub could
+    have served it. Both halves are fixed; this pins the outcome the docstrings
+    always claimed.
+    """
+    state = _mirror_server(payload, break_first=1, break_bytes=4)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+
+
+def test_a_mirror_client_that_raises_at_all_cannot_fail_the_download(base,
+                                                                     monkeypatch,
+                                                                     tmp_path,
+                                                                     payload):
+    """Belt and braces around the whole branch, not just the fetch.
+
+    "Any failure falls back to the Hub" is the promise the feature is allowed to
+    exist on, and it should not depend on having enumerated every exception a
+    URL library can raise. So the manifest call, the filter and the fetch are all
+    inside one guard.
+    """
+    state = _mirror_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+    def boom(model_id):
+        raise RuntimeError("an exception nobody enumerated")
+
+    monkeypatch.setattr(base._mirror_module(), "manifest", boom)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"]
+
+
+# -- an empty file is a real file (review finding 6) ------------------------------
+
+
+def test_a_zero_byte_file_in_a_manifest_is_fetched_and_filed(base, monkeypatch,
+                                                             tmp_path, payload):
+    """Allowing size 0 in the manifest is only worth anything if the fetcher
+    really handles it, so this drives the whole path rather than reasoning about
+    `_chunks(0)`."""
+    empty_etag = hashlib.sha256(b"").hexdigest()
+    manifest = _mirror_manifest(payload)
+    manifest["files"].append({"name": "empty.txt", "etag": empty_etag,
+                              "size": 0, "sha256": empty_etag})
+    state = _mirror_server(payload, manifest=manifest)
+    state["routes"][f"/models/org/m/{MIRROR_COMMIT}/{empty_etag}"] = b""
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal(base, monkeypatch)
+
+    snapshot = base.download_snapshot("org/m")
+
+    assert open(os.path.join(snapshot, "empty.txt"), "rb").read() == b""
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload

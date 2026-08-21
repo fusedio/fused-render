@@ -55,6 +55,7 @@ def _manifest(**overrides):
         "schema": 1,
         "repo": "org/m",
         "commit": COMMIT,
+        "complete": True,
         "files": [{"name": "model.safetensors", "etag": ETAG,
                    "size": len(BLOB), "sha256": ETAG}],
     }
@@ -62,10 +63,12 @@ def _manifest(**overrides):
     return payload
 
 
-def _serve(payload, model_id="org/m"):
+def _serve(payload, model_id="org/m", **flags):
     """A mirror that answers a manifest for `model_id` and nothing else.
 
     `payload` may be a dict (served as JSON), raw bytes, or an int status.
+    `flags` reach the harness, so a test can make the RESPONSE misbehave rather
+    than only its body — see `test_ai_hub_fetch._start_server`.
     """
     body = payload
     if isinstance(payload, dict):
@@ -74,7 +77,7 @@ def _serve(payload, model_id="org/m"):
     routes = {f"/models/{org}/{name}/manifest.json": body}
     if not isinstance(payload, int):
         routes[f"/models/{org}/{name}/{COMMIT}/{ETAG}"] = BLOB
-    _url, state = _start_server(b"", routes=routes)
+    _url, state = _start_server(b"", routes=routes, **flags)
     return state
 
 
@@ -153,8 +156,8 @@ def test_a_good_manifest_yields_the_file_list_and_hub_shaped_metadata(mirror,
 
     assert manifest is not None
     assert manifest["commit"] == COMMIT
-    assert mirror.names(manifest) == ["model.safetensors"]
-    assert mirror.total_bytes(manifest) == len(BLOB)
+    assert [entry["name"] for entry in manifest["files"]] == ["model.safetensors"]
+    assert [entry["size"] for entry in manifest["files"]] == [len(BLOB)]
     # Exactly one request, before any bytes: the counting key (see the plan).
     assert [r["path"] for r in state["requests"]] == [
         "/models/org/m/manifest.json"]
@@ -196,8 +199,6 @@ def test_a_base_url_with_a_trailing_slash_or_a_prefix_still_resolves(mirror,
     ({"files": "model.safetensors"}, "a file list that is not a list"),
     ({"files": [{"name": "m", "etag": "zz", "size": 1, "sha256": ETAG}]},
      "an etag that is not hex"),
-    ({"files": [{"name": "m", "etag": ETAG, "size": 0, "sha256": ETAG}]},
-     "a size of zero"),
     ({"files": [{"name": "m", "etag": ETAG, "size": -5, "sha256": ETAG}]},
      "a negative size"),
     ({"files": [{"name": "m", "etag": ETAG, "size": 1.5, "sha256": ETAG}]},
@@ -350,3 +351,95 @@ def test_mirror_imports_nothing_but_the_stdlib():
     outside = sorted(name for name in imported
                      if name not in sys.stdlib_module_names)
     assert outside == [], f"mirror gained a non-stdlib module-scope import: {outside}"
+
+
+# -- a manifest has to declare that it is the WHOLE repo (review finding 3) ------
+
+
+def test_a_manifest_that_does_not_claim_to_be_complete_is_refused(mirror,
+                                                                  monkeypatch):
+    """`complete` is the manifest asserting that it lists EVERY file in the repo
+    at that commit, and the client requires it.
+
+    Without it the client would be inferring completeness from the very document
+    it is reading — and the consequence is not a slow download but a permanent
+    one: a manifest missing `config.json` downloads a subset, the fetch record
+    calls that subset complete at this scope, and every later bring-up is served
+    a snapshot that cannot load, with nothing to make it refetch. The client
+    cannot check completeness itself without asking the Hub, which is the one
+    thing this feature exists to avoid — so the proof is the build script's job
+    (it verifies the snapshot against the Hub's own listing at that commit) and
+    this field is where that proof is recorded. A manifest that cannot say it is
+    complete is not one this client will file a record for, so it is not one it
+    will use at all.
+    """
+    for value in (False, None, 1, "yes"):
+        state = _serve(_manifest(complete=value))
+        _point_at(monkeypatch, state)
+        assert mirror.manifest("org/m") is None, value
+
+
+def test_a_manifest_with_no_complete_field_at_all_is_refused(mirror, monkeypatch):
+    """A hand-written manifest, or one from an older generator that could not
+    prove completeness. Absence is not consent."""
+    payload = _manifest()
+    del payload["complete"]
+    state = _serve(payload)
+    _point_at(monkeypatch, state)
+
+    assert mirror.manifest("org/m") is None
+
+
+# -- an empty file is a real file (review finding 6) ------------------------------
+
+
+def test_a_zero_byte_file_does_not_reject_the_whole_repo(mirror, monkeypatch):
+    """An empty file is legal on the Hub and hf caches it like any other.
+
+    Rejecting the MANIFEST for one of them would take a whole model off the
+    mirror over a file with nothing in it — and the fetcher handles a
+    zero-length segment already (`_chunks(0)` yields one piece that is complete
+    on arrival).
+    """
+    empty = hashlib.sha256(b"").hexdigest()
+    state = _serve(_manifest(files=[
+        {"name": "model.safetensors", "etag": ETAG, "size": len(BLOB),
+         "sha256": ETAG},
+        {"name": "empty.txt", "etag": empty, "size": 0, "sha256": empty},
+    ]))
+    _point_at(monkeypatch, state)
+
+    manifest = mirror.manifest("org/m")
+
+    assert manifest is not None
+    assert [entry["size"] for entry in manifest["files"]] == [len(BLOB), 0]
+
+
+def test_a_negative_or_non_integer_size_is_still_refused(mirror, monkeypatch):
+    """Allowing zero is not allowing nonsense: a size is the length of a file
+    this client is about to pre-size on disk."""
+    for size in (-1, 1.5, "12", True, None):
+        state = _serve(_manifest(files=[{"name": "m", "etag": ETAG,
+                                         "size": size, "sha256": ETAG}]))
+        _point_at(monkeypatch, state)
+        assert mirror.manifest("org/m") is None, size
+
+
+# -- a response that falls apart, not merely a body that is wrong (finding 2) -----
+
+
+def test_a_manifest_response_that_falls_apart_reads_as_no_mirror(mirror,
+                                                                 monkeypatch):
+    """A truncated chunked body raises `http.client.IncompleteRead`, which is an
+    `HTTPException` — NOT an `OSError`, and not a `ValueError`.
+
+    So it escaped the guard that was written to mean "any way of not getting a
+    manifest", and a mirror host misbehaving at the HTTP level failed the whole
+    download instead of degrading to the Hub. `worker_base._TRANSIENT` has
+    always named this family for the same reason.
+    """
+    state = _serve(_manifest(), break_first=1, break_bytes=4)
+    _point_at(monkeypatch, state)
+
+    assert mirror.manifest("org/m") is None
+    assert len(state["requests"]) == 1

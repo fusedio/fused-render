@@ -47,6 +47,7 @@ down, misconfigured or serving junk costs a slower download and never a failed
 one.
 """
 
+import http.client
 import json
 import os
 import re
@@ -68,6 +69,17 @@ OK_ENV = "FUSED_MODEL_MIRROR_OK"
 MAX_MANIFEST_BYTES = 1 << 20
 
 MANIFEST_TIMEOUT_S = 15.0
+
+#: Every way of not getting a manifest, and `http.client.HTTPException` is in it
+#: for a reason that is easy to miss: it is NOT an `OSError` and not a
+#: `ValueError`, so `BadStatusLine` and `LineTooLong` out of `getresponse()` and
+#: `IncompleteRead` off a truncated chunked body all escaped a guard written to
+#: mean "the mirror did not answer". Escaping here is not a slower download, it
+#: is a FAILED one — a mirror host misbehaving at the HTTP level took down a
+#: download the Hub could have served. `worker_base._TRANSIENT` names the same
+#: family for the same reason.
+_UNREACHABLE = (urllib.error.URLError, OSError, ValueError,
+                http.client.HTTPException)
 
 _ALLOWED_SCHEMES = ("http", "https")
 _COMMIT = re.compile(r"\A[0-9a-f]{40}\Z")
@@ -149,7 +161,7 @@ def manifest(model_id):
             # One byte past the cap, so a body that is exactly at the limit is
             # still distinguishable from one that ran over it.
             raw = response.read(MAX_MANIFEST_BYTES + 1)
-    except (urllib.error.URLError, OSError, ValueError):
+    except _UNREACHABLE:
         return None
     if len(raw) > MAX_MANIFEST_BYTES:
         return None
@@ -158,21 +170,6 @@ def manifest(model_id):
     except (UnicodeDecodeError, ValueError):
         return None
     return _validated(payload, model_id)
-
-
-def files(man):
-    """The manifest's file entries, in manifest order."""
-    return list(man["files"])
-
-
-def names(man):
-    """Every filename the mirror holds for this repo."""
-    return [entry["name"] for entry in man["files"]]
-
-
-def total_bytes(man):
-    """What a full fetch of this manifest adds up to, for the progress row."""
-    return sum(entry["size"] for entry in man["files"]) or None
 
 
 def file_meta(model_id, man):
@@ -263,6 +260,27 @@ def _validated(payload, model_id):
         # Lower-case 40 hex, because that string IS the snapshot directory name
         # hf resolves and `_commit_of` reads back.
         return None
+    if payload.get("complete") is not True:
+        # **The manifest has to SAY it lists the whole repo at this commit**, and
+        # `is not True` rather than a truthiness test, so a `1` or a `"yes"` from
+        # some other generator is not taken as the assertion this is.
+        #
+        # The client cannot check completeness for itself: the only independent
+        # authority on what a repo contains is the Hub, and asking it is the one
+        # thing this feature exists to avoid. So the proof lives on the
+        # GENERATOR side — `scripts/build_model_mirror.py` verifies the snapshot
+        # against the Hub's own listing at this commit, on a build machine where
+        # talking to the Hub costs nothing — and this field is where that proof
+        # is recorded.
+        #
+        # It matters because of what the client does NEXT: it writes a fetch
+        # record (AI-5k) saying this scope is complete on disk. An incomplete
+        # manifest would make that record self-certifying — a manifest missing
+        # `config.json` downloads a subset, records the subset as whole, and
+        # every later bring-up is then served a snapshot that cannot load, with
+        # nothing left that would ever refetch it. A slow download is a cost; a
+        # permanently broken model is not.
+        return None
     entries = payload.get("files")
     if not isinstance(entries, list) or not entries:
         return None
@@ -276,7 +294,12 @@ def _validated(payload, model_id):
             return None
         if not _safe_etag(etag):
             return None
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            # Zero is allowed: an empty file is legal on the Hub, hf caches it
+            # like any other, and the fetcher already handles a zero-length
+            # segment (`_chunks(0)` yields one piece that is complete on
+            # arrival). Rejecting the MANIFEST over it would take a whole model
+            # off the mirror because of a file with nothing in it.
             return None
         if not isinstance(digest, str) or not _SHA256.match(digest):
             return None

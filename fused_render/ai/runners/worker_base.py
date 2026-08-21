@@ -866,7 +866,7 @@ class _FileFetch:
     """
 
     def __init__(self, folder, repo_id, filename, revision, meta, token, stop,
-                 probes=None):
+                 probes=None, re_resolvable=True):
         self.folder = folder
         self.repo_id = repo_id
         self.filename = filename
@@ -879,6 +879,18 @@ class _FileFetch:
         self.token = token
         self.stop = stop
         self.probes = {} if probes is None else probes
+        #: Whether a fresh `location` can be obtained for this file at all. True
+        #: on the Hub path, where `location` is a presigned CDN URL that expires;
+        #: False for caller-supplied metadata, where there is nothing to refresh
+        #: — see `_re_resolve`.
+        self.re_resolvable = re_resolvable
+        #: The digest to verify the finished blob against, or None. **Captured
+        #: here, from the metadata this fetch was PLANNED with, and never re-read
+        #: out of `self.meta` at publish time.** `self.meta` is reassignable
+        #: (`_re_resolve` replaces it wholesale), and reading the digest late is
+        #: exactly how the mirror path's hash check came to switch itself off
+        #: silently in the one situation it exists for.
+        self.verify = meta.get("sha256")
         self.size = meta["size"]
         self.blob = os.path.join(folder, "blobs", meta["etag"])
         self.part = self.blob + PART_SUFFIX
@@ -1123,13 +1135,21 @@ class _FileFetch:
                     return
                 reason = f"the stream ended at byte {seg['start'] + seg['done']}"
             except urllib.error.HTTPError as error:
-                if error.code in (401, 403) and not refreshed:
+                if error.code in (401, 403) and not refreshed and self.re_resolvable:
                     # `location` is a presigned CDN URL and a multi-hour
                     # download outlives it. Re-resolving does NOT count against
                     # the budget: an expired signature is not evidence that the
                     # file is unreachable. Its own failure is an ordinary
                     # network fault and must be COUNTED rather than escape —
                     # otherwise one unlucky moment aborts the whole download.
+                    #
+                    # **`self.re_resolvable` is what keeps this off the mirror
+                    # path**, where the URL is commit-pinned and immutable: there
+                    # is no signature to refresh, so a 401 or 403 there means the
+                    # object is missing or misconfigured, and the ORDINARY retry
+                    # below is the whole answer. Asking anyway made a request to
+                    # huggingface.co in the middle of a download whose entire
+                    # point is that huggingface.co is never contacted.
                     refreshed = True
                     try:
                         self._re_resolve()
@@ -1161,6 +1181,13 @@ class _FileFetch:
     def _re_resolve(self):
         """A fresh presigned URL for this file. Only the LOCATION may change.
 
+        Refuses outright when this fetch's metadata did not come from the Hub.
+        The caller above already checks that, so this is the invariant stated
+        where it is enforced rather than a second condition to keep in step: the
+        one thing that must never happen is a Hub call, or a `self.meta`
+        replacement, on a path that has neither a URL to refresh nor a Hub to
+        ask.
+
         `etag`, `size` and `commit` are what the blob path, every segment offset
         and the snapshot folder were derived from before any thread started. A
         repo updated mid-download therefore has to abort, never continue: the
@@ -1168,6 +1195,9 @@ class _FileFetch:
         as `blobs/<old-etag>` are a mix of two revisions at exactly the right
         length, under a name hf will then serve from cache forever.
         """
+        if not self.re_resolvable:
+            raise _Unsegmentable(
+                f"{self.filename}: this download has no re-resolvable location")
         fresh = _hub_file_meta(self.repo_id, self.filename, self.revision)
         for field in ("etag", "size", "commit"):
             if fresh.get(field) != self.meta[field]:
@@ -1289,7 +1319,7 @@ class _FileFetch:
                     f"{len(missing)} segment(s) short")
             os.close(self.fd)
             self.fd = None
-            digest = self.meta.get("sha256")
+            digest = self.verify
             if digest:
                 # ONE read of the whole file, here — not per segment and not per
                 # chunk. The segments write out of order, so there is no
@@ -1488,7 +1518,7 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
             already.filenames.append(name)
             continue
         fetch = _FileFetch(folder, model_id, name, revision, info, token, stop,
-                           probes)
+                           probes, re_resolvable=meta is None)
         by_etag[info["etag"]] = fetch
         fetches.append(fetch)
 
@@ -1627,6 +1657,15 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
     escapes here is `Cancelled`: a ✕ must not be answered by starting the
     download again somewhere else.
 
+    **The whole branch is inside one guard, the manifest call included.** It was
+    outside it, on the reasoning that `mirror.manifest` returns None rather than
+    raising — which is what that function intends and not what it guaranteed: a
+    truncated chunked body raises `http.client.IncompleteRead`, which is neither
+    an `OSError` nor a `ValueError`, so it escaped the client AND this function
+    and FAILED a download the Hub could have served. Both halves are fixed, and
+    the promise this feature is allowed to exist on should not rest on having
+    enumerated every exception a URL library can raise.
+
     The manifest is filtered by the SAME `selects` the Hub listing goes through,
     so a scoped download (`torch_image` passes an allow-list) measures and
     fetches the same subset on both paths — and the fetch record is written with
@@ -1634,20 +1673,23 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
     back off the fast path.
     """
     mirror = _mirror_module()
-    if mirror is None or not mirror.allowed(model_id):
+    if mirror is None:
         return None
-    manifest = mirror.manifest(model_id)
-    if manifest is None:
-        return None
-    files = [(entry["name"], entry["size"]) for entry in manifest["files"]
-             if selects(entry["name"], allow=allow_patterns,
-                        ignore=ignore_patterns)]
-    if not files:
-        # A manifest that selects nothing at this scope is not a mirror hit; the
-        # Hub listing is the authority on what the scope was supposed to match.
-        return None
-    names = [name for name, _size in files]
     try:
+        if not mirror.allowed(model_id):
+            return None
+        manifest = mirror.manifest(model_id)
+        if manifest is None:
+            return None
+        files = [(entry["name"], entry["size"]) for entry in manifest["files"]
+                 if selects(entry["name"], allow=allow_patterns,
+                            ignore=ignore_patterns)]
+        if not files:
+            # A manifest that selects nothing at this scope is not a mirror hit;
+            # the Hub listing is the authority on what the scope was supposed to
+            # match.
+            return None
+        names = [name for name, _size in files]
         fetched = fetch_with_progress(
             model_id,
             lambda: _segmented_fetch(
@@ -1668,6 +1710,20 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
     # tab's inventory and deletion all read it without knowing where it came
     # from. `_record_fetch` verifies the names are really there and writes
     # nothing if they are not.
+    #
+    # **`names` comes from the manifest here, where the Hub path takes it from
+    # the Hub listing — and `_record_fetch`'s shortfall check is only as good as
+    # that list's independence.** Against the manifest alone the check would be
+    # self-certifying: a manifest missing `config.json` would download a subset,
+    # record the subset as complete at this scope, and every later bring-up would
+    # then be served a snapshot that cannot load, with nothing left to refetch
+    # it. What makes the list trustworthy is that `mirror.manifest` refuses any
+    # manifest that does not ASSERT it lists the whole repo at this commit, and
+    # `scripts/build_model_mirror.py` sets that assertion only after checking the
+    # snapshot against the Hub's own listing — on a build machine, where asking
+    # the Hub costs nothing. The independence is real; it just lives at build
+    # time, because asking the Hub here is the one thing this feature exists to
+    # avoid.
     _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
                   allow=allow_patterns, ignore=ignore_patterns)
     return fetched
