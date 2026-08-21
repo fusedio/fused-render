@@ -38,6 +38,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import fnmatch
+import hashlib
 import http.client
 import http.server
 import importlib.util
@@ -469,6 +470,10 @@ READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
 #: block, small enough that paying for it on one is nothing.
 SPARSE_PROBE_BYTES = 4 * 1024 * 1024
+#: How much of a blob is hashed at a time on the MIRROR path (see
+#: `_FileFetch.finish`). The same size as `READ_BYTES`, and for the same reason:
+#: nothing in this file may hold a multi-gigabyte shard in memory.
+HASH_BLOCK_BYTES = 1024 * 1024
 HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
@@ -836,6 +841,20 @@ def _chunks(size):
 
 def _seg_complete(seg):
     return seg["start"] + seg["done"] > seg["end"]
+
+
+def _blob_sha256(path):
+    """The file's sha256, read in fixed blocks.
+
+    In BLOCKS rather than `read()`: this runs on multi-gigabyte shards, and the
+    whole reason a part file is pre-sized and written through `pwrite` is that
+    nothing here holds a file in memory.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(HASH_BLOCK_BYTES), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 class _FileFetch:
@@ -1240,9 +1259,25 @@ class _FileFetch:
         cursors are the same durable-byte accounting the sidecar records, and
         they are the only evidence there is that the file is whole.
 
-        No hash, like huggingface_hub itself, which relies on TLS and
-        `Content-Length`: re-reading every gigabyte off the disk would give back
-        a good part of what this feature is for.
+        No hash on the HUB path, like huggingface_hub itself, which relies on TLS
+        and `Content-Length`: re-reading every gigabyte off the disk would give
+        back a good part of what this feature is for.
+
+        **The MIRROR path is hashed, and the trade is genuinely different there.**
+        A `sha256` in the metadata is what marks it (the Hub cannot give us one;
+        see `mirror.file_meta`). On that path we are the origin, so nobody else
+        would ever notice a bad byte we shipped — a corrupt upload, a truncated
+        object, a cache poisoned somewhere between us and the user — and a wrong
+        blob filed under a real etag is not a failed download but a PERMANENT
+        one: hf's own loaders then serve those bytes out of the cache forever,
+        and no later download would refetch them. One re-read of the file we just
+        wrote, once, against a digest we generated from the same blob hf produced,
+        is what makes that impossible.
+
+        Verified BEFORE `os.replace`, not after. A blob is published the instant
+        it is renamed, and a concurrent load can pick it up between the rename
+        and any check that follows — so the check that has to hold is the one on
+        the part file, where a failure leaves nothing in the cache to clean up.
         """
         if self.fd is not None:
             os.fsync(self.fd)
@@ -1254,6 +1289,22 @@ class _FileFetch:
                     f"{len(missing)} segment(s) short")
             os.close(self.fd)
             self.fd = None
+            digest = self.meta.get("sha256")
+            if digest:
+                # ONE read of the whole file, here — not per segment and not per
+                # chunk. The segments write out of order, so there is no
+                # streaming hash to keep: `_drain` sees the file's bytes in
+                # whatever order the connections deliver them.
+                actual = _blob_sha256(self.part)
+                if actual != digest:
+                    # The part file and its sidecar go with it. Kept, the next
+                    # run would resume INTO bytes already known to be wrong and
+                    # arrive at the same mismatch, forever.
+                    _remove(self.part)
+                    _remove(self.sidecar)
+                    raise RuntimeError(
+                        f"{self.filename}: the mirror served {actual[:12]} where "
+                        f"the manifest says {digest[:12]}")
             os.replace(self.part, self.blob)
             _remove(self.sidecar)
         return self.link()

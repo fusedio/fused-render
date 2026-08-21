@@ -1890,3 +1890,131 @@ def test_a_cancel_during_a_mirror_fetch_is_never_swallowed(base, monkeypatch,
         base.download_snapshot("org/m")
 
     assert started == [], "pressing Stop started a download instead"
+
+
+# -- hashes, on the mirror path only ---------------------------------------------
+
+
+def test_a_mirror_serving_one_wrong_byte_leaves_no_blob_behind(base, monkeypatch,
+                                                               tmp_path, payload,
+                                                               capsys):
+    """The failure this check exists for is PERMANENT, not merely slow.
+
+    A wrong blob filed under a real etag is served out of the hub cache forever —
+    by hf's own loaders as much as ours — and no later download refetches it. So
+    a mismatch must leave the cache exactly as it found it, and the repo goes to
+    the Hub.
+    """
+    wrong = bytearray(payload)
+    wrong[0] ^= 0xFF  # one byte, so nothing but the hash can notice
+    state = _mirror_server(bytes(wrong), manifest=_mirror_manifest(payload))
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers(base, monkeypatch, payload)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
+    assert fell_back == ["org/m"], "the repo did not fall through to the Hub"
+    assert os.listdir(os.path.join(folder, "blobs")) == [], "a bad blob was kept"
+    assert not os.path.exists(os.path.join(folder, "snapshots", MIRROR_COMMIT,
+                                           "model.safetensors"))
+    assert "the mirror served" in capsys.readouterr().err
+
+
+def test_a_mirror_serving_the_right_bytes_is_verified_once_per_file(base,
+                                                                   monkeypatch,
+                                                                   tmp_path,
+                                                                   payload):
+    """Once per FILE, not once per chunk.
+
+    The segments write out of order, so there is no streaming hash to keep — the
+    check is one read of the finished file. Four chunks and two files here, so a
+    per-chunk implementation would show eight.
+    """
+    manifest = _mirror_manifest(payload)
+    manifest["files"].append({"name": "second.safetensors", "etag": "cafe" * 10,
+                              "size": len(payload),
+                              "sha256": hashlib.sha256(payload).hexdigest()})
+    state = _mirror_server(payload, manifest=manifest)
+    state["routes"][f"/models/org/m/{MIRROR_COMMIT}/{'cafe' * 10}"] = payload
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal(base, monkeypatch)
+
+    hashed = []
+    real = base._blob_sha256
+    monkeypatch.setattr(base, "_blob_sha256",
+                        lambda path: hashed.append(path) or real(path))
+
+    snapshot = base.download_snapshot("org/m")
+
+    assert len(hashed) == 2, f"{len(hashed)} hashes for 2 files: {hashed}"
+    assert len(_ranges(state["log"])) == 8, "not four chunks per file any more"
+    for name in ("model.safetensors", "second.safetensors"):
+        assert open(os.path.join(snapshot, name), "rb").read() == payload
+
+
+def test_the_hub_path_is_not_hashed(base, monkeypatch, tmp_path, payload):
+    """hf's own downloader does not hash either, and re-reading every gigabyte
+    off the disk would give back a good part of what the segmented fetch is for.
+
+    The Hub cannot supply a digest anyway — that asymmetry IS the gate, so this
+    is what pins it rather than a flag somebody could set on both paths.
+    """
+    url, _state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    hashed = []
+    monkeypatch.setattr(base, "_blob_sha256",
+                        lambda path: hashed.append(path) or "")
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert hashed == [], "the Hub path paid for a hash it cannot check"
+
+
+def test_a_verified_blob_already_on_disk_is_not_re_hashed(base, monkeypatch,
+                                                          tmp_path, payload):
+    """A blob the cache already holds cost nothing to obtain and is not re-read.
+
+    `plan()` returns no work for it, so no bytes came off the mirror this run and
+    there is nothing this check could be checking. Re-hashing it would put a
+    multi-gigabyte read in front of a download that is already complete.
+    """
+    state = _mirror_server(payload)
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal(base, monkeypatch)
+    os.makedirs(os.path.join(folder, "blobs"), exist_ok=True)
+    with open(os.path.join(folder, "blobs", "beef" * 10), "wb") as handle:
+        handle.write(payload)
+
+    hashed = []
+    monkeypatch.setattr(base, "_blob_sha256",
+                        lambda path: hashed.append(path) or "")
+
+    snapshot = base.download_snapshot("org/m")
+
+    assert hashed == []
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert _ranges(state["log"]) == [], "bytes were fetched for a blob we had"
+
+
+def test_a_mismatch_does_not_leave_bytes_a_later_run_would_resume_into(
+        base, monkeypatch, tmp_path, payload):
+    """The part file and its sidecar go too.
+
+    Kept, the next run resumes into bytes already known to be wrong, hashes to
+    the same mismatch, and does so forever — a download that can never succeed
+    while the mirror keeps serving what it is serving.
+    """
+    wrong = bytearray(payload)
+    wrong[-1] ^= 0xFF
+    state = _mirror_server(bytes(wrong), manifest=_mirror_manifest(payload))
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_answers(base, monkeypatch, payload)
+
+    base.download_snapshot("org/m")
+
+    # Both halves, because either one alone passes for the wrong reason: an
+    # empty `blobs/` is what says the mismatch was DETECTED, and no part file is
+    # what says the rejected bytes are not waiting to be resumed into.
+    assert os.listdir(os.path.join(folder, "blobs")) == []
+    leftovers = [name for _d, _s, files in os.walk(folder) for name in files
+                 if base.PART_SUFFIX in name]
+    assert leftovers == [], leftovers
