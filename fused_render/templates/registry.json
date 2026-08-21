@@ -57,6 +57,11 @@
     "notebook",
     "claude"
   ],
+  ".workflow.json": [
+    "workflow",
+    "code",
+    "claude"
+  ],
   ".calls.jsonl": [
     "log_studio",
     "code",

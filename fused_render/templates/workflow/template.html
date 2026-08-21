@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Workflow</title>
+<style>
+  /* Appearance (SPEC §30/AP-9, D134). The dark block below IS this view's
+     palette; every colour a rule uses is a token from it, because a literal is
+     a colour light mode cannot repaint (tests/test_theme.py enforces both the
+     opt-in on <html> and the two blocks defining the SAME token set). The token
+     set is the `mcp` panel's, deliberately: this mode sits directly beside that
+     one — one authors an app's tools, this one chains them — and two adjacent
+     surfaces with two palettes read as two products. */
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #22252b;
+    --line: #2a2d33;
+    --line-strong: #3a3e46;
+    --line-hover: #454a53;
+    --ink: #e8eaed;
+    --ink-2: #9aa0a6;
+    --ink-3: #868d94;
+    --accent: #E5FF44;
+    --accent-dim: #b8cc36;
+    --on-accent: #131417;
+    --grid-dot: #1e2126;
+    --note-line: #4a4326;
+    --note-bg: #221f14;
+    --note-fg: #d9c98a;
+    --good-fg: #a8dfa8;
+    --good-bg: #16241a;
+    --good-line: #2c452f;
+    --bad-fg: #efb0b0;
+    --bad-bg: #251618;
+    --bad-line: #4a2b2e;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-2: #eceef0;
+    --line: #d8dade;
+    --line-strong: #c4c8ce;
+    --line-hover: #b4b9c0;
+    --ink: #1f2023;
+    --ink-2: #61656c;
+    --ink-3: #6f747c;
+    --accent: #5f7300;
+    --accent-dim: #4e5f00;
+    --on-accent: #ffffff;
+    --grid-dot: #e8eaed;
+    --note-line: #e0cd94;
+    --note-bg: #fdf7e6;
+    --note-fg: #6b5316;
+    --good-fg: #1f5f22;
+    --good-bg: #e8f6e8;
+    --good-line: #bcdcbc;
+    --bad-fg: #8f2020;
+    --bad-bg: #fdecec;
+    --bad-line: #e6b6b6;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  #wf-name {
+    font-weight: 600;
+    flex: 1 1 220px;
+    min-width: 120px;
+  }
+  .bar { display: flex; gap: 6px; align-items: center; }
+
+  .btn {
+    font: inherit;
+    color: var(--ink-2);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    padding: 3px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover:not([disabled]) { color: var(--ink); border-color: var(--line-hover); }
+  .btn.primary {
+    color: var(--on-accent);
+    background: var(--accent);
+    border-color: var(--accent-dim);
+  }
+  .btn.primary:hover:not([disabled]) { background: var(--accent-dim); }
+  /* A disabled control says so three ways — dimmed ink, the plain line, and the
+     cursor — because one of the three is the one a given user notices. */
+  .btn[disabled] {
+    color: var(--ink-3);
+    background: var(--surface);
+    border-color: var(--line);
+    cursor: not-allowed;
+  }
+  .btn.danger:hover:not([disabled]) { color: var(--bad-fg); border-color: var(--bad-line); }
+  .btn.retry { margin-left: 8px; padding: 0 6px; font-size: 11px; }
+
+  input, textarea, select {
+    font: inherit;
+    color: var(--ink);
+    background: var(--bg);
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    padding: 2px 6px;
+    min-width: 0;
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: 1px solid var(--accent);
+    border-color: var(--accent);
+  }
+
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+
+  /* ---- the two side panels ---- */
+  aside {
+    flex: 0 0 236px;
+    min-width: 236px;
+    overflow: auto;
+    background: var(--surface);
+    padding: 8px 10px 30px;
+  }
+  #palette { border-right: 1px solid var(--line); }
+  #inspector { border-left: 1px solid var(--line); flex-basis: 292px; min-width: 292px; }
+  aside h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--ink-3);
+    margin: 0 0 6px;
+    font-weight: 600;
+  }
+  .app-group { margin-bottom: 10px; }
+  .app-group > .app-title { color: var(--ink-2); font-size: 11px; margin-bottom: 3px; }
+  .app-group > .app-note { color: var(--note-fg); font-size: 11px; }
+  .pal-tool {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 4px 7px;
+    margin-bottom: 3px;
+    cursor: grab;
+  }
+  .pal-tool:hover { border-color: var(--line-hover); }
+  .pal-tool .d { color: var(--ink-3); font-size: 11px; display: block; }
+
+  /* ---- the canvas ---- */
+  #stage {
+    flex: 1 1 auto;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg);
+    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
+    background-size: 28px 28px;
+    cursor: grab;
+  }
+  #stage.panning { cursor: grabbing; }
+  #stage.linking { cursor: crosshair; }
+  #world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  /* A ZERO-SIZED SVG with `overflow: visible`. `#world` is a transform container
+     whose children are all absolutely positioned, so it has no size of its own
+     for an SVG to fill — and a percentage size would resolve against nothing.
+     Wires are drawn in `#world`'s coordinate space and simply overflow the box,
+     which is what keeps them registered with the nodes at any pan or zoom. */
+  #wires { position: absolute; left: 0; top: 0; width: 1px; height: 1px;
+           overflow: visible; pointer-events: none; }
+  #wires path { fill: none; stroke: var(--line-strong); stroke-width: 1.6; }
+  #wires path.conditional { stroke-dasharray: 5 4; stroke: var(--note-line); }
+  #wires path.hot { stroke: var(--accent); }
+  #wires .hit { stroke: transparent; stroke-width: 14px; pointer-events: stroke; cursor: pointer; }
+
+  .node {
+    position: absolute;
+    width: 212px;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    padding: 6px 8px 7px;
+    cursor: grab;
+    user-select: none;
+  }
+  .node.sel { border-color: var(--accent); }
+  .node.dragging { cursor: grabbing; }
+  .node .n-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .n-tool { color: var(--ink-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .n-inputs { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 3px; }
+  .node .n-in { font-size: 11px; color: var(--ink-2); display: flex; gap: 5px; }
+  .node .n-in b { color: var(--ink-3); font-weight: 400; flex: 0 0 auto; }
+  .node .n-in span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node .n-in.prev span { color: var(--accent-dim); }
+  .node .n-none { font-size: 11px; color: var(--ink-3); margin-top: 4px; }
+  .node .plug {
+    position: absolute;
+    right: -9px;
+    top: 50%;
+    margin-top: -8px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    cursor: crosshair;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-3);
+    font-size: 11px;
+    line-height: 1;
+  }
+  .node .plug:hover { border-color: var(--accent); color: var(--accent); }
+  .node .step-no {
+    position: absolute;
+    left: -9px;
+    top: -9px;
+    min-width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    color: var(--ink-3);
+    font-size: 11px;
+    text-align: center;
+    line-height: 16px;
+    padding: 0 4px;
+  }
+  /* Run state. The border and the pill say the same thing, because the node may
+     be scrolled so only its edge is on screen. */
+  .node.st-running { border-color: var(--accent); }
+  .node.st-done { border-color: var(--good-line); }
+  .node.st-error { border-color: var(--bad-line); }
+  .pill {
+    float: right;
+    font-size: 10px;
+    border-radius: 3px;
+    padding: 0 4px;
+    border: 1px solid var(--line);
+    color: var(--ink-3);
+  }
+  .pill.running { color: var(--on-accent); background: var(--accent); border-color: var(--accent-dim); }
+  .pill.done { color: var(--good-fg); background: var(--good-bg); border-color: var(--good-line); }
+  .pill.error { color: var(--bad-fg); background: var(--bad-bg); border-color: var(--bad-line); }
+
+  /* ---- the inspector ---- */
+  .field { margin-bottom: 8px; }
+  .field > label { display: block; color: var(--ink-3); font-size: 11px; margin-bottom: 2px; }
+  .field > input, .field > textarea, .field > select { width: 100%; }
+  textarea { resize: vertical; min-height: 2.6em; }
+  .params { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 8px; }
+  .param { display: flex; gap: 5px; align-items: center; margin-top: 3px; }
+  .param > label { flex: 1 1 auto; display: flex; gap: 5px; align-items: center; min-width: 0; }
+  .param .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .param.on .pname { color: var(--accent); }
+  .param .ptype { color: var(--ink-3); font-size: 11px; flex: 0 0 auto; }
+  .param-row { display: flex; gap: 5px; margin: 2px 0 5px 18px; }
+  .param-row select { flex: 0 0 88px; }
+  .param-row input { flex: 1 1 auto; min-width: 0; }
+  .edge-row { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 8px; }
+  .out { white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--ink-2);
+         background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
+         padding: 4px 6px; max-height: 180px; overflow: auto; }
+  .out.bad { color: var(--bad-fg); border-color: var(--bad-line); }
+
+  .note {
+    border: 1px solid var(--note-line);
+    background: var(--note-bg);
+    color: var(--note-fg);
+    border-radius: 5px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    font-size: 11px;
+  }
+  .note.bad { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad-fg); }
+  .note .btn { margin-top: 5px; }
+  .empty { color: var(--ink-3); padding: 12px 0; font-size: 12px; }
+
+  #hint {
+    position: absolute;
+    left: 50%;
+    top: 40%;
+    transform: translate(-50%, -50%);
+    color: var(--ink-3);
+    text-align: center;
+    pointer-events: none;
+    max-width: 340px;
+  }
+
+  footer {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-3);
+    min-height: 26px;
+    display: flex;
+    align-items: center;
+  }
+  footer.bad { color: var(--bad-fg); }
+</style>
+</head>
+<body>
+<header>
+  <input id="wf-name" placeholder="Untitled workflow" />
+  <div class="bar">
+    <!-- THREE verbs, and they are the three things a workflow is for: write it
+         down, run it, stop it. Everything that acts on ONE node lives in the
+         inspector beside that node, and everything that adds a node lives in
+         the palette the node comes from — the same placement rule the `mcp`
+         panel's toolbar follows (MC-11).
+
+         Disabled in the MARKUP, not just by render(): Save writes a document
+         that has not been read yet and Run compiles one, so a click before the
+         first load has nothing to act on. -->
+    <button class="btn" id="save" disabled>Save</button>
+    <button class="btn primary" id="run" disabled>Run</button>
+    <button class="btn danger" id="cancel" hidden>Stop</button>
+  </div>
+</header>
+
+<main>
+  <aside id="palette"><h2>Tools</h2><div id="palette-body" class="empty">Loading…</div></aside>
+  <div id="stage">
+    <div id="world">
+      <svg id="wires"></svg>
+      <div id="nodes"></div>
+    </div>
+    <div id="hint"></div>
+  </div>
+  <aside id="inspector"><h2>Step</h2><div id="inspector-body" class="empty">Nothing selected.</div></aside>
+</main>
+
+<footer id="status"></footer>
+
+<script>
+// The MCP workflow canvas (SPEC §44 / D401). A `.workflow.json` document is a
+// chain of curated MCP tools; this page is its editor and its run readout.
+//
+// Three backends, and the split mirrors the `mcp` panel's:
+//
+//   1. `discover.py` — one READ of the machine: every `[[tool]]` in every
+//      `mcp.toml` the file index, the workspace and registered_apps.json can
+//      show, with each tool's parameters derived from its signature snapshot.
+//   2. `run.py` — the WRITE-shaped half: compile the graph into an MCP config
+//      and a prompt, spawn one headless claude over it, and read per-node
+//      progress back out of the run's `tool_use`/`tool_result` records.
+//   3. `fused.readFile` / `fused.writeFile` — the document itself. It is an
+//      ordinary user file opened from the explorer, so the page reads and
+//      writes it directly; no Python is needed to move JSON around.
+//
+// THE DOCUMENT LIVES IN A JS OBJECT, NOT IN URL PARAMS. Params are for view
+// state a refresh must reproduce; this is a document being edited, and a graph
+// in the address bar would be both unreadable and (at a few hundred bytes a
+// node) unsurvivable — the same call the `mcp` panel makes about its tool list.
+// The consequence is stated on screen: unsaved edits are lost on reload, and
+// Save is the only durable step.
+//
+// The ONE thing that IS a param is the selection: which step you had open is
+// exactly the state a refresh should bring back, and it is eight characters.
+// Pan and zoom deliberately are not — they change continuously under a drag,
+// and writing the URL per frame would fill the history with a gesture.
+
+const TARGET = fused.params.get("_file") || "";
+
+// The parsed document. `null` until the first read; `dirty` is what Save reads.
+let doc = null;
+let dirty = false;
+// The mtime the document was last read/written at — the optimistic lock's arm.
+// Null means "no lock to arm" (the file was empty or absent), in which case a
+// Save writes unconditionally, which is correct for a document nothing else
+// has ever written.
+let mtime = null;
+// The palette, straight from discover.py. Kept whole rather than flattened, so
+// a node can find its tool's parameter list by (app, tool) at any time.
+let catalog = null;
+let catalogError = "";
+// Which node the inspector is showing, and which node an edge is being drawn
+// from. Separate: a selection survives a cancelled link.
+let selected = fused.params.get("sel") || "";
+let linkFrom = "";
+// The live run. `runNodes` is keyed by node id and comes from run.py's poll —
+// never from anything this page infers about what "should" be happening.
+let runId = "";
+let runNodes = {};
+let runDone = false;
+// Whether THIS RUN has taught the document anything — an observed output shape
+// it did not have. Per RUN, not per tick: a shape is learned on the tick its
+// tool answers, which is almost never the tick that reports the run finished,
+// so a per-tick flag left the closing message silent about the one thing the
+// user then has to Save.
+let runLearned = false;
+let polling = null;
+let busy = false;
+
+// The canvas transform. Plain numbers, applied to one element.
+let view = { x: 40, y: 40, z: 1 };
+
+const el = (id) => document.getElementById(id);
+const stage = el("stage");
+const world = el("world");
+const wires = el("wires");
+const nodesEl = el("nodes");
+const statusEl = el("status");
+
+function say(text, bad) {
+  statusEl.textContent = text;
+  statusEl.className = bad ? "bad" : "";
+}
+
+// A failure a re-read could clear says so and offers the re-read. The
+// affordance rides the message it belongs to rather than living permanently in
+// the chrome — there is no Reload button here for the same reason the `mcp`
+// panel has none (MC-11).
+function sayWithRetry(text, action) {
+  say(text, true);
+  const again = document.createElement("button");
+  again.className = "btn retry";
+  again.textContent = "retry";
+  again.addEventListener("click", action);
+  statusEl.appendChild(again);
+}
+
+function mark() {
+  dirty = true;
+  el("save").textContent = "Save •";
+}
+
+// ------------------------------------------------------------------ helpers
+
+function uid(prefix) {
+  // Enough entropy that two nodes added in the same millisecond differ, and
+  // short enough to read in the document. Ids are internal — edges reference
+  // them — so they never need to be meaningful.
+  return prefix + Math.random().toString(36).slice(2, 8);
+}
+
+function nodeById(id) {
+  return (doc.nodes || []).find((n) => n.id === id) || null;
+}
+
+// The catalog entry for a node, or null when the tool has gone. Matched on the
+// same (app folder, tool name) pair `run.py` compiles against, so a node the
+// canvas draws as unresolved is exactly a node Run would refuse.
+function toolOf(node) {
+  if (!catalog) return null;
+  for (const app of catalog.apps || []) {
+    if (app.folder !== node.app) continue;
+    return (app.tools || []).find((t) => t.name === node.tool) || null;
+  }
+  return null;
+}
+
+function paramsOf(node) {
+  const tool = toolOf(node);
+  return tool ? tool.params || [] : [];
+}
+
+function inputsOf(node) {
+  return Array.isArray(node.inputs) ? node.inputs : (node.inputs = []);
+}
+
+function edgesInto(id) {
+  return (doc.edges || []).filter((e) => e.to === id);
+}
+
+// ------------------------------------------------------------------- loading
+
+async function loadDocument() {
+  let text = "";
+  try {
+    const st = await fused.stat(TARGET);
+    mtime = st ? st.mtime : null;
+  } catch (err) {
+    mtime = null;
+  }
+  try {
+    text = await fused.readFile(TARGET);
+  } catch (err) {
+    // A file the explorer just listed and this page cannot read is a real
+    // failure, not an empty document — saying "new workflow" here would offer
+    // to overwrite whatever is actually in there.
+    doc = null;
+    sayWithRetry("Could not read the workflow: " + (err.message || err), () => guard(load));
+    return false;
+  }
+  // AN EMPTY FILE IS A NEW WORKFLOW. That is the shape the explorer's generic
+  // New File… leaves behind, and it is this mode's whole creation path
+  // (condition.py) — treating it as a parse error would mean there was no way
+  // to make one.
+  if (!text.trim()) {
+    doc = { version: 1, name: "", nodes: [], edges: [] };
+    return true;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    doc = null;
+    sayWithRetry("This file does not parse as JSON (" + err.message +
+      "). Fix it in the code view — starting over here would discard it.",
+      () => guard(load));
+    return false;
+  }
+  doc = {
+    version: parsed.version || 1,
+    name: typeof parsed.name === "string" ? parsed.name : "",
+    nodes: Array.isArray(parsed.nodes) ? parsed.nodes.filter((n) => n && n.id) : [],
+    edges: Array.isArray(parsed.edges) ? parsed.edges.filter((e) => e && e.from && e.to) : [],
+  };
+  return true;
+}
+
+async function loadCatalog() {
+  try {
+    const out = await fused.runPython("./discover.py", { action: "tools" });
+    if (!out.ok) {
+      catalog = null;
+      catalogError = out.message || "the tool list could not be read.";
+      return;
+    }
+    catalog = out;
+    catalogError = "";
+  } catch (err) {
+    catalog = null;
+    catalogError = (err.type || "error") + ": " + err.message;
+  }
+}
+
+async function load() {
+  say("Loading…");
+  // The document first and the catalog second, but BOTH before the first paint:
+  // a node cannot be drawn without its tool's parameters, so painting between
+  // them would show every node as unresolved and then correct itself.
+  const okDoc = await loadDocument();
+  await loadCatalog();
+  if (!okDoc) {
+    renderPalette();
+    return;
+  }
+  el("wf-name").value = doc.name || "";
+  el("save").disabled = false;
+  el("save").textContent = "Save";
+  dirty = false;
+  renderAll();
+  say(catalogError ? "Tools could not be listed: " + catalogError : "");
+}
+
+// ------------------------------------------------------------------ palette
+
+function renderPalette() {
+  const body = el("palette-body");
+  body.innerHTML = "";
+  if (!catalog) {
+    body.appendChild(note(catalogError ||
+      "The tool list could not be read.", true, "retry", () => guard(reloadCatalog)));
+    return;
+  }
+  // THE READINESS RULE, on the palette. An empty tool list means two entirely
+  // different things — nothing is curated, or the index has not been built —
+  // and drawing the second as the first is the silent lie the whole index
+  // surface is designed around. `discover.py` keeps them apart in the payload;
+  // this is where that distinction reaches a person.
+  const idx = catalog.index || {};
+  if (idx.message) {
+    body.appendChild(note(idx.message, false, "scan now", () => guard(rescan)));
+  }
+  if (!(catalog.apps || []).length) {
+    body.appendChild(text("div", "empty",
+      idx.available === false
+        ? "No app folders found yet."
+        : "No app declares any MCP tools. Curate one in an app folder's MCP panel first."));
+    return;
+  }
+  for (const app of catalog.apps) {
+    const group = document.createElement("div");
+    group.className = "app-group";
+    group.appendChild(text("div", "app-title", app.name));
+    if (app.error) {
+      group.appendChild(text("div", "app-note", app.error));
+    }
+    for (const tool of app.tools || []) {
+      const btn = document.createElement("button");
+      btn.className = "pal-tool";
+      btn.draggable = true;
+      btn.appendChild(text("span", "", tool.name));
+      if (tool.description) btn.appendChild(text("span", "d", tool.description));
+      btn.title = app.folder + " · " + tool.file + ":" + tool.entrypoint;
+      // Click adds at a free spot; drag drops where the pointer lands. Both,
+      // because a click is what works when the canvas is empty and a drag is
+      // what a person reaches for once it is not.
+      btn.addEventListener("click", () => addNode(app, tool, null));
+      btn.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", JSON.stringify(
+          { folder: app.folder, tool: tool.name }));
+        e.dataTransfer.effectAllowed = "copy";
+      });
+      group.appendChild(btn);
+    }
+    body.appendChild(group);
+  }
+}
+
+async function reloadCatalog() {
+  say("Reading tools…");
+  await loadCatalog();
+  renderAll();
+  say(catalogError ? "Tools could not be listed: " + catalogError : "");
+}
+
+async function rescan() {
+  say("Asking for a file-index scan…");
+  const out = await fused.runPython("./discover.py", { action: "rescan" });
+  if (!out.ok) { say(out.message, true); return; }
+  // Deliberately not a progress bar: the scan runs in the server and takes as
+  // long as the disk takes. The honest thing to offer is the re-read, once.
+  say("Scan started. Re-read the tool list once it has had a moment.");
+}
+
+// -------------------------------------------------------------- editing ops
+
+function addNode(app, tool, at) {
+  // A fresh node exposes NOTHING. That is the whole point of the `inputs` list:
+  // `send_mail` has 22 parameters and every one of them has a default, so a
+  // node that pre-exposed them would be a 22-row form nobody fills in. The
+  // author picks the two or three this step is actually about, in the
+  // inspector, and everything unpicked keeps the tool's own default.
+  const node = {
+    id: uid("n"),
+    app: app.folder,
+    tool: tool.name,
+    label: tool.name,
+    x: at ? Math.round(at.x) : 40 + (doc.nodes.length % 4) * 250,
+    y: at ? Math.round(at.y) : 40 + Math.floor(doc.nodes.length / 4) * 150,
+    inputs: [],
+  };
+  doc.nodes.push(node);
+  select(node.id);
+  mark();
+  renderAll();
+}
+
+function removeNode(id) {
+  doc.nodes = doc.nodes.filter((n) => n.id !== id);
+  // Edges to or from a deleted node go with it. A dangling edge would compile
+  // into a condition about a step that is not in the plan.
+  doc.edges = doc.edges.filter((e) => e.from !== id && e.to !== id);
+  if (selected === id) select("");
+  mark();
+  renderAll();
+}
+
+function connect(from, to) {
+  if (!from || !to || from === to) return;
+  if (doc.edges.some((e) => e.from === from && e.to === to)) return;
+  doc.edges.push({ id: uid("e"), from: from, to: to, condition: "" });
+  mark();
+  renderAll();
+}
+
+function select(id) {
+  selected = id;
+  // `set`, not `replace`: the selection is a step in the user's browsing of
+  // this document, and Back should walk it.
+  if (id) fused.params.set("sel", id); else fused.params.set("sel", "");
+}
+
+// ---------------------------------------------------------------- rendering
+
+function text(tag, cls, content) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (content !== undefined) node.textContent = content;
+  return node;
+}
+
+function note(message, bad, actionLabel, action) {
+  const box = text("div", "note" + (bad ? " bad" : ""), message);
+  if (actionLabel) {
+    const btn = text("button", "btn", actionLabel);
+    btn.addEventListener("click", action);
+    box.appendChild(document.createElement("br"));
+    box.appendChild(btn);
+  }
+  return box;
+}
+
+function renderAll() {
+  renderPalette();
+  renderNodes();
+  renderInspector();
+  updateButtons();
+}
+
+function applyView() {
+  world.style.transform =
+    "translate(" + view.x + "px," + view.y + "px) scale(" + view.z + ")";
+}
+
+function renderNodes() {
+  nodesEl.innerHTML = "";
+  const hint = el("hint");
+  if (!doc || !doc.nodes.length) {
+    hint.textContent = catalog && (catalog.apps || []).length
+      ? "Click a tool on the left to add the first step."
+      : "No tools to build with yet.";
+    wires.innerHTML = "";
+    applyView();
+    return;
+  }
+  hint.textContent = "";
+
+  // The step number a node carries is the position `run.py` will put it in.
+  // Derived here by the SAME rule — a topological order, stable on document
+  // order — so the canvas and the prompt cannot disagree about what step 2 is.
+  const order = executionOrder();
+  doc.nodes.forEach((node) => {
+    const div = text("div", "node");
+    div.dataset.id = node.id;
+    // A node is an activatable control, so it says so and takes focus. Not a
+    // <button>: a button swallows the pointer gestures this thing is mostly
+    // for (drag to move, drag from the plug to connect), and role+tabindex buys
+    // the keyboard and the screen reader without giving those up.
+    div.setAttribute("role", "button");
+    div.setAttribute("tabindex", "0");
+    div.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      select(node.id);
+      renderAll();
+    });
+    if (node.id === selected) div.classList.add("sel");
+    const state = runNodes[node.id];
+    if (state) div.classList.add("st-" + state.status);
+    div.style.left = (node.x || 0) + "px";
+    div.style.top = (node.y || 0) + "px";
+
+    const step = order.indexOf(node.id);
+    div.appendChild(text("div", "step-no", step >= 0 ? String(step + 1) : "?"));
+
+    if (state) {
+      const pill = text("span", "pill " + state.status, state.status);
+      div.appendChild(pill);
+    }
+    const tool = toolOf(node);
+    div.appendChild(text("div", "n-label", node.label || node.tool));
+    const sub = text("div", "n-tool",
+      (tool ? "" : "⚠ ") + shortApp(node.app) + " · " + node.tool);
+    if (!tool) sub.title = "This tool is no longer declared in that app's mcp.toml.";
+    div.appendChild(sub);
+
+    const shown = inputsOf(node).filter((i) => i && i.name);
+    if (shown.length) {
+      const list = text("div", "n-inputs");
+      for (const input of shown.slice(0, 6)) {
+        const row = text("div", "n-in" + (input.source === "previous" ? " prev" : ""));
+        row.appendChild(text("b", "", input.name));
+        row.appendChild(text("span", "",
+          input.source === "previous" ? "← previous step" : String(input.value ?? "")));
+        list.appendChild(row);
+      }
+      if (shown.length > 6) {
+        list.appendChild(text("div", "n-in", "+" + (shown.length - 6) + " more"));
+      }
+      div.appendChild(list);
+    } else {
+      div.appendChild(text("div", "n-none", "defaults only"));
+    }
+
+    const plug = text("div", "plug", "→");
+    plug.title = "Drag to the next step";
+    plug.setAttribute("role", "button");
+    plug.setAttribute("aria-label", "Connect " + (node.label || node.tool) +
+      " to the next step");
+    plug.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      startLink(node.id);
+    });
+    div.appendChild(plug);
+
+    div.setAttribute("aria-label", "Step " + (step + 1) + ": " +
+      (node.label || node.tool) + " — " + node.tool +
+      (state ? " (" + state.status + ")" : ""));
+    div.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
+    nodesEl.appendChild(div);
+  });
+  applyView();
+  // Wires need the nodes' MEASURED heights, which only exist once they are in
+  // the document — a node's height depends on how many inputs it shows. So the
+  // wire pass runs after layout rather than guessing a box size.
+  requestAnimationFrame(renderWires);
+}
+
+function shortApp(folder) {
+  const parts = String(folder || "").replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || folder;
+}
+
+function boxOf(id) {
+  const div = nodesEl.querySelector('[data-id="' + CSS.escape(id) + '"]');
+  const node = nodeById(id);
+  if (!div || !node) return null;
+  return { x: node.x || 0, y: node.y || 0, w: div.offsetWidth, h: div.offsetHeight };
+}
+
+function renderWires() {
+  wires.innerHTML = "";
+  if (!doc) return;
+  for (const edge of doc.edges) {
+    const a = boxOf(edge.from), b = boxOf(edge.to);
+    if (!a || !b) continue;
+    const x1 = a.x + a.w, y1 = a.y + a.h / 2;
+    const x2 = b.x, y2 = b.y + b.h / 2;
+    // A horizontal-tangent cubic: the control offset grows with the gap so a
+    // long edge bows rather than cutting through whatever is between.
+    const dx = Math.max(40, Math.abs(x2 - x1) / 2);
+    const d = "M" + x1 + "," + y1 + " C" + (x1 + dx) + "," + y1 + " " +
+      (x2 - dx) + "," + y2 + " " + x2 + "," + y2;
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    line.setAttribute("d", d);
+    // A DASHED edge carries a condition and a solid one does not. That is the
+    // only difference the graph has that a reader must be able to see without
+    // clicking: a conditional edge may not be taken at all.
+    if ((edge.condition || "").trim()) line.setAttribute("class", "conditional");
+    if (edge.from === selected || edge.to === selected) {
+      line.setAttribute("class", (line.getAttribute("class") || "") + " hot");
+    }
+    wires.appendChild(line);
+    // A fat transparent copy is the click target: a 1.6px stroke is not
+    // something anyone can hit, and edges are how a condition is reached.
+    const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    hit.setAttribute("d", d);
+    hit.setAttribute("class", "hit");
+    hit.addEventListener("click", () => { select(edge.to); renderAll(); });
+    wires.appendChild(hit);
+  }
+}
+
+// The same linearisation `run.py::_order` computes, for the step numbers on the
+// canvas. Duplicated in JS deliberately rather than round-tripped through
+// Python: it is called on every render, including mid-drag, and a subprocess
+// per frame to number three boxes is not a trade worth making. The two are
+// pinned to each other by being the same algorithm — Kahn, ready nodes taken in
+// document order — and the canvas only ever uses it to LABEL, never to decide.
+function executionOrder() {
+  const ids = doc.nodes.map((n) => n.id);
+  const incoming = {}, outgoing = {};
+  ids.forEach((i) => { incoming[i] = 0; outgoing[i] = []; });
+  for (const edge of doc.edges) {
+    if (incoming[edge.to] === undefined || incoming[edge.from] === undefined) continue;
+    incoming[edge.to] += 1;
+    outgoing[edge.from].push(edge.to);
+  }
+  let ready = ids.filter((i) => incoming[i] === 0);
+  const out = [];
+  while (ready.length) {
+    const current = ready.shift();
+    out.push(current);
+    for (const next of outgoing[current]) {
+      if (--incoming[next] === 0) ready.push(next);
+    }
+    ready.sort((a, b) => ids.indexOf(a) - ids.indexOf(b));
+  }
+  // A cycle leaves nodes unplaced. They keep a number here (Run refuses the
+  // graph outright) rather than showing "?" for every node in the loop with no
+  // explanation of why.
+  for (const id of ids) if (!out.includes(id)) out.push(id);
+  return out;
+}
+
+// -------------------------------------------------------------- inspector
+
+function renderInspector() {
+  const body = el("inspector-body");
+  body.innerHTML = "";
+  const node = selected ? nodeById(selected) : null;
+  if (!node) {
+    body.appendChild(text("div", "empty", doc && doc.nodes.length
+      ? "Select a step to set its inputs." : "Nothing selected."));
+    return;
+  }
+  const tool = toolOf(node);
+
+  const label = text("div", "field");
+  label.appendChild(text("label", "", "Label"));
+  const labelInput = document.createElement("input");
+  labelInput.value = node.label || "";
+  labelInput.addEventListener("input", () => {
+    node.label = labelInput.value;
+    mark();
+    renderNodes();
+  });
+  label.appendChild(labelInput);
+  body.appendChild(label);
+
+  const where = text("div", "field");
+  where.appendChild(text("label", "", "Tool"));
+  where.appendChild(text("div", "n-tool", node.tool + "  ·  " + node.app));
+  body.appendChild(where);
+
+  if (!tool) {
+    body.appendChild(note(
+      "That app folder no longer declares a tool called " + node.tool +
+      ". Re-curate it in the app's MCP panel, or delete this step — a run will " +
+      "refuse the whole workflow while it is here.", true));
+  }
+
+  // Incoming edges, with their conditions. They live here rather than on the
+  // canvas because a condition is a SENTENCE and a canvas has nowhere to put
+  // one; the edge shows dashed once there is one, which is the part a reader
+  // needs at a glance.
+  const incoming = edgesInto(node.id);
+  if (incoming.length) {
+    const box = text("div", "edge-row");
+    box.appendChild(text("label", "", "Runs after"));
+    for (const edge of incoming) {
+      const from = nodeById(edge.from);
+      const row = text("div", "field");
+      row.appendChild(text("label", "", (from ? (from.label || from.tool) : edge.from) +
+        " → this step, only if:"));
+      const input = document.createElement("input");
+      input.value = edge.condition || "";
+      input.placeholder = "always (leave empty — Claude decides)";
+      input.addEventListener("input", () => {
+        edge.condition = input.value;
+        mark();
+        renderNodes();
+      });
+      row.appendChild(input);
+      const drop = text("button", "btn", "disconnect");
+      drop.addEventListener("click", () => {
+        doc.edges = doc.edges.filter((e) => e !== edge);
+        mark();
+        renderAll();
+      });
+      row.appendChild(drop);
+      box.appendChild(row);
+    }
+    body.appendChild(box);
+  }
+
+  // THE PARAMETER PICKER — the reason the document has an `inputs` list at all.
+  // Every parameter of a dispatcher entrypoint has a default, so the tool's own
+  // schema says "22 optional properties" and nothing more; the author's choice
+  // of which ones this step is about is information that exists nowhere else,
+  // and this is where it is made. A filter box, because 22 rows is a scroll.
+  const params = tool ? tool.params || [] : [];
+  const picker = text("div", "params");
+  picker.appendChild(text("label", "", "Inputs (" + inputsOf(node).length +
+    " of " + params.length + " exposed)"));
+  if (!params.length) {
+    picker.appendChild(text("div", "empty", tool
+      ? "This tool takes no parameters beyond the ones its manifest pins."
+      : "No parameters to show."));
+  } else {
+    const filter = document.createElement("input");
+    filter.placeholder = "filter parameters…";
+    picker.appendChild(filter);
+    const list = text("div", "");
+    picker.appendChild(list);
+    const draw = () => {
+      list.innerHTML = "";
+      const needle = filter.value.trim().toLowerCase();
+      for (const param of params) {
+        const input = inputsOf(node).find((i) => i.name === param.name);
+        // A filtered-out parameter that IS exposed stays visible: hiding a
+        // value the step actually sends would make the filter a way to lose
+        // track of what this node does.
+        if (needle && !param.name.toLowerCase().includes(needle) && !input) continue;
+        const row = text("div", "param" + (input ? " on" : ""));
+        const lab = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = !!input;
+        box.addEventListener("change", () => {
+          if (box.checked) {
+            inputsOf(node).push({ name: param.name, source: "literal", value: "" });
+          } else {
+            node.inputs = inputsOf(node).filter((i) => i.name !== param.name);
+          }
+          mark();
+          draw();
+          renderNodes();
+        });
+        lab.appendChild(box);
+        lab.appendChild(text("span", "pname", param.name));
+        row.appendChild(lab);
+        if (param.annotation || param.default) {
+          row.appendChild(text("span", "ptype",
+            (param.annotation || "") + (param.default ? " = " + param.default : "")));
+        }
+        list.appendChild(row);
+        if (!input) continue;
+
+        const detail = text("div", "param-row");
+        const source = document.createElement("select");
+        for (const [value, text_] of [["literal", "value"], ["previous", "from previous"]]) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = text_;
+          source.appendChild(option);
+        }
+        source.value = input.source === "previous" ? "previous" : "literal";
+        const valueInput = document.createElement("input");
+        valueInput.value = input.value ?? "";
+        valueInput.placeholder = param.default ? "default: " + param.default : "value";
+        const sync = () => {
+          // A "from previous" input has no value to type: the whole point is
+          // that Claude derives it from the step before, and a stale literal
+          // left in the box would be written into a document that does not use
+          // it — a lie the next reader of this file would believe.
+          valueInput.hidden = source.value === "previous";
+        };
+        source.addEventListener("change", () => {
+          input.source = source.value;
+          if (input.source === "previous") input.value = "";
+          sync();
+          mark();
+          renderNodes();
+        });
+        valueInput.addEventListener("input", () => {
+          input.value = valueInput.value;
+          mark();
+          renderNodes();
+        });
+        sync();
+        detail.appendChild(source);
+        detail.appendChild(valueInput);
+        list.appendChild(detail);
+      }
+    };
+    filter.addEventListener("input", draw);
+    draw();
+  }
+  body.appendChild(picker);
+
+  // What the step ACTUALLY returned, once a run has said so. This is the fact
+  // nothing else on this surface has: an MCP tool declares its inputs and says
+  // nothing at all about its output, and `search_mail` and `send_mail` share
+  // one entrypoint while returning entirely different things.
+  const state = runNodes[node.id];
+  if (state && (state.output || state.error)) {
+    const box = text("div", "edge-row");
+    box.appendChild(text("label", "", state.error ? "Failed with" : "Returned"));
+    if (node.observedOutput) {
+      box.appendChild(text("div", "n-tool", node.observedOutput.kind +
+        (node.observedOutput.keys && node.observedOutput.keys.length
+          ? " { " + node.observedOutput.keys.join(", ") + " }" : "")));
+    }
+    box.appendChild(text("div", "out" + (state.error ? " bad" : ""),
+      state.error || state.output));
+    body.appendChild(box);
+  }
+
+  const remove = text("button", "btn danger", "Delete step");
+  remove.style.marginTop = "10px";
+  remove.addEventListener("click", () => removeNode(node.id));
+  body.appendChild(remove);
+}
+
+// ------------------------------------------------------- pan / zoom / drag
+
+function stagePoint(event) {
+  const rect = stage.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left - view.x) / view.z,
+    y: (event.clientY - rect.top - view.y) / view.z,
+  };
+}
+
+let drag = null;
+
+function onNodePointerDown(event, node) {
+  if (event.button !== 0) return;
+  event.stopPropagation();
+  // Completing a link takes priority over selecting: the user is mid-gesture,
+  // and a click that both ended the link and moved the selection would leave
+  // them looking at a different step than the one they just connected.
+  if (linkFrom) {
+    connect(linkFrom, node.id);
+    endLink();
+    return;
+  }
+  select(node.id);
+  const start = stagePoint(event);
+  drag = { node: node, dx: start.x - (node.x || 0), dy: start.y - (node.y || 0), moved: false };
+  event.target.closest(".node").classList.add("dragging");
+  event.target.setPointerCapture && event.target.setPointerCapture(event.pointerId);
+  renderAll();
+}
+
+stage.addEventListener("pointermove", (event) => {
+  if (drag) {
+    const at = stagePoint(event);
+    drag.node.x = Math.round(at.x - drag.dx);
+    drag.node.y = Math.round(at.y - drag.dy);
+    drag.moved = true;
+    const div = nodesEl.querySelector('[data-id="' + CSS.escape(drag.node.id) + '"]');
+    if (div) {
+      div.style.left = drag.node.x + "px";
+      div.style.top = drag.node.y + "px";
+    }
+    // Wires only — a full re-render per pointermove would rebuild the inspector
+    // (and blur whatever input has focus) sixty times a second.
+    renderWires();
+    return;
+  }
+  if (pan) {
+    view.x = pan.x0 + (event.clientX - pan.cx);
+    view.y = pan.y0 + (event.clientY - pan.cy);
+    applyView();
+  }
+});
+
+function endDrag() {
+  if (!drag) return;
+  const div = nodesEl.querySelector('[data-id="' + CSS.escape(drag.node.id) + '"]');
+  if (div) div.classList.remove("dragging");
+  // A click that did not move anything is not an edit. Marking it dirty would
+  // put a • on Save for looking at the canvas.
+  if (drag.moved) mark();
+  drag = null;
+}
+
+let pan = null;
+
+stage.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  if (linkFrom) { endLink(); return; }
+  // Background click clears the selection: it is the gesture every canvas has,
+  // and without it there is no way to close the inspector.
+  if (selected) { select(""); renderAll(); }
+  pan = { x0: view.x, y0: view.y, cx: event.clientX, cy: event.clientY };
+  stage.classList.add("panning");
+});
+
+window.addEventListener("pointerup", () => {
+  endDrag();
+  pan = null;
+  stage.classList.remove("panning");
+});
+
+stage.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const rect = stage.getBoundingClientRect();
+  const px = event.clientX - rect.left, py = event.clientY - rect.top;
+  const factor = Math.exp(-event.deltaY * 0.0015);
+  const next = Math.min(2.4, Math.max(0.3, view.z * factor));
+  // Zoom about the POINTER, not the origin: the point under the cursor stays
+  // under the cursor, which is the only zoom that feels like the canvas is a
+  // surface rather than a scaling image.
+  view.x = px - (px - view.x) * (next / view.z);
+  view.y = py - (py - view.y) * (next / view.z);
+  view.z = next;
+  applyView();
+}, { passive: false });
+
+// Drag from the palette drops a node where the pointer is.
+stage.addEventListener("dragover", (event) => { event.preventDefault(); });
+stage.addEventListener("drop", (event) => {
+  event.preventDefault();
+  let payload;
+  try {
+    payload = JSON.parse(event.dataTransfer.getData("text/plain") || "");
+  } catch (err) { return; }
+  if (!payload || !catalog) return;
+  const app = (catalog.apps || []).find((a) => a.folder === payload.folder);
+  const tool = app && (app.tools || []).find((t) => t.name === payload.tool);
+  if (!app || !tool) return;
+  const at = stagePoint(event);
+  addNode(app, tool, { x: at.x - 100, y: at.y - 24 });
+});
+
+function startLink(id) {
+  linkFrom = id;
+  stage.classList.add("linking");
+  say("Click the step this one feeds into. Escape to cancel.");
+}
+
+function endLink() {
+  linkFrom = "";
+  stage.classList.remove("linking");
+  say("");
+}
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && linkFrom) endLink();
+});
+
+// ----------------------------------------------------------- save and run
+
+function updateButtons() {
+  const runnable = doc && doc.nodes.length && !runId && catalog && catalog.fusedCli;
+  const runBtn = el("run");
+  runBtn.disabled = busy || !runnable;
+  // D334 / MC-5a: the reason a disabled Run is disabled goes ON the control.
+  // A workflow's servers are `fused app serve` processes, and a machine with no
+  // exported `fused` cannot start one — a Run that failed silently inside a
+  // detached session is a failure nobody can see.
+  runBtn.title = !doc || !doc.nodes.length
+    ? "Add a step first."
+    : (catalog && !catalog.fusedCli
+      ? "No `fused` command is available, so this workflow's MCP servers cannot be started."
+      : "Run this workflow");
+  el("cancel").hidden = !runId || runDone;
+}
+
+async function save() {
+  if (!doc) return;
+  doc.name = el("wf-name").value;
+  const body = JSON.stringify(doc, null, 2) + "\n";
+  say("Saving…");
+  try {
+    // The optimistic lock is armed whenever there is an mtime to arm it with.
+    // Without it, two windows on the same document silently clobber each other
+    // — and this file is exactly the kind somebody leaves open in a second tab.
+    const stat = await fused.writeFile(TARGET, body,
+      mtime ? { expectedMtime: mtime } : {});
+    mtime = stat ? stat.mtime : null;
+    dirty = false;
+    el("save").textContent = "Save";
+    say("Saved.");
+  } catch (err) {
+    if (err.type === "conflict") {
+      sayWithRetry("This file changed on disk since it was read. Re-read to see " +
+        "the other version (this discards your edits), or save again to overwrite.",
+        () => guard(load));
+      // The overwrite path: dropping the lock is what the second Save does.
+      mtime = null;
+      return;
+    }
+    say("Could not save: " + (err.message || err), true);
+  }
+}
+
+async function run() {
+  if (dirty) {
+    // Run compiles the file on disk, not the object in this page — `run.py`
+    // reads the path. Saving first is the only way the two can be the same
+    // thing, and silently running a stale version is the confusion this avoids.
+    await save();
+    if (dirty) return;  // the save failed; its message is already on screen
+  }
+  say("Starting…");
+  const out = await fused.runPython("./run.py", { action: "start", path: TARGET });
+  if (!out.ok) { say(out.message, true); return; }
+  runId = out.runId;
+  runNodes = {};
+  runDone = false;
+  runLearned = false;
+  updateButtons();
+  poll();
+}
+
+// The poll loop deliberately does NOT go through `guard`. `guard` is a
+// single-flight lock over the user's own actions, and a tick that arrived while
+// one was in progress would be dropped — which does not retry, it ends the loop
+// and freezes the readout on whatever it last drew. So this carries its own
+// try/catch and its own re-arm.
+async function poll() {
+  if (!runId) return;
+  let out;
+  try {
+    // `key: null` opts out of the stale-request cancellation runPython applies
+    // per file (D114): this is a polling loop, and the default would have each
+    // tick abort the one before it.
+    out = await fused.runPython("./run.py",
+      { action: "poll", runId: runId }, { key: null });
+  } catch (err) {
+    // One failed tick is not a failed run — the executor is a subprocess and
+    // can lose a race. Keep polling and say so; the run itself is detached and
+    // carries on regardless of whether this page can see it.
+    say("Lost contact with the run (" + (err.message || err) + ") — retrying…", true);
+    polling = setTimeout(poll, 1500);
+    return;
+  }
+  if (!out.ok) {
+    say(out.message, true);
+    runId = "";
+    updateButtons();
+    return;
+  }
+  runNodes = {};
+  for (const node of out.nodes || []) runNodes[node.id] = node;
+  // THE OBSERVED OUTPUT IS MERGED INTO THE DOCUMENT, NOT WRITTEN BEHIND THE
+  // PAGE'S BACK. The page is this file's only writer; a backend that saved into
+  // it mid-edit would race whatever is in the inspector. So a run's findings
+  // land as an unsaved edit, marked, and Save is the deliberate step — the
+  // same rule the rest of this panel follows.
+  let learned = false;
+  for (const node of doc.nodes) {
+    const state = runNodes[node.id];
+    if (state && state.observedOutput &&
+        JSON.stringify(node.observedOutput) !== JSON.stringify(state.observedOutput)) {
+      node.observedOutput = state.observedOutput;
+      learned = true;
+    }
+  }
+  if (learned) { runLearned = true; mark(); }
+  renderNodes();
+  renderInspector();
+  if (out.done) {
+    runDone = true;
+    const failed = (out.nodes || []).filter((n) => n.status === "error").length;
+    say(out.error ? "Run failed: " + out.error
+      : (failed ? failed + " step(s) failed." : "Run finished.") +
+        (runLearned ? " Output shapes recorded — Save to keep them." : ""),
+      !!out.error || !!failed);
+    runId = "";
+    updateButtons();
+    return;
+  }
+  const running = (out.nodes || []).find((n) => n.status === "running");
+  say(running ? "Running: " + running.label : "Waiting for the first tool call…");
+  polling = setTimeout(poll, 1500);
+}
+
+async function cancel() {
+  if (!runId) return;
+  const id = runId;
+  runId = "";
+  runDone = true;
+  if (polling) clearTimeout(polling);
+  updateButtons();
+  const out = await fused.runPython("./run.py", { action: "cancel", runId: id });
+  say(out.cancelled ? "Run stopped." : (out.message || "Could not stop the run."),
+    !out.cancelled);
+}
+
+// One place turns a rejected promise into a footer line. Without it a thrown
+// runPython would auto-open the red traceback overlay, which is the debugging
+// default and the wrong answer for a panel that has a status line.
+async function guard(fn) {
+  if (busy) return;
+  busy = true;
+  updateButtons();
+  try {
+    await fn();
+  } catch (err) {
+    say((err && err.type ? err.type + ": " : "") + (err && err.message ? err.message : err), true);
+  } finally {
+    busy = false;
+    updateButtons();
+  }
+}
+
+el("save").addEventListener("click", () => guard(save));
+el("run").addEventListener("click", () => guard(run));
+el("cancel").addEventListener("click", () => guard(cancel));
+el("wf-name").addEventListener("input", mark);
+window.addEventListener("beforeunload", (event) => {
+  // The document lives in memory until Save, which is stated in the docstring
+  // above and is worth one confirm: a graph is twenty minutes of wiring and a
+  // reload is one keystroke.
+  if (!dirty) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
+// The selection is the one piece of state in the URL, so Back/Forward move it.
+fused.params.onChange(() => {
+  const next = fused.params.get("sel") || "";
+  if (next === selected || !doc) return;
+  selected = next;
+  renderAll();
+});
+
+if (!TARGET) {
+  say("No workflow file selected.", true);
+} else {
+  guard(load);
+}
+</script>
+</body>
+</html>
