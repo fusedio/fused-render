@@ -53,7 +53,7 @@ _QUALITY_HIGH = 96
 RECORD_MIN = (13, 0)
 #: `SCRecordingOutput` — the API that writes the movie for us — is macOS 15.
 #: Below it `_darwin_mux` supplies the `AVAssetWriter` that does the same job,
-#: which is the "later decision" the first cut of this comment deferred (D413).
+#: which is the "later decision" the first cut of this comment deferred (D417).
 SCRO_MIN = (15, 0)
 #: `SCScreenshotManager` is 14. `CGDisplayCreateImage` covers 13 (`_cg_shot`),
 #: so the still's floor is 13 as well.

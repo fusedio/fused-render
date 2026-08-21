@@ -8369,7 +8369,7 @@ three platforms, one API, no field naming which one served you.
   recording's floor is `SCStreamConfiguration.capturesAudio`: **macOS 13**. The
   still's is 13 too, and audio-only never needed ScreenCaptureKit at all. Below
   13 a Mac gets `available: false, reason: "needs macOS 13"` and a start rejects
-  `"unavailable"` with the same sentence (D413). Windows and Linux get the same
+  `"unavailable"` with the same sentence (D417). Windows and Linux get the same
   shape with their own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT
   too** — the macOS module loads its frameworks at module top and
   `ScreenCaptureKit.framework` does not exist below macOS 12.3, so an
