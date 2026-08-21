@@ -6123,7 +6123,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   **The branch lives in `download_snapshot` alone**, below every runner call
   site, so no runner changed and none can forget it; it is skipped under
   `**kwargs` for AI-5k's reason, that an argument the function does not know about
-  changes what a download IS. **Every failure degrades to today's Hub path** — a
+  changes what a download IS. A one-FILE download (`download_file`, which is how
+  llama.cpp fetches a GGUF) does not pass through here at all and has its own
+  object, its own reader and its own weaker claim — see **AI-5m**, which is where
+  everything below about `complete` stops applying. **Every failure degrades to today's Hub path** — a
   404, a 5xx, a host that does not answer, a body that is not JSON, an unknown
   schema version, a manifest whose fields do not hold up, a mid-download drop, a
   hash mismatch — and says which path gave up on stderr. A mirror that is down
@@ -6227,6 +6230,62 @@ an AI Models page that could say what was on disk but not what was *running*.
   commit, so a suggested model updated upstream keeps installing the pinned one
   until the build script reruns — reproducibility, at the cost of lagging a
   fix.
+- **AI-5m** **ONE FILE off the mirror is a SECOND object with a WEAKER claim, not
+  a relaxed manifest** (D419). AI-5l's branch lives in `download_snapshot` alone,
+  and `llama_text.download` does not go through it: it fetches one GGUF with
+  `download_file`, because a GGUF repo publishes dozens of quantizations of the
+  same model (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB file).
+  Since D416 made llama.cpp the only local text engine on Windows and Linux, that
+  left every suggested TEXT model on those platforms off the mirror entirely —
+  invisibly, since a download that never asks is a perfectly normal download.
+  Routing it through `download_snapshot(allow_patterns=[file])` is NOT the fix:
+  the per-repo manifest is accepted only when it asserts `complete: true` for the
+  whole repo, so serving one file that way would mean mirroring 147.81GB, and
+  weakening the assertion would break AI-5k. So there is a third object,
+  `/models/<org>/<name>/files/<filename>/manifest.json` — mutable and short-TTL
+  like the repo manifest, listing EXACTLY ONE named file, whose **blob stays at
+  the existing `/models/<org>/<name>/<commit>/<etag>`**, so a repo published both
+  ways stores one copy of each blob and either manifest's URL is the other's.
+  **Its reader is separate rather than relaxed** (`mirror.file_manifest` beside
+  `mirror.manifest`): same validation vocabulary, same "every rejection reads as
+  NO MIRROR", same per-model permission and the same one-guard/`Cancelled`-only
+  degradation, but it requires exactly one entry whose `name` IS the file that was
+  asked for, and it neither requires nor reads `complete`. Two claims, two
+  readers, so relaxing one cannot relax the other. **The absent completeness
+  assertion is safe because of what the CALLER does next, not because one file is
+  small**: `download_file` writes NO AI-5k fetch record and never has — one file
+  is not a scope a later bring-up can be told is complete — so there is no record
+  for a partial answer to self-certify, which is the entire harm that assertion
+  prevents. The worst a wrong per-file manifest can do is serve the wrong bytes,
+  and the sha256 check keeps those out of the cache. Adding a fetch record to this
+  path would take that argument away and put the assertion back in scope.
+  **The permission has to be TRANSLATED, or the hook is dead code for every real
+  model**: `llamacpp-text`'s catalog ids are bare `.gguf` FILENAMES (that is how
+  the AI Models page keys a repo publishing many quantizations) while the worker
+  names the recipe's REPO to the mirror, and `mirror.allowed` compares against
+  `_REPO_ID` (`org/name`) — so a permission carrying the filename is refused by
+  the client forever. `catalog.mirror_id` maps a suggested id to the repo the
+  worker will name and `supervisor._mirror_ok` returns that id rather than a
+  boolean. The privacy rule is untouched: nothing outside
+  `catalog.all_suggested_ids()` is ever granted, the lookup is in the CURATED
+  recipe table so an uncurated GGUF gets nothing, and the worker still learns the
+  answer for one model. This lives in the server process because `catalog` and
+  `formats` are unreachable from a runner's interpreter, and because the whole
+  point of AI-5l's permission is that the worker cannot decide it. The test that
+  matters is parametrized over the REAL curated rows: the pre-existing
+  `test_a_suggested_model_may_use_the_mirror` asserted equality with the catalog
+  id and passed while describing a value the client refuses. The generator gains
+  the matching mode (`--model org/name --file NAME`), which reads one file out of
+  a cache holding only that file, asks the Hub nothing (there is no completeness
+  to prove) and validates the name as the single URL path segment it becomes;
+  `--fetch-missing` fetches the one file. A default run now expands each curated
+  GGUF id into a `(repo, file)` target, which also fixes a run that could not
+  succeed: those ids were looked up as `models--<filename>` cache folders, printed
+  SKIPPED and made every default invocation exit 1. Still out of scope, and
+  unchanged by this: **component repos stay on the Hub** — the FLUX GGUF
+  transformer comes out of `unsloth/FLUX.2-klein-4B-GGUF` while the permitted id
+  is the base repo, so the component's `download_file` finds no permission by
+  construction rather than by a rule anyone has to remember.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
