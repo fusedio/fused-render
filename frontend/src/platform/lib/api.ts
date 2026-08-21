@@ -1930,7 +1930,14 @@ export interface TaskMessage {
   unread: boolean;
   entry_id: string; // schedule entry; "" for a chat message
   template_id: string; // the recurring message this is an occurrence of
-  turn: "done" | "idle" | "unknown" | "";
+  // How the turn behind this message went, written once when it ends. "" is a
+  // turn STILL RUNNING — for a scheduled message that is the store's own answer
+  // (`sent` with no verdict, the same rule /api/schedule/queue calls `live`),
+  // for a chat message it is the transcript's liveness. `idle` is only ever a
+  // chat turn whose transcript has gone quiet. `cancelled` is a run the user
+  // stopped from the queue card: an ended turn, labelled "Stopped" rather than
+  // "Ran" so this page and that card describe one outcome with one word.
+  turn: "done" | "idle" | "unknown" | "cancelled" | "";
   anchor: string; // transcript record uuid, for scroll-to; "" if unknown
 }
 

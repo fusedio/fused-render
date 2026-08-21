@@ -1526,15 +1526,19 @@ def test_a_send_the_scheduler_is_still_waiting_on_reads_as_running(
         client, projects_dir):
     """The transcript is not live — a turn thinking through a long tool call
     appends nothing for minutes — but the store still has the send in flight.
-    `schedule.busy_sessions` is the scheduler's own answer and the one that is
-    right here; the RENDERED turn cannot be the guard, because `_entry_turn`
-    folds liveness in and writes `idle` for exactly this case."""
+
+    The RENDERED turn is now the guard as well, and that is the change: it used
+    to fold liveness in and write `idle` here, which `_message_verdict` then
+    read as a finished run, so the board could file a task Done while the queue
+    card was still showing it thinking. `turn` is written once, when the turn
+    ends, so `sent` with no turn is a running turn — `busy_sessions` and the
+    message now AGREE rather than one covering for the other."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
                            turn="", claude_session_id="sess-a")])
     task = _by_key(client)["sess-a"]
     assert task["live"] is False
-    assert task["messages"][0]["turn"] == "idle"
+    assert task["messages"][0]["turn"] == ""
     assert task["status"] == "in_progress"
 
 

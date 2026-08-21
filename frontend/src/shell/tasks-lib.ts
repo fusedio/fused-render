@@ -302,7 +302,17 @@ export function messageTone(m: TaskMessage): MessageTone {
           return { column: "in_progress", failed: false, label: "Running…" };
         // "done", "idle", or whatever a newer server writes — the turn ended.
         default:
-          return { column: "done", failed: false, label: "Ran" };
+          // A run the USER stopped (the queue card's ✕, which really kills the
+          // process — schedule.py `_turn_tick`). It is a settled outcome and
+          // therefore Done, not a fault: the stop was asked for, so flying a
+          // red mark would ask the reader to deal with their own decision. What
+          // it is not is indistinguishable from a run that finished — the dock
+          // and the schedule list both say "Stopped", and a board saying "Ran"
+          // for the same run is two surfaces describing one outcome with
+          // opposite words. Same word, same lane, one fact.
+          return m.turn === "cancelled"
+            ? { column: "done", failed: false, label: "Stopped" }
+            : { column: "done", failed: false, label: "Ran" };
       }
   }
 }

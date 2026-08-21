@@ -272,6 +272,50 @@ _watched_lock = threading.Lock()
 _thread: threading.Thread | None = None
 _thread_lock = threading.Lock()
 
+# THE LOOP'S DOORBELL — how work that is due NOW gets sent now.
+#
+# The loop used to `time.sleep(POLL_INTERVAL_S)`, which is right for asking
+# "what came due while I was asleep" and wrong for the one case the user
+# actually watches: scheduling something for a time that has already passed, or
+# restoring a skipped run whose time has gone. Those are due the instant they
+# are stored, and the tick that would send them was up to 30 seconds away —
+# then the Tasks page's own poll (10-30s) on top of that. A message asked for
+# NOW sat reading "Upcoming" for the best part of a minute with nothing
+# happening, which is indistinguishable from a scheduler that is not running.
+#
+# So a mutation that stores past-due work rings this, and the loop wakes. It is
+# a HINT AND NEVER A MECHANISM: every rule about what fires stays in `tick`,
+# which still runs on its own timer, so a missed ring costs latency and nothing
+# else. That is what makes it safe to ring from a request thread (`Event.set`
+# is atomic and idempotent), and why the loop clears the flag AFTER waking
+# rather than before ticking — a ring that lands mid-tick then wakes the pass
+# after it, instead of being swallowed by the pass that was already running
+# when it arrived.
+_wake = threading.Event()
+
+
+def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> bool:
+    """Wake the loop if anything in `entries` is pending and already due.
+
+    Reads the store when handed nothing. The test is deliberately the cheap
+    half of `_claim_due`'s — pending, and due — because a spurious ring costs
+    one early tick that finds nothing to do, while a missed one costs the user
+    the whole poll interval."""
+    now = now or _now()
+    if entries is None:
+        with _lock:
+            entries = _read()
+    for entry in entries:
+        if entry.get("state") != PENDING:
+            continue
+        try:
+            if parse_due(entry.get("due")) <= now:
+                _wake.set()
+                return True
+        except ValueError:
+            continue
+    return False
+
 
 def store_path() -> str:
     return os.path.join(storage.home_dir(), _STORE_NAME)
@@ -815,6 +859,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # First occurrence, immediately — so the schedule the user just wrote
         # is visible (and wake-synced) without waiting for the next tick.
         _materialize(_now())
+    # AFTER materialization, so a repeat anchored in the past rings for the
+    # catch-up occurrence that pass just created rather than for the template
+    # (which never fires). Reads the store rather than testing `entry`, for the
+    # same reason. A future-dated message rings nothing and waits for its time.
+    _ring()
     return entry
 
 
@@ -2405,15 +2454,23 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
 
 
 def _loop() -> None:
-    """Daemon-thread body: tick() on a timer, forever. `tick` already keeps a
-    per-entry failure on its entry, but wrap here too so nothing — not even an
-    unreadable store — can kill the loop and take the schedule with it."""
+    """Daemon-thread body: tick() on a timer — or as soon as something rings —
+    forever. `tick` already keeps a per-entry failure on its entry, but wrap
+    here too so nothing, not even an unreadable store, can kill the loop and
+    take the schedule with it.
+
+    `_wake.wait(POLL_INTERVAL_S)` in place of `time.sleep`: the timer is
+    unchanged (an entry that comes due on its own is found by the next pass, as
+    it always was) and the wait is what lets work stored ALREADY DUE go
+    immediately — see `_wake`. Cleared after the wait and before the tick, so a
+    ring that arrives while a tick is running wakes the pass after it."""
     while True:
         try:
             tick()
         except Exception:
             logger.exception("scheduled-message tick failed")
-        time.sleep(POLL_INTERVAL_S)
+        _wake.wait(POLL_INTERVAL_S)
+        _wake.clear()
 
 
 def start() -> None:
