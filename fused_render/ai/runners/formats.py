@@ -160,7 +160,14 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     plain = MFLUX_VARIANTS.get(model_id)
     if edit is None or plain is None:
         return None
-    return {**edit, "config": plain["config"], "vae": plain["vae"]}
+    # `.get("vae")`, not a hard index: `MFLUX_VARIANTS`'s own docstring
+    # declares the key optional ("a variant with no `vae` simply gets no
+    # preview"), and `_build_variant` reads it the same soft way
+    # (`recipe.get("vae")`) — a plain row that ever ships without one must
+    # not make the edit recipe raise where the plain row itself would not.
+    # `config` stays a hard index: every row in this table names one, and
+    # `_build_variant` reads it unconditionally.
+    return {**edit, "config": plain["config"], "vae": plain.get("vae")}
 
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"

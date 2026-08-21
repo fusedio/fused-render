@@ -514,6 +514,85 @@ def test_editing_an_UNKNOWN_edit_model_is_refused_with_a_sentence(
         worker.generate(_request(tmp_path, image="/base/photo.png"))
 
 
+def test_a_failed_edit_swap_leaves_the_resident_model_INTACT(
+        monkeypatch, base, tmp_path):
+    """A model absent from the edit table is refused BEFORE anything is
+    dropped (`_ensure_mode`'s own validate-before-drop ordering) — a
+    request that turns out to be refused must not be licence to break the
+    next one. The worker must still answer a PLAIN generate afterward,
+    exactly as if the refused request had never arrived."""
+    worker, model = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    monkeypatch.delitem(worker.formats.MFLUX_EDIT_VARIANTS, MODEL)
+
+    with pytest.raises(RuntimeError, match="edit an image with"):
+        worker.generate(_request(tmp_path, image="/base/photo.png"))
+
+    worker.generate(_request(tmp_path))
+    assert model.calls, "the plain variant should still be resident and usable"
+
+
+def test_a_mode_swap_drops_the_OLD_model_before_building_the_new_one(
+        monkeypatch, base, tmp_path):
+    """Peak memory during a swap must never hold both variants at once —
+    `_build_variant` constructs every weight tensor of the incoming variant
+    before `_ensure_mode` assigns it anywhere, so `_loaded["model"]` has to
+    already be `None` by the time that construction starts, or this process
+    holds both resident on exactly the 16GB Macs this runner targets."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    seen_at_build = []
+    real_build = worker._build_variant
+
+    def spy(model_id, fetched, mode):
+        seen_at_build.append(worker._loaded.get("model"))
+        return real_build(model_id, fetched, mode)
+
+    monkeypatch.setattr(worker, "_build_variant", spy)
+
+    worker.generate(_request(tmp_path, image="/base/a.png"))
+
+    assert seen_at_build == [None], (
+        "the outgoing model must be dropped before the incoming one is built")
+
+
+def test_a_mode_swap_reports_on_the_job_row(monkeypatch, base, tmp_path):
+    """No tick, no detail during a full variant rebuild is exactly the
+    "user watches a stalled render" failure the mode-keyed swap exists to
+    keep from happening anywhere else — a swap must show up on the row
+    it is happening under."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+    base.ticks.clear()
+
+    worker.generate(_request(tmp_path, image="/base/a.png",
+                             job="sys:ai-image:xyz"))
+
+    switching = [t for t in base.ticks if "Switching" in str(t.get("detail"))]
+    assert switching, base.ticks
+    assert switching[0]["job"] == "sys:ai-image:xyz"
+    assert switching[0]["state"] == "running"
+
+
+def test_a_swap_BACK_to_the_resident_mode_reports_NOTHING(
+        monkeypatch, base, tmp_path):
+    """`_ensure_mode` returns on its first line when the resident mode
+    already matches — a caller who never alternates modes must see no
+    "Switching" tick at all, ever, on the plain-generate path Decision 3
+    promises stays untouched."""
+    worker, model = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    base.ticks.clear()
+
+    worker.generate(_request(tmp_path))
+
+    switching = [t for t in base.ticks if "Switching" in str(t.get("detail"))]
+    assert switching == []
+
+
 # -- progress and the ✕ ----------------------------------------------------------
 
 

@@ -350,7 +350,7 @@ def load(model_id, fetched):
     worker_base.set_state(device="mps")
 
 
-def _ensure_mode(mode):
+def _ensure_mode(mode, job=None):
     """Make the resident model's MODE match `mode`, swapping if it does not.
 
     Decision 3: residency is keyed by `(model_id, mode)`. This is a
@@ -366,10 +366,45 @@ def _ensure_mode(mode):
     (`load()` sets it), so this returns on its first line and the resident
     `Flux2Klein` object built at load time is untouched for the life of the
     process — Decision 3's "zero behaviour change" in code.
+
+    **Validated before anything is dropped.** A model with no row in the
+    table `mode` needs must leave the worker exactly as resident as it found
+    it — a request that turns out to be refused is not licence to break the
+    NEXT one — so `_recipe_for` is checked first and `_build_variant` is
+    called for its lookup+raise (never returning) before `_loaded["model"]`
+    is touched at all.
+
+    **The OLD model's reference is dropped before the NEW one is built, not
+    after.** `_build_variant` constructs a full second model object — every
+    weight tensor of it — before this function ever assigns the result
+    anywhere; holding `_loaded["model"]` pointed at the outgoing variant for
+    that whole build means this process holds BOTH resident at once, which
+    on the 16GB Macs this runner targets is the difference between a
+    working swap and an OOM mid-request. Dropping the reference first lets
+    the interpreter (and mflux's own allocator, once nothing holds the
+    arrays) reclaim the old weights before the new ones are asked for.
+
+    **`job`, so the swap is not invisible on the row.** A full rebuild
+    measured ~0.6s warm on the hardware that ran Gate B, and worse cold or
+    on a smaller Mac — with no tick here, `snapshot()["state"]` would still
+    read `"ready"` for the whole of it, no detail and no progress, which is
+    exactly the "user watches a stalled render" failure the mode-keyed swap
+    exists to keep from happening anywhere ELSE (see the module docstring's
+    note on why a swap must not re-download). `None` is fine when nothing
+    is watching (a bring-up thread's own first `load()` never swaps, so
+    this path is only ever reached from a request that already has one).
     """
     if _loaded.get("mode") == mode:
         return
-    model, vae = _build_variant(_loaded["model_id"], _loaded["fetched"], mode)
+    model_id, fetched = _loaded["model_id"], _loaded["fetched"]
+    if _recipe_for(model_id, mode) is None:
+        _build_variant(model_id, fetched, mode)  # raises; never returns
+    worker_base.report(job=job, state="running", kind="task", unit="",
+                       done=None, total=None,
+                       detail="Switching to %s mode…" % mode)
+    _loaded["model"] = None
+    _loaded["vae"] = None
+    model, vae = _build_variant(model_id, fetched, mode)
     _loaded["model"] = model
     _loaded["vae"] = vae
     _loaded["mode"] = mode
@@ -562,7 +597,7 @@ def generate(body):
     # instead of a list of an unknown, possibly-`None` element.
     image = str(body.get("image") or "")
     mode = "edit" if image else "generate"
-    _ensure_mode(mode)
+    _ensure_mode(mode, body.get("job") or None)
     model = _loaded["model"]
     # BEFORE anything touches the model: this is a request thread, the weights it
     # is about to force were built on the bring-up thread, and mlx 0.32's default

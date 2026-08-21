@@ -317,6 +317,19 @@ def test_mflux_edit_recipe_is_None_without_a_row_in_EITHER_table(monkeypatch):
     assert formats.mflux_edit_recipe(known) is None
 
 
+def test_mflux_edit_recipe_tolerates_a_plain_row_with_NO_vae(monkeypatch):
+    """`MFLUX_VARIANTS`'s own docstring declares `vae` optional — "a variant
+    with no `vae` simply gets no preview" — and `_build_variant` reads it
+    with `.get()`. The derivation in `mflux_edit_recipe` must not turn that
+    into a `KeyError` a plain row itself would never raise."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    no_vae = {k: v for k, v in formats.MFLUX_VARIANTS[known].items() if k != "vae"}
+    monkeypatch.setitem(formats.MFLUX_VARIANTS, known, no_vae)
+    recipe = formats.mflux_edit_recipe(known)
+    assert recipe is not None
+    assert recipe.get("vae") is None
+
+
 def test_a_root_level_gguf_is_llamacpp_texts_and_nothing_elses():
     """A `.gguf` at the snapshot root is llama.cpp's format (SPEC AI-11) —
     checked case-insensitively, and decisive against a stray safetensors file
