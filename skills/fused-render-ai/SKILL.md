@@ -11,10 +11,10 @@ description: Use when a fused-render page needs an AI model — calling fused.ai
 
 | `opts.model` | Where it runs | Credential |
 |---|---|---|
-| Contains a `/` — a Hugging Face repo id | **This machine.** A resident worker process holding the weights. | none |
+| Contains a `/` (a Hugging Face repo id), **or ends in `.gguf`** (a llamacpp-text curated filename id) | **This machine.** A resident worker process holding the weights. | none |
 | Anything else — `"sonnet"`, `"claude-haiku-4-5-20251001"`, omitted | The local **`claude` (Claude Code) CLI**. | the user's Claude Code login |
 
-That one rule (`"/" in model`) is the whole seam: a page swapping `model: "opus"` for a repo id changes nothing else — same call, same resolved shape.
+That rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
 
 **Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to Transformers. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
 
@@ -142,6 +142,7 @@ Each capability's `models[]` entry is `{id, label, size_gb, note}` plus three st
 - **Every entry is one the engine serving that capability can actually load** — a cached repo in a format that backend does not read is left out, so the list moves when the user switches engines.
 - **Lists are ordered smallest download first, `default` is the first CURATED entry.** So omitting `model` gets the *smallest* model, not the best one. **Read `default`, never `models[0]`**: cached entries are appended after the curated ones, and an engine with no shortlist reports `default: null` — "no recommended model" is an answer to respect.
 - `note` is `null` on a cached entry and `size_gb` is its measured on-disk footprint. Render `label || id`.
+- **`id` shapes can differ WITHIN one capability's `models[]`.** `text-generation`'s curated `llamacpp-text` entries are GGUF filenames; a "cached" GGUF repo the user found via Hub search is a bare repo id like every other engine's entries. Render `id` as an opaque label — never assume `id.split("/")` or a Hub-URL template works for every row.
 
 ### Loading, unloading, cancelling
 
@@ -373,11 +374,11 @@ Everything else — the result shape, the two files, `onSegment`, the speaker la
 
 ## What Actually Runs Locally Today
 
-Eleven runners, three capabilities, all taking **Hugging Face repo ids**:
+Thirteen runners, three capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
-| `text-generation` | MLX, then Transformers (CPU), then Transformers (CUDA), then Transformers (ROCm) | **Everywhere.** MLX on Apple Silicon; the **CPU** torch build everywhere else, and as the Apple Silicon fallback — it answers slowly but it answers. The CUDA and ROCm builds are the same runner on a different wheel: opt-in from the Engines tab, and offered only where the app can see a usable NVIDIA or AMD GPU. |
+| `text-generation` | MLX, then Transformers (CPU), then Transformers (CUDA), then Transformers (ROCm), then llama.cpp (GGUF), then llama.cpp (Vulkan) | **Everywhere**, from the first four — MLX on Apple Silicon; the **CPU** torch build everywhere else, and as the Apple Silicon fallback — it answers slowly but it answers. CUDA/ROCm are the same runner on a different wheel: opt-in, offered only where the app sees a usable NVIDIA or AMD GPU. **The two llama.cpp rows are never reached by `auto`, on any platform** — the maintainer's own wheel index has shipped corrupt macOS wheels on most sampled releases, so this pin stays opt-in, chosen from the Engines tab. Five curated ids are the GGUF's own filename; any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. Vulkan needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
 | `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are the same opt-in, hardware-gated arrangement as text generation. |
 | `automatic-speech-recognition` | MLX Whisper, then Parakeet TDT, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; Parakeet TDT is an Apple-Silicon opt-in — quicker and more accurate in English, but 25 European languages only; CTranslate2 serves both Mac architectures, Linux and Windows. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
 
@@ -428,6 +429,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Rendering only `catalog()`'s curated entries** → the model the user just downloaded is missing from your picker. Render every entry; mark them.
 - **Assuming a capability's runner from the platform** → every capability has more than one and a user preference can pick any. Read `active` from `fused.ai.models.list()`.
 - **Hard-coding a repo id, or carrying one between engines** → formats are backend-specific; a repo that works on one engine is an unusable download on the other.
+- **Assuming a model id is always `org/name`** → `llamacpp-text`'s curated ids are the GGUF's own filename (`Qwen3.5-4B-Q5_K_M.gguf`, no slash). Splitting on `/` or building a Hub URL from `id` breaks on one; treat it as opaque.
 
 **Images**
 

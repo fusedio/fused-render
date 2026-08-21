@@ -199,7 +199,7 @@ try {
 - `model` — the **full model id that actually ran**; an alias request (`"sonnet"`) echoes the resolved id.
 - `usage` — either `null` or exactly `{input_tokens, output_tokens}` (both integers). These are **Anthropic-style names** — there is NO `prompt_tokens`/`completion_tokens` (OpenAI names); reading those yields `undefined`.
 
-The page never talks to a model directly, and there are **two destinations** — the model id decides which. An id **containing a `/`** is a Hugging Face repo and runs on **this machine** (a resident worker process); anything else goes to the **`claude` (Claude Code) CLI**, where the user's Claude Code login is the credential (binary from `PATH`, overridable with `FUSED_RENDER_CLAUDE_BIN`).
+The page never talks to a model directly, and there are **two destinations** — the model id decides which. An id **containing a `/`** (a Hugging Face repo), or **ending in `.gguf`** (a llamacpp-text curated filename id — those are not repo ids, see **`fused-render-ai`**), runs on **this machine** (a resident worker process); anything else goes to the **`claude` (Claude Code) CLI**, where the user's Claude Code login is the credential (binary from `PATH`, overridable with `FUSED_RENDER_CLAUDE_BIN`).
 
 Both are **local-only**: an exported/hosted page has neither, so the exporter rejects any page containing the string `fused.ai(` (SPEC RH-11) — a textual match, so an `if (fused.env === "local")` guard does not make the page exportable. Keep AI out of a view that must export.
 
@@ -208,7 +208,7 @@ Core options:
 | Option | Meaning |
 |---|---|
 | `systemPrompt` | System message (string). Role + ground rules here; data + question in `prompt`. |
-| `model` | Model id. Default `claude-haiku-4-5-20251001` (or the user's configured default). A `/` in it means a local model. |
+| `model` | Model id. Default `claude-haiku-4-5-20251001` (or the user's configured default). A `/`, or a `.gguf` filename id, means a local model. |
 | `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"`. Claude path only; default low = no extended thinking. |
 | `onChunk(text)` | Opts into streaming; the promise still resolves with the same `{text, model, usage}`. |
 
