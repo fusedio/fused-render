@@ -592,6 +592,81 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
         assert calls["retention_forced_by"] == expected_retention, (capture, retention)
 
 
+# -- the AI idle-unload window (AI-13) ------------------------------------------
+#
+# `ai_idle_unload_minutes` in the shape of `calls_retention_days` — a stored
+# int, a range, an env override that mirrors `_calls_effective()`'s two
+# questions ("is it set" vs "is it in force"). No cache to invalidate here:
+# unlike calls.py, prefs.py's own reads carry no TTL.
+
+
+def test_ai_idle_unload_minutes_defaults_to_ten(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    ai_idle = client.get("/api/prefs").json()["ai_idle"]
+    assert ai_idle["minutes"] == 10
+    assert ai_idle["effective_minutes"] == 10
+    assert ai_idle["forced_by"] is None
+
+
+def test_ai_idle_unload_minutes_zero_means_never(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"ai_idle_unload_minutes": 0}, headers=FUSED).json()
+    assert body["ai_idle"]["minutes"] == 0
+    assert body["ai_idle"]["effective_minutes"] == 0
+
+
+def test_ai_idle_unload_minutes_round_trips(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"ai_idle_unload_minutes": 45}, headers=FUSED).json()
+    assert body["ai_idle"]["minutes"] == 45
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["ai_idle_unload_minutes"] == 45
+
+
+def test_put_rejects_an_out_of_range_or_non_int_ai_idle_minutes(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    for bad in (-1, 1441, 5.5, "10", True):
+        resp = client.put("/api/prefs", json={"ai_idle_unload_minutes": bad}, headers=FUSED)
+        assert resp.status_code == 400, bad
+    assert not (home / "prefs.json").exists()
+
+
+def test_a_hand_edited_out_of_range_ai_idle_minutes_falls_back_to_the_default(
+    tmp_path, monkeypatch
+):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "prefs.json").write_text(json.dumps({"ai_idle_unload_minutes": 99999}))
+    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 10
+
+    (home / "prefs.json").write_text(json.dumps({"ai_idle_unload_minutes": "soon"}))
+    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 10
+
+
+def test_ai_idle_env_override_wins_but_leaves_the_stored_value_intact(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"ai_idle_unload_minutes": 30}, headers=FUSED)
+
+    monkeypatch.setenv("FUSED_RENDER_AI_IDLE_MINUTES", "2")
+    ai_idle = client.get("/api/prefs").json()["ai_idle"]
+    assert ai_idle["minutes"] == 30, "the stored choice stands"
+    assert ai_idle["effective_minutes"] == 2
+    assert ai_idle["forced_by"] == "2"
+
+    # An unhonoured spelling reports no force and leaves the stored pref deciding.
+    monkeypatch.setenv("FUSED_RENDER_AI_IDLE_MINUTES", "not-a-number")
+    ai_idle = client.get("/api/prefs").json()["ai_idle"]
+    assert ai_idle["effective_minutes"] == 30
+    assert ai_idle["forced_by"] is None
+
+
+def test_the_no_known_preference_message_names_ai_idle_unload_minutes(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/prefs", json={"nope": 1}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "ai_idle_unload_minutes" in resp.json()["error"]
+
+
 # -- the inference engine preference (D302) -------------------------------------
 #
 # Driven through the ENDPOINT, because what is under test here is the STORE: what
