@@ -20,13 +20,20 @@ declining leaves the key off, so a caller reads which happened off the reply.
 It is answered best-effort in `mlx_whisper/worker.py`, where the decline lives.
 
 **This module is where that rule lives, once**, for exactly the reason
-`diarize.speakers_or_raise` sits where it does: the refusal has to happen in
-TWO places and must be one sentence. The endpoint refuses first, before a job
-row opens and before a multi-gigabyte model downloads — the runner is already
-resolved server-side (`registry.for_capability`), so the answer is available
-immediately and making the user wait for a load to be told "no" is a cost with
-no benefit. The worker refuses again on arrival, because the bridge and the
-endpoint are not the only doors into that process.
+`diarize.speakers_or_raise` sits where it does. The endpoint refuses first,
+before a job row opens and before a multi-gigabyte model downloads — the
+runner is already resolved server-side (`registry.for_capability`), so the
+answer is available immediately and making the user wait for a load to be
+told "no" is a cost with no benefit. **Today the endpoint is the ONLY door**:
+`parakeet-mlx` was the one runner that ever imported this module from its own
+worker, and D406 withdrew it, so nothing on the worker side calls
+`unsupported_or_raise` any more. That is a gap, not a design — the refusal
+still has to happen in TWO places, because the bridge and the endpoint are
+not the only doors into a worker process. **The next runner that adds an
+`UNSUPPORTED` entry MUST also import this module in its own `worker.py` and
+call `unsupported_or_raise` on arrival**, the way `parakeet_mlx/worker.py`
+did, or an option refused at the endpoint can still be accepted-and-ignored
+by whatever reaches the worker directly.
 
 **Stdlib only, and no import of `fused_render`.** The same constraint
 `formats.py`, `diarize.py`, `vad.py` and `partial.py` document: it is read by a

@@ -18,6 +18,8 @@ Read alongside `tests/test_ai_runtime.py` (the endpoint's half).
 import importlib.util
 import os
 
+import pytest
+
 from fused_render.ai import registry
 from fused_render.ai.runners import engine_options
 
@@ -63,17 +65,35 @@ def test_an_engine_with_nothing_to_refuse_refuses_nothing():
         "some-future-runner", task="translate") is None
 
 
-def test_the_module_reads_the_same_BY_PATH_as_it_does_through_the_package():
+def test_the_module_reads_the_same_BY_PATH_as_it_does_through_the_package(monkeypatch):
     """Two loaders, one module. The runner imports it by path off `sys.path`
     (its own interpreter has no `fused_render`); the server imports it as
     `fused_render.ai.runners.engine_options`. A module that resolved under only
     one of them would be half a rule, and the failure would land in production
-    rather than here."""
+    rather than here.
+
+    Exercised with a monkeypatched entry rather than the bare empty-table
+    comparison this reduced to after D406: `{} == {}` passes no matter how the
+    two loads diverge, so a copy that behaved differently — the exact drift
+    this test exists to catch — would pass silently right alongside it. The
+    fake entry is set on BOTH loads and both are made to actually raise, so a
+    divergent `unsupported_or_raise` (wrong signature, wrong lookup, a stale
+    duplicate file reachable by path) fails here rather than in production."""
     spec = importlib.util.spec_from_file_location("runners_engine_options",
                                                   OPTIONS_PATH)
     assert spec is not None and spec.loader is not None, OPTIONS_PATH
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+
+    monkeypatch.setitem(module.UNSUPPORTED, "fake-refusing-engine",
+                        {"task": "the fake engine has no translate task"})
+    monkeypatch.setitem(engine_options.UNSUPPORTED, "fake-refusing-engine",
+                        {"task": "the fake engine has no translate task"})
+
+    with pytest.raises(ValueError, match="no translate task"):
+        module.unsupported_or_raise("fake-refusing-engine", task="translate")
+    with pytest.raises(ValueError, match="no translate task"):
+        engine_options.unsupported_or_raise("fake-refusing-engine", task="translate")
 
     assert module.UNSUPPORTED == engine_options.UNSUPPORTED
     assert module.unsupported_or_raise("mlx-whisper", task="translate") is None
