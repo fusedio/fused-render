@@ -2620,8 +2620,41 @@
   // a rule that lives in `runners/preview.py`, and being wrong about it on some
   // future model — whereas "the file is gone once the row is terminal" is this
   // bridge's own fact, and it is the one that would be seen every render.
+  // The request envelope of a job-backed AI call is closed (D413): an option
+  // this API does not have is refused, not dropped. Checked before the POST
+  // — and before the field checks below it, matching the server's own
+  // ordering — so the caller learns it in one round trip and with a message
+  // naming the API rather than the endpoint. `allowedKeys` is exactly the
+  // whitelist array `aiImage`/`aiTranscribe` already loop over to build the
+  // body; `extra` is the callbacks consumed above that loop (`onProgress`,
+  // `onSegment`) — real options, just not body fields, so they must not
+  // trip this check or every existing caller that passes one breaks.
+  function rejectUnknownOptions(opts, allowedKeys, extra, apiName) {
+    const allowed = new Set(allowedKeys.concat(extra));
+    // Sorted, matching the server's `_reject_unknown` — otherwise the same
+    // two-key mistake reads differently depending on which order the caller
+    // happened to write its object literal in, and the two layers' messages
+    // stop being comparable.
+    const unknown = Object.keys(opts).filter((key) => !allowed.has(key)).sort();
+    if (!unknown.length) return null;
+    const named = unknown.map((key) => "'" + key + "'").join(", ");
+    const verb = unknown.length === 1 ? "is not an option" : "are not options";
+    const accepted = allowedKeys.concat(extra).slice().sort().join(", ");
+    const err = new Error(`${named} ${verb} of ${apiName}; accepted: ${accepted}`);
+    err.type = "bad_request";
+    return err;
+  }
+
   function aiImage(opts) {
     opts = opts || {};
+    // Checked BEFORE `prompt`, matching the server's own ordering: a call
+    // with both an unknown option and a missing `prompt` must learn about
+    // the option it does not have, not about the field it also got wrong —
+    // "add a prompt" would "fix" the error and land the caller right back
+    // in the silent-drop illusion this whole change exists to end.
+    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed"];
+    const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress"], "fused.ai.image");
+    if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
       const err = new Error("fused.ai.image({prompt}): prompt must be a non-empty string");
       err.type = "bad_request";
@@ -2629,7 +2662,7 @@
     }
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
     const body = {};
-    for (const key of ["prompt", "model", "width", "height", "steps", "guidance", "seed"]) {
+    for (const key of imageKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     return aiPost("/api/ai/image", body).then((started) => {
@@ -2699,6 +2732,20 @@
   // watching a 90-minute recording is actually thinking in.
   function aiTranscribe(opts) {
     opts = opts || {};
+    // The envelope check, same as `aiImage` and for the same reason (D413),
+    // and checked BEFORE `path` for the same reason too: a call with both an
+    // unknown option and no `path` must learn about the option it does not
+    // have, not about the missing field, or "fixing" the field reported
+    // sends the caller right back into the silent-drop illusion. `base` is
+    // deliberately NOT in this caller-facing list, even though the server
+    // accepts it — it is injected below from the page's own `?path=`, never
+    // from the caller's own options object, so a caller passing it directly
+    // is passing an option that does not exist from here.
+    const transcribeKeys = ["path", "model", "language", "task", "initialPrompt",
+                            "vad", "diarize", "speakers", "words"];
+    const transcribeUnknownErr = rejectUnknownOptions(
+      opts, transcribeKeys, ["onProgress", "onSegment"], "fused.ai.transcribe");
+    if (transcribeUnknownErr) return Promise.reject(transcribeUnknownErr);
     if (typeof opts.path !== "string" || !opts.path.trim()) {
       const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
       err.type = "bad_request";
@@ -2767,8 +2814,7 @@
     // nobody is reading.
     const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
     const body = {};
-    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad",
-                       "diarize", "speakers", "words"]) {
+    for (const key of transcribeKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     // The page's own path, so a RELATIVE `path` resolves beside this page —

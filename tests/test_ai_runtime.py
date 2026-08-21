@@ -3389,6 +3389,54 @@ def test_an_image_needs_a_prompt(client, fake_image_runner):
         assert response.status_code == 400, body
 
 
+def test_an_unrecognised_image_option_is_a_400_naming_it(client, fake_image_runner):
+    """The bug report: `image`/`strength` render a text-to-image picture and say
+    nothing about the option that was ignored. Now the envelope is closed —
+    an option this endpoint does not have is refused rather than dropped."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "image" in message
+    assert "not an option" in message
+
+
+def test_an_unrecognised_image_option_names_BOTH_unknown_keys(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "strength": 0.6},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "image" in message and "strength" in message
+
+
+def test_the_envelope_is_checked_BEFORE_any_field_validation(client, fake_image_runner):
+    """An unknown key and a bad `steps` in the same request: the envelope error
+    wins, so the caller learns about the option it does not have first."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "x.png", "steps": "nonsense"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "'image' is not an option" in message
+    # The field error ("'steps' must be a number") never appears — the
+    # envelope check short-circuits before `steps` is ever parsed.
+    assert "must be a number" not in message
+
+
+def test_every_documented_image_option_is_still_accepted(client, fake_image_runner):
+    """The regression this change could plausibly cause: a false rejection of a
+    valid option. Assert the whole accepted set, not two of them."""
+    body = {
+        "prompt": "a fox", "model": "org/x", "width": 512, "height": 512,
+        "steps": 10, "guidance": 3.0, "seed": 7,
+    }
+    response = client.post("/api/ai/image", json=body, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
                                                         monkeypatch):
     monkeypatch.setenv("FAKE_IMAGE_FAILS", "1")
@@ -3586,6 +3634,36 @@ def test_transcribing_needs_a_file_that_actually_exists(
         assert _post_transcribe(client, **body).status_code == 400, body
     assert not [j for j in jobs.list_jobs()
                 if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_transcribe_rejects_a_caller_supplied_unknown_option(
+        client, fake_transcribe_runner, recording):
+    response = _post_transcribe(client, path=recording, image="x.png")
+    assert response.status_code == 400
+    assert "image" in response.json()["error"]
+
+
+def test_transcribe_accepts_the_bridge_injected_base(
+        client, fake_transcribe_runner, recording, tmp_path):
+    """`base` is not a caller-facing option — the bridge adds it from the
+    page's own `?path=` — but the server must still accept it, or every
+    existing `fused.ai.transcribe` call with a relative path breaks."""
+    started = _post_transcribe(client, path=recording, base=str(tmp_path / "page.html"))
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_every_documented_transcribe_option_is_still_accepted(
+        client, fake_transcribe_runner, recording):
+    """The regression this change could plausibly cause: a false rejection of
+    a valid option. Assert the whole accepted set, not two of them."""
+    body = dict(
+        path=recording, model=catalog.default_for(registry.SPEECH_TO_TEXT),
+        language="en", task="transcribe", initialPrompt="hello",
+        vad=True, diarize=False, speakers=None, words=False)
+    response = _post_transcribe(client, **body)
+    assert response.status_code == 200, response.json()
+    _wait_job(response.json()["jobId"])
 
 
 def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
@@ -4522,6 +4600,23 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
+def _lift_js_fn(source, marker):
+    """One named `function` lifted out of `runtime.js` by its declaration
+    text, body included. Shared by every harness below that drives a real
+    bridge function under node."""
+    start = source.index(marker)
+    return source[start:source.index("\n  }\n", start) + 4]
+
+
+def _js_fn_with_helper(source, marker):
+    """`_lift_js_fn`, plus `rejectUnknownOptions` ahead of it — `aiImage` and
+    `aiTranscribe` both call it now (D413), and it is not itself part of
+    either function's own source, so a harness that lifts only the target
+    function leaves the call unresolved."""
+    return (_lift_js_fn(source, "  function rejectUnknownOptions(")
+            + _lift_js_fn(source, marker))
+
+
 def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}',
                        extra=None):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
@@ -4547,9 +4642,7 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiTranscribe(opts)")
-    end = source.index("\n  }\n", start) + 4
-    fn = source[start:end]
+    fn = _js_fn_with_helper(source, "  function aiTranscribe(opts)")
 
     prelude = f"""
       const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
@@ -4633,7 +4726,8 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
 
 
-def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"'):
+def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"',
+                  opts='{prompt: "a fox", onProgress: (job) => progress.push(job)}'):
     """Run `aiImage` out of runtime.js under node, against stubs.
 
     `_run_ai_transcribe`'s harness for the other half of the same API: the
@@ -4652,9 +4746,7 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiImage(opts)")
-    end = source.index("\n  }\n", start) + 4
-    fn = source[start:end]
+    fn = _js_fn_with_helper(source, "  function aiImage(opts)")
 
     prelude = """
       const started = {jobId: "sys:ai-image:x", path: "/t/a.png", seed: 7,
@@ -4675,12 +4767,12 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
       const progress = [];
     """.replace("PREVIEW", preview).replace("TICKS", ticks).replace("RECORD", record)
     call = """
-      aiImage({prompt: "a fox", onProgress: (job) => progress.push(job)}).then(
+      aiImage(OPTS).then(
         (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
         (err) => console.log(JSON.stringify(
           {ok: false, message: err.message, type: err.type, progress, rows})),
       );
-    """
+    """.replace("OPTS", opts)
     # Node writes UTF-8 to stdout regardless of platform; without an explicit
     # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
     # (often cp1252), which mangles or crashes on the multibyte transcript
@@ -4752,6 +4844,130 @@ def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
     assert settled["ok"] is True, settled
     assert settled["progress"][0]["previewUrl"] is None
     assert settled["value"]["previewUrl"] is None
+
+
+def test_the_bridge_rejects_an_unrecognised_image_option_before_the_POST():
+    """The bug report itself, at the bridge layer: `image`/`strength` must not
+    reach `aiPost` at all — the caller learns about the drop instead of
+    getting a text-to-image picture back."""
+    settled = _run_ai_image(opts='{prompt: "a fox", image: "photo.png"}')
+    assert settled["ok"] is False
+    assert settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_names_BOTH_unknown_image_options():
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", image: "photo.png", strength: 0.6}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"] and "strength" in settled["message"]
+
+
+def test_onProgress_is_exempt_from_the_image_unknown_key_check():
+    """`onProgress` is a callback consumed above the whitelist loop, not a body
+    field — it must stay accepted or every existing caller that passes one
+    breaks."""
+    settled = _run_ai_image(opts='{prompt: "a fox", onProgress: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_envelope_BEFORE_the_prompt_field():
+    """Ordering, matching the server: a call with an unknown option AND no
+    `prompt` must learn about the option, not about the missing prompt —
+    "add a prompt" would "fix" the error and land the caller right back in
+    the silent-drop illusion this change exists to end."""
+    settled = _run_ai_image(opts='{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    # The field error's specific text never appears — asserting the bare
+    # word "prompt" would pass by accident, since it is in the accepted-set
+    # listing too.
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridge_names_unknown_image_options_SORTED():
+    """The server's `_reject_unknown` sorts; the bridge must match, or the
+    same two-key mistake reads in a different order depending on how the
+    caller happened to write the object literal — the two layers' messages
+    stop being comparable."""
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", strength: 0.6, image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image', 'strength'" in settled["message"]
+
+
+def _run_ai_transcribe_opts_only(opts):
+    return _run_ai_transcribe('Promise.resolve(JSON.stringify({text: "hi", segments: []}))',
+                              '{state: "done"}', opts=opts)
+
+
+def test_the_bridge_rejects_a_caller_supplied_unknown_transcribe_option():
+    settled = _run_ai_transcribe_opts_only('{path: "a.m4a", image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_refuses_a_caller_supplied_base_as_an_unknown_option():
+    """`base` is bridge-injected from the page's own `?path=` — a CALLER
+    passing it directly is passing an option that does not exist from the
+    page's point of view, even though the server accepts it once the bridge
+    adds it itself."""
+    settled = _run_ai_transcribe_opts_only('{path: "a.m4a", base: "/pages/other.html"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "base" in settled["message"]
+
+
+def test_onProgress_and_onSegment_are_exempt_from_the_transcribe_unknown_key_check():
+    settled = _run_ai_transcribe_opts_only(
+        '{path: "a.m4a", onProgress: () => {}, onSegment: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_transcribe_envelope_BEFORE_the_path_field():
+    """Same ordering fix as `aiImage`: an unknown option and a missing
+    `path` must report the option, not the missing field."""
+    settled = _run_ai_transcribe_opts_only('{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridges_accepted_image_keys_match_the_servers_constant():
+    """The drift guard: the bridge's whitelist and the server's accepted set
+    are the same fact written in two languages, which is exactly how they
+    come to disagree. Extract the JS array literal and compare it, sorted,
+    to the Python constant driving `_reject_unknown` on the server."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiImage(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const imageKeys = \[(.*?)\];', body)
+    assert match, "could not find aiImage's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._IMAGE_OPTIONS)
+
+
+def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
+    """Same drift guard for transcribe — compared against the CALLER-FACING
+    set, which must NOT include `base`: the server's set is wider because
+    the bridge injects `base` itself, and the two sets must not collapse into
+    one or a caller passing `base` stops being an error."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const transcribeKeys = \[(.*?)\];', body, re.S)
+    assert match, "could not find aiTranscribe's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._TRANSCRIBE_OPTIONS)
+    assert "base" not in ai_runtime._TRANSCRIBE_OPTIONS
+    assert "base" in ai_runtime._TRANSCRIBE_SERVER_OPTIONS
 
 
 @pytest.mark.parametrize("opts", [
@@ -4941,8 +5157,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiTranscribe(opts)")
-    fn = source[start:source.index("\n  }\n", start) + 4]
+    fn = _js_fn_with_helper(source, "  function aiTranscribe(opts)")
 
     prelude = """
       const started = {jobId: "sys:ai-transcribe:x", output: "/t/out.json",
@@ -5587,6 +5802,38 @@ def test_cancel_carries_the_guard_and_checks_the_capability(client):
     bad = client.post("/api/ai/cancel", json={"capability": "telepathy"},
                       headers={"X-Fused": "1"})
     assert bad.status_code == 400
+
+
+def test_unload_rejects_an_unrecognised_capability_like_cancel_does(client):
+    """The addendum: `unload` never validated `capability` — a typo went
+    straight to `supervisor.unload()`, which answers `{"stopped": false}` for
+    an unrecognised capability, indistinguishable from a correct request
+    against an idle machine. `cancel`, 45 lines below in the same file,
+    already refuses this; `unload` gets the same guard."""
+    bad = client.post("/api/ai/runtime/unload", json={"capability": "telepathy"},
+                      headers={"X-Fused": "1"})
+    assert bad.status_code == 400
+
+
+def test_unload_by_MODEL_ALONE_still_works_with_no_capability(client, fake_runner):
+    """The guard must stay compatible with the `model`-only form: `capability`
+    is validated only when it is not None."""
+    supervisor.load("org/bye", registry.TEXT_GENERATION)
+    _wait_ready("org/bye")
+    response = client.post("/api/ai/runtime/unload", json={"model": "org/bye"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
+
+
+def test_unload_by_a_REAL_capability_still_works(client, fake_runner):
+    supervisor.load("org/bye2", registry.TEXT_GENERATION)
+    _wait_ready("org/bye2")
+    response = client.post(
+        "/api/ai/runtime/unload", json={"capability": registry.TEXT_GENERATION},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
 
 
 def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypatch):
