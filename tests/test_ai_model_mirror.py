@@ -455,3 +455,267 @@ def test_these_tests_cannot_reach_the_network():
 
     with pytest.raises(AssertionError, match="tried to resolve"):
         socket.getaddrinfo("huggingface.co", 443)
+
+
+# -- a manifest for ONE FILE, which claims nothing about the repo (AI-5m) ---------
+#
+# A GGUF repo publishes dozens of quantizations of the same model
+# (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole) and `llama_text.download` wants
+# exactly one of them, so the per-repo manifest above cannot serve it: that
+# document has to assert `complete: true` for the WHOLE repo, and earning that
+# assertion would mean mirroring all of it to serve 2.6GB. Hence a second
+# object and a second reader — a manifest that lists one named file and makes
+# no completeness claim at all, which is safe precisely because nothing on this
+# path writes an AI-5k fetch record (`download_file` never has).
+
+FILE_NAME = "Model-Q4_K_M.gguf"
+
+
+def _file_manifest(**overrides):
+    """A per-file manifest the client accepts. Note: NO `complete` field."""
+    payload = {
+        "schema": 1,
+        "repo": "org/m",
+        "commit": COMMIT,
+        "files": [{"name": FILE_NAME, "etag": ETAG,
+                   "size": len(BLOB), "sha256": ETAG}],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _serve_file(payload, model_id="org/m", filename=FILE_NAME, **flags):
+    """A mirror answering the per-file manifest for one (repo, filename)."""
+    body = payload
+    if isinstance(payload, dict):
+        body = json.dumps(payload).encode()
+    org, _, name = model_id.partition("/")
+    routes = {f"/models/{org}/{name}/files/{filename}/manifest.json": body}
+    if not isinstance(payload, int):
+        routes[f"/models/{org}/{name}/{COMMIT}/{ETAG}"] = BLOB
+    _url, state = _start_server(b"", routes=routes, **flags)
+    return state
+
+
+def test_a_per_file_manifest_needs_no_completeness_claim(mirror, monkeypatch):
+    """The crux of the second reader: one named file asserts nothing about the
+    repo, so there is no completeness proof to demand.
+
+    The per-repo reader refuses a manifest without `complete: true` because it
+    is about to write a fetch record saying "this scope is whole on disk"
+    (AI-5k), and a list taken from the same document would make that record
+    self-certifying. `download_file` writes no such record — it never has — so
+    the worst a wrong per-file manifest can do is fetch the wrong bytes, which
+    the sha256 check catches, and there is nothing left on disk to poison a
+    later bring-up.
+    """
+    state = _serve_file(_file_manifest())
+    _point_at(monkeypatch, state)
+
+    manifest = mirror.file_manifest("org/m", FILE_NAME)
+
+    assert manifest is not None
+    assert manifest["commit"] == COMMIT
+    assert manifest["files"] == [{"name": FILE_NAME, "etag": ETAG,
+                                 "size": len(BLOB), "sha256": ETAG}]
+    # One request, at the per-file URL, and nothing else — the same "the
+    # manifest request IS the download signal" rule the per-repo path has.
+    assert [r["path"] for r in state["requests"]] == [
+        f"/models/org/m/files/{FILE_NAME}/manifest.json"]
+
+
+def test_the_per_repo_reader_still_demands_completeness(mirror, monkeypatch):
+    """Two readers, two claims. Adding the relaxed one must not relax the other:
+    a repo manifest without `complete: true` is still no mirror."""
+    payload = _manifest()
+    payload.pop("complete")
+    state = _serve(payload)
+    _point_at(monkeypatch, state)
+
+    assert mirror.manifest("org/m") is None
+
+
+def test_both_shapes_address_the_same_blob(mirror, monkeypatch):
+    """The dedupe claim, checked rather than asserted in a comment.
+
+    The per-file manifest lives at its own key but its blobs stay at
+    `<base>/models/<org>/<name>/<commit>/<etag>` — the per-repo path's blob
+    space — so a repo mirrored BOTH ways stores one copy of each blob and a
+    client that has one shape's URL has the other's.
+    """
+    state = _serve_file(_file_manifest())
+    _point_at(monkeypatch, state)
+    per_file = mirror.file_manifest("org/m", FILE_NAME)
+
+    meta = mirror.file_meta("org/m", per_file)("org/m", FILE_NAME, COMMIT)
+
+    assert meta["url"] == f"{state['origin']}/models/org/m/{COMMIT}/{ETAG}"
+    assert meta["url"] == mirror.blob_url("org/m", COMMIT, ETAG)
+    assert meta == {"url": meta["url"], "location": meta["url"], "etag": ETAG,
+                    "commit": COMMIT, "size": len(BLOB), "sha256": ETAG}
+
+
+def test_a_manifest_naming_a_different_file_is_refused(mirror, monkeypatch):
+    """The requested name is the whole identity of this object. A manifest that
+    answers with some other file would install those bytes under the name the
+    caller asked for."""
+    state = _serve_file(_file_manifest(
+        files=[{"name": "something-else.gguf", "etag": ETAG,
+                "size": len(BLOB), "sha256": ETAG}]))
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None
+
+
+def test_a_manifest_listing_more_than_one_file_is_refused(mirror, monkeypatch):
+    """EXACTLY one entry. A second one is either a repo manifest served at a
+    per-file key or a generator that does not mean what this reader reads, and
+    fetching the extra file is not what the caller asked for."""
+    entry = {"name": FILE_NAME, "etag": ETAG, "size": len(BLOB), "sha256": ETAG}
+    other = dict(entry, name="also.gguf")
+    state = _serve_file(_file_manifest(files=[entry, other]))
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None
+
+
+def test_a_completeness_claim_on_a_per_file_manifest_buys_nothing(mirror,
+                                                                 monkeypatch):
+    """`complete` is not read here, in either direction.
+
+    Present or absent, this document lists one file and the reader treats it as
+    one file — the field cannot promote a per-file manifest into a repo one,
+    because the only thing completeness gates is the fetch record and this path
+    writes none.
+    """
+    state = _serve_file(_file_manifest(complete=True))
+    _point_at(monkeypatch, state)
+
+    manifest = mirror.file_manifest("org/m", FILE_NAME)
+
+    assert manifest is not None
+    assert "complete" not in manifest
+    assert [entry["name"] for entry in manifest["files"]] == [FILE_NAME]
+
+
+@pytest.mark.parametrize("broken, why", [
+    ({"schema": 2}, "a schema version this build does not know"),
+    ({"schema": True}, "a boolean that would pass an `== 1` test"),
+    ({"repo": "other/m"}, "a manifest that names a different repo"),
+    ({"commit": "not-a-sha"}, "a commit that is not 40 hex characters"),
+    ({"commit": "A1B2C3D4" * 5}, "a commit in upper case, which names no folder"),
+    ({"files": []}, "no file at all where exactly one was promised"),
+    ({"files": "a-string"}, "a file list that is not a list"),
+    ({"files": [{"name": FILE_NAME, "etag": "../../etc/passwd",
+                 "size": 1, "sha256": ETAG}]},
+     "an etag that would climb out of `blobs/`"),
+    ({"files": [{"name": FILE_NAME, "etag": ETAG, "size": -1, "sha256": ETAG}]},
+     "a negative size"),
+    ({"files": [{"name": FILE_NAME, "etag": ETAG, "size": True,
+                 "sha256": ETAG}]},
+     "a boolean size, which is an int in Python and not one on the wire"),
+    ({"files": [{"name": FILE_NAME, "etag": ETAG, "size": 1,
+                 "sha256": "short"}]},
+     "a digest that is not 64 hex characters"),
+    ({"files": [{"name": FILE_NAME, "etag": ETAG, "size": 1}]},
+     "no digest at all — the mirror path's only proof of what it wrote"),
+    ({"files": [[FILE_NAME, ETAG]]}, "an entry that is not an object"),
+])
+def test_a_per_file_manifest_wrong_in_one_field_reads_as_no_mirror(mirror,
+                                                                  monkeypatch,
+                                                                  broken, why):
+    """Same trust boundary as the per-repo reader, same rejection vocabulary.
+    Relaxing the completeness claim relaxes nothing else."""
+    state = _serve_file(_file_manifest(**broken))
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None, why
+
+
+@pytest.mark.parametrize("bad", [
+    "", "..", ".", "a/b.gguf", "/abs.gguf", "sub\\file.gguf", "C:file.gguf",
+    "%2e%2e/x.gguf", "a?b.gguf", "a#b.gguf", "a b.gguf", ".hidden.gguf",
+    "x" * 300,
+])
+def test_a_filename_that_could_address_another_object_has_no_url(mirror,
+                                                                monkeypatch,
+                                                                bad):
+    """The filename is pasted into a URL PATH SEGMENT and then used as a
+    filesystem name, so it is validated before either.
+
+    A `/` addresses a different object, `..` climbs the key space, and `?`/`#`
+    truncate the path into a query or a fragment — `files/a?b.gguf/manifest.json`
+    requests `files/a` with the rest thrown away, which is a different object
+    answering for this one. Refused, with no request made at all.
+    """
+    state = _serve_file(_file_manifest())
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest_url("org/m", bad) == "", bad
+    assert mirror.file_manifest("org/m", bad) is None, bad
+    assert state["requests"] == [], bad
+
+
+def test_the_per_file_url_carries_the_base_prefix_and_no_double_slash(mirror,
+                                                                     monkeypatch):
+    """An operator points this at a bucket subpath or types a trailing slash."""
+    state = _serve_file(_file_manifest())
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"] + "/")
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
+
+    assert mirror.file_manifest_url("org/m", FILE_NAME) == (
+        f"{state['origin']}/models/org/m/files/{FILE_NAME}/manifest.json")
+    assert mirror.file_manifest("org/m", FILE_NAME) is not None
+
+
+def test_a_per_file_probe_needs_the_same_per_model_permission(mirror,
+                                                             monkeypatch):
+    """The privacy rule is the reader-independent half of this feature: the
+    probe itself is what would leak which models a user downloads, so a second
+    reader must not be a second way around the permission."""
+    state = _serve_file(_file_manifest())
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"])
+    monkeypatch.delenv("FUSED_MODEL_MIRROR_OK", raising=False)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None
+    assert mirror.file_manifest_url("org/m", FILE_NAME) != ""
+
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "other/m")
+    assert mirror.file_manifest("org/m", FILE_NAME) is None
+    assert state["requests"] == [], "an unpermitted repo was named to the mirror"
+
+
+@pytest.mark.parametrize("payload, why", [
+    (404, "a file nobody mirrored"),
+    (503, "a distribution having a bad day"),
+    (b"<html>not json</html>", "a body that is not JSON"),
+    (b"[]", "a JSON body that is not an object"),
+])
+def test_a_mirror_that_cannot_answer_a_per_file_probe_reads_as_no_mirror(
+        mirror, monkeypatch, payload, why):
+    state = _serve_file(payload)
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None, why
+
+
+def test_a_per_file_manifest_larger_than_the_cap_is_refused(mirror, monkeypatch):
+    """One file's worth of names cannot be a megabyte, and reading a response
+    into memory unbounded on the strength of a base URL is the one thing this
+    client must not do."""
+    padded = _file_manifest(pad="x" * (mirror.MAX_MANIFEST_BYTES + 10))
+    state = _serve_file(padded)
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None
+
+
+def test_a_per_file_response_that_falls_apart_reads_as_no_mirror(mirror,
+                                                                monkeypatch):
+    """`http.client.HTTPException` is neither an `OSError` nor a `ValueError`,
+    and a truncated chunked body raising out of here would FAIL a download the
+    Hub could have served."""
+    state = _serve_file(_file_manifest(), chunked=True, budget=40)
+    _point_at(monkeypatch, state)
+
+    assert mirror.file_manifest("org/m", FILE_NAME) is None

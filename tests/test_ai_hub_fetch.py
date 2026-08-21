@@ -2301,6 +2301,254 @@ def test_a_mirror_client_that_raises_at_all_cannot_fail_the_download(base,
     assert fell_back == ["org/m"]
 
 
+# -- ONE FILE off our own distribution, claiming nothing about the repo (AI-5m) --
+#
+# `download_snapshot` was the only decision point, and `llama_text.download`
+# does not go through it: it fetches ONE GGUF with `download_file`, because a
+# GGUF repo publishes dozens of quantizations (`unsloth/Qwen3.5-9B-GGUF` is
+# 147.81GB whole for a 2.6GB file). Since llama.cpp became the only local text
+# engine on Windows and Linux (D416) that left every suggested TEXT model on
+# those platforms off the mirror entirely. Hence a second branch, in
+# `download_file`, reading a manifest that lists one named file and makes no
+# completeness claim — and writing no fetch record, which is what makes dropping
+# that claim safe rather than convenient.
+
+FILE_NAME = "q4.gguf"
+FILE_MANIFEST_PATH = f"/models/org/m/files/{FILE_NAME}/manifest.json"
+
+
+def _file_manifest(payload, name=FILE_NAME, **overrides):
+    """A PER-FILE manifest: exactly one entry, and NO `complete` claim."""
+    entry = {"name": name, "etag": "beef" * 10, "size": len(payload),
+             "sha256": hashlib.sha256(payload).hexdigest()}
+    manifest = {"schema": 1, "repo": "org/m", "commit": MIRROR_COMMIT,
+                "files": [entry]}
+    manifest.update(overrides)
+    return manifest
+
+
+def _mirror_file_server(payload, manifest=None, manifest_status=None, blob=True,
+                        **flags):
+    """A mirror serving one per-file manifest and its blob.
+
+    Same shape as `_mirror_server` above — a status instead of the manifest for a
+    file nobody mirrored or a distribution having a bad day, `blob=False` for a
+    manifest promising bytes the mirror does not hold.
+    """
+    manifest = _file_manifest(payload) if manifest is None else manifest
+    body = manifest_status if manifest_status else json.dumps(manifest).encode()
+    routes = {FILE_MANIFEST_PATH: body}
+    if blob and manifest.get("files"):
+        etag = manifest["files"][0].get("etag", "")
+        routes[f"/models/org/m/{manifest.get('commit')}/{etag}"] = payload
+    _url, state = _start_server(b"", routes=routes, **flags)
+    return state
+
+
+def _no_cached_file(monkeypatch, **extra):
+    """hf's read-only cache lookup, answering "not cached".
+
+    `_cached_file` calls it on every `download_file`, and it is not a Hub
+    request — it resolves a ref and a blob off the disk and cannot download — so
+    a fatal wiring stubs it to a MISS rather than treating it as egress.
+    """
+    _fake_hub(monkeypatch, try_to_load_from_cache=lambda *a, **k: None, **extra)
+
+
+def _hub_is_fatal_for_a_file(base, monkeypatch):
+    """Everything `download_file` could ask huggingface.co, made fatal.
+
+    Fatal rather than counted, for the reason the snapshot arm's twin gives: "no
+    request to huggingface.co" is the property the feature exists for, and a path
+    that listed the repo anyway would still produce the right file.
+    """
+    def boom(*args, **kwargs):
+        raise AssertionError("the Hub was consulted for a mirrored file")
+
+    monkeypatch.setattr(base, "_repo_files", boom)
+    monkeypatch.setattr(base, "_hub_file_meta", boom)
+    _no_cached_file(monkeypatch, hf_hub_download=boom, snapshot_download=boom,
+                    HfApi=boom)
+
+
+def _hub_answers_for_a_file(base, monkeypatch, payload):
+    """The Hub's single-file path, wired to succeed — what every failure lands on."""
+    fell_back = []
+
+    def hf_hub_download(repo_id=None, filename=None, **kwargs):
+        fell_back.append((repo_id, filename))
+        return "/cache/blobs/from-the-hub"
+
+    # No sha, so `download_file` takes hf's own downloader rather than the
+    # segmented one — the arm a mirror failure has to reach.
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda repo, include=None, allow=None, ignore=None,
+                        revision="main": (None, [(include, len(payload))]))
+    _no_cached_file(monkeypatch, hf_hub_download=hf_hub_download,
+                    HfApi=lambda: types.SimpleNamespace(
+                        model_info=lambda *a, **k: types.SimpleNamespace(
+                            siblings=[])))
+    return fell_back
+
+
+def test_a_mirrored_gguf_is_fetched_without_the_hub_being_listed(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """The feature for a one-file download: no request to the Hub, and an hf
+    cache entry.
+
+    The branch sits AFTER the cached-file fast path and BEFORE the listing,
+    because a listing before it would defeat the whole point — the manifest
+    request is meant to be the only metadata call a mirrored download makes.
+    """
+    state = _mirror_file_server(payload)
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal_for_a_file(base, monkeypatch)
+
+    path = base.download_file("org/m", FILE_NAME)
+
+    assert os.path.basename(path) == FILE_NAME
+    assert open(path, "rb").read() == payload
+    # hf's own layout, byte for byte: the blob under its etag and a snapshot
+    # entry pointing at it, which is what every later load reads.
+    assert os.listdir(os.path.join(folder, "blobs")) == ["beef" * 10]
+    assert os.path.exists(os.path.join(folder, "snapshots", MIRROR_COMMIT,
+                                       FILE_NAME))
+    assert state["requests"][0]["path"] == FILE_MANIFEST_PATH
+    assert all(r["path"] in (FILE_MANIFEST_PATH,
+                             f"/models/org/m/{MIRROR_COMMIT}/{'beef' * 10}")
+               for r in state["requests"])
+
+
+def test_a_per_file_mirror_hit_writes_no_fetch_record(base, monkeypatch, tmp_path,
+                                                      payload):
+    """The reason the per-file manifest needs no completeness assertion.
+
+    `download_file` has never written an AI-5k record and this branch does not
+    start: one file is not a scope anybody can later be told is complete. So a
+    manifest that is wrong about the repo cannot poison a later bring-up — there
+    is no record for it to poison — and the assertion the per-repo reader
+    demands would buy nothing here but 147.81GB of mirrored bytes.
+    """
+    state = _mirror_file_server(payload)
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    _hub_is_fatal_for_a_file(base, monkeypatch)
+
+    base.download_file("org/m", FILE_NAME)
+
+    assert base._has_fetch_record(folder) is False
+    assert [name for name in os.listdir(folder) if "fused-fetch" in name] == []
+
+
+@pytest.mark.parametrize("kwargs, why", [
+    ({"manifest_status": 404}, "a file nobody mirrored"),
+    ({"manifest_status": 503}, "a distribution having a bad day"),
+    ({"blob": False}, "a manifest promising bytes the mirror does not hold"),
+    ({"budget": 60_000}, "a mirror that drops mid-download"),
+])
+def test_a_per_file_mirror_that_cannot_answer_lands_on_the_hub_path(base,
+                                                                   monkeypatch,
+                                                                   tmp_path,
+                                                                   payload,
+                                                                   kwargs, why):
+    """The property the whole feature is allowed to exist on, one file wide: a
+    mirror that is down costs a slower download and never a failed one."""
+    state = _mirror_file_server(payload, **kwargs)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers_for_a_file(base, monkeypatch, payload)
+
+    assert base.download_file("org/m", FILE_NAME) == "/cache/blobs/from-the-hub", why
+    assert fell_back == [("org/m", FILE_NAME)], why
+
+
+def test_a_per_file_mirror_serving_wrong_bytes_leaves_nothing_behind(base,
+                                                                    monkeypatch,
+                                                                    tmp_path,
+                                                                    payload,
+                                                                    capsys):
+    """The sha256 is what makes a claim-free manifest safe: the worst a wrong one
+    can do is serve the wrong bytes, and those never reach the cache."""
+    wrong = bytearray(payload)
+    wrong[0] ^= 0xFF  # one byte, so nothing but the hash can notice
+    state = _mirror_file_server(bytes(wrong),
+                               manifest=_file_manifest(payload))
+    folder = _mirror_wire(base, monkeypatch, tmp_path, state)
+    fell_back = _hub_answers_for_a_file(base, monkeypatch, payload)
+
+    assert base.download_file("org/m", FILE_NAME) == "/cache/blobs/from-the-hub"
+    assert fell_back == [("org/m", FILE_NAME)]
+    assert os.listdir(os.path.join(folder, "blobs")) == [], "a bad blob was kept"
+    assert "the mirror served" in capsys.readouterr().err
+
+
+def test_an_unpermitted_file_is_never_named_to_the_mirror(base, monkeypatch,
+                                                          tmp_path, payload):
+    """A file out of a repo the user found themselves. The probe itself is what
+    would tell us they downloaded it, so it is never made."""
+    state = _mirror_file_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state, permitted=False)
+    fell_back = _hub_answers_for_a_file(base, monkeypatch, payload)
+
+    assert base.download_file("org/m", FILE_NAME) == "/cache/blobs/from-the-hub"
+    assert fell_back == [("org/m", FILE_NAME)]
+    assert state["requests"] == []
+
+
+def test_no_mirror_configured_leaves_a_one_file_download_where_it_was(base,
+                                                                     monkeypatch,
+                                                                     tmp_path,
+                                                                     payload):
+    """The shipped default: no base URL, no mirror code in the path at all."""
+    state = _mirror_file_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    monkeypatch.delenv("FUSED_MODEL_MIRROR")
+    fell_back = _hub_answers_for_a_file(base, monkeypatch, payload)
+
+    assert base.download_file("org/m", FILE_NAME) == "/cache/blobs/from-the-hub"
+    assert fell_back == [("org/m", FILE_NAME)]
+    assert state["requests"] == []
+
+
+def test_a_cached_file_is_never_re_fetched_off_the_mirror(base, monkeypatch,
+                                                          tmp_path, payload):
+    """The fast path stays first. A file already on disk means no manifest
+    request, which also keeps the access log honest: a manifest request means a
+    download really started."""
+    state = _mirror_file_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    already = tmp_path / "blobs" / "already-here"
+    already.parent.mkdir(parents=True, exist_ok=True)
+    already.write_bytes(payload)
+    monkeypatch.setattr(base, "_cached_file", lambda repo, name: str(already))
+
+    assert base.download_file("org/m", FILE_NAME) == str(already)
+    assert state["requests"] == []
+
+
+def test_a_cancel_during_a_per_file_mirror_fetch_is_never_swallowed(base,
+                                                                   monkeypatch,
+                                                                   tmp_path,
+                                                                   payload):
+    """The one failure that must not be answered by starting the download
+    somewhere else (AI-5e)."""
+    state = _mirror_file_server(payload)
+    _mirror_wire(base, monkeypatch, tmp_path, state)
+    started = []
+
+    def cancelled(*args, **kwargs):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "_segmented_fetch", cancelled)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **k: started.append(1) or (None, []))
+    _no_cached_file(monkeypatch,
+                    hf_hub_download=lambda **k: started.append(1) or "/never")
+
+    with pytest.raises(base.Cancelled):
+        base.download_file("org/m", FILE_NAME)
+
+    assert started == [], "pressing Stop started a download instead"
+
+
 # -- an empty file is a real file (review finding 6) ------------------------------
 
 

@@ -15,6 +15,24 @@ one immutable blob per distinct etag under the commit:
     <base>/models/<org>/<name>/manifest.json
     <base>/models/<org>/<name>/<commit>/<etag>
 
+**Plus a third shape for ONE named file, which is not a relaxed manifest but a
+different claim** (AI-5m):
+
+    <base>/models/<org>/<name>/files/<filename>/manifest.json
+
+`llama_text.download` fetches a single GGUF out of a repo that publishes dozens
+of quantizations — `unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB
+file — and the manifest above cannot serve that, because it has to ASSERT it
+lists the whole repo at the commit (`complete: true`, see `_validated`) and
+earning that assertion would mean mirroring all of it. So there is a second
+reader, `file_manifest`, with its own document and its own claim: exactly one
+named file, and no completeness claim at all. What makes dropping the claim safe
+rather than convenient is what the CALLER does next — `worker_base.download_file`
+writes no AI-5k fetch record and never has, so nothing on this path can record a
+partial answer as whole, which is the only harm the assertion exists to prevent.
+The blobs stay in the per-repo blob space above, so a repo mirrored both ways
+stores one copy of each blob.
+
 That is deliberately NOT `HF_ENDPOINT`, which is a protocol switch: the mirror
 would then have to answer `/api/models/…`, produce `x-linked-etag`,
 `x-linked-size` and `x-repo-commit` on a resolve, and hold up its end of Xet's
@@ -88,6 +106,16 @@ _HEX = re.compile(r"\A[0-9a-f]+\Z")
 #: `org/name`, with nothing in either half that could address a different
 #: object once it is pasted into a URL path.
 _REPO_ID = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
+#: ONE path segment, for the per-file manifest key. Deliberately narrower than
+#: `_safe_name`, which validates a repo-RELATIVE path and therefore allows `/`:
+#: here the name is a single URL path segment, so a `/` would address a
+#: different object outright. Anchored on an alphanumeric first character so
+#: `.`, `..` and a dotfile cannot be spelled at all, and the charset excludes
+#: `?`, `#`, `%` and a space — each of which would let the segment truncate or
+#: rewrite the rest of the path (`files/a?b.gguf/manifest.json` requests
+#: `files/a`). Every curated GGUF filename is inside it.
+_FILENAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+MAX_FILENAME_CHARS = 256
 
 
 def base_url():
@@ -126,6 +154,23 @@ def manifest_url(model_id):
     return f"{base}/models/{model_id}/manifest.json"
 
 
+def file_manifest_url(model_id, filename):
+    """Where ONE file's manifest lives, or `""` if it cannot be addressed.
+
+    `filename` becomes a URL path SEGMENT here and a filesystem name later, so
+    it is validated before either — a `/` addresses a different object, `..`
+    climbs the key space, and `?` or `#` truncate the rest of the path so that
+    some other object answers for this one. `""` rather than an exception,
+    because every way of not having a mirror reads the same to the caller.
+    """
+    base = base_url()
+    if not base or not _REPO_ID.match(model_id or ""):
+        return ""
+    if not _safe_filename(filename):
+        return ""
+    return f"{base}/models/{model_id}/files/{filename}/manifest.json"
+
+
 def blob_url(model_id, commit, etag):
     """Where one blob lives. Commit-pinned, and therefore immutable.
 
@@ -150,26 +195,41 @@ def manifest(model_id):
     """
     if not allowed(model_id):
         return None
-    url = manifest_url(model_id)
-    try:
-        request = urllib.request.Request(
-            url, headers={"Accept": "application/json",
-                          # A gzipped body's length is not the body's length,
-                          # and the cap below is a cap on what we read.
-                          "Accept-Encoding": "identity"})
-        with urllib.request.urlopen(request, timeout=MANIFEST_TIMEOUT_S) as response:
-            # One byte past the cap, so a body that is exactly at the limit is
-            # still distinguishable from one that ran over it.
-            raw = response.read(MAX_MANIFEST_BYTES + 1)
-    except _UNREACHABLE:
-        return None
-    if len(raw) > MAX_MANIFEST_BYTES:
-        return None
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    payload = _fetch_json(manifest_url(model_id))
+    if payload is None:
         return None
     return _validated(payload, model_id)
+
+
+def file_manifest(model_id, filename):
+    """The validated manifest for ONE file of `model_id`, or None.
+
+    A separate reader from `manifest` above rather than a flag on it, because it
+    reads a document that makes a DIFFERENT claim: this one lists exactly one
+    named file and asserts nothing about the repo, where that one asserts it
+    lists the repo whole. Two claims, two readers, so relaxing this one cannot
+    relax that one.
+
+    **And this one has no completeness assertion to make.** `_validated`
+    requires `complete: true` not for tidiness but because of what its caller
+    does next: `_mirror_snapshot` writes an AI-5k fetch record from the
+    manifest's own file list, so an incomplete manifest would record a subset as
+    whole and every later bring-up would be served a snapshot that cannot load,
+    with nothing left that would refetch it. `download_file` — the only caller
+    of this reader — writes NO fetch record, and never has. So there is no
+    record to be self-certifying, and the worst a wrong manifest here can do is
+    serve the wrong bytes for one file, which the sha256 in `file_meta` catches
+    before anything is published into the cache. Requiring completeness anyway
+    would not buy safety; it would only mean mirroring 147.81GB to serve 2.6GB.
+
+    None for every way of not having one, exactly as above.
+    """
+    if not allowed(model_id) or not _safe_filename(filename):
+        return None
+    payload = _fetch_json(file_manifest_url(model_id, filename))
+    if payload is None:
+        return None
+    return _validated_file(payload, model_id, filename)
 
 
 def file_meta(model_id, man):
@@ -202,6 +262,35 @@ def file_meta(model_id, man):
 # ------------------------------------------------------------------ validation
 
 
+def _fetch_json(url):
+    """One manifest request, or None. The whole network half of this module.
+
+    Shared by both readers so that the cap, the timeout, the identity encoding
+    and the "every failure is None" rule are stated once — a second copy is how
+    one reader comes to be missing a guard the other has.
+    """
+    if not url:
+        return None
+    try:
+        request = urllib.request.Request(
+            url, headers={"Accept": "application/json",
+                          # A gzipped body's length is not the body's length,
+                          # and the cap below is a cap on what we read.
+                          "Accept-Encoding": "identity"})
+        with urllib.request.urlopen(request, timeout=MANIFEST_TIMEOUT_S) as response:
+            # One byte past the cap, so a body that is exactly at the limit is
+            # still distinguishable from one that ran over it.
+            raw = response.read(MAX_MANIFEST_BYTES + 1)
+    except _UNREACHABLE:
+        return None
+    if len(raw) > MAX_MANIFEST_BYTES:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
 def _env(name):
     # Read at CALL time rather than captured at import: a worker's permission
     # arrives in its environment, and one process serves one download.
@@ -224,6 +313,17 @@ def _safe_name(name):
     return all(part and part not in (".", "..") for part in parts)
 
 
+def _safe_filename(filename):
+    """Whether `filename` can be ONE segment of the per-file manifest's key.
+
+    Stricter than `_safe_name` on purpose (see `_FILENAME`): that one validates
+    a repo-relative path, which may contain `/`, and this one is a single URL
+    path segment where a `/` addresses a different object entirely.
+    """
+    return (isinstance(filename, str) and 0 < len(filename) <= MAX_FILENAME_CHARS
+            and bool(_FILENAME.match(filename)))
+
+
 def _safe_etag(etag):
     """Whether `etag` can be a blob FILENAME.
 
@@ -244,11 +344,7 @@ def _validated(payload, model_id):
     """
     if not isinstance(payload, dict):
         return None
-    schema = payload.get("schema")
-    if not isinstance(schema, int) or isinstance(schema, bool) or schema != SCHEMA:
-        # `isinstance(True, int)` is True and `True == 1`, so a boolean schema
-        # would otherwise pass as version 1. A manifest this build does not
-        # understand reads as no mirror, which is what lets the shape change.
+    if not _known_schema(payload):
         return None
     if payload.get("repo") != model_id:
         # A manifest that names a different repo is either a misconfigured
@@ -286,24 +382,79 @@ def _validated(payload, model_id):
         return None
     validated, seen = [], set()
     for entry in entries:
-        if not isinstance(entry, dict):
+        checked = _validated_entry(entry)
+        if checked is None or checked["name"] in seen:
             return None
-        name, etag = entry.get("name"), entry.get("etag")
-        size, digest = entry.get("size"), entry.get("sha256")
-        if not _safe_name(name) or name in seen:
-            return None
-        if not _safe_etag(etag):
-            return None
-        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
-            # Zero is allowed: an empty file is legal on the Hub, hf caches it
-            # like any other, and the fetcher already handles a zero-length
-            # segment (`_chunks(0)` yields one piece that is complete on
-            # arrival). Rejecting the MANIFEST over it would take a whole model
-            # off the mirror because of a file with nothing in it.
-            return None
-        if not isinstance(digest, str) or not _SHA256.match(digest):
-            return None
-        seen.add(name)
-        validated.append({"name": name, "etag": etag, "size": size,
-                          "sha256": digest})
+        seen.add(checked["name"])
+        validated.append(checked)
     return {"commit": commit, "files": validated}
+
+
+def _validated_file(payload, model_id, filename):
+    """The per-file manifest as this build uses it, or None (AI-5m).
+
+    Same shape out as `_validated` — `{"commit", "files"}` — so `file_meta` and
+    `_segmented_fetch` cannot tell the two documents apart, and the same field
+    vocabulary going in. Two differences, both deliberate:
+
+    * EXACTLY one entry, and its `name` must be the file that was asked for. The
+      requested name is this object's whole identity: a manifest answering with
+      some other file would install those bytes under the name the caller wants,
+      and a second entry means either a repo manifest served at a per-file key
+      or a generator this reader does not understand.
+    * `complete` is not read, in either direction. See `file_manifest` for why
+      the assertion is unnecessary here rather than merely inconvenient: nothing
+      on this path writes a fetch record, so there is no record for a partial
+      answer to certify.
+    """
+    if not isinstance(payload, dict):
+        return None
+    if not _known_schema(payload) or payload.get("repo") != model_id:
+        return None
+    commit = payload.get("commit")
+    if not isinstance(commit, str) or not _COMMIT.match(commit):
+        return None
+    entries = payload.get("files")
+    if not isinstance(entries, list) or len(entries) != 1:
+        return None
+    entry = _validated_entry(entries[0])
+    if entry is None or entry["name"] != filename:
+        return None
+    return {"commit": commit, "files": [entry]}
+
+
+def _known_schema(payload):
+    """Whether this build understands the manifest's shape.
+
+    `isinstance(True, int)` is True and `True == 1`, so a boolean schema would
+    otherwise pass as version 1. A manifest this build does not understand reads
+    as no mirror, which is what lets the shape change.
+    """
+    schema = payload.get("schema")
+    return (isinstance(schema, int) and not isinstance(schema, bool)
+            and schema == SCHEMA)
+
+
+def _validated_entry(entry):
+    """One file entry, normalised, or None. Shared by both readers.
+
+    Shared so the two documents cannot come to disagree about what a valid entry
+    IS — the etag names a blob, the name is written into a snapshot, and the
+    digest is the mirror path's only proof of what it wrote.
+    """
+    if not isinstance(entry, dict):
+        return None
+    name, etag = entry.get("name"), entry.get("etag")
+    size, digest = entry.get("size"), entry.get("sha256")
+    if not _safe_name(name) or not _safe_etag(etag):
+        return None
+    if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+        # Zero is allowed: an empty file is legal on the Hub, hf caches it like
+        # any other, and the fetcher already handles a zero-length segment
+        # (`_chunks(0)` yields one piece that is complete on arrival). Rejecting
+        # the MANIFEST over it would take a whole model off the mirror because
+        # of a file with nothing in it.
+        return None
+    if not isinstance(digest, str) or not _SHA256.match(digest):
+        return None
+    return {"name": name, "etag": etag, "size": size, "sha256": digest}

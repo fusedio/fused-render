@@ -1899,6 +1899,59 @@ def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
     return fetched
 
 
+def _mirror_file(repo_id, filename, detail=None, job=None, row=None):
+    """ONE file off our own mirror, or None to say "take the Hub path" (AI-5m).
+
+    The `_mirror_snapshot` above cannot serve this. A GGUF repo publishes dozens
+    of quantizations of the same model — `unsloth/Qwen3.5-9B-GGUF` is 147.81GB
+    whole — and `llama_text.download` wants one 2.6GB file out of it, while a
+    per-repo manifest is only accepted when it ASSERTS it lists the whole repo at
+    that commit. Earning that assertion would mean mirroring all 147.81GB to
+    serve the one file, and weakening it would break AI-5k. So this reads a
+    different object: `mirror.file_manifest`, one named file, no completeness
+    claim (see that function for why the claim is unnecessary here rather than
+    merely inconvenient).
+
+    **No `_record_fetch`, and that is load-bearing rather than an omission.**
+    `download_file` has never written one — one file is not a scope a later
+    bring-up can be told is complete — so there is no record for a wrong manifest
+    to make self-certifying, which is precisely what lets the manifest be
+    claim-free. Adding a record here would take that argument away.
+
+    Same degradation rules as the snapshot branch, for the same reason: the whole
+    body including the manifest call sits inside one guard, every failure returns
+    None after saying which path gave up, and only `Cancelled` escapes (AI-5e).
+    """
+    mirror = _mirror_module()
+    if mirror is None:
+        return None
+    try:
+        if not mirror.allowed(repo_id):
+            return None
+        manifest = mirror.file_manifest(repo_id, filename)
+        if manifest is None:
+            return None
+        entry = manifest["files"][0]
+        return fetch_with_progress(
+            repo_id,
+            lambda: os.path.join(
+                _segmented_fetch(repo_id, [filename], manifest["commit"],
+                                 meta=mirror.file_meta(repo_id, manifest),
+                                 # Anonymous, always, for `_mirror_snapshot`'s
+                                 # reason: the blob URL is the metadata URL
+                                 # here, so `_cdn_token` would otherwise hand a
+                                 # user's Hub token to whatever host
+                                 # `FUSED_MODEL_MIRROR` names.
+                                 token=None),
+                filename),
+            total=entry["size"], detail=detail, job=job, row=row)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to the Hub
+        _fallback(repo_id, error, source="the model mirror")
+        return None
+
+
 class _HubByteTicker:
     """A `tqdm_class` for hf's OWN downloaders, and the counter it writes into.
 
@@ -2763,6 +2816,18 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     if cached:
         return cached
 
+    detail = detail or f"Fetching {filename}…"
+
+    # Our own mirror, for a suggested model, BEFORE the Hub is consulted at all —
+    # the point of the feature is a download that involves huggingface.co
+    # nowhere, so the listing below would defeat it. This is the branch that
+    # keeps llama.cpp's GGUFs on the mirror: since D416 it is the only local text
+    # engine on Windows and Linux, and it fetches one file rather than a snapshot,
+    # so `_mirror_snapshot` never sees a suggested text model on those platforms.
+    mirrored = _mirror_file(repo_id, filename, detail=detail, job=job, row=row)
+    if mirrored:
+        return mirrored
+
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
     # whole snapshot fetched that way, one file wide.
@@ -2772,7 +2837,6 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(repo_id, error)
-    detail = detail or f"Fetching {filename}…"
 
     def hub():
         from huggingface_hub import hf_hub_download
