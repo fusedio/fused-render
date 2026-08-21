@@ -2434,8 +2434,12 @@ def test_a_restored_turn_renders_its_picture_from_the_path_in_the_wire(html):
     assert "shotReceipt(sum, " in restore, "the same row as a live send, not a copy"
     assert "for (const shot of shots)" in restore, \
         "every picture the turn carried, not just the first"
-    # wired into the restore loop, on the turn addUser just appended
-    load = _between(html, "      if (t.role === \"user\") {", "      } else addAssistantTurn")
+    # wired into the restore loop, on the turn addUser just appended. The end
+    # marker is that loop's `else`, and it is a BLOCK since 2026-08-21 — the
+    # assistant arm grew the stopped-turn note beside its render — so it is
+    # matched as an opening brace rather than as the old one-line
+    # `} else addAssistantTurn`.
+    load = _between(html, "      if (t.role === \"user\") {", "      } else {")
     assert "addUser(stripBlocks(t.text), t.uuid);" in load
     assert "shotRestoreReceipt(turns[turns.length - 1], t.text);" in load
     # a pruned temp file says so instead of showing a broken-image glyph
