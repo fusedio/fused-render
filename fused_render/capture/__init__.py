@@ -416,9 +416,13 @@ def _tick(session: _Session) -> bool:
     would log each failure and change nothing. Below it, the same failure costs
     a message.
 
-    The cost of the order is one tie: a recording that dies in the same tick it
-    reaches its cap ends as "done" rather than "error". The file was written up
-    to the cap either way, so the row is the only difference.
+    The cost of the order is two ties, both inside one tick and both falling
+    the safe way. A recording that DIES in the tick it reaches its cap ends as
+    "done" rather than "error" — the file was written up to the cap either way,
+    so the row is the only difference. A ✕ pressed in that same tick is missed
+    and the file is KEPT rather than discarded, which is the direction to miss
+    in: the user can delete a recording they have, and cannot recover one this
+    threw away.
     """
     elapsed = time.time() - session.started_at
     if elapsed >= session.max_seconds:
