@@ -6,8 +6,9 @@ what makes this folder its own environment, and the runner itself is
 `runners/llama_text.py` — the SAME module `llamacpp_text/worker.py` imports,
 reused rather than forked. Which wheel a user installed is a fact about the
 hardware they picked on the Engines tab and never about how a token loop
-runs, the identical argument `transformers_text_cuda/worker.py`'s docstring
-makes for its own three-folder split.
+runs — the argument the removed `transformers_text_cuda/worker.py` made for
+its own three-folder split, and the reason both these shells stayed five
+lines when one of them gained a GPU.
 
 **Named `llama_text`, not `llamacpp_text`, for the reason
 `llamacpp_text/worker.py`'s own docstring states** — a shared module with the

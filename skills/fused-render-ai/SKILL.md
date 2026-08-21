@@ -16,7 +16,7 @@ description: Use when a fused-render page needs an AI model — calling fused.ai
 
 That rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
 
-**Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to Transformers. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
+**Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to llama.cpp. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
 
 Both destinations are **local-only** — there is no hosted path — so an exported page can call neither. See "Surviving Export".
 
@@ -373,12 +373,12 @@ Every ASR option `fused.ai.transcribe` takes — `task`, `language`, `initialPro
 
 ## What Actually Runs Locally Today
 
-Twelve runners, three capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
+Nine runners, three capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
-| `text-generation` | MLX, then Transformers (CPU), then Transformers (CUDA), then Transformers (ROCm), then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere**, from the first four — MLX on Apple Silicon; the **CPU** torch build everywhere else, and as the Apple Silicon fallback — it answers slowly but it answers. CUDA/ROCm are the same runner on a different wheel: opt-in, offered only where the app sees a usable NVIDIA or AMD GPU. **The two llama.cpp rows are never reached by `auto`, on any platform** — the maintainer's own wheel index has shipped corrupt macOS wheels on most sampled releases, so this pin stays opt-in, chosen from the Engines tab. Five curated ids are the GGUF's own filename; any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. Vulkan needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
-| `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are the same opt-in, hardware-gated arrangement as text generation. |
+| `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. The three Transformers rows that used to sit between them were withdrawn: llama.cpp reads a quantized GGUF of the same current-generation Qwen several times quicker, at roughly a third of the download and a third of the memory, so **local text ids are GGUF now** — the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
+| `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are opt-in and hardware-gated: offered only where the app sees a usable NVIDIA or AMD GPU, greyed out with the reason otherwise. |
 | `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
 
 Those three strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
@@ -445,6 +445,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Reading progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads. Take the id from `catalog()`.
+- **Loading a plain safetensors text model such as `Qwen/Qwen3.5-9B`** → since the Transformers engines were withdrawn, only MLX reads safetensors, so this is loadable on Apple Silicon and nowhere else. Off a Mac take the GGUF id from `catalog()` — the same model, a quarter of the download.
 
 **Export**
 

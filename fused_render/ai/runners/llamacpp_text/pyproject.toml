@@ -1,5 +1,5 @@
 # The llama.cpp / GGUF text runner's environment — OPT-IN, CPU-only (SPEC §40,
-# AI-2a, AI-11, D406).
+# AI-2a, AI-11, D411).
 #
 # **Why this folder exists at all when AI-11 refused llama.cpp outright.**
 # `llama-cpp-python` publishes an sdist and NO wheels on PyPI, which is what
@@ -10,10 +10,11 @@
 # than assumed: it publishes complete, current `py3-none` wheels — a prebuilt
 # shared library behind ctypes, no compiler involved — so the NEW FACT is
 # "PyPI is still sdist-only, but a maintainer index is not". `explicit = true`
-# below is the same confinement `transformers_text/pyproject.toml` uses for
-# `download.pytorch.org/whl/cpu`: without it this index becomes a candidate for
-# every requirement in the graph, and with it the override reaches exactly
-# `llama-cpp-python` and nothing else.
+# below is the same confinement the removed `transformers_text/pyproject.toml`
+# used for `download.pytorch.org/whl/cpu` (D416) and that
+# `llamacpp_text_vulkan/pyproject.toml` beside it still uses: without it this
+# index becomes a candidate for every requirement in the graph, and with it the
+# override reaches exactly `llama-cpp-python` and nothing else.
 #
 # **The RESIDUAL RISK that does not go away, and it is worse than "a second
 # host to trust".** A full sweep of every macOS arm64 wheel this index has ever

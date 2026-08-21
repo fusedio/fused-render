@@ -1,5 +1,5 @@
 # The llama.cpp / GGUF text runner's environment — the VULKAN variant, GPU
-# acceleration on NVIDIA and AMD (SPEC §40, AI-11, D406).
+# acceleration on NVIDIA and AMD (SPEC §40, AI-11, D411).
 #
 # Identical to `llamacpp_text/pyproject.toml` except for the one thing a
 # hardware variant is allowed to change: which of the maintainer's indexes the
@@ -18,8 +18,9 @@
 # maintainer's index publishes no ROCm/HIP build at all (checked directly:
 # `rocm`, `rocm6.1` through `rocm7.1`, `hip`, and `sycl` all 404 under this
 # maintainer's GitHub Pages index). This is therefore not a third choice
-# alongside a CUDA and a ROCm variant the way the transformers rows are split
-# — it is the ONLY accelerated path this backend has for either vendor.
+# alongside a CUDA and a ROCm variant the way the diffusers rows are split (and
+# the removed transformers rows were, D416) — it is the ONLY accelerated path
+# this backend has for either vendor.
 #
 # **The index publishes exactly two platform tags for `0.3.29`, checked
 # directly against the listing rather than assumed:**
@@ -29,7 +30,7 @@
 # registry's `_vulkan` gate (`registry.py`) enforces exactly this tag set, not
 # the wider one `_llamacpp_platform` checks for its own CPU-index row.
 #
-# **THIS PIN IS INTEGRITY-AUDITED, same rule as the CPU index (D406), same
+# **THIS PIN IS INTEGRITY-AUDITED, same rule as the CPU index (D411), same
 # method, independently re-run for this index's own two wheels.** Both
 # platform tags this runner ships were downloaded from the exact GitHub
 # release asset this index redirects to

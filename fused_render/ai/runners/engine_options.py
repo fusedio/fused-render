@@ -62,9 +62,10 @@ TRANSCRIBE = "transcribe"
 #: tab, and one they can unmake there.
 #:
 #: **Keyed by CODE, so a HARDWARE VARIANT is a separate key.** The per-hardware
-#: torch rows (`transformers-text-cuda`, `diffusers-image-rocm`, …) need no entry
-#: and have none: they answer exactly what their CPU sibling answers, which for
-#: the torch runners is every option here, and the CPU rows are absent too. But
+#: rows (`diffusers-image-rocm`, `llamacpp-text-vulkan`, …) need no entry and
+#: have none: they answer exactly what their unaccelerated sibling answers,
+#: which for both of those families is every option here, and the sibling rows
+#: are absent too. But
 #: the day a runner that DOES refuse something gains a CUDA or ROCm variant, the
 #: variant needs its own entry — an unknown code refuses nothing (see
 #: `unsupported_or_raise`), so the failure would be an accepted-and-ignored

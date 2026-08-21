@@ -5570,11 +5570,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   declaring folder gets. No second install mechanism exists for AI. **One library
   may occupy SEVERAL folders, one per hardware build of it, and then the shared
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
-  it** (D381). The torch backends are three folders each — `transformers_text`,
-  `transformers_text_cuda`, `transformers_text_rocm`, and the same trio for
-  `diffusers_image` — whose manifests are identical except for the index `torch`
-  is resolved from, and whose `worker.py` is a `sys.path` insert and a call into
-  `runners/torch_text.py` or `runners/torch_image.py`. Both halves of that are
+  it** (D381). Diffusers is three folders — `diffusers_image`,
+  `diffusers_image_cuda`, `diffusers_image_rocm` — and llama.cpp is two
+  (`llamacpp_text`, `llamacpp_text_vulkan`), whose manifests are identical except
+  for the index the accelerated distribution is resolved from, and whose
+  `worker.py` is a `sys.path` insert and a call into `runners/torch_image.py` or
+  `runners/llama_text.py`. (D416 removed a third such family — `transformers_text`
+  and its `_cuda`/`_rocm` siblings over `runners/torch_text.py`, which is where
+  this rule was first written. The rule is unchanged; only one of its instances
+  is gone.) Both halves of that are
   forced rather than chosen. **The folder split is forced by PY-16**: a venv is
   keyed on the folder, so two rows sharing one folder share one environment and
   could not hold two different torch builds; and `_env_install_worker` runs a
@@ -5603,7 +5607,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   built on a user's laptop the first time they press Download, and compiling
   from source there is minutes of their battery for something a release already
   answers. Held by a test over every runner's declaration.
-  **Amended (D406): the rule is WHEELS, not PyPI.** AI-11's original refusal of
+  **Amended (D411): the rule is WHEELS, not PyPI.** AI-11's original refusal of
   `llama-cpp-python` rested on PyPI publishing an sdist for it and nothing
   else, which is still true and stopped being the whole story: the
   maintainer's own index (`abetlen.github.io/llama-cpp-python/whl/cpu/`)
@@ -5611,8 +5615,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   behind ctypes, no compiler anywhere in the path — checked directly rather
   than assumed. A non-PyPI index is therefore admissible under this rule, but
   ONLY confined to the one distribution it exists for: `explicit = true`,
-  exactly the confinement `transformers_text/pyproject.toml` already uses for
-  PyTorch's CPU index, so the index cannot become a candidate for anything
+  exactly the confinement the removed `transformers_text/pyproject.toml` used
+  for PyTorch's CPU index (D416) and `diffusers_image_cuda`'s still does, so the
+  index cannot become a candidate for anything
   else a runner declares. **The residual risk is a second host to trust, and
   it turned out to be worse than that phrase suggests.** A sweep of every
   macOS arm64 wheel this specific index has published for
@@ -6833,11 +6838,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   and was deferred rather than dismissed: it only loads pre-converted ONNX
   repos, so the Hub models the page already offers a Load button for would
   refuse — and as a SECOND text runner it would break the rule that a model
-  id never picks the runner. **Revised (D406): llama.cpp shipped anyway, as a
+  id never picks the runner. **Revised (D411): llama.cpp shipped anyway, as a
   FOURTH, opt-in runner, once the packaging objection was checked rather than
   taken as settled** — see AI-11f and AI-2a's amendment. torch's position as
   the cross-platform default is unaffected: this did not change which backend
   `auto` reaches for on any platform, only what a user can additionally choose.
+  **Superseded in part (D416): the `transformers_text` runner and its two
+  hardware variants are REMOVED, and `llamacpp-text` is now what Windows and
+  Linux resolve to.** The CLAIM of this item stands — text generation still runs
+  on every supported desktop platform, MLX on Apple Silicon and one
+  cross-platform row below it, and nothing in the app knows a capability can have
+  two runners — but the backend named above is no longer the one serving it, and
+  the packaging argument that chose torch over llama.cpp was overturned by a
+  measurement rather than by a new packaging fact. See AI-11h.
 - **AI-11a** **The CATALOG is keyed by runner, and the page says which one it
   resolved.** This is the part a second runner really did change. A suggestion
   is only meaningful for the backend that will load it: `mlx-community/…` is
@@ -6863,7 +6876,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   only became a distinction when a capability grew a second runner: three places
   independently took "the first runner registered for this capability" — the
   registry, `_runner_or_raise` and `start_image` — so a Linux machine whose
-  transformers worker was missing was told text generation "needs Apple
+  cross-platform text worker was missing was told text generation "needs Apple
   Silicon", naming the one backend that was never going to serve it. The three
   copies are now one, which is the actual fix; joining rather than picking is
   the answer because there is no rule for choosing between two reasons that is
@@ -6886,7 +6899,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   the runner the row resolved is among the ones that would accept its snapshot
   (`CachedModel.loaders`, straight from `ai/runners/formats.py`). That drops
   `openai/whisper-large-v3`, a speech model neither shipping speech runner reads, and
-  an MLX conversion on a Mac switched to Transformers; injecting on capability alone
+  an MLX conversion on a Mac switched to llama.cpp; injecting on capability alone
   put both into pickers whose load then refused them by name. **Dropped, not flagged
   `available: false`**: `models[]` has no availability field and every consumer reads
   it as "things I may offer", so a flag would leave existing pages offering the repo
@@ -6924,14 +6937,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   flag is passed to every model rather than to a list of known ones: kwargs land
   in the Jinja render context, so a template that never mentions it does not
   read it, and a tokenizer whose signature rejects it outright retries without —
-  a model that will not take the hint should still answer, just verbosely. The
-  same class of trap as the version floor beside it: `transformers>=5.15` is a
-  release that knows a `qwen3_5` exists, and a 4.x resolution installs perfectly
-  and then fails every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which reads
-  as a broken model rather than an environment a major version too old.
+  a model that will not take the hint should still answer, just verbosely.
+  (Written for the transformers runner and inherited unchanged by
+  `runners/llama_text.py`, which renders the GGUF's own embedded template by hand
+  and passes `enable_thinking=False` into the render context — Jinja ignores an
+  unreferenced variable, so no retry is needed there at all. D416 removed the
+  other runner; the default did not move.) The same class of trap as the version
+  floor that used to sit beside it: `transformers>=5.15` is a release that knows
+  a `qwen3_5` exists, and a 4.x resolution installed perfectly and then failed
+  every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which read as a broken model
+  rather than an environment a major version too old. The GGUF path has no such
+  floor to get wrong — a `.gguf` carries its own architecture and its own
+  template — which is one fewer way for a curated model to be unloadable.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
-  knowable from outside the process: **the default torch rows pin the `whl/cpu`
+  knowable from outside the process: **the default rows pin an unaccelerated
   build on every platform** (AI-2b, D381), so the ordinary outcome on ANY machine
   with a graphics card in it — not the Windows machine it used to be, back when
   the PyPI wheel's `nvidia-*` dependencies were the only thing marked
@@ -6939,9 +6959,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   words a second, with a green LOADED card and a healthy memory figure and
   nothing on screen to explain the speed. The one exception is what makes the
   device worth reporting rather than assuming: that same CPU pin resolves darwin
-  to the ordinary macOS wheel, so the CPU row lands on `mps` on Apple Silicon and
-  the row's `note` says so (D382) — a picker printing a CPU speed claim beside a
-  card reporting `mps` is one page contradicting itself. `worker_base.STATE` therefore carries a `device` that each runner sets
+  to the ordinary macOS wheel, so `diffusers-image` lands on `mps` on Apple
+  Silicon and the row's `note` says so (D382) — a picker printing a CPU speed
+  claim beside a card reporting `mps` is one page contradicting itself. The
+  llama.cpp CPU row does the same thing through a different mechanism: the
+  maintainer's `whl/cpu` wheel links `libggml-metal.dylib`, so it reports device
+  `gpu` there, and D416 made that row the DEFAULT on two more platforms, which
+  raises how much this reporting matters rather than lowering it.
+  `worker_base.STATE` therefore carries a `device` that each runner sets
   in its own `load()` — the same argument AI-8 makes about resident bytes: only
   the process holding the weights knows. It surfaces twice, and the two are
   different KINDS of statement: the loaded card shows a measurement (**on CPU**,
@@ -6949,6 +6974,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   fact about the backend above the cards, before any download, since that is
   when it can still change a decision. All three runners report it — the image
   runner has had the same Windows CPU-only problem since D257 and never said so.
+  (Written when three runners reported it; the text half is now llama.cpp's
+  `"cpu"`/`"gpu"`/`"gpu (partial)"`, which is the same statement with a backoff
+  outcome folded in — see AI-11f.)
   **Windows CUDA IS offered as of D381, and the objection that used to block it
   is void.** That objection — pulling torch from `download.pytorch.org` through a
   `[[tool.uv.index]]` would cost EVERY Windows user a ~3GB CUDA runtime to serve
@@ -6968,18 +6996,25 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-11c** **No text has ever been generated by this runner, and AI-10b's
   disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
   catalog, the resolution across four platforms and the API are exercised
-  against fakes, and the runner's OWN logic is tested a level down —
-  `runners/torch_text.py` is stdlib-only at import time, so its format
-  refusals, its dtype-keyword choice, its device placement and its two
-  prompt-encoding paths are all driven on CI with stubs. What no test touches is
-  torch itself: the actual generation, the streaming, the real speed on a CPU,
-  and whether the four suggested repos load as expected. Their `size_gb` values
+  against fakes, and the runner's OWN logic is tested a level down — a text
+  runner module is stdlib-only at import time, so its format refusals, its
+  device placement and its prompt-encoding paths are all driven on CI with
+  stubs. (Written of `runners/torch_text.py`; D416 removed that module and
+  `runners/llama_text.py` inherits the disclaimer verbatim, which is why
+  `tests/test_ai_llamacpp_worker.py` loads the worker by path with a faked
+  `llama_cpp`.) What no test touches is the inference library itself: the actual
+  generation, the streaming, the real speed on a CPU, and whether the suggested
+  repos load as expected. Their `size_gb` values
   are full-snapshot download estimates from the Hub's per-file byte metadata,
   not claims about measured filesystem usage (D295). A first real load is the
   outstanding verification.
 - **AI-11f** **`llamacpp-text` is a FOURTH text runner, GGUF via
   `llama-cpp-python`, registered BELOW all three `transformers-text` rows so
-  `auto` never reaches it on any platform** (D406). AI-11's original refusal
+  `auto` never reaches it on any platform** (D411). **AMENDED (D416): those three
+  rows are gone and this one is now SECOND, so it IS what `auto` reaches on
+  Windows and Linux. Everything below about the wheel index still holds; what
+  changed is that its risk is now carried by the default rather than by an opt-in
+  — see AI-11h for why that trade was taken.** AI-11's original refusal
   rested on one fact — PyPI publishes an sdist for `llama-cpp-python` and no
   wheels — and that fact held while a second one went unchecked: the
   maintainer's own index publishes complete, current `py3-none` wheels, a
@@ -7040,10 +7075,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   happened to carry both a `model_index.json` and a root `.gguf` cannot read
   as this engine's. `torch_text._weights_here`'s refusal — which used to end
   at "a repo of GGUF files is llama.cpp's format" with nowhere to go — now
-  names this engine as the answer. **A fifth text runner, `llamacpp-text-vulkan`,
-  is this engine's GPU-accelerated variant on NVIDIA and AMD** (D406's
-  addendum), registered immediately below `llamacpp-text` and still below
-  every `transformers-text` row, sharing `runners/llama_text.py` and
+  names this engine as the answer. (That refusal went with `torch_text.py` at
+  D416; the pointer it added is now unnecessary, since llama.cpp is the engine a
+  non-Apple machine already has.) **A fifth text runner,
+  `llamacpp-text-vulkan`, is this engine's GPU-accelerated variant on NVIDIA and
+  AMD** (D411's addendum), registered immediately below `llamacpp-text` and, since
+  D416, LAST — so it is the one text row `auto` still never reaches, sharing
+  `runners/llama_text.py` and
   `catalog.SUGGESTIONS["llamacpp-text"]` unchanged — a GGUF is one format and
   one curated list whichever wheel loads it. It exists because the CPU
   index's acceleration story is Apple-only (Metal, via that wheel's own
@@ -7052,7 +7090,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   path that reaches both vendors. That index publishes wheels for exactly
   two platform tags at the shared `0.3.29` pin —
   `manylinux2014_x86_64.manylinux_2_17_x86_64` and `win_amd64`, audited by
-  D406's own method and passing — so `registry._vulkan` refuses every other
+  D411's own method and passing — so `registry._vulkan` refuses every other
   architecture outright. Where it differs from `_cuda`/`_rocm` is WHY a
   missing device still needs a hard gate at all: a Vulkan wheel links its
   GPU backend directly (`DT_NEEDED libvulkan.so.1` in `libggml-vulkan.so`,
@@ -7083,7 +7121,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   of which attempt succeeded, not a name for which backend served it, since
   the bound API cannot distinguish Vulkan from Metal.
 - **AI-11g** **Any Hub repo with a loadable root-level GGUF resolves, not
-  only the 5 curated filenames in `formats.GGUF_RECIPES`** (D407).
+  only the 5 curated filenames in `formats.GGUF_RECIPES`** (D412).
   `formats.pick_gguf_file()` ranks an arbitrary repo's own file listing —
   excluding subdirectories, multi-part shards, and auxiliary weights
   (`mmproj`/`mtp`/`draft`/`projector`, widened past one observed file to a
@@ -7115,6 +7153,63 @@ an AI Models page that could say what was on disk but not what was *running*.
   the same way `_UNRUNNABLE_LIBRARIES` already is for FORMAT rather than
   hardware availability, and kept narrow: two machines differ only after a
   VISIBLE Preferences choice, never for a reason neither could see.
+- **AI-11h** **The `transformers-text` family is WITHDRAWN — all three rows, all
+  three folders, `runners/torch_text.py`, and its catalog shortlist — leaving text
+  generation served by `mlx-text` on Apple Silicon and `llamacpp-text` everywhere
+  else, with `llamacpp-text-vulkan` the one opt-in row below them** (D416).
+  Removed on a like-for-like measurement rather than on a judgement about the
+  library: same model (Qwen3.5-4B), same prompt, same 128-token cap, back to
+  back on one Linux x86_64 machine (Ryzen 5 9600X, Radeon RX 9060 XT), llama.cpp
+  reading a Q5_K_M GGUF beat transformers reading bf16 on **every axis at once** —
+  53.4 against 12.6 tok/s on the GPU and 6.4 against 2.7 on the CPU, at 2.93GB
+  against 8.7GB downloaded and ~3.1GB against ~9.2GB peak RSS, with load and
+  first-token latency several times shorter. All four runs produced correct fluent
+  prose, and `transformers-text-rocm`'s availability gate was verified honest on
+  RDNA4 first (torch 2.13.0+rocm7.1 reports `cuda_avail True` on gfx1200 and
+  really did generate on the GPU), so the losing engine got a fair fight. Product
+  rule from the owner: an engine that does not earn its place is removed, and
+  models here are curated suggestions — reach into arbitrary Hub repos is
+  explicitly not a reason to keep a backend.
+  **Two consequences that are costs, accepted rather than argued away.**
+  First, AI-11f's packaging objection now applies to a DEFAULT: llama.cpp wheels
+  come from the maintainer's GitHub Pages index rather than PyPI, where 4 of 16
+  audited macOS arm64 releases fail `testzip()`. What makes it affordable is that
+  the failure is loud and at install time (`uv sync` reports it verbatim through
+  PY-18), the pinned `0.3.29` Linux and Windows wheels were verified intact and
+  working, and macOS arm64 — where the audit's failures were — still resolves to
+  `mlx-text` ahead of this row. Second, `llamacpp-text-vulkan` is now the only
+  GPU text path on Linux/AMD, and its `_offload_schedule` over-commit backoff is
+  known NOT to engage there: radv satisfies an over-commit by evicting other
+  clients rather than erroring, which took a desktop session down during testing
+  (reported separately, PR #706). That is why D416 moved the default onto
+  `llamacpp-text` and deliberately not onto the Vulkan row.
+  **A plain safetensors text checkpoint is now loadable on Apple Silicon only**,
+  which is the one user-visible loss: `formats.loaders()` maps a directory of
+  safetensors to `mlx-text` alone, so a Linux user with a bf16 Qwen already on
+  disk gets a card naming that engine and the registry's own sentence about why
+  this machine is not it. The GGUF of the same model is what `catalog()` offers
+  them instead, at roughly a quarter of the download.
+  **A stored preference naming a removed code degrades to the ordering** rather
+  than erroring or blanking the picker: `registry.resolve()`'s existing
+  unknown-code branch answers it (the branch written for a prefs.json from a
+  NEWER build), `selected` is still reported as stored because a preference
+  silently corrected on read cannot be seen or undone, and the Engines tab renders
+  that stored code as one extra disabled option so the `<select>` is not empty —
+  a `<select>` whose value matches no option renders blank, not as its first row.
+  **`formats.UNLOADABLE_QUANT` survives as a frozenset of method names** where it
+  was a dict of refusal sentences: only `torch_text` printed the sentences, and
+  the keys are still read by `loaders()` to keep an AWQ/GPTQ/bitsandbytes/
+  compressed-tensors repo away from `mlx-text` too. Its bitsandbytes comment asked
+  for an x86 re-measurement before anyone reversed that refusal; this item IS that
+  re-measurement, and it settles the question by making it moot — the quantized
+  path this app offers is GGUF, which needs no extra package.
+  `formats.is_mlx_checkpoint` is DELETED, unlike those constants: its only caller
+  was the fork in `loaders()`' safetensors branch, both arms of which now answer
+  `mlx-text`, and nothing downstream depends on telling the two apart.
+  **No platform this app ships to is stranded**, which is pinned by
+  `test_every_shipped_platform_keeps_a_local_text_engine` over an enumerated
+  platform table rather than left to be inferred — the coverage on Windows and
+  Linux is now one runner deep, so a future removal has to argue with a test.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every

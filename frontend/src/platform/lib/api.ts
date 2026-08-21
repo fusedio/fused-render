@@ -2599,9 +2599,9 @@ export interface AiCatalogModel {
 export interface AiCatalogCapability {
   capability: string;
   runner: string | null;
-  /** The backend in words — "MLX LM (Apple Silicon)", "Transformers (CUDA)".
-   *  One capability can have more than one runner (text generation has two
-   *  since D293), so which one this machine resolved is worth naming. */
+  /** The backend in words — "MLX LM (Apple Silicon)", "Diffusers (CUDA)".
+   *  One capability can have more than one runner (text generation has three
+   *  since D416), so which one this machine resolved is worth naming. */
   runnerLabel: string | null;
   /** The same, without the platform qualifier — what the Discover heading
    *  shows ("via MLX Whisper"). That caption says which backend these

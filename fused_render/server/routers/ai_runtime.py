@@ -338,8 +338,8 @@ def _catalog_with_downloads() -> list[dict]:
     formats (AI-11a), and a cached repo injected on its capability alone would break
     that invariant inside the very same array. `openai/whisper-large-v3` is a speech
     model that neither shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit`
-    is a text model that Transformers cannot open, so on a Mac switched to
-    Transformers it is an unusable download. So the test is the FORMAT's own answer —
+    is a text model that llama.cpp cannot open, so on a Mac switched to
+    llama.cpp it is an unusable download. So the test is the FORMAT's own answer —
     is the runner this row resolved among the ones that would accept this snapshot
     (`CachedModel.loaders`)? — and anything else is left out of `models[]` entirely.
 
@@ -349,8 +349,8 @@ def _catalog_with_downloads() -> list[dict]:
     failure being fixed rather than a fix. The repo is not hidden — the AI Models
     page's Local tab is the surface for "what is on my disk", it lists the repo, and
     it already prints WHICH engine reads it and what stands in the way ("text
-    generation is set to Transformers, which does not read this format — switch it on
-    the Engines tab"). A picker cannot say that; a card can.
+    generation is set to llama.cpp (CPU), which does not read this format — switch
+    it on the Engines tab"). A picker cannot say that; a card can.
 
     **Cached entries are APPENDED.** `entry.default`, `catalog.default_for()` and
     `catalog.for_capability()` keep answering over the curated list alone — read
