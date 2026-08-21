@@ -104,14 +104,18 @@ def test_download_fetches_exactly_the_one_curated_file(worker):
 def test_download_resolves_an_uncurated_repo_via_the_picker(worker, monkeypatch):
     """The blocking limit this piece exists to remove: a repo `GGUF_RECIPES`
     has never heard of used to refuse by name unconditionally. Now it reads
-    the repo's own file listing and runs `formats.pick_gguf_file` over it —
-    `import huggingface_hub` happens only here, never for a curated id."""
-    assert "huggingface_hub" not in sys.modules
-    _fake_huggingface_hub(monkeypatch, files=[
+    the repo's own file listing (`huggingface_hub.list_repo_files`, faked
+    here — real `huggingface_hub` is a genuine dependency of the wider app,
+    unlike `llama_cpp`, so this asserts on the CALL rather than on
+    `sys.modules` membership, which an earlier test in the same process may
+    already have set for reasons that have nothing to do with this one) and
+    runs `formats.pick_gguf_file` over it."""
+    fake = _fake_huggingface_hub(monkeypatch, files=[
         "README.md", "model-Q4_K_M.gguf", "model-Q8_0.gguf",
     ])
     path = worker.download("some-org/not-in-the-table")
     assert path == "/blobs/some-org/not-in-the-table/model-Q4_K_M.gguf"
+    assert fake.calls == ["some-org/not-in-the-table"]
 
 
 def test_an_uncurated_repo_with_no_loadable_gguf_is_refused_by_name(worker, monkeypatch):
@@ -134,10 +138,11 @@ def test_an_uncurated_repos_lookup_failure_is_a_different_refusal(worker, monkey
 
 def test_an_uncurated_repo_already_on_disk_needs_no_network(worker, monkeypatch, tmp_path):
     """The local-cache-first fast path: a repo already fully downloaded
-    through this engine resolves from its own snapshot directory, with no
-    `huggingface_hub` import at all — the same "answer the disk before
-    asking the Hub" rule a curated recipe's `_cached_file` check already
-    follows."""
+    through this engine resolves from its own snapshot directory, with NO
+    `list_repo_files` call — asserted by making the fake's call raise, since
+    `huggingface_hub` (unlike `llama_cpp`) is a real dependency of the wider
+    app and may already sit in `sys.modules` for reasons unrelated to this
+    test, so membership alone cannot prove this path took no network."""
     folder = tmp_path / "models--some-org--already-here"
     snapshot = folder / "snapshots" / "abc123"
     snapshot.mkdir(parents=True)
@@ -145,9 +150,15 @@ def test_an_uncurated_repo_already_on_disk_needs_no_network(worker, monkeypatch,
     worker.worker_base.repo_folder = lambda model_id, repo_type="model": (
         str(folder) if model_id == "some-org/already-here" else None)
 
+    def boom(*_args, **_kwargs):
+        pytest.fail("the local-cache-first fast path called the Hub anyway")
+
+    fake = types.ModuleType("huggingface_hub")
+    fake.list_repo_files = boom
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+
     path = worker.download("some-org/already-here")
     assert path == "/blobs/some-org/already-here/model-Q4_K_M.gguf"
-    assert "huggingface_hub" not in sys.modules
 
 
 def test_load_refuses_an_uncurated_repo_with_nothing_loadable_before_importing_llama_cpp(
