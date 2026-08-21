@@ -1654,7 +1654,13 @@ def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
   extra.opened = {rows: byClass(card.el, "qopt").length,
                   // Alpha and Beta are still buttons; Other is not one any more.
                   buttons: byTag(card.el, "BUTTON").length,
-                  focused: _focused === field};
+                  focused: _focused === field,
+                  // The opened row still SAYS what it is, and the field says
+                  // what to do with it.
+                  label: byClass(card.el, "lbl")[2].textContent,
+                  placeholder: field.placeholder,
+                  boxes: byTag(card.el, "INPUT").filter(
+                    (n) => n.type !== "text").length};
   field.value = "  Neither — use Delta  ";
   field.onkeydown({key: "Enter", preventDefault(){}, stopPropagation(){}});
   await settle();
@@ -1662,7 +1668,13 @@ def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
             "answers": {"Alpha or Beta?": "Neither — use Delta"}})
     # The button became the box, in place — three rows before and after — and
     # the caret is already in it, so the click and the typing are one gesture.
-    assert got["extra"]["opened"] == {"rows": 3, "buttons": 2, "focused": True}
+    # `label` and `boxes` are the shipped regression: the opened row went out as
+    # a bare field in a grey box (no label at all) whose only visible mark was
+    # the text input painted as a 14px tick, so it read as a broken checkbox row
+    # with nowhere to type. A single-choice question has no tick anywhere on it.
+    assert got["extra"]["opened"] == {
+        "rows": 3, "buttons": 2, "focused": True, "boxes": 0,
+        "label": "Other…", "placeholder": "Type your answer, then press Enter"}
     sent = got["sent"][0]
     # Trimmed, and the SAME string on both channels: `answers` is what the model
     # reads, `custom` is the provenance the validators need to let it through.

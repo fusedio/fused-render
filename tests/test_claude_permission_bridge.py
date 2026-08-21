@@ -2644,6 +2644,43 @@ def test_the_question_card_always_offers_an_other_box(agent):
     assert "custom: JSON.stringify(custom" in card
 
 
+def test_the_drawn_tick_never_paints_the_other_rows_text_field():
+    """The bug this card shipped with, asserted as the rule that prevents it.
+
+    The option rows draw their own checkbox/radio (`appearance: none`, a 14px
+    box, a drawn border and background) because Chrome's native one is unreadable
+    on a dark card. That rule was written as `.perm .qopt input` — "any input in
+    an option row" — which was true of exactly one thing until the "Other" row
+    put a TEXT field in one. At (0,2,1) it out-specifies `.perm .qtype` (0,2,0),
+    so the field inherited the 14px square, the tick border and the background:
+    what reached the user was an empty grey row with a tiny white box in it and
+    nowhere visible to type.
+
+    A DOM probe cannot see this — the tree was always right, only the paint was
+    wrong — so the guard is on the stylesheet: every rule that dresses a tick
+    says which input types it means, and the field's own rules sit under `.qopt`
+    so they cannot lose the race again.
+    """
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    # Comments out first: this file's CSS narrates itself, and the prose talks
+    # about the very selectors being scanned for.
+    naked = re.sub(r"/\*.*?\*/", "", html, flags=re.S)
+    selectors = re.findall(r"^\s*([^{}\n][^{}]*?)\s*\{", naked, re.M)
+    dressing = [s for s in selectors if re.search(r"\.qopt\s+input", s)]
+    assert dressing, "the drawn-tick rules moved; this guard is asserting nothing"
+    for sel in dressing:
+        for part in sel.split(","):
+            if ".qopt" not in part:
+                continue
+            assert 'input[type="checkbox"]' in part or 'input[type="radio"]' in part, (
+                "%r dresses every input inside an option row, including the "
+                "\"Other\" row's text field" % part.strip())
+    # …and the field is selected through the row, so it outranks anything that
+    # reaches it by way of `.qopt`.
+    assert ".perm .qopt .qtype {" in html
+    assert not re.search(r"^\s*\.perm \.qtype\s*[,{]", html, re.M)
+
+
 def monkey_runs(agent, tmp_path):
     """Point the module's RUNS at tmp_path, where `_run_dir` made "run"."""
     agent.RUNS = str(tmp_path)
