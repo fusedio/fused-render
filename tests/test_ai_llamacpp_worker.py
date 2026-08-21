@@ -3,17 +3,19 @@ llama-cpp-python and nothing else.
 
 The contract half (routes, states, progress, the port handshake) is
 `worker_base`'s and is covered by `tests/test_ai_worker_base.py`. What is left
-here is what this runner decides for itself: which ids it will fetch at all
-(SPEC AI-11's curated-only rule), how it renders a GGUF's own embedded chat
-template, and how it streams and cancels without a producer thread.
+here is what this runner decides for itself: which ids it will fetch (a
+curated table, PLUS an uncurated repo id resolved by its own file listing
+since D407), how it renders a GGUF's own embedded chat template, and how it
+streams and cancels without a producer thread.
 
 Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
 `tests/test_ai_transformers_worker.py` does: the runner finds its base off
 `sys.path` in an interpreter of its own, so importing it the packaged way
-would be testing an import that never ships. `llama_cpp` itself is never
-imported by these tests — the real dependency is not installed in the test
-venv, matching AI-11c's precedent for `torch_text`, and every path that would
-touch it works against `_loaded["llm"]` set directly to a fake.
+would be testing an import that never ships. Neither `llama_cpp` nor
+`huggingface_hub` is installed in this test venv, matching AI-11c's
+precedent for `torch_text` — every path that would touch the former works
+against `_loaded["llm"]` set directly to a fake, and every path that would
+touch the latter fakes it via `_fake_huggingface_hub` below.
 """
 import importlib.util
 import sys
@@ -47,6 +49,11 @@ def worker(monkeypatch):
     base._cached_file = (
         lambda repo, filename: f"/blobs/{repo}/{filename}"
         if (repo, filename) in base.cached_files else None)
+    # No local hf cache folder in these tests unless a test says otherwise —
+    # `_locally_cached_gguf_files`'s fast path reads `None` as "nothing on
+    # disk" and falls through to the networked listing, the same way the real
+    # function does for a repo hf's cache has never heard of.
+    base.repo_folder = lambda model_id, repo_type="model": None
 
     monkeypatch.setitem(sys.modules, "worker_base", base)
     spec = importlib.util.spec_from_file_location(
@@ -58,16 +65,32 @@ def worker(monkeypatch):
     return module
 
 
-# -- the curated-only rule -------------------------------------------------
+# -- the curated table, and D407's generic fallback for everything else -----
 #
-# A GGUF repo commonly publishes two dozen quantizations of one model, so
-# there is no rule for turning a bare repo id into "the one file this means" —
-# only the (repo, file) pairs this runner curates ever load.
+# A GGUF repo commonly publishes two dozen quantizations of one model.
+# `formats.GGUF_RECIPES` curates 5 of them by hand, but since D407 a repo
+# this table has never heard of resolves too — Piece 1's picker
+# (`formats.pick_gguf_file`) runs over the repo's own file listing instead of
+# refusing outright.
 
 
-def test_download_refuses_an_uncurated_id_by_name(worker):
-    with pytest.raises(RuntimeError, match="curated"):
-        worker.download("some-org/not-in-the-table")
+def _fake_huggingface_hub(monkeypatch, *, files=None, error=None):
+    """A fake `huggingface_hub` good enough for `_resolve_uncurated_repo`'s
+    networked path — `list_repo_files` either returns `files` or raises
+    `error`, mirroring the one function this module calls."""
+    fake = types.ModuleType("huggingface_hub")
+    calls = []
+
+    def list_repo_files(model_id, **kwargs):
+        calls.append(model_id)
+        if error is not None:
+            raise error
+        return list(files or [])
+
+    fake.list_repo_files = list_repo_files
+    fake.calls = calls
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    return fake
 
 
 def test_download_fetches_exactly_the_one_curated_file(worker):
@@ -78,12 +101,65 @@ def test_download_fetches_exactly_the_one_curated_file(worker):
     assert path == "/blobs/unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q4_K_M.gguf"
 
 
-def test_load_refuses_an_uncurated_id_before_importing_llama_cpp(worker):
-    """The curation check comes first, the same order `torch_text.load` checks
-    its own format refusal before importing torch — a model this runner was
-    never going to serve is a fact about the request, not about llama.cpp."""
+def test_download_resolves_an_uncurated_repo_via_the_picker(worker, monkeypatch):
+    """The blocking limit this piece exists to remove: a repo `GGUF_RECIPES`
+    has never heard of used to refuse by name unconditionally. Now it reads
+    the repo's own file listing and runs `formats.pick_gguf_file` over it —
+    `import huggingface_hub` happens only here, never for a curated id."""
+    assert "huggingface_hub" not in sys.modules
+    _fake_huggingface_hub(monkeypatch, files=[
+        "README.md", "model-Q4_K_M.gguf", "model-Q8_0.gguf",
+    ])
+    path = worker.download("some-org/not-in-the-table")
+    assert path == "/blobs/some-org/not-in-the-table/model-Q4_K_M.gguf"
+
+
+def test_an_uncurated_repo_with_no_loadable_gguf_is_refused_by_name(worker, monkeypatch):
+    """A real repo, successfully listed, but nothing in it is a chat model —
+    all `mmproj`/auxiliary, or a format this app does not serve. Refused
+    with a sentence naming the repo, never a silent smallest-file guess."""
+    _fake_huggingface_hub(monkeypatch, files=["README.md", "model-mmproj-F16.gguf"])
+    with pytest.raises(RuntimeError, match="no GGUF file"):
+        worker.download("some-org/only-a-projector")
+
+
+def test_an_uncurated_repos_lookup_failure_is_a_different_refusal(worker, monkeypatch):
+    """Named apart from "no GGUF file" on purpose (see the module's
+    `_LOOKUP_FAILED`/`_NO_GGUF_MATCH` docstrings): a network problem means
+    "try again", not "this repo will never resolve"."""
+    _fake_huggingface_hub(monkeypatch, error=RuntimeError("offline"))
+    with pytest.raises(RuntimeError, match="[Cc]ould not read"):
+        worker.download("some-org/unreachable")
+
+
+def test_an_uncurated_repo_already_on_disk_needs_no_network(worker, monkeypatch, tmp_path):
+    """The local-cache-first fast path: a repo already fully downloaded
+    through this engine resolves from its own snapshot directory, with no
+    `huggingface_hub` import at all — the same "answer the disk before
+    asking the Hub" rule a curated recipe's `_cached_file` check already
+    follows."""
+    folder = tmp_path / "models--some-org--already-here"
+    snapshot = folder / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"x")
+    worker.worker_base.repo_folder = lambda model_id, repo_type="model": (
+        str(folder) if model_id == "some-org/already-here" else None)
+
+    path = worker.download("some-org/already-here")
+    assert path == "/blobs/some-org/already-here/model-Q4_K_M.gguf"
+    assert "huggingface_hub" not in sys.modules
+
+
+def test_load_refuses_an_uncurated_repo_with_nothing_loadable_before_importing_llama_cpp(
+        worker, monkeypatch):
+    """The curation/resolution check still comes first, the same order
+    `torch_text.load` checks its own format refusal before importing torch —
+    a model this runner cannot resolve is a fact about the request, not
+    about llama.cpp, whether the refusal is "not curated" or, since D407,
+    "no GGUF file here to pick"."""
     assert "llama_cpp" not in sys.modules
-    with pytest.raises(RuntimeError, match="curated"):
+    _fake_huggingface_hub(monkeypatch, files=["README.md"])
+    with pytest.raises(RuntimeError, match="no GGUF file"):
         worker.load("some-org/not-in-the-table", "/blobs/whatever.gguf")
     assert "llama_cpp" not in sys.modules
 

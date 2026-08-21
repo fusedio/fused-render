@@ -39,15 +39,20 @@ and the page runs in a process that cannot import this venv — the identical
 reason `formats.COMPONENT_REPOS` lives there rather than inside the runner
 that reads it.
 
-**The consequence is deliberate and documented rather than fixed**: Hub
-search on the Discover tab cannot offer a model this runner would load,
-because typing a bare repo id into that search box supplies no filename and
-this runner has no rule for picking one out of thirty — only the ids in
-`formats.GGUF_RECIPES` (the ones `catalog.SUGGESTIONS` also lists) ever load,
-UNLESS the repo is already cached under one of them, which `_resolve_model_id`
-below is what makes a bare repo id resolve anyway once that is true. That
-mirrors `formats.COMPONENT_REPOS`, whose repos are likewise not addressable by
-a user typing on the Discover tab.
+**No longer true as of D407: a bare repo id `formats.GGUF_RECIPES` has never
+heard of now resolves too**, through `_resolve_uncurated_repo` — the id still
+supplies no filename, but this runner now HAS a rule for picking one out of
+thirty (`formats.pick_gguf_file`, ranked by quantization suffix, small and
+reliable first), rather than no rule at all. `GGUF_RECIPES` keeps its
+original job — a hand-picked, `size_gb`-promised suggestion list, not the
+only thing this engine can load — and `hub_models.py`'s search runs the SAME
+picker over a result's own `siblings` before ever offering it, so a repo
+that would load here is also one Hub search will surface (`Runner.hub_filter_tags`,
+`registry.py`). `formats.COMPONENT_REPOS`'s repos remain the one thing this
+paragraph used to describe that is STILL true of a different table: they
+name a component swapped into an otherwise ordinary pipeline, not a whole
+model a bare id could mean, so no picker generalizes them the way this one
+generalizes `GGUF_RECIPES`.
 
 **No external tokenizer/config download, and that is a fact about THESE
 repos, not a general rule.** unsloth's GGUF conversions — the ones
@@ -179,19 +184,6 @@ _N_CTX = 8192
 #: a `repo:quant` grammar.
 _GGUF_RECIPES = formats.GGUF_RECIPES
 
-#: What to say when a caller asks for a model id this runner has no recipe
-#: for. Named rather than left to a bare `hf_hub_download` 404, because "no
-#: recipe" and "the file does not exist" are different facts a user can act on
-#: differently — the first means "pick from this engine's own list", the
-#: second means "you mistyped a repo id".
-_NOT_CURATED = (
-    "{model_id!r} is not one of this engine's curated models. A GGUF repo "
-    "commonly publishes two dozen quantizations of one model, so llamacpp-text "
-    "loads only the (repo, file) pairs in its own catalog rather than "
-    "guessing which file a bare repo id means — pick a model from the AI "
-    "Models page's suggestions for this engine."
-)
-
 #: What to say when a repo id curates MORE THAN ONE quantization and none of
 #: them is on disk yet — the one case a bare repo id is genuinely ambiguous
 #: rather than merely uncurated.
@@ -201,6 +193,29 @@ _AMBIGUOUS_REPO = (
     "pick one of those ids instead of the bare repo id."
 )
 
+#: What to say when an uncurated repo's own file listing could not be read —
+#: named apart from `_NO_GGUF_MATCH` because the two are different facts a
+#: user can act on differently: this one means "try again", that one means
+#: "this repo will never resolve".
+_LOOKUP_FAILED = (
+    "Could not read {model_id!r}'s file listing on the Hub ({error}) — an "
+    "uncurated repo id resolves by reading which GGUF files it actually "
+    "publishes, so a network or Hub problem here means the pick cannot be "
+    "made right now."
+)
+
+#: What to say when an uncurated repo's listing WAS read but
+#: `formats.pick_gguf_file` found nothing to choose — either no `.gguf` at
+#: all (this was never a GGUF repo), or every candidate was excluded by
+#: shape or format (see that function's docstring for exactly which).
+_NO_GGUF_MATCH = (
+    "{model_id!r} has no GGUF file this engine can pick as a chat model "
+    "({count} file(s) checked) — files in subdirectories, multi-part shards, "
+    "auxiliary weights (a projector, a speculative-decoding draft, or "
+    "similar) and quantizations below Q4 are excluded, and nothing else "
+    "matched a recognised quantization suffix."
+)
+
 
 def _recipes_for_repo(repo_id):
     """Every curated recipe whose repo is `repo_id`, keyed by their filename ids."""
@@ -208,33 +223,120 @@ def _recipes_for_repo(repo_id):
             if recipe["repo"] == repo_id}
 
 
+def _locally_cached_gguf_files(repo_id):
+    """Root-level `.gguf` filenames `repo_id` already has ON DISK, with no
+    network call — the local-cache-first fast path (D407) for resolving an
+    UNCURATED repo, the same "answer the disk before asking the Hub" rule
+    `worker_base._cached_file` already gives a curated recipe.
+
+    Every snapshot directory hf's cache holds for this repo is scanned
+    (usually one, `main`) rather than resolving a specific revision first,
+    because this function's ONLY job is "what filenames exist", and a second
+    hf call to resolve a ref before answering that would defeat the point of
+    a local-only fast path. `entry.is_file()` follows the symlink hf's cache
+    writes for a materialised file — a snapshot entry for a download still in
+    flight is a symlink to a blob that does not exist yet, which this
+    correctly reads as absent.
+
+    Returns an empty list rather than raising for anything this cannot read;
+    a fast path that fails is a fast path this function simply does not
+    offer, not a reason to break resolution — `_resolve_uncurated_repo` falls
+    through to the networked listing exactly as if the cache were empty.
+    """
+    folder = worker_base.repo_folder(repo_id)
+    if not folder:
+        return []
+    names = set()
+    try:
+        with os.scandir(os.path.join(folder, "snapshots")) as entries:
+            snapshot_dirs = [entry.path for entry in entries if entry.is_dir()]
+    except OSError:
+        return []
+    for snapshot_dir in snapshot_dirs:
+        try:
+            with os.scandir(snapshot_dir) as entries:
+                for entry in entries:
+                    if (entry.name.lower().endswith(formats.GGUF_EXTENSION)
+                            and entry.is_file()):
+                        names.add(entry.name)
+        except OSError:
+            continue
+    return sorted(names)
+
+
+def _resolve_uncurated_repo(model_id):
+    """`(key, recipe)` for a bare repo id `formats.GGUF_RECIPES` has never
+    heard of — Piece 1 (D407): any Hub repo carrying a root-level GGUF is
+    something `llama_cpp.Llama` can load, and the only reason this used to be
+    refused outright is that this app had no rule for choosing WHICH of a
+    repo's own quantizations a bare id should mean. `formats.pick_gguf_file`
+    is that rule; this function is only the two ways of getting it a file
+    list to run over, cheapest first.
+
+    Local cache checked FIRST — see `_locally_cached_gguf_files` — so
+    reloading a model already fully downloaded through this engine costs
+    nothing and needs no network, exactly like a curated recipe's own
+    cache-first check three lines up in `_resolve_model_id`. Only when the
+    cache has nothing does this reach the Hub, and `list_repo_files` is
+    everything this needs: filenames only, no per-file size metadata this
+    picker never uses.
+
+    The two ways this refuses are named apart because they are different
+    facts about the id: `_LOOKUP_FAILED` means "ask again", `_NO_GGUF_MATCH`
+    means "this repo will not resolve to anything, GGUF or otherwise".
+    """
+    local_files = _locally_cached_gguf_files(model_id)
+    if local_files:
+        chosen = formats.pick_gguf_file(local_files)
+        if chosen:
+            return model_id, {"repo": model_id, "file": chosen}
+
+    import huggingface_hub
+
+    try:
+        filenames = huggingface_hub.list_repo_files(model_id)
+    except Exception as error:  # noqa: BLE001 - a Hub lookup failure is a fact
+                                 # about the id/network, not a bug in this runner
+        raise RuntimeError(
+            _LOOKUP_FAILED.format(model_id=model_id, error=error)) from error
+
+    chosen = formats.pick_gguf_file(filenames)
+    if chosen is None:
+        raise RuntimeError(
+            _NO_GGUF_MATCH.format(model_id=model_id, count=len(filenames)))
+    return model_id, {"repo": model_id, "file": chosen}
+
+
 def _resolve_model_id(model_id):
     """`(key, recipe)` for whatever `model_id` actually means, or raise.
 
-    Two shapes reach here, because the page and this table disagree about
+    Three shapes reach here, because the page and this table disagree about
     what a model's ID is (see the module docstring): a curated FILENAME key,
-    used unchanged, and a bare REPO id — the shape the AI Models page's local
-    cache scan hands back for a repo this runner already downloaded, since
-    that scan is keyed by repo folder and knows nothing of this table's own
-    keys.
+    used unchanged; a bare REPO id this table already curates one or more
+    recipes for — the shape the AI Models page's local cache scan hands back
+    for a repo this runner already downloaded, since that scan is keyed by
+    repo folder and knows nothing of this table's own keys; and, since D407,
+    a bare repo id this table has NEVER heard of, resolved generically by
+    `_resolve_uncurated_repo` rather than refused by name — the whole point
+    of Piece 1: a curated recipe was never a limit llama.cpp itself imposed.
 
-    A repo id resolves to whichever of ITS curated recipes is already on
-    disk (`worker_base._cached_file` is a read-only lookup — it cannot start
-    a download, so asking it here speculatively costs nothing and starts
-    nothing), which is what makes the exact model a user just downloaded
-    through this engine loadable again under the id the cache scan offers it
-    by. A repo with exactly one curated recipe resolves to it even cold,
-    since there is nothing to disambiguate. A repo with more than one and
-    nothing cached yet is refused BY NAME by `_AMBIGUOUS_REPO`, rather than
-    guessed at — a wrong guess here is not a `FileNotFoundError`, it is a
-    multi-gigabyte download of the WRONG quantization.
+    A CURATED repo id resolves to whichever of ITS curated recipes is
+    already on disk (`worker_base._cached_file` is a read-only lookup — it
+    cannot start a download, so asking it here speculatively costs nothing
+    and starts nothing), which is what makes the exact model a user just
+    downloaded through this engine loadable again under the id the cache
+    scan offers it by. A repo with exactly one curated recipe resolves to it
+    even cold, since there is nothing to disambiguate. A repo with more than
+    one and nothing cached yet is refused BY NAME by `_AMBIGUOUS_REPO`,
+    rather than guessed at — a wrong guess here is not a `FileNotFoundError`,
+    it is a multi-gigabyte download of the WRONG quantization.
     """
     if model_id in _GGUF_RECIPES:
         return model_id, _GGUF_RECIPES[model_id]
 
     candidates = _recipes_for_repo(model_id)
     if not candidates:
-        raise RuntimeError(_NOT_CURATED.format(model_id=model_id))
+        return _resolve_uncurated_repo(model_id)
 
     for key, recipe in candidates.items():
         if worker_base._cached_file(recipe["repo"], recipe["file"]):

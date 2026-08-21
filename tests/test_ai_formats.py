@@ -354,6 +354,115 @@ def test_gguf_block_count_is_read_from_a_real_gguf_header(tmp_path):
     assert formats.gguf_block_count(str(tmp_path / "does-not-exist.gguf")) is None
 
 
+# -- pick_gguf_file (D407, Piece 1) ------------------------------------------
+#
+# Deterministic ranking over a repo's own file listing, so a bare Hub repo id
+# means the same bytes on every machine (see the module note above
+# `pick_gguf_file`'s definition for why hardware never enters this).
+
+
+def test_pick_gguf_file_prefers_q4_k_m_over_every_other_named_suffix():
+    """The community's own floor for "still reliable" and the branch's own
+    curated table's cheapest tier — never the true smallest quant a repo
+    might publish, because a pick that is too small downloads exactly as
+    many bytes and then answers worse, which nothing here can fix
+    afterward."""
+    names = ["m-Q8_0.gguf", "m-Q6_K.gguf", "m-Q5_K_M.gguf", "m-IQ4_XS.gguf",
+             "m-Q4_K_S.gguf", "m-Q4_K_M.gguf", "m-Q4_0.gguf"]
+    assert formats.pick_gguf_file(names) == "m-Q4_K_M.gguf"
+
+
+def test_pick_gguf_file_ranks_named_families_smallest_reasonable_first():
+    assert formats.pick_gguf_file(["m-Q8_0.gguf", "m-Q5_K_M.gguf"]) == "m-Q5_K_M.gguf"
+    assert formats.pick_gguf_file(["m-Q6_K.gguf", "m-Q8_0.gguf"]) == "m-Q6_K.gguf"
+
+
+def test_pick_gguf_file_excludes_multi_part_shards():
+    """`download()` fetches exactly one file — a split quantization can never
+    be assembled by this runner's own download path, so it must never be the
+    answer even when nothing else is on offer."""
+    names = ["m-BF16-00001-of-00002.gguf", "m-BF16-00002-of-00002.gguf"]
+    assert formats.pick_gguf_file(names) is None
+
+
+def test_pick_gguf_file_excludes_subdirectories():
+    """`BF16/` (unquantized) and `MTP/` (speculative-decoding auxiliary) —
+    observed live on real repos — plus every split shard in the sample,
+    which happened to live under one of these two, for free."""
+    names = ["BF16/m-BF16.gguf", "MTP/mtp-m-Q4_0.gguf", "m-Q4_K_M.gguf"]
+    assert formats.pick_gguf_file(names) == "m-Q4_K_M.gguf"
+
+
+def test_pick_gguf_file_excludes_auxiliary_weights_by_name():
+    """`mmproj`/`mtp`/`draft`/`projector` — the widened scan's finding: BARE
+    substrings, not anchored ones (`RVN-Q4_K_M-mtp.gguf`'s dash comes BEFORE
+    "mtp", which an anchored `mtp[-_]` pattern would have missed)."""
+    names = [
+        "m-Q4_K_M.gguf", "m-mmproj-Q8_0.gguf", "RVN-Q4_K_M-mtp.gguf",
+        "m-draft-Q8_0.gguf", "vision_f16_projector.gguf",
+    ]
+    assert formats.pick_gguf_file(names) == "m-Q4_K_M.gguf"
+    # And with the chat model itself removed, every remaining file is
+    # auxiliary and NONE of them may be offered as a fallback.
+    names.remove("m-Q4_K_M.gguf")
+    assert formats.pick_gguf_file(names) is None
+
+
+def test_pick_gguf_file_ranks_unsloth_dynamic_quants_below_plain_quants():
+    """Eligible, per the branch's own curated `UD-Q3_K_XL` entry — but ranked
+    below every plain quant of a named family, since a plain quant needs no
+    per-layer engineering to stay usable at that width."""
+    names = ["m-UD-Q4_K_XL.gguf", "m-Q5_K_M.gguf"]
+    assert formats.pick_gguf_file(names) == "m-Q5_K_M.gguf"
+
+
+def test_pick_gguf_file_prefers_a_named_family_over_a_plain_sub_4bit_quant():
+    """A PLAIN sub-4-bit quant (no dynamic per-layer allocation behind it) is
+    never PREFERRED — ranking excludes it whenever something better
+    competes — but a `UD-` dynamic quant of the identical bit width is
+    eligible and ranks ABOVE it once both are candidates, since the dynamic
+    allocation is specifically engineered to stay usable at that width and a
+    uniform quant at the same width is not."""
+    assert formats.pick_gguf_file(["m-Q3_K_M.gguf", "m-UD-Q3_K_XL.gguf"]) == "m-UD-Q3_K_XL.gguf"
+    assert formats.pick_gguf_file(["m-UD-Q3_K_XL.gguf"]) == "m-UD-Q3_K_XL.gguf"
+    # A named family always outranks an unranked-family dynamic quant too.
+    names = ["m-UD-Q3_K_XL.gguf", "m-Q8_0.gguf"]
+    assert formats.pick_gguf_file(names) == "m-Q8_0.gguf"
+
+
+def test_pick_gguf_file_still_falls_back_to_a_lone_plain_sub_4bit_quant():
+    """Excluded from RANKING, not from candidacy outright — with nothing
+    else to compete against, the single-candidate fallback still applies:
+    the same "no ambiguity, nothing to guess between" reasoning that lets a
+    lone unsuffixed file resolve also covers a repo that published exactly
+    one (aggressive) quantization."""
+    assert formats.pick_gguf_file(["m-Q3_K_M.gguf"]) == "m-Q3_K_M.gguf"
+
+
+def test_pick_gguf_file_falls_back_to_the_one_unranked_candidate():
+    """No clear Q4_K_M (or any recognised suffix) did not occur in the
+    plan's own 5-repo sample, but must not be assumed impossible — a lone
+    candidate with nothing to disambiguate against is the one case this
+    picker resolves anyway, the same "no ambiguity" rule
+    `llama_text._resolve_model_id` already uses for a single curated
+    recipe."""
+    assert formats.pick_gguf_file(["model.gguf"]) == "model.gguf"
+    assert formats.pick_gguf_file(["model-BF16.gguf"]) == "model-BF16.gguf"
+
+
+def test_pick_gguf_file_refuses_when_multiple_candidates_have_no_signal():
+    """More than one unranked file and nothing to break the tie with — do
+    NOT silently pick the smallest, since a `mmproj` or a draft model is
+    also small and is not a chat model (the exact failure mode this whole
+    picker exists to avoid)."""
+    assert formats.pick_gguf_file(["model-a.gguf", "model-b.gguf"]) is None
+
+
+def test_pick_gguf_file_returns_none_for_an_empty_or_non_gguf_listing():
+    assert formats.pick_gguf_file([]) is None
+    assert formats.pick_gguf_file(["README.md", "config.json"]) is None
+
+
 def test_a_gguf_inside_a_subfolder_is_not_a_root_level_snapshot():
     """`names` is the snapshot's TOP-LEVEL listing only (`ai_models.py` builds
     it with `os.listdir`, never a recursive walk) — a GGUF one directory down,

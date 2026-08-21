@@ -29,6 +29,7 @@ invite.
 from __future__ import annotations
 
 import os
+import re
 import struct
 
 #: CTranslate2 writes one `model.bin` beside a plain-JSON config. Checked by
@@ -453,6 +454,228 @@ GGUF_RECIPES = {
         "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Picking ONE GGUF file out of an arbitrary repo's own listing (D407).
+#
+# `GGUF_RECIPES` above is 5 keys over 3 repos — a hand-curated shortcut, not
+# a limit llama.cpp itself imposes. Any Hub repo that carries a root-level
+# GGUF is loadable by `llama_cpp.Llama`; the only reason an uncurated one was
+# previously refused is that this app had no rule for choosing WHICH of a
+# repo's 20-30 quantizations a bare repo id should mean. This section is that
+# rule, used by both `llama_text._resolve_model_id` (worker side, an
+# uncurated repo id) and `hub_models.py`'s search (page side, deciding
+# whether a GGUF search result is actionable) — the same "one answer, two
+# readers" shape `GGUF_RECIPES` itself states above, and for the identical
+# reason: the two must not be able to disagree about which file a repo id
+# means.
+#
+# **Deterministic, not hardware-aware, and that is a considered choice, not
+# an oversight.** A model id has to determine the same bytes on a 6GB laptop
+# and a 24GB desktop — `catalog.SUGGESTIONS["llamacpp-text"]`'s own
+# `size_gb` field is a promise that breaks the moment resolution varies by
+# machine, and `ai_runtime.py`'s downloaded/curated join keys entries by
+# FILENAME for the same reason. A hardware BUDGET was considered and
+# rejected on a harder ground than non-determinism: there is nothing to
+# budget against. `llama_cpp.py`'s ctypes bindings expose no
+# `ggml_backend_dev_memory` or any other free-VRAM query (confirmed by
+# reading the installed bindings — see `llama_text.py`'s own "sized by
+# trying, not calculating" note), so a "budget" would be total system RAM or
+# a guess, not a measurement. What makes hardware-blindness AFFORDABLE rather
+# than reckless is `llama_text._offload_schedule`: an over-large pick
+# degrades to partial or full CPU offload instead of failing, so the cost of
+# picking too big is a slower load, never a crash — the one cost backoff
+# cannot undo is the DOWNLOAD itself, which is exactly why the suffix
+# priority below starts at Q4_K_M rather than at the true smallest quant a
+# repo might publish.
+#
+# **The exclusion rules were measured, not assumed.** Split shards and
+# subdirectories were checked against five real repos (`unsloth/Qwen3.5-9B-GGUF`,
+# `unsloth/Qwen3.8-27B-GGUF`, `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF`,
+# `bartowski/Qwen_Qwen3-8B-GGUF`, `ornith-ai/Ornith-1.0-9B-GGUF`) on
+# 2026-08-21; the auxiliary-filename list was widened past that single pass —
+# an initial guess of `mmproj` / `mtp-` / `draft` (from ONE observed file,
+# `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`) was re-checked against ~200 real
+# `text-generation` + `gguf`-tagged repos (2637 GGUF filenames) before being
+# trusted: `mmproj` and `draft` held as plain substrings, `mtp-` was WRONG as
+# an anchored pattern (`RVN-Q4_K_M-mtp.gguf` — the dash comes BEFORE "mtp",
+# not after, in the common suffix form) and is now a bare substring too, and
+# `projector` was found and added (`llama-3.2-11B-vision_f16_projector.gguf`
+# — an mmproj-shaped file that never contains the string "mmproj" at all).
+# `specul`/`speculative` was tried and REJECTED: it false-positive-matched a
+# real fine-tune name, `DeepSeek-R1-Distill-Qwen-1.5B-GRPO-SpeculativeReasoner`,
+# that is not a draft model at all. Multimodal projectors are NOT
+# theoretical for a text-generation picker either — every mmproj-carrying
+# repo found in that scan (`prism-ml/Bonsai-27B-gguf` and its ternary
+# sibling) is tagged `pipeline_tag: text-generation`, the base LLM and its
+# projector sharing one repo, so this exclusion is load-bearing on the exact
+# path this picker serves, not a precaution against a shape that cannot
+# occur here.
+
+#: A GGUF this app must never offer as "the chat model", even though it is an
+#: ordinary single file a naive scan would rank — auxiliary weights
+#: llama.cpp's own ecosystem ships ALONGSIDE a standalone causal-LM
+#: checkpoint rather than as one. Bare substrings, not anchored patterns —
+#: see the section note above for why `mtp-` (anchored) missed real files an
+#: unanchored `mtp` does not.
+GGUF_AUXILIARY_RE = re.compile(r"mmproj|mtp|draft|projector", re.IGNORECASE)
+
+#: A multi-part GGUF shard (`-00001-of-00005.gguf`). `download()`
+#: (`worker_base.download_file`) fetches exactly ONE file, so a split
+#: quantization can never be assembled by this runner's existing download
+#: path — excluding it from candidacy costs nothing this runner could have
+#: served anyway. Observed only under a `BF16/` subdirectory in the sample
+#: above, so `pick_gguf_file`'s subdirectory exclusion already catches every
+#: split file seen in practice; this regex is the belt to that suspenders; in
+#: case a future repo ships a split quantization at its root.
+GGUF_SPLIT_RE = re.compile(r"-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
+
+#: Standard llama.cpp quantization suffixes this picker will choose between,
+#: MOST-preferred first. Starts at `Q4_K_M` rather than a smaller K-quant
+#: (`Q3_K_M`, `Q2_K`) DELIBERATELY: those exist and are sometimes smaller,
+#: but this is the one list where being wrong is expensive in a way
+#: `llama_text._offload_schedule`'s backoff cannot fix — a pick that is too
+#: LARGE for the GPU degrades to a slower load, but a pick that is too SMALL
+#: (an aggressively quantized, noticeably degraded model) downloads exactly
+#: as many bytes and then answers worse, which backoff has no lever for at
+#: all. `Q4_K_M` is the community's own floor for "still a reliable
+#: general-purpose quant" — the branch's own curated table never suggests
+#: anything below it either (its cheapest entries are Q4_K_M/Q5_K_M).
+#: `Q6_K`/`Q8_0` are ranked last among NAMED suffixes because they are closer
+#: to unquantized than to the sweet spot most repos are downloaded for.
+GGUF_SUFFIX_PRIORITY = (
+    "Q4_K_M", "Q4_K_S", "IQ4_NL", "IQ4_XS", "Q4_1", "Q4_0",
+    "Q5_K_M", "Q5_K_S", "Q5_1", "Q5_0",
+    "Q6_K",
+    "Q8_0",
+)
+
+#: The quantization token right before `.gguf` — optionally prefixed by
+#: unsloth's `UD-` dynamic-quant marker — e.g. `Q4_K_M` out of
+#: `...-Q4_K_M.gguf`, or `Q3_K_XL` (`ud` set) out of `...-UD-Q3_K_XL.gguf`.
+#: Anchored to the literal end of the filename, so `.search()` can only
+#: succeed at the one position adjacent to `.gguf`, never on an
+#: accidental earlier substring. Matches nothing for an unsuffixed file
+#: (`model.gguf`) or a full-precision one (`BF16`/`F16`/`F32` are not shaped
+#: like `<letters><digit>` immediately followed by `.gguf`), which is
+#: deliberate: neither should be picked BY SUFFIX, only as a last-resort
+#: single-candidate fallback (`pick_gguf_file`).
+_GGUF_QUANT_TOKEN_RE = re.compile(
+    r"(?:^|[-_.])(?P<ud>UD-)?(?P<token>[A-Za-z]{1,2}\d(?:_[A-Za-z0-9]+)*)\.gguf$",
+    re.IGNORECASE,
+)
+#: The bit-width family a quant token names — `Q4_K_M`/`IQ4_XS` are both
+#: family `4`. Matched separately from the full suffix table because
+#: unsloth's dynamic quants (`UD-Q3_K_XL`) do not share an exact suffix with
+#: any plain quant — "XL" names a per-layer bit ALLOCATION, not a fixed
+#: width — so family membership is the only reliable signal for THOSE files.
+_GGUF_FAMILY_RE = re.compile(r"^I?Q(\d)", re.IGNORECASE)
+#: Plain (non-dynamic) families this picker will rank at all — everything
+#: below 4 bits is excluded UNLESS it is a `UD-` dynamic quant, whose
+#: per-layer allocation is specifically engineered to stay usable at a lower
+#: AVERAGE bit width (the branch's own curated 27B entry is `UD-Q3_K_XL`,
+#: a family-3 dynamic quant, for exactly this reason). A plain, uniform
+#: sub-4-bit quant has no such engineering behind it and is excluded.
+_GGUF_NAMED_FAMILIES = frozenset({4, 5, 6, 8})
+
+
+def _gguf_rank(filename: str) -> tuple[int, int] | None:
+    """`filename`'s sort key for `pick_gguf_file` — smaller sorts first
+    (more preferred) — or None to exclude it from ranked candidacy.
+
+    Four tiers, described in ascending (best-to-worst) order:
+
+    0. A plain (non-`UD-`) NAMED suffix, ranked by `GGUF_SUFFIX_PRIORITY`'s
+       own order.
+    1. A plain named suffix `GGUF_SUFFIX_PRIORITY` does not list by exact
+       name but whose family (`Q4`/`Q5`/`Q6`/`Q8`) is still one of the four
+       ranked ones — a suffix variant this table has not been taught yet,
+       ranked below every NAMED suffix in the same family rather than
+       excluded outright.
+    2. A `UD-` dynamic quant of one of the four ranked families — eligible,
+       per the module note above, but ranked below every plain quant of any
+       ranked family, since a plain quant needs no engineering to stay
+       usable at that width.
+    3. A `UD-` dynamic quant of an UNRANKED (sub-4-bit) family — eligible
+       ONLY because it is dynamic, and ranked last: this is the tier the
+       branch's own curated `UD-Q3_K_XL` entry would land in.
+
+    A plain sub-4-bit quant, an unquantized file (`BF16`/`F16`/`F32`), or a
+    filename with no recognisable quant token at all returns None — not a
+    tier, EXCLUDED. `pick_gguf_file`'s single-candidate fallback is the only
+    way one of those is ever chosen, and only when nothing else competes.
+    """
+    match = _GGUF_QUANT_TOKEN_RE.search(filename)
+    if not match:
+        return None
+    token = match.group("token").upper()
+    is_ud = bool(match.group("ud"))
+    family_match = _GGUF_FAMILY_RE.match(token)
+    if not family_match:
+        return None
+    family = int(family_match.group(1))
+    ranked_family = family in _GGUF_NAMED_FAMILIES
+    if not ranked_family and not is_ud:
+        return None
+    try:
+        suffix_rank = GGUF_SUFFIX_PRIORITY.index(token)
+    except ValueError:
+        suffix_rank = len(GGUF_SUFFIX_PRIORITY)
+    if ranked_family:
+        tier = 2 if is_ud else (0 if token in GGUF_SUFFIX_PRIORITY else 1)
+    else:
+        tier = 3
+    return (tier, suffix_rank)
+
+
+def pick_gguf_file(filenames) -> str | None:
+    """The one GGUF file `filenames` (a repo's own listing, root-relative)
+    means as a chat model — or None when nothing here qualifies.
+
+    **This is the whole of Piece 1** (D407): given ANY Hub repo's file
+    listing, decide which single `.gguf` a bare repo id resolves to, the same
+    question `GGUF_RECIPES` answers by hand for 5 curated filenames. Three
+    passes:
+
+    1. Exclude by SHAPE — a subdirectory entry (`BF16/model.gguf`, sidesteps
+       both the unquantized-BF16 case and every split shard observed, since
+       both live under a subdirectory in every sample checked), a non-GGUF
+       file, a multi-part shard (`GGUF_SPLIT_RE`), or an auxiliary weight
+       (`GGUF_AUXILIARY_RE`) — regardless of what its own quant suffix says.
+    2. RANK what is left by `_gguf_rank` and take the best-ranked file, when
+       anything ranks at all.
+    3. Only when NOTHING ranks (no recognisable quant token anywhere) and
+       there is EXACTLY ONE eligible file, fall back to it — the same
+       "no ambiguity, nothing to guess between" rule
+       `llama_text._resolve_model_id` already uses for a curated repo with
+       one recipe. With MORE than one unranked candidate, refuse: picking
+       the smallest of them would risk exactly what this function exists to
+       avoid, an `mmproj` or a draft model offered as the chat model.
+    """
+    candidates = []
+    for name in filenames:
+        if not isinstance(name, str) or "/" in name:
+            continue
+        if not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_SPLIT_RE.search(name) or GGUF_AUXILIARY_RE.search(name):
+            continue
+        candidates.append(name)
+    if not candidates:
+        return None
+    ranked = sorted(
+        (rank_and_name for rank_and_name in
+         ((_gguf_rank(name), name) for name in candidates)
+         if rank_and_name[0] is not None),
+        key=lambda pair: (pair[0], pair[1]),
+    )
+    if ranked:
+        return ranked[0][1]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
 
 #: Quantizations `runners/torch_text.py` refuses BY NAME, each with the
 #: sentence it refuses them with: what transformers raises for an AWQ repo with
