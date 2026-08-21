@@ -357,10 +357,12 @@ def fake_refusing_runner(tmp_path, monkeypatch):
     endpoint's per-engine refusals reachable from a test.
 
     Until D406, this used the real `parakeet-mlx` code and its real table
-    entry; that engine was withdrawn and the table is empty now that no
-    registered runner refuses anything, so the refusal PATH is exercised
-    here with a fake entry instead of a real one — the mechanism, not any
-    particular engine, is what this file pins."""
+    entry; that engine was withdrawn and no registered TRANSCRIBE runner
+    refuses anything today (the table itself is no longer empty overall —
+    D419 gave the diffusers image engines a real `image` row — just still
+    empty on this capability), so the refusal PATH is exercised here with a
+    fake entry instead of a real one — the mechanism, not any particular
+    engine, is what this file pins."""
     from fused_render.ai.runners import engine_options
     code = "fake-refusing-engine"
     monkeypatch.setitem(engine_options.UNSUPPORTED, code, {
@@ -3555,6 +3557,22 @@ def test_the_reply_describes_the_render_that_will_actually_happen(client, fake_i
     assert reply["guidance"] == 20.0       # clamped
 
 
+def test_an_explicit_ZERO_steps_or_guidance_is_CLAMPED_not_REPLACED(
+        client, fake_image_runner):
+    """`body.get("steps") or default` reads an explicit `0` as "the caller
+    said nothing" and silently substitutes the default — this predates the
+    edit option (the base commit already had `body.get("steps") or 28`),
+    but two different defaults depending on mode is what makes the
+    substitution obvious rather than a one-in-a-million miss. `0` is a
+    real, in-range value for `guidance` and a real (if extreme) request for
+    `steps`, and either must be CLAMPED, never quietly swapped out."""
+    reply = client.post(
+        "/api/ai/image", json={"prompt": "x", "steps": 0, "guidance": 0},
+        headers={"X-Fused": "1"}).json()
+    assert reply["steps"] == 1          # clamped to the floor, not 28
+    assert reply["guidance"] == 0.0     # honoured, not replaced with 4.0
+
+
 def test_two_renders_are_two_rows_and_two_files(client, fake_image_runner):
     """One row per RENDER, not per model: a shared id would have the second
     overwrite the first's progress mid-flight."""
@@ -3678,6 +3696,90 @@ def base_photo(tmp_path):
     photo = page.parent / "photo.png"
     photo.write_bytes(_png_bytes(2000, 1000))
     return str(page), str(photo)
+
+
+# -- WebP: all three sub-formats, against REAL Pillow-written files -------------
+#
+# `cwebp`, Pillow and a browser's own "Save as WebP" all emit plain `VP8 `
+# (lossy) or `VP8L` (lossless) — only an explicit request for alpha/EXIF/ICC
+# or animation gets the extended `VP8X` container. A reader that understood
+# only `VP8X` would silently fall back to the 1024x1024 default for every
+# ORDINARY WebP, stretching the render — exactly the class of surprise this
+# feature exists to avoid. These write real files through Pillow rather than
+# hand-rolled bytes, because the hand-rolled PNG fixture above is honest about
+# testing the READER and not the ENCODER, but a hand-rolled VP8/VP8L bitstream
+# would itself be the thing under test if this file wrote the bytes.
+
+
+def test_a_LOSSY_webp_VP8_is_read_correctly(tmp_path):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    photo = tmp_path / "lossy.webp"
+    Image.new("RGB", (1183, 800), (255, 0, 0)).save(
+        str(photo), "WEBP", lossless=False, quality=80)
+    assert open(photo, "rb").read(16)[12:16] == b"VP8 ", "fixture drifted"
+    assert ai_runtime._image_pixel_size(str(photo)) == (1183, 800)
+
+
+def test_a_LOSSLESS_webp_VP8L_is_read_correctly(tmp_path):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    photo = tmp_path / "lossless.webp"
+    Image.new("RGB", (777, 333), (0, 255, 0)).save(
+        str(photo), "WEBP", lossless=True)
+    assert open(photo, "rb").read(16)[12:16] == b"VP8L", "fixture drifted"
+    assert ai_runtime._image_pixel_size(str(photo)) == (777, 333)
+
+
+def test_an_EXTENDED_webp_VP8X_still_works(tmp_path):
+    """The one form this reader always understood — pinned again here
+    against a REAL file (alpha forces the extended container) rather than
+    only the hand-rolled bytes further down, now that it has two real
+    siblings to be consistent with."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    photo = tmp_path / "extended.webp"
+    Image.new("RGBA", (500, 900), (0, 0, 255, 128)).save(str(photo), "WEBP")
+    assert open(photo, "rb").read(16)[12:16] == b"VP8X", "fixture drifted"
+    assert ai_runtime._image_pixel_size(str(photo)) == (500, 900)
+
+
+def test_a_plain_webp_edit_does_NOT_silently_come_back_square(
+        client, fake_image_runner, tmp_path):
+    """End to end, through the real endpoint: a caller who saved a WebP the
+    ordinary way (`cwebp`, Pillow's default, a browser's "Save as WebP")
+    must get the SIZE-FROM-BASE promise SPEC AI-9f and the SKILL both make,
+    not a silent fallback to 1024x1024 that stretches whatever renders."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "photo.webp"
+    Image.new("RGB", (1183, 800), (10, 20, 30)).save(str(photo), "WEBP")
+
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.webp", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (1024, 688)
+    _wait_job(started["jobId"])
+
+
+def test_a_REAL_jpeg_is_read_correctly(tmp_path):
+    """The one format above with no synthetic-bytes test at all — Pillow's
+    default encoder, against the marker walk rather than a hand-rolled
+    SOF0 segment."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    photo = tmp_path / "photo.jpg"
+    Image.new("RGB", (640, 427), (128, 64, 32)).save(str(photo), "JPEG")
+    assert ai_runtime._image_pixel_size(str(photo)) == (640, 427)
 
 
 def test_editing_needs_a_base_image_that_EXISTS(client, fake_image_runner):
@@ -3839,6 +3941,35 @@ def test_an_edits_default_size_never_UPSCALES_a_small_base(tmp_path):
     assert ai_runtime._edit_default_size(str(photo)) == (288, 256)
 
 
+def test_the_256_FLOOR_overrides_aspect_on_an_extreme_ratio(tmp_path):
+    """Documented, not a bug to route around: a 4000x200 base (20:1) fits
+    its long side to 1024 (200 -> 51, floored to 256) and comes back
+    1024x256 (4:1) — the arithmetic as confirmed on hardware, which is why
+    the docstring, SPEC AI-9f and the SKILL all now say the floor overrides
+    "aspect preserved" on an extreme ratio rather than merely asserting the
+    aspect claim unqualified."""
+    photo = tmp_path / "banner.png"
+    photo.write_bytes(_png_bytes(4000, 200))
+    assert ai_runtime._edit_default_size(str(photo)) == (1024, 256)
+
+
+def test_an_edits_default_size_HITS_1024_EXACTLY_not_1008(tmp_path):
+    """A width `float` rounding regresses on: `1024.0 / 1122 * 1122`
+    lands on `1023.9999999999999` rather than `1024.0`, and a truncating
+    `int()` then snaps that DOWN a whole extra `_SIDE_STEP` — `1122x600`
+    coming back `1008x544` instead of the `1024x544` the docstring
+    promises. Integer division (`width * 1024 // longest`) cancels exactly
+    and does not have this failure mode. `1183x800` is the same bug from
+    the other axis (height the long side)."""
+    photo = tmp_path / "long.png"
+    photo.write_bytes(_png_bytes(1122, 600))
+    assert ai_runtime._edit_default_size(str(photo)) == (1024, 544)
+
+    tall = tmp_path / "tall.png"
+    tall.write_bytes(_png_bytes(800, 1183))
+    assert ai_runtime._edit_default_size(str(tall)) == (688, 1024)
+
+
 def test_an_explicit_width_still_wins_over_the_edit_default(
         client, fake_image_runner, base_photo):
     page, _photo = base_photo
@@ -3847,6 +3978,23 @@ def test_an_explicit_width_still_wins_over_the_edit_default(
         json={"prompt": "a fox", "image": "photo.png", "base": page, "width": 512},
         headers={"X-Fused": "1"}).json()
     assert started["width"] == 512
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_ZERO_guidance_on_an_EDIT_is_honoured_not_replaced(
+        client, fake_image_runner, base_photo):
+    """The same falsy-`or` bug, under the edit defaults (4/1.0) rather than
+    the generate ones (28/4.0) — either default silently swallowing an
+    explicit `0` is wrong, and the edit path is where the two different
+    defaults made the bug worth fixing in the first place."""
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page,
+             "steps": 0, "guidance": 0},
+        headers={"X-Fused": "1"}).json()
+    assert started["steps"] == 1        # clamped to the floor, not 4
+    assert started["guidance"] == 0.0   # honoured, not replaced with 1.0
     _wait_job(started["jobId"])
 
 
@@ -3919,6 +4067,55 @@ def test_the_image_endpoint_and_the_worker_refuse_it_by_the_SAME_rule(
     with pytest.raises(ValueError) as raised:
         engine_options.unsupported_or_raise("diffusers-image", image="photo.png")
     assert response.json()["error"] == str(raised.value)
+
+
+@pytest.fixture()
+def fake_mflux_image_runner(tmp_path, monkeypatch):
+    """Same fake worker as `fake_diffusers_image_runner`, resolved under the
+    REAL `mflux-image` code — needed because the edit-recipe check below is
+    keyed on that exact string, and a fake code would never reach it."""
+    yield _only_image_runner(tmp_path, monkeypatch, "mflux-image")
+    supervisor.unload()
+    supervisor.reset()
+
+
+def test_editing_a_model_with_NO_edit_recipe_is_refused_before_a_job_opens(
+        client, fake_mflux_image_runner, base_photo, monkeypatch):
+    """The ENGINE can edit (mflux resolved as the only runner) but this
+    specific MODEL has no row in `formats.MFLUX_EDIT_VARIANTS` — refused
+    here, before a job row opens, for the identical reason the engine-level
+    refusal a few lines up is: a venv build and a multi-GB download must
+    not happen before the worker's own `_build_variant` raises the same
+    fact."""
+    from fused_render.ai.runners import formats
+
+    known = next(iter(formats.MFLUX_VARIANTS))
+    monkeypatch.delitem(formats.MFLUX_EDIT_VARIANTS, known)
+    page, _photo = base_photo
+    response = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "model": known},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400, response.json()
+    assert "no edit variant" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.IMAGE_JOB_PREFIX)]
+
+
+def test_editing_a_model_WITH_an_edit_recipe_still_opens_a_job(
+        client, fake_mflux_image_runner, base_photo):
+    """The check is an exception, not a blanket refusal of every mflux
+    edit — a model that DOES have a row in both tables must still work."""
+    from fused_render.ai.runners import formats
+
+    known = next(iter(formats.MFLUX_VARIANTS))
+    assert formats.mflux_edit_recipe(known) is not None
+    page, _photo = base_photo
+    started = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "model": known},
+        headers={"X-Fused": "1"}).json()
+    _wait_job(started["jobId"])
 
 
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
