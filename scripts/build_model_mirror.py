@@ -7,6 +7,20 @@ etag under the commit — and this is what produces both:
     <prefix>/models/<org>/<name>/manifest.json
     <prefix>/models/<org>/<name>/<commit>/<etag>
 
+Plus a third for ONE named file (AI-5m), which is how a GGUF gets mirrored at
+all:
+
+    <prefix>/models/<org>/<name>/files/<filename>/manifest.json
+
+`llama_text.download` fetches one quantization out of a repo publishing dozens,
+and the repo manifest cannot describe that: it asserts it lists the repo WHOLE at
+the commit, so publishing one 2.6GB file the repo-wide way would mean holding and
+uploading all 147.81GB of `unsloth/Qwen3.5-9B-GGUF`. The per-file manifest lists
+exactly one file, carries no `complete` flag (there is no repo claim to prove, so
+`--fetch-missing` and the Hub listing are both skipped), and points at a blob in
+the SHARED key space above — so a repo published both ways stores one copy of
+each blob.
+
 **Everything is READ OUT OF A CACHE DIRECTORY hf itself produced**, never
 transcribed. The commit comes from `refs/main`, the etags are the blob
 FILENAMES, the sizes and the sha256 digests come from the blobs. That is the
@@ -30,6 +44,7 @@ Usage:
 
     python scripts/build_model_mirror.py --cache ~/.cache/huggingface/hub
     python scripts/build_model_mirror.py --model org/name --json manifest.json
+    python scripts/build_model_mirror.py --model org/name --file model-Q4_K_M.gguf
     python scripts/build_model_mirror.py --fetch-missing        # download first
     python scripts/build_model_mirror.py --upload s3://bucket/prefix
 
@@ -57,6 +72,12 @@ SCHEMA = 1
 HASH_BLOCK_BYTES = 1024 * 1024
 _COMMIT = re.compile(r"\A[0-9a-f]{40}\Z")
 _HEX = re.compile(r"\A[0-9a-f]+\Z")
+#: Kept in step with `mirror._FILENAME`, and checked HERE for the reason this
+#: whole script exists: the name becomes one URL path segment of the per-file
+#: manifest's key, so publishing a name the client refuses produces an object
+#: nothing can ever read — silently, since a client that finds no mirror just
+#: downloads from the Hub.
+_FILENAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def default_cache() -> str:
@@ -195,6 +216,48 @@ def read_manifest(cache: str, repo_id: str, ref: str = "main", listing=None) -> 
             "complete": True, "files": files}
 
 
+def read_file_manifest(cache: str, repo_id: str, filename: str,
+                       ref: str = "main") -> dict:
+    """The manifest for ONE file of a repo, read out of its cache directory.
+
+    **A partial cache is the normal input here**, which is the whole difference
+    from `read_manifest` above. That function refuses a snapshot missing anything
+    the Hub lists, because the manifest it writes claims to describe the repo
+    whole and a client turns that claim into an AI-5k fetch record. This one
+    claims one named file, so there is nothing to prove: no `complete` flag, no
+    Hub listing, and `--fetch-missing` fetches the one file rather than the repo.
+    That is not a loosening for convenience — see `mirror.file_manifest` — the
+    client that reads this writes no fetch record, so no partial answer can be
+    recorded as whole.
+
+    Everything else is read exactly as the repo mode reads it: the commit from
+    `refs/<ref>`, the etag from the blob FILENAME the snapshot entry resolves to,
+    the size and digest from the blob itself.
+    """
+    if not _FILENAME.match(filename or ""):
+        raise ValueError(
+            f"{repo_id}: {filename!r} is not a publishable file name — the "
+            f"per-file manifest's key is `files/<name>/manifest.json`, one path "
+            f"segment, and the client refuses anything else")
+    folder = repo_folder(cache, repo_id)
+    commit = read_commit(folder, ref)
+    root = os.path.join(folder, "snapshots", commit)
+    path = os.path.join(root, filename)
+    if not os.path.isfile(path):
+        raise ValueError(
+            f"{repo_id}: {filename} is not in the cached snapshot for "
+            f"{commit[:12]}. Re-run with --fetch-missing.")
+    blob = os.path.realpath(path)
+    etag = os.path.basename(blob)
+    if not _HEX.match(etag):
+        raise ValueError(
+            f"{repo_id}: {filename} resolves to {etag!r}, which is not an etag "
+            f"— is this snapshot a `local_dir` copy rather than a cache entry?")
+    return {"schema": SCHEMA, "repo": repo_id, "commit": commit,
+            "files": [{"name": wire_name(path, root), "etag": etag,
+                       "size": os.path.getsize(blob), "sha256": sha256_of(blob)}]}
+
+
 def sha256_of(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -203,13 +266,20 @@ def sha256_of(path: str) -> str:
     return digest.hexdigest()
 
 
-def plan(cache: str, manifest: dict) -> list[dict]:
+def plan(cache: str, manifest: dict, filename: str | None = None) -> list[dict]:
     """One upload per distinct etag, plus the manifest itself, last.
 
     Last deliberately: the manifest is what makes a model DOWNLOADABLE, so
     publishing it before its blobs would advertise objects that are not there
     yet — a manifest promising bytes the mirror does not hold, which the client
     can only discover mid-download.
+
+    `filename` publishes the PER-FILE manifest key instead of the repo one — an
+    explicit argument rather than something inferred from the manifest's shape,
+    because which claim is being published is the caller's decision and a wrong
+    guess would file one document under the other's key. The BLOBS are keyed
+    identically either way, which is what makes a repo published both ways store
+    one copy of each blob.
     """
     folder = repo_folder(cache, manifest["repo"])
     uploads, seen = [], set()
@@ -223,10 +293,10 @@ def plan(cache: str, manifest: dict) -> list[dict]:
             "size": entry["size"],
             "immutable": True,
         })
-    uploads.append({
-        "key": f"models/{manifest['repo']}/manifest.json",
-        "path": None, "size": None, "immutable": False,
-    })
+    key = f"models/{manifest['repo']}/manifest.json"
+    if filename:
+        key = f"models/{manifest['repo']}/files/{filename}/manifest.json"
+    uploads.append({"key": key, "path": None, "size": None, "immutable": False})
     return uploads
 
 
@@ -243,6 +313,17 @@ def fetch_missing(repo_id: str, cache: str) -> None:
     from huggingface_hub import snapshot_download
 
     snapshot_download(repo_id, cache_dir=cache)
+
+
+def fetch_missing_file(repo_id: str, filename: str, cache: str) -> None:
+    """Download ONE file into `cache` with hf's own downloader.
+
+    The repo-wide `fetch_missing` is not an option here: for a GGUF repo it would
+    fetch every quantization, which is the 147.81GB this mode exists to avoid.
+    """
+    from huggingface_hub import hf_hub_download
+
+    hf_hub_download(repo_id, filename, cache_dir=cache)
 
 
 def upload(uploads: list[dict], destination: str, manifest: dict,
@@ -286,12 +367,40 @@ def suggested_ids() -> list[str]:
     return sorted(catalog.all_suggested_ids())
 
 
+def suggested_targets() -> list[tuple]:
+    """Every suggested model as a `(repo_id, filename or None)` publish target.
+
+    A curated llama.cpp id is a `.gguf` FILENAME rather than a repo id — one repo
+    publishes many quantizations, so the app keys that curation by file — and
+    `models--<filename>` is not a cache folder, so the whole-repo mode could only
+    ever print SKIPPED for it. A default run therefore could not succeed and
+    always exited 1, once for every llama.cpp row. Those ids become per-file
+    targets against the recipe's repo, which is also the only shape publishable
+    at all: the repo is 147.81GB and the file is 2.6GB.
+
+    Everything else is already a repo id and stays a whole-repo target.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from fused_render.ai import catalog
+    from fused_render.ai.runners import formats
+
+    targets = []
+    for model_id in sorted(catalog.all_suggested_ids()):
+        recipe = formats.GGUF_RECIPES.get(model_id)
+        targets.append((recipe["repo"], recipe["file"]) if recipe
+                       else (model_id, None))
+    return targets
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cache", default=None,
                         help="hf hub cache to read (default: hf's own location)")
     parser.add_argument("--model", action="append", dest="models", default=None,
                         help="repo id; repeatable. Default: every suggested model")
+    parser.add_argument("--file", action="append", dest="files", default=None,
+                        help="publish ONE file of --model rather than the whole "
+                             "repo (AI-5m); repeatable, needs exactly one --model")
     parser.add_argument("--ref", default="main", help="the ref to publish")
     parser.add_argument("--fetch-missing", action="store_true",
                         help="ask hf to complete each model's cache first")
@@ -302,9 +411,19 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     cache = args.cache or default_cache()
-    models = args.models or suggested_ids()
+    if args.files:
+        # `--file` names a file OF a repo, and of ONE repo: spread over the
+        # suggested list it would ask every model for somebody else's GGUF.
+        if not args.models or len(args.models) != 1:
+            parser.error("--file needs exactly one --model")
+        targets = [(args.models[0], filename) for filename in args.files]
+    elif args.models:
+        targets = [(repo_id, None) for repo_id in args.models]
+    else:
+        targets = suggested_targets()
     failed = []
-    for repo_id in models:
+    for repo_id, filename in targets:
+        label = repo_id if filename is None else f"{repo_id} {filename}"
         if args.fetch_missing:
             # UNCONDITIONALLY, not only when the folder is absent. "The folder
             # exists" was the old condition and it is not the same question: a
@@ -312,24 +431,36 @@ def main(argv=None) -> int:
             # holds a tenth of the repo, and the manifest built from it would be
             # a permanently broken model. For a cache that IS complete this costs
             # one etag revalidation, which is nothing on a release script.
-            print(f"{repo_id}: completing the cache in {cache}")
-            fetch_missing(repo_id, cache)
+            #
+            # A per-file target fetches the one FILE, because the repo behind it
+            # is the 147.81GB this mode exists to avoid.
+            print(f"{label}: completing the cache in {cache}")
+            if filename is None:
+                fetch_missing(repo_id, cache)
+            else:
+                fetch_missing_file(repo_id, filename, cache)
         try:
-            manifest = read_manifest(cache, repo_id, args.ref)
+            manifest = (read_manifest(cache, repo_id, args.ref) if filename is None
+                        else read_file_manifest(cache, repo_id, filename, args.ref))
         except (OSError, ValueError) as error:
             # Reported and skipped, not fatal: one model missing from a machine's
             # cache must not stop the other twenty from being published.
-            print(f"{repo_id}: SKIPPED — {error}")
-            failed.append(repo_id)
+            print(f"{label}: SKIPPED — {error}")
+            failed.append(label)
             continue
-        uploads = plan(cache, manifest)
+        uploads = plan(cache, manifest, filename)
         total = sum(item["size"] or 0 for item in uploads)
-        print(f"{repo_id} @ {manifest['commit'][:12]} — {len(manifest['files'])} "
+        print(f"{label} @ {manifest['commit'][:12]} — {len(manifest['files'])} "
               f"files, {len(uploads) - 1} blobs, {total / 1e9:.2f} GB")
         if args.json:
             os.makedirs(args.json, exist_ok=True)
-            out = os.path.join(args.json,
-                               repo_id.replace("/", "--") + ".manifest.json")
+            # The filename is in the OUTPUT name too: two targets in one repo
+            # write two manifests, and a shared name would leave whichever ran
+            # last on disk under a name describing the other.
+            stem = repo_id.replace("/", "--")
+            if filename is not None:
+                stem = f"{stem}--{filename}"
+            out = os.path.join(args.json, stem + ".manifest.json")
             with open(out, "w", encoding="utf-8") as handle:
                 json.dump(manifest, handle, indent=2)
             print(f"  wrote {out}")

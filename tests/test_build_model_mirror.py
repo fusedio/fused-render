@@ -446,6 +446,257 @@ def test_a_zero_byte_file_is_published_like_any_other(script, tmp_path):
     assert empty["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
+# -- ONE FILE, from a cache that holds only that file (AI-5m) --------------------
+#
+# `llama_text.download` fetches one GGUF out of a repo publishing dozens of
+# quantizations, and the whole-repo mode above cannot serve it: it refuses a
+# partial cache, so publishing one 2.6GB file would mean holding — and
+# uploading — all 147.81GB of `unsloth/Qwen3.5-9B-GGUF`. This mode reads exactly
+# one file, asks the Hub nothing (there is no completeness to prove), and writes
+# its manifest to a key of its own while the BLOB stays in the shared per-repo
+# blob space.
+
+GGUF_NAME = "Model-Q4_K_M.gguf"
+ONE_FILE = {GGUF_NAME: hashlib.sha256(b"quant").digest() * 6250}  # 200_000 B
+
+
+def test_a_per_file_manifest_is_read_from_a_cache_holding_only_that_file(script,
+                                                                        tmp_path):
+    """The whole point: a partial cache is the NORMAL input here.
+
+    Read out of the cache like everything else — commit from `refs/main`, etag
+    from the blob filename, size and digest from the blob — and with no
+    `complete` field, because one named file makes no claim about the repo.
+    """
+    cache = _cache(tmp_path, ONE_FILE)
+
+    manifest = script.read_file_manifest(cache, "org/m", GGUF_NAME)
+
+    etag = hashlib.sha256(ONE_FILE[GGUF_NAME]).hexdigest()
+    assert manifest == {
+        "schema": script.SCHEMA, "repo": "org/m", "commit": COMMIT,
+        "files": [{"name": GGUF_NAME, "etag": etag, "size": 200_000,
+                   "sha256": etag}],
+    }
+    assert "complete" not in manifest
+
+
+def test_a_per_file_manifest_asks_the_hub_nothing(script, tmp_path, monkeypatch):
+    """No listing call, because there is no completeness claim to earn.
+
+    The whole-repo mode has to ask (a cache directory existing says nothing
+    about it being whole), and that is exactly the cost this mode exists to
+    avoid — the Hub's answer for a GGUF repo is the 147.81GB list.
+    """
+    cache = _cache(tmp_path, ONE_FILE)
+
+    def no(*args, **kwargs):
+        raise AssertionError("the per-file mode listed the repo")
+
+    monkeypatch.setattr(script, "hub_listing", no)
+
+    assert script.read_file_manifest(cache, "org/m", GGUF_NAME) is not None
+
+
+def test_a_file_the_cache_does_not_hold_is_refused(script, tmp_path):
+    """Refused, never trimmed to what is there — the same rule as the repo mode,
+    for the same reason: a manifest of "whatever this machine happens to hold"
+    is the bug and not the fix."""
+    cache = _cache(tmp_path, ONE_FILE)
+
+    with pytest.raises(ValueError, match="not in the cached snapshot"):
+        script.read_file_manifest(cache, "org/m", "some-other-quant.gguf")
+
+
+@pytest.mark.parametrize("bad", ["", "..", "sub/file.gguf", "/abs.gguf",
+                                 ".hidden.gguf", "a?b.gguf"])
+def test_a_filename_the_client_would_reject_is_never_published(script, tmp_path,
+                                                               bad):
+    """The name becomes one URL path SEGMENT of the manifest's key, and the
+    client validates it as such. Publishing a name it refuses would produce an
+    object nothing can read, which is the "fails silently" class this script
+    exists to prevent."""
+    cache = _cache(tmp_path, ONE_FILE)
+
+    with pytest.raises(ValueError, match="not a publishable file name"):
+        script.read_file_manifest(cache, "org/m", bad)
+
+
+def test_the_per_file_plan_keeps_the_blob_in_the_shared_space(script, tmp_path):
+    """Two objects: the blob at the EXISTING per-repo key, and the manifest at a
+    per-file one.
+
+    The shared blob key is what makes a repo mirrored both ways store one copy
+    of each blob — the key already names the commit and the etag, so it cannot
+    hold anything but those bytes whichever manifest points at it. Manifest
+    last, as ever.
+    """
+    cache = _cache(tmp_path, ONE_FILE)
+    manifest = script.read_file_manifest(cache, "org/m", GGUF_NAME)
+
+    uploads = script.plan(cache, manifest, filename=GGUF_NAME)
+
+    etag = manifest["files"][0]["etag"]
+    assert [item["key"] for item in uploads] == [
+        f"models/org/m/{COMMIT}/{etag}",
+        f"models/org/m/files/{GGUF_NAME}/manifest.json",
+    ]
+    assert uploads[0]["immutable"] is True
+    assert uploads[-1]["immutable"] is False
+    assert uploads[0]["path"].endswith(os.path.join("blobs", etag))
+
+
+def test_a_per_file_upload_sets_the_same_cache_control_as_the_repo_mode(script,
+                                                                       tmp_path,
+                                                                       monkeypatch):
+    """One short-TTL manifest and one immutable blob — the same two answers, at a
+    different key. And a blob whose key exists is still skipped."""
+    cache = _cache(tmp_path, ONE_FILE)
+    manifest = script.read_file_manifest(cache, "org/m", GGUF_NAME)
+    uploads = script.plan(cache, manifest, filename=GGUF_NAME)
+    monkeypatch.setattr(script.shutil, "which", lambda name: "/usr/bin/aws")
+    calls = []
+
+    class _Missing:
+        returncode = 1
+        stdout = b""
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return _Missing()
+
+    written = script.upload(uploads, "s3://bucket/prefix", manifest, run=run)
+
+    assert written == [f"models/org/m/{COMMIT}/{manifest['files'][0]['etag']}",
+                       f"models/org/m/files/{GGUF_NAME}/manifest.json"]
+    copies = [args for args in calls if args[:3] == ["aws", "s3", "cp"]]
+    assert len(copies) == 2, copies
+    assert "public, max-age=31536000, immutable" in copies[0]
+    assert "max-age=60" in copies[1]
+    assert copies[1][4].endswith(f"/models/org/m/files/{GGUF_NAME}/manifest.json")
+
+
+def test_the_cli_publishes_one_file_of_a_repo(script, tmp_path, monkeypatch,
+                                              capsys):
+    """`--model org/name --file NAME`, dry run by default like everything else."""
+    cache = _cache(tmp_path, ONE_FILE)
+
+    def no(*args, **kwargs):
+        raise AssertionError("a dry run shelled out to something")
+
+    monkeypatch.setattr(script.subprocess, "run", no)
+    monkeypatch.setattr(script.shutil, "which", no)
+    monkeypatch.setattr(script, "hub_listing", no)
+
+    code = script.main(["--cache", cache, "--model", "org/m", "--file", GGUF_NAME])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert f"would upload models/org/m/files/{GGUF_NAME}/manifest.json" in out
+
+
+def test_a_file_missing_from_the_cache_is_skipped_but_the_run_fails(script,
+                                                                   tmp_path,
+                                                                   monkeypatch,
+                                                                   capsys):
+    """Same rule as a missing repo: tolerant loop, non-zero exit. A curated GGUF
+    quietly absent from the mirror is invisible by design, so the exit code is
+    the only place it can be caught."""
+    cache = _cache(tmp_path, ONE_FILE)
+    monkeypatch.setattr(script, "hub_listing", _listing(*ONE_FILE))
+
+    code = script.main(["--cache", cache, "--model", "org/m",
+                        "--file", GGUF_NAME, "--file", "absent.gguf"])
+
+    out = capsys.readouterr().out
+    assert code == 1, "an incomplete publish exited green"
+    assert "absent.gguf: SKIPPED" in out
+    assert f"would upload models/org/m/files/{GGUF_NAME}/manifest.json" in out
+
+
+def test_a_file_without_a_model_is_a_usage_error(script):
+    """`--file` names a file OF a repo, and one repo: applying it to the whole
+    suggested list would ask every model for somebody else's GGUF."""
+    with pytest.raises(SystemExit):
+        script.main(["--file", GGUF_NAME])
+    with pytest.raises(SystemExit):
+        script.main(["--model", "org/a", "--model", "org/b", "--file", GGUF_NAME])
+
+
+def test_the_default_run_expands_a_curated_gguf_into_a_repo_and_a_file(script):
+    """The default target list, and this is a BUG FIX as much as a feature.
+
+    `catalog.all_suggested_ids()` includes `llamacpp-text`'s bare `.gguf`
+    filenames, so the old default run looked for `models--LFM2.5-….gguf` in the
+    cache, found nothing, and printed SKIPPED for every llama.cpp model — a
+    default invocation that could not succeed and always exited 1. Those ids are
+    now per-file targets against the recipe's repo, which is also the only shape
+    that can be published at all: the repo is 147.81GB and the file is 2.6GB.
+    """
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from fused_render.ai import catalog
+    from fused_render.ai.runners import formats
+
+    targets = script.suggested_targets()
+
+    assert len(targets) == len(catalog.all_suggested_ids())
+    for model_id, recipe in formats.GGUF_RECIPES.items():
+        assert (recipe["repo"], recipe["file"]) in targets, model_id
+        assert not any(repo == model_id for repo, _file in targets), (
+            f"{model_id} is a FILENAME and would be looked up as a repo folder")
+    # …and every other runner's ids are repo ids and stay whole-repo targets.
+    assert all(filename is None for repo, filename in targets
+               if repo not in {r["repo"] for r in formats.GGUF_RECIPES.values()})
+
+
+def test_the_client_reads_a_per_file_manifest_the_script_wrote(script,
+                                                              mirror_and_base,
+                                                              tmp_path,
+                                                              monkeypatch):
+    """The round trip, per-file half: generator and the second reader agreeing,
+    then a real download through `download_file`.
+
+    Each half can be self-consistently wrong on its own — a script that reported
+    the symlink's size and a client that trusted it would agree perfectly and
+    produce a truncated blob under a real etag — so this drives both against
+    real bytes, and lands them in hf's own cache layout.
+    """
+    mirror, base = mirror_and_base
+    source = _cache(tmp_path, ONE_FILE)
+    manifest = script.read_file_manifest(source, "org/m", GGUF_NAME)
+    etag = manifest["files"][0]["etag"]
+    routes = {f"/models/org/m/files/{GGUF_NAME}/manifest.json":
+              json.dumps(manifest).encode(),
+              f"/models/org/m/{COMMIT}/{etag}": ONE_FILE[GGUF_NAME]}
+    _url, state = _start_server(b"", routes=routes)
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"])
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
+
+    read = mirror.file_manifest("org/m", GGUF_NAME)
+
+    assert read is not None, "the client rejected a manifest the script wrote"
+    assert read["commit"] == manifest["commit"]
+    assert read["files"] == manifest["files"]
+
+    landed = str(tmp_path / "downloaded" / "models--org--m")
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": landed)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "SEGMENT_MIN_BYTES", 20_000)
+    monkeypatch.setattr(base, "CHUNK_BYTES", 50_000)
+    monkeypatch.setattr(base, "_cached_file", lambda repo, name: None)
+
+    path = base.download_file("org/m", GGUF_NAME)
+
+    assert open(path, "rb").read() == ONE_FILE[GGUF_NAME]
+    # The blob NAME is the assertion that matters: hf's loaders find a file by
+    # its etag, so bytes right and name wrong is cache-invisible forever.
+    assert os.listdir(os.path.join(landed, "blobs")) == [etag]
+    assert open(os.path.join(landed, "refs", "main")).read() == COMMIT
+
+
 # -- the one boundary where a path becomes a name (and back) ---------------------
 
 
