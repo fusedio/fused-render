@@ -427,6 +427,10 @@
     max-height: calc(100vh - 60px); overflow: auto;
   }
   .sheet h3 { margin: 0 0 8px; font-size: 13px; }
+  /* The `.field > textarea` rule next door does not reach these — the sheet's
+     boxes are not in a field — and a JSON object typed into a 190px box is a
+     JSON object nobody can read back. */
+  .sheet textarea, .sheet > div > input { width: 100%; }
   .sheet .sheet-foot { display: flex; gap: 6px; justify-content: flex-end;
     margin-top: 12px; }
   .sheet .sheet-foot .spacer { flex: 1 1 auto; }
@@ -440,8 +444,14 @@
   .toolset .t-head { color: var(--ink-2); font-size: 11px; margin-bottom: 4px; }
   .toolset code { display: block; color: var(--ink); font-size: 11px;
     padding: 1px 0; word-break: break-all; }
-  .trig-row { display: flex; gap: 5px; align-items: center; margin-top: 4px; }
-  .trig-row select { flex: 0 0 96px; }
+  /* Wraps, because the row holds a sentence with boxes in it ("at most [n]
+     runs per hour") and a sheet is 560px wide at most — a nowrap row clipped
+     the second half of that sentence, which is the half that says what the
+     number means. */
+  .trig-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    margin-top: 4px; }
+  .trig-row select { flex: 0 0 auto; }
+  .trig-row input[type="number"] { flex: 0 0 64px; }
   .trig-row input { flex: 1 1 auto; min-width: 0; }
   .trig-row .btn { flex: 0 0 auto; }
   .trig-row label { display: flex; gap: 4px; align-items: center;
