@@ -411,6 +411,53 @@
   }
   .note.bad { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad-fg); }
   .note .btn { margin-top: 5px; }
+  /* The trigger sheet. A modal over the canvas rather than a fourth column:
+     arming is a decision made once and then left alone, and giving it a
+     permanent panel would spend the canvas's width on a control most sessions
+     never touch. */
+  #modal {
+    position: fixed; inset: 0; z-index: 40; display: flex;
+    align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--bg) 76%, transparent);
+  }
+  #modal[hidden] { display: none; }
+  .sheet {
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: 8px; padding: 14px; width: min(560px, calc(100vw - 40px));
+    max-height: calc(100vh - 60px); overflow: auto;
+  }
+  .sheet h3 { margin: 0 0 8px; font-size: 13px; }
+  .sheet .sheet-foot { display: flex; gap: 6px; justify-content: flex-end;
+    margin-top: 12px; }
+  .sheet .sheet-foot .spacer { flex: 1 1 auto; }
+  /* THE APPROVAL. Given its own frame because it IS the thing being agreed to:
+     an arm dialog whose tool list reads as one more caption is a dialog where
+     nobody reads the tool list. */
+  .toolset {
+    border: 1px solid var(--accent-dim); border-radius: 6px; padding: 8px;
+    margin: 8px 0; background: var(--bg);
+  }
+  .toolset .t-head { color: var(--ink-2); font-size: 11px; margin-bottom: 4px; }
+  .toolset code { display: block; color: var(--ink); font-size: 11px;
+    padding: 1px 0; word-break: break-all; }
+  .trig-row { display: flex; gap: 5px; align-items: center; margin-top: 4px; }
+  .trig-row select { flex: 0 0 96px; }
+  .trig-row input { flex: 1 1 auto; min-width: 0; }
+  .trig-row .btn { flex: 0 0 auto; }
+  .trig-row label { display: flex; gap: 4px; align-items: center;
+    color: var(--ink-3); font-size: 11px; flex: 0 0 auto; }
+  .armed-pill { color: var(--good-fg); background: var(--good-bg);
+    border: 1px solid var(--good-line); border-radius: 999px;
+    padding: 0 7px; font-size: 11px; line-height: 18px; }
+  .armed-pill.off { color: var(--ink-3); background: transparent;
+    border-color: var(--line); }
+  .armed-pill.warn { color: var(--bad-fg); background: var(--bad-bg);
+    border-color: var(--bad-line); }
+  .runs-list { font-size: 11px; color: var(--ink-2); margin-top: 6px; }
+  .runs-list .r { display: flex; gap: 6px; padding: 1px 0; }
+  .runs-list .r .src { color: var(--accent-dim); flex: 0 0 auto; }
+  .runs-list .r .st { flex: 0 0 auto; }
+  .runs-list .r .st.error { color: var(--bad-fg); }
   .empty { color: var(--ink-3); padding: 12px 0; font-size: 12px; }
 
   #hint {
@@ -452,7 +499,14 @@
          first load has nothing to act on. -->
     <button class="btn" id="save" disabled>Save</button>
     <button class="btn primary" id="run" disabled>Run</button>
+    <!-- The manual half of the trigger feature, and the reason it is worth
+         having on its own: a `source: "trigger"` input is untestable without a
+         way to supply the payload by hand, and "arm it and drop a file" is a
+         terrible edit-run loop. -->
+    <button class="btn" id="run-input" disabled>Run with input…</button>
     <button class="btn danger" id="cancel" hidden>Stop</button>
+    <span id="armed-state"></span>
+    <button class="btn" id="triggers" disabled>Triggers…</button>
   </div>
 </header>
 
@@ -474,6 +528,8 @@
   </div>
   <aside id="inspector"><h2>Step</h2><div id="inspector-body" class="empty">Nothing selected.</div></aside>
 </main>
+
+<div id="modal" hidden><div class="sheet" id="sheet"></div></div>
 
 <footer id="status"></footer>
 
@@ -552,6 +608,12 @@ let inspectorRunSig = "";
 // branch usually answers well before the run ends, so that is the normal
 // reading window, not an edge case.
 let nodesRunSig = "";
+// The armed state, as the SERVER holds it. Never inferred from the document:
+// arming lives in `fused_render/workflow_triggers.py`'s store and not in the
+// `.workflow.json`, precisely so that editing the file cannot edit the
+// approval — which is the whole point of the fingerprint check.
+let armed = null;
+let armedDefaults = null;
 let polling = null;
 // WHICH POLL LOOP IS THE LIVE ONE. Clearing the timer is not enough to stop a
 // loop: a tick already awaiting `runPython` resumes afterwards, overwrites the
@@ -738,6 +800,11 @@ async function load() {
   el("save").textContent = "Save";
   dirty = false;
   renderAll();
+  // The armed state is a SEPARATE read from a separate store, and it is
+  // deliberately not allowed to fail the load: a document is editable on a
+  // machine whose trigger store is unreadable, and a canvas that refused to
+  // open over it would be the wrong trade.
+  try { await loadArmed(); } catch (err) { /* the pill simply stays blank */ }
   say(catalogError ? "Tools could not be listed: " + catalogError : "");
 }
 
@@ -1235,10 +1302,14 @@ function renderNodes() {
       if (shown.length) {
         const list = text("div", "n-inputs");
         for (const input of shown.slice(0, 6)) {
-          const row = text("div", "n-in" + (input.source === "previous" ? " prev" : ""));
+          const row = text("div", "n-in" +
+            (input.source === "previous" || input.source === "trigger" ? " prev" : ""));
           row.appendChild(text("b", "", input.name));
           row.appendChild(text("span", "",
-            input.source === "previous" ? "← previous step" : String(input.value ?? "")));
+            input.source === "previous" ? "← previous step"
+              : (input.source === "trigger"
+                ? "⟵ input." + (input.key || input.name)
+                : String(input.value ?? ""))));
           list.appendChild(row);
         }
         if (shown.length > 6) {
@@ -1505,26 +1576,40 @@ function renderParamPicker(body, node, tool) {
 
         const detail = text("div", "param-row");
         const source = document.createElement("select");
-        for (const [value, text_] of [["literal", "value"], ["previous", "from previous"]]) {
+        for (const [value, text_] of [["literal", "value"],
+                                     ["previous", "from previous"],
+                                     ["trigger", "from input"]]) {
           const option = document.createElement("option");
           option.value = value;
           option.textContent = text_;
           source.appendChild(option);
         }
-        source.value = input.source === "previous" ? "previous" : "literal";
+        source.value = ["previous", "trigger"].includes(input.source)
+          ? input.source : "literal";
         const valueInput = document.createElement("input");
         valueInput.value = input.value ?? "";
         valueInput.placeholder = param.default ? "default: " + param.default : "value";
+        // The payload KEY, and it is a separate box rather than a reuse of the
+        // value box: they mean different things, and a document where `value`
+        // sometimes holds a literal and sometimes holds a key name is one no
+        // reader can check. Empty means "the parameter's own name", which is
+        // the common case (a file trigger's `path` landing on `path`).
+        const keyInput = document.createElement("input");
+        keyInput.value = input.key ?? "";
+        keyInput.placeholder = "input key (default: " + param.name + ")";
         const sync = () => {
           // A "from previous" input has no value to type: the whole point is
           // that Claude derives it from the step before, and a stale literal
           // left in the box would be written into a document that does not use
-          // it — a lie the next reader of this file would believe.
-          valueInput.hidden = source.value === "previous";
+          // it — a lie the next reader of this file would believe. A "from
+          // input" one is the same story with a key in place of the value.
+          valueInput.hidden = source.value !== "literal";
+          keyInput.hidden = source.value !== "trigger";
         };
         source.addEventListener("change", () => {
           input.source = source.value;
-          if (input.source === "previous") input.value = "";
+          if (input.source !== "literal") input.value = "";
+          if (input.source !== "trigger") delete input.key;
           sync();
           mark();
           renderNodes();
@@ -1534,9 +1619,16 @@ function renderParamPicker(body, node, tool) {
           mark();
           renderNodes();
         });
+        keyInput.addEventListener("input", () => {
+          const key = keyInput.value.trim();
+          if (key) input.key = key; else delete input.key;
+          mark();
+          renderNodes();
+        });
         sync();
         detail.appendChild(source);
         detail.appendChild(valueInput);
+        detail.appendChild(keyInput);
         list.appendChild(detail);
       }
     };
@@ -1866,6 +1958,314 @@ function updateButtons() {
       ? "No `fused` command is available, so this workflow's MCP servers cannot be started."
       : "Run this workflow");
   el("cancel").hidden = !runId || runDone;
+  el("run-input").disabled = runBtn.disabled;
+  el("run-input").title = runBtn.title === "Run this workflow"
+    ? "Run this workflow with a JSON input its steps can read"
+    : runBtn.title;
+  // Arming needs a SAVED document — the server compiles the file on disk, and
+  // arming what is not there yet would approve a tool list nobody has.
+  el("triggers").disabled = busy || !doc || !doc.nodes.length;
+  renderArmedState();
+}
+
+// ---------------------------------------------------------------- triggers
+//
+// Arming is the approval a trigger runs on, and it lives in the SERVER's store
+// (`fused_render/workflow_triggers.py`) rather than in this document — a
+// template imports nothing from `fused_render` (SPEC PY-15 / D166), so this
+// half of the panel is HTTP, exactly like `shared/folder-picker.js`'s.
+//
+// The document does not record the approval for a stronger reason than the
+// import rule, though: an approval stored in the file the user edits would be
+// an approval the user could edit. The fingerprint check exists because the
+// document changes under an armed workflow; keeping the two apart is what makes
+// that check mean anything.
+async function api(path, body) {
+  const opts = body === undefined
+    ? { headers: { "X-Fused": "1" } }
+    : { method: "POST", headers: { "Content-Type": "application/json",
+                                   "X-Fused": "1" },
+        body: JSON.stringify(body) };
+  const res = await fetch(path, opts);
+  let out = null;
+  try { out = await res.json(); } catch (err) { out = null; }
+  if (!res.ok) {
+    return { ok: false, reason: "http_" + res.status,
+             message: (out && (out.error || out.message)) || ("HTTP " + res.status) };
+  }
+  return out || { ok: false, reason: "empty", message: "no answer from the server" };
+}
+
+async function loadArmed() {
+  const out = await api("/api/workflow-triggers?path=" + encodeURIComponent(TARGET));
+  armed = out && out.workflow ? out.workflow : null;
+  armedDefaults = (out && out.defaults) || null;
+  renderArmedState();
+}
+
+function renderArmedState() {
+  const box = el("armed-state");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!armed) return;
+  // Three states and three readings, because "not armed" and "armed until you
+  // changed it" are different sentences and only one of them needs a person.
+  const cls = armed.armed ? "" : (armed.needs_rearm ? " warn" : " off");
+  const label = armed.armed
+    ? "Armed · " + (armed.triggers || []).length + " trigger" +
+      ((armed.triggers || []).length === 1 ? "" : "s")
+    : (armed.needs_rearm ? "Needs re-arming" : "Not armed");
+  const pill = text("span", "armed-pill" + cls, label);
+  pill.title = armed.needs_rearm_reason || "";
+  box.appendChild(pill);
+}
+
+function closeSheet() {
+  el("modal").hidden = true;
+  el("sheet").innerHTML = "";
+}
+
+function sheet(title) {
+  const host = el("sheet");
+  host.innerHTML = "";
+  el("modal").hidden = false;
+  host.appendChild(text("h3", "", title));
+  const body = text("div", "");
+  host.appendChild(body);
+  const foot = text("div", "sheet-foot");
+  host.appendChild(foot);
+  return { body, foot };
+}
+
+// The "Run with input…" sheet: a JSON object, and the keys the document
+// actually reads listed above it so the box is not a guessing game.
+async function openRunInput() {
+  if (dirty) { await save(); if (dirty) return; }
+  const compiled = await api("/api/workflow-triggers/plan", { path: TARGET });
+  const { body, foot } = sheet("Run with input");
+  if (!compiled.ok) {
+    body.appendChild(note(compiled.message, true));
+  }
+  const wanted = (compiled.triggerInputs || []);
+  body.appendChild(text("div", "out-note", wanted.length
+    ? "This workflow reads these keys from the input: " +
+      wanted.map((t) => t.key).join(", ")
+    : "No step reads the input yet — set a parameter's source to \u201cfrom " +
+      "input\u201d in the inspector to use one."));
+  const area = document.createElement("textarea");
+  area.style.minHeight = "7em";
+  area.value = wanted.length
+    ? JSON.stringify(Object.fromEntries(wanted.map((t) => [t.key, ""])), null, 2)
+    : "{}";
+  body.appendChild(area);
+  const problem = text("div", "");
+  body.appendChild(problem);
+
+  const cancel = text("button", "btn", "Cancel");
+  cancel.addEventListener("click", closeSheet);
+  const go = text("button", "btn primary", "Run");
+  go.addEventListener("click", () => {
+    let payload;
+    try { payload = JSON.parse(area.value || "{}"); } catch (err) {
+      problem.innerHTML = "";
+      problem.appendChild(note("That is not valid JSON: " + err.message, true));
+      return;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      problem.innerHTML = "";
+      problem.appendChild(note("The input must be a JSON object.", true));
+      return;
+    }
+    closeSheet();
+    guard(() => run(payload));
+  });
+  foot.appendChild(cancel);
+  foot.appendChild(go);
+}
+
+// The arming sheet. Its job is one sentence: SHOW THE TOOL LIST, then let a
+// person say yes to it. Everything else on it — the triggers, the caps, the
+// history — is arranged around that.
+async function openTriggers() {
+  if (dirty) { await save(); if (dirty) return; }
+  const compiled = await api("/api/workflow-triggers/plan", { path: TARGET });
+  await loadArmed();
+  const { body, foot } = sheet("Triggers");
+  if (!compiled.ok) {
+    body.appendChild(note(compiled.message, true));
+    const close = text("button", "btn", "Close");
+    close.addEventListener("click", closeSheet);
+    foot.appendChild(close);
+    return;
+  }
+  const tools = compiled.tools || [];
+  if (armed && armed.needs_rearm && armed.needs_rearm_reason) {
+    body.appendChild(note(armed.needs_rearm_reason, true));
+  }
+
+  // THE APPROVAL, first and framed. A trigger removes the click that used to
+  // authorize this list (WC-4a), so this is the moment it gets read.
+  const set = text("div", "toolset");
+  set.appendChild(text("div", "t-head", tools.length
+    ? "Arming authorizes runs with nobody watching, and these are the only " +
+      "tools those runs may call:"
+    : "This workflow calls no tools."));
+  for (const name of tools) set.appendChild(text("code", "", name));
+  body.appendChild(set);
+
+  // The triggers themselves.
+  const rows = [];
+  const list = text("div", "");
+  body.appendChild(list);
+  const drawRows = () => {
+    list.innerHTML = "";
+    rows.forEach((trigger, i) => {
+      const row = text("div", "trig-row");
+      const kind = document.createElement("select");
+      for (const [value, label] of [["schedule", "on a schedule"],
+                                    ["file", "when a file arrives"]]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        kind.appendChild(option);
+      }
+      kind.value = trigger.kind;
+      kind.addEventListener("change", () => {
+        trigger.kind = kind.value;
+        drawRows();
+      });
+      row.appendChild(kind);
+      if (trigger.kind === "schedule") {
+        const expr = document.createElement("input");
+        expr.value = trigger.cron || "";
+        expr.placeholder = "cron: minute hour day month weekday  (e.g. 0 9 * * 1-5)";
+        expr.addEventListener("input", () => { trigger.cron = expr.value; });
+        row.appendChild(expr);
+      } else {
+        const folder = document.createElement("input");
+        folder.value = trigger.folder || "";
+        folder.placeholder = "folder to watch";
+        folder.addEventListener("input", () => { trigger.folder = folder.value; });
+        row.appendChild(folder);
+        const match = document.createElement("input");
+        match.style.flex = "0 0 96px";
+        match.value = trigger.match || "*";
+        match.placeholder = "*.csv";
+        match.addEventListener("input", () => { trigger.match = match.value; });
+        row.appendChild(match);
+        const deep = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = !!trigger.recursive;
+        box.addEventListener("change", () => { trigger.recursive = box.checked; });
+        deep.appendChild(box);
+        deep.appendChild(document.createTextNode("subfolders"));
+        row.appendChild(deep);
+      }
+      const drop = text("button", "btn", "\u00d7");
+      drop.addEventListener("click", () => { rows.splice(i, 1); drawRows(); });
+      row.appendChild(drop);
+      list.appendChild(row);
+    });
+    if (!rows.length) {
+      list.appendChild(text("div", "empty",
+        "No triggers yet. Add one, then arm the workflow."));
+    }
+  };
+  for (const trigger of (armed && armed.triggers) || []) {
+    rows.push(Object.assign({}, trigger));
+  }
+  drawRows();
+  const add = text("button", "btn", "Add trigger");
+  add.addEventListener("click", () => {
+    rows.push({ id: "t" + (rows.length + 1) + "-" + Date.now().toString(36),
+                kind: "schedule", cron: "0 9 * * 1-5" });
+    drawRows();
+  });
+  body.appendChild(add);
+
+  // The two brakes. Shown as numbers rather than hidden behind a default,
+  // because "how often may this run without me" is exactly the question a
+  // person arming something should be answering.
+  const caps = text("div", "trig-row");
+  caps.style.marginTop = "10px";
+  const rate = document.createElement("input");
+  rate.type = "number";
+  rate.min = "1";
+  rate.value = String((armed && armed.max_runs_per_hour) ||
+    (armedDefaults && armedDefaults.max_runs_per_hour) || 12);
+  const errs = document.createElement("input");
+  errs.type = "number";
+  errs.min = "1";
+  errs.value = String((armed && armed.error_limit) ||
+    (armedDefaults && armedDefaults.error_limit) || 3);
+  caps.appendChild(text("label", "", "at most"));
+  caps.appendChild(rate);
+  caps.appendChild(text("label", "", "runs per hour, and disarm after"));
+  caps.appendChild(errs);
+  caps.appendChild(text("label", "", "failures in a row"));
+  body.appendChild(caps);
+
+  if (armed && (armed.runs || []).length) {
+    const history = text("div", "runs-list");
+    history.appendChild(text("div", "out-note", "Recent unattended runs"));
+    for (const entry of armed.runs.slice(-8).reverse()) {
+      const row = text("div", "r");
+      row.appendChild(text("span", "src", entry.source || "?"));
+      row.appendChild(text("span", "st" + (entry.state === "error" ? " error" : ""),
+        entry.state || ""));
+      row.appendChild(text("span", "", (entry.finished || "").slice(0, 19)));
+      history.appendChild(row);
+    }
+    body.appendChild(history);
+  }
+  if (armed && armed.dropped) {
+    body.appendChild(note(armed.dropped + " queued events were dropped because " +
+      "this workflow could not keep up with its triggers."));
+  }
+
+  const problem = text("div", "");
+  body.appendChild(problem);
+  const complain = (message) => {
+    problem.innerHTML = "";
+    problem.appendChild(note(message, true));
+  };
+
+  const close = text("button", "btn", "Close");
+  close.addEventListener("click", closeSheet);
+  foot.appendChild(close);
+  foot.appendChild(text("span", "spacer", ""));
+  if (armed && armed.armed) {
+    const off = text("button", "btn danger", "Disarm");
+    off.addEventListener("click", () => guard(async () => {
+      const out = await api("/api/workflow-triggers/disarm", { path: TARGET });
+      if (!out.ok) { complain(out.message); return; }
+      closeSheet();
+      await loadArmed();
+      say("Disarmed. Queued work was dropped.");
+    }));
+    foot.appendChild(off);
+  }
+  const arm = text("button", "btn primary",
+    armed && armed.armed ? "Re-arm" : "Arm");
+  arm.addEventListener("click", () => guard(async () => {
+    // `tools` goes back with the approval, and the server refuses if it no
+    // longer matches. That round trip is the guarantee behind "the list you
+    // were shown is the list you approved" — without it, a document edited in
+    // another window between the plan and the click would arm a list nobody
+    // read.
+    const out = await api("/api/workflow-triggers/arm", {
+      path: TARGET, tools, triggers: rows,
+      max_runs_per_hour: Number(rate.value) || undefined,
+      error_limit: Number(errs.value) || undefined,
+    });
+    if (!out.ok) { complain(out.message); return; }
+    closeSheet();
+    await loadArmed();
+    say("Armed. " + tools.length + " tool" + (tools.length === 1 ? "" : "s") +
+      " authorized for unattended runs.");
+  }));
+  foot.appendChild(arm);
 }
 
 async function save() {
@@ -1896,7 +2296,7 @@ async function save() {
   }
 }
 
-async function run() {
+async function run(payload) {
   if (dirty) {
     // Run compiles the file on disk, not the object in this page — `run.py`
     // reads the path. Saving first is the only way the two can be the same
@@ -1905,7 +2305,8 @@ async function run() {
     if (dirty) return;  // the save failed; its message is already on screen
   }
   say("Starting…");
-  const out = await fused.runPython("./run.py", { action: "start", path: TARGET });
+  const out = await fused.runPython("./run.py",
+    { action: "start", path: TARGET, payload: JSON.stringify(payload || {}) });
   if (!out.ok) { say(out.message, true); return; }
   runId = out.runId;
   runNodes = {};
@@ -2044,6 +2445,16 @@ async function guard(fn) {
 el("save").addEventListener("click", () => guard(save));
 el("run").addEventListener("click", () => guard(run));
 el("cancel").addEventListener("click", () => guard(cancel));
+el("run-input").addEventListener("click", () => guard(openRunInput));
+el("triggers").addEventListener("click", () => guard(openTriggers));
+// Click-outside and Escape both close the sheet. It is a modal over a canvas
+// somebody was in the middle of using, so the way out has to be the obvious one.
+el("modal").addEventListener("pointerdown", (event) => {
+  if (event.target === el("modal")) closeSheet();
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !el("modal").hidden) closeSheet();
+});
 el("wf-name").addEventListener("input", mark);
 window.addEventListener("beforeunload", (event) => {
   // The document lives in memory until Save, which is stated in the docstring

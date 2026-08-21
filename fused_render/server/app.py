@@ -62,6 +62,8 @@ from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
+from fused_render.server.routers.workflow_triggers import (
+    router as workflow_triggers_router)
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.tasks import router as tasks_router
@@ -271,6 +273,18 @@ def create_app(start_dir: str) -> FastAPI:
 
         schedule.start()
 
+    # Armed workflows (workflow_triggers.py). A startup event and emphatically
+    # not the create_app body, for the reason above and one more of its own:
+    # this loop's first tick is a catch-up pass that both fires a schedule
+    # trigger whose time went by while the app was closed AND sweeps every
+    # watched folder. Under the create_app body, every test that constructs an
+    # app would run whatever the developer happened to have armed.
+    @app.on_event("startup")
+    async def _startup_workflow_triggers():
+        from fused_render import workflow_triggers
+
+        workflow_triggers.start()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
@@ -419,6 +433,10 @@ def create_app(start_dir: str) -> FastAPI:
     # POSTs that add to and cancel from it. The loop that SENDS them is started
     # as a startup event below, not here — see there.
     app.include_router(schedule_router)
+    # Programmatic triggers for the workflow canvas (routers/workflow_triggers.py):
+    # arm, disarm, plan, and run-with-input. The loop that FIRES them is started
+    # as a startup event below, not here — same reason as the schedule's.
+    app.include_router(workflow_triggers_router)
     # Tasks (routers/tasks.py): the sessions above and the schedule above,
     # joined into one noun — a task IS a Claude session, and its thread is every
     # message that entered it, typed or scheduled. Reads are unguarded; the one
