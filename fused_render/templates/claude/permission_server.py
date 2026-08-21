@@ -54,7 +54,7 @@ confirmed end to end). The two shapes that look right and are not: a plain
 under `permission_denials`. `updatedInput` is re-validated against the tool's
 schema, so it must be the parked input PLUS the key — dropping `questions` is a
 `<tool_use_error>`, not a silent no-op. The card also always offers an "Other"
-box the model did not author (D406, the CLI's own prompt does the same); what the
+box the model did not author (D407, the CLI's own prompt does the same); what the
 user types there rides on the decision file as `custom` and reaches the CLI as
 both the answer AND a new option appended to that question in `questions`, so the
 label check the CLI runs over the answer finds it.
@@ -308,7 +308,7 @@ def _answers_from(questions, answers, custom=None):
     as unanswered, which is true); an invented one is not.
 
     `custom` is the one way a value that the model did not author gets through:
-    the card's "Other" box (D406), keyed by the same question text, carrying what
+    the card's "Other" box (D407), keyed by the same question text, carrying what
     the USER typed. It is folded in as one extra option for that question and
     nothing more — the answer still has to match the option list exactly, the
     typed string still has to come last in a multi-select join, and free text for
@@ -437,7 +437,7 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
             updated.pop(model_written, None)
         updated["answers"] = answers
         # An answer typed into "Other" also becomes an OPTION on the question it
-        # answers (D406). The CLI checks each answer against the option list it
+        # answers (D407). The CLI checks each answer against the option list it
         # is handed, and an answer it cannot find there downgrades the
         # tool_result from "Your questions have been answered" to the weaker
         # "follow what they actually say" — measured, same finding as the

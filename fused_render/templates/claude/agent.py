@@ -377,7 +377,7 @@ def _answers_from(questions, answers, custom=None):
     as unanswered, which is true); an invented one is not.
 
     `custom` is the one way a value that the model did not author gets through:
-    the card's "Other" box (D406), keyed by the same question text, carrying what
+    the card's "Other" box (D407), keyed by the same question text, carrying what
     the USER typed. It is folded in as one extra option for that question and
     nothing more — the answer still has to match the option list exactly, the
     typed string still has to come last in a multi-select join, and free text for
@@ -1302,7 +1302,7 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
                 # one string per question either way, and permission_server
                 # re-validates from scratch — so it needs to be told which part
                 # of that string the user typed rather than inferring it back
-                # out of a join it must not try to split (D406).
+                # out of a join it must not try to split (D407).
                 if typed:
                     payload["custom"] = typed
         # Anywhere else `answers` is simply not a field: dropping it here is what

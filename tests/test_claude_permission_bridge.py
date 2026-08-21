@@ -557,7 +557,7 @@ def test_a_multi_select_answer_rides_back_as_the_joined_labels(tmp_path, server)
 
 def test_a_typed_answer_rides_back_as_the_answer_and_as_a_new_option(tmp_path,
                                                                      server):
-    """D406: the card always offers "Other", so an answer the model never listed
+    """D407: the card always offers "Other", so an answer the model never listed
     has to reach it as a real answer rather than as a near-miss.
 
     Two halves, and both are load-bearing. `answers` carries what the user wrote,
@@ -813,7 +813,7 @@ _ANSWER_CASES = [
 ] + [(_QUESTION_INPUT["questions"], bad, None) for bad in _MALFORMED_ANSWERS]
 
 
-# The same table for the "Other" box (D406): (questions, answers, custom,
+# The same table for the "Other" box (D407): (questions, answers, custom,
 # expected). Free text is not a loophole in the label check — it is a SECOND
 # channel, validated as what it is, and folded in as one extra option for the one
 # question it was typed into.
@@ -871,7 +871,7 @@ _CUSTOM_CASES = [
                          ids=range(len(_CUSTOM_CASES)))
 def test_the_two_validators_agree_on_a_typed_answer(agent, questions, answers,
                                                     custom, expected):
-    """D406: "Other" is always offered, so both copies have to treat what the
+    """D407: "Other" is always offered, so both copies have to treat what the
     user typed identically — and treat it as free text, not as a hole in the
     label check."""
     srv = _load("permission_server")
@@ -969,7 +969,7 @@ def test_decide_denies_a_question_it_cannot_validate(agent, tmp_path, answers):
 
 def test_decide_latches_a_typed_answer_and_says_which_part_was_typed(agent,
                                                                      tmp_path):
-    """D406: the answer is one string per question either way, so what the user
+    """D407: the answer is one string per question either way, so what the user
     TYPED is latched beside it — permission_server re-validates from scratch and
     must not have to split a join back apart to work out where it came from."""
     run_dir = _park_a_question(agent, tmp_path)
@@ -2626,7 +2626,7 @@ def test_template_wires_the_decide_action(agent):
 
 
 def test_the_question_card_always_offers_an_other_box(agent):
-    """D406. Claude Code's own prompt appends "Other" to every AskUserQuestion,
+    """D407. Claude Code's own prompt appends "Other" to every AskUserQuestion,
     and a card that can only echo the model's two-to-four options back forces
     the user to pick the nearest wrong answer — which the model then acts on.
     The row is not conditional on anything the model sent, so this asserts it is

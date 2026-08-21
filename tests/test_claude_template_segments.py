@@ -1525,7 +1525,7 @@ def test_a_question_card_renders_the_header_question_and_every_option(card):
     assert _texts(tree, "qtext") == ["Alpha or Beta?"]
     # One control per option, each showing the label AND its description — the
     # label is the only thing that can be sent, so nothing about it is elided.
-    # …plus the "Other" row this window always adds (D406), last and marked as
+    # …plus the "Other" row this window always adds (D407), last and marked as
     # not one of Claude's: two-to-four options are its guess at the answer
     # space, and a card that cannot express disagreement with that guess makes
     # the user pick the nearest wrong answer.
@@ -1642,7 +1642,7 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
 
 
 def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
-    """D406. On a single-choice card every option IS a button, so "Other" is one
+    """D407. On a single-choice card every option IS a button, so "Other" is one
     too and clicking it swaps the button for the field where the button stood —
     the row the user aimed at stays where they aimed at it. Enter answers, and
     what leaves is the typed string in `answers` plus the same string in
