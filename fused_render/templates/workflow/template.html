@@ -350,7 +350,11 @@
   <aside id="palette"><h2>Tools</h2><div id="palette-body" class="empty">Loading…</div></aside>
   <div id="stage">
     <div id="world">
-      <svg id="wires"></svg>
+      <!-- role="group", not the default: Chrome maps a bare <svg> to a single
+           `image` node and PRUNES its descendants, so every connection — each
+           an activatable control carrying a branch condition — was invisible
+           to the accessibility tree and to the keyboard. -->
+      <svg id="wires" role="group" aria-label="Connections between steps"></svg>
       <div id="nodes"></div>
     </div>
     <div id="hint"></div>
@@ -886,10 +890,28 @@ function renderWires() {
     // click to `#stage`. The net effect was that clicking a wire to edit its
     // condition cleared the selection and started a pan instead — the one
     // gesture the edge exists for was the one that could not work.
+    // An edge is an activatable control — it carries the condition that decides
+    // whether its target step runs at all — so it says so and takes focus. Until
+    // this, an edge's condition was reachable ONLY by landing a mouse on a
+    // 14px-wide invisible stroke: no keyboard path, and nothing in the
+    // accessibility tree naming it. Same treatment as a node, and for the same
+    // reason.
+    const from = nodeById(edge.from), to = nodeById(edge.to);
+    const label = (from ? (from.label || from.tool) : edge.from) + " to " +
+      (to ? (to.label || to.tool) : edge.to) +
+      ((edge.condition || "").trim() ? ", conditional" : "");
+    hit.setAttribute("role", "button");
+    hit.setAttribute("tabindex", "0");
+    hit.setAttribute("aria-label", "Connection: " + label);
+    const open = () => { select(edge.to); renderAll(); };
     hit.addEventListener("pointerdown", (event) => {
       event.stopPropagation();
-      select(edge.to);
-      renderAll();
+      open();
+    });
+    hit.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open();
     });
     wires.appendChild(hit);
   }
