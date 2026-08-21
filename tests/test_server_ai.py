@@ -293,7 +293,7 @@ def _stream(body):
 
 @pytest.mark.parametrize("model,expected", [
     ("mlx-community/Qwen3-8B-4bit", True),   # a Hugging Face repo id
-    ("unsloth/Qwen3.5-4B-GGUF", True),       # ditto, an uncurated GGUF repo (D407)
+    ("unsloth/Qwen3.5-4B-GGUF", True),       # ditto, an uncurated GGUF repo (D412)
     ("Qwen3.5-4B-Q5_K_M.gguf", True),        # a curated llamacpp-text FILENAME id
     ("Qwen3.5-9B-Q4_K_M.gguf", True),
     ("QWEN3.5-4B-Q5_K_M.GGUF", True),        # case-insensitive, like the extension check it mirrors
@@ -307,7 +307,7 @@ def test_is_local_model_recognises_both_id_shapes(model, expected):
     inference; a Claude alias is neither shape. Regression pin for the bug
     found auditing the fused-render-ai skill: `"/" in model` alone routed
     every curated llamacpp id to the Claude CLI path as an unrecognised
-    alias (D406/D407)."""
+    alias (D411/D412)."""
     assert _server_ai._is_local_model(model) is expected
 
 

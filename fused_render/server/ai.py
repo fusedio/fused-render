@@ -106,7 +106,7 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
 # reach a local model with no new parameter and no change to any existing caller.
 #
-# **The seam gained a second shape (D407) and this is the one place it has to
+# **The seam gained a second shape (D411) and this is the one place it has to
 # be spelled out, because it is genuinely not a slash-shaped id.**
 # `llamacpp-text`'s curated ids (`formats.GGUF_RECIPES`) are the GGUF's own
 # FILENAME, never a repo id — `"Qwen3.5-4B-Q5_K_M.gguf"` has no `/` at all —
@@ -115,7 +115,7 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # `"/" in model` alone therefore sent every curated llamacpp id down the
 # CLAUDE path, as an unrecognised alias, which nothing caught because nothing
 # had called `fused.ai()` with one — a bug from the moment `llamacpp-text`
-# shipped (D406), not something Piece 1/2 introduced, found while auditing
+# shipped (D411), not something Piece 1/2 introduced, found while auditing
 # this file for what the branch invalidated. No Claude alias has ever ended
 # in `.gguf` either, so the fix is the same kind of fact as the slash: an
 # uncurated repo id Piece 1 resolves (always `org/name`) already has the

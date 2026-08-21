@@ -75,6 +75,64 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
   return `${name} is not used here — ${row.ignoredReason}.`;
 }
 
+/** The stored engine code when NO option in the list matches it — else null.
+ *
+ *  A `<select value={x}>` whose options contain no `x` does not fall back to
+ *  the first option: the DOM ignores the assignment, `selectedIndex` becomes -1,
+ *  and the control renders EMPTY. So a stored preference naming an engine this
+ *  build no longer registers turns the picker blank — the user sees a control
+ *  with nothing in it, on a page whose whole job is saying which engine is in
+ *  force. `ignoredWarning` already prints the reason underneath, which makes the
+ *  blank control worse rather than better: a sentence explaining a choice, above
+ *  a control showing no choice.
+ *
+ *  **TWO different stored values land here, and the caller's copy has to be true
+ *  of both.** `describe_engines` builds `choices` filtered by
+ *  `runner.capability == capability`, so a stored code goes missing from the list
+ *  for either of two reasons `resolve()` tells apart in prose but this function
+ *  cannot see:
+ *
+ *    - the code is not registered at all — a preference written by a newer build,
+ *      or naming an engine since withdrawn (D413 removed the three
+ *      `transformers-text*` codes, which were offered in this very picker and
+ *      stored by people who chose them);
+ *    - the code IS registered and serves a DIFFERENT capability — a hand-edited
+ *      or stale prefs.json, e.g. `{"text-generation": "mlx-whisper"}`.
+ *      `prefs._valid_engine_choice` refuses that on write but says nothing about
+ *      a file already on disk, which is the same reachability argument that
+ *      justifies handling the withdrawn case at all.
+ *
+ *  So this returns "the stored code matches no option", and NOT "the engine is
+ *  gone" — the caller must not claim a withdrawal it cannot establish. Telling
+ *  the two apart needs `registry.by_code`, which lives on the server and is not
+ *  on this payload; the DISTINCTION is already carried by `ignoredReason`, which
+ *  `ignoredWarning` prints verbatim underneath ("… is not a runner this build
+ *  knows" against "MLX Whisper does not do text-generation"). That split is
+ *  deliberate: the specific reason is the registry's sentence to write, and this
+ *  module does not paraphrase those.
+ *
+ *  Either way `prefs.json` is a file that travels — synced, copied, restored
+ *  from a backup — so an upgrade is not the only way one arrives, and the server
+ *  deliberately does NOT rewrite `selected` to match reality (a preference
+ *  silently corrected on read is one the user can neither see nor undo, see
+ *  `describe_engines`). That is the right call, and it is exactly what leaves
+ *  this case for the page to render.
+ *
+ *  The caller renders the returned code as one extra DISABLED option, so the
+ *  select shows what is stored, cannot be re-picked, and reads consistently with
+ *  the warning below it. The raw code rather than a label, because there may be
+ *  no label to be had: a withdrawn engine has none, and using the registered
+ *  label of a wrong-capability engine would dress a stale value up as a real
+ *  choice.
+ *
+ *  Null for `auto` — the caller renders that option itself, unconditionally.
+ */
+export function strandedSelection(row: CapabilityEngine, auto: string): string | null {
+  if (row.selected === auto) return null;
+  if (row.choices.some((c) => c.code === row.selected)) return null;
+  return row.selected;
+}
+
 /** Why one option cannot be picked — null when it can.
  *
  *  A disabled control with no explanation is the thing the greying-out rule

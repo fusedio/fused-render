@@ -155,17 +155,19 @@ def test_there_are_runner_folders_to_check():
 
 @pytest.mark.parametrize("folder", _runner_folders(), ids=os.path.basename)
 def test_a_non_pypi_index_is_explicit(folder):
-    """AI-2a's wheels-only rule, amended (D406): a non-PyPI index is
+    """AI-2a's wheels-only rule, amended (D411): a non-PyPI index is
     admissible ONLY confined to the one distribution it exists for.
 
     `uv sync` runs bare, with no `--index`/`--extra` a caller could supply
     (PY-18), so everything about where a dependency comes from has to be
     expressible in the manifest sitting beside it — which is exactly why
     `explicit = true` matters. Without it, ANY extra index becomes a
-    candidate for EVERY requirement in the graph: `transformers_text`'s own
-    header measured this directly (of 45 locked packages, 42 come from PyPI
-    and only `torch` from the PyTorch mirror) specifically because the index
-    is `explicit`. An index missing that flag is not a smaller version of the
+    candidate for EVERY requirement in the graph. The removed
+    `transformers_text/pyproject.toml` measured this directly (of 45 locked
+    packages, 42 came from PyPI and only `torch` from the PyTorch mirror)
+    precisely because its index was `explicit`; that folder went at D413 and the
+    measurement stays here, since it is the evidence for the rule rather than a
+    fact about torch. An index missing that flag is not a smaller version of the
     same risk — it is the mirror silently answering for packages nobody
     pointed it at, which is indistinguishable from a supply-chain substitution
     until something breaks. This is the general form of the rule

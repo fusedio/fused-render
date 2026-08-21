@@ -240,7 +240,10 @@ def load(model_id, fetched):
             "model.safetensors with a transformers config). Try "
             "mlx-community/whisper-large-v3-turbo or "
             # Named models a refusal points at, and they must be models the
-            # CATALOG actually offers (see torch_text._TRY_INSTEAD) — update
+            # CATALOG actually offers — a refusal naming a repo the page no
+            # longer suggests sends the user to a Hub search, which is the whole
+            # thing this string exists to prevent (the rule was first written
+            # for `torch_text._TRY_INSTEAD`, removed with that runner) — update
             # this pair if SUGGESTIONS["mlx-whisper"] moves.
             "mlx-community/whisper-large-v3-mlx.")
 

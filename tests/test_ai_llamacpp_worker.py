@@ -5,17 +5,17 @@ The contract half (routes, states, progress, the port handshake) is
 `worker_base`'s and is covered by `tests/test_ai_worker_base.py`. What is left
 here is what this runner decides for itself: which ids it will fetch (a
 curated table, PLUS an uncurated repo id resolved by its own file listing
-since D407), how it renders a GGUF's own embedded chat template, and how it
+since D412), how it renders a GGUF's own embedded chat template, and how it
 streams and cancels without a producer thread.
 
-Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
-`tests/test_ai_transformers_worker.py` does: the runner finds its base off
-`sys.path` in an interpreter of its own, so importing it the packaged way
-would be testing an import that never ships. Neither `llama_cpp` nor
-`huggingface_hub` is installed in this test venv, matching AI-11c's
-precedent for `torch_text` — every path that would touch the former works
-against `_loaded["llm"]` set directly to a fake, and every path that would
-touch the latter fakes it via `_fake_huggingface_hub` below.
+Loaded by PATH with `worker_base` primed in `sys.modules`, the way
+`tests/test_ai_transformers_worker.py` did before D413 removed it: the runner
+finds its base off `sys.path` in an interpreter of its own, so importing it the
+packaged way would be testing an import that never ships. Neither `llama_cpp`
+nor `huggingface_hub` is installed in this test venv, per AI-11c — every path
+that would touch the former works against `_loaded["llm"]` set directly to a
+fake, and every path that would touch the latter fakes it via
+`_fake_huggingface_hub` below.
 """
 import importlib.util
 import sys
@@ -65,10 +65,10 @@ def worker(monkeypatch):
     return module
 
 
-# -- the curated table, and D407's generic fallback for everything else -----
+# -- the curated table, and D412's generic fallback for everything else -----
 #
 # A GGUF repo commonly publishes two dozen quantizations of one model.
-# `formats.GGUF_RECIPES` curates 5 of them by hand, but since D407 a repo
+# `formats.GGUF_RECIPES` curates 5 of them by hand, but since D412 a repo
 # this table has never heard of resolves too — Piece 1's picker
 # (`formats.pick_gguf_file`) runs over the repo's own file listing instead of
 # refusing outright.
@@ -163,10 +163,10 @@ def test_an_uncurated_repo_already_on_disk_needs_no_network(worker, monkeypatch,
 
 def test_load_refuses_an_uncurated_repo_with_nothing_loadable_before_importing_llama_cpp(
         worker, monkeypatch):
-    """The curation/resolution check still comes first, the same order
-    `torch_text.load` checks its own format refusal before importing torch —
-    a model this runner cannot resolve is a fact about the request, not
-    about llama.cpp, whether the refusal is "not curated" or, since D407,
+    """The curation/resolution check still comes first — the order the removed
+    `torch_text.load` also kept, checking its format refusal before importing
+    torch: a model this runner cannot resolve is a fact about the request, not
+    about llama.cpp, whether the refusal is "not curated" or, since D412,
     "no GGUF file here to pick"."""
     assert "llama_cpp" not in sys.modules
     _fake_huggingface_hub(monkeypatch, files=["README.md"])
@@ -486,9 +486,10 @@ def test_no_model_loaded_answers_a_clean_failure(worker):
 
 
 def test_cancellation_needs_no_thread_to_join(worker):
-    """`create_completion`'s own generator IS the token loop here — unlike
-    `torch_text`, which needs a producer thread for `TextIteratorStreamer`,
-    breaking out of this loop on `CANCEL` is the whole of stopping it."""
+    """`create_completion`'s own generator IS the token loop here. transformers'
+    `model.generate` owns its own loop and needs a producer thread to hand
+    tokens back through `TextIteratorStreamer`; here, breaking out of this loop
+    on `CANCEL` is the whole of stopping it."""
     llm = _FakeLlama(chunks=["a", "b", "c", "d"], tokens=2)
     worker._loaded["llm"] = llm
 
@@ -650,8 +651,8 @@ def test_memory_defers_entirely_to_rss(worker):
 
 def test_memory_is_actually_wired_into_serve(worker):
     """`memory()` returning None is only meaningful if `worker_base.serve`
-    is actually told about it — `torch_text.main`/`torch_image.main` both
-    pass `memory=memory`, and this runner's own `main()` used to omit the
+    is actually told about it — `torch_image.main` passes `memory=memory`,
+    and this runner's own `main()` used to omit the
     kwarg entirely, which made the function dead code no future real
     measurement could ever reach (code review finding 7)."""
     worker.main()
