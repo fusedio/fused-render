@@ -522,6 +522,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "One self-contained repo with an int8-quantized "
                     "transformer: several GB less to fetch and to hold than the "
                     "bf16 FLUX.2 pipeline it is built from.",
+            # klein is a step-distilled model: D310's benchmark ran it at 4
+            # steps (~34s an image on the reference Mac), and the server's
+            # generic 28-step default turns a first image into minutes for no
+            # quality a distilled model can spend. The Playground reads this
+            # hint; a model without one keeps the server's default.
+            "defaults": {"steps": 4},
         },
     ],
     # The same model, converted for MLX — and unloadable by the runner above,
@@ -539,6 +545,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 4.6,
             "note": "One repo instead of the Diffusers split, and quicker per "
                     "image — but it reserves far more memory while running.",
+            # The same distilled model; the same D310 4-step benchmark.
+            "defaults": {"steps": 4},
         },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper

@@ -345,11 +345,16 @@ export default function AiModelsPlayground() {
               <PlaygroundChat
                 key={selected.model.id}
                 model={selected.model.id}
+                modelLabel={modelName(selected.model)}
                 ready={!!selectedResident && selectedResident.state === "ready"}
                 downloaded={selected.model.downloaded}
               />
             ) : selected.row.capability === "text-to-image" ? (
-              <PlaygroundImage key={selected.model.id} model={selected.model.id} />
+              <PlaygroundImage
+                key={selected.model.id}
+                model={selected.model.id}
+                entry={selected.model}
+              />
             ) : selected.row.capability === "automatic-speech-recognition" ? (
               <PlaygroundTranscribe key={selected.model.id} model={selected.model.id} />
             ) : (
