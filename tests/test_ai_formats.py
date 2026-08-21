@@ -16,14 +16,24 @@ def _codes():
     return {r.code for r in registry.all_runners()}
 
 
-#: The runners a plain directory of torch safetensors belongs to, and the ones a
+#: The runners a plain directory of safetensors belongs to, and the ones a
 #: `model_index.json` belongs to — spelled once here because the per-hardware
-#: split made them three codes apiece, and a test that listed them by hand in
+#: split made the image side three codes, and a test that listed them by hand in
 #: every case would be the same drift `loaders()` itself avoids by extending a
-#: tuple. Read from the module under test on purpose: what these tests pin is
-#: the BRANCHES (which format reaches which family), and the membership of a
-#: family is pinned by `test_every_registered_runner_appears_in_loaders` below.
-_TEXT = set(formats.TRANSFORMERS_RUNNERS) | {"mlx-text"}
+#: tuple. `_IMAGE` is read from the module under test on purpose: what these
+#: tests pin is the BRANCHES (which format reaches which family), and the
+#: membership of a family is pinned by
+#: `test_every_registered_runner_appears_in_loaders` below.
+#:
+#: `_TEXT` is a LITERAL rather than a tuple read from `formats`, and only became
+#: one at D413: it was `set(formats.TRANSFORMERS_RUNNERS) | {"mlx-text"}` while
+#: four codes read a directory of safetensors, and with the transformers family
+#: removed there is exactly one left. A one-element family tuple in `formats`
+#: would be a name with nothing to hold together, so the code is written here —
+#: which makes these assertions say `{"mlx-text"}` out loud, where a tuple would
+#: have let the safetensors branch silently empty out and every case below still
+#: pass.
+_TEXT = {"mlx-text"}
 _IMAGE = set(formats.DIFFUSERS_RUNNERS)
 
 
@@ -242,12 +252,12 @@ def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():
     A `model_index.json` is a diffusion pipeline whichever wheel opens it, and
     `ai_models.py` infers a cached repo's capability from the first decisive
     runner among its loaders — so listing only the CPU row would make that
-    inference depend on which builds happen to be registered. The text runners
-    are the counter-case in the same assertion: a directory of safetensors says
-    nothing about the modality on any wheel.
+    inference depend on which builds happen to be registered. The safetensors
+    text runner is the counter-case in the same assertion: a directory of
+    safetensors says nothing about the modality on any wheel.
     """
     assert set(formats.DIFFUSERS_RUNNERS) <= set(formats.DECISIVE)
-    assert not set(formats.TRANSFORMERS_RUNNERS) & set(formats.DECISIVE)
+    assert not _TEXT & set(formats.DECISIVE)
     assert set(formats.LLAMACPP_RUNNERS) <= set(formats.DECISIVE)
 
 
@@ -354,7 +364,7 @@ def test_gguf_block_count_is_read_from_a_real_gguf_header(tmp_path):
     assert formats.gguf_block_count(str(tmp_path / "does-not-exist.gguf")) is None
 
 
-# -- pick_gguf_file (D407, Piece 1) ------------------------------------------
+# -- pick_gguf_file (D412, Piece 1) ------------------------------------------
 #
 # Deterministic ranking over a repo's own file listing, so a bare Hub repo id
 # means the same bytes on every machine (see the module note above

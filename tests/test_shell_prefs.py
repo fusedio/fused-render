@@ -705,15 +705,50 @@ def test_setting_one_capabilitys_engine_leaves_the_others_alone(tmp_path, monkey
     level down: the page changes one capability and must not have to echo the
     rest, or two open tabs would each undo the other."""
     client, home = _client(tmp_path, monkeypatch)
-    client.put("/api/prefs", json={"engines": {"text-generation": "transformers-text"}},
+    client.put("/api/prefs", json={"engines": {"text-generation": "llamacpp-text"}},
                headers=FUSED)
     client.put("/api/prefs",
                json={"engines": {"automatic-speech-recognition": "mlx-whisper"}},
                headers=FUSED)
 
     stored = json.loads((home / "prefs.json").read_text())
-    assert stored["engines"] == {"text-generation": "transformers-text",
+    assert stored["engines"] == {"text-generation": "llamacpp-text",
                                  "automatic-speech-recognition": "mlx-whisper"}
+
+
+def test_a_prefs_file_naming_a_WITHDRAWN_engine_still_serves_the_capability(
+        tmp_path, monkeypatch):
+    """A prefs.json holding `transformers-text` after D413 removed it.
+
+    Written to disk directly rather than through the endpoint, because the
+    endpoint would now REFUSE it (`_valid_engine_choice` rejects an unknown
+    code) — which is correct for a write and says nothing about the file that is
+    already there. That file is how this actually reaches a user: the three
+    `transformers-text*` codes were offered in the picker and stored by people
+    who chose them, and prefs.json travels — synced, copied between machines,
+    restored from a backup — so an upgrade is not the only route.
+
+    What is asserted is that the READ path degrades rather than breaking: the
+    value comes back verbatim (never silently rewritten, so the user can see and
+    undo it), and `/api/prefs` still reports a live effective engine with a
+    reason. `registry.resolve()` is where that happens and
+    `test_a_removed_engine_code_in_prefs_degrades_to_the_ordering` pins it at
+    that level; this is the end-to-end half, over a real file.
+    """
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"engines": {"text-generation": "transformers-text"}}))
+
+    body = client.get("/api/prefs").json()
+    row = next(r for r in body["engines"]["capabilities"]
+               if r["capability"] == "text-generation")
+    assert row["selected"] == "transformers-text"
+    assert row["effective"] is not None and row["effective"] != "transformers-text"
+    assert row["ignoredReason"]
+    # …and the file is untouched by having been read.
+    assert json.loads((home / "prefs.json").read_text())["engines"] == {
+        "text-generation": "transformers-text"}
 
 
 def test_auto_is_a_value_you_can_write_BACK(tmp_path, monkeypatch):

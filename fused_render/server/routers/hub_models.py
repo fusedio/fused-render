@@ -149,7 +149,7 @@ _TIMEOUT_S = 12.0
 # What a card can show. Anything the deployment does not know how to expand is
 # simply absent from the reply (see the module docstring).
 #
-# **`siblings` (D407) is the one entry that is not for the card at all — it
+# **`siblings` (D412) is the one entry that is not for the card at all — it
 # is for `_model_row`'s own GGUF resolution.** Confirmed directly against the
 # live API rather than assumed: the bare list endpoint returns NO `siblings`
 # at all, passing `full` at ANY value (including `full=false`) turns them on
@@ -451,7 +451,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     has no business offering.
 
     **Five ways to be dropped, and they are the search's whole contract**
-    (D313, narrowed by D316, widened by D407). A row that reaches the page
+    (D313, narrowed by D316, widened by D412). A row that reaches the page
     comes with a Download button or with the one sentence that says what to
     do first, so every one of these is the difference between an actionable
     card and one that apologises:
@@ -472,7 +472,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
       not a drop: the Hub often does not set it, and silence about the format
       is not evidence against it — only an explicit unrunnable value counts,
       the same way `_gate` reads only what the Hub actually said.
-    * (D407) the capability's ACTIVE runner here declares a format tag
+    * (D412) the capability's ACTIVE runner here declares a format tag
       (`Runner.hub_filter_tags`) and `formats.pick_gguf_file` finds nothing
       loadable among the repo's own `siblings` — see below for why this is
       the one drop reason that depends on the resolved runner rather than on
@@ -493,10 +493,10 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     the guess that wastes someone's afternoon.
 
     **Why the fifth drop is allowed to depend on the resolved runner, when
-    every other check here is capability-only (D407).** `llamacpp-text`'s
-    GGUF format and `transformers-text`/`mlx-text`'s safetensors are the
-    first time one capability has had two genuinely different on-disk
-    formats behind it — every earlier multi-runner capability's variants
+    every other check here is capability-only (D412).** `llamacpp-text`'s
+    GGUF format and `mlx-text`'s safetensors are the first time one capability
+    has had two genuinely different on-disk formats behind it — every earlier
+    multi-runner capability's variants
     share a format, so `_UNRUNNABLE_LIBRARIES` never had to choose between
     them. A search result this machine's ACTIVE text-generation engine
     cannot resolve at all (a safetensors repo, while llamacpp is the engine
@@ -724,7 +724,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     }
     if query:
         params["search"] = query
-    # (D407) When a task filter is set AND the runner actually serving that
+    # (D412) When a task filter is set AND the runner actually serving that
     # capability HERE declares a format tag (`Runner.hub_filter_tags`), the
     # Hub is asked to AND it onto the pipeline-tag filter already sent —
     # confirmed live that multiple `filter=` values are ANDed, and the Hub

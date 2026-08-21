@@ -1,7 +1,7 @@
 """The llama.cpp / GGUF text runner (SPEC §40, AI-11).
 
 Five lines of code and a `pyproject.toml`, the same shell shape
-`transformers_text/worker.py` and `parakeet_mlx/worker.py` use: the manifest
+`parakeet_mlx/worker.py` uses: the manifest
 beside this file is the whole of what makes this folder its own environment,
 and the runner itself is `runners/llama_text.py`, imported the same way
 every other shell reaches its shared module one directory up.
@@ -10,12 +10,13 @@ every other shell reaches its shared module one directory up.
 `llamacpp_text/`, and a shared module with the SAME stem beside a same-named
 folder is a footgun: a directory with no `__init__.py` is a namespace
 portion, which loses to a same-name ordinary module in the same `sys.path`
-entry ONLY as long as nobody ever adds one. The other three-folder runner
-(`transformers_text/`, `transformers_text_cuda/`, `transformers_text_rocm/`
-all importing `torch_text.py`) avoids this by construction — the shared
-module's name never matches any of the folders that import it — and this
-module follows the same rule rather than relying on the accident of a
-missing `__init__.py` staying missing forever.
+entry ONLY as long as nobody ever adds one. The rule came from the
+transformers family that used to sit beside this one — three folders
+(`transformers_text/`, `_cuda`, `_rocm`) all importing a `torch_text.py`
+whose stem matched none of them — and it outlives that family because it is
+a fact about `sys.path`, not about torch: `llamacpp_text_vulkan/` imports the
+same `llama_text.py` this folder does, so the collision this avoids is still
+two folders away from happening by accident.
 
 Nothing here may grow a second line of behaviour — a format check or a prompt
 rule that lived in this shell would be a difference between this folder and a

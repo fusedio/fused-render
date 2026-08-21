@@ -1,16 +1,27 @@
 """Text generation on llama.cpp / GGUF: one resident model, four routes (SPEC §40).
 
 **This module is the whole of the runner and it sits at the runners ROOT**,
-beside `worker_base.py`, `formats.py` and `torch_text.py`, for the reason
-`torch_text.py` states about itself: `llamacpp_text/` holds only a
-`pyproject.toml` and a five-line `worker.py` shell around `main()` below.
+beside `worker_base.py`, `formats.py` and `torch_image.py`: TWO folders serve
+this one engine — `llamacpp_text/` and `llamacpp_text_vulkan/` — and each holds
+only a `pyproject.toml` and a five-line `worker.py` shell around `main()`
+below. They differ in which wheel index their manifest takes
+`llama-cpp-python` from, and the hardware that names is a fact about the wheel,
+never about the code. (The pattern is `torch_image.py`'s and was the removed
+`torch_text.py`'s, which served three such folders — D413.)
 
-**Opt-in, and registered BELOW every `transformers-text` row** (`registry.py`)
-— `auto` resolution never reaches this runner, on any platform. That is not a
-benchmark verdict, it is a packaging one: AI-11's amendment records that the
-maintainer's wheel index is a coin-flip per release on macOS arm64 (roughly
-4 of 16 sampled releases are intact), so a capability this fragile to install
-must never be what a machine gets without asking for it. `llamacpp_text/pyproject.toml`
+**The DEFAULT text engine on Windows and Linux since D413, and it was designed
+not to be.** This module shipped registered below three `transformers-text*`
+rows so that `auto` could never reach it, because `llamacpp_text/pyproject.toml`
+records that the maintainer's wheel index is a coin-flip per release on macOS
+arm64 (4 of 16 sampled releases fail an integrity check) and a capability that
+fragile to INSTALL is a poor thing to hand a machine that did not ask for it.
+D413 removed those rows on a benchmark this engine won on every axis at once
+(4.2x transformers' throughput on a Radeon GPU, 2.4x on CPU, a third of the
+download, a third of the peak RSS), so the packaging argument lost to a
+performance one and the default moved. What kept it affordable: the pinned
+`0.3.29` Linux and Windows wheels were verified intact, macOS arm64 still
+resolves to `mlx-text` ahead of this row, and a corrupt wheel fails LOUDLY at
+`uv sync` rather than answering wrongly later. `llamacpp_text/pyproject.toml`
 carries the version this was audited against and the audit itself; bumping the
 pin without repeating it is the one thing that folder's comment forbids.
 
@@ -39,7 +50,7 @@ and the page runs in a process that cannot import this venv — the identical
 reason `formats.COMPONENT_REPOS` lives there rather than inside the runner
 that reads it.
 
-**No longer true as of D407: a bare repo id `formats.GGUF_RECIPES` has never
+**No longer true as of D412: a bare repo id `formats.GGUF_RECIPES` has never
 heard of now resolves too**, through `_resolve_uncurated_repo` — the id still
 supplies no filename, but this runner now HAS a rule for picking one out of
 thirty (`formats.pick_gguf_file`, ranked by quantization suffix, small and
@@ -69,7 +80,11 @@ exactly what `llama_cpp.Llama` reads at load time into `.metadata`. So
 nothing else — there is no `download_snapshot(..., allow_patterns=…)` call
 here, because there is nothing at those repos' roots for it to fetch.
 
-Three things differ from `torch_text.py`, and all three are llama.cpp's doing:
+Five things are true of this runner and of no other text runner here, and all
+five are llama.cpp's doing. Three of them are stated as contrasts with the
+transformers runner this app shipped until D413 (`torch_text.py`), because that
+is the shape the difference has and the reasoning does not become wrong when
+the other side of the comparison is deleted — only unvisitable:
 
 * **GPU offload is decided by the LINKED BUILD, never by this module knowing
   which folder imported it.** `llamacpp_text/` and `llamacpp_text_vulkan/`
@@ -112,28 +127,28 @@ Three things differ from `torch_text.py`, and all three are llama.cpp's doing:
   runner assumed.** `worker_base.set_state(device=...)` is `"cpu"`, `"gpu"`
   (every layer offloaded), or `"gpu (partial)"` (the backoff above landed on
   fewer than the model's own total) — a MEASUREMENT of which attempt
-  succeeded, the same principle AI-11b already states for `torch_text`'s own
-  probed device. It cannot say "Vulkan" or "Metal" by name: nothing in the
+  succeeded, the same principle AI-11b already states about reporting a probed
+  device rather than an assumed one. It cannot say "Vulkan" or "Metal" by name: nothing in the
   bound API reports which backend actually served the request, only whether
   a GPU-shaped device existed at all.
 * **The chat template is rendered by hand, from the GGUF's own embedded jinja2
   source, because `create_completion(stream=True)` — not
   `create_chat_completion` — is what keeps the streaming contract identical to
-  `torch_text.generate`'s NDJSON shape.** `create_chat_completion`'s streaming
+  every other runner's NDJSON shape (`worker_base`).** `create_chat_completion`'s streaming
   reply is OpenAI-delta-shaped and would need reshaping back into this app's
   `{"type": "chunk"}` frames anyway, so rendering the prompt ourselves and
   calling the low-level completion API keeps one code path instead of two.
   `enable_thinking=False` is passed into the render context unconditionally,
-  the same default `torch_text._apply_template` chooses and for the same
-  reason (AI-11d): three of this runner's curated models are Qwen3.5 GGUFs,
-  whose upstream template defaults reasoning ON. Jinja simply ignores a
+  the same default the removed `torch_text._apply_template` chose and for the
+  same reason (AI-11d): three of this runner's curated models are Qwen3.5
+  GGUFs, whose upstream template defaults reasoning ON. Jinja simply ignores a
   context variable a template never references, so — unlike transformers'
   `apply_chat_template`, which can raise on an unexpected keyword — no retry
   is needed here.
-* **Cancelling needs no thread.** `model.generate` in `torch_text` owns its own
-  loop, so a `StoppingCriteria` callback is the only interruption point and a
-  producer thread is required to let `TextIteratorStreamer` hand tokens back
-  to this process while generation runs. `Llama.create_completion(stream=True)`
+* **Cancelling needs no thread.** transformers' `model.generate` owned its own
+  loop, so a `StoppingCriteria` callback was the only interruption point and a
+  producer thread was required to let `TextIteratorStreamer` hand tokens back
+  to that process while generation ran. `Llama.create_completion(stream=True)`
   is an ordinary Python generator that computes one token per `next()` — this
   loop IS the token loop — so checking `worker_base.CANCEL` between iterations
   is the whole of cancellation, and a `write()` that raises on a client
@@ -225,7 +240,7 @@ def _recipes_for_repo(repo_id):
 
 def _locally_cached_gguf_files(repo_id):
     """Root-level `.gguf` filenames `repo_id` already has ON DISK, with no
-    network call — the local-cache-first fast path (D407) for resolving an
+    network call — the local-cache-first fast path (D412) for resolving an
     UNCURATED repo, the same "answer the disk before asking the Hub" rule
     `worker_base._cached_file` already gives a curated recipe.
 
@@ -266,7 +281,7 @@ def _locally_cached_gguf_files(repo_id):
 
 def _resolve_uncurated_repo(model_id):
     """`(key, recipe)` for a bare repo id `formats.GGUF_RECIPES` has never
-    heard of — Piece 1 (D407): any Hub repo carrying a root-level GGUF is
+    heard of — Piece 1 (D412): any Hub repo carrying a root-level GGUF is
     something `llama_cpp.Llama` can load, and the only reason this used to be
     refused outright is that this app had no rule for choosing WHICH of a
     repo's own quantizations a bare id should mean. `formats.pick_gguf_file`
@@ -315,7 +330,7 @@ def _resolve_model_id(model_id):
     used unchanged; a bare REPO id this table already curates one or more
     recipes for — the shape the AI Models page's local cache scan hands back
     for a repo this runner already downloaded, since that scan is keyed by
-    repo folder and knows nothing of this table's own keys; and, since D407,
+    repo folder and knows nothing of this table's own keys; and, since D412,
     a bare repo id this table has NEVER heard of, resolved generically by
     `_resolve_uncurated_repo` rather than refused by name — the whole point
     of Piece 1: a curated recipe was never a limit llama.cpp itself imposed.
@@ -396,11 +411,12 @@ def _offload_schedule(total_layers):
 
 def load(model_id, gguf_path):
     """`gguf_path` is what `download` returned — the one `.gguf` file's path."""
-    # The curation check comes first, before the heavy import, for the reason
-    # `torch_text.load` gives about its own format check: a model this runner
-    # was never going to serve is a fact about the request, and importing
+    # The curation check comes first, before the heavy import: a model this
+    # runner was never going to serve is a fact about the REQUEST, and importing
     # first would replace a clear refusal with whatever llama.cpp raises on a
-    # path that was never fetched.
+    # path that was never fetched. (The rule was `torch_text.load`'s, which
+    # checked its own format before importing transformers for the same
+    # reason — removed at D413, the rule kept.)
     _resolve_model_id(model_id)
 
     import llama_cpp
@@ -461,12 +477,13 @@ def memory():
     llama.cpp `mmap`s the GGUF by default (`use_mmap=True`), and unlike a CUDA
     or MPS allocator's pool there is no second accounting system to ask: pages
     that are actually touched during inference are counted in this process's
-    resident set the same way `torch_text`'s CPU case is (see that module's
-    `memory` docstring). Returning None rather than 0 tells `worker_base` there
+    resident set already, the way any CPU-resident allocation is — there is no
+    second allocator to interrogate the way `torch_image` must interrogate
+    torch's Metal pool. Returning None rather than 0 tells `worker_base` there
     is nothing beyond RSS to add, not that the answer is zero.
 
     WIRED, not dead code: `main()` passes this to `worker_base.serve`, the
-    same way `torch_text.main`/`torch_image.main` pass theirs — an unwired
+    same way `torch_image.main` passes its own — an unwired
     `memory()` would be silently ignored forever, including the day someone
     adds a real probe (llama.cpp's own KV-cache size, say) to this body.
     """
@@ -545,9 +562,9 @@ def _render_chat(template_str, llm, messages):
     """The model's own chat template, with reasoning OFF by default.
 
     See the module docstring for why `enable_thinking=False` needs no retry
-    here the way `torch_text._apply_template` does: a template that never
-    reads the variable simply never sees it, where transformers'
-    `apply_chat_template` can raise on an unexpected keyword.
+    here, where the removed `torch_text._apply_template` needed one: a Jinja
+    template that never reads the variable simply never sees it, where
+    transformers' `apply_chat_template` can raise on an unexpected keyword.
     """
     from jinja2 import Environment
 
@@ -585,7 +602,8 @@ def _content_text(content):
 def _prompt_text(llm, messages, raw_prompt):
     """The text to hand `create_completion`: raw, templated, or a plain join.
 
-    Three paths, same order `torch_text._encode` tries them in: an explicit
+    Three paths, in the order the removed `torch_text._encode` tried them
+    (kept because the ORDER is the app's contract, not that runner's): an explicit
     `raw` prompt always wins, a model that carries a chat template renders
     through it, and a model with neither falls back to a plain concatenation
     of message bodies rather than inventing turn markers the model never saw
@@ -646,8 +664,8 @@ def generate(body, write):
 
     No producer thread — see the module docstring. `create_completion`'s own
     generator IS the token loop, so this function reads it directly and checks
-    `worker_base.CANCEL` between tokens, the same flag `torch_text`'s
-    `StoppingCriteria` reads from a different thread.
+    `worker_base.CANCEL` between tokens — the same flag every other runner
+    checks, read from this thread rather than from a producer one.
     """
     llm = _loaded.get("llm")
     if llm is None:

@@ -959,13 +959,16 @@ def test_every_registered_runner_ships_both_of_its_files():
 def _runner_source(runner):
     """The module that actually IMPLEMENTS a runner, following a shell.
 
-    Six of the eleven runner folders — the CPU/CUDA/ROCm variants of the two
-    torch engines — hold a five-line `worker.py` that inserts `runners/` on the
-    path and calls `torch_text.main()` or `torch_image.main()`. The behaviour
+    Five of the runner folders — the CPU/CUDA/ROCm Diffusers variants and both
+    llama.cpp builds — hold a five-line `worker.py` that inserts `runners/` on
+    the path and calls `torch_image.main()` or `llama_text.main()`. The behaviour
     lives one level up, so a source assertion made against the folder's file
     would read a shell and pass on anything: the two tests below would have
-    stopped checking the torch runners entirely, silently, on the commit that
-    hoisted them.
+    stopped checking those runners entirely, silently, on the commit that
+    hoisted them. (It was six folders and two shared modules until D413 removed
+    the three transformers variants and `torch_text.py` with them; the
+    RECOGNITION rule below never named any of them, which is why nothing here
+    had to change.)
 
     The shell is recognised by what makes it one — it imports a module from the
     runners root and CALLS ITS `main()`, which is the whole of its body — rather

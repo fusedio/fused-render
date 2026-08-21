@@ -632,12 +632,14 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
 
 
 def _has_torch_weights(snapshot_dir: str) -> bool:
-    """Is there anything in this revision torch could open?
+    """Is there anything in this revision a safetensors reader could open?
 
     A WALK, like `_weight_files`, and for the same reason: a diffusers pipeline
     keeps its weights per component. The suffixes are `formats.TORCH_WEIGHTS`
-    rather than a list spelled here — this is the page's copy of the question
-    `runners/torch_text.py` asks before it refuses a repo.
+    rather than a list spelled here, so the page and `formats.loaders()` cannot
+    come to disagree about what counts as weights — this was the page's copy of
+    the question the removed `runners/torch_text.py` asked before refusing a
+    repo (D413), and `mlx-text` and the Diffusers rows still ask it.
     """
     for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
         if any(name.endswith(formats.TORCH_WEIGHTS) for name in filenames):
