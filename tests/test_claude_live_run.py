@@ -517,11 +517,146 @@ console.log(JSON.stringify(calls));
         assert calls == [], setup
 
 
-def test_the_watch_never_prints_a_message_the_reader_did_not_send(html_pane):
-    """`quiet`: the run it finds may be one whose first turn is already on
-    screen under an older message, and resumeRun's fallback is to print that
-    message as a fresh user line."""
+# --- what WAKES the watch ----------------------------------------------------
+#
+# The interval alone was half a fix (Akshil, 2026-08-21, two tabs on one chat):
+# the second tab showed the reply ten seconds late and never showed the running
+# chrome, because the lap that finally looked found a run that had already
+# finished. Adoption was never the defect — the LATENCY was. So the triggers are
+# what these pin: the cross-tab stamp (milliseconds, and free), coming back to a
+# backgrounded tab, and a halved interval that a hidden tab does not spend.
+
+
+def _triggers(html, call):
+    """Run the watch's REGISTRATION block under node, over a recording tick."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own re-attach glue")
+    start = html.index("const LIVE_WATCH_MS = ")
+    end = html.index('window.addEventListener("focus"', start)
+    block = html[start:html.index("\n", end) + 1]
+    stubs = """
+const calls = [];
+const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+let activeRun = null, sending = false;
+const handlers = {};
+const document = { hidden: false, addEventListener: (t, f) => { handlers["doc:" + t] = f; } };
+const window = { addEventListener: (t, f) => { handlers["win:" + t] = f; } };
+let ticking = null;
+const setInterval = (fn, ms) => { ticking = fn; calls.push(["interval", ms]); };
+const adoptLiveRun = async (sid, opts) => { calls.push(["adopt", sid, opts.laps, opts.quiet]); };
+const fused = { params: { get: () => "sess-A" } };
+"""
+    script = stubs + block + "\n(async () => {\n" + call + "\n})();"
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_tab_that_started_the_turn_wakes_the_others_at_once(html_pane):
+    """`noteChatActivity` already stamps localStorage as a turn OPENS, and a
+    storage event fires in every other document and never in the writer. So the
+    two-tab case costs no polling and lands while the turn is still streaming."""
+    calls = _triggers(html_pane, """
+await handlers["win:storage"]({ key: CHAT_ACTIVITY_KEY });
+console.log(JSON.stringify(calls));
+""")
+    assert ["adopt", "sess-A", 1, True] in calls
+
+
+def test_another_store_key_is_not_news_about_a_turn(html_pane):
+    calls = _triggers(html_pane, """
+await handlers["win:storage"]({ key: "fused-render:queued-msgs" });
+console.log(JSON.stringify(calls));
+""")
+    assert not [c for c in calls if c[0] == "adopt"]
+
+
+def test_coming_back_to_a_backgrounded_tab_looks_immediately(html_pane):
+    """Both halves: returning laps at once, and leaving does not."""
+    calls = _triggers(html_pane, """
+document.hidden = true;
+await handlers["doc:visibilitychange"]();
+document.hidden = false;
+await handlers["doc:visibilitychange"]();
+await handlers["win:focus"]();
+console.log(JSON.stringify(calls));
+""")
+    assert len([c for c in calls if c[0] == "adopt"]) == 2
+
+
+def test_a_hidden_tab_does_not_spend_the_interval(html_pane):
+    """Chrome nobody is looking at is worth nothing, and the storage poke reaches
+    a hidden tab anyway; what it gives up is catching a SERVER-started run before
+    the reader comes back."""
+    calls = _triggers(html_pane, """
+document.hidden = true;
+await ticking();
+document.hidden = false;
+await ticking();
+console.log(JSON.stringify(calls));
+""")
+    assert [c for c in calls if c[0] == "interval"] == [["interval", 5000]], (
+        "the backstop interval is the one path a server-started run has"
+    )
+    assert len([c for c in calls if c[0] == "adopt"]) == 1
+
+
+def test_the_watch_attaches_in_quiet_mode(html_pane):
     html = html_pane
     start = html.index("async function liveWatchTick() {")
     tick = html[start:html.index("\n}\n", start) + 3]
     assert "quiet: true" in tick
+
+
+# --- `quiet` is dedupe, not silence ------------------------------------------
+#
+# The first version of `quiet` suppressed the run's user line unconditionally,
+# and the second tab then showed an ANSWER HANGING UNDER NO QUESTION: the words
+# were typed in the other tab, so this transcript had never shown them. `quiet`
+# now means "do not print a message this transcript is already showing", which
+# splits the watch's two cases the way they actually differ.
+
+
+def test_quiet_prints_a_message_this_transcript_has_never_shown(html_pane):
+    """Both render sites, because a turn adopted mid-flight and one adopted
+    after it finished are the same question about the same message."""
+    live = _block_between(html_pane, "    } else if (probeMsg && !(quiet",
+                          "addUser(probeMsg);")
+    assert "onScreen(probeMsg)" in live
+    done = _block_between(html_pane, "      } else if ((!users.length",
+                          "addUser(probeMsg);")
+    assert "quiet && !onScreen(probeMsg)" in done, (
+        "a short turn made in another tab is over before the watch looks; "
+        "dropping it silently is what the second tab complained about"
+    )
+
+
+def test_already_shown_is_asked_of_the_whole_transcript(html_pane):
+    """`matches` asks only the LAST bubble because it also decides whether to
+    STRIP rows. This one only decides whether to PRINT, so it may look wider —
+    which is what stops a woken run re-printing a message further up the log."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own re-attach glue")
+    start = html_pane.index("  const onScreen = (msg) =>")
+    pred = html_pane[start:html_pane.index(";\n", start) + 1]
+    script = """
+const bubbles = [{textContent: "old question"}, {textContent: "newer one"}];
+const log = { querySelectorAll: () => bubbles };
+""" + pred + """
+console.log(JSON.stringify({
+  older: onScreen("old question"),
+  last: onScreen("newer one"),
+  fresh: onScreen("typed in the other tab"),
+  empty: onScreen(""),
+}));
+"""
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == {"older": True, "last": True,
+                                      "fresh": False, "empty": False}
+
+
+def _block_between(html, start_marker, end_marker):
+    i = html.index(start_marker)
+    return html[i:html.index(end_marker, i) + len(end_marker)]
+
