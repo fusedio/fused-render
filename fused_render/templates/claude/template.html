@@ -6658,11 +6658,12 @@ async function annRecBegin() {
     rec = await fused.capture.audio({ title: "Spoken walkthrough" });
   } catch (err) {
     annRecBtn.disabled = false;
-    // One alert for both flavours: `unavailable` carries the machine's own
-    // sentence (an ungranted microphone, a browser that cannot record) and
-    // that is exactly what a reader needs in order to act.
-    alert("Cannot record — " + (err.message || err.name)
-          + "\n\nAllow microphone access for this app and try again.");
+    // The message IS the advice, so nothing is appended to it: `unavailable`
+    // carries the machine's own sentence — an ungranted microphone naming
+    // System Settings, or a browser that cannot record naming one that can —
+    // and the old fixed "allow microphone access" line was wrong advice for
+    // half of those.
+    alert("Cannot record — " + (err.message || err.name));
     return;
   }
   annRecBtn.disabled = false;
