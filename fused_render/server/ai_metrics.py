@@ -53,6 +53,19 @@ from __future__ import annotations
 import threading
 import time
 
+from fused_render.ai.runners import formats
+
+
+def _is_local_model(model: str) -> bool:
+    """The same LOCAL/CLAUDE seam `ai.py`'s own `_is_local_model` decides,
+    duplicated rather than imported (importing `ai.py` here would cycle back
+    through it) — a Hugging Face repo id always has a `/`, and, since D407,
+    a curated `llamacpp-text` id is the GGUF's own FILENAME instead and has
+    none. Kept identical on purpose: this module's whole point is that the
+    TIER a call is counted under must never disagree with which one actually
+    served it."""
+    return "/" in model or model.lower().endswith(formats.GGUF_EXTENSION)
+
 #: Bucket width. Ten seconds is the resolution a one-hour graph can actually
 #: draw (360 columns is already more than a chart is wide) and it is coarse
 #: enough that one prompt lands in one bar rather than smeared across ten.
@@ -234,7 +247,7 @@ class _Store:
         # has no slash — so a tier read after the fold would put every local
         # model past the cap in the Claude column, and get it wrong on exactly
         # the path the cap exists for.
-        tier = self._tiers[LOCAL if "/" in model else CLAUDE]
+        tier = self._tiers[LOCAL if _is_local_model(model) else CLAUDE]
         key = int((self._monotonic() - self._started_mono) // BUCKET_S)
         slot = self._slots[key % BUCKETS]
         if slot[0] != key:  # a slot from a previous lap: start it over
@@ -253,7 +266,7 @@ class _Store:
                 # placeholder id happens to look like.
                 self._model_tiers[model] = (
                     None if model == OTHER_MODEL
-                    else (LOCAL if "/" in model else CLAUDE))
+                    else (LOCAL if _is_local_model(model) else CLAUDE))
         return slot[1], row, tier
 
     def record(self, model: str, usage: dict | None,

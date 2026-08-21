@@ -17,6 +17,7 @@ from fastapi.responses import (
 )
 
 from fused_render import claude_health
+from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
 from fused_render.server.common import _require_fused
 from fused_render.shell.prefs import default_model
@@ -104,11 +105,26 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # is not a heuristic — a Hub id always has the form `org/name`, and no Claude
 # alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
 # reach a local model with no new parameter and no change to any existing caller.
+#
+# **The seam gained a second shape (D407) and this is the one place it has to
+# be spelled out, because it is genuinely not a slash-shaped id.**
+# `llamacpp-text`'s curated ids (`formats.GGUF_RECIPES`) are the GGUF's own
+# FILENAME, never a repo id — `"Qwen3.5-4B-Q5_K_M.gguf"` has no `/` at all —
+# because a GGUF repo commonly ships two dozen quantizations of one model and
+# the filename is what tells them apart (see `llama_text.py`'s own docstring).
+# `"/" in model` alone therefore sent every curated llamacpp id down the
+# CLAUDE path, as an unrecognised alias, which nothing caught because nothing
+# had called `fused.ai()` with one — a bug from the moment `llamacpp-text`
+# shipped (D406), not something Piece 1/2 introduced, found while auditing
+# this file for what the branch invalidated. No Claude alias has ever ended
+# in `.gguf` either, so the fix is the same kind of fact as the slash: an
+# uncurated repo id Piece 1 resolves (always `org/name`) already has the
+# slash and needs nothing new.
 _AI_MODEL_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def _is_local_model(model: str) -> bool:
-    return "/" in model
+    return "/" in model or model.lower().endswith(formats.GGUF_EXTENSION)
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:

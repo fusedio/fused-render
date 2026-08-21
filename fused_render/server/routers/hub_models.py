@@ -120,7 +120,8 @@ import httpx
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai.registry import capability_for_task
+from fused_render.ai.registry import capability_for_task, for_capability
+from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers.ai_models import (
     _FRIENDLIER_TAGS,
@@ -147,9 +148,19 @@ _TIMEOUT_S = 12.0
 
 # What a card can show. Anything the deployment does not know how to expand is
 # simply absent from the reply (see the module docstring).
+#
+# **`siblings` (D407) is the one entry that is not for the card at all — it
+# is for `_model_row`'s own GGUF resolution.** Confirmed directly against the
+# live API rather than assumed: the bare list endpoint returns NO `siblings`
+# at all, passing `full` at ANY value (including `full=false`) turns them on
+# as a side effect, and `expand[]=siblings` composed with the rest of this
+# tuple returns the repo's COMPLETE file list in the LIST response itself —
+# no per-repo follow-up request. That is what makes resolving a GGUF search
+# result at ROW-CONSTRUCTION time (`formats.pick_gguf_file`) cheap: the data
+# this needs is already in the payload this module was fetching anyway.
 _EXPAND = (
     "pipeline_tag", "downloads", "likes", "lastModified", "createdAt",
-    "library_name", "gated", "private", "tags", "safetensors",
+    "library_name", "gated", "private", "tags", "safetensors", "siblings",
 )
 
 # Sorts the page offers. Keyed so a client cannot pass an arbitrary sort field
@@ -439,10 +450,11 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
-    **Four ways to be dropped, and they are the search's whole contract**
-    (D313, narrowed by D316). A row that reaches the page comes with a Download
-    button or with the one sentence that says what to do first, so every one of
-    these is the difference between an actionable card and one that apologises:
+    **Five ways to be dropped, and they are the search's whole contract**
+    (D313, narrowed by D316, widened by D407). A row that reaches the page
+    comes with a Download button or with the one sentence that says what to
+    do first, so every one of these is the difference between an actionable
+    card and one that apologises:
 
     * no id — a row the page could not act on at all.
     * a `pipeline_tag` no registered runner serves, or none at all. The tag is
@@ -460,6 +472,12 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
       not a drop: the Hub often does not set it, and silence about the format
       is not evidence against it — only an explicit unrunnable value counts,
       the same way `_gate` reads only what the Hub actually said.
+    * (D407) the capability's ACTIVE runner here declares a format tag
+      (`Runner.hub_filter_tags`) and `formats.pick_gguf_file` finds nothing
+      loadable among the repo's own `siblings` — see below for why this is
+      the one drop reason that depends on the resolved runner rather than on
+      capability existence alone, and is therefore the one exception to this
+      module's "search does not depend on the host" rule.
 
     **`gated` is NOT a drop, and the distinction is the point** (D316). It was
     one, on the rule that every card must be downloadable — a rule drawn one
@@ -473,6 +491,23 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     its own value; a truthy gate we do not recognise is read as `manual`, the
     stricter reading, because guessing "just sign in" about an unknown gate is
     the guess that wastes someone's afternoon.
+
+    **Why the fifth drop is allowed to depend on the resolved runner, when
+    every other check here is capability-only (D407).** `llamacpp-text`'s
+    GGUF format and `transformers-text`/`mlx-text`'s safetensors are the
+    first time one capability has had two genuinely different on-disk
+    formats behind it — every earlier multi-runner capability's variants
+    share a format, so `_UNRUNNABLE_LIBRARIES` never had to choose between
+    them. A search result this machine's ACTIVE text-generation engine
+    cannot resolve at all (a safetensors repo, while llamacpp is the engine
+    in force) is not actionable HERE regardless of what a different engine
+    elsewhere could do with it — the identical argument
+    `_UNRUNNABLE_LIBRARIES` already makes about FORMAT, only now decided per
+    machine because the format itself varies per machine. Two people running
+    the same query see different results only after making different,
+    VISIBLE choices in Preferences, never for a reason neither could see —
+    which is what keeps this inside the spirit of "not by what resolves on
+    this machine", even though it reads the resolved runner to answer it.
     """
     model_id = raw.get("id") or raw.get("modelId")
     if not isinstance(model_id, str) or not model_id:
@@ -486,6 +521,21 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     library = raw.get("library_name") if isinstance(raw.get("library_name"), str) else None
     if library and library.lower() in _UNRUNNABLE_LIBRARIES:
         return None
+    file = None
+    runner = for_capability(capability)
+    if runner is not None and "gguf" in runner.hub_filter_tags:
+        # The one runner-specific branch in this module (see the docstring's
+        # last section) — `pick_gguf_file` is a GGUF-specific function, and
+        # `hub_filter_tags` names the FILTER TAG generically but not the
+        # picker that goes with it, since llama.cpp's is the only format
+        # that needs one today. A future second format-specific runner would
+        # need its own branch here, not a new item in `hub_filter_tags`.
+        siblings = raw.get("siblings")
+        names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
+                 if isinstance(siblings, list) else [])
+        file = formats.pick_gguf_file(names)
+        if file is None:
+            return None
     safetensors = raw.get("safetensors")
     return {
         "id": model_id,
@@ -498,6 +548,12 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         # `POST /api/ai/runtime/download`, which needs to know which runner is
         # being asked for.
         "capability": capability,
+        # The ONE file `pick_gguf_file` chose, for a GGUF row — None for
+        # every other row. Carried so `POST /api/ai/runtime/download` can act
+        # without re-deriving the pick from `siblings` a second time; the id
+        # stays a bare repo id regardless (no `repo:file` grammar — see
+        # `llama_text.py`'s own docstring for why one was rejected).
+        "file": file,
         # None, "auto" or "manual" — never absent and never False, so the page
         # tests one field for "is there a gate and what kind". A missing key
         # would make "no gate" and "the Hub did not say" the same answer.
@@ -668,10 +724,30 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     }
     if query:
         params["search"] = query
+    # (D407) When a task filter is set AND the runner actually serving that
+    # capability HERE declares a format tag (`Runner.hub_filter_tags`), the
+    # Hub is asked to AND it onto the pipeline-tag filter already sent —
+    # confirmed live that multiple `filter=` values are ANDed, and the Hub
+    # request already uses `urlencode(..., doseq=True)` below, so a list
+    # value here is not a new parameter shape. Without a task filter there is
+    # no single capability to resolve a runner for (a bare keyword search
+    # spans every supported tag at once), so this narrowing is skipped and
+    # `_model_row`'s own per-row check is the only gate — the same
+    # two-layer shape the pipeline-tag filter itself already has.
+    extra_tags: tuple[str, ...] = ()
     if task_filter:
-        params["filter"] = task_filter
+        filter_capability = capability_for_task(_friendly_task(task_filter))
+        filter_runner = for_capability(filter_capability) if filter_capability else None
+        if filter_runner is not None:
+            extra_tags = filter_runner.hub_filter_tags
+        params["filter"] = [task_filter, *extra_tags] if extra_tags else task_filter
 
-    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()))
+    # `extra_tags` is part of the cache key because it is part of the
+    # ANSWER: a preference switched live (CT-5, no restart needed) changes
+    # which runner serves the capability and therefore what this narrows to,
+    # so the SAME query/task/sort/count must not be served from a cache
+    # entry built under a different engine choice.
+    key = (hub_endpoint(), query, task_filter, sort, count, bool(_token()), extra_tags)
     payload = _cached(key)
     if payload is None:
         rows, error = _fetch(params)
