@@ -321,9 +321,9 @@ def _only_transcribe_runner(tmp_path, monkeypatch, code):
     """A registry whose ONLY runner transcribes, under `code`, with the fake
     worker and this interpreter — so no CTranslate2, no weights, no audio.
 
-    The code is a parameter because it is not decoration since D319: the
-    endpoint asks `runners/engine_options.py` what the RESOLVED runner cannot
-    do, so a test about that answer has to be able to say which runner resolved.
+    The code is a parameter because it is not decoration: the endpoint asks
+    `runners/engine_options.py` what the RESOLVED runner cannot do, so a test
+    about that answer has to be able to say which runner resolved.
     """
     folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
     folder.mkdir()
@@ -351,10 +351,30 @@ def fake_transcribe_runner(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def fake_parakeet_runner(tmp_path, monkeypatch):
-    """The same fake worker, resolving under the PARAKEET code — which is what
-    makes the endpoint's per-engine refusals reachable from a test."""
-    yield _only_transcribe_runner(tmp_path, monkeypatch, "parakeet-mlx")
+def fake_refusing_runner(tmp_path, monkeypatch):
+    """The same fake worker, resolving under a code this fixture gives a
+    temporary `engine_options.UNSUPPORTED` entry — which is what makes the
+    endpoint's per-engine refusals reachable from a test.
+
+    Until D406, this used the real `parakeet-mlx` code and its real table
+    entry; that engine was withdrawn and the table is empty now that no
+    registered runner refuses anything, so the refusal PATH is exercised
+    here with a fake entry instead of a real one — the mechanism, not any
+    particular engine, is what this file pins."""
+    from fused_render.ai.runners import engine_options
+    code = "fake-refusing-engine"
+    monkeypatch.setitem(engine_options.UNSUPPORTED, code, {
+        "task": (
+            "the fake engine only transcribes — it has no translate task. "
+            "Ask for task: 'transcribe'."),
+        "language": (
+            "the fake engine has no 'language' option — it detects the "
+            "language itself."),
+        "initialPrompt": (
+            "the fake engine has no 'initialPrompt' — it has no text to "
+            "condition on."),
+    })
+    yield _only_transcribe_runner(tmp_path, monkeypatch, code)
     supervisor.unload()
     supervisor.reset()
 
@@ -440,7 +460,7 @@ def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     resolved = registry.for_capability(registry.TEXT_GENERATION)
-    assert resolved is not None and resolved.code == "transformers-text"
+    assert resolved is not None and resolved.code == "llamacpp-text"
     # …and the runner that was skipped is still registered ahead of it, which is
     # what makes this a skip rather than an absence.
     assert registry.all_runners()[0].code == "mlx-text"
@@ -507,8 +527,7 @@ def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
     # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
-        "tonera/FLUX.2-klein-4B-int8-diffusers",
-        "black-forest-labs/FLUX.2-klein-4B"]
+        "tonera/FLUX.2-klein-4B-int8-diffusers"]
 
     # Windows and Linux never see the MLX row at all, preference or none.
     for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
@@ -594,6 +613,61 @@ def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypat
     resolution = registry.resolve(registry.SPEECH_TO_TEXT)
     assert resolution.runner is not None
     assert "not a runner this build knows" in resolution.ignored_reason
+
+
+def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch):
+    """The three codes D416 deleted, arriving in a prefs.json that outlived them.
+
+    This is not the same case as the test above even though it takes the same
+    branch, and the difference is who is holding the file. "whisper-9000" is a
+    value nobody's app ever wrote — a newer build's vocabulary, or a typo. These
+    three were REGISTERED, offered in the Engines picker, and stored by users who
+    made a deliberate choice; `prefs.json` is a plain file in a home directory
+    people sync and restore from backup, so upgrading is not the only way one
+    arrives. The failure mode being ruled out is therefore not exotic: it is the
+    ordinary experience of anyone who had picked Transformers before upgrading.
+
+    Every one of the three is checked rather than one standing for the family.
+    `resolve()`'s unknown-code branch is code-agnostic, but a future build that
+    "helpfully" mapped one stale code onto a live engine would want to be forced
+    to think about all three, and a test that only names the CPU row would let
+    two of them keep a silent special case.
+
+    What must NOT happen: an error, or a capability with no engine. What DOES
+    happen is the ordering deciding, with the reason carried out so the Engines
+    tab can say the stored choice is not in force — and the stored value is left
+    exactly as written, because a preference silently corrected on read is one
+    the user can neither see nor undo (`describe_engines`' `selected`).
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    for stale in ("transformers-text", "transformers-text-cuda",
+                  "transformers-text-rocm"):
+        assert registry.by_code(stale) is None, stale
+        _prefer(monkeypatch, registry.TEXT_GENERATION, stale)
+
+        resolution = registry.resolve(registry.TEXT_GENERATION)
+        assert resolution.runner is not None, stale
+        assert resolution.runner.code == "llamacpp-text", stale
+        assert resolution.honoured is False, stale
+        assert "not a runner this build knows" in resolution.ignored_reason, stale
+        # The ordering's answer and nothing else: an ignored preference must
+        # resolve exactly as "auto" would, or the drop is not really a drop.
+        _prefer(monkeypatch, registry.TEXT_GENERATION, registry.AUTO)
+        assert registry.for_capability(registry.TEXT_GENERATION).code == \
+            resolution.runner.code, stale
+        _prefer(monkeypatch, registry.TEXT_GENERATION, stale)
+
+        # …and what the Engines tab is handed: the stale value still shown as
+        # SELECTED (never rewritten), a live effective engine beside it, a reason,
+        # and no option in the list to match — which is the state
+        # `engines.strandedSelection` exists to render.
+        row = next(r for r in registry.describe_engines()
+                   if r["capability"] == registry.TEXT_GENERATION)
+        assert row["selected"] == stale
+        assert row["effective"] == "llamacpp-text"
+        assert row["ignoredReason"]
+        assert stale not in {c["code"] for c in row["choices"]}
 
 
 def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
@@ -721,7 +795,7 @@ def test_describe_engines_carries_every_choice_with_its_own_reason(monkeypatch):
     assert speech["effective"] == "faster-whisper"
     assert speech["ignoredReason"] is None
     choices = {choice["code"]: choice for choice in speech["choices"]}
-    assert set(choices) == {"mlx-whisper", "parakeet-mlx", "faster-whisper"}
+    assert set(choices) == {"mlx-whisper", "faster-whisper"}
     assert choices["mlx-whisper"]["available"] is False
     assert "Apple Silicon" in choices["mlx-whisper"]["reason"]
     assert choices["faster-whisper"]["reason"] is None
@@ -733,8 +807,8 @@ def test_describe_engines_carries_every_choice_with_its_own_reason(monkeypatch):
 def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatch):
     """A capability with two runners must not answer for only the first of them.
 
-    `mlx-text` is registered first, so a Linux machine whose transformers worker
-    was missing — a state `Runner.available` documents, since a runner is
+    `mlx-text` is registered first, so a Linux machine whose cross-platform text
+    worker was missing — a state `Runner.available` documents, since a runner is
     registered before its folder is written — was told text generation "needs
     Apple Silicon": the one backend that was never going to serve it, with the
     one that would have gone unmentioned. Reported by review on the PR that
@@ -743,12 +817,12 @@ def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatc
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
-    # The transformers runner present but unbuilt, which is what makes the whole
-    # capability unservable on a machine MLX has already turned down.
+    # The cross-platform runner present but unbuilt, which is what makes the
+    # whole capability unservable on a machine MLX has already turned down.
     ghost = registry.Runner(
-        code="transformers-text", capability=registry.TEXT_GENERATION,
-        folder="/nowhere", label="Transformers (CPU)",
-        short_label="Transformers (CPU)")
+        code="llamacpp-text", capability=registry.TEXT_GENERATION,
+        folder="/nowhere", label="llama.cpp (CPU)",
+        short_label="llama.cpp (CPU)")
     monkeypatch.setattr(
         registry, "_RUNNERS", (registry.by_code("mlx-text"), ghost))
 
@@ -757,12 +831,12 @@ def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatc
     # The SHORT name. This sentence is read wherever a capability has to
     # explain itself — a card, a job row, an API error — and none of those is
     # the engine picker, which is the one surface that keeps a PLATFORM
-    # qualifier. On a torch row the two names are now equal, because the
-    # accelerator is part of the short name too (a hardware variant is not
-    # identifiable without it), so what this pins is that the sentence names
-    # the engine at all and names it the way the rest of the app does.
-    assert "Transformers (CPU)" in reason, reason
-    assert "(PyTorch)" not in reason, reason
+    # qualifier. On a hardware variant the two names are equal, because the
+    # accelerator is part of the short name too (a variant is not identifiable
+    # without it), so what this pins is that the sentence names the engine at
+    # all and names it the way the rest of the app does.
+    assert "llama.cpp (CPU)" in reason, reason
+    assert "(GGUF)" not in reason, reason
     # The supervisor raises the same sentence rather than deriving its own.
     with pytest.raises(supervisor.SupervisorError) as caught:
         supervisor.load("org/x", registry.TEXT_GENERATION)
@@ -827,21 +901,27 @@ def test_every_runner_has_both_names_and_they_differ_only_by_the_qualifier():
 #:
 #: A PLATFORM qualifier ("(Apple Silicon)", "(CTranslate2)") is dropped outside
 #: the picker: it tells someone sitting at the machine nothing they do not know.
-#: A HARDWARE qualifier is kept, because it is the only thing that tells three
-#: builds of one library apart, and the short name is what the Local card and
-#: `servingLine` print — three engines all reading "Diffusers" would render as
-#: one engine everywhere but the picker.
+#: A HARDWARE qualifier is kept, because it is the only thing that tells two or
+#: three builds of one library apart, and the short name is what the Local card
+#: and `servingLine` print — three engines all reading "Diffusers" would render
+#: as one engine everywhere but the picker.
 #:
 #: An allow-list rather than a rule about brackets, so adding a row with a
 #: qualifier in its short name is a decision somebody writes down here.
 _QUALIFIED_SHORT_NAMES = {
-    "transformers-text": "(CPU)",
-    "transformers-text-cuda": "(CUDA)",
-    "transformers-text-rocm": "(ROCm)",
     "diffusers-image": "(CPU)",
     "diffusers-image-cuda": "(CUDA)",
     "diffusers-image-rocm": "(ROCm)",
+    "llamacpp-text": "(CPU)",
+    "llamacpp-text-vulkan": "(Vulkan)",
 }
+
+#: Every qualifier this app uses to name a BUILD rather than a platform.
+#:
+#: The vocabulary is closed on purpose: it is what
+#: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
+#: name against, and what Task B's family test forbids in a family name.
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -873,6 +953,76 @@ def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
             assert row["effectiveShortLabel"] == runner.short
 
 
+def test_every_runner_names_its_family_with_no_hardware_in_it():
+    """A THIRD name per runner, and the card's tag is what it exists for.
+
+    The tag on a Local card is a FORMAT claim — "Diffusers" is exactly the
+    statement that these weights are safetensors a Diffusers pipeline opens —
+    and all three Diffusers rows read the identical file, so "(ROCm)" on that
+    tag answers a question nobody asked of a file on disk and leaks which
+    machine happens to be reading it. `family_label` is that claim with the
+    hardware taken out; the hardware-qualified `short_label` stays on the
+    tag's hover, so the full truth is one hover away rather than gone.
+
+    A prefix of `short_label` and never a regex over it, for `short_label`'s
+    own reason: derived names make the value a side effect of somebody's
+    punctuation. The prefix check is what keeps the pair one engine.
+    """
+    for runner in registry.all_runners():
+        assert runner.family_label, f"{runner.code} has no family name"
+        assert runner.family == runner.family_label
+        assert runner.short_label.startswith(runner.family_label), (
+            f"{runner.code}: {runner.family_label!r} is not the start of "
+            f"{runner.short_label!r}")
+        for qualifier in _HARDWARE_QUALIFIERS + ("(Apple Silicon)",):
+            assert qualifier not in runner.family_label, (
+                f"{runner.code}: {runner.family_label!r} carries {qualifier} — "
+                f"a tag that is a format claim must not name the hardware")
+    # And the field earns its existence: on a hardware variant it is genuinely
+    # a different string from the short name. Without a row like that the test
+    # above would pass on a registry that simply copied `short_label` across.
+    assert registry.by_code("diffusers-image-rocm").family_label == "Diffusers"
+
+
+def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
+    """Sibling rows of one library are told apart by HARDWARE, never by format.
+
+    The regression this locks out shipped once: the first llama.cpp row was
+    called "llama.cpp (GGUF)" beside "llama.cpp (Vulkan)", and GGUF is not what
+    tells those two apart — both load it through the same
+    `runners/llama_text.py`. A qualifier naming something a sibling also does is
+    a qualifier that answers nothing, and it cost that row a hardware name it
+    needed: the Vulkan row's own note has to point at "the CPU build", which
+    only reads as a cross-reference once the row is CALLED that.
+
+    So the rule, per library: where two rows share a `label` stem, each
+    qualifier must come from `_HARDWARE_QUALIFIERS`, they must differ, and no
+    name may repeat a format tag both rows declare in `hub_filter_tags`.
+    """
+    families: dict[str, list] = {}
+    for runner in registry.all_runners():
+        families.setdefault(runner.label.split(" (")[0], []).append(runner)
+    siblings = {stem: rows for stem, rows in families.items() if len(rows) > 1}
+    # If this is ever empty the test has stopped testing anything — every
+    # hardware-variant family could have been renamed out from under it.
+    assert "llama.cpp" in siblings, sorted(families)
+    for stem, rows in siblings.items():
+        qualifiers = [runner.label[len(stem):].strip() for runner in rows]
+        assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
+        for runner, qualifier in zip(rows, qualifiers):
+            assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
+            # And the hardware is in BOTH names, the shape the torch rows set:
+            # the short name is what the Local card and the job row print, so a
+            # family whose short names collide renders as one engine there.
+            assert runner.short_label == runner.label, runner.code
+        shared = set.intersection(*(set(r.hub_filter_tags) for r in rows))
+        for runner in rows:
+            for tag in shared:
+                assert tag.lower() not in runner.label.lower(), (
+                    f"{runner.code}: {runner.label!r} names {tag!r}, which "
+                    f"every {stem} row reads — it distinguishes nothing")
+
+
 def test_every_suggested_model_names_a_runner_that_exists():
     # A suggestion list under a runner nobody registered is a dead card on the
     # page — and since D293 the table is keyed by RUNNER rather than capability,
@@ -900,36 +1050,139 @@ def test_every_runner_that_can_run_here_suggests_something(monkeypatch):
                 f"{capability} resolves to a runner on {system} and suggests nothing")
 
 
-def test_text_generation_resolves_to_a_runner_on_every_supported_platform(monkeypatch):
-    """The whole point of D293, stated as one assertion.
+#: Every (system, machine) pair this app is DISTRIBUTED to, and the local text
+#: engine each one resolves to with no preference set.
+#:
+#: A literal table rather than a loop over `_RUNNERS`, because the property being
+#: pinned is not "the registry is self-consistent" — it is "the set of platforms
+#: we ship to is covered", and a registry cannot know that set. The three rows
+#: are the three artefacts this repo builds: the macOS DMG (`skills/making-a-release`),
+#: and the Windows and Linux builds under `windows/` and `.github/workflows`.
+#:
+#: The `code` column is asserted and not merely non-None on purpose. "Something
+#: serves text generation here" would still pass if a removal silently moved
+#: every non-Apple machine onto a DIFFERENT engine than the one this app's
+#: catalog, notes and docs describe — which is exactly what D416 did do, and it
+#: is a decision that must show up as a diff in this table rather than as
+#: nothing.
+_TEXT_ENGINE_PER_SHIPPED_PLATFORM = (
+    ("Darwin", "arm64", "mlx-text"),
+    ("Windows", "AMD64", "llamacpp-text"),
+    ("Linux", "x86_64", "llamacpp-text"),
+)
 
-    Text generation was Apple-Silicon-only, which made the app's flagship local
-    capability something a Windows or Linux user could read about and not use.
+
+def test_every_shipped_platform_keeps_a_local_text_engine(monkeypatch):
+    """No platform this app ships to may be left with no local text generation.
+
+    D293 stated this first: text generation was Apple-Silicon-only, which made
+    the app's flagship local capability something a Windows or Linux user could
+    read about and not use. D416 is why it is now written as an INVARIANT over an
+    enumerated platform list rather than as three incidental assertions — that
+    change removed three of the four text rows, and the thing that made it safe
+    to do was being able to show that no shipped platform was stranded. A future
+    removal must have to argue with this test.
+
+    **The remaining coverage is thin, and the test says so rather than implying
+    otherwise.** Apple Silicon holds `mlx-text` and `llamacpp-text` both; Windows
+    and Linux hold `llamacpp-text` alone, with `llamacpp-text-vulkan` as an
+    opt-in registered BELOW it — which is why `auto` never reaches the Vulkan row
+    and why it does not widen this coverage — and no second FAMILY behind
+    either. So on those two
+    platforms this assertion is one runner deep, and `_llamacpp_platform`'s own
+    docstring carries what that costs (a Windows ARM64 box, or a Linux machine
+    outside the three architectures its wheel index publishes, has no local text
+    engine at all and falls back to `claude-cli`).
     """
-    for system, machine, code in (
-        ("Darwin", "arm64", "mlx-text"),
-        ("Windows", "AMD64", "transformers-text"),
-        ("Linux", "x86_64", "transformers-text"),
-    ):
+    for system, machine, code in _TEXT_ENGINE_PER_SHIPPED_PLATFORM:
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         runner = registry.for_capability(registry.TEXT_GENERATION)
         assert runner is not None and runner.code == code, (system, machine)
+        # A resolved engine with an empty shortlist is a Discover tab with a
+        # heading and nothing under it, which is not "covered".
+        assert catalog.for_capability(registry.TEXT_GENERATION), (system, machine)
 
 
 def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch):
-    """Availability controls the catalog and Load button, so it is a support claim."""
+    """Availability controls the catalog and Load button, so it is a support claim.
+
+    Both text runners registered for Darwin have to say no here, and each is
+    checked BY NAME rather than through `for_capability` alone: "nothing
+    resolves" would still pass if one gate regressed while the other covered
+    for it. `mlx-text` is Metal-only, and `llamacpp-text` refuses because the
+    maintainer's wheel index publishes no macOS x86_64 build at all — pinned
+    against the index's own tag list in
+    `test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags` below.
+
+    Intel macOS was never covered: the removed `transformers-text` row refused
+    it too (as a distribution decision rather than a packaging one), so D416
+    took nothing away here.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
 
     assert registry.for_capability(registry.TEXT_GENERATION) is None
-    status = registry.by_code("transformers-text").available()
+    status = registry.by_code("mlx-text").available()
     assert status.ok is False
-    assert "Apple Silicon macOS" in status.reason
+    assert "Apple Silicon" in status.reason
+    llamacpp_status = registry.by_code("llamacpp-text").available()
+    assert llamacpp_status.ok is False
+    assert "Apple Silicon" in llamacpp_status.reason
 
 
-def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
+def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypatch):
+    """`_llamacpp_platform`, pinned directly rather than only through
+    `for_capability` — the maintainer's CPU index publishes wheels for
+    `win_amd64`, Linux x86_64/aarch64/riscv64, and macOS arm64, and NOTHING
+    else (verified against the index listing for the pinned 0.3.29, D411).
+
+    **The gate is checked by ARCHITECTURE, and the refusals are asserted, not
+    just the admissions.** This docstring used to say "Windows (any arch it runs
+    on), Linux (any arch)", which contradicted both `_llamacpp_platform` and the
+    loop two lines below it — and a half-checked gate is what
+    `test_the_hardware_probes_stop_refusing_machines_that_work`'s whole family
+    exists to prevent. D416 makes it load-bearing rather than cosmetic: this row
+    is now the ONLY local text engine on Windows and Linux, so an arch this gate
+    wrongly ADMITS gets a Load button whose `uv sync` has nothing to install, and
+    one it wrongly REFUSES has no local text generation at all —
+    `_llamacpp_platform`'s own docstring cites this test for exactly that reason.
+    """
+    for system, machine in (
+        ("Windows", "AMD64"), ("Linux", "x86_64"), ("Linux", "aarch64"),
+        ("Linux", "riscv64"), ("Darwin", "arm64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text").available()
+        assert status.ok is True, (system, machine, status.reason)
+
+    # …and every architecture the index does NOT publish, refused with a reason
+    # that names the missing tag rather than the OS. Each `needle` is checked
+    # because "ok is False" alone would pass on a gate that refused for the
+    # wrong reason, which is the failure mode a user reads off the disabled row.
+    for system, machine, needle in (
+        ("Windows", "ARM64", "no win_arm64"),
+        ("Linux", "ppc64le", "no ppc64le build for Linux"),
+        ("Darwin", "x86_64", "macOS x86_64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text").available()
+        assert status.ok is False, (system, machine)
+        assert needle in status.reason, (system, machine, status.reason)
+
+
+def test_apple_silicon_falls_back_to_llamacpp_when_mlx_is_unavailable(
         monkeypatch):
+    """A Mac keeps text generation even with the MLX row gone.
+
+    The fallback used to be `transformers-text`, whose `whl/cpu` pin resolved to
+    an MPS-capable macOS wheel. Since D416 it is `llamacpp-text`, whose CPU-index
+    wheel links `libggml-metal.dylib` — so a Mac still falls back onto its GPU
+    rather than onto a CPU path, which is the property this test is really about
+    and the reason the row below MLX is allowed to be the only one.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
@@ -938,7 +1191,7 @@ def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
     )
 
     runner = registry.for_capability(registry.TEXT_GENERATION)
-    assert runner is not None and runner.code == "transformers-text"
+    assert runner is not None and runner.code == "llamacpp-text"
 
 
 # -- the accelerator probes -----------------------------------------------------
@@ -1102,7 +1355,7 @@ def test_every_supported_rocm_target_is_a_name_the_decoder_can_produce():
 
 def test_a_supported_amd_gpu_is_offered_the_rocm_engines(monkeypatch, tmp_path):
     _fake_amd(monkeypatch, tmp_path, gpus=(120000,))
-    for code in ("transformers-text-rocm", "diffusers-image-rocm"):
+    for code in ("diffusers-image-rocm",):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
 
@@ -1116,7 +1369,7 @@ def test_an_amd_gpu_the_rocm_wheel_cannot_target_is_refused(monkeypatch, tmp_pat
     available for execution", several frames below anything this app wrote.
     """
     _fake_amd(monkeypatch, tmp_path, gpus=(100100,))
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "gfx1010" in status.reason
     assert "not supported by the ROCm build" in status.reason
@@ -1140,7 +1393,7 @@ def test_a_kfd_reporting_no_gpu_nodes_names_the_container_case(monkeypatch, tmp_
     container.
     """
     _fake_amd(monkeypatch, tmp_path, gpus=())
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "CPU nodes only" in status.reason
     assert "--device /dev/kfd" in status.reason
@@ -1153,7 +1406,7 @@ def test_an_amd_gpu_with_no_kfd_device_says_the_driver_is_not_loaded(
     driver update), which is why the probe falls back to the DRM class rather
     than concluding there is no GPU."""
     _fake_amd(monkeypatch, tmp_path, kfd=False, amd_card=True)
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "amdgpu kernel driver" in status.reason
     assert "modprobe amdgpu" in status.reason
@@ -1184,7 +1437,7 @@ def test_a_kfd_this_user_cannot_open_asks_for_permission(monkeypatch, tmp_path):
     the test would assert nothing while still passing.
     """
     _fake_amd(monkeypatch, tmp_path, kfd_mode=0o000)
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "needs permission" in status.reason
     assert "render" in status.reason
@@ -1202,7 +1455,7 @@ def test_a_render_node_that_is_ABSENT_is_not_a_permission_problem(
     unreachable whenever the devices are missing rather than the topology.
     """
     _fake_amd(monkeypatch, tmp_path, render=False)
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "renderD*" in status.reason
     assert "--device /dev/dri" in status.reason
@@ -1218,7 +1471,7 @@ def test_a_render_node_that_is_CLOSED_asks_for_permission(monkeypatch, tmp_path)
     half-working state, and here `usermod` is the whole fix.
     """
     _fake_amd(monkeypatch, tmp_path, render_mode=0o000)
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "needs permission" in status.reason
     assert "renderD128" in status.reason
@@ -1251,7 +1504,7 @@ def test_a_render_node_belonging_to_another_vendor_is_not_the_amd_one(
     not evidence of anything ROCm can use, and the reason must say the AMD card
     has none rather than asking for a permission the user already has."""
     _fake_amd(monkeypatch, tmp_path, render=False, foreign_render="0x8086")
-    status = registry.by_code("transformers-text-rocm").available()
+    status = registry.by_code("diffusers-image-rocm").available()
     assert status.ok is False
     assert "belongs to an AMD card" in status.reason
 
@@ -1274,7 +1527,7 @@ def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
     for system, machine in (("Windows", "AMD64"), ("Darwin", "arm64")):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
-        status = registry.by_code("transformers-text-rocm").available()
+        status = registry.by_code("diffusers-image-rocm").available()
         assert status.ok is False
         assert "needs Linux" in status.reason
         assert system.lower() in status.reason
@@ -1282,7 +1535,7 @@ def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
 
 def test_an_nvidia_machine_is_offered_the_cuda_engines(monkeypatch, tmp_path):
     _fake_nvidia(monkeypatch, tmp_path)
-    for code in ("transformers-text-cuda", "diffusers-image-cuda"):
+    for code in ("diffusers-image-cuda",):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
 
@@ -1298,12 +1551,16 @@ def test_cuda_is_a_HARD_GATE_on_a_machine_with_no_nvidia_gpu(monkeypatch, tmp_pa
     put a driver on.
     """
     _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False)
-    status = registry.by_code("transformers-text-cuda").available()
+    status = registry.by_code("diffusers-image-cuda").available()
     assert status.ok is False
     assert "needs an NVIDIA GPU" in status.reason
-    # …and the capability is untouched: the CPU row above it still serves.
+    # …and the capability is untouched: the unaccelerated row above it still
+    # serves. Asserted on IMAGE generation rather than on text, because since
+    # D416 the CUDA row under test is an image row — text generation's own
+    # accelerated variant is `llamacpp-text-vulkan`, gated by `_vulkan`, and
+    # would not have been moved by this NVIDIA probe either way.
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
-    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+    assert registry.for_capability(registry.IMAGE_GENERATION).code == "diffusers-image"
 
 
 def test_a_MISSING_uvm_node_is_not_a_refusal_because_it_is_created_LAZILY(
@@ -1327,7 +1584,7 @@ def test_a_MISSING_uvm_node_is_not_a_refusal_because_it_is_created_LAZILY(
     argument the probe already makes about a driver-version floor.
     """
     _fake_nvidia(monkeypatch, tmp_path, uvm=False)
-    for code in ("transformers-text-cuda", "diffusers-image-cuda"):
+    for code in ("diffusers-image-cuda",):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
 
@@ -1349,7 +1606,7 @@ def test_wsl2_can_pick_cuda_with_none_of_the_linux_device_nodes(
     driver on a page render, which AI-6 bars for `nvidia-smi`'s reasons.
     """
     _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False, wsl=True)
-    assert registry.by_code("transformers-text-cuda").available().ok is True
+    assert registry.by_code("diffusers-image-cuda").available().ok is True
     # …and it takes BOTH: a `/dev/dxg` with no CUDA library is a WSL2 guest whose
     # host driver does not carry one, which is not a CUDA machine.
     os.remove(str(registry.WSL_CUDA_LIBRARY))
@@ -1372,7 +1629,7 @@ def test_nvidia_nodes_this_user_cannot_open_ask_for_permission(
     control-and-GPU check entirely still passed it on the unified-memory one.
     """
     _fake_nvidia(monkeypatch, tmp_path, unreadable=(device,))
-    status = registry.by_code("transformers-text-cuda").available()
+    status = registry.by_code("diffusers-image-cuda").available()
     assert status.ok is False
     assert "needs permission" in status.reason
     assert device in status.reason
@@ -1395,24 +1652,38 @@ def test_windows_gates_cuda_on_the_drivers_own_cuda_library(monkeypatch, tmp_pat
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(registry, "NVCUDA_DLL", str(tmp_path / "nvcuda.dll"))
-    status = registry.by_code("transformers-text-cuda").available()
+    status = registry.by_code("diffusers-image-cuda").available()
     assert status.ok is False
     assert "nvcuda.dll" in status.reason
 
     (tmp_path / "nvcuda.dll").write_text("")
-    assert registry.by_code("transformers-text-cuda").available().ok is True
+    assert registry.by_code("diffusers-image-cuda").available().ok is True
 
 
-def test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR(monkeypatch, tmp_path):
+def test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR(
+        monkeypatch, tmp_path):
     """The whole user-facing decision of the per-hardware split, in one test.
 
-    A machine with a working NVIDIA GPU and a working AMD GPU has five text
-    engines available and resolves to the CPU one, because CPU is the default and
-    the accelerated rows are OPT-IN from the Engines tab. That is a choice, not
-    an accident of ordering: the accelerated wheels are much larger downloads
-    with a hardware requirement, and a default that silently required one would
-    fail hardest on the machines least able to explain why. Anyone who wants the
-    GPU says so once, and `prefs.json` remembers.
+    A machine with a working NVIDIA GPU and a working AMD GPU has both
+    accelerated image rows available and still resolves to the unaccelerated
+    one, because that is the default and the accelerated rows are OPT-IN from the
+    Engines tab. That is a choice, not an accident of ordering: the accelerated
+    wheels are much larger downloads with a hardware requirement, and a default
+    that silently required one would fail hardest on the machines least able to
+    explain why. Anyone who wants the GPU says so once, and `prefs.json`
+    remembers.
+
+    **Renamed from `test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR` at
+    D416, and the text-generation half of it went with the transformers rows.**
+    The rule is unchanged and still holds on both capabilities — text
+    generation's accelerated variant is now `llamacpp-text-vulkan`, which sits
+    below `llamacpp-text` for this very reason — but Vulkan is gated by
+    `_vulkan`, which needs a loader library and a registered ICD rather than the
+    `/dev` nodes `_fake_amd`/`_fake_nvidia` fake here. Pinning text generation
+    through those two fakes would have asserted a property of the fixtures, so
+    the text side is pinned by
+    `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
+    instead, on the ordering itself.
 
     Pinned because the ordering is invisible in a diff of the table and nothing
     else fails when a row moves — the same argument the mflux ordering test
@@ -1422,17 +1693,15 @@ def test_AUTO_STAYS_ON_THE_CPU_ROW_EVEN_WITH_AN_ACCELERATOR(monkeypatch, tmp_pat
     _fake_nvidia(monkeypatch, tmp_path)
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
 
-    for code in ("transformers-text-cuda", "transformers-text-rocm",
-                 "diffusers-image-cuda", "diffusers-image-rocm"):
+    for code in ("diffusers-image-cuda", "diffusers-image-rocm"):
         assert registry.by_code(code).available().ok is True, code
-    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
     assert registry.for_capability(registry.IMAGE_GENERATION).code == "diffusers-image"
 
     # …and opting in is honoured, which is what makes the default a default
     # rather than a restriction.
-    _prefer(monkeypatch, registry.TEXT_GENERATION, "transformers-text-cuda")
-    resolution = registry.resolve(registry.TEXT_GENERATION)
-    assert resolution.runner.code == "transformers-text-cuda" and resolution.honoured
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
+    resolution = registry.resolve(registry.IMAGE_GENERATION)
+    assert resolution.runner.code == "diffusers-image-cuda" and resolution.honoured
 
 
 def test_an_engine_row_is_serialised_from_ONE_probe(monkeypatch):
@@ -1464,7 +1733,7 @@ def test_an_engine_row_is_serialised_from_ONE_probe(monkeypatch):
         capability=registry.TEXT_GENERATION,
         # A real folder, so `available()` gets past its is-the-worker-built check
         # and reaches the probe this test is about.
-        folder=os.path.join(registry.RUNNERS_DIR, "transformers_text"),
+        folder=os.path.join(registry.RUNNERS_DIR, "llamacpp_text"),
         label="Flapping", short_label="Flapping",
         _available=probe,
     )
@@ -1476,31 +1745,41 @@ def test_an_engine_row_is_serialised_from_ONE_probe(monkeypatch):
             assert (choice["available"] is False) == (choice["reason"] is not None), choice
 
 
-def test_the_cpu_torch_rows_name_the_apple_silicon_GPU_they_run_on(monkeypatch):
+def test_the_cpu_rows_name_the_apple_silicon_GPU_they_run_on(monkeypatch):
     """The Engines tab must not contradict the card beside it.
 
-    `torch_text._placement()` returns `("mps", float16)` on a Mac and
-    `torch_image._place()` moves the pipeline to `mps` — which is the whole point
-    of the `whl/cpu` pin resolving darwin to the ordinary MPS-capable wheel: this
-    row is what a Mac falls back to when MLX is unavailable (AI-2b). So a note
-    reading "Runs on the CPU on any machine, at a few words a second" printed a
-    CPU speed claim under the picker while the loaded card reported device `mps`,
-    on the exact machine the fallback exists for.
+    `torch_image._place()` moves the pipeline to `mps` and `llama_text.load()`
+    reports device "gpu" when the Metal backend takes the layers — which is the
+    whole point of a `whl/cpu`-style pin resolving darwin to a wheel with Metal
+    in it: these rows are what a Mac falls back to when MLX is unavailable
+    (AI-2b). So a note reading "Runs on the CPU on any machine, at a few words a
+    second" printed a CPU speed claim under the picker while the loaded card
+    reported device `mps`, on the exact machine the fallback exists for.
 
     The `code`, the `label` and the `short_label` are deliberately NOT what
     changed: a stored engine preference keys on `code` (D381), and "(CPU)" names
     the BUILD — the install with no accelerator libraries in it — which is the
     identity AI-2c requires a hardware variant to carry in both names.
+
+    `transformers-text` was the third row here and the one this test was written
+    for (D382); it went at D416, and the property outlived it because it was
+    never about torch. `llamacpp-text` took its place in the list, which is the
+    check that matters: it is now the row a Mac with no MLX falls back to.
     """
-    for code in ("transformers-text", "diffusers-image"):
+    for code, cap in (("llamacpp-text", 170), ("diffusers-image", 110)):
         runner = registry.by_code(code)
         assert runner.label == runner.short_label
         assert "(CPU)" in runner.label
         note = runner.note
         assert "Apple Silicon" in note, (code, note)
         # ONE LINE is the constraint the field documents, so the Mac clause has
-        # to be paid for rather than appended.
-        assert len(note) <= 110, (code, len(note), note)
+        # to be paid for rather than appended. The caps differ because
+        # `llamacpp-text`'s sentence carries a second irreducible fact no other
+        # row has to state — that its wheels come from the maintainer's index
+        # rather than PyPI — and since D416 made this the default engine on two
+        # platforms, that provenance is the one thing a reader cannot discover
+        # from anywhere else on the page.
+        assert len(note) <= cap, (code, len(note), note)
 
 
 def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
@@ -1559,7 +1838,8 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
     list to drift: `_SHARED_SUGGESTIONS` aliases them, and this is the assertion
     that the alias is wired rather than the lists merely being equal today.
     """
-    assert catalog.for_runner("transformers-text-cuda") == catalog.SUGGESTIONS["transformers-text"]
+    assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
+    assert catalog.for_runner("diffusers-image-cuda") == catalog.SUGGESTIONS["diffusers-image"]
     assert catalog.for_runner("diffusers-image-rocm") == catalog.SUGGESTIONS["diffusers-image"]
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
@@ -1588,19 +1868,28 @@ def test_no_hardware_variant_holds_its_own_suggestion_list():
         assert registry.by_code(variant).capability == registry.by_code(source).capability
 
 
-def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
+def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
+    """The `size_gb` column, pinned by value on the two lists whose numbers came
+    from summing real Hub blob metadata rather than from a parameter count.
+
+    It read the `transformers-text` list until D416 — the bf16 Qwen entries at
+    9.3 to 19.3GB — and now reads `llamacpp-text`, whose figures are the single
+    GGUF file each id resolves to. That the numbers are a quarter to a third of
+    what they replaced is the measurement D416 rests on, sitting here as data.
+    """
     expected = {
-        "Qwen/Qwen3-4B-Instruct-2507": 8.1,
-        "microsoft/Phi-4-mini-instruct": 7.7,
-        "Qwen/Qwen3-1.7B": 4.1,
-        "Qwen/Qwen3-8B": 16.4,
+        "Qwen3.5-4B-Q5_K_M.gguf": 3.1,
+        "Qwen3.5-4B-Q8_0.gguf": 4.5,
+        "Qwen3.5-9B-Q4_K_M.gguf": 5.7,
+        "Qwen3.5-9B-Q8_0.gguf": 9.5,
+        "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
-        "Systran/faster-whisper-medium": 1.5,
+        "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
     }
     actual = {
         model["id"]: model["size_gb"]
-        for runner in ("transformers-text", "faster-whisper")
+        for runner in ("llamacpp-text", "faster-whisper")
         for model in catalog.SUGGESTIONS[runner]
     }
     assert actual == expected
@@ -1610,7 +1899,7 @@ def test_every_suggestion_list_is_ordered_smallest_first():
     """One ordering rule, and the default is whatever it puts at position 0.
 
     The user was shown the trade — a bare `fused.ai.transcribe()` now loads
-    `Systran/faster-whisper-small` rather than the turbo model — and chose one
+    `Systran/faster-whisper-tiny.en` rather than the turbo model — and chose one
     rule over a separate default field. So this is the rule, asserted rather
     than left to the eye: sorted by ascending `size_gb`, with an entry that has
     no size sorting LAST (an unknown download must never lead a list, since
@@ -1641,18 +1930,18 @@ def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch)
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
-    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3-1.7B"
+    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen3.5-4B-Q5_K_M.gguf"
     assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
-        "Systran/faster-whisper-small"
+        "Systran/faster-whisper-tiny.en"
 
 
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     """A Windows machine must not be shown MLX repos, or told it has no runner.
 
     Both halves were one bug: `describe()` took the FIRST runner registered for
-    a capability regardless of whether it could run, so with MLX listed above
-    transformers a Windows box would have read "needs Apple Silicon" under a
-    heading whose four suggestions were all Metal-packed checkpoints it could
+    a capability regardless of whether it could run, so with MLX listed above the
+    cross-platform row a Windows box would have read "needs Apple Silicon" under
+    a heading whose four suggestions were all Metal-packed checkpoints it could
     not load — while a runner sat ready to serve it.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
@@ -1660,12 +1949,12 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     text = next(row for row in catalog.describe()
                 if row["capability"] == registry.TEXT_GENERATION)
     assert text["available"] is True and text["reason"] is None
-    assert text["runner"] == "transformers-text"
-    assert text["runnerLabel"] == "Transformers (CPU)"
+    assert text["runner"] == "llamacpp-text"
+    assert text["runnerLabel"] == "llama.cpp (CPU)"
     # Both names travel, and the Discover heading uses the short one — which on
-    # a torch row is the same string, because the accelerator is part of the
-    # engine's identity rather than a platform note.
-    assert text["runnerShortLabel"] == "Transformers (CPU)"
+    # a hardware variant is the same string, because the accelerator is part of
+    # the engine's identity rather than a platform note.
+    assert text["runnerShortLabel"] == "llama.cpp (CPU)"
     assert not any(m["id"].startswith("mlx-community/") for m in text["models"])
     # …and the default a bare `fused.ai.image()`-style call would reach for is
     # the loadable one, not the first entry of some other machine's list.
@@ -1723,6 +2012,220 @@ def test_speech_recognition_is_a_capability_something_here_serves(monkeypatch):
 def test_the_registry_describes_the_transcription_runner():
     rows = {row["code"]: row for row in registry.describe()}
     assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
+
+
+def test_llamacpp_text_is_registered_directly_below_mlx_text(monkeypatch):
+    """`llamacpp-text` is SECOND, so it is the `auto` answer everywhere MLX
+    cannot run — and MLX still wins on the platform it was built for.
+
+    **This test asserted the opposite until D416 and the inversion is the
+    decision, not a fixture repair.** It was
+    `test_llamacpp_text_is_registered_below_every_transformers_row`: this row sat
+    fourth precisely so `auto` could never reach it, because
+    `llamacpp_text/pyproject.toml` records that the maintainer's wheel index is
+    a coin-flip per release on macOS arm64 and a capability that fragile to
+    install is a poor default. Removing the three rows above it removed the
+    thing that made "never a fallthrough" achievable; D416 weighed that against
+    a measurement this engine won on every axis (4.2x transformers' throughput
+    on a Radeon GPU, 2.4x on CPU, a third of the download, a third of the peak
+    RSS) and moved the default. macOS arm64 — where the audit's failures were —
+    still resolves to `mlx-text` first, which is asserted below and is half of
+    why the trade was acceptable.
+
+    Position is checked directly, rather than only inferred from behaviour,
+    because the ordering is invisible in a diff of the table (the same argument
+    `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR`'s
+    docstring makes about the Diffusers split) and nothing else fails when a row
+    moves one line up.
+    """
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert codes.index("llamacpp-text") == codes.index("mlx-text") + 1
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
+
+
+def test_llamacpp_text_is_reachable_only_by_an_explicit_preference(monkeypatch):
+    """The other half of "opt-in": `_always` means it CAN run everywhere, and a
+    preference naming it is honoured exactly like any other runner's — the
+    registered position only keeps AUTO off it, never a deliberate choice."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text" and resolution.honoured
+
+
+def test_llamacpp_text_suggestions_are_smallest_first_and_curated_by_filename():
+    """Every id here is the GGUF's own filename, not a Hub repo id — see
+    `runners/llama_text.py`'s module docstring for why there is no
+    `repo:quant` grammar. `test_every_suggestion_list_is_ordered_smallest_first`
+    already pins the ordering rule generically; this pins the SHAPE that is
+    specific to this runner's list."""
+    entries = catalog.SUGGESTIONS["llamacpp-text"]
+    assert len(entries) >= 3
+    for entry in entries:
+        assert entry["id"].endswith(".gguf"), entry["id"]
+        assert "/" not in entry["id"], (
+            f"{entry['id']} looks like a Hub repo id — this list's ids are "
+            f"curated filenames, never repo ids")
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert "llamacpp-text" in codes
+
+
+def test_llamacpp_text_default_is_reached_only_once_selected(monkeypatch):
+    """`default_for` follows the RESOLVED runner (`catalog._runner_for`), so it
+    only reaches this list once a preference actually selects the engine —
+    the same mechanism `test_the_default_is_the_smallest_model_the_active_runner_offers`
+    exercises for the other runners."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+    entries = catalog.SUGGESTIONS["llamacpp-text"]
+    assert catalog.default_for(registry.TEXT_GENERATION) == entries[0]["id"]
+
+
+def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monkeypatch):
+    """The Vulkan variant sits directly after the CPU/Metal row, and it is LAST —
+    so `auto` never reaches it on any platform, and reaching it is always a
+    choice made on the Engines tab.
+
+    This is now the whole of the "never a fallthrough" property for text
+    generation: D416 gave `llamacpp-text` the default and deliberately did not
+    give it to this row, whose `_offload_schedule` backoff is known not to engage
+    on AMD (see the row's own comment and PR #706 — radv satisfies an
+    over-commit by evicting other clients, which took a desktop session down
+    during testing). An over-large model on the row above costs a slow load; on
+    this row it can cost a session, which is not a thing to hand a machine that
+    did not ask for it.
+    """
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.TEXT_GENERATION]
+    assert codes.index("llamacpp-text-vulkan") == codes.index("llamacpp-text") + 1
+    assert codes[-1] == "llamacpp-text-vulkan"
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
+
+
+def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
+    """`_vulkan`, pinned directly — the maintainer's vulkan index publishes
+    `manylinux2014_x86_64` and `win_amd64` for `0.3.29` and NOTHING else: no
+    macOS build (Apple Silicon already gets acceleration through the CPU
+    index's Metal-linked wheel), no Linux aarch64, no Windows ARM64.
+
+    A working loader and ICD are faked via the same `_fake_vulkan` fixture
+    `test_vulkan_needs_a_registered_icd_even_with_a_working_loader` and its
+    neighbours use, so this only pins the ARCHITECTURE half of the gate.
+    """
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        _fake_vulkan(monkeypatch, tmp_path, system)
+        status = registry.by_code("llamacpp-text-vulkan").available()
+        assert status.ok is True, (system, machine, status.reason)
+
+    for system, machine in (
+        ("Darwin", "arm64"), ("Linux", "aarch64"), ("Windows", "ARM64"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = registry.by_code("llamacpp-text-vulkan").available()
+        assert status.ok is False, (system, machine)
+        assert "x86_64" in status.reason
+
+
+def _fake_vulkan(monkeypatch, tmp_path, system, *, loader=True, icd=True):
+    """A machine with a working Vulkan loader and (optionally) a registered
+    ICD — real files under `tmp_path`, repointed onto the module constants
+    `_vulkan` reads, the same style `test_windows_gates_cuda_on_the_drivers_own_cuda_library`
+    uses for `NVCUDA_DLL` rather than a global `os.path` patch.
+    """
+    if system == "Windows":
+        dll = tmp_path / "vulkan-1.dll"
+        if loader:
+            dll.write_text("")
+        monkeypatch.setattr(registry, "VULKAN_DLL", str(dll))
+        return
+    loader_path = tmp_path / "libvulkan.so.1"
+    if loader:
+        loader_path.write_text("")
+    monkeypatch.setattr(registry, "VULKAN_LOADER_PATHS", (str(loader_path),))
+    icd_dir = tmp_path / "icd.d"
+    icd_dir.mkdir(exist_ok=True)
+    if icd:
+        (icd_dir / "fake_icd.json").write_text("")
+    monkeypatch.setattr(registry, "VULKAN_ICD_DIRS", (str(icd_dir),))
+
+
+def test_vulkan_needs_the_loader_even_before_a_gpu_is_asked_about(monkeypatch, tmp_path):
+    """The hard-failure half: `libggml-vulkan.so`/`ggml-vulkan.dll` link the
+    loader directly (`DT_NEEDED libvulkan.so.1` / a PE import on
+    `vulkan-1.dll`, read off the actual `0.3.29` wheels on 2026-08-21), so a
+    missing loader fails `import llama_cpp` itself — refused here rather than
+    left to that import error, the same reasoning `_cuda`'s missing-device
+    case documents for why ITS checks exist at all.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", loader=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "loader" in status.reason
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _fake_vulkan(monkeypatch, tmp_path, "Windows", loader=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "Vulkan driver" in status.reason
+
+
+def test_vulkan_needs_a_registered_icd_even_with_a_working_loader(monkeypatch, tmp_path):
+    """The advisory half, on Linux only — Windows has no equivalent manifest
+    directory this module checks, per `_vulkan`'s own docstring, so the DLL
+    check stands in for both halves there.
+
+    A loader with no registered driver is not a load failure (ggml's own
+    bundled CPU backend answers instead), but it IS the "advertising a claim
+    that buys nothing" case `_cuda`/`_rocm`'s device checks already refuse —
+    an 8x larger download for the exact CPU outcome `llamacpp-text` already
+    gives more cheaply.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux", loader=True, icd=False)
+    status = registry.by_code("llamacpp-text-vulkan").available()
+    assert status.ok is False
+    assert "driver" in status.reason
+
+
+def test_llamacpp_text_vulkan_is_reachable_only_by_an_explicit_preference(monkeypatch, tmp_path):
+    """Opt-in, UNLIKE its neighbour since D416: a working loader and ICD make
+    this row AVAILABLE, and `auto` still resolves to `llamacpp-text` above it —
+    reaching this one is a choice."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _fake_vulkan(monkeypatch, tmp_path, "Linux")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text-vulkan")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner.code == "llamacpp-text-vulkan" and resolution.honoured
+
+
+def test_llamacpp_text_vulkan_shares_its_neighbours_suggestion_list():
+    """`_SHARED_SUGGESTIONS` aliases this row to `llamacpp-text`'s curated
+    list, the same way the CUDA/ROCm Diffusers rows share theirs — one
+    GGUF is one GGUF whichever wheel loads it, so a second copy of the list
+    would be the exact drift `_SHARED_SUGGESTIONS`'s own docstring warns
+    about."""
+    assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
 
 
 def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
@@ -1957,6 +2460,322 @@ def test_generating_with_an_unloaded_model_starts_the_load(fake_runner):
         list(supervisor.generate_text("org/cold", {"messages": []}))
     assert caught.value.job_id == supervisor.job_id_for("org/cold")
     _wait_ready("org/cold")  # …and it really is loading, not just claimed to be
+
+
+# -- per-worker activity, for the idle reaper (AI-13) ------------------------
+
+
+def test_a_streamed_chunk_re_stamps_last_activity(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 999
+    list(supervisor.generate_text("org/chat", {"messages": []}))
+    # Every yielded chunk re-stamps, not just entry — a stream running longer
+    # than the idle window must never look idle partway through it.
+    assert time.monotonic() - worker.last_activity < 5
+
+
+def test_closing_a_partially_read_stream_frees_in_flight(fake_runner):
+    # `generate_text` is a generator: a page that stops iterating without
+    # calling `close()` is exactly the leak the `finally` in `_in_use` exists
+    # to prevent (see Key decisions).
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    stream = supervisor.generate_text("org/chat", {"messages": []})
+    next(stream)
+    assert worker.in_flight == 1
+    stream.close()
+    assert worker.in_flight == 0
+
+
+def test_in_use_nests_without_losing_track(fake_runner):
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    with supervisor._in_use(worker):
+        with supervisor._in_use(worker):
+            assert worker.in_flight == 2
+        assert worker.in_flight == 1
+    assert worker.in_flight == 0
+
+
+# -- the idle reaper (AI-13) ------------------------------------------------
+
+
+def _idle_worker(monkeypatch, *, state="ready", last_activity, in_flight=0,
+                 capability=registry.TEXT_GENERATION, model="org/idle"):
+    """A `ready` worker planted directly in `_workers`, the same shortcut
+    `test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served` uses — no
+    process, so `_terminate` is stubbed the same way."""
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    worker = supervisor.Worker(model=model, capability=capability,
+                               runner_code="fake-text", token="t", state=state,
+                               last_activity=last_activity, in_flight=in_flight)
+    monkeypatch.setitem(supervisor._workers, capability, worker)
+    return worker
+
+
+def test_a_non_ready_worker_is_exempt_from_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, state="loading", last_activity=now - 10_000)
+    # A 40-minute `uv sync` or an 8GB pull IS activity, and killing it mid-build
+    # is hostile rather than a memory win — only `ready` is eligible.
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._workers[registry.TEXT_GENERATION] is worker
+
+
+def test_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_in_flight_with_a_fresh_stamp_is_spared(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 5, in_flight=1)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_mid_transcription_worker_is_spared_well_past_the_idle_window(monkeypatch):
+    """The bug a collapsed predicate would ship: `generate_transcript` is a
+    single blocking call, not a stream — nothing re-stamps `last_activity`
+    between the request going out and the reply coming back, which can be up
+    to `TRANSCRIBE_TIMEOUT_S` (4h) later. A 30-minute-old stamp on a
+    `SPEECH_TO_TEXT` worker with `in_flight == 1` is exactly what a real
+    90-minute transcription looks like at the 30-minute mark under a
+    10-minute window, and reaping it here is `_terminate` killing the
+    process the request is still waiting on."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 30 * 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_transcription_worker_past_its_leak_ceiling_is_reaped(monkeypatch):
+    """The other half: `in_flight` is not a permanent exemption. Past a
+    ceiling derived from `TRANSCRIBE_TIMEOUT_S` itself, the request that set
+    `in_flight` would already have raised — `_worker_request` has its own
+    timeout — so a counter still reading positive is a leaked stream
+    (an abandoned `generate_text` iterator on another capability, say),
+    never a legitimately slow answer."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    ceiling = supervisor._leak_ceiling(registry.SPEECH_TO_TEXT, 600)
+    _idle_worker(monkeypatch, last_activity=now - ceiling - 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) != []
+
+
+def test_a_slow_first_load_is_not_reaped_the_instant_it_becomes_ready(fake_runner, monkeypatch):
+    """Regression: `last_activity` used to be seeded once, in the `Worker`
+    dataclass, at CONSTRUCTION — before `_bring_up`'s venv build, pull and
+    load even start. A first-ever download that takes longer than the idle
+    window would become `ready` already past it, and the reaper's very next
+    tick would unload it before anything had used it.
+
+    Simulated without actually waiting minutes: `Worker.last_activity`'s
+    `field(default_factory=time.monotonic)` captured the REAL function at
+    class-definition time, so patching the `time` module's `monotonic`
+    attribute afterwards does not touch the construction stamp — only calls
+    made through the module attribute at RUN time are affected, which is
+    every `time.monotonic()` call `_bring_up` makes once the fake worker
+    (a ~0.1s bring-up) actually reaches `ready`. A constant offset rather
+    than a frozen value, so every deadline/elapsed computation along the way
+    still advances normally; only the ABSOLUTE reading moves, by more than
+    the idle window.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_monotonic = time.monotonic
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: real_monotonic() + 800)
+
+    supervisor.load("org/slow", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/slow")
+
+    # If the ready transition still left `last_activity` at its construction
+    # stamp (real time, unaffected by the patch), `now` here would read it as
+    # ~800s stale — past a 10-minute window — and this would fail.
+    assert supervisor.idle_workers(real_monotonic() + 800) == []
+    assert worker.state == "ready"
+
+
+def test_reap_decision_and_removal_share_one_lock_hold(fake_runner, monkeypatch):
+    """Regression: `reap_idle` used to call `idle_workers()` (one `_lock`
+    acquisition) and then `unload()` (a SECOND, later one) to remove what it
+    found. In the gap between those two acquisitions the table was briefly
+    unlocked, and a request racing in could call `ready_worker()`, enter
+    `_in_use()` and start a call on the very worker the reaper had already
+    condemned — `unload()` matches by model+capability alone and never
+    re-checks `in_flight`, so it would terminate the process that request is
+    now waiting on.
+
+    Driven deterministically rather than left to scheduler luck, with no
+    `sleep()` anywhere: `reap_idle` runs on its OWN thread, and `_is_idle` —
+    called from INSIDE `_claim_for_removal`'s lock hold, unconditionally, for
+    every candidate worker — is patched to pause there on an `Event`, still
+    holding `_lock`. Only once that pause is observed does a second ("racer")
+    thread start and immediately try to claim the same worker via
+    `ready_worker()`, which itself needs `_lock`. Whatever happens next, the
+    racer's call cannot complete until the reaper thread releases the lock —
+    and by then, if the fix holds, decision AND pop have both already
+    happened, so the racer can only ever observe "already gone", never a live
+    worker the reaper is about to terminate out from under it.
+    """
+    supervisor.load("org/racer", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/racer")
+    worker.last_activity = time.monotonic() - 700  # idle past a 10-min window
+
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+
+    real_is_idle = supervisor._is_idle
+    paused = threading.Event()
+    release = threading.Event()
+
+    def slow_is_idle(w, now, window):
+        result = real_is_idle(w, now, window)
+        if w is worker:
+            paused.set()
+            assert release.wait(5), "the main thread never released us"
+        return result
+
+    monkeypatch.setattr(supervisor, "_is_idle", slow_is_idle)
+
+    result = {}
+
+    def run_reap():
+        result["stopped"] = supervisor.reap_idle(time.monotonic())
+
+    reaper = threading.Thread(target=run_reap)
+    reaper.start()
+    assert paused.wait(5), "reap_idle never reached its decision"
+    # `reap_idle` is now blocked INSIDE `_claim_for_removal`'s lock hold,
+    # mid-decision for this exact worker. Only now does the racer start.
+
+    def racer():
+        result["racer_saw"] = supervisor.ready_worker(registry.TEXT_GENERATION, "org/racer")
+
+    t = threading.Thread(target=racer)
+    t.start()
+    release.set()
+    reaper.join(5)
+    t.join(5)
+
+    assert result["stopped"] == ["org/racer"]
+    # The racer's lookup could only run AFTER the whole reap finished
+    # (decided AND removed) — it needed the same `_lock`, and `reap_idle`
+    # never let go of it mid-decision — so it can only ever find the worker
+    # already gone.
+    assert result["racer_saw"] is None
+
+
+def test_zero_minutes_disables_the_reaper_entirely(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 100_000)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+
+
+def test_a_weights_only_fetch_is_untouched_by_the_reaper(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    stub = supervisor.Worker(model="org/fetching", capability=registry.TEXT_GENERATION,
+                             runner_code="fake-text", token="t", state="downloading",
+                             last_activity=now - 100_000)
+    monkeypatch.setitem(supervisor._fetch_workers, "org/fetching", stub)
+    assert supervisor.idle_workers(now) == []
+    assert supervisor.reap_idle(now) == []
+    assert supervisor._fetch_workers["org/fetching"] is stub
+
+
+def test_the_pref_is_re_read_on_every_call(monkeypatch):
+    """No caching between calls: a preference edited mid-session, or an env
+    override that comes and goes, moves the answer on the very next tick —
+    same discipline as `ready_worker`'s live re-read of the engine choice."""
+    from fused_render.shell import prefs
+    now = time.monotonic()
+    _idle_worker(monkeypatch, last_activity=now - 400)
+    minutes = [10]
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: minutes[0])
+    assert supervisor.idle_workers(now) == [], "400s has not reached a 10-minute window"
+    minutes[0] = 5
+    assert supervisor.idle_workers(now) != [], "the SAME worker, a shorter window"
+
+
+def test_the_reaped_job_row_names_the_idle_reason(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    worker = _idle_worker(monkeypatch, last_activity=now - 700)
+    job_id = supervisor.job_id_for(worker.model)
+    supervisor._report(job_id, title=worker.model, state="running", kind="task")
+
+    assert supervisor.reap_idle(now) == [worker.model]
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job_id)
+    assert row["detail"] == "Unloaded after 10 min idle"
+
+
+def test_describe_reports_idle_seconds_and_the_countdown(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["idleSeconds"] == pytest.approx(60, abs=3)
+    assert row["unloadsInSeconds"] == pytest.approx(540, abs=3)
+
+
+def test_describe_reports_no_countdown_when_the_window_is_disabled(monkeypatch, fake_runner):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 0)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["unloadsInSeconds"] is None
+
+
+def test_describe_countdowns_a_busy_worker_against_the_leak_ceiling(monkeypatch, fake_runner):
+    """Regression: `unloadsInSeconds` used to be `window - idle age` with no
+    reference to `in_flight`, so a busy worker's card would count down to
+    "unloads in under a minute" and then sit there — the reaper's own
+    predicate (`_is_idle`) spares a busy worker until `_leak_ceiling`, well
+    past the bare window, so the card was asserting an unload that would not
+    happen for a long time yet.
+    """
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/chat")
+    worker.last_activity = time.monotonic() - 60
+    worker.in_flight = 1
+
+    row = supervisor.describe()["loaded"][0]
+
+    ceiling = supervisor._leak_ceiling(registry.TEXT_GENERATION, 600)
+    assert row["unloadsInSeconds"] == pytest.approx(ceiling - 60, abs=3)
+    # Sanity: the leak ceiling is well past the bare 10-minute window here,
+    # so this genuinely distinguishes the fix from the old `window`-only math
+    # rather than coincidentally landing on the same number.
+    assert ceiling > 600
 
 
 # -- a worker's environment carries no Hub token of our making (D402) ------------
@@ -2390,10 +3209,10 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
-        "mlx-text", "transformers-text", "transformers-text-cuda",
-        "transformers-text-rocm", "diffusers-image", "diffusers-image-cuda",
+        "mlx-text", "llamacpp-text", "llamacpp-text-vulkan",
+        "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
-        "faster-whisper", "mlx-whisper", "parakeet-mlx"}
+        "faster-whisper", "mlx-whisper"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -2740,6 +3559,54 @@ def test_an_image_needs_a_prompt(client, fake_image_runner):
         assert response.status_code == 400, body
 
 
+def test_an_unrecognised_image_option_is_a_400_naming_it(client, fake_image_runner):
+    """The bug report: `image`/`strength` render a text-to-image picture and say
+    nothing about the option that was ignored. Now the envelope is closed —
+    an option this endpoint does not have is refused rather than dropped."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "image" in message
+    assert "not an option" in message
+
+
+def test_an_unrecognised_image_option_names_BOTH_unknown_keys(client, fake_image_runner):
+    response = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "strength": 0.6},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "image" in message and "strength" in message
+
+
+def test_the_envelope_is_checked_BEFORE_any_field_validation(client, fake_image_runner):
+    """An unknown key and a bad `steps` in the same request: the envelope error
+    wins, so the caller learns about the option it does not have first."""
+    response = client.post(
+        "/api/ai/image", json={"prompt": "a fox", "image": "x.png", "steps": "nonsense"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "'image' is not an option" in message
+    # The field error ("'steps' must be a number") never appears — the
+    # envelope check short-circuits before `steps` is ever parsed.
+    assert "must be a number" not in message
+
+
+def test_every_documented_image_option_is_still_accepted(client, fake_image_runner):
+    """The regression this change could plausibly cause: a false rejection of a
+    valid option. Assert the whole accepted set, not two of them."""
+    body = {
+        "prompt": "a fox", "model": "org/x", "width": 512, "height": 512,
+        "steps": 10, "guidance": 3.0, "seed": 7,
+    }
+    response = client.post("/api/ai/image", json=body, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
                                                         monkeypatch):
     monkeypatch.setenv("FAKE_IMAGE_FAILS", "1")
@@ -2939,6 +3806,36 @@ def test_transcribing_needs_a_file_that_actually_exists(
                 if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
 
 
+def test_transcribe_rejects_a_caller_supplied_unknown_option(
+        client, fake_transcribe_runner, recording):
+    response = _post_transcribe(client, path=recording, image="x.png")
+    assert response.status_code == 400
+    assert "image" in response.json()["error"]
+
+
+def test_transcribe_accepts_the_bridge_injected_base(
+        client, fake_transcribe_runner, recording, tmp_path):
+    """`base` is not a caller-facing option — the bridge adds it from the
+    page's own `?path=` — but the server must still accept it, or every
+    existing `fused.ai.transcribe` call with a relative path breaks."""
+    started = _post_transcribe(client, path=recording, base=str(tmp_path / "page.html"))
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_every_documented_transcribe_option_is_still_accepted(
+        client, fake_transcribe_runner, recording):
+    """The regression this change could plausibly cause: a false rejection of
+    a valid option. Assert the whole accepted set, not two of them."""
+    body = dict(
+        path=recording, model=catalog.default_for(registry.SPEECH_TO_TEXT),
+        language="en", task="transcribe", initialPrompt="hello",
+        vad=True, diarize=False, speakers=None, words=False)
+    response = _post_transcribe(client, **body)
+    assert response.status_code == 200, response.json()
+    _wait_job(response.json()["jobId"])
+
+
 def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
         client, fake_transcribe_runner, recording, monkeypatch):
     """A page spreading an options object with an unset `vad` key must not
@@ -3011,12 +3908,18 @@ def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
     ({"initialPrompt": "Acme Corp"}, "'initialPrompt'"),
 ])
 def test_an_option_the_RESOLVED_engine_cannot_honour_is_refused_before_a_job_opens(
-        client, fake_parakeet_runner, recording, sent, needle):
-    """D319/AI-10g. The worker refuses these too, but by then the user has paid
-    for a job row, a venv build and a multi-gigabyte download to be told no —
-    and the runner is resolved synchronously HERE, so the answer was available
-    before any of it. Same treatment as a bad `task` or `speakers`: an instant
-    400 with the sentence `runners/engine_options.py` holds."""
+        client, fake_refusing_runner, recording, sent, needle):
+    """The worker refuses these too, but by then the user has paid for a job
+    row, a venv build and a multi-gigabyte download to be told no — and the
+    runner is resolved synchronously HERE, so the answer was available before
+    any of it. Same treatment as a bad `task` or `speakers`: an instant 400
+    with the sentence `runners/engine_options.py` holds.
+
+    Exercised against `fake_refusing_runner`'s temporary table entry rather
+    than a real engine's: D406 withdrew `parakeet-mlx`, the one engine that
+    used to populate `UNSUPPORTED`, and no currently-registered engine refuses
+    anything — but the endpoint's refusal PATH still has to work the day one
+    does."""
     response = _post_transcribe(client, path=recording, **sent)
 
     assert response.status_code == 400, (sent, response.json())
@@ -3026,7 +3929,7 @@ def test_an_option_the_RESOLVED_engine_cannot_honour_is_refused_before_a_job_ope
 
 
 def test_an_ORDINARY_request_to_that_engine_still_runs(
-        client, fake_parakeet_runner, recording):
+        client, fake_refusing_runner, recording):
     """The check is on the value of `task` and the presence of the other two:
     every request carries `task: "transcribe"`, and a refusal keyed on presence
     would refuse every call the engine exists to serve."""
@@ -3041,8 +3944,8 @@ def test_an_engine_with_NOTHING_to_refuse_is_asked_the_same_question(
         client, fake_transcribe_runner, recording):
     """The table is an exception list, so a runner absent from it accepts what
     it always did — checked because a refusal that fired for every engine would
-    take `translate` away from both whisper runners and pass every parakeet
-    test while doing it."""
+    take `translate` away from both whisper runners and pass every fake
+    refusing-engine test while doing it."""
     started = _post_transcribe(client, path=recording, task="translate",
                                language="en", initialPrompt="Acme Corp")
 
@@ -3051,7 +3954,7 @@ def test_an_engine_with_NOTHING_to_refuse_is_asked_the_same_question(
 
 
 def test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule(
-        client, fake_parakeet_runner, recording):
+        client, fake_refusing_runner, recording):
     """One sentence, one place. The endpoint hands the caller whatever
     `runners/engine_options.py` raises, which is the module the worker imports
     out of its own venv — so a message reworded there is reworded here."""
@@ -3059,7 +3962,7 @@ def test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule(
 
     response = _post_transcribe(client, path=recording, task="translate")
     with pytest.raises(ValueError) as raised:
-        engine_options.unsupported_or_raise("parakeet-mlx", task="translate")
+        engine_options.unsupported_or_raise("fake-refusing-engine", task="translate")
     assert response.json()["error"] == str(raised.value)
 
 
@@ -3334,7 +4237,12 @@ def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
         seen["timeout"] = timeout
         return _Reply()
 
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request", fake_request)
     supervisor.generate_transcript("org/whisper", {"path": "/x"},
                                    supervisor.TRANSCRIBE_JOB_PREFIX + "t")
@@ -3404,7 +4312,12 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -3458,7 +4371,12 @@ def test_an_EVICTED_queued_row_is_rebuilt_on_DETECTION_not_on_the_next_tick(monk
     """
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 30.0)
@@ -3709,7 +4627,12 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     it reached the worker to cancel."""
     release = threading.Event()
     first_in_flight = threading.Event()
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
@@ -3759,7 +4682,12 @@ def test_the_cross_is_honoured_on_the_UNCONTENDED_path_too(monkeypatch):
     being wrong, not the optimisation.
     """
     posted = []
-    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    # A bare `object()` stood in here before `_in_use` needed `last_activity`
+    # / `in_flight` to bracket the call — these tests are about the request
+    # timeout and the queueing, not about the worker, so a `SimpleNamespace`
+    # with just the two new fields is the whole of the update.
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None:
+                        types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0))
     monkeypatch.setattr(supervisor, "_worker_request",
                         lambda *a, **k: posted.append(a) or pytest.fail(
                             "a cancelled transcription reached the worker"))
@@ -3803,7 +4731,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
 
     def spy_ready_worker(capability, model=None):
         resolved.append(model)
-        return object()
+        return types.SimpleNamespace(last_activity=time.monotonic(), in_flight=0)
 
     monkeypatch.setattr(supervisor, "ready_worker", spy_ready_worker)
     monkeypatch.setattr(
@@ -3842,6 +4770,23 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
+def _lift_js_fn(source, marker):
+    """One named `function` lifted out of `runtime.js` by its declaration
+    text, body included. Shared by every harness below that drives a real
+    bridge function under node."""
+    start = source.index(marker)
+    return source[start:source.index("\n  }\n", start) + 4]
+
+
+def _js_fn_with_helper(source, marker):
+    """`_lift_js_fn`, plus `rejectUnknownOptions` ahead of it — `aiImage` and
+    `aiTranscribe` both call it now (D413), and it is not itself part of
+    either function's own source, so a harness that lifts only the target
+    function leaves the call unresolved."""
+    return (_lift_js_fn(source, "  function rejectUnknownOptions(")
+            + _lift_js_fn(source, marker))
+
+
 def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}',
                        extra=None):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
@@ -3867,9 +4812,7 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiTranscribe(opts)")
-    end = source.index("\n  }\n", start) + 4
-    fn = source[start:end]
+    fn = _js_fn_with_helper(source, "  function aiTranscribe(opts)")
 
     prelude = f"""
       const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
@@ -3953,7 +4896,8 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
 
 
-def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"'):
+def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"',
+                  opts='{prompt: "a fox", onProgress: (job) => progress.push(job)}'):
     """Run `aiImage` out of runtime.js under node, against stubs.
 
     `_run_ai_transcribe`'s harness for the other half of the same API: the
@@ -3972,9 +4916,7 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiImage(opts)")
-    end = source.index("\n  }\n", start) + 4
-    fn = source[start:end]
+    fn = _js_fn_with_helper(source, "  function aiImage(opts)")
 
     prelude = """
       const started = {jobId: "sys:ai-image:x", path: "/t/a.png", seed: 7,
@@ -3995,12 +4937,12 @@ def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.p
       const progress = [];
     """.replace("PREVIEW", preview).replace("TICKS", ticks).replace("RECORD", record)
     call = """
-      aiImage({prompt: "a fox", onProgress: (job) => progress.push(job)}).then(
+      aiImage(OPTS).then(
         (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
         (err) => console.log(JSON.stringify(
           {ok: false, message: err.message, type: err.type, progress, rows})),
       );
-    """
+    """.replace("OPTS", opts)
     # Node writes UTF-8 to stdout regardless of platform; without an explicit
     # `encoding` here, Windows decodes with `locale.getpreferredencoding()`
     # (often cp1252), which mangles or crashes on the multibyte transcript
@@ -4072,6 +5014,130 @@ def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
     assert settled["ok"] is True, settled
     assert settled["progress"][0]["previewUrl"] is None
     assert settled["value"]["previewUrl"] is None
+
+
+def test_the_bridge_rejects_an_unrecognised_image_option_before_the_POST():
+    """The bug report itself, at the bridge layer: `image`/`strength` must not
+    reach `aiPost` at all — the caller learns about the drop instead of
+    getting a text-to-image picture back."""
+    settled = _run_ai_image(opts='{prompt: "a fox", image: "photo.png"}')
+    assert settled["ok"] is False
+    assert settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_names_BOTH_unknown_image_options():
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", image: "photo.png", strength: 0.6}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"] and "strength" in settled["message"]
+
+
+def test_onProgress_is_exempt_from_the_image_unknown_key_check():
+    """`onProgress` is a callback consumed above the whitelist loop, not a body
+    field — it must stay accepted or every existing caller that passes one
+    breaks."""
+    settled = _run_ai_image(opts='{prompt: "a fox", onProgress: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_envelope_BEFORE_the_prompt_field():
+    """Ordering, matching the server: a call with an unknown option AND no
+    `prompt` must learn about the option, not about the missing prompt —
+    "add a prompt" would "fix" the error and land the caller right back in
+    the silent-drop illusion this change exists to end."""
+    settled = _run_ai_image(opts='{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    # The field error's specific text never appears — asserting the bare
+    # word "prompt" would pass by accident, since it is in the accepted-set
+    # listing too.
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridge_names_unknown_image_options_SORTED():
+    """The server's `_reject_unknown` sorts; the bridge must match, or the
+    same two-key mistake reads in a different order depending on how the
+    caller happened to write the object literal — the two layers' messages
+    stop being comparable."""
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", strength: 0.6, image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image', 'strength'" in settled["message"]
+
+
+def _run_ai_transcribe_opts_only(opts):
+    return _run_ai_transcribe('Promise.resolve(JSON.stringify({text: "hi", segments: []}))',
+                              '{state: "done"}', opts=opts)
+
+
+def test_the_bridge_rejects_a_caller_supplied_unknown_transcribe_option():
+    settled = _run_ai_transcribe_opts_only('{path: "a.m4a", image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_refuses_a_caller_supplied_base_as_an_unknown_option():
+    """`base` is bridge-injected from the page's own `?path=` — a CALLER
+    passing it directly is passing an option that does not exist from the
+    page's point of view, even though the server accepts it once the bridge
+    adds it itself."""
+    settled = _run_ai_transcribe_opts_only('{path: "a.m4a", base: "/pages/other.html"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "base" in settled["message"]
+
+
+def test_onProgress_and_onSegment_are_exempt_from_the_transcribe_unknown_key_check():
+    settled = _run_ai_transcribe_opts_only(
+        '{path: "a.m4a", onProgress: () => {}, onSegment: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_transcribe_envelope_BEFORE_the_path_field():
+    """Same ordering fix as `aiImage`: an unknown option and a missing
+    `path` must report the option, not the missing field."""
+    settled = _run_ai_transcribe_opts_only('{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridges_accepted_image_keys_match_the_servers_constant():
+    """The drift guard: the bridge's whitelist and the server's accepted set
+    are the same fact written in two languages, which is exactly how they
+    come to disagree. Extract the JS array literal and compare it, sorted,
+    to the Python constant driving `_reject_unknown` on the server."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiImage(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const imageKeys = \[(.*?)\];', body)
+    assert match, "could not find aiImage's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._IMAGE_OPTIONS)
+
+
+def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
+    """Same drift guard for transcribe — compared against the CALLER-FACING
+    set, which must NOT include `base`: the server's set is wider because
+    the bridge injects `base` itself, and the two sets must not collapse into
+    one or a caller passing `base` stops being an error."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const transcribeKeys = \[(.*?)\];', body, re.S)
+    assert match, "could not find aiTranscribe's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._TRANSCRIBE_OPTIONS)
+    assert "base" not in ai_runtime._TRANSCRIBE_OPTIONS
+    assert "base" in ai_runtime._TRANSCRIBE_SERVER_OPTIONS
 
 
 @pytest.mark.parametrize("opts", [
@@ -4261,8 +5327,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "fused_render", "static", "runtime.js")
     source = open(path, encoding="utf-8").read()
-    start = source.index("  function aiTranscribe(opts)")
-    fn = source[start:source.index("\n  }\n", start) + 4]
+    fn = _js_fn_with_helper(source, "  function aiTranscribe(opts)")
 
     prelude = """
       const started = {jobId: "sys:ai-transcribe:x", output: "/t/out.json",
@@ -4909,6 +5974,38 @@ def test_cancel_carries_the_guard_and_checks_the_capability(client):
     assert bad.status_code == 400
 
 
+def test_unload_rejects_an_unrecognised_capability_like_cancel_does(client):
+    """The addendum: `unload` never validated `capability` — a typo went
+    straight to `supervisor.unload()`, which answers `{"stopped": false}` for
+    an unrecognised capability, indistinguishable from a correct request
+    against an idle machine. `cancel`, 45 lines below in the same file,
+    already refuses this; `unload` gets the same guard."""
+    bad = client.post("/api/ai/runtime/unload", json={"capability": "telepathy"},
+                      headers={"X-Fused": "1"})
+    assert bad.status_code == 400
+
+
+def test_unload_by_MODEL_ALONE_still_works_with_no_capability(client, fake_runner):
+    """The guard must stay compatible with the `model`-only form: `capability`
+    is validated only when it is not None."""
+    supervisor.load("org/bye", registry.TEXT_GENERATION)
+    _wait_ready("org/bye")
+    response = client.post("/api/ai/runtime/unload", json={"model": "org/bye"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
+
+
+def test_unload_by_a_REAL_capability_still_works(client, fake_runner):
+    supervisor.load("org/bye2", registry.TEXT_GENERATION)
+    _wait_ready("org/bye2")
+    response = client.post(
+        "/api/ai/runtime/unload", json={"capability": registry.TEXT_GENERATION},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    assert response.json()["stopped"] is True
+
+
 def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypatch):
     """`fused.ai` resolves with the done frame's `result`, so a local model that
     omitted it handed every streaming page `undefined` — and the page threw on
@@ -5071,15 +6168,66 @@ def test_an_uncached_unknown_repo_still_defaults_to_text_generation(
 
 def test_a_cached_repo_no_engine_reads_is_refused_by_name(client, hub, dispatched):
     """Not a FileNotFoundError from inside a library, and not a bare "unknown
-    capability": the repo, what it looks like, and what to pass."""
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
-    response = _load(client, {"model": "org/gguf-only"})
+    capability": the repo, what it looks like, and what to pass.
+
+    A `.ckpt`-only repo, not a `.gguf` one: since SPEC AI-11 a root-level GGUF
+    IS decisively loadable, by `llamacpp-text` — see
+    `test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp` below. `.ckpt` is
+    a raw pickle checkpoint no format check here recognises (it is not in
+    `formats.TORCH_WEIGHTS`), so it remains a case nothing reads.
+    """
+    _cached_repo(hub, "org/ckpt-only", files=("model.ckpt", "README.md"))
+    response = _load(client, {"model": "org/ckpt-only"})
     assert response.status_code == 400
     message = response.json()["error"]
-    assert "org/gguf-only" in message
-    assert "gguf" in message
+    assert "org/ckpt-only" in message
     assert "capability" in message
     assert registry.IMAGE_GENERATION in message and registry.SPEECH_TO_TEXT in message
+    assert dispatched == []
+
+
+def _gguf_bytes(architecture: str) -> bytes:
+    """A minimal, real GGUF header declaring `general.architecture` — enough
+    for `formats.gguf_architecture` to read, which is what `loaders()` now
+    requires before calling a root `.gguf` decisively `llamacpp-text`
+    (code review finding 4: presence of the extension alone is not enough,
+    since GGUF is a container format shared with image and speech models)."""
+    import struct
+
+    pairs = [("general.architecture", architecture)]
+    buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
+        struct.pack("<Q", len(pairs))
+    for key, value in pairs:
+        buf += struct.pack("<Q", len(key.encode())) + key.encode()
+        buf += struct.pack("<I", 8)  # GGUF string type
+        buf += struct.pack("<Q", len(value.encode())) + value.encode()
+    return buf
+
+
+def test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp(client, hub, dispatched):
+    """The other half of the story the test above used to tell alone: since
+    SPEC AI-11 a root-level `.gguf` whose OWN `general.architecture` is a
+    recognised text one IS decisively `llamacpp-text`'s (`formats.DECISIVE`),
+    so `cached_capability`'s `meta.loaders` fallback resolves it to text
+    generation with no task label needed — the same mechanism
+    `test_a_cached_repo_with_no_task_but_readable_weights_is_text` exercises
+    for a bare directory of safetensors."""
+    repo_dir = _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    assert _load(client, {"model": "org/gguf-only"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_gguf_repo_with_a_non_text_architecture_is_still_refused(
+        client, hub, dispatched):
+    """`city96/FLUX.1-dev-gguf`'s own shape, verified 2026-08-21
+    (`general.architecture = "flux"`) — a root `.gguf` alone must not be
+    enough, or this app would offer a Load button for an image model under
+    the text-generation capability (code review finding 4)."""
+    repo_dir = _cached_repo(hub, "org/flux-gguf", files=("model.gguf",))
+    (repo_dir / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("flux"))
+    response = _load(client, {"model": "org/flux-gguf"})
+    assert response.status_code == 400
     assert dispatched == []
 
 
@@ -5107,11 +6255,14 @@ def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
 
 
 def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched):
-    _cached_repo(hub, "org/gguf-only", files=("model.gguf",))
-    response = client.post("/api/ai/runtime/download", json={"model": "org/gguf-only"},
+    """`.ckpt`-only, not `.gguf` — see the docstring on
+    `test_a_cached_repo_no_engine_reads_is_refused_by_name` for why a GGUF is
+    no longer this test's example (SPEC AI-11)."""
+    _cached_repo(hub, "org/ckpt-only", files=("model.ckpt",))
+    response = client.post("/api/ai/runtime/download", json={"model": "org/ckpt-only"},
                            headers={"X-Fused": "1"})
     assert response.status_code == 400
-    assert "org/gguf-only" in response.json()["error"]
+    assert "org/ckpt-only" in response.json()["error"]
     assert dispatched == []
 
 
@@ -5148,15 +6299,42 @@ def _offered(client, capability, repo_id):
     return entry
 
 
+@pytest.fixture()
+def safetensors_text_engine(monkeypatch):
+    """Pin the platform to Apple Silicon, so the engine SERVING text generation is
+    one that reads `_text_repo`'s safetensors.
+
+    Required by every test below that builds a `_text_repo`, and it is not
+    boilerplate: the cached-repo union only offers a repo the ACTIVE engine can
+    load, so which engine is active decides whether these fixtures are visible at
+    all. That used to be true on every platform by accident — `transformers-text`
+    read safetensors and served Windows and Linux — and D416 removed it, leaving
+    `mlx-text` as the only safetensors text engine and `llamacpp-text` (GGUF) as
+    what a non-Apple machine resolves to. Without this fixture these tests assert
+    the union mechanism on a developer's Mac and assert nothing at all in CI.
+
+    Pinning rather than parametrising over both platforms on purpose: the subject
+    here is the UNION — measured sizes, ordering, the memo, the downloaded flag —
+    which has no per-engine behaviour. The engine-dependent half is its own test
+    (`test_a_text_model_the_CHOSEN_engine_cannot_open_is_not_offered`).
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+
+
 def _text_repo(hub, repo_id, *, size=0):
-    """A cached repo whose config says text generation beyond doubt, sized."""
+    """A cached repo whose config says text generation beyond doubt, sized.
+
+    Safetensors, so a test using this needs the `safetensors_text_engine`
+    fixture — see its docstring for why the ambient platform is not enough.
+    """
     repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
                         config={"architectures": ["LlamaForCausalLM"]})
     (repo / "snapshots" / "c0ffee" / "model.safetensors").write_bytes(b"x" * size)
     return repo
 
 
-def test_a_downloaded_repo_the_curation_never_heard_of_joins_its_capability(client, hub):
+def test_a_downloaded_repo_the_curation_never_heard_of_joins_its_capability(client, hub, safetensors_text_engine):
     """The bug, end to end: a repo the SUGGESTIONS dict has never contained is on
     the disk, and the payload three real apps read now offers it."""
     repo_id = "some-org/a-model-nobody-curated"
@@ -5176,7 +6354,7 @@ def test_a_downloaded_repo_the_curation_never_heard_of_joins_its_capability(clie
     assert entry["note"] is None
 
 
-def test_a_cached_entrys_size_is_its_real_measured_footprint(client, hub):
+def test_a_cached_entrys_size_is_its_real_measured_footprint(client, hub, safetensors_text_engine):
     """Measured, not guessed: the field means "every byte on the disk", the same
     thing it means for a curated entry (see catalog.py's docstring)."""
     _text_repo(hub, "some-org/three-gb", size=3_000_000_000)
@@ -5184,7 +6362,7 @@ def test_a_cached_entrys_size_is_its_real_measured_footprint(client, hub):
     assert entry["size_gb"] == 3.0
 
 
-def test_an_uncurated_repo_on_disk_cannot_take_position_0_or_the_default(client, hub):
+def test_an_uncurated_repo_on_disk_cannot_take_position_0_or_the_default(client, hub, safetensors_text_engine):
     """The regression guard for catalog.py's ordering rule.
 
     A NEARLY EMPTY repo is the dangerous case, not a huge one: the list is sorted
@@ -5209,7 +6387,7 @@ def test_an_uncurated_repo_on_disk_cannot_take_position_0_or_the_default(client,
         "some-org/tiny-but-uncurated", "some-org/enormous-and-uncurated"}
 
 
-def test_the_cached_tail_is_smallest_first_with_unknown_sizes_last(client, hub):
+def test_the_cached_tail_is_smallest_first_with_unknown_sizes_last(client, hub, safetensors_text_engine):
     """catalog.py's ordering rule, applied to the tail as well as the head."""
     _text_repo(hub, "some-org/big", size=9_000_000)
     _text_repo(hub, "some-org/small", size=2_000)
@@ -5232,7 +6410,7 @@ def test_an_unmeasured_cached_entry_sorts_last_rather_than_first():
     assert [m.repo_id for m in ordered] == ["a", "b", "c"]
 
 
-def test_a_curated_repo_that_is_also_on_disk_appears_once_marked_downloaded(client, hub):
+def test_a_curated_repo_that_is_also_on_disk_appears_once_marked_downloaded(client, hub, safetensors_text_engine):
     """Deduplicated, and it is the CURATED entry that survives — the hand-written
     label and note are the point of curating it."""
     repo_id = catalog.default_for(registry.TEXT_GENERATION)
@@ -5256,6 +6434,60 @@ def test_a_curated_repo_that_is_not_on_disk_says_so(client, hub):
     assert row["models"]
     assert all(m["downloaded"] is False for m in row["models"])
     assert all(m["source"] == "curated" for m in row["models"])
+
+
+def test_a_llamacpp_curated_id_is_marked_downloaded_and_not_duplicated(
+        client, hub, monkeypatch):
+    """The regression code review found (finding 3): `formats.GGUF_RECIPES`
+    keys `llamacpp-text`'s catalog entries by FILENAME, and
+    `_catalog_with_downloads`'s `on_disk` set holds REPO ids — so
+    `entry["id"] in on_disk` could never be true for one of these entries,
+    and the SAME downloaded bytes then reappeared a second time as an
+    undifferentiated "cached" row under the bare repo id, whose Load button
+    failed (finding 2). Both symptoms must be gone together: the curated
+    entry reads `downloaded: true`, and the repo does not also appear as a
+    plain cached row.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    entry_id = "Qwen3.5-9B-Q4_K_M.gguf"
+    recipe = formats.GGUF_RECIPES[entry_id]
+    repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
+        _gguf_bytes("qwen35"))
+
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    curated_match = next(m for m in row["models"] if m["id"] == entry_id)
+    assert curated_match["downloaded"] is True
+    assert curated_match["source"] == "curated"
+    # The repo id itself must NOT also appear as a second, "cached" row.
+    assert not any(m["id"] == recipe["repo"] for m in row["models"])
+
+
+def test_a_llamacpp_curated_id_with_a_sibling_quant_not_downloaded_is_told_apart(
+        client, hub, monkeypatch):
+    """`unsloth/Qwen3.5-4B-GGUF` curates TWO catalog entries (Q5_K_M and
+    Q8_0) — downloading one must not mark the OTHER "downloaded" too, since
+    `CachedModel.files` is checked per FILE, not per repo."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    downloaded_id = "Qwen3.5-4B-Q5_K_M.gguf"
+    other_id = "Qwen3.5-4B-Q8_0.gguf"
+    recipe = formats.GGUF_RECIPES[downloaded_id]
+    repo = _cached_repo(hub, recipe["repo"], files=(recipe["file"],))
+    (repo / "snapshots" / "c0ffee" / recipe["file"]).write_bytes(
+        _gguf_bytes("qwen35"))
+
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    by_id = {m["id"]: m for m in row["models"]}
+    assert by_id[downloaded_id]["downloaded"] is True
+    assert by_id[other_id]["downloaded"] is False
+    # Still no duplicate cached row for the shared repo.
+    assert not any(m["id"] == recipe["repo"] for m in row["models"])
 
 
 def test_a_component_repo_an_engine_fetched_is_never_offered_as_a_model(client, hub):
@@ -5289,7 +6521,7 @@ def test_a_dataset_in_the_cache_joins_no_capability(client, hub):
     assert not any(m["id"] == "some-org/corpus" for row in rows.values() for m in row["models"])
 
 
-def test_a_model_downloaded_after_a_read_appears_on_the_very_next_one(client, hub):
+def test_a_model_downloaded_after_a_read_appears_on_the_very_next_one(client, hub, safetensors_text_engine):
     """The cache-staleness trap, pinned. The scan is memoised because a page polls
     this route, and a memo that outlived a completed download would reproduce
     exactly the bug this change fixes — the model the user just fetched missing
@@ -5300,7 +6532,7 @@ def test_a_model_downloaded_after_a_read_appears_on_the_very_next_one(client, hu
     assert _entry(client, registry.TEXT_GENERATION, repo_id) is not None
 
 
-def test_a_resident_model_is_marked_loaded(client, hub, monkeypatch):
+def test_a_resident_model_is_marked_loaded(client, hub, monkeypatch, safetensors_text_engine):
     """The third state a picker wants: on the disk is not the same as held in
     memory, and a page showing "loaded" beside one entry should not have to join
     two endpoints to know which.
@@ -5345,7 +6577,7 @@ def test_the_cache_walk_is_not_repeated_on_every_poll(client, hub, monkeypatch):
 
 
 def test_the_memo_is_dropped_when_a_repo_lands_rather_than_when_a_timer_says_so(
-        client, hub, monkeypatch):
+        client, hub, monkeypatch, safetensors_text_engine):
     """The TTL is a BACKSTOP, not the mechanism. A read is invalidated by the cache
     directory's own signature, so a finished download is visible immediately even
     with the clock frozen — a memo that could only expire on time would hide the
@@ -5415,17 +6647,21 @@ def test_a_speech_model_NEITHER_speech_engine_reads_is_not_offered(
 def test_a_text_model_the_CHOSEN_engine_cannot_open_is_not_offered(
         client, hub, monkeypatch):
     """The second half, and the one a preference can create out of nothing. An MLX
-    conversion is a perfectly good text model that the Transformers runner cannot
-    read — so on a Mac switched to Transformers on the Engines tab it is an unusable
+    conversion is a perfectly good text model that the llama.cpp runner cannot
+    read — so on a Mac switched to llama.cpp on the Engines tab it is an unusable
     download, and D293's whole point is that the list moves when the preference
-    does. It must move for the cached half too."""
+    does. It must move for the cached half too.
+
+    The engine switched TO was `transformers-text` until D416; `llamacpp-text` is
+    the same shape of counter-example and a sharper one — safetensors against
+    GGUF is a difference of container, not merely of quantization layout."""
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = "mlx-community/Qwen3-8B-MLX-4bit"
     assert repo_id not in catalog.all_suggested_ids()
     # A REAL MLX conversion: the `quantization` block with a `group_size` is what
     # `formats.py` reads as "mlx-lm packed this", and it is what makes the repo
-    # unreadable to Transformers rather than merely differently named.
+    # unreadable to anything else rather than merely differently named.
     _cached_repo(hub, repo_id, files=("model.safetensors",),
                  config={"architectures": ["Qwen3ForCausalLM"],
                          "quantization": {"bits": 4, "group_size": 64}})
@@ -5435,9 +6671,9 @@ def test_a_text_model_the_CHOSEN_engine_cannot_open_is_not_offered(
     assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
     assert _entry(client, registry.TEXT_GENERATION, repo_id) is not None
     # …and the moment the user picks the engine that cannot read it, it is not.
-    _prefer(monkeypatch, registry.TEXT_GENERATION, "transformers-text")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
     ai_models._CACHED_MODELS.clear()
-    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
     assert _entry(client, registry.TEXT_GENERATION, repo_id) is None
 
 
@@ -5500,13 +6736,13 @@ def test_a_worker_that_DIED_after_reaching_ready_is_not_reported_as_loaded():
 #: The two text-generation resolutions that ship, forced rather than inherited.
 #: `_apple_silicon()` reads `platform` at CALL time precisely so a test can decide
 #: this, and every assertion about a per-runner list has to: `mlx-text` serves text
-#: generation on an M-series Mac and `transformers-text` serves it everywhere else,
-#: their `SUGGESTIONS` lists are completely different, and a test that took whichever
-#: one the dev machine happened to answer is a test that passes at home and fails in
-#: CI on the other three platforms.
+#: generation on an M-series Mac and `llamacpp-text` serves it everywhere else,
+#: their `SUGGESTIONS` lists are completely different (safetensors repo ids against
+#: GGUF filenames), and a test that took whichever one the dev machine happened to
+#: answer is a test that passes at home and fails in CI on the other platforms.
 _TEXT_PLATFORMS = [
     pytest.param("Darwin", "arm64", "mlx-text", id="apple-silicon"),
-    pytest.param("Linux", "x86_64", "transformers-text", id="linux"),
+    pytest.param("Linux", "x86_64", "llamacpp-text", id="linux"),
 ]
 
 
@@ -5525,7 +6761,7 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
     **The no-suggestions condition is CONSTRUCTED, and the construction is asserted.**
     The first version of this test emptied `SUGGESTIONS["mlx-text"]` by name, which
     is the runner a Mac resolves — so on Linux it emptied a list nobody was reading,
-    `transformers-text` answered with `Qwen/Qwen3-1.7B` at position 0, and the test
+    the cross-platform row answered with its own position 0, and the test
     failed on its conclusion for a premise that was never true. Both resolutions now
     run, the list emptied is the one the row actually resolved, and the premise is
     checked before the conclusion so a future change to resolution fails loudly on
@@ -5538,7 +6774,17 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
     monkeypatch.setitem(catalog.SUGGESTIONS, runner.code, [])
     # The premise, before anything is concluded from it.
     assert catalog.for_capability(registry.TEXT_GENERATION) == []
-    _text_repo(hub, "some-org/only-thing-here", size=2048)
+    # …and the cached repo has to be in a format THIS engine reads, which since
+    # D416 is a different format per platform: safetensors for `mlx-text`, a
+    # root-level GGUF for `llamacpp-text`. Building one shape for both would have
+    # made the Linux case assert "an unreadable repo is not offered" while
+    # claiming to assert the opposite — the failure `safetensors_text_engine`'s
+    # docstring describes, arriving here through the parametrisation instead.
+    if expected_runner == "llamacpp-text":
+        gguf = _cached_repo(hub, "some-org/only-thing-here", files=("model.gguf",))
+        (gguf / "snapshots" / "c0ffee" / "model.gguf").write_bytes(_gguf_bytes("qwen35"))
+    else:
+        _text_repo(hub, "some-org/only-thing-here", size=2048)
     row = _catalog(client)[registry.TEXT_GENERATION]
     assert row["runner"] == expected_runner
     assert row["default"] is None
@@ -5546,7 +6792,7 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
     assert row["models"][0]["source"] == "cached"
 
 
-def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub):
+def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub, safetensors_text_engine):
     """The invariant that does hold unconditionally, stated as itself: wherever a
     curated entry exists, index 0 is curated — so `models[0]` and `default` agree
     and a bare call cannot reach an unvetted repo."""
@@ -5558,7 +6804,7 @@ def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub):
 
 
 def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
-        client, hub, monkeypatch):
+        client, hub, monkeypatch, safetensors_text_engine):
     """The staleness hole the first version of this memo had, and the reason the TTL
     is no longer what invalidates it.
 

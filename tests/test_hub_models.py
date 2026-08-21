@@ -63,6 +63,26 @@ def _no_token(monkeypatch, tmp_path):
     monkeypatch.setattr(constants, "HF_STORED_TOKENS_PATH", str(home / "stored_tokens"))
 
 
+@pytest.fixture(autouse=True)
+def _no_format_filter(monkeypatch):
+    """Every test here starts with an active text engine that filters no format,
+    and the handful that care about the format filter override it.
+
+    Without this the module's assertions depend on the HOST, and D416 is what
+    made that bite. `hub._model_row` narrows a text-generation search by the
+    active runner's `hub_filter_tags` (D412), and until D416 the runner a
+    non-Apple machine resolved to was `transformers-text`, which declares none —
+    so every safetensors fixture in this file survived the filter by accident of
+    what the developer's laptop happened to be. With the transformers rows gone,
+    Linux and Windows resolve to `llamacpp-text` and its `("gguf",)` tag, which
+    dropped 30 tests here while the code under test was behaving exactly as
+    designed. Pinning it makes the DEFAULT explicit and the format-filter tests
+    the deliberate exception they already read as (`_gguf_runner` below), and it
+    is the same reasoning `_no_token` above applies to a developer's Hub login.
+    """
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+
+
 @pytest.fixture()
 def hub_cache(tmp_path, monkeypatch):
     cache = tmp_path / "hub"
@@ -250,6 +270,73 @@ def test_a_row_with_no_id_is_dropped(client, hub_cache, monkeypatch):
     assert [m["id"] for m in models] == ["org/real"]
 
 
+# -- D412: the GGUF pick, only when the active runner needs one -------------
+#
+# `siblings` is a NEW `_EXPAND` field, so every hit in this section carries
+# it — verified live that the Hub returns the full filename list in the LIST
+# response itself, which is what makes this resolvable per-row with no
+# second request.
+
+
+def _gguf_runner(tags=("gguf",)):
+    """A stand-in for whatever runner `registry.for_capability` resolves to,
+    carrying only the one field `_model_row` reads. Not a real `Runner` —
+    this module's own resolution is under test, not the registry's."""
+    import types as _types
+
+    return _types.SimpleNamespace(hub_filter_tags=tags)
+
+
+def test_a_gguf_repo_resolves_to_the_pickers_choice_when_llamacpp_is_active(
+        client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("unsloth/x-GGUF", siblings=[
+        {"rfilename": "x-Q8_0.gguf"}, {"rfilename": "x-Q4_K_M.gguf"},
+        {"rfilename": "README.md"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "x-Q4_K_M.gguf"
+
+
+def test_a_gguf_repo_with_nothing_loadable_is_dropped_when_llamacpp_is_active(
+        client, hub_cache, monkeypatch):
+    """The fifth drop reason (D412): a repo whose ONLY GGUF is auxiliary
+    (here, a projector) is not actionable by the active engine, so it is
+    dropped exactly like a `.tflite` repo already is for a different
+    reason — never offered with a Download button that cannot resolve."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/only-a-projector", siblings=[
+        {"rfilename": "m-mmproj-F16.gguf"},
+    ])]))
+    models = _search(client).json()["models"]
+    assert models == []
+
+
+def test_a_gguf_row_carries_no_file_when_the_active_engine_is_not_llamacpp(
+        client, hub_cache, monkeypatch):
+    """When the capability's active runner declares no format tag at all —
+    the `mlx-text` case — a repo is not resolved or dropped
+    by the picker, whatever its `siblings` look like: `file` is simply
+    absent from the answer, the same as it always was before D412."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever", siblings=[
+        {"rfilename": "m-mmproj-F16.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] is None
+
+
+def test_a_gguf_row_carries_no_file_when_nothing_serves_the_capability_here(
+        client, hub_cache, monkeypatch):
+    """`for_capability` returning None (nothing registered could run here)
+    must not crash the join — the row still surfaces on capability
+    existence alone, per D313, with `file` simply unset."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: None)
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever")]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] is None
+
+
 # -- the request ------------------------------------------------------------
 
 
@@ -344,6 +431,61 @@ def test_the_endpoint_override_must_be_an_http_url(monkeypatch, endpoint, expect
     # environment — but it is still checked before it becomes a request.
     monkeypatch.setenv("HF_ENDPOINT", endpoint)
     assert hub.hub_endpoint() == expected
+
+
+# -- D412: the runner-declared filter tag, ANDed onto the task filter -------
+
+
+def test_the_gguf_tag_is_anded_onto_the_hub_request_when_llamacpp_is_active(
+        client, hub_cache, monkeypatch):
+    """Confirmed live: the Hub ANDs multiple `filter=` values, and the router
+    already sends `urlencode(..., doseq=True)` — so a runner declaring a
+    format tag turns into a SECOND `filter=` on the wire, not a new
+    parameter shape."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"task": "text-generation"})
+    url = fake.calls[0][0]
+    assert "filter=text-generation" in url and "filter=gguf" in url
+
+
+def test_no_format_tag_is_added_when_the_active_runner_declares_none(
+        client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"task": "text-generation"})
+    url = fake.calls[0][0]
+    assert "filter=text-generation" in url and "gguf" not in url
+
+
+def test_no_format_tag_is_added_without_a_task_filter(client, hub_cache, monkeypatch):
+    """A bare keyword search spans every supported tag at once — there is no
+    SINGLE capability to resolve a runner for, so the Hub-side narrowing is
+    skipped and `_model_row`'s own per-row check is the only gate, the same
+    two-layer shape the pipeline-tag filter itself already has."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"q": "llama"})
+    assert "filter=" not in fake.calls[0][0]
+
+
+def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypatch):
+    """A preference switched live (CT-5, no restart) changes which runner
+    serves the capability — the SAME query/task/sort/count must not be
+    served from a cache entry built under the OTHER engine's filter."""
+    fake = _reply([_hit("org/m")])
+    monkeypatch.setattr(httpx, "get", fake)
+
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    _search(client, {"task": "text-generation"})
+    assert len(fake.calls) == 1
+
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    _search(client, {"task": "text-generation"})
+    assert len(fake.calls) == 2  # a different engine choice is a different question
 
 
 # -- when the far side is unhappy -------------------------------------------
@@ -561,8 +703,9 @@ def test_a_result_in_a_format_no_runner_reads_is_dropped(client, hub_cache, monk
     monkeypatch.setattr(httpx, "get", _reply([
         {"id": "litert-community/FLUX.2-klein-4B-LiteRT",
          "pipeline_tag": "text-to-image", "library_name": "litert"},
-        # A raw NeMo archive is the same shape of mistake in the audio column:
-        # `parakeet-mlx` reads the MLX CONVERSION of one, never the `.nemo`.
+        # A raw NeMo archive is the same shape of mistake in the audio column,
+        # and unloadable outright since D406 withdrew `parakeet-mlx` — no
+        # runner here reads a `.nemo` archive or an MLX conversion of one.
         {"id": "nvidia/parakeet-tdt-0.6b-v3",
          "pipeline_tag": "automatic-speech-recognition", "library_name": "nemo"},
         _hit("org/known"),

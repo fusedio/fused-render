@@ -12,6 +12,7 @@ import os
 from fastapi.testclient import TestClient
 
 import fused_render.shell.prefs as prefs_mod
+from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
 
 
@@ -138,7 +139,62 @@ def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.
     assert client.put("/api/prefs", json={"nope": 1}, headers=FUSED).status_code == 400
+
+
+# -- indexing_enabled -------------------------------------------------------------
+
+
+def test_indexing_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default ON (absent key => enabled) — the opposite polarity from reader.
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is True
+    body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
+    assert body["indexing"]["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "indexing_enabled"
+    ] is False
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is False
+    assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
+        "indexing"
+    ]["enabled"] is True
+
+
+def test_put_rejects_bad_indexing_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert (
+        client.put("/api/prefs", json={"indexing_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
     assert not (home / "prefs.json").exists()
+
+
+def test_indexing_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()
+    assert body["reader"]["enabled"] is True
+    assert body["indexing"]["enabled"] is False
+
+
+def test_turning_indexing_off_cancels_a_live_scan(tmp_path, monkeypatch):
+    """The behavior contract: a scan running at the moment of toggle-off is
+    cancelled outright, using the same `cancel` sentinel `runner.cancel`
+    writes — not merely refused for the future."""
+    client, home = _client(tmp_path, monkeypatch)
+    from fused_render.index import runner
+    from fused_render.index.config import load_config
+
+    cfg = load_config()
+    root = str(tmp_path / "proj")
+    os.makedirs(root, exist_ok=True)
+    started = runner.start(cfg, root)
+    run_id = started["run_id"]
+    run_dir = os.path.join(cfg.runs_dir, run_id)
+    assert not os.path.exists(os.path.join(run_dir, "cancel"))
+
+    client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED)
+
+    assert os.path.exists(os.path.join(run_dir, "cancel"))
 
 
 def test_default_model_defaults_to_unset_and_round_trips(tmp_path, monkeypatch):
@@ -592,6 +648,81 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
         assert calls["retention_forced_by"] == expected_retention, (capture, retention)
 
 
+# -- the AI idle-unload window (AI-13) ------------------------------------------
+#
+# `ai_idle_unload_minutes` in the shape of `calls_retention_days` — a stored
+# int, a range, an env override that mirrors `_calls_effective()`'s two
+# questions ("is it set" vs "is it in force"). No cache to invalidate here:
+# unlike calls.py, prefs.py's own reads carry no TTL.
+
+
+def test_ai_idle_unload_minutes_defaults_to_ten(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    ai_idle = client.get("/api/prefs").json()["ai_idle"]
+    assert ai_idle["minutes"] == 10
+    assert ai_idle["effective_minutes"] == 10
+    assert ai_idle["forced_by"] is None
+
+
+def test_ai_idle_unload_minutes_zero_means_never(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"ai_idle_unload_minutes": 0}, headers=FUSED).json()
+    assert body["ai_idle"]["minutes"] == 0
+    assert body["ai_idle"]["effective_minutes"] == 0
+
+
+def test_ai_idle_unload_minutes_round_trips(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"ai_idle_unload_minutes": 45}, headers=FUSED).json()
+    assert body["ai_idle"]["minutes"] == 45
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["ai_idle_unload_minutes"] == 45
+
+
+def test_put_rejects_an_out_of_range_or_non_int_ai_idle_minutes(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    for bad in (-1, 1441, 5.5, "10", True):
+        resp = client.put("/api/prefs", json={"ai_idle_unload_minutes": bad}, headers=FUSED)
+        assert resp.status_code == 400, bad
+    assert not (home / "prefs.json").exists()
+
+
+def test_a_hand_edited_out_of_range_ai_idle_minutes_falls_back_to_the_default(
+    tmp_path, monkeypatch
+):
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "prefs.json").write_text(json.dumps({"ai_idle_unload_minutes": 99999}))
+    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 10
+
+    (home / "prefs.json").write_text(json.dumps({"ai_idle_unload_minutes": "soon"}))
+    assert client.get("/api/prefs").json()["ai_idle"]["minutes"] == 10
+
+
+def test_ai_idle_env_override_wins_but_leaves_the_stored_value_intact(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"ai_idle_unload_minutes": 30}, headers=FUSED)
+
+    monkeypatch.setenv("FUSED_RENDER_AI_IDLE_MINUTES", "2")
+    ai_idle = client.get("/api/prefs").json()["ai_idle"]
+    assert ai_idle["minutes"] == 30, "the stored choice stands"
+    assert ai_idle["effective_minutes"] == 2
+    assert ai_idle["forced_by"] == "2"
+
+    # An unhonoured spelling reports no force and leaves the stored pref deciding.
+    monkeypatch.setenv("FUSED_RENDER_AI_IDLE_MINUTES", "not-a-number")
+    ai_idle = client.get("/api/prefs").json()["ai_idle"]
+    assert ai_idle["effective_minutes"] == 30
+    assert ai_idle["forced_by"] is None
+
+
+def test_the_no_known_preference_message_names_ai_idle_unload_minutes(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/prefs", json={"nope": 1}, headers=FUSED)
+    assert resp.status_code == 400
+    assert "ai_idle_unload_minutes" in resp.json()["error"]
+
+
 # -- the inference engine preference (D302) -------------------------------------
 #
 # Driven through the ENDPOINT, because what is under test here is the STORE: what
@@ -650,15 +781,104 @@ def test_setting_one_capabilitys_engine_leaves_the_others_alone(tmp_path, monkey
     level down: the page changes one capability and must not have to echo the
     rest, or two open tabs would each undo the other."""
     client, home = _client(tmp_path, monkeypatch)
-    client.put("/api/prefs", json={"engines": {"text-generation": "transformers-text"}},
+    client.put("/api/prefs", json={"engines": {"text-generation": "llamacpp-text"}},
                headers=FUSED)
     client.put("/api/prefs",
                json={"engines": {"automatic-speech-recognition": "mlx-whisper"}},
                headers=FUSED)
 
     stored = json.loads((home / "prefs.json").read_text())
-    assert stored["engines"] == {"text-generation": "transformers-text",
+    assert stored["engines"] == {"text-generation": "llamacpp-text",
                                  "automatic-speech-recognition": "mlx-whisper"}
+
+
+def test_a_prefs_file_naming_a_WITHDRAWN_engine_still_serves_the_capability(
+        tmp_path, monkeypatch):
+    """A prefs.json holding `transformers-text` after D416 removed it.
+
+    Written to disk directly rather than through the endpoint, because the
+    endpoint would now REFUSE it (`_valid_engine_choice` rejects an unknown
+    code) — which is correct for a write and says nothing about the file that is
+    already there. That file is how this actually reaches a user: the three
+    `transformers-text*` codes were offered in the picker and stored by people
+    who chose them, and prefs.json travels — synced, copied between machines,
+    restored from a backup — so an upgrade is not the only route.
+
+    What is asserted is that the READ path degrades rather than breaking: the
+    value comes back verbatim (never silently rewritten, so the user can see and
+    undo it), and `/api/prefs` still reports a live effective engine with a
+    reason. `registry.resolve()` is where that happens and
+    `test_a_removed_engine_code_in_prefs_degrades_to_the_ordering` pins it at
+    that level; this is the end-to-end half, over a real file.
+
+    **The platform is PINNED, and on this branch that is load-bearing rather
+    than tidiness.** "A live effective engine" is not true everywhere any more:
+    since D416 the only local text engines are `mlx-text` (Apple Silicon) and
+    `llamacpp-text` (whose wheel index publishes no macOS x86_64 build and only
+    three Linux architectures), so `effective is None` is the CORRECT answer on
+    Intel macOS, Windows ARM64 and a Linux machine outside
+    x86_64/aarch64/riscv64 — and this test would fail there on right behaviour.
+    Linux/x86_64 is the same pin its registry-level sibling uses, and for the
+    same reason. What is under test here is the DEGRADATION, not the coverage;
+    the coverage invariant is
+    `test_ai_runtime.test_every_shipped_platform_keeps_a_local_text_engine`.
+    """
+    monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"engines": {"text-generation": "transformers-text"}}))
+
+    body = client.get("/api/prefs").json()
+    row = next(r for r in body["engines"]["capabilities"]
+               if r["capability"] == "text-generation")
+    assert row["selected"] == "transformers-text"
+    assert row["effective"] == "llamacpp-text"
+    assert "not a runner this build knows" in row["ignoredReason"]
+    # The stranded value is absent from `choices`, which is what sends the page
+    # down `engines.strandedSelection` — asserted here so the frontend fixture
+    # in `engines.test.ts` cannot drift away from what the server really sends.
+    assert "transformers-text" not in {c["code"] for c in row["choices"]}
+    # …and the file is untouched by having been read.
+    assert json.loads((home / "prefs.json").read_text())["engines"] == {
+        "text-generation": "transformers-text"}
+
+
+def test_a_prefs_file_naming_ANOTHER_capabilitys_engine_degrades_the_same_way(
+        tmp_path, monkeypatch):
+    """The second value that strands the Engines picker, and it is not withdrawn.
+
+    `resolve()` documents this branch separately from the unknown-code one — "the
+    runner does not serve this capability (a stale prefs.json, or one
+    hand-edited)" — and `_valid_engine_choice` refuses it on write while saying
+    nothing about a file already on disk, exactly as with a withdrawn code. So it
+    reaches the page the same way and, because `describe_engines` filters
+    `choices` by capability, it goes missing from the list the same way too.
+
+    It is pinned here because the two are NOT interchangeable to a reader:
+    `mlx-whisper` is registered and, on a Mac, available — so copy claiming the
+    stored engine is gone or unavailable would be false of this row. That is the
+    overclaim `AiModelsEngines.tsx` was carrying, and this is the server-side
+    half of its fix; `engines.test.ts` covers the rendering half.
+    """
+    monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"engines": {"text-generation": "mlx-whisper"}}))
+
+    # The premise: a code this build DOES know, just not for this capability.
+    assert ai_registry.by_code("mlx-whisper") is not None
+
+    body = client.get("/api/prefs").json()
+    row = next(r for r in body["engines"]["capabilities"]
+               if r["capability"] == "text-generation")
+    assert row["selected"] == "mlx-whisper"
+    assert row["effective"] == "llamacpp-text"
+    assert "does not do text-generation" in row["ignoredReason"]
+    assert "mlx-whisper" not in {c["code"] for c in row["choices"]}
 
 
 def test_auto_is_a_value_you_can_write_BACK(tmp_path, monkeypatch):

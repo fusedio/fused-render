@@ -405,6 +405,24 @@ def test_the_local_tier_records_its_generated_tokens(monkeypatch):
     assert row["seconds"] == 0.5 and row["tokens_per_second"] == 24.0
 
 
+def test_a_curated_llamacpp_filename_id_dispatches_local_not_to_claude(monkeypatch):
+    """The bug this pins: `llamacpp-text`'s curated ids are the GGUF's own
+    FILENAME (`formats.GGUF_RECIPES`), never a repo id, so
+    `"Qwen3.5-4B-Q5_K_M.gguf"` has no `/` at all. `"/" in model` alone sent
+    it down the CLAUDE path as an unrecognised alias — a bug shipped with
+    `llamacpp-text` itself (D411), found and fixed while auditing the
+    fused-render-ai skill for what this branch invalidated (D412). If this
+    regresses, this test fails as a CLAUDE-tier 502 (an unknown alias),
+    not silently."""
+    _local(monkeypatch, [{"type": "done", "ok": True, "tokens": 5, "seconds": 0.2}])
+    resp = asyncio.run(_server_ai._ai_relay(
+        {"prompt": "hi", "model": "Qwen3.5-4B-Q5_K_M.gguf"}))
+    assert resp.status_code == 200
+
+    row, = ai_metrics.snapshot(5)["models"]
+    assert (row["model"], row["tier"]) == ("Qwen3.5-4B-Q5_K_M.gguf", "local")
+
+
 def test_the_local_tier_records_a_streamed_completion(monkeypatch):
     _local(monkeypatch, [{"type": "chunk", "text": "hi"},
                          {"type": "done", "ok": True, "tokens": 3, "seconds": 0.1}])

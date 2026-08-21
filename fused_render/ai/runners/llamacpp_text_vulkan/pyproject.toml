@@ -1,0 +1,104 @@
+# The llama.cpp / GGUF text runner's environment — the VULKAN variant, GPU
+# acceleration on NVIDIA and AMD (SPEC §40, AI-11, D411).
+#
+# Identical to `llamacpp_text/pyproject.toml` except for the one thing a
+# hardware variant is allowed to change: which of the maintainer's indexes the
+# one pinned dependency comes from. Read that file first — it carries the
+# residual-corruption finding, the reasoning for `jinja2`/`huggingface_hub`,
+# and the `explicit = true` confinement this file reuses verbatim; this one
+# only states its difference.
+#
+# **Why this variant exists at all.** The CPU index's macOS arm64 wheel links
+# `libggml-metal.dylib`, so Apple Silicon already gets GPU acceleration through
+# `llamacpp-text` — but that same index's Linux and Windows wheels are CPU
+# only. The maintainer separately publishes a `vulkan` index
+# (`https://abetlen.github.io/llama-cpp-python/whl/vulkan/`), which is GPU
+# acceleration for NVIDIA and AMD under Vulkan rather than CUDA/HIP directly —
+# the one path that reaches BOTH vendors from a single wheel, since this
+# maintainer's index publishes no ROCm/HIP build at all (checked directly:
+# `rocm`, `rocm6.1` through `rocm7.1`, `hip`, and `sycl` all 404 under this
+# maintainer's GitHub Pages index). This is therefore not a third choice
+# alongside a CUDA and a ROCm variant the way the diffusers rows are split (and
+# the removed transformers rows were, D416) — it is the ONLY accelerated path
+# this backend has for either vendor.
+#
+# **The index publishes exactly two platform tags for `0.3.29`, checked
+# directly against the listing rather than assumed:**
+# `manylinux2014_x86_64.manylinux_2_17_x86_64` and `win_amd64`. **No macOS
+# build at all** (expected — Metal is already covered by the CPU index's own
+# wheel) **and no Linux aarch64**, unlike the CPU index which ships both. The
+# registry's `_vulkan` gate (`registry.py`) enforces exactly this tag set, not
+# the wider one `_llamacpp_platform` checks for its own CPU-index row.
+#
+# **THIS PIN IS INTEGRITY-AUDITED, same rule as the CPU index (D411), same
+# method, independently re-run for this index's own two wheels.** Both
+# platform tags this runner ships were downloaded from the exact GitHub
+# release asset this index redirects to
+# (`releases/download/v0.3.29-vulkan/...`) and round-tripped through
+# `zipfile.ZipFile(...).testzip()` on 2026-08-21, for
+# `llama-cpp-python==0.3.29`:
+#
+#     manylinux2014_x86_64.manylinux_2_17_x86_64     PASS  (181.77 MB)
+#     win_amd64                                       PASS  (56.94 MB)
+#
+# **ANY version bump of this pin MUST repeat that audit, exactly as the CPU
+# index's own header states** — this index is a separate publish of the same
+# upstream release job, and nothing about the CPU index's audit says anything
+# about this one's bytes. `0.3.29` is also the CPU index's own audited pin, so
+# both runners stay on one `llama-cpp-python` version rather than drifting
+# apart the day either index's audit moves independently.
+#
+# **The size difference is the whole reason this is a SECOND folder and not a
+# flag on the first one.** The vulkan Linux wheel is 181.77MB against the CPU
+# index's 22.5MB Linux wheel — roughly 8x, almost entirely the ~74.5MB Vulkan
+# backend library (`libggml-vulkan.so`/`ggml-vulkan.dll`) linked into a wheel
+# that ALSO still carries the ordinary CPU backend
+# (`libggml-cpu.so`/`ggml-cpu.dll`) beside it. A user on a machine with no
+# usable Vulkan device gets nothing this variant offers for eight times the
+# download — which is exactly the case `registry._vulkan`'s device gate exists
+# to refuse, the identical argument `_cuda`/`_rocm` already make for the
+# torch rows.
+#
+# **A missing loader is a HARD import failure here, which is worth stating in
+# the manifest and not only in the registry gate that checks for it.**
+# `libggml-vulkan.so` declares `DT_NEEDED libvulkan.so.1` and
+# `libggml.so`/`libllama.so` both declare `DT_NEEDED libggml-vulkan.so.0` in
+# turn (read directly off the downloaded wheel's ELF `.dynamic` sections); the
+# Windows DLL carries the identical import on `vulkan-1.dll` (read off its PE
+# import table). So `import llama_cpp` fails outright — not a degraded
+# CPU fallback — on a machine with this wheel installed but no Vulkan loader
+# on the library search path, regardless of whether a GPU is even present.
+# `registry._vulkan` refuses that machine a Load button before `uv sync` ever
+# runs. A missing DRIVER (loader present, no ICD registered) is the milder
+# case: ggml's OWN bundled CPU backend answers instead of failing, which is
+# why that half of the gate is refused for being pointless rather than for
+# being broken — see `registry._vulkan`'s docstring for the full reasoning
+# and the evidence each half rests on.
+[project]
+name = "fused-render-runner-llamacpp-text-vulkan"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "llama-cpp-python==0.3.29",
+    # `<4` — this runner renders the GGUF's own chat template through it, so a
+    # major bump changing Jinja's rendering semantics is exactly the "lands on
+    # users with no commit behind it" risk the ceiling rule exists for.
+    "jinja2>=3,<4",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# The maintainer's Vulkan wheel index. `explicit = true` for the identical
+# reason the CPU index's own manifest states — without it this index becomes a
+# candidate for every requirement in the graph, not only the one name below.
+[[tool.uv.index]]
+name = "llamacpp-vulkan"
+url = "https://abetlen.github.io/llama-cpp-python/whl/vulkan/"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llamacpp-vulkan" }

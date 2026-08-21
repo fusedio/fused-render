@@ -15,7 +15,7 @@ down beside each entry.
 **Keyed by RUNNER, not by capability, and that is what makes it correct on more
 than one platform.** A suggestion is only meaningful for the backend that will
 load it: `mlx-community/Qwen3.5-9B-MLX-4bit` is packed for Metal kernels and is
-unloadable rubbish on a Windows box, while `Qwen/Qwen3-4B-Instruct-2507` is the
+unloadable rubbish on a Windows box, while `Qwen/Qwen3.5-4B` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
 two BACKENDS (text generation since D293, speech to text since D302) therefore
 has two lists — hardware variants of one backend share theirs, since the wheel
@@ -45,7 +45,7 @@ since the per-hardware runner split means frank about the MODEL and never about
 the machine: one list is shown by three engines (CPU, CUDA, ROCm), and a note
 saying "tight on 16GB" would mean system RAM under one of them and VRAM under
 the others. `size_gb` is the field that answers the budget question, in the one
-unit this file defines; see the rule above the transformers list.
+unit this file defines; see the rules stated above `SUGGESTIONS` itself.
 
 **`size_gb` IS EVERY BYTE THE DOWNLOAD FETCHES, ACROSS EVERY REPO IT TOUCHES.**
 Not the weights file, not the interesting part, not one of the two repos — the
@@ -66,9 +66,13 @@ not be promoted into the "safe, small, starts quickly" slot.
 
 **The cost of that rule is deliberate and was chosen by the user with the
 trade-off in front of them (2026-08-16).** A no-model call now gets the LEAST
-ACCURATE model rather than the recommended one — `Systran/faster-whisper-small`
-instead of `deepdml/faster-whisper-large-v3-turbo-ct2`, `Qwen/Qwen3-1.7B` instead
-of `Qwen/Qwen3-4B-Instruct-2507`. The alternative — a separate `default: True`
+ACCURATE model rather than the recommended one — `Systran/faster-whisper-tiny.en`
+instead of `deepdml/faster-whisper-large-v3-turbo-ct2`, and the smallest text
+entry instead of the strongest one (`Qwen/Qwen3.5-4B` rather than
+`Qwen/Qwen3.5-9B` after the 2026-08-21 refresh; the pair the user was actually
+shown was `Qwen/Qwen3-1.7B` against `Qwen/Qwen3-4B-Instruct-2507`, both since
+retired, which is why the rule is stated in terms of POSITION and not of
+names). The alternative — a separate `default: True`
 field, so the list could be ordered one way and the default picked another — was
 offered and rejected: one rule that a reader can verify by eye beats two that can
 silently disagree. **Do not "fix" this back** by reordering a list so the good
@@ -88,6 +92,30 @@ from fused_render.ai import registry
 #: which the card shows as "—" rather than inventing a figure from parameter
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
+#:
+#: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
+#: sentences is a wall nobody reaches the end of — so each note carries the
+#: single thing that would change the choice and stops, with the rest left to
+#: the model card the name links to. The oldest lists here predate the rule and
+#: still run to three sentences.
+#:
+#: **THE NOTES ARE HARDWARE-NEUTRAL, and that is a rule rather than a style.**
+#: A list is shown by every hardware variant of its runner (`_SHARED_SUGGESTIONS`),
+#: so a note that mentions a device is wrong on all but one of them: "the one to
+#: pick with no GPU" is a tautology on the CPU row, and "the only one that needs
+#: a GPU" reads as "do not pick this" inside a list whose only purpose is to be
+#: picked from. A memory claim is worse than wrong, it is ambiguous — "fits a
+#: 16GB machine" means SYSTEM RAM on the CPU row and VRAM on the accelerated
+#: ones, which are different numbers on the same physical machine, and on ROCm
+#: they are not even the number on the box (pytorch#184880 has a 16GB RX 9060 XT
+#: reporting ~7915MB usable). **`size_gb` carries the budget question**, in the
+#: one unit this file defines — every byte the download fetches — and a reader
+#: comparing it against their own machine is doing arithmetic these sentences
+#: cannot do for them.
+#:
+#: Both rules were written above the `transformers-text` list and are stated here
+#: because D416 removed it: a rule that lives inside one entry of a table is a
+#: rule that disappears when that entry does, and four other lists cite it.
 SUGGESTIONS: dict[str, list[dict]] = {
     # Refreshed 2026-08-16, and the refresh brought one fact this list has not
     # had to state before.
@@ -231,91 +259,104 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "machine this swaps rather than runs.",
         },
     ],
-    # Text generation on Windows and Linux, plus the Apple Silicon fallback
-    # when MLX is unavailable (D293). Three rules
-    # picked these, and each one is a failure this app has already shipped once:
+    # llama.cpp / GGUF (SPEC AI-11, D411) — opt-in, and the only runner here
+    # whose ids are NOT Hub repo ids: a GGUF repo publishes two dozen
+    # quantizations of one model (`unsloth/Qwen3.5-9B-GGUF` alone sums to
+    # 147.81GB across every file it holds), so the id is the curated key
+    # `runners/llama_text.py`'s `_GGUF_RECIPES` maps to one `(repo, file)`
+    # pair — see that module's docstring for why this is not a `repo:quant`
+    # grammar. **That is also why Hub search cannot populate this list**: the
+    # Discover tab's search hands back a bare repo id, this runner has no rule
+    # for picking one file out of thirty, and only the ids curated here ever
+    # load — the same limitation `formats.COMPONENT_REPOS`'s repos already
+    # have, for the same reason.
     #
-    # * **Unquantized safetensors only.** Every other format on the Hub needs
-    #   something this runner does not ship — GGUF is llama.cpp's, AWQ and GPTQ
-    #   need their own packages, bitsandbytes needs an NVIDIA card — and a
-    #   suggestion the loader then refuses is the trap AI-10 describes for
-    #   CTranslate2 and the whisper runner had to write an error message about.
-    # * **Ungated.** `google/gemma-3-*` and `meta-llama/*` need a licence
-    #   accepted on the Hub first, so Download 401s partway through for a user
-    #   who has done nothing wrong. The MLX list above gets away with gemma only
-    #   because the `mlx-community` re-uploads are not gated.
-    # * **Sized for the machine that will actually run them.** The accepted v1
-    #   trade is that the default torch row installs the `whl/cpu` build on
-    #   every non-Apple machine (D381, see this runner's `pyproject.toml`), so
-    #   the list has to be usable with no GPU at all rather than assuming one —
-    #   which is why the smallest entry is here on merit and not as an
-    #   afterthought. The accelerated rows share this very list (`catalog.py`'s
-    #   `_SHARED_SUGGESTIONS`), so it is the CPU that sets its ceiling.
+    # **`gguf.architecture = "qwen35"` on every entry here, which is worth
+    # spelling out because it is the whole reason this list can offer
+    # CURRENT-GENERATION Qwen at all.** llama.cpp converts and runs the TEXT
+    # TOWER of the `Qwen3_5ForConditionalGeneration` family — the same
+    # language model the removed `transformers-text` list served in full bf16
+    # precision, at 19.3GB for the 9B (D416) — so a machine too small for that
+    # download can still run the same model's answers at a fraction of the
+    # size, not a smaller model wearing the same name. Since D416 this list is
+    # also what a bare "auto" reaches on Windows and Linux rather than an opt-in
+    # a user had to find, which raises what these five entries have to be: they
+    # are no longer an alternative shortlist beside a safetensors one, they are
+    # the whole of what text generation suggests on those platforms.
     #
-    # Sizes sum every file in the Hub snapshot (2026-08-14) and round the byte
-    # total to one decimal GB. That makes them download estimates rather than
-    # filesystem measurements, but unlike parameter arithmetic they include the
-    # tokenizer, configs, split weights and any other payload the whole-repo
-    # downloader actually fetches (D295).
+    # Sizes verified against the Hub's `?blobs=true` metadata on 2026-08-21,
+    # summing ONLY the one GGUF file `download_file` fetches (never the whole
+    # repo) plus nothing else — these unsloth repos ship no external
+    # tokenizer/config files at their root, so there is no second download to
+    # add in (see `runners/llama_text.py`). Every file checked is a single
+    # root-level `.gguf`, not a `-00001-of-0000N` shard — `download_file` takes
+    # one filename, so a sharded tier would have been silently unloadable and
+    # was excluded before it could ship (the 27B repo's own BF16 tier IS
+    # sharded, which is one reason its shortlist entry is the aggressively
+    # quantized UD-Q3_K_XL rather than anything closer to full precision).
+    # Every repo checked `gated: false`. **No sub-4B entries** — the user's own
+    # standing rule that a text model under 4B parameters is not worth using,
+    # and every model here is a Qwen3.5-or-newer 4B, 9B or 27B.
     #
-    # **One line each.** A shortlist is read by SWEEPING it, and four cards of
-    # three sentences is a wall nobody reaches the end of — so each note carries
-    # the single thing that would change the choice and stops, with the rest
-    # left to the model card the name links to. The older lists in this file
-    # predate the rule and still run to three sentences.
-    #
-    # **THE NOTES ARE HARDWARE-NEUTRAL, and that is a rule rather than a style.**
-    # This one list is what the CPU, CUDA and ROCm builds of Transformers all
-    # show (see `_SHARED_SUGGESTIONS`), so a note that mentions a device is
-    # wrong on two rows out of three: "the one to pick with no GPU" is a
-    # tautology on the CPU engine, and "the only one that needs a GPU" reads as
-    # "do not pick this" inside a list whose only purpose is to be picked from.
-    # A memory claim is worse than wrong, it is ambiguous — "fits a 16GB
-    # machine" means SYSTEM RAM on the CPU row and VRAM on the accelerated
-    # ones, which are different numbers on the same physical machine, and on
-    # ROCm they are not even the number on the box (pytorch#184880 has a 16GB
-    # RX 9060 XT reporting ~7915MB usable, so an 8.1GB entry that "fits 16GB"
-    # does not fit that row). **`size_gb` carries the budget question**, in the
-    # one unit this file defines — every byte the download fetches — and a
-    # reader comparing it against their own machine is doing arithmetic these
-    # sentences cannot do for them.
-    "transformers-text": [
+    # **One line each** and hardware-neutral, per `SUGGESTIONS`' own rules:
+    # this list
+    # is shared by BOTH llama.cpp builds (`_SHARED_SUGGESTIONS` aliases
+    # `llamacpp-text-vulkan` to this same key), so a note naming one build's
+    # device would be wrong on the other.
+    "llamacpp-text": [
         {
-            "id": "Qwen/Qwen3-1.7B",
-            "label": "Qwen3 1.7B",
-            "size_gb": 4.1,
-            "note": "The smallest here and the one a bare call loads — quickest "
-                    "to fetch and quickest to answer.",
+            "id": "Qwen3.5-4B-Q5_K_M.gguf",
+            "label": "Qwen3.5 4B (Q5_K_M)",
+            "size_gb": 3.1,
+            "note": "The smallest here and the one a bare call loads — Qwen3.5 "
+                    "4B (Q8_0) below is the same model at higher fidelity for "
+                    "1.3GB more.",
         },
         {
-            "id": "microsoft/Phi-4-mini-instruct",
-            "label": "Phi-4 mini (3.8B)",
-            "size_gb": 7.7,
-            "note": "Punches above its size on reasoning and maths, and MIT "
-                    "licensed.",
+            "id": "Qwen3.5-4B-Q8_0.gguf",
+            "label": "Qwen3.5 4B (Q8_0)",
+            "size_gb": 4.5,
+            "note": "The same 4B near full precision, for a third more "
+                    "download than Q5_K_M above.",
         },
         {
-            "id": "Qwen/Qwen3-4B-Instruct-2507",
-            "label": "Qwen3 4B Instruct",
-            "size_gb": 8.1,
-            "note": "The best all-round pick: clearly stronger than the small "
-                    "ones without being the largest download here.",
+            "id": "Qwen3.5-9B-Q4_K_M.gguf",
+            "label": "Qwen3.5 9B (Q4_K_M)",
+            "size_gb": 5.7,
+            # Named the removed `transformers-text` engine until D416. A note
+            # citing an engine the page no longer lists is a dead reference the
+            # reader cannot resolve, so the comparison is to the FORMAT — which
+            # is the fact that actually earns the entry, and is true whatever
+            # engines happen to be registered.
+            "note": "Current-gen Qwen at under a third of what the same 9B "
+                    "weighs unquantized — the strongest pick here for the "
+                    "size.",
         },
         {
-            "id": "Qwen/Qwen3-8B",
-            "label": "Qwen3 8B",
-            "size_gb": 16.4,
-            "note": "Best quality here, and twice the download and the memory "
-                    "of the pick above it.",
+            "id": "Qwen3.5-9B-Q8_0.gguf",
+            "label": "Qwen3.5 9B (Q8_0)",
+            "size_gb": 9.5,
+            "note": "The 9B at higher fidelity than Q4_K_M above, for nearly "
+                    "double the download — bigger than most laptop GPUs' "
+                    "VRAM, so expect a slower partial or CPU load there.",
+        },
+        {
+            "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            "label": "Qwen3.8 27B (UD-Q3_K_XL)",
+            "size_gb": 13.1,
+            "note": "The newest and largest model here, quantized hard to fit "
+                    "the download — expect a bigger quality hit than the 9B "
+                    "above, and a laptop GPU to run it mostly or entirely on "
+                    "the CPU rather than resident in VRAM.",
         },
     ],
     "diffusers-image": [
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
             "label": "FLUX.2 klein 4B (int8)",
-            # The whole repo, per the rule the entry below states: 8.22e9 bytes
-            # of `usedStorage` (2026-08-20 Hub metadata), and here that number
-            # IS the download — one repo, no component repo, and no skipped
+            # The whole repo, per the module docstring's rule: 8.22e9 bytes of
+            # `usedStorage` (2026-08-20 Hub metadata), and here that number IS
+            # the download — one repo, no component repo, and no skipped
             # subfolder, because the quantization is already in the checkpoint.
             "size_gb": 8.2,
             # **No `_GGUF_RECIPES` row, and that is the point of this entry.**
@@ -331,33 +372,19 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # encoder and VAE still come from their safetensors. Forcing
             # `use_safetensors=False` would break those two instead.
             #
-            # It leads the list, so it is what a bare `fused.ai.image()` starts:
-            # that is the one ordering rule
-            # (`test_every_suggestion_list_is_ordered_smallest_first`), and the
-            # smaller thing to fetch is the reason this entry exists at all.
-            "note": "Smallest Diffusers download here: one self-contained repo "
-                    "with an int8-quantized transformer, rather than the base "
-                    "pipeline plus a separate GGUF file.",
-        },
-        {
-            "id": "black-forest-labs/FLUX.2-klein-4B",
-            "label": "FLUX.2 klein 4B",
-            # EVERYTHING the Download fetches, both repos: 8.23 of base
-            # components (text encoder 8.05, VAE 0.17, tokenizer + configs) plus
-            # the 2.60 GGUF transformer. It said 2.6 — the GGUF alone — while
-            # the actual pull was 18.6, and the field two lists down means the
-            # whole download; see the module docstring's rule (D308).
-            "size_gb": 10.8,
-            # Hardware-neutral, per the rule the transformers list above states:
-            # this one list serves the CPU, CUDA and ROCm Diffusers rows, and
-            # the sentence used to say the full-precision pipeline "OOMs on
-            # 16GB machines" — a claim about system RAM on one row and about
-            # VRAM on the others, and on ROCm about neither (a 16GB card can
-            # report half that usable). What survives the move is the fact that
-            # decides the choice anyway: this is the smaller thing to fetch and
-            # to hold.
-            "note": "Quantized transformer (Q4_K_M) rather than the bf16 "
-                    "original — several GB less to fetch and to hold in memory.",
+            # It is the only entry, so it is what a bare `fused.ai.image()`
+            # starts: the ordering rule
+            # (`test_every_suggestion_list_is_ordered_smallest_first`) holds
+            # trivially, and being the smaller thing to fetch is why this is the
+            # entry the list keeps.
+            #
+            # Hardware-neutral, per `SUGGESTIONS`' own rule: this one list
+            # serves the CPU, CUDA and ROCm Diffusers rows, so a
+            # note about what fits in "16GB" would mean system RAM on one row
+            # and VRAM on the others.
+            "note": "One self-contained repo with an int8-quantized "
+                    "transformer: several GB less to fetch and to hold than the "
+                    "bf16 FLUX.2 pipeline it is built from.",
         },
     ],
     # The same model, converted for MLX — and unloadable by the runner above,
@@ -391,8 +418,13 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # so (`describe`'s `runnerLabel`).
     #
     # Sizes use the same full-snapshot Hub metadata estimate as the lists above
-    # (2026-08-15). **One line each**, per the rule the transformers list
-    # states: a shortlist is read by sweeping it.
+    # (2026-08-15). **One line each**, per `SUGGESTIONS`' own rule: a
+    # shortlist is read by sweeping it.
+    #
+    # **No medium.** It weighs about what large-v3 turbo weighs and turbo is
+    # better at every language, so a medium row would be an entry that is never
+    # the right pick — a shortlist earns its length by every line being
+    # somebody's answer.
     "mlx-whisper": [
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
@@ -411,14 +443,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "right.",
         },
         {
-            "id": "mlx-community/whisper-medium-mlx",
-            "label": "Whisper medium (MLX)",
-            "size_gb": 1.5,
-            "note": "Bigger than small for no gain in English over turbo, which "
-                    "costs about the same — worth it only for a language turbo "
-                    "struggles with.",
-        },
-        {
             "id": "mlx-community/whisper-large-v3-turbo",
             "label": "Whisper large-v3 turbo (MLX)",
             "size_gb": 1.6,
@@ -434,67 +458,41 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "twice turbo's disk and several times its decoding.",
         },
     ],
-    # NeMo Parakeet exports ONLY, and the FOURTH mutually unloadable speech
-    # list in the app (D319). These carry `model.safetensors` — the same
-    # filename a transformers checkpoint has — beside a `config.json` naming a
-    # NeMo ASR class, which is what tells the two apart (`formats.py`). A
-    # Whisper repo suggested here would fail inside `from_config` with "Model
-    # is not supported yet!", and a Parakeet repo suggested to a whisper runner
-    # fails the other way; the split is per RUNNER for exactly this reason.
+    # A fourth speech list here, `parakeet-mlx` (NeMo Parakeet exports), lived
+    # briefly under D319 and was removed by D406 along with the runner that
+    # read it — maintenance cost not justified by use.
     #
-    # These are the repos a Mac sees only after CHOOSING this engine on the
-    # Engines tab — the registry keeps Whisper as the default (see the runner
-    # row). Sizes are the same full-snapshot Hub metadata estimate as the lists
-    # above (2026-08-17). **One line each**, per the rule the transformers list
-    # states: a shortlist is read by sweeping it.
-    "parakeet-mlx": [
-        {
-            "id": "mlx-community/parakeet-tdt_ctc-110m",
-            "label": "Parakeet TDT-CTC 110M",
-            "size_gb": 0.5,
-            "note": "The smallest here, and what a bare transcribe call loads — "
-                    "English only, and it drops the punctuation the 0.6B "
-                    "models get right.",
-        },
-        {
-            "id": "mlx-community/parakeet-tdt-0.6b-v2",
-            "label": "Parakeet TDT 0.6B v2",
-            "size_gb": 2.5,
-            "note": "English only, and the most accurate of the three on it — "
-                    "pick v3 instead unless every recording is in English.",
-        },
-        {
-            "id": "mlx-community/parakeet-tdt-0.6b-v3",
-            "label": "Parakeet TDT 0.6B v3",
-            "size_gb": 2.5,
-            "note": "The one to reach for: v2's accuracy plus 24 more European "
-                    "languages, detected rather than declared.",
-        },
-    ],
     # CTranslate2 conversions ONLY. `openai/whisper-large-v3` is the repo
     # everyone reaches for and it does not load here — the runner reads
     # CTranslate2's `model.bin`, not transformers' safetensors — so suggesting
     # one would hand the user the exact failure `worker.py` had to write an
     # error message about.
     #
-    # Sizes use the same full-snapshot Hub metadata estimate as the Transformers
-    # list above (2026-08-14), including model.bin plus tokenizer and configs.
+    # Sizes use the same full-snapshot Hub metadata estimate every list in this
+    # file uses (2026-08-14; tiny.en re-checked 2026-08-21), including model.bin
+    # plus tokenizer and configs. It was stated as "the same estimate as the
+    # Transformers list above" until D416 removed that list — the METHOD is
+    # what the sentence is about, and it is unchanged, so it now names the method
+    # rather than a neighbour that has to keep existing for this to parse.
+    #
+    # **No medium.** large-v3 turbo weighs about the same 1.6GB and is better at
+    # every language, so a medium row would be an entry that is never the right
+    # pick — a shortlist earns its length by every line being somebody's answer.
     "faster-whisper": [
+        {
+            "id": "Systran/faster-whisper-tiny.en",
+            "label": "Whisper tiny English (CT2)",
+            "size_gb": 0.08,
+            "note": "The quickest download and decode here, English only — "
+                    "fine for a rough draft of clear speech, below small on "
+                    "everything else.",
+        },
         {
             "id": "Systran/faster-whisper-small",
             "label": "Whisper small (CT2)",
             "size_gb": 0.5,
-            "note": "The smallest here, and what a bare transcribe call loads — "
-                    "light enough for an old machine, but it drops names and "
+            "note": "Light enough for an old machine, but it drops names and "
                     "punctuation turbo gets right.",
-        },
-        {
-            "id": "Systran/faster-whisper-medium",
-            "label": "Whisper medium (CT2)",
-            "size_gb": 1.5,
-            "note": "Bigger than small for no gain in English over turbo, which "
-                    "costs about the same — worth it only for a language turbo "
-                    "handles badly.",
         },
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
@@ -514,26 +512,29 @@ SUGGESTIONS: dict[str, list[dict]] = {
 #: **This file is keyed by runner because a repo belongs to a BACKEND** — the
 #: docstring's argument is about weights formats, `mlx-community/…` against
 #: `Qwen/…`, and two lists exist because neither backend can open the other's
-#: files. A CUDA build of Transformers reads byte for byte what the CPU build
+#: files. A CUDA build of Diffusers reads byte for byte what the CPU build
 #: reads; the split between them is which wheel gets installed, and nothing
 #: about which repos are loadable. So their lists must be identical BY
-#: CONSTRUCTION. Four copied literals would be identical only until somebody
-#: edited one of them, and the failure that produces — a curated model offered
-#: on the CPU engine and missing on the CUDA one, or worse, sized for a
-#: different budget — is silent on the page.
+#: CONSTRUCTION. Three copied literals — one per Diffusers row — would be
+#: identical only until somebody edited one of them, and the failure that
+#: produces is silent on the page: a curated model offered on the CPU engine and
+#: missing on the CUDA one, or worse, sized for a different budget. (Transformers
+#: was this paragraph's example until D416 withdrew it; Diffusers is the
+#: surviving three-row family and the argument is the same one.)
 #:
 #: An alias also keeps two invariants this file states elsewhere true: every id
 #: still appears in exactly ONE list (`capability_of` reads that), and
-#: `all_suggested_ids()` is not four copies deduplicated by luck.
+#: `all_suggested_ids()` is not a pile of copies deduplicated by luck. Left
+#: count-free deliberately: the number of literals aliasing avoids is the number
+#: of rows in the table, which is a thing that changes.
 #:
 #: What must NOT be aliased is a runner that reads a different format. That is
 #: the whole keying rule, and it is why this table names the specific pairs
 #: instead of stripping a suffix off a code.
 _SHARED_SUGGESTIONS = {
-    "transformers-text-cuda": "transformers-text",
-    "transformers-text-rocm": "transformers-text",
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
+    "llamacpp-text-vulkan": "llamacpp-text",
 }
 
 
@@ -610,7 +611,7 @@ def capability_of(repo_id: str) -> str | None:
 
     **That one-list-per-id invariant survives the hardware variants only because
     they are ALIASED rather than copied** (`_SHARED_SUGGESTIONS`): a CUDA
-    Transformers row shares the CPU row's entries instead of holding its own,
+    Diffusers row shares the CPU row's entries instead of holding its own,
     so no id appears under two keys and this loop cannot see the same repo
     twice. Copying the lists would not have broken the ANSWER — the variants of
     one backend share a capability, so first-match-wins returns the same string
@@ -634,10 +635,10 @@ def describe() -> list[dict]:
 
     The runner is resolved the way a LOAD resolves it, which is the fix D293
     needed: this used to take the first runner registered for the capability
-    whatever its availability, so a Windows machine — where the MLX row is first
-    and unavailable, and the transformers row below it is fine — would have been
-    told text generation "needs Apple Silicon" while a runner sat ready to serve
-    it, and shown four MLX repos it could not load.
+    whatever its availability, so a Windows machine — where the MLX row is
+    first and unavailable, and the cross-platform row below it is fine — would
+    have been told text generation "needs Apple Silicon" while a runner sat
+    ready to serve it, and shown four MLX repos it could not load.
     """
     rows = []
     for capability in registry.capabilities():
@@ -647,7 +648,7 @@ def describe() -> list[dict]:
             {
                 "capability": capability,
                 "runner": runner.code if runner else None,
-                # The backend in words ("Transformers (CUDA)"), because with
+                # The backend in words ("Diffusers (CUDA)"), because with
                 # two runners per capability the code alone stopped being
                 # something a page could show a person.
                 "runnerLabel": runner.label if runner else None,

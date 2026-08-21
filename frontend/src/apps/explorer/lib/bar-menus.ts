@@ -54,10 +54,12 @@ export interface CrumbActions {
 }
 
 // Right-click on an ANCESTOR crumb in the path strip — a folder you are not in.
-// Exactly the two items a folder ROW gets (useFileOps.rowMenu's isDir branch),
-// and for the same reason: the only things that make sense on a folder you are
-// pointing at rather than standing in are "open it elsewhere" and "hand it to
-// the OS". What it must NOT be is the bar's own folder menu — that list acts on
+// Deliberately just two items: the only things that make sense on a folder you
+// are pointing at rather than standing in are "open it elsewhere" and "hand it
+// to the OS". A crumb is a navigation handle, not a row you selected, so the
+// editing verbs (Rename/Cut/Paste/Delete) have no business here — they belong
+// on the listing rows, which do carry the full menu (useFileOps.rowMenu).
+// What this must NOT be is the bar's own folder menu — that list acts on
 // the CURRENT directory (New File, Paste, Refresh), so on an ancestor crumb it
 // answered about the wrong folder entirely, which is the bug this fixes.
 //

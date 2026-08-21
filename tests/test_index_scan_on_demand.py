@@ -149,6 +149,23 @@ def test_a_mount_backed_root_is_refused_without_a_kernel_stat(client, home, tmp_
     assert not [p for p in stats if str(folder) in p]
 
 
+def test_scan_folder_reports_disabled_and_starts_nothing(client, tmp_path,
+                                                          monkeypatch):
+    """A durable "no", same shape as `refused`/`debounced`: the search box
+    polls this on a retry loop, and asking again would never change while
+    the pref stays off."""
+    from fused_render.server.routers import index as index_routes
+
+    calls = _started(monkeypatch)
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    folder = tmp_path / "elsewhere"
+    folder.mkdir()
+    body = _ask(client, folder)
+    assert body["ok"] is True and body["started"] is False
+    assert body["why"] == "disabled"
+    assert calls == []
+
+
 def test_the_route_is_guarded(client, tmp_path):
     resp = client.post("/api/index/scan-folder", json={"path": str(tmp_path)})
     assert resp.status_code == 403

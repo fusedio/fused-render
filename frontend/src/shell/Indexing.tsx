@@ -11,10 +11,11 @@ import {
   deleteIndex,
   getIndexConfig,
   putIndexConfig,
+  putIndexingEnabled,
   runIndexQuery,
   startIndexScan,
 } from "@platform/lib/api";
-import type { IndexConfig } from "@platform/lib/api";
+import type { IndexConfig, Prefs } from "@platform/lib/api";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { formatMtimeFull } from "@platform/lib/format";
@@ -33,7 +34,56 @@ function textToPatterns(text: string): string[] {
   return text.split("\n");
 }
 
-export function IndexingPanel() {
+// Same pattern as Preferences.tsx's ReaderToggle: local busy/error, a PUT
+// that returns the full Prefs, and the parent re-renders from it. Kept here
+// rather than in Preferences.tsx because it is entirely about indexing, and
+// every other control on this panel already lives here.
+function IndexingToggle({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.indexing.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putIndexingEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable file indexing.</b> Turning this off stops all background scans — search
+          falls back to slower live walks of the folder you're in, and the existing index
+          keeps answering until it goes stale.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+export function IndexingPanel({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
   const [config, setConfig] = useState<IndexConfig | null>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -95,9 +145,11 @@ export function IndexingPanel() {
   };
 
   const dirty = config !== null && text !== patternsToText(config.ignore);
+  const indexingOff = !prefs.indexing.enabled;
 
   return (
     <>
+      <IndexingToggle prefs={prefs} onChange={onChange} />
       <section className="prefs-section">
         <h2>File index</h2>
         <p className="deploy-muted">
@@ -135,8 +187,12 @@ export function IndexingPanel() {
         <div className="prefs-actions">
           <button
             type="button"
-            disabled={busy || scanning}
-            title="Check for changes since the last scan (fast — unchanged folders are skipped)"
+            disabled={busy || scanning || indexingOff}
+            title={
+              indexingOff
+                ? "Indexing is off — turn it back on above to scan"
+                : "Check for changes since the last scan (fast — unchanged folders are skipped)"
+            }
             onClick={() =>
               act(async () => {
                 await startIndexScan();
@@ -148,8 +204,12 @@ export function IndexingPanel() {
           </button>
           <button
             type="button"
-            disabled={busy || scanning}
-            title="Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
+            disabled={busy || scanning || indexingOff}
+            title={
+              indexingOff
+                ? "Indexing is off — turn it back on above to scan"
+                : "Rebuild from scratch, ignoring what the last scan recorded — use this if results look wrong"
+            }
             onClick={() =>
               act(async () => {
                 await startIndexScan({ full: true });
@@ -174,6 +234,12 @@ export function IndexingPanel() {
             Delete index
           </button>
         </div>
+        {indexingOff && (
+          <p className="deploy-muted">
+            Indexing is off, so Re-index and Full scan have nothing to do — turn it back on
+            above first.
+          </p>
+        )}
         {note && <p className="deploy-muted">{note}</p>}
         {error && <ErrorBanner>{error}</ErrorBanner>}
       </section>

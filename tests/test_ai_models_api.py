@@ -1040,15 +1040,20 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
 
 @requires_symlinks
 def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
-    """The one a llama.cpp user's cache is full of: no config.json, no card,
-    just weights — and the library is all that can honestly be read off them.
+    """No config.json, no card, no real GGUF header either — a fixture whose
+    `.gguf` file is fake bytes, not a real one — and the library is all that
+    can honestly be read off it.
 
-    It used to say "text generation" here, which is a guess about the MODALITY
-    made from a CONTAINER, and it was wrong on the first image repo it met
-    (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer the diffusers
-    recipe fetches). The guess never bought anything either: no runner that
-    ships loads a GGUF-only repo, so all it ever produced was a Load button
-    that fails.
+    It used to say "text generation" here unconditionally, which is a guess
+    about the MODALITY made from a CONTAINER, and it was wrong on the first
+    image repo it met (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized
+    transformer the diffusers recipe fetches). Since SPEC AI-11 a GGUF whose
+    OWN `general.architecture` metadata names a real causal-text model DOES
+    get a task and a Load button (`llamacpp-text`) —
+    `test_ai_runtime.py::test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp`
+    covers that with a real header. This fixture's file is not one (no magic
+    bytes to read at all), which is why it still reads exactly as it did
+    before that runner existed: nothing here can tell what it is.
     """
     repo = _repo(hub, "models--TheBloke--m-GGUF", blobs={"w": 10},
                  snapshots={"c1": {"model.Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
@@ -1481,8 +1486,12 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
     not even a model, it is the quantized transformer the diffusers recipe
     fetches for FLUX.2 klein. It read "Text generation" with a Load button,
     which is the exact failure `capability_for_task` warns about: a GGUF file
-    is a container, not a modality, and no shipping runner loads a GGUF-only
-    repo at all."""
+    is a container, not a modality. `formats.component()` is what excludes
+    THIS repo specifically (it is a COMPONENT, never a `load()` target on its
+    own); a GGUF repo that is not a known component additionally needs its
+    own `general.architecture` metadata to name a real causal-text model
+    before `llamacpp-text` (SPEC AI-11) calls it decisively text — the
+    fixture's file has none, so it reads the same either way."""
     _repo(hub, "models--unsloth--FLUX.2-klein-4B-GGUF", blobs={"w": 10},
           snapshots={"c1": {"flux-2-klein-4b-Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
     row = _repo_row(client, "unsloth/FLUX.2-klein-4B-GGUF")
@@ -1494,10 +1503,11 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
 
 @requires_symlinks
 def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch):
-    """`black-forest-labs/FLUX.2-klein-4B` is `catalog.py`'s suggestion for the
-    diffusers runner, and its card's `pipeline_tag` says image-to-image — a
-    label in NO_RUNNER_YET, so the page offered no Load for a model the app
-    recommends on the next tab. The card names the model FAMILY; the
+    """`black-forest-labs/FLUX.2-klein-4B` is the FLUX.2 base pipeline the
+    diffusers runner loads by id (it has a `_GGUF_RECIPES` row, and was
+    `catalog.py`'s second diffusers suggestion until the int8 repo made it
+    redundant), and its card's `pipeline_tag` says image-to-image — a label in
+    NO_RUNNER_YET, so the page offered no Load for a model a user can reach. The card names the model FAMILY; the
     `model_index.json` in the snapshot names the pipeline that is actually
     here, written by the library that will load it."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
@@ -1511,6 +1521,42 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
     assert row["task"] == "image generation"
     assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"]["code"] == "diffusers-image"
+
+
+@requires_symlinks
+def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
+        client, hub, monkeypatch):
+    """Three names on the wire, because the card wants two different things.
+
+    The card's TAG is a format claim, so it wears the family ("Diffusers") —
+    every Diffusers row reads the identical safetensors and "(CPU)" on a tag
+    describing a file on disk is noise plus a leak of which machine is reading
+    it. The tag's hover keeps the hardware-qualified `shortLabel`, so nothing
+    is lost. Both are asserted here rather than only in the registry because
+    the payload is built at TWO sites in this router — the serving engine and
+    the engine that merely reads the format — and one of them shipped without
+    a key before now.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    # The SERVING site: Diffusers CPU is the image engine on Linux.
+    serving = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert serving["shortLabel"] == "Diffusers (CPU)"
+    assert serving["familyLabel"] == "Diffusers"
+    # …and the OTHER site: on a Mac the image engine is MLX FLUX, so this repo
+    # comes back naming the engine that reads it with `available: false`. Same
+    # row, same two names — a payload missing the key here would leave the tag
+    # blank on exactly the cards that need explaining.
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert other["code"] == "diffusers-image" and other["available"] is False
+    assert other["shortLabel"] == "Diffusers (CPU)"
+    assert other["familyLabel"] == "Diffusers"
 
 
 @requires_symlinks
@@ -1646,9 +1692,11 @@ def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch)
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     assert _engine(client, "mlx-community/Qwen3-8B-4bit")["code"] == "mlx-text"
 
-    # The same checkpoint off a Mac: still MLX's, and torch will not read it —
-    # which is exactly what the transformers runner's `_refuse_unloadable`
-    # raises about a `quantization` block with a `group_size` in it.
+    # The same checkpoint off a Mac: still MLX's, and nothing else here reads
+    # it — an MLX `quantization` block with a `group_size` in it is bit-packed
+    # for Metal kernels, which is what the removed transformers runner's
+    # `_refuse_unloadable` raised about and why `loaders()` never offered it to
+    # anything but `mlx-text`.
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
@@ -1690,7 +1738,7 @@ def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
     # the ones `_engine` makes about the candidate — otherwise this test would be
     # counting the resolution's probes too and would pass for the wrong reason.
     monkeypatch.setattr(_ai_registry, "for_capability",
-                        lambda capability: _ai_registry.by_code("transformers-text"))
+                        lambda capability: _ai_registry.by_code("llamacpp-text"))
 
     # An MLX text checkpoint on Linux: the only runner that reads it is the one
     # that cannot run here, which is the branch that does the double probe.
@@ -1706,7 +1754,20 @@ def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
 
 
 @requires_symlinks
-def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, hub, monkeypatch):
+def test_a_plain_safetensors_causal_lm_is_MLXS_AND_UNAVAILABLE_off_a_mac(client, hub, monkeypatch):
+    """A cached bf16 causal LM off a Mac names `mlx-text` and says it cannot run.
+
+    This asserted `transformers-text` and `available: True` until D416, and the
+    change of answer is the one user-visible cost of removing that family rather
+    than an accident of the test: `formats.loaders()` maps a directory of plain
+    safetensors to exactly one engine now, and that engine is Apple-only. So a
+    Linux user with a bf16 Qwen already on disk gets a card that names the
+    engine which reads the format and the registry's own sentence about why this
+    machine is not it — which is the honest answer, and is what the card is for.
+    What that user CAN run is a GGUF of the same model through `llamacpp-text`;
+    `catalog.SUGGESTIONS["llamacpp-text"]` is what the Discover tab offers them,
+    and its 9B entry's note makes the size comparison to exactly this download.
+    """
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     repo = _repo(hub, "models--Qwen--Qwen3-8B", blobs={"w": 10},
@@ -1715,7 +1776,8 @@ def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, h
                    json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}))
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     engine = _engine(client, "Qwen/Qwen3-8B")
-    assert engine["code"] == "transformers-text" and engine["available"] is True
+    assert engine["code"] == "mlx-text" and engine["available"] is False
+    assert "Apple Silicon" in engine["reason"]
 
 
 # -- and the same reading answers a load that omitted one (D321) -----------------
@@ -1826,7 +1888,7 @@ def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
 
     row = _repo_row(client, "onnx-community/silero-vad")
 
-    assert row["component"]["owner"] == "MLX transcription"
+    assert row["component"]["owner"] == "MLX Whisper"
     assert row["component"]["part"] == "speech detector"
     # An engine's component, not a model's — nothing to point at, and the prose
     # says the cost of deleting it is a slower transcription rather than a
@@ -1846,7 +1908,7 @@ def test_an_ordinary_model_is_not_a_component(client, hub):
 @requires_symlinks
 def test_loading_a_component_is_refused_by_name(client, hub):
     """`cached_capability` is what the load route refuses with (D321). "a
-    speech detector that belongs to MLX transcription" is a far more useful
+    speech detector that belongs to MLX Whisper" is a far more useful
     sentence than the "model repo" reading it used to produce."""
     _repo(hub, "models--onnx-community--silero-vad", blobs={"w": 10},
           snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
@@ -1854,4 +1916,4 @@ def test_loading_a_component_is_refused_by_name(client, hub):
     reading = ai_models_mod.cached_capability("onnx-community/silero-vad")
 
     assert reading.cached is True and reading.capability is None
-    assert reading.looks_like == "a speech detector that belongs to MLX transcription"
+    assert reading.looks_like == "a speech detector that belongs to MLX Whisper"

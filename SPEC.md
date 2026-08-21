@@ -5570,11 +5570,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   declaring folder gets. No second install mechanism exists for AI. **One library
   may occupy SEVERAL folders, one per hardware build of it, and then the shared
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
-  it** (D381). The torch backends are three folders each — `transformers_text`,
-  `transformers_text_cuda`, `transformers_text_rocm`, and the same trio for
-  `diffusers_image` — whose manifests are identical except for the index `torch`
-  is resolved from, and whose `worker.py` is a `sys.path` insert and a call into
-  `runners/torch_text.py` or `runners/torch_image.py`. Both halves of that are
+  it** (D381). Diffusers is three folders — `diffusers_image`,
+  `diffusers_image_cuda`, `diffusers_image_rocm` — and llama.cpp is two
+  (`llamacpp_text`, `llamacpp_text_vulkan`), whose manifests are identical except
+  for the index the accelerated distribution is resolved from, and whose
+  `worker.py` is a `sys.path` insert and a call into `runners/torch_image.py` or
+  `runners/llama_text.py`. (D416 removed a third such family — `transformers_text`
+  and its `_cuda`/`_rocm` siblings over `runners/torch_text.py`, which is where
+  this rule was first written. The rule is unchanged; only one of its instances
+  is gone.) Both halves of that are
   forced rather than chosen. **The folder split is forced by PY-16**: a venv is
   keyed on the folder, so two rows sharing one folder share one environment and
   could not hold two different torch builds; and `_env_install_worker` runs a
@@ -5603,6 +5607,35 @@ an AI Models page that could say what was on disk but not what was *running*.
   built on a user's laptop the first time they press Download, and compiling
   from source there is minutes of their battery for something a release already
   answers. Held by a test over every runner's declaration.
+  **Amended (D411): the rule is WHEELS, not PyPI.** AI-11's original refusal of
+  `llama-cpp-python` rested on PyPI publishing an sdist for it and nothing
+  else, which is still true and stopped being the whole story: the
+  maintainer's own index (`abetlen.github.io/llama-cpp-python/whl/cpu/`)
+  publishes complete, current `py3-none` wheels — a prebuilt shared library
+  behind ctypes, no compiler anywhere in the path — checked directly rather
+  than assumed. A non-PyPI index is therefore admissible under this rule, but
+  ONLY confined to the one distribution it exists for: `explicit = true`,
+  exactly the confinement the removed `transformers_text/pyproject.toml` used
+  for PyTorch's CPU index (D416) and `diffusers_image_cuda`'s still does, so the
+  index cannot become a candidate for anything
+  else a runner declares. **The residual risk is a second host to trust, and
+  it turned out to be worse than that phrase suggests.** A sweep of every
+  macOS arm64 wheel this specific index has published for
+  `llama-cpp-python` found the corruption is close to a coin flip per
+  release — 4 of 16 sampled pass a zip-integrity check, the rest fail under
+  three different corruption signatures, every failure's sha256 matches its
+  own published GitHub digest (so this is upstream publishing bad bytes, not
+  a CDN), and wheel size is not a proxy for which. Root-caused to upstream
+  issue #1650 (the release job's own artifact-merge step corrupts wheels that
+  built fine), open since Aug 2024. This is why `llamacpp-text` (AI-11's
+  amendment) is opt-in and registered FOURTH rather than made a fallback
+  anywhere in the resolution order — a capability whose install can silently
+  fail on the maintainer's own release pipeline must never be something
+  `auto` reaches for. The test over every runner's declaration is now the
+  general form of this rule (a non-PyPI index must be `explicit = true`, on a
+  wheel-shaped source) rather than a per-folder exemption, so the NEXT runner
+  that needs an index outside PyPI or a torch mirror is caught by the same
+  check rather than requiring a new one.
 - **AI-2b** **CPU is what `auto` resolves to off Apple Silicon; an accelerated
   build is an explicit choice, and a HARD GATE stands in front of it** (D381).
   The registry's order is the default (AI-2, AI-10e), and it puts the Apple
@@ -5632,16 +5665,36 @@ an AI Models page that could say what was on disk but not what was *running*.
   ("(CTranslate2)") are both that second kind of fact and drop. "(CUDA)" is not:
   it is the engine's IDENTITY, and dropping it makes three rows print one name on
   every surface but the picker. So `label` and `short_label` are EQUAL on all
-  six torch rows ("Diffusers (CUDA)"), and a bracketed qualifier in the SHORT
-  name is therefore the marker of a hardware variant, which leaves the
-  Apple-only rows visually distinct from them. `(PyTorch)` is gone from the
-  family: the library stopped being what distinguishes these rows from each
-  other, and the accelerator is what does. **A qualifier names the BUILD, not a
+  six torch rows and on both llama.cpp rows ("Diffusers (CUDA)", "llama.cpp
+  (CPU)"), and a bracketed qualifier in the SHORT name is therefore the marker
+  of a hardware variant, which leaves the Apple-only rows visually distinct from
+  them. `(PyTorch)` is gone from the family: the library stopped being what
+  distinguishes these rows from each other, and the accelerator is what does.
+  **The qualifier axis is HARDWARE, never format**: "llama.cpp (GGUF)" beside
+  "llama.cpp (Vulkan)" qualified the wrong axis and was renamed to "llama.cpp
+  (CPU)", because both rows read GGUF through the same
+  `runners/llama_text.py` — a qualifier naming something the sibling row also
+  does distinguishes nothing, and it cost that row the hardware name its
+  sibling's `note` has to cross-reference. **A qualifier names the BUILD, not a
   prediction about the reader's device** (D382): "(CPU)" is the `whl/cpu` pin —
   the install with no accelerator libraries in it — and that same pin runs on the
   GPU on Apple Silicon, so the row keeps its name there and its `note` carries the
   Mac case (AI-11b). Renaming it would break a stored preference, which keys on
   `code`, and would leave the picker with two rows called the same thing.
+  **A THIRD name, `family_label`, exists for the one surface whose statement is
+  about the FILE rather than about this machine: the Local card's engine tag.**
+  That tag is a format claim — "Diffusers" says these weights are safetensors a
+  Diffusers pipeline opens — and all three Diffusers rows read the identical
+  file, so the accelerator there answers nothing a reader could ask about a
+  download on disk and leaks the machine's configuration into a sentence about
+  the model. The tag renders `familyLabel`; its `title` and `aria-label` keep
+  the hardware-qualified `shortLabel`, so which build would load it is one hover
+  away, and WCAG 2.5.3 still holds because the family is a PREFIX of the short
+  name. It is a field on every row, not a parenthetical stripped by regex, for
+  the reason `short_label` is not derived either. It is deliberately absent from
+  the Engines-tab payload (`registry.describe`): there the reader is choosing
+  BETWEEN builds of one library, and a family name is precisely the string that
+  cannot tell those rows apart.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -5693,6 +5746,29 @@ an AI Models page that could say what was on disk but not what was *running*.
   segments write out of order, so the file is created at its final size and
   filled sparsely, and `st_size` would report a 4.6GB download as complete before
   a byte had arrived.
+
+  **On the FALLBACK path — `snapshot_download`/`hf_hub_download`, not our own
+  segmented fetch — the disk walk alone is not enough either (D405).** `hf_xet`
+  ships in every runner venv and every mlx-community repo is Xet-backed, and Xet
+  delivers bytes in BURSTS: measured on a 481MB repo, `bytes_on_disk` sat on one
+  number for 6 seconds, then jumped ~90MB, then landed the last ~45% all at once
+  on completion. Scaled to a 4.6GB model that reads as "stuck at 98%" for a
+  minute of a perfectly healthy download. `_HubByteTicker` is a `tqdm_class`
+  passed to hf's own downloader that reads its BYTE bars directly — but the
+  outer "Fetching N files" bar hf also hands a `tqdm_class` is the same trap
+  one level further in, since it has no `unit` at all and reporting its
+  per-file `.update(1)` as bytes reproduces the "10 / 11 B" bug this section
+  already fixed once; `unit == "B"` is what tells the two apart. Xet also hands
+  back TWO byte bars — network TRANSFER and disk RECONSTRUCTION — covering
+  close to the same total, so they are tracked separately and the counter
+  reports whichever is FURTHER ALONG rather than their sum, which can read past
+  100%. The tick reports `max(hub counter, disk walk)`, never less than either,
+  and keeps ticking once a second regardless of which is moving — the tick
+  itself is the heartbeat (AI-5h), not whichever number happens to be live. An
+  hf version that reports differently, or ignores `tqdm_class` outright, is
+  silently indistinguishable from a counter that has not started yet: either
+  way the tick falls back to exactly the disk-walk-only number, because a
+  progress refinement must never be able to fail or freeze a download.
 - **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
   Two workers for one capability really do overlap — an eviction's replacement
   starts while the old one is still being killed, a Download runs beside a Load —
@@ -5807,16 +5883,34 @@ an AI Models page that could say what was on disk but not what was *running*.
   by a token-holding user fail over to the slow path (the token is whatever
   `huggingface_hub.get_token()` finds in the worker — hf's own store, written by
   the Preferences login button or by a `hf auth login`; nothing is injected into
-  the worker's environment, §20/PF-1f, D402) — up to
-  **4 `Range` segments per file** with **segments across all files** as
-  the units of work in one pool capped at **8 connections** — the single number
-  that bounds how many sockets a download opens, which a pool per file would
-  multiply out. Segments share one fd and write with `os.pwrite`, and per-segment
-  offsets go to a sidecar in the order that makes them true: snapshot the
-  cursors, **fsync the data, then write the sidecar** — a recorded byte is always
-  a durable byte, so a resume never skips one that was still in flight. The
-  partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
-  resumes one of those by seeking to its length, ours are written out of order,
+  the worker's environment, §20/PF-1f, D402) — a file at or above the
+  segment floor is split into **fixed `CHUNK_BYTES` (32MB) pieces**, with
+  **chunks across all files** as the units of work in one pool capped at **8
+  connections** (D404) — the single number that bounds how many sockets a
+  download opens, which a pool per file would multiply out. Fixed size rather
+  than the earlier `size / N` equal shares (capped at 4 per file) is what
+  fixed the download's TAIL: four equal shares finish at four different real
+  speeds, and once the fast three are done there is nothing left to hand the
+  slow one, which measured as a 481MB model's last quarter running 80% longer
+  than its first and a 4.6GB model crawling from ~90% to 100% for over a
+  minute. Fixed-size chunks turn a big file into MANY units of work in the
+  shared queue, so an idle worker pulls the NEXT chunk instead of finding
+  nothing assigned to it — a slow connection then delays only its own current
+  32MB, never the tail of the whole download. Chunks share one fd per file and
+  write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
+  that makes them true: snapshot the cursors, **fsync the data, then write the
+  sidecar** — a recorded byte is always a durable byte, so a resume never
+  skips one that was still in flight. **The sidecar carries its own version
+  number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
+  list MEANS — fixed pieces rather than equal shares — so a sidecar written
+  before this existed can have the right etag and size and a self-consistent
+  layout while describing boundaries this build derives differently for the
+  same file, which is exactly the input shape that turns a resume into a
+  silently wrong blob rather than a loudly failed one. Any sidecar whose
+  version does not match, missing included, is discarded exactly like no
+  sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
+  hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
+  are written out of order,
   and handing it one would produce a silently corrupt blob. Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
@@ -6189,6 +6283,37 @@ an AI Models page that could say what was on disk but not what was *running*.
   environment failure look like a transient race. "Unloaded" survives as the
   answer for what it actually describes: a record that never errored and was
   taken away — evicted by another model, or unloaded from the AI Models page.
+- **AI-9d** **The request envelope of a job-backed AI call is closed** (D413):
+  an option `/api/ai/image` or `/api/ai/transcribe` does not have is a 400
+  naming it, not a value silently dropped. `runners/engine_options.py`
+  already refuses an option an ENGINE cannot honour rather than ignoring it
+  — an unknown key is the same violation one layer up, and the most
+  undetectable case of it: nothing in a text-to-image reply distinguishes
+  "ignored your base image" from "there was no base image to begin with",
+  which is how `fused.ai.image({prompt, image, strength})` came to render a
+  plain text-to-image picture with no sign the edit request was dropped.
+  Checked in both the bridge (`runtime.js`'s `rejectUnknownOptions`, before
+  the POST) and the server (`ai_runtime._reject_unknown`, before any other
+  validation) — the bridge is not the only caller, since the skill documents
+  `curl` against these routes directly, and a page can `fetch` them itself.
+  Both report EVERY unknown key in one message, not just the first, and the
+  server's envelope check runs ahead of its field checks, so a request that
+  is wrong twice is told about the option it does not have rather than the
+  field it also got wrong. `base` is the one deliberate asymmetry: the
+  bridge injects it itself from the page's own `?path=`, so the SERVER's
+  accepted set for transcribe includes it while the bridge's own
+  caller-facing set does not — a caller passing `base` directly is passing
+  an option that does not exist from where it is standing, and letting the
+  two sets collapse into one would silently stop enforcing that. A drift
+  test extracts the bridge's whitelist arrays out of `runtime.js` and
+  compares them, sorted, against the server's constants, so the two
+  languages cannot restate the same fact and disagree unnoticed. The same
+  change reaches `POST /api/ai/runtime/unload`, for consistency rather than
+  a new rule: it never validated `capability`, so a typo reached
+  `supervisor.unload()` and answered `{"stopped": false}`, exactly what a
+  correct request against an idle machine also answers — the same illusion
+  as an ignored image option, fixed with the guard `cancel` already carried
+  four lines below it in the same file.
 - **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
   A runner is still a folder, but the half that is the SUPERVISOR'S contract —
   the auth header's name, the status file's shape, the state vocabulary it
@@ -6558,11 +6683,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   0.8-second region buys a full encoder window. faster-whisper never had the
   defect (its own `vad_filter` calls `collect_chunks`, which concatenates and
   remaps), and two engines sitting 2.8x apart on one flag is precisely what this
-  clause exists to prevent. **`parakeet_mlx` deliberately does not pack**: it is
-  a transducer with no fixed window (it chunks only above `chunk_duration =
-  60.0`), so its cost is proportional to the audio it is given and packing would
-  add a second timestamp mapping for no measured gain — same meaning of the
-  flag, different batching, which is the distinction the clause draws. A single
+  clause exists to prevent. **The withdrawn `parakeet_mlx` engine (D406)
+  deliberately did not pack**: it was a transducer with no fixed window (it
+  chunked only above `chunk_duration = 60.0`), so its cost was proportional to
+  the audio it was given and packing would have added a second timestamp
+  mapping for no measured gain — same meaning of the flag, different batching,
+  which is the distinction the clause draws. A single
   region longer than the budget passes through whole and is never split: cutting
   mid-speech loses words, and Whisper's own seeking chunks a long input better.
   What is still lost is conditioning ACROSS a CALL
@@ -6618,47 +6744,26 @@ an AI Models page that could say what was on disk but not what was *running*.
   rows are uneven, and here that is information: this engine has a caveat, that
   one does not. The field stays on `catalog.describe()` regardless; it answers
   a question about the catalog, not about where a page prints it.
-- **AI-10g** **A THIRD engine serves transcription — `parakeet_mlx`, Apple
-  Silicon only — registered UNDER MLX Whisper so the default does not move,
-  and refusing what it cannot do rather than pretending** (D319). Parakeet-TDT
-  beats Whisper large-v3 on English word error rate, decodes several times
-  quicker again on the same Metal, is CC-BY-4.0 and does not hallucinate over
-  silence. It is still **not** the default, and that is the requirement rather
-  than a caution: v3 handles 25 European languages against Whisper's ~99, so
-  promoting it would silently regress every page relying on language detection,
-  producing a confident transcript in the wrong language instead of an error.
-  The row sits directly below `mlx-whisper`, and a user opts in per capability
-  on the Engines tab — AI-10e's machinery serving the case it was built for,
-  with no new plumbing. **The waveform reaches the library by borrowing its
-  loader.** `parakeet_mlx.transcribe` takes a path and calls `load_audio`,
-  which spawns ffmpeg (AI-10's rule again, at its sharpest — without ffmpeg the
-  library raises rather than degrading), so the runner decodes with `av` and
-  swaps the module's `load_audio` binding for the duration of one call. That
-  keeps the library's chunking AND its overlap token merge, which reimplementing
-  around `get_logmel`/`generate` would have cost; it is the same reach into
-  another package's globals AI-10c already makes for `tqdm`, guarded and
-  restored the same way, and a MISSING binding raises rather than falling
-  through to ffmpeg. Progress is the library's `chunk_callback`, which fires
-  before each chunk — so the reported position is that chunk's start: behind
-  reality, never ahead of it. **Three options are REFUSED by name**:
-  `task: "translate"`, `language` and `initialPrompt`, none of which this model
-  has an answer for. That is a deliberate, visible crack in AI-10c's "a page
-  cannot tell which engine ran", and it is the right place to put one — a loud
-  refusal naming the engine and the way out beats a silent substitution the
-  page cannot see. **`vad` still means one thing** (AI-10f): `runners/vad.py`
-  moved out of `mlx_whisper/` on its second caller and is now shared by the two
-  MLX engines, with a `vad.py` inside any runner folder a failing test. The CT2
-  engine is unchanged and does NOT read it — faster-whisper carries its own
-  Silero and is asked for it through `vad_filter`, which is what AI-10f settled
-  and why the flag already meant one thing across those two. On this engine it
-  is a wall-clock saving rather than a correctness fix, which changes why it is
-  wanted and not what it does. **The format check is on the CONFIG**: a Parakeet snapshot
-  carries `model.safetensors` like every transformers repo, so what identifies
-  it is a `nemo.collections.asr.models.…` class in `config.json` — and a match
-  claims the snapshot alone, or the text runners would offer to load a speech
-  model as a chat model. **Nothing here has transcribed real audio under test**;
-  AI-10b and AI-10d's caveat applies unchanged, against the `parakeet-mlx` 0.5.2
-  API.
+- **AI-10g** **REMOVED (D406) — engine withdrawn, maintenance cost not
+  justified by use.** This clause originally added a THIRD transcription
+  engine, `parakeet_mlx` (Parakeet-TDT, Apple Silicon only, registered under
+  MLX Whisper so the default would not move) and documented its refusal of
+  `task: "translate"`, `language` and `initialPrompt`. All of that is gone: the
+  runner folder, its registry row, its catalog shortlist, and its three
+  refusal entries in `engine_options.UNSUPPORTED` (now empty — see AI-10's
+  engine-options module, which stays for the next engine that needs it).
+  Speech to text is back to the two engines AI-10e describes, MLX Whisper then
+  CTranslate2. **What survives, deliberately:** the format check. A Parakeet /
+  NeMo ASR snapshot (`model.safetensors` beside a `nemo.collections.asr.models.…`
+  `config.json` target) is still recognised by `formats.is_parakeet_checkpoint`,
+  and the branch that recognises it still returns early — it now claims NO
+  runner rather than `parakeet-mlx`, so a cached NeMo ASR repo reads as "a
+  speech model nothing here can load" rather than falling through to the text
+  branch and being offered as a chat model, which is the exact regression this
+  branch has existed to prevent since D319. `runners/vad.py` also stays at the
+  runners root rather than moving back into `mlx_whisper/`: the shared location
+  cost nothing with one caller and saves a second move if a second ASR engine
+  is ever added again.
 - **AI-10h** **`words: true` times each WORD inside a segment — on MLX Whisper
   only, and DECLINED rather than refused where an engine has none** (D392). A
   segment is a sentence or several, so `{start, end, text}` cannot drive a
@@ -6677,9 +6782,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   declining leaves the key off, so `segment.words || []` is the whole contract
   and one page runs unchanged on every machine. Refusing would do the opposite of
   what AI-10c is for, making a page work on a Mac and 400 on a CTranslate2 box.
-  The other two engines could carry it — faster-whisper for a mapping, since it
-  returns the same DTW-aligned words; Parakeet for more, its native times being
-  per SUBWORD on an 80ms grid. **`task:
+  The other engine could carry it too — faster-whisper for a mapping, since it
+  returns the same DTW-aligned words. **`task:
   "translate"` carries no words on any engine**: word timings are positions in
   the audio and a translation's words were never spoken in it, so there is
   nothing to align them to, and the library's warn-and-return-anyway reaches a
@@ -6723,17 +6827,30 @@ an AI Models page that could say what was on disk but not what was *running*.
   advertised by the runner. Nothing else in the app learned that a capability
   can have two runners, which is the claim AI-2 made and this is the test of it.
   **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
-  the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
-  and no wheels at all, so declaring it would put cmake and a C++ toolchain —
-  MSVC, on Windows — between a user and the Download button, with its prebuilt
-  wheels on a private index that is a second thing to trust. torch is the
-  runtime this app already builds on users' machines for the image runner, so
-  its install path and its failure modes are known rather than guessed at.
-  `onnxruntime-genai` is the credible alternative (tiny, fast int4 on CPU,
-  DirectML reaching every Windows GPU) and was deferred rather than dismissed:
-  it only loads pre-converted ONNX repos, so the Hub models the page already
-  offers a Load button for would refuse — and as a SECOND text runner it would
-  break the rule that a model id never picks the runner.
+  the obvious pick and was refused by AI-2a at the time: `llama-cpp-python`
+  publishes an sdist and no wheels at all on PyPI, so declaring it would put
+  cmake and a C++ toolchain — MSVC, on Windows — between a user and the
+  Download button, with its prebuilt wheels on a private index that is a
+  second thing to trust. torch is the runtime this app already builds on
+  users' machines for the image runner, so its install path and its failure
+  modes are known rather than guessed at. `onnxruntime-genai` is the credible
+  alternative (tiny, fast int4 on CPU, DirectML reaching every Windows GPU)
+  and was deferred rather than dismissed: it only loads pre-converted ONNX
+  repos, so the Hub models the page already offers a Load button for would
+  refuse — and as a SECOND text runner it would break the rule that a model
+  id never picks the runner. **Revised (D411): llama.cpp shipped anyway, as a
+  FOURTH, opt-in runner, once the packaging objection was checked rather than
+  taken as settled** — see AI-11f and AI-2a's amendment. torch's position as
+  the cross-platform default is unaffected: this did not change which backend
+  `auto` reaches for on any platform, only what a user can additionally choose.
+  **Superseded in part (D416): the `transformers_text` runner and its two
+  hardware variants are REMOVED, and `llamacpp-text` is now what Windows and
+  Linux resolve to.** The CLAIM of this item stands — text generation still runs
+  on every supported desktop platform, MLX on Apple Silicon and one
+  cross-platform row below it, and nothing in the app knows a capability can have
+  two runners — but the backend named above is no longer the one serving it, and
+  the packaging argument that chose torch over llama.cpp was overturned by a
+  measurement rather than by a new packaging fact. See AI-11h.
 - **AI-11a** **The CATALOG is keyed by runner, and the page says which one it
   resolved.** This is the part a second runner really did change. A suggestion
   is only meaningful for the backend that will load it: `mlx-community/…` is
@@ -6759,7 +6876,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   only became a distinction when a capability grew a second runner: three places
   independently took "the first runner registered for this capability" — the
   registry, `_runner_or_raise` and `start_image` — so a Linux machine whose
-  transformers worker was missing was told text generation "needs Apple
+  cross-platform text worker was missing was told text generation "needs Apple
   Silicon", naming the one backend that was never going to serve it. The three
   copies are now one, which is the actual fix; joining rather than picking is
   the answer because there is no rule for choosing between two reasons that is
@@ -6782,7 +6899,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   the runner the row resolved is among the ones that would accept its snapshot
   (`CachedModel.loaders`, straight from `ai/runners/formats.py`). That drops
   `openai/whisper-large-v3`, a speech model neither shipping speech runner reads, and
-  an MLX conversion on a Mac switched to Transformers; injecting on capability alone
+  an MLX conversion on a Mac switched to llama.cpp; injecting on capability alone
   put both into pickers whose load then refused them by name. **Dropped, not flagged
   `available: false`**: `models[]` has no availability field and every consumer reads
   it as "things I may offer", so a flag would leave existing pages offering the repo
@@ -6811,7 +6928,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   the bug being fixed.
 - **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
   path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
-  true and three of the four curated models are Qwen3, so an ordinary question
+  true and half the curated models are Qwen (Qwen3.5 since the 2026-08-21
+  refresh), so an ordinary question
   emits a `<think>` block first — hundreds of tokens the caller cannot tell
   apart from the answer, since `/generate` streams whatever the model produces.
   At a few tokens a second on the CPU this runner exists to serve, that is
@@ -6819,14 +6937,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   flag is passed to every model rather than to a list of known ones: kwargs land
   in the Jinja render context, so a template that never mentions it does not
   read it, and a tokenizer whose signature rejects it outright retries without —
-  a model that will not take the hint should still answer, just verbosely. The
-  same class of trap as the version floor beside it: `transformers>=4.51` is
-  what knows a `qwen3` exists, and an older resolution installs perfectly and
-  then fails every Qwen3 Download with `KeyError: 'qwen3'`, which reads as a
-  broken model rather than an environment one version too old.
+  a model that will not take the hint should still answer, just verbosely.
+  (Written for the transformers runner and inherited unchanged by
+  `runners/llama_text.py`, which renders the GGUF's own embedded template by hand
+  and passes `enable_thinking=False` into the render context — Jinja ignores an
+  unreferenced variable, so no retry is needed there at all. D416 removed the
+  other runner; the default did not move.) The same class of trap as the version
+  floor that used to sit beside it: `transformers>=5.15` is a release that knows
+  a `qwen3_5` exists, and a 4.x resolution installed perfectly and then failed
+  every Qwen3.5 Download with `KeyError: 'qwen3_5'`, which read as a broken model
+  rather than an environment a major version too old. The GGUF path has no such
+  floor to get wrong — a `.gguf` carries its own architecture and its own
+  template — which is one fewer way for a curated model to be unloadable.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
-  knowable from outside the process: **the default torch rows pin the `whl/cpu`
+  knowable from outside the process: **the default rows pin an unaccelerated
   build on every platform** (AI-2b, D381), so the ordinary outcome on ANY machine
   with a graphics card in it — not the Windows machine it used to be, back when
   the PyPI wheel's `nvidia-*` dependencies were the only thing marked
@@ -6834,9 +6959,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   words a second, with a green LOADED card and a healthy memory figure and
   nothing on screen to explain the speed. The one exception is what makes the
   device worth reporting rather than assuming: that same CPU pin resolves darwin
-  to the ordinary macOS wheel, so the CPU row lands on `mps` on Apple Silicon and
-  the row's `note` says so (D382) — a picker printing a CPU speed claim beside a
-  card reporting `mps` is one page contradicting itself. `worker_base.STATE` therefore carries a `device` that each runner sets
+  to the ordinary macOS wheel, so `diffusers-image` lands on `mps` on Apple
+  Silicon and the row's `note` says so (D382) — a picker printing a CPU speed
+  claim beside a card reporting `mps` is one page contradicting itself. The
+  llama.cpp CPU row does the same thing through a different mechanism: the
+  maintainer's `whl/cpu` wheel links `libggml-metal.dylib`, so it reports device
+  `gpu` there, and D416 made that row the DEFAULT on two more platforms, which
+  raises how much this reporting matters rather than lowering it.
+  `worker_base.STATE` therefore carries a `device` that each runner sets
   in its own `load()` — the same argument AI-8 makes about resident bytes: only
   the process holding the weights knows. It surfaces twice, and the two are
   different KINDS of statement: the loaded card shows a measurement (**on CPU**,
@@ -6844,6 +6974,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   fact about the backend above the cards, before any download, since that is
   when it can still change a decision. All three runners report it — the image
   runner has had the same Windows CPU-only problem since D257 and never said so.
+  (Written when three runners reported it; the text half is now llama.cpp's
+  `"cpu"`/`"gpu"`/`"gpu (partial)"`, which is the same statement with a backoff
+  outcome folded in — see AI-11f.)
   **Windows CUDA IS offered as of D381, and the objection that used to block it
   is void.** That objection — pulling torch from `download.pytorch.org` through a
   `[[tool.uv.index]]` would cost EVERY Windows user a ~3GB CUDA runtime to serve
@@ -6863,16 +6996,220 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-11c** **No text has ever been generated by this runner, and AI-10b's
   disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
   catalog, the resolution across four platforms and the API are exercised
-  against fakes, and the runner's OWN logic is tested a level down —
-  `runners/torch_text.py` is stdlib-only at import time, so its format
-  refusals, its dtype-keyword choice, its device placement and its two
-  prompt-encoding paths are all driven on CI with stubs. What no test touches is
-  torch itself: the actual generation, the streaming, the real speed on a CPU,
-  and whether the four suggested repos load as expected. Their `size_gb` values
+  against fakes, and the runner's OWN logic is tested a level down — a text
+  runner module is stdlib-only at import time, so its format refusals, its
+  device placement and its prompt-encoding paths are all driven on CI with
+  stubs. (Written of `runners/torch_text.py`; D416 removed that module and
+  `runners/llama_text.py` inherits the disclaimer verbatim, which is why
+  `tests/test_ai_llamacpp_worker.py` loads the worker by path with a faked
+  `llama_cpp`.) What no test touches is the inference library itself: the actual
+  generation, the streaming, the real speed on a CPU, and whether the suggested
+  repos load as expected. Their `size_gb` values
   are full-snapshot download estimates from the Hub's per-file byte metadata,
   not claims about measured filesystem usage (D295). A first real load is the
   outstanding verification.
-
+- **AI-11f** **`llamacpp-text` is a FOURTH text runner, GGUF via
+  `llama-cpp-python`, registered BELOW all three `transformers-text` rows so
+  `auto` never reaches it on any platform** (D411). **AMENDED (D416): those three
+  rows are gone and this one is now SECOND, so it IS what `auto` reaches on
+  Windows and Linux. Everything below about the wheel index still holds; what
+  changed is that its risk is now carried by the default rather than by an opt-in
+  — see AI-11h for why that trade was taken.** AI-11's original refusal
+  rested on one fact — PyPI publishes an sdist for `llama-cpp-python` and no
+  wheels — and that fact held while a second one went unchecked: the
+  maintainer's own index publishes complete, current `py3-none` wheels, a
+  prebuilt shared library behind ctypes with no compiler anywhere in the
+  install path. AI-2a's amendment records the wheels-only rule surviving
+  that: a non-PyPI index is admissible, `explicit = true` and confined to the
+  one distribution it exists for, same as the torch mirrors already are.
+  **What does NOT survive checking is the assumption that a wheel existing
+  means it is INTACT**, and that is the reason this runner is opt-in and
+  fourth rather than a fallback anywhere in the order: a sweep of this
+  specific index's macOS arm64 wheels across sixteen releases of
+  `llama-cpp-python` found roughly a coin flip's worth intact (4 of 16), every
+  failure with a sha256 matching its own published digest, root-caused to
+  upstream issue #1650 (the release job's own artifact-merge step, corrupting
+  wheels that built cleanly). The pin (`0.3.29`) is the newest release where
+  every platform tag this runner ships — macOS arm64 and both `manylinux_2_17`
+  tags and `win_amd64` — passes a `zipfile.testzip()` audit, not the newest
+  release that resolves; `llamacpp_text/pyproject.toml` carries the full
+  table and the rule that a version bump must repeat it. **The model-id
+  problem is `torch_image._GGUF_RECIPES`'s shape, reused rather than
+  reinvented**: a GGUF repo commonly publishes two dozen quantizations of one
+  model, so a model here is a `(repo, filename)` pair under a curated,
+  opaque id — the file's own name, never parsed — instead of a `repo:Q4_K_M`
+  grammar that would touch every page, preference and cache tag treating a
+  model id as a Hub repo id verbatim. Accepted and stated rather than fixed:
+  Hub search on the Discover tab cannot populate this engine, since a typed
+  repo id supplies no filename and only the curated ids load — UNLESS the
+  repo is already cached under one of them, in which case the worker's own
+  `_resolve_model_id` reads the ONE recipe whose file `worker_base._cached_file`
+  finds on disk and loads that: the AI Models page's cache scan is keyed by
+  REPO id, never by this table's filename keys, so without that fallback the
+  exact model a user just downloaded through this engine became unloadable
+  again under the id its own Load button offered it by. A repo curating more
+  than one quantization with NEITHER cached is refused by name rather than
+  guessed at, naming the ids to pick from instead. **No external tokenizer
+  download**: GGUF is single-file by design, so the vocabulary and the
+  model's own chat template live inside the one `.gguf`'s key-value metadata
+  (`llama_cpp.Llama.metadata`), which this runner renders by hand with
+  jinja2 and hands to `create_completion(stream=True)` — never
+  `create_chat_completion`, so the NDJSON contract stays identical to
+  `torch_text.generate`'s. `enable_thinking=False` rides into the render
+  context unconditionally, the same default AI-11d chose for the family of
+  models this shares (Qwen3.5), because Jinja silently ignores a context
+  variable a template never reads. **The chat template reads
+  `Llama._model.token_get_text`/`add_bos_token`, not the public `Llama`
+  surface** — `Llama` itself has no `token_get_text` at all, verified
+  against the installed 0.3.29, and `add_bos_token` decides whether
+  `create_completion` will prepend BOS itself; the rendered `bos_token` is
+  therefore left EMPTY whenever it will, so a template that also spells it
+  out cannot double it. `formats.py` gains a DECISIVE branch, but presence
+  of the extension is not enough on its own: a root-level `.gguf` is only
+  decisive when its OWN `general.architecture` metadata names a recognised
+  causal-text architecture (`formats.GGUF_TEXT_ARCHITECTURES`, read off
+  llama.cpp's own `LLM_ARCH_NAMES` at the vendored commit) — GGUF is a
+  container shared with image models (`city96/FLUX.1-dev-gguf`, architecture
+  `"flux"`) and speech ones, and the check is genuinely exclusive, evaluated
+  before the diffusers/mflux branches rather than after, so a snapshot that
+  happened to carry both a `model_index.json` and a root `.gguf` cannot read
+  as this engine's. `torch_text._weights_here`'s refusal — which used to end
+  at "a repo of GGUF files is llama.cpp's format" with nowhere to go — now
+  names this engine as the answer. (That refusal went with `torch_text.py` at
+  D416; the pointer it added is now unnecessary, since llama.cpp is the engine a
+  non-Apple machine already has.) **A fifth text runner,
+  `llamacpp-text-vulkan`, is this engine's GPU-accelerated variant on NVIDIA and
+  AMD** (D411's addendum), registered immediately below `llamacpp-text` and, since
+  D416, LAST — so it is the one text row `auto` still never reaches, sharing
+  `runners/llama_text.py` and
+  `catalog.SUGGESTIONS["llamacpp-text"]` unchanged — a GGUF is one format and
+  one curated list whichever wheel loads it. It exists because the CPU
+  index's acceleration story is Apple-only (Metal, via that wheel's own
+  linked `libggml-metal.dylib`) and the maintainer publishes a separate
+  `vulkan` index with no ROCm/HIP index alongside it, making Vulkan the one
+  path that reaches both vendors. That index publishes wheels for exactly
+  two platform tags at the shared `0.3.29` pin —
+  `manylinux2014_x86_64.manylinux_2_17_x86_64` and `win_amd64`, audited by
+  D411's own method and passing — so `registry._vulkan` refuses every other
+  architecture outright. Where it differs from `_cuda`/`_rocm` is WHY a
+  missing device still needs a hard gate at all: a Vulkan wheel links its
+  GPU backend directly (`DT_NEEDED libvulkan.so.1` in `libggml-vulkan.so`,
+  `libggml.so`/`libllama.so` needing that in turn; the identical import on
+  `vulkan-1.dll` on Windows), so a machine with the wheel installed but no
+  Vulkan loader on its library path fails `import llama_cpp` itself rather
+  than degrading — refused before `uv sync` ever runs, the same way a
+  missing NVIDIA/AMD device already is. A loader present with no driver ICD
+  registered is not a load failure (the wheel also bundles ggml's ordinary
+  CPU backend, which answers instead), so that half is refused only for
+  buying nothing over the cheaper CPU-index wheel, not for being broken.
+  **Correction to the paragraph above (2026-08-21): "the CPU index's
+  acceleration story is Apple-only" was true of the WHEEL and false of the
+  RUNNER — `load()` never passed `n_gpu_layers`, which `llama-cpp-python`
+  defaults to `0`, so the Metal-linked macOS wheel was also CPU-only in
+  practice until this was fixed.** `load()` now asks
+  `llama_cpp.llama_supports_gpu_offload()` — a real llama.cpp API that
+  queries ggml's backend registry for an actual `GPU`/`IGPU` device, true on
+  Metal and a working Vulkan install alike, false otherwise — and, when true,
+  tries a shrinking sequence of `n_gpu_layers` (sized against the model's own
+  layer count, read off its GGUF header) rather than either hardcoding `0` or
+  guessing a fixed number that could overcommit a small laptop GPU's VRAM;
+  neither the binding nor llama.cpp itself can check available VRAM before
+  allocating, so sizing is done by catching a failed allocation and retrying
+  smaller, down to `0` (CPU) as the guaranteed floor, rather than letting an
+  oversized request fail the Load outright. `worker_base.STATE["device"]`
+  reports `"cpu"`, `"gpu"`, or `"gpu (partial)"` accordingly — a measurement
+  of which attempt succeeded, not a name for which backend served it, since
+  the bound API cannot distinguish Vulkan from Metal.
+- **AI-11g** **Any Hub repo with a loadable root-level GGUF resolves, not
+  only the 5 curated filenames in `formats.GGUF_RECIPES`** (D412).
+  `formats.pick_gguf_file()` ranks an arbitrary repo's own file listing —
+  excluding subdirectories, multi-part shards, and auxiliary weights
+  (`mmproj`/`mtp`/`draft`/`projector`, widened past one observed file to a
+  scan of ~200 real repos before being trusted), then ranking by
+  quantization suffix starting at `Q4_K_M` rather than the true smallest
+  quant a repo might publish — deliberately, since `_offload_schedule`'s
+  backoff can turn a too-large pick into a slower load but nothing can turn
+  an already-downloaded, needlessly degraded quant into a better one.
+  unsloth's `UD-` dynamic quants are eligible but rank below every plain
+  quant of a named bit-width family; a lone unranked file still resolves
+  (no ambiguity to refuse), and more than one does not (refused by name,
+  never guessed at — a `mmproj` is also small and is not a chat model).
+  Deterministic and hardware-blind on purpose: `catalog.py`'s `size_gb` and
+  `ai_runtime.py`'s downloaded/curated join both require a model id to mean
+  the same bytes everywhere, and there is no VRAM query available through
+  the wheel to budget against regardless (confirmed by reading the
+  installed bindings). `llama_text._resolve_model_id` falls back to this
+  for any repo `GGUF_RECIPES` has never heard of, checking the local hf
+  cache before ever asking the Hub. `hub_models.py`'s search runs the SAME
+  picker over a result's `siblings` (`expand[]=siblings`, confirmed live to
+  return a repo's complete file list in the search LIST response with no
+  per-repo follow-up call) and drops a row it cannot resolve — the one
+  runner-specific branch in that module, gated on a new optional
+  `Runner.hub_filter_tags` field (`("gguf",)` on both llama.cpp rows, empty
+  elsewhere) so the module's "adding a runner needs no edit here" property
+  survives. Reading which tag applies asks the machine's ACTIVE runner
+  (`registry.for_capability`), a deliberate, documented exception to
+  `hub_models.py`'s "search does not depend on the host" rule — justified
+  the same way `_UNRUNNABLE_LIBRARIES` already is for FORMAT rather than
+  hardware availability, and kept narrow: two machines differ only after a
+  VISIBLE Preferences choice, never for a reason neither could see.
+- **AI-11h** **The `transformers-text` family is WITHDRAWN — all three rows, all
+  three folders, `runners/torch_text.py`, and its catalog shortlist — leaving text
+  generation served by `mlx-text` on Apple Silicon and `llamacpp-text` everywhere
+  else, with `llamacpp-text-vulkan` the one opt-in row below them** (D416).
+  Removed on a like-for-like measurement rather than on a judgement about the
+  library: same model (Qwen3.5-4B), same prompt, same 128-token cap, back to
+  back on one Linux x86_64 machine (Ryzen 5 9600X, Radeon RX 9060 XT), llama.cpp
+  reading a Q5_K_M GGUF beat transformers reading bf16 on **every axis at once** —
+  53.4 against 12.6 tok/s on the GPU and 6.4 against 2.7 on the CPU, at 2.93GB
+  against 8.7GB downloaded and ~3.1GB against ~9.2GB peak RSS, with load and
+  first-token latency several times shorter. All four runs produced correct fluent
+  prose, and `transformers-text-rocm`'s availability gate was verified honest on
+  RDNA4 first (torch 2.13.0+rocm7.1 reports `cuda_avail True` on gfx1200 and
+  really did generate on the GPU), so the losing engine got a fair fight. Product
+  rule from the owner: an engine that does not earn its place is removed, and
+  models here are curated suggestions — reach into arbitrary Hub repos is
+  explicitly not a reason to keep a backend.
+  **Two consequences that are costs, accepted rather than argued away.**
+  First, AI-11f's packaging objection now applies to a DEFAULT: llama.cpp wheels
+  come from the maintainer's GitHub Pages index rather than PyPI, where 4 of 16
+  audited macOS arm64 releases fail `testzip()`. What makes it affordable is that
+  the failure is loud and at install time (`uv sync` reports it verbatim through
+  PY-18), the pinned `0.3.29` Linux and Windows wheels were verified intact and
+  working, and macOS arm64 — where the audit's failures were — still resolves to
+  `mlx-text` ahead of this row. Second, `llamacpp-text-vulkan` is now the only
+  GPU text path on Linux/AMD, and its `_offload_schedule` over-commit backoff is
+  known NOT to engage there: radv satisfies an over-commit by evicting other
+  clients rather than erroring, which took a desktop session down during testing
+  (reported separately, PR #706). That is why D416 moved the default onto
+  `llamacpp-text` and deliberately not onto the Vulkan row.
+  **A plain safetensors text checkpoint is now loadable on Apple Silicon only**,
+  which is the one user-visible loss: `formats.loaders()` maps a directory of
+  safetensors to `mlx-text` alone, so a Linux user with a bf16 Qwen already on
+  disk gets a card naming that engine and the registry's own sentence about why
+  this machine is not it. The GGUF of the same model is what `catalog()` offers
+  them instead, at roughly a quarter of the download.
+  **A stored preference naming a removed code degrades to the ordering** rather
+  than erroring or blanking the picker: `registry.resolve()`'s existing
+  unknown-code branch answers it (the branch written for a prefs.json from a
+  NEWER build), `selected` is still reported as stored because a preference
+  silently corrected on read cannot be seen or undone, and the Engines tab renders
+  that stored code as one extra disabled option so the `<select>` is not empty —
+  a `<select>` whose value matches no option renders blank, not as its first row.
+  **`formats.UNLOADABLE_QUANT` survives as a frozenset of method names** where it
+  was a dict of refusal sentences: only `torch_text` printed the sentences, and
+  the keys are still read by `loaders()` to keep an AWQ/GPTQ/bitsandbytes/
+  compressed-tensors repo away from `mlx-text` too. Its bitsandbytes comment asked
+  for an x86 re-measurement before anyone reversed that refusal; this item IS that
+  re-measurement, and it settles the question by making it moot — the quantized
+  path this app offers is GGUF, which needs no extra package.
+  `formats.is_mlx_checkpoint` is DELETED, unlike those constants: its only caller
+  was the fork in `loaders()`' safetensors branch, both arms of which now answer
+  `mlx-text`, and nothing downstream depends on telling the two apart.
+  **No platform this app ships to is stranded**, which is pinned by
+  `test_every_shipped_platform_keeps_a_local_text_engine` over an enumerated
+  platform table rather than left to be inferred — the coverage on Windows and
+  Linux is now one runner deep, so a future removal has to argue with a test.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
@@ -6970,6 +7307,52 @@ an AI Models page that could say what was on disk but not what was *running*.
   one. The rate lives in the page's own state (not the prefs store, not the
   server): it is a what-if a reader is doing on numbers in front of them, and
   persisting it would make a guess look like a setting the app stands behind.
+- **AI-13** **A resident local model's tenancy is TIME-BOUNDED: a model
+  nothing has used for ten minutes (default) unloads itself, and the next
+  `fused.ai(...)` reloads it exactly as a cold first call already does.**
+  Before this, the one way a model's gigabytes came back was the user closing
+  the app or picking a different one — a page opened once at 9am and never
+  used again holds its weights until quit. `fused_render/ai/supervisor.py`
+  stamps `last_activity` and an `in_flight` counter on every `Worker`
+  (`_in_use`, wrapped around all three generation paths — `generate_text`,
+  `generate_image`, `generate_transcript` — and `_touch` re-stamping on every
+  yielded chunk of a stream), and a reaper thread ticks a pure `reap_idle(now)`
+  predicate against the table roughly every 30s, unloading through the
+  ordinary `unload()` (now taking a `reason`, so the job row reads "Unloaded
+  after 10 min idle" rather than looking like a crash). **Only
+  `state == "ready"` is eligible** — a `starting`/`venv`/`downloading`/
+  `loading` worker (a 40-minute `uv sync`, an 8GB pull) is not holding a
+  finished model, and killing it mid-build is hostile, not a memory win; a
+  weights-only fetch (`_fetch_workers`) is a separate table this never touches
+  for the same reason `evict_stale_engines` leaves it alone. **`in_flight`
+  exempts a worker past its own idle window, but only up to a separate LEAK
+  CEILING — one predicate cannot cover both, because the three generation
+  paths are not symmetric.** `generate_text` streams and re-stamps
+  `last_activity` on every chunk, so a genuinely live call is never stale; but
+  `generate_image` and `generate_transcript` are single BLOCKING
+  `_worker_request` calls that go quiet for their whole duration — `_in_use`
+  stamps once on entry and nothing ticks again until the reply arrives, which
+  can be `GENERATE_TIMEOUT_S` (900s) or `TRANSCRIBE_TIMEOUT_S` (4h) later. A
+  predicate that judged `in_flight` purely by `last_activity`'s age against the
+  idle window would reap a 90-minute transcription at the ten-minute mark,
+  mid-decode — `_terminate` killing the very process the request is still
+  waiting on. So `_leak_ceiling(capability, window)` derives a second, longer
+  bound from the request timeout that actually governs the call (plus a
+  margin, and never less than the idle window itself), and a busy worker is
+  spared until THAT bound: past it, the request itself would already have
+  raised, so a still-positive `in_flight` can only be a leaked stream (a page
+  that abandoned a `generate_text` iterator without closing it) rather than a
+  legitimately slow answer. The window is a preference, `ai_idle_unload_minutes`
+  (`shell/prefs.py`, default 10, `0` = never, `FUSED_RENDER_AI_IDLE_MINUTES`
+  overrides it the same way `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides call
+  retention), re-read fresh on every reaper tick and every `describe()` call —
+  never cached — so an edit or an env change applies on the very next tick. The
+  AI Models page's Engines tab gets a control for it, and each resident card's
+  memory line grows an "unloads in N min" countdown from `describe()`'s new
+  `idleSeconds`/`unloadsInSeconds` fields; **no page change is required for
+  correctness**, since an auto-unloaded model's next call raises
+  `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
+  existing `model_loading` handling already covers it.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
@@ -7896,3 +8279,149 @@ manifest is the entire contract between them.
   (unclickable), and could-not-tell (re-probes). A control that offered a
   direction before the answer was in would be asserting the opposite of what
   might be true.
+
+## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
+
+`fused.capture` lets a page record the screen, record the microphone, and grab
+a single still — and the result is a FILE on this machine, at a path known before
+the first frame, rather than a blob a page has to round-trip through JS. All
+three platforms, one API, no field naming which one served you.
+
+- **CP-0** The surface is deliberately small, because a bridge method is a
+  forever contract. Cut in review before shipping: `onTick` (a recording
+  publishes a job row and `fused.watchJob(jobId)` is the documented way to read
+  one — a private second spelling of it buys nothing), `format` on the still
+  (above), and a `get(id)` with no caller. `list()`/`attach(id)` stayed: after a
+  reload they are the only way back to a live recording's `stop()`, and ✕
+  discards, so without them a reload can only destroy what it finds.
+- **CP-1** Three verbs behind one namespace: `capture.screen(opts)` and
+  `capture.audio(opts)` resolve WHEN THE RECORDING IS RUNNING with a handle
+  (`{id, path, url, mode, jobId, state, stop(), cancel()}`), and
+  `capture.screenshot(opts)` resolves with the file. `sources()` reports what
+  the machine can do, `list()` the live recordings, `attach(id)` the handle for
+  one of them. Named `capture` and not `record` because a still is an instant,
+  not a session — and because all three share one TCC grant, one display list
+  and one output-path rule, so a root-level `fused.screenshot()` would be a
+  second door onto one permission model.
+- **CP-2** **The path is decided before the first frame exists** and is on the
+  start reply — the same contract `/api/ai/transcribe` has, and the reason this
+  is worth having at all: `fused.ai.transcribe({path: rec.path})` is the next
+  line, with no bytes through JS. A recording therefore also outlives its page.
+- **CP-3** A recording is a server-owned job row (`sys:capture:<id>`,
+  SPEC §36): visible in the download manager after the page that started it is
+  navigated away from, `unit: "s"`, `total` = `maxSeconds`. Its ✕ **discards**,
+  like every other row, and the row's `detail` says so in words.
+- **CP-4** **Three endings, and only one of them destroys the file.**
+  `stop()` keeps it; `cancel()` and the manager's ✕ delete it; hitting
+  `maxSeconds` (default 30 min, hard ceiling 4 h) is a STOP. The cap has to
+  keep, because a page can be closed mid-recording and then the ✕ is the only
+  control left — a cap that discarded would leave no ending that kept the file.
+  A recording the backend has already LOST is a fourth ending the watchdog
+  reports the moment it sees it, rather than ticking "Recording" to the cap over
+  a file nothing is writing. **The cap is enforced before either of those two
+  probes**, and before anything else that can fail: it is the promise that a
+  microphone nobody stops still turns off, so a probe raising on every tick
+  must not be able to sit in front of it.
+  **Finalising on the way out is wired into the paths that really run**: the
+  `"capture"` rung of `app.quit_teardown` (the packaged app quits via `os._exit`
+  — DM-9 — so an `atexit` handler there is dead code) and the server's ASGI
+  shutdown for the plain `fused-render` process. Both exist because a
+  half-written .mov has no `moov` atom and does not play.
+- **CP-5** Output lands in `<home>/recordings` (beside `<home>/ai/transcripts`),
+  or at a caller `path` — relative to the CALLING PAGE, the rule
+  `readFile`/`rawUrl`/`transcribe` follow (RH-1). **The container is the
+  BACKEND's to name** (`ext(mode, spec)`), because one of the three does not
+  encode: macOS writes `.mov` (h264 + aac) and `.m4a` (aac); the streamed
+  platforms write what `MediaRecorder` produced, fragmented `.mp4`/`.m4a` where
+  the browser supports avc1 and `.webm` (VP9 + Opus) otherwise, named by the
+  `container` the page states in its start body. A caller `path` whose extension
+  contradicts that is refused rather than filled with something else. Still →
+  png or jpeg **as the output filename says** —
+  there is no `format` option, because a `path` and a `format` can disagree and
+  "shot.jpg" holding PNG bytes is a file every other tool misreads. Recordings
+  are captured at the display's real pixel scale, so a Retina recording is not
+  half-size.
+- **CP-6** `audio` on a screen recording is `false`, `"mic"`, `"system"` or
+  `"both"` — named, and refused rather than coerced, the posture AI-10 takes on
+  `task`. **System audio is what a browser cannot do on macOS at all**, and that
+  is what justifies the native path there — and, read the other way, why the
+  other two platforms do not need one (CP-10): Chromium shares system audio on
+  Windows and through the PipeWire portal on Linux. Audio-only on macOS records
+  the system's current input and **refuses** `device` rather than ignoring it,
+  naming where a specific microphone can be chosen (a screen recording's
+  `audio: "mic"`) — see D409 for why the API that could do both deadlocked. On
+  the streamed platforms both paths are `getUserMedia`, so `device` is honoured
+  on `audio()` too; that asymmetry is a refusal sentence on one platform, never
+  a flag a page reads.
+- **CP-7** **The probe never prompts.** `sources()` answers permission from
+  `CGPreflightScreenCaptureAccess` and `AVCaptureDevice.authorizationStatus`,
+  and lists displays from `CGGetActiveDisplayList` — never
+  `SCShareableContent`, which raises the TCC dialog. The dialog rides the first
+  real capture, where the user has just asked for one. Same rule the GPU probe
+  follows (SPEC §40): a page asking "can I?" must not change anything.
+- **CP-8** **The floor is macOS 15, not the app's floor.** `SCRecordingOutput`
+  is 15+ and `SCScreenshotManager` 14+, against `LSMinimumSystemVersion` 11.0,
+  so a 12–14 Mac gets `available: false, reason: "needs macOS 15"` and a start
+  rejects `"unavailable"` with the same sentence. Windows and Linux get the same
+  shape with their own reason (CP-10, CP-11). **That holds for a backend that will not IMPORT
+  too** — the macOS module loads its frameworks at module top and
+  `ScreenCaptureKit.framework` does not exist below macOS 12.3, so an
+  unimportable backend is `Unsupported` (a 409) rather than an ImportError (a
+  500). And `sources()` cannot raise AT ALL: a failure this module did not
+  predict is still `available: false`, carrying the exception as its reason,
+  because the promise is about the shape and a page reads it while drawing a
+  record button. **No `via` field anywhere**, and that survived gaining a
+  second implementation: the two wire fields that steer the streamed path
+  (`transport`, `streamToken`) are consumed by `runtime.js` and deleted before
+  the handle exists, as is the `client` flag on `sources()`. A page reads
+  `{available, reason}` and refusal sentences; it never learns which backend it
+  got, and `tests/test_capture.py` fails if any of the three leaks.
+  Local only — a hosted/exported page has no capture (docs/EXPORT.md).
+- **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
+  that touches the mic without it is killed, not prompted) and
+  `com.apple.security.device.audio-input` in the hardened-runtime entitlements
+  (without it the mic is refused whatever TCC says). Screen recording needs
+  neither — only the System Settings grant, which macOS 15+ re-confirms after
+  ~30 idle days. Windows and Linux need no packaging step at all: the still is
+  ordinary GDI/D-Bus, and the recording permission is the browser's to ask for.
+- **CP-10** **Windows and Linux split by CAPABILITY, not by platform: a native
+  still, and a recording the PAGE encodes into a file this server writes.**
+  A still is one `BitBlt` (Windows) or one `org.freedesktop.portal.Screenshot`
+  call (Linux) — instant, no picker, no permission — so it stays native and
+  keeps `display`, `rect` and `cursor` working where the OS supports them.
+  A recording with SYSTEM AUDIO in it has no OS API a non-packaged Python
+  process can reach on Windows: `AppRecordingManager` needs MSIX identity,
+  `Windows.Graphics.Capture` hands out D3D surfaces with no muxer,
+  Media Foundation has no screen source, and ffmpeg's Windows inputs are
+  dshow/gdigrab/vfwcap — **no WASAPI, so no loopback without a third-party
+  driver**. Chromium already does what a native recorder would (WGC plus WASAPI
+  loopback; the PipeWire portal on Linux; hardware-encoded), so the page runs
+  `MediaRecorder` and `capture/_sink.py` appends its chunks over a WebSocket.
+  Everything that makes this feature worth having is unchanged: the path is
+  decided at start (CP-2), it is a job row with the same three endings (CP-3,
+  CP-4), and `fused.ai.transcribe({path})` is still the next line. What is
+  genuinely different is stated rather than hidden — `display`/`rect`/`cursor`
+  are REFUSED on `screen()` because the browser's share picker owns the region,
+  `device` DOES work on `audio()` (it does not on macOS, CP-6), the container is
+  fragmented mp4 or WebM as `MediaRecorder.isTypeSupported` allows, and a full
+  page reload ends the recording. That last one is the only regression against
+  macOS, and it fails safely: both containers are playable AS WRITTEN, so the
+  socket closing keeps the file, marks the row done and says why — there is no
+  `moov` atom to lose and never a row claiming to record over a file nothing is
+  writing. Rejected: bundling ffmpeg (40–60 MB, and still no system audio),
+  and WGC through `MediaStreamSource` (per-frame Python and D3D copies for
+  hours). The socket is guarded by the per-recording token from its own start
+  reply plus an `Origin` check, because a browser cannot put `X-Fused` on a
+  handshake.
+- **CP-11** **What only the browser knows is answered by the browser.** On the
+  streamed platforms whether a recording is possible is a fact about the BROWSER
+  — has it `MediaRecorder`, will it share system audio — and a server route
+  cannot know which one is asking. So those probes answer `client: true` and
+  `runtime.js` replaces `video`, `audio`, `systemAudio` and `microphones` from
+  what its own window can do, then deletes the flag (CP-8). Firefox therefore
+  reports `video.available: false` with a reason naming Chrome or Edge, on the
+  same machine where Chrome reports true. Two limits are documented rather than
+  papered over: mic LABELS are empty until the permission has been granted once
+  (a browser rule), and on Wayland `displays` is always `[]` because no client
+  may enumerate them without prompting — `display` is refused there with a
+  sentence instead of offered as a list nothing accepts.

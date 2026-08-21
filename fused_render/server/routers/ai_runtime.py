@@ -43,7 +43,7 @@ from fused_render.ai import catalog, registry, supervisor
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
 # rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, partial, preview
+from fused_render.ai.runners import diarize, engine_options, formats, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
@@ -63,6 +63,44 @@ router = APIRouter()
 _MIN_SIDE, _MAX_SIDE, _SIDE_STEP = 256, 2048, 16
 _MAX_STEPS = 100
 _MAX_SEED = 2**31 - 1
+
+# The request envelope of a job-backed AI call is closed (D413): an option
+# neither of these routes has is refused with a 400 rather than silently
+# dropped. These are the CALLER-FACING sets — the same facts `runtime.js`
+# restates as its own whitelist arrays, and `test_the_bridges_accepted_*`
+# below is what stops the two from drifting apart.
+_IMAGE_OPTIONS = frozenset({
+    "prompt", "model", "width", "height", "steps", "guidance", "seed"})
+_TRANSCRIBE_OPTIONS = frozenset({
+    "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
+    "speakers", "words"})
+# `base` is bridge-injected — `aiTranscribe` adds it from the page's own
+# `?path=`, never from the caller's own options object — so the SERVER's
+# accepted set is wider than the caller-facing one on purpose. Collapsing
+# these two into one set would make a caller passing `base` itself stop
+# being an error.
+_TRANSCRIBE_SERVER_OPTIONS = _TRANSCRIBE_OPTIONS | {"base"}
+
+
+def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
+    """400 naming every key of `body` that is not in `allowed`, or None.
+
+    Called before any other validation in `api_ai_image`/`api_ai_transcribe`
+    so an envelope error beats a field error — a page that mistyped an
+    option AND passed a bad `steps` learns about the option it does not have
+    first, rather than about the unrelated field it also got wrong.
+
+    Reports every unknown key at once, not just the first: a page passing
+    both `image` and `strength` should learn about both in one round trip.
+    Sorted, so the message is stable and testable.
+    """
+    unknown = sorted(k for k in body if k not in allowed)
+    if not unknown:
+        return None
+    named = ", ".join(repr(k) for k in unknown)
+    verb = "is not an option" if len(unknown) == 1 else "are not options"
+    accepted = ", ".join(sorted(allowed))
+    return _error(f"{named} {verb} of {endpoint}; accepted: {accepted}", status=400)
 
 
 def _side(value, default: int) -> int:
@@ -300,8 +338,8 @@ def _catalog_with_downloads() -> list[dict]:
     formats (AI-11a), and a cached repo injected on its capability alone would break
     that invariant inside the very same array. `openai/whisper-large-v3` is a speech
     model that neither shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit`
-    is a text model that Transformers cannot open, so on a Mac switched to
-    Transformers it is an unusable download. So the test is the FORMAT's own answer —
+    is a text model that llama.cpp cannot open, so on a Mac switched to
+    llama.cpp it is an unusable download. So the test is the FORMAT's own answer —
     is the runner this row resolved among the ones that would accept this snapshot
     (`CachedModel.loaders`)? — and anything else is left out of `models[]` entirely.
 
@@ -311,8 +349,8 @@ def _catalog_with_downloads() -> list[dict]:
     failure being fixed rather than a fix. The repo is not hidden — the AI Models
     page's Local tab is the surface for "what is on my disk", it lists the repo, and
     it already prints WHICH engine reads it and what stands in the way ("text
-    generation is set to Transformers, which does not read this format — switch it on
-    the Engines tab"). A picker cannot say that; a card can.
+    generation is set to llama.cpp (CPU), which does not read this format — switch
+    it on the Engines tab"). A picker cannot say that; a card can.
 
     **Cached entries are APPENDED.** `entry.default`, `catalog.default_for()` and
     `catalog.for_capability()` keep answering over the curated list alone — read
@@ -331,10 +369,27 @@ def _catalog_with_downloads() -> list[dict]:
     downloaded and is not duplicated as a cached one. `loaded` is read live from the
     supervisor rather than from the memoised scan, because residency changes on a
     second's notice and the disk inventory does not.
+
+    **One runner's curated ids are FILENAMES, not repo ids, and this function is
+    where that stops being invisible.** `formats.GGUF_RECIPES` keys
+    `llamacpp-text`'s catalog entries by the GGUF's own filename — the module
+    docstring there explains why a repo id alone cannot address one of a
+    repo's several curated quantizations — so `entry["id"] in on_disk`
+    (a set of REPO ids) can never be true for one of those entries: a
+    downloaded `Qwen3.5-9B-Q4_K_M.gguf` showed "Download" forever, while the
+    same bytes appeared a SECOND time as a plain "cached" row keyed by
+    `unsloth/Qwen3.5-9B-GGUF`, whose Load button then failed (that repo id is
+    not itself a `GGUF_RECIPES` key). `_downloaded` below resolves a
+    filename-keyed entry through the recipe's `(repo, file)` pair and
+    `CachedModel.files` (the snapshot's own filenames) instead of `on_disk`
+    alone; `curated_repo_ids` then removes the SAME repo from the "cached"
+    tail below whenever any of ITS curated entries resolved as downloaded, so
+    the two halves cannot show the one download twice under two different ids.
     """
     rows = catalog.describe()
     cached = cached_models()
     on_disk = {model.repo_id for model in cached}
+    models_by_repo = {model.repo_id: model for model in cached}
     resident = supervisor.resident_models()
     by_capability: dict[str, list] = {}
     for model in cached:
@@ -344,13 +399,31 @@ def _catalog_with_downloads() -> list[dict]:
             # on the AI Models page, which is the surface for "what is on my disk".
             continue
         by_capability.setdefault(model.capability, []).append(model)
+
+    def _downloaded(entry_id: str) -> bool:
+        recipe = formats.GGUF_RECIPES.get(entry_id)
+        if recipe is None:
+            return entry_id in on_disk
+        model = models_by_repo.get(recipe["repo"])
+        return model is not None and recipe["file"] in model.files
+
     for row in rows:
         curated = [
-            dict(entry, source="curated", downloaded=entry["id"] in on_disk,
+            dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
                  loaded=entry["id"] in resident)
             for entry in row["models"]
         ]
         curated_ids = {entry["id"] for entry in curated}
+        # Repo ids already spoken for by a DOWNLOADED filename-keyed curated
+        # entry — see the docstring. Built from `curated` (post-`_downloaded`)
+        # rather than re-checking `formats.GGUF_RECIPES` here, so this stays
+        # correct for any future runner whose ids work the same way without
+        # this function needing to know which one.
+        curated_repo_ids = {
+            formats.GGUF_RECIPES[entry["id"]]["repo"]
+            for entry in curated
+            if entry["downloaded"] and entry["id"] in formats.GGUF_RECIPES
+        }
         extra = [
             {
                 "id": model.repo_id,
@@ -367,6 +440,7 @@ def _catalog_with_downloads() -> list[dict]:
             }
             for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)
             if model.repo_id not in curated_ids
+            and model.repo_id not in curated_repo_ids
             # The per-runner invariant, enforced: this row's list belongs to the
             # runner `describe()` resolved, and a repo whose format that runner does
             # not read has no business in it. See the docstring for both real repos
@@ -415,6 +489,15 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     capability = body.get("capability") if isinstance(body.get("capability"), str) else None
     if model is None and capability is None:
         return _error("name a 'model' or a 'capability' to unload", status=400)
+    # Matching `cancel`, 45 lines below: an unrecognised capability is a 400,
+    # not a no-op. Without this, a typo went straight to `supervisor.unload()`,
+    # which filters workers by equality and answers `bool(targets)` — so
+    # `{"stopped": false}` is exactly what a correct request against an idle
+    # machine also answers, and the caller cannot tell the two apart. Only
+    # checked when `capability` is not None, so the `model`-only form is
+    # unaffected.
+    if capability is not None and capability not in registry.capabilities():
+        return _error(f"unknown capability {capability!r}", status=400)
     stopped = supervisor.unload(model=model, capability=capability)
     return {"stopped": stopped, **supervisor.describe()}
 
@@ -485,6 +568,12 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+
+    # Checked first, so an unknown option is reported even when another field
+    # is also wrong — see `_reject_unknown`.
+    rejection = _reject_unknown(body, _IMAGE_OPTIONS, "/api/ai/image")
+    if rejection is not None:
+        return rejection
 
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -611,6 +700,13 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     if guard is not None:
         return guard
 
+    # Checked first, same as `api_ai_image` — see `_reject_unknown`. `base` is
+    # in the server's accepted set (the bridge injects it) but not the
+    # caller-facing one the bridge itself validates against.
+    rejection = _reject_unknown(body, _TRANSCRIBE_SERVER_OPTIONS, "/api/ai/transcribe")
+    if rejection is not None:
+        return rejection
+
     source = body.get("path")
     if not isinstance(source, str) or not source.strip():
         return _error("'path' must be the audio or video file to transcribe", status=400)
@@ -665,9 +761,12 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         except ValueError as e:
             return _error(str(e), status=400)
 
-    # …and what the ENGINE that will serve this cannot do at all (D319). Three
-    # engines share this capability now and one of them — Parakeet — has no
-    # translate task, no `language` argument and no text conditioning.
+    # …and what the ENGINE that will serve this cannot do at all. D319 added a
+    # third engine, Parakeet, that had no translate task, no `language`
+    # argument and no text conditioning; D406 withdrew it, so the two engines
+    # sharing this capability today (MLX Whisper, Faster Whisper) both answer
+    # everything below and `engine_options.UNSUPPORTED` is empty — but the
+    # check stays, for the next engine that needs it.
     #
     # Asked HERE, beside the other arguments a typo deserves an answer about,
     # because the answer is already available: `for_capability` is the same

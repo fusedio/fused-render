@@ -11,12 +11,12 @@ description: Use when a fused-render page needs an AI model — calling fused.ai
 
 | `opts.model` | Where it runs | Credential |
 |---|---|---|
-| Contains a `/` — a Hugging Face repo id | **This machine.** A resident worker process holding the weights. | none |
+| Contains a `/` (a Hugging Face repo id), **or ends in `.gguf`** (a llamacpp-text curated filename id) | **This machine.** A resident worker process holding the weights. | none |
 | Anything else — `"sonnet"`, `"claude-haiku-4-5-20251001"`, omitted | The local **`claude` (Claude Code) CLI**. | the user's Claude Code login |
 
-That one rule (`"/" in model`) is the whole seam: a page swapping `model: "opus"` for a repo id changes nothing else — same call, same resolved shape.
+That rule (`"/" in model or model.endsWith(".gguf")`) is the whole seam: a page swapping `model: "opus"` for a local id changes nothing else — same call, same resolved shape. **The local id is not always `org/name`.** Most engines address a model by its Hugging Face repo id, but `llamacpp-text`'s curated ids are the GGUF's OWN FILENAME instead (`"Qwen3.5-4B-Q5_K_M.gguf"`, no slash at all) — a repo commonly ships two dozen quantizations, and the filename is what tells them apart. Never split an id on `/` or build a Hub URL from one assuming that shape; treat it as opaque.
 
-**Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to Transformers. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
+**Never hard-code a repo id, and treat the ones in this file as illustrations.** A repo belongs to a *backend*, not to a capability: an MLX-packed repo is an unusable download on Windows, Linux, or a Mac switched to llama.cpp. Always take ids from `fused.ai.models.catalog()`, which answers for the engine actually serving this machine.
 
 Both destinations are **local-only** — there is no hosted path — so an exported page can call neither. See "Surviving Export".
 
@@ -142,6 +142,7 @@ Each capability's `models[]` entry is `{id, label, size_gb, note}` plus three st
 - **Every entry is one the engine serving that capability can actually load** — a cached repo in a format that backend does not read is left out, so the list moves when the user switches engines.
 - **Lists are ordered smallest download first, `default` is the first CURATED entry.** So omitting `model` gets the *smallest* model, not the best one. **Read `default`, never `models[0]`**: cached entries are appended after the curated ones, and an engine with no shortlist reports `default: null` — "no recommended model" is an answer to respect.
 - `note` is `null` on a cached entry and `size_gb` is its measured on-disk footprint. Render `label || id`.
+- **`id` shapes can differ WITHIN one capability's `models[]`.** `text-generation`'s curated `llamacpp-text` entries are GGUF filenames; a "cached" GGUF repo the user found via Hub search is a bare repo id like every other engine's entries. Render `id` as an opaque label — never assume `id.split("/")` or a Hub-URL template works for every row.
 
 ### Loading, unloading, cancelling
 
@@ -201,7 +202,7 @@ el.dataset.seed = img.seed;
 | `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
 | `onProgress(job)` | — | — | per denoising step |
 
-**That is the whole surface**: no negative prompt, no image-to-image or inpainting, no batch count, no scheduler or LoRA. One prompt in, one PNG out; two pictures means two calls.
+**That is the whole surface**: no negative prompt, no image-to-image or inpainting, no batch count, no scheduler or LoRA. One prompt in, one PNG out; two pictures means two calls. Pass an option that is not in the table above — `image`, `strength`, a typo — and the call is refused `bad_request` rather than quietly rendering text-to-image and ignoring what you asked for; the request envelope is closed, both in the bridge and on the server, so a page cannot get a plausible-looking picture back from an option that was never honoured (D413).
 
 Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for.
 
@@ -281,7 +282,7 @@ Everything else worth knowing:
 - `task`: `"transcribe"` (same language) or `"translate"` (into English). Anything else is a **400 naming both**, never a silent default.
 - `language` omitted means **auto-detect**. Pass one only if you know it.
 - **`model` omitted loads the SMALLEST model the active engine offers**, not the turbo one — the catalog is smallest-first and `default` is its first entry. If accuracy matters, pass a `model` from `catalog()`; the turbo entries are the ones to reach for.
-- `vad` (default `true`) runs a Silero speech detector and skips silence, the same filter on all three transcription engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — not an off-by-one to work around. Timestamps are always positions in the original file.
+- `vad` (default `true`) runs a Silero speech detector and skips silence, the same filter on both transcription engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — not an off-by-one to work around. Timestamps are always positions in the original file.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (missing path, not a file, unknown `task`, or an unusable `speakers`).
 
@@ -334,7 +335,7 @@ rec.estimatedSpeakers;              // 3 — only on a run that had to work it o
 - **An estimate can be wrong** either way (one person across two mics can split; similar voices can merge), so pass the count when you know it. `estimatedSpeakers` is how a page shows what was assumed and offers a re-run.
 - `estimatedSpeakers` counts voices the **segmenter** heard, which can exceed `speakers.length`: someone who spoke where Whisper transcribed no words is in the first and not the second.
 - Every segment gains **`speaker`** and the reply gains **`speakers`** — the labels that actually landed, ready for a colour map without walking thousands of segments. **`speaker` is `null` where Whisper heard words but the segmenter heard nobody.**
-- **Default `false` and additive**: a call without it is unchanged, and a transcript written without it has no `speaker` and no `speakers` at all. All three transcription engines run the same two models, so labels don't depend on which served you.
+- **Default `false` and additive**: a call without it is unchanged, and a transcript written without it has no `speaker` and no `speakers` at all. Both transcription engines run the same two models, so labels don't depend on which served you.
 - **It does not change what progress means.** `job.done`/`job.total` stay seconds of audio; diarization is a fast pre-pass with its own line on the row ("Finding speakers…") and an indeterminate bar.
 - **First use on a machine downloads ~33MB** (a speaker segmenter and a voice-embedding model), once, then works offline. Unlike the VAD these are *not* pre-fetched by a model Download.
 
@@ -350,7 +351,7 @@ for (const s of rec.segments) {
 ```
 
 - **BEST-EFFORT, and the only option here that is.** Asking never fails. An engine that has no word timings just leaves `words` off its segments — so write **`s.words || []`** and one page works on every machine, instead of asking which engine it landed on before it asks for anything. This is deliberately unlike `task`/`language`/`initialPrompt`, which are **refused** when an engine cannot do them: an ignored `task` is undetectable, whereas a missing `words` key is right there on the segment.
-- **Only the MLX Whisper engine (Apple Silicon) produces them today.** CTranslate2 and Parakeet both *could* — neither is wired — so treat "no `words`" as normal, not as an error to report.
+- **Only the MLX Whisper engine (Apple Silicon) produces them today.** CTranslate2 *could* — it is not wired — so treat "no `words`" as normal, not as an error to report.
 - **How good are the timings?** Whisper infers them by dynamic time warping its cross-attention, which it was not trained to do. The [WhisperX paper](https://arxiv.org/abs/2303.00747) (Table 2, 200ms collar) scores that mechanism at 78.9 precision / 52.1 recall on AMI-IHM against 84.1/60.3 for external forced alignment — so roughly *half* the words land more than 200ms off on hard conversational audio. Fine for a highlight that follows along; do not build phonetic or clip-cutting work on it.
 - **`word` keeps its leading space**, so `s.words.map(w => w.word).join("")` reconstructs `s.text`. Timings are positions in the **original file**, like a segment's, and always inside their own segment.
 - **With `vad` on (the default) a word that spanned a removed pause comes back SHORTER than it was spoken.** Silence is cut out before decoding, so a word the model timed across the cut is placed on the side most of it was heard on and keeps only that part — a highlight lets go of it early rather than sitting on it for the whole pause. It never *stretches*: no word is longer than the audio it came from.
@@ -360,26 +361,25 @@ for (const s of rec.segments) {
 - Default `false` and additive: a transcript written without it has no `words` key anywhere.
 - `onSegment` segments carry `words` too, same shape — one rendering path for the live view and the final list.
 
-### Three engines, one of them not Whisper
+### Two engines, and a format that loads nowhere
 
-**Take the model from `catalog()`, never from memory.** Speech repos come in four mutually unloadable formats — CTranslate2 (`model.bin`), MLX Whisper (`weights.npz`), NeMo/Parakeet (`model.safetensors` beside a NeMo ASR config) and plain transformers — and which loads depends on the engine serving this machine, not on the model being "the good one". `openai/whisper-large-v3` is the repo everyone reaches for and **no shipping runner reads it**.
+**Take the model from `catalog()`, never from memory.** Speech repos come in three mutually unloadable formats — CTranslate2 (`model.bin`), MLX Whisper (`weights.npz`) and plain transformers — and which loads depends on the engine serving this machine, not on the model being "the good one". `openai/whisper-large-v3` is the repo everyone reaches for and **no shipping runner reads it**. A fourth format, NeMo/Parakeet (`model.safetensors` beside a NeMo ASR config), is recognised but loads **nowhere at all**: no engine here claims it, so a cached repo in that shape gets no engine tag and no Load button rather than being mistaken for a chat model.
 
-Two things about the call are therefore engine-dependent:
+One thing about the call is therefore engine-dependent:
 
-- **Progress resolution.** MLX Whisper reports once per decoded window (up to 30s), Parakeet once per 60s chunk, so `job.done` can sit still and then jump. It is always a real position in the recording.
-- **Parakeet refuses three options rather than ignoring them**: `task: "translate"`, `language` (it detects among its 25 European languages and cannot be pinned) and `initialPrompt`. Each rejects `bad_request` **before a job opens**, naming the engine. If your page needs any of the three, check `active` in `fused.ai.models.list()` and say so in the UI — the user chose that engine, your page did not.
+- **Progress resolution.** MLX Whisper reports once per decoded window (up to 30s), so `job.done` can sit still and then jump. It is always a real position in the recording.
 
-Everything else — the result shape, the two files, `onSegment`, the speaker labels, `vad` — is identical whichever one served you.
+Every ASR option `fused.ai.transcribe` takes — `task`, `language`, `initialPrompt` — is honoured by both engines today, so nothing here needs a per-engine check. Everything else — the result shape, the two files, `onSegment`, the speaker labels, `vad` — is identical whichever one served you.
 
 ## What Actually Runs Locally Today
 
-Eleven runners, three capabilities, all taking **Hugging Face repo ids**:
+Nine runners, three capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
-| `text-generation` | MLX, then Transformers (CPU), then Transformers (CUDA), then Transformers (ROCm) | **Everywhere.** MLX on Apple Silicon; the **CPU** torch build everywhere else, and as the Apple Silicon fallback — it answers slowly but it answers. The CUDA and ROCm builds are the same runner on a different wheel: opt-in from the Engines tab, and offered only where the app can see a usable NVIDIA or AMD GPU. |
-| `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are the same opt-in, hardware-gated arrangement as text generation. |
-| `automatic-speech-recognition` | MLX Whisper, then Parakeet TDT, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; Parakeet TDT is an Apple-Silicon opt-in — quicker and more accurate in English, but 25 European languages only; CTranslate2 serves both Mac architectures, Linux and Windows. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
+| `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. The three Transformers rows that used to sit between them were withdrawn: llama.cpp reads a quantized GGUF of the same current-generation Qwen several times quicker, at roughly a third of the download and a third of the memory, so **local text ids are GGUF now** — the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
+| `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are opt-in and hardware-gated: offered only where the app sees a usable NVIDIA or AMD GPU, greyed out with the reason otherwise. |
+| `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
 
 Those three strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
@@ -428,6 +428,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Rendering only `catalog()`'s curated entries** → the model the user just downloaded is missing from your picker. Render every entry; mark them.
 - **Assuming a capability's runner from the platform** → every capability has more than one and a user preference can pick any. Read `active` from `fused.ai.models.list()`.
 - **Hard-coding a repo id, or carrying one between engines** → formats are backend-specific; a repo that works on one engine is an unusable download on the other.
+- **Assuming a model id is always `org/name`** → `llamacpp-text`'s curated ids are the GGUF's own filename (`Qwen3.5-4B-Q5_K_M.gguf`, no slash). Splitting on `/` or building a Hub URL from `id` breaks on one; treat it as opaque.
 
 **Images**
 
@@ -436,6 +437,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Echoing your request as the image's caption** → sides snap to a multiple of 16 and everything is clamped. Read the reply.
 - **Letting the user paste any Hub diffusion repo on a Mac** → MLX FLUX loads exactly one. Offer `catalog()`'s entries, or name the Engines tab.
 - **Adding your own cache-buster to `previewUrl`** → it already has one keyed on the step.
+- **Passing `image`/`strength` expecting image-to-image or inpainting** → there is no such option (see "That is the whole surface" above); the call is now refused `bad_request` naming the option, instead of quietly rendering text-to-image from the prompt alone and leaving the base image ignored.
 
 **Transcription**
 
@@ -443,6 +445,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Reading progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads. Take the id from `catalog()`.
+- **Loading a plain safetensors text model such as `Qwen/Qwen3.5-9B`** → since the Transformers engines were withdrawn, only MLX reads safetensors, so this is loadable on Apple Silicon and nowhere else. Off a Mac take the GGUF id from `catalog()` — the same model, a quarter of the download.
 
 **Export**
 

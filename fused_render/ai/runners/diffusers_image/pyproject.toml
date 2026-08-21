@@ -55,9 +55,14 @@
 # with no commit behind it. The FLOORS are left where they were — `diffusers`
 # keeps `>=0.39` rather than gaining the installed patch, and `transformers`
 # carries a ceiling with NO floor added, because this runner has never declared one
-# and inventing one here would forbid versions that are currently allowed while
-# also disagreeing with `transformers_text`'s deliberate `>=4.51`. A ceiling only
-# removes the future; a floor removes the present.
+# and inventing one here would forbid versions that are currently allowed. It
+# also used to disagree with a sibling: `transformers_text/pyproject.toml`
+# pinned `transformers>=5.15` because its catalog had moved to Qwen3.5, and this
+# runner needs no such floor because its own suggestions do not turn on a
+# transformers model CLASS. That folder is gone (D416) and this manifest is now
+# the only place in the app that names `transformers` at all, which removes the
+# disagreement without changing the reasoning. A ceiling only removes the
+# future; a floor removes the present.
 #
 # What each earns:
 #   torch          the tensors and the device (CUDA / MPS / CPU). `<3` — the

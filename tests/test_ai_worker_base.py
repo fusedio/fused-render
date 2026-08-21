@@ -649,6 +649,184 @@ def test_fetch_with_progress_re_raises_on_the_calling_thread(base, monkeypatch):
         base.fetch_with_progress("org/m", boom, total=None)
 
 
+# -- driving the fallback bar from hf's OWN byte counters (AI-5b, xet bursts) ----
+#
+# `snapshot_download`/`hf_hub_download` on the fallback path used to be measured
+# purely by the disk walk, and `hf_xet` (installed in every runner venv; every
+# mlx-community repo is Xet-backed) delivers bytes in BURSTS — the walk sees one
+# number for many seconds and then a huge jump, which on a multi-GB model reads
+# as "stuck at 98%" even though the download is healthy. `_HubByteTicker` is the
+# `tqdm_class` that reads hf's own counters instead.
+
+
+def _bytes_bar(ticker, desc, **extra):
+    """One instance of `ticker.bar()`, shaped like what hf's own downloader
+    would construct — `unit="B"` is the whole of what marks a byte bar."""
+    return ticker.bar()(desc=desc, total=extra.pop("total", 0), unit="B", **extra)
+
+
+def test_a_hub_byte_counter_drives_done_while_the_disk_walk_is_stuck(
+        base, monkeypatch):
+    """The exact shape of the bug: `bytes_on_disk` frozen (the xet burst gap)
+    while hf's own reconstruction bar is moving underneath it."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)  # frozen
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    ticker = base._HubByteTicker()
+
+    def call():
+        bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1024)
+        bar.update(400)
+        time.sleep(1.2)  # past the one-second tick, so a mid-flight poll sees it
+        return "/snap"
+
+    result = base.fetch_with_progress("org/m", call, total=1024, counter=ticker)
+
+    assert result == "/snap"
+    assert any(tick["done"] == 400 for tick in ticks), ticks
+    assert ticker.seen is True
+
+
+def test_the_outer_FILE_counter_is_never_read_as_bytes(base, monkeypatch):
+    """The trap this whole class exists to avoid one level further in: the
+    "Fetching N files" bar has no `unit`, and reporting its `.update(1)` per
+    file as bytes is how a 4.6GB pull once read "10 / 11 B"."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    ticker = base._HubByteTicker()
+
+    Bar = ticker.bar()
+    file_counter = Bar(desc="Fetching 11 files", total=11)  # no `unit` at all
+    for _ in range(11):
+        file_counter.update(1)
+
+    assert ticker.seen is False, "the file counter was read as a byte counter"
+    assert ticker.value == 0
+
+
+def test_transfer_and_reconstruct_bars_are_not_summed(base, monkeypatch):
+    """hf's Xet path hands back TWO byte bars covering close to the same total
+    — network transfer and disk reconstruction. Summing them can read past
+    100% of a file that has not finished; the counter reports whichever
+    stream is FURTHER ALONG instead."""
+    ticker = base._HubByteTicker()
+    transfer = _bytes_bar(ticker, "Downloading bytes", total=1000)
+    reconstruct = _bytes_bar(ticker, "Reconstructing (incomplete total...)",
+                             total=1000)
+
+    transfer.update(600)
+    reconstruct.update(200)
+
+    assert ticker.value == 600, "the two streams were added instead of maxed"
+
+    reconstruct.update(500)
+    assert ticker.value == 700
+
+
+def _set_aggregate_rate_postfix(bar):
+    """The exact call shape hf's `_xet_progress_reporting._set_aggregate_rate_postfix`
+    makes against a bar it was handed — verified against the real
+    huggingface_hub installed in the runner venvs (1.27.0, 1.28.0). Not a
+    stand-in for that function: this IS what it does, reduced to the one
+    line that crashed, so a future signature drift on hf's side is caught
+    here rather than by a user's first Xet-backed download."""
+    bar.set_postfix_str(str(bar.format_dict.get("rate")), refresh=False)
+
+
+def test_a_bar_survives_the_rate_postfix_call_hf_makes_on_it(base, monkeypatch):
+    """The HIGH finding: `XetDownloadProgressReporter.update_progress` calls
+    `_AggregatedTqdm.set_postfix_str`, which forwards to
+    `_set_aggregate_rate_postfix(transfer_progress_or_reconstruct_progress)`
+    — and those bars are OUR `_Bar` instances, made through
+    `_create_progress_bar(cls=tqdm_class)`. That function does
+    `bar.format_dict.get("rate")`, which raised `AttributeError` on the
+    first non-zero byte of every Xet-backed download (every mlx-community
+    repo) before `_Bar` grew a `format_dict`. The existing tests never
+    caught it because they only ever call `.update()` on a fake bar, never
+    one of hf's own helper functions — this one does, deliberately.
+    """
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1000)
+    bar.update(100)
+
+    _set_aggregate_rate_postfix(bar)  # must not raise AttributeError
+
+    assert bar.format_dict["rate"] is None
+    assert bar.format_dict["n"] == 100
+    assert bar.format_dict["total"] == 1000
+
+
+def test_a_bars_own_n_is_updated_under_the_same_lock_as_the_ticker(base):
+    """`self.n += n` used to run OUTSIDE `ticker._lock`, racing the read
+    `format_dict` (and hf's own `_update_transfer_bar`/`_finish_transfer_bar`,
+    which read `.n` back to size hf's display) does on the same attribute.
+    Concurrent per-file threads funnel into ONE shared bar via
+    `_AggregatedTqdm`, exactly like `ticker._transfer`/`ticker._reconstruct`
+    do — so `.n` needs the same protection those already have, not a
+    separate unlocked increment beside them."""
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=100_000)
+    threads = [threading.Thread(target=bar.update, args=(1,)) for _ in range(500)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert bar.n == 500, "a concurrent update to .n was lost outside the lock"
+    assert ticker.value == 500
+
+
+def test_a_missing_or_ignored_counter_falls_back_to_the_disk_walk(base, monkeypatch):
+    """An hf version that reports differently, or ignores `tqdm_class`
+    outright, must degrade SILENTLY to exactly today's behaviour — a progress
+    refinement must never be able to fail or freeze a download."""
+    ticks = []
+    disk = {"value": 0}
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: disk["value"])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    ticker = base._HubByteTicker()  # never touched by `call`
+
+    def call():
+        disk["value"] = 512
+        time.sleep(1.2)
+        return "/snap"
+
+    base.fetch_with_progress("org/m", call, total=1024, counter=ticker)
+
+    assert ticker.seen is False
+    assert any(tick["done"] == 512 for tick in ticks), ticks
+
+
+def test_reported_progress_never_goes_backwards(base, monkeypatch):
+    """`done` is `max(counter, disk)` at every tick, specifically so a counter
+    that stalls while the disk keeps moving — or the reverse — cannot make an
+    already-reported number look like it un-happened."""
+    ticks = []
+    disk = {"value": 900}  # AHEAD of the counter from the very first tick
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: disk["value"])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    ticker = base._HubByteTicker()
+
+    def call():
+        bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1024)
+        bar.update(100)  # behind the disk walk's 900
+        time.sleep(1.2)
+        return "/snap"
+
+    base.fetch_with_progress("org/m", call, total=1024, counter=ticker)
+
+    dones = [tick["done"] for tick in ticks]
+    assert dones == sorted(dones), dones
+    assert 900 in dones, "the disk walk's lead was thrown away for the counter's number"
+
+
 # -- a fetch that happens inside a REQUEST, on a row with a live ✕ ---------------
 #
 # These fetches used to own a model-load row, whose ✕ the supervisor answers by
@@ -781,13 +959,16 @@ def test_every_registered_runner_ships_both_of_its_files():
 def _runner_source(runner):
     """The module that actually IMPLEMENTS a runner, following a shell.
 
-    Six of the eleven runner folders — the CPU/CUDA/ROCm variants of the two
-    torch engines — hold a five-line `worker.py` that inserts `runners/` on the
-    path and calls `torch_text.main()` or `torch_image.main()`. The behaviour
+    Five of the runner folders — the CPU/CUDA/ROCm Diffusers variants and both
+    llama.cpp builds — hold a five-line `worker.py` that inserts `runners/` on
+    the path and calls `torch_image.main()` or `llama_text.main()`. The behaviour
     lives one level up, so a source assertion made against the folder's file
     would read a shell and pass on anything: the two tests below would have
-    stopped checking the torch runners entirely, silently, on the commit that
-    hoisted them.
+    stopped checking those runners entirely, silently, on the commit that
+    hoisted them. (It was six folders and two shared modules until D416 removed
+    the three transformers variants and `torch_text.py` with them; the
+    RECOGNITION rule below never named any of them, which is why nothing here
+    had to change.)
 
     The shell is recognised by what makes it one — it imports a module from the
     runners root and CALLS ITS `main()`, which is the whole of its body — rather
@@ -1346,6 +1527,36 @@ def test_the_FALLBACK_records_the_commit_hf_actually_landed(base, monkeypatch,
     base.download_snapshot("u/x")
 
     assert asked == {"revision": COMMIT}, asked
+
+
+def test_download_snapshots_fallback_wires_a_byte_counter_through(
+        base, monkeypatch, tmp_path):
+    """The fallback call site — not just `fetch_with_progress` in isolation —
+    has to actually HAND hf's downloader the `tqdm_class` that drives it."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    seen_bars = []
+
+    def spy(model_id, allow_patterns=None, ignore_patterns=None,
+            local_files_only=False, revision=None, tqdm_class=None, **kw):
+        if not local_files_only and tqdm_class is not None:
+            bar = tqdm_class(desc="Reconstructing (incomplete total...)",
+                             total=7, unit="B")
+            bar.update(7)
+            seen_bars.append(bar)
+        return snapshot
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert len(seen_bars) == 1, "the fallback did not pass its own tqdm_class through"
 
 
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(

@@ -2633,12 +2633,24 @@ export function laneRolledUp(
 // The test holds this array and BOARD_COLUMNS to the same sequence, so the two
 // cannot quietly drift apart again.
 //
-// WITHIN a rank nothing is re-sorted: the server's order is the list's order and
-// always has been (TaskList takes `tasks` "in the SERVER's order"). A stable
-// bucketing keeps it, which is why this is a bucket-and-concat rather than a
-// comparator — `Array.prototype.sort` is stable in every engine this ships to,
-// but a comparator would also invite a second sort key later, and there is not
-// one: rank, then whatever the server said.
+// WITHIN a rank the rows run by the time each row PRINTS — `taskWhen`, the very
+// stamp sitting at the end of the line. It was the server's order for a while
+// ("rank, then whatever the server said"), and that read as principled and
+// looked random on screen: the server sorts the FULL list by `last_active`, but
+// a row does not print `last_active` — it prints its next or last run — so two
+// adjacent Done rows could read "2h ago" above "10m ago" for no reason the
+// screen could show. The list's one honest question inside a rank is recency,
+// and the key that answers it must be the key the reader can see.
+//
+// The DIRECTION is the board's, read off the same map taskWhen reads (LANE_SORTS):
+// the rank whose rows print the run ahead (Upcoming) runs soonest first —
+// ascending, which puts an overdue run at the very top, same spirit as the
+// board's lane — and every other rank runs most recent first. A row with no
+// time at all (`kind: "none"`, the em-dash row) goes LAST in its rank, in both
+// directions: it cannot claim a place among rows sorted by a fact it does not
+// have. Ties keep the server's order, by comparing the incoming index
+// explicitly (sortLane's rule 1, for sortLane's reason: two rows that ran in
+// the same second must not trade places between polls).
 
 /** Rank order, top to bottom. Every BoardColumn appears exactly once — the test
  * holds it to that, so a sixth lane cannot be silently unsortable. */
@@ -2650,15 +2662,42 @@ export const LIST_ORDER: BoardColumn[] = [
   "archived",
 ];
 
-/** The list's rows, in rank order, server order preserved inside each rank. A
- * new array; the input is never mutated (it is the polled list, which React is
- * still holding). */
-export function sortByLane(tasks: Task[]): Task[] {
+/** One rank's rows, by the time each row prints. `null` is "this row prints no
+ * time at all" and is kept apart from a real `at` for laneTime's reason: 0 is
+ * 1970 and would sort to an end of the rank by accident rather than by
+ * decision. */
+function sortRank(tasks: Task[], rank: BoardColumn, now: number): Task[] {
+  const asc = rank === "upcoming";
+  const rows = tasks.map((task, index) => {
+    const when = taskWhen(task, now);
+    return { task, index, at: when.kind === "none" ? null : when.at };
+  });
+  rows.sort((a, b) => {
+    if (a.at === null || b.at === null) {
+      // Exactly one of them prints a time: the one that does comes first.
+      if (a.at !== b.at) return a.at === null ? 1 : -1;
+    } else if (a.at !== b.at) {
+      return asc ? a.at - b.at : b.at - a.at;
+    }
+    return a.index - b.index;
+  });
+  return rows.map((r) => r.task);
+}
+
+/** The list's rows: rank order, and by printed time inside each rank (the
+ * comment above says which way and why). A new array; the input is never
+ * mutated (it is the polled list, which React is still holding).
+ *
+ * `now` is read ONCE for the whole list and handed to every rank, so every row
+ * is placed against one instant — a comparator that changes its mind halfway
+ * through a sort straddling a second is a comparator with no defined output
+ * (sortLane, rule 2). */
+export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
   const buckets = new Map<BoardColumn, Task[]>(
     LIST_ORDER.map((key) => [key, [] as Task[]]),
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
-  return LIST_ORDER.flatMap((key) => buckets.get(key) ?? []);
+  return LIST_ORDER.flatMap((key) => sortRank(buckets.get(key) ?? [], key, now));
 }
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
