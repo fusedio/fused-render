@@ -2141,6 +2141,17 @@
     padding-left: 10px;
     margin-top: 4px;
   }
+  /* The background-task chip (buildNoticeView, D406). Sized and coloured like
+     the thinking summary rather than like a tool chip: it is a note about why
+     the next paragraph exists, not a thing to open, so it carries no border, no
+     hover and no pointer — everything a chip has that invites a click. */
+  .seg-notice {
+    display: flex; gap: 6px; align-items: baseline;
+    color: var(--faint); font-size: 12px; margin: 6px 0;
+    white-space: normal; word-break: break-word;
+  }
+  .seg-notice-glyph { flex: none; font-size: 10px; }
+
   /* Opening a chip or a thinking block reveals its body in one short beat, so
      the eye follows what appeared instead of re-finding it after a jump.
      Opacity + 2px of travel only (no height animation: <details> has no
@@ -12596,9 +12607,35 @@ function buildTextView() {
   };
 }
 
+// A system chip: the harness woke the run because a background shell it had
+// started finished or was stopped (agent.py's `notice` segment, D406). It is
+// the ONE line that accounts for a reply nobody asked for — without it the
+// turn underneath reads as the agent answering a message that is not there —
+// and it is deliberately not a bubble: the user did not say it, and the raw
+// `<task-notification>` XML it replaces was a screenful of machinery quoted at
+// the person it was never addressed to.
+//
+// Plain text, never renderMd: the summary is a sentence the CLI wrote about a
+// command the user ran, and running it through markdown would let a stray
+// backtick or underscore in a command line restyle the chip.
+function buildNoticeView() {
+  const el = document.createElement("div");
+  el.className = "seg-notice";
+  const glyph = document.createElement("span");
+  glyph.className = "seg-notice-glyph";
+  glyph.textContent = "⏵";
+  const words = document.createElement("span");
+  el.append(glyph, words);
+  return {
+    kind: "notice", el, text: null,
+    render(t) { words.textContent = t; },
+  };
+}
+
 function buildSegmentView(seg, key) {
   if (seg.kind === "tool") return buildToolChip(seg, key);
   if (seg.kind === "thinking") return buildThinkingView(key);
+  if (seg.kind === "notice") return buildNoticeView();
   return buildTextView();  // "text", and anything a newer agent.py invents
 }
 
@@ -12648,7 +12685,7 @@ function renderSegments(container, segments, opts) {
     const seg = list[i] || {};
     let view = st.views[i];
     if (!view || view.kind !== (seg.kind === "tool" || seg.kind === "thinking"
-                                ? seg.kind : "text")) {
+                                || seg.kind === "notice" ? seg.kind : "text")) {
       // A settled index never changes kind (segments only grow, and same-kind
       // neighbours merge in agent.py) — but rebuilding beats rendering a tool
       // call into a prose element if that ever stops being true.
@@ -14297,12 +14334,17 @@ setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 //
 // Gen-guarded like every other loop that outlives an await: leaving the chat
 // bumps logGen and the watch dies with the transcript it was watching.
-async function adoptLiveRun(session_id) {
+// `opts.laps` is how many times to look before giving up. The default is the
+// reopen's ~3s window; the standing watch below passes 1, because it is asking
+// again in ten seconds anyway and has no spawn window to cover — a repeated
+// lookup there would be the same question asked eight times a lap forever.
+async function adoptLiveRun(session_id, opts) {
   const gen = logGen;
+  const laps = (opts && opts.laps) || 8;
   // ~3s of looking: one tick is the common case (the reopen itself), the tail
   // exists for the spawn window above. Each miss waits one poll interval, so
   // the working row appears within ~400ms of the run becoming visible.
-  for (let tries = 0; tries < 8; tries++) {
+  for (let tries = 0; tries < laps; tries++) {
     if (tries) await sleep(400);
     if (logGen !== gen) return;       // the reader left; nothing here is ours
     if (activeRun) return;            // a turn is attached — adopted, or the user's own
@@ -14328,7 +14370,7 @@ async function adoptLiveRun(session_id) {
     // resumeRun can itself bail on a gate grabbed between these two lines — the
     // loop, not this call, is the guarantee: a bailed attempt comes back around,
     // and the `activeRun` check above ends the watch once anyone has attached.
-    await resumeRun(id);
+    await resumeRun(id, { quiet: !!(opts && opts.quiet) });
     // resumeRun resolves at the END of the turn, so a completed call means the
     // run was handled — its done branch cleared the param. The one call that
     // resolves with the param still reading `id` is the bail above, and only
@@ -14337,9 +14379,60 @@ async function adoptLiveRun(session_id) {
   }
 }
 
+// ── the standing watch: a turn this frame did not start, at any moment ──────
+//
+// `adoptLiveRun` above is a WINDOW — three seconds around opening a chat — and
+// that was the whole of the page's answer to "is something running that I am
+// not showing?". It covers arriving late and covers nothing after: a session
+// that becomes busy while this chat sits open lit no indicator and streamed
+// nothing, whoever started the turn (D406). The reported case is the harness's
+// own — a background shell finishes, the run wakes for another turn — and it is
+// not the only one: the same chat open in a second pane, a `claude` the user
+// resumed from a terminal against a run this page never saw, a spawn from the
+// canvases workspace. None of them go through `sendMessage`, which is the only
+// path that used to arm the running chrome.
+//
+// So the question is asked on a timer for the life of the page, and asked of the
+// SERVER — the one party that knows a run is alive — rather than inferred from
+// what this frame happens to have sent. Cheap by construction: `live_run` reads
+// at most 60 meta.json files, and every lap that finds an attached turn
+// (`activeRun`) or a held gate returns before asking anything at all.
+//
+// Slower than the reopen's watch on purpose: that one is chasing a run it knows
+// exists and pays 400ms to catch the spawn window, while this one is a
+// background question whose answer is almost always "nothing". Ten seconds is
+// the worst-case lag before a foreign turn shows up, against a lookup that is
+// otherwise pure overhead.
+const LIVE_WATCH_MS = 10000;
+let liveWatchBusy = false;   // one lap at a time; a lap can outlive its interval
+
+async function liveWatchTick() {
+  if (liveWatchBusy || activeRun || sending) return;
+  const session_id = fused.params.get("session_id") || "";
+  // Only with a session on screen. Without one there is no conversation to
+  // adopt a turn INTO — the landing page's own send makes the session — and
+  // `live_run` with no session matches on the target alone, which would drag a
+  // run belonging to some other chat about this folder onto this screen.
+  if (!session_id) return;
+  liveWatchBusy = true;
+  try {
+    await adoptLiveRun(session_id, { laps: 1, quiet: true });
+  } finally {
+    liveWatchBusy = false;
+  }
+}
+
+setInterval(liveWatchTick, LIVE_WATCH_MS);
+
 async function resumeRun(run_id, opts) {
   const neverShown = !!(opts && opts.neverShown);
   const retryUnknown = !!(opts && opts.retryUnknown);
+  // Attach WITHOUT writing a user line the reader did not just see. The standing
+  // watch passes it (D406): a run it finds may be one whose first turn is already
+  // on screen under an older message, and re-printing that message below a newer
+  // conversation would be this page inventing a turn. With the line suppressed
+  // the woken reply lands as what it is — the agent saying something on its own.
+  const quiet = !!(opts && opts.quiet);
   if (sending) return;
   sending = true;
   const seat = ++sendSeq;
@@ -14426,7 +14519,7 @@ async function resumeRun(run_id, opts) {
       // In flight and this turn's user line is on screen: keep it, drop the
       // partial assistant rows — pollLoop re-streams the whole turn.
       while (lastTurn.nextElementSibling) lastTurn.nextElementSibling.remove();
-    } else if (probeMsg) {
+    } else if (probeMsg && !quiet) {
       addUser(probeMsg);
     }
     await pollLoop(run_id, gen);

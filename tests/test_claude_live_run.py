@@ -454,3 +454,74 @@ def test_the_lookup_is_the_only_new_agent_action_the_page_calls(html_pane):
     such write in the file to that rule, and two guards for one invariant is one
     that gets updated and one that goes stale."""
     assert html_pane.count('action: "live_run"') == 1
+
+
+# ── the standing watch: a turn nobody on this page started (D406) ────────────
+#
+# The window version of the watch only ran around opening a chat, so a session
+# that became busy while the chat sat open lit nothing at all — the reported
+# case being the harness waking the run when a background shell finished. The
+# watch is now also a timer, and `liveWatchTick` is the lap it runs: the same
+# lookup, once, and only when this frame is showing a session and holding
+# nothing.
+
+
+def _watch(html, call):
+    """Run liveWatchTick() out of the page under node, over adoptLiveRun."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own re-attach glue")
+    start = html.index("async function adoptLiveRun(")
+    adopt = html[start:html.index("\n}\n", start) + 3]
+    start = html.index("async function liveWatchTick() {")
+    tick = html[start:html.index("\n}\n", start) + 3]
+    script = (_ADOPT_STUBS + "\nlet liveWatchBusy = false;\n"
+              + adopt + "\n" + tick + "\n(async () => {\n" + call + "\n})();")
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_watch_asks_once_a_lap_not_eight_times(html_pane):
+    """A tick that finds nothing must cost ONE lookup: this runs for the life of
+    the page, where the reopen's budget is chasing a run it knows exists."""
+    calls = _watch(html_pane, """
+answer = { run_id: "" };
+store.session_id = "sess-A";
+await liveWatchTick();
+console.log(JSON.stringify(calls));
+""")
+    assert calls == [["ask", "live_run", "/proj/index.html", "sess-A"]]
+
+
+def test_the_watch_adopts_a_run_this_frame_never_started(html_pane):
+    calls = _watch(html_pane, """
+store.session_id = "sess-A";
+await liveWatchTick();
+console.log(JSON.stringify(calls));
+""")
+    assert calls[-1] == ["resume", "run-1"]
+
+
+def test_the_watch_is_quiet_while_this_frame_is_busy(html_pane):
+    """Every reason not to look: no session on screen (there is no conversation
+    to adopt a turn into), a turn already attached, the send gate held, and a
+    lap of its own still in flight."""
+    for setup in ('store.session_id = "";',
+                  'store.session_id = "sess-A"; activeRun = "run-9";',
+                  'store.session_id = "sess-A"; sending = true;',
+                  'store.session_id = "sess-A"; liveWatchBusy = true;'):
+        calls = _watch(html_pane, setup + """
+await liveWatchTick();
+console.log(JSON.stringify(calls));
+""")
+        assert calls == [], setup
+
+
+def test_the_watch_never_prints_a_message_the_reader_did_not_send(html_pane):
+    """`quiet`: the run it finds may be one whose first turn is already on
+    screen under an older message, and resumeRun's fallback is to print that
+    message as a fresh user line."""
+    html = html_pane
+    start = html.index("async function liveWatchTick() {")
+    tick = html[start:html.index("\n}\n", start) + 3]
+    assert "quiet: true" in tick

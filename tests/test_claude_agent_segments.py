@@ -695,3 +695,75 @@ def test_history_of_an_unknown_session_is_still_empty(agent, tmp_path, monkeypat
     target.write_text("x")
     assert agent._history(str(target), "missing") == {"turns": []}
     assert agent._history(str(target), "../escape") == {"turns": []}
+
+
+# ------------------------------------------- the background-task wake (D406)
+
+def _wake_row(summary="Background command \"pytest -q\" completed (exit code 0)",
+              status="completed"):
+    """The `out.jsonl` shape: a `system` row the CLI writes when the harness
+    wakes the run because a background shell finished."""
+    return {"type": "system", "subtype": "task_notification",
+            "status": status, "summary": summary}
+
+
+def test_a_task_notification_becomes_a_notice_segment(agent, tmp_path):
+    data = _poll_rows(agent, tmp_path, [
+        _delta("text_delta", "Started the tests."),
+        {"type": "result", "result": "Started the tests.", "session_id": "s1"},
+        _wake_row(),
+        _delta("text_delta", "They passed."),
+    ])
+    kinds = [s["kind"] for s in data["segments"]]
+    assert kinds == ["text", "notice", "text"]
+    assert data["segments"][1]["text"].startswith("Background command")
+    assert data["segments"][1]["status"] == "completed"
+    # The prose either side stays two segments, so the woken turn does not glue
+    # itself onto the sentence that ended the previous one.
+    assert data["segments"][2]["text"] == "They passed."
+
+
+def test_a_task_notification_with_no_summary_still_says_something(agent, tmp_path):
+    data = _poll_rows(agent, tmp_path, [_wake_row(summary="")])
+    assert data["segments"] == []  # nothing to say = nothing drawn
+
+
+def test_history_renders_a_task_notification_as_a_notice_not_a_bubble(
+        agent, tmp_path, monkeypatch):
+    """The persisted transcript records the wake as a synthetic `user` record of
+    raw XML. It used to render as a message bubble the user never typed."""
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("run the tests in the background"),
+        _t_assistant([{"type": "text", "text": "Started."}]),
+        _t_user("<task-notification>\n<task-id>b1</task-id>\n"
+                "<status>completed</status>\n"
+                "<summary>Background command \"pytest -q\" completed"
+                "</summary>\n</task-notification>"),
+        _t_assistant([{"type": "text", "text": "They passed."}]),
+    ])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert "task-notification" not in json.dumps(turns)
+    assert [s["kind"] for s in turns[1]["segments"]] == ["text", "notice", "text"]
+    assert turns[1]["segments"][1]["text"] == \
+        'Background command "pytest -q" completed'
+
+
+def test_history_drops_the_other_synthetic_user_records_too(
+        agent, tmp_path, monkeypatch):
+    """Everything in `_MACHINERY_DROP` is Claude Code writing a `user` record on
+    the user's behalf — none of them are turns."""
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("<system-reminder>be nice</system-reminder>"),
+        _t_user("<bash-input>ls</bash-input>"),
+        _t_user("hello"),
+        _t_assistant([{"type": "text", "text": "hi"}]),
+    ])
+    assert [t["text"] for t in turns if t["role"] == "user"] == ["hello"]
+
+
+def test_a_message_that_merely_mentions_the_tag_is_still_the_users(
+        agent, tmp_path, monkeypatch):
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("why does <task-notification> render as XML?"),
+    ])
+    assert [t["role"] for t in turns] == ["user"]

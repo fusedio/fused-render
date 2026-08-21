@@ -1414,6 +1414,40 @@ _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
     r"<(%s)>.*?</\1>\s*" % "|".join(_MACHINERY_TAGS), re.DOTALL)
 _LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
+# The DROP half alone, for `_history`: those records are Claude Code writing on
+# the user's behalf and are never a turn, where a STRIP tag is a block this page
+# prepended to words the user really did type and must not take the turn with it.
+_LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
+
+# A synthetic `user` record the HARNESS writes when a background shell the turn
+# started finishes (or is stopped): it wakes the run, and everything the agent
+# says afterwards is the answer to it. Nobody typed it, so it may never render as
+# a user bubble — it used to, as a screenful of raw XML — but it may not be
+# silently dropped either, because it is the only explanation on screen for a
+# reply that arrives with no message above it (D406).
+_TASK_NOTIFICATION_OPEN = "<task-notification>"
+_TASK_FIELD = re.compile(r"<(summary|status)>(.*?)</\1>", re.DOTALL)
+
+
+def _task_notification(text: str) -> dict | None:
+    """`{"summary", "status"}` for a task-notification record, else None.
+
+    Matched on the OPENING tag only, and only at the head: the block is the
+    whole record in practice, and a message that merely mentions the tag
+    somewhere in its prose is a human writing about this feature, not the
+    harness. A record whose `<summary>` is missing or empty still answers — with
+    the status alone as its words — because the chip's job is to account for the
+    turn underneath it, and "a background task finished" says that much."""
+    if not isinstance(text, str) or not text.lstrip().startswith(_TASK_NOTIFICATION_OPEN):
+        return None
+    found = {m.group(1): m.group(2).strip() for m in _TASK_FIELD.finditer(text)}
+    status = found.get("status", "")
+    summary = found.get("summary", "")
+    if not summary:
+        summary = ("Background task %s" % status) if status \
+            else "A background task woke the agent"
+    return {"summary": summary, "status": status}
+
 
 # `formatAnnotations`' preamble, which has no tag at all — the inverse of
 # template.html's `stripAnnBlock`, anchored on the json fence for the same
@@ -2409,6 +2443,28 @@ def _segments_from_rows(rows: list) -> list:
                     by_tool_id[tool_id] = seg
                     if tool_id in orphans:
                         settle(seg, orphans.pop(tool_id))
+        elif t == "system" and row.get("subtype") == "task_notification":
+            # The harness waking the run because a background shell it started
+            # has finished or been stopped (D406). It is not the model speaking
+            # and it is not a tool call, so it is neither text nor a chip — it
+            # is the REASON the turn that follows exists, and without it a reply
+            # appears out of nowhere under a message the user never sent. One
+            # line, from the CLI's own `summary`; the page draws it as a system
+            # chip (buildNoticeView).
+            #
+            # This is the LIVE shape, the row `out.jsonl` carries. The persisted
+            # transcript records the same event as a synthetic `user` row of
+            # `<task-notification>` XML — the branch below — and both land here
+            # so a restored conversation and a streaming one show the same chip.
+            note = str(row.get("summary") or "").strip()
+            if note:
+                segments.append({"kind": "notice", "text": [note],
+                                 "status": str(row.get("status") or "")})
+        elif t == "user" and isinstance(content, str):
+            note = _task_notification(content)
+            if note:
+                segments.append({"kind": "notice", "text": [note["summary"]],
+                                 "status": note["status"]})
         elif t == "user" and isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
@@ -2475,6 +2531,33 @@ def _poll(run_id: str, file: str = "") -> dict:
     text_parts = []
     result_text = None
     new_session = ""
+    # `done` IS PER TURN, AND A `result` ONLY ENDS ONE WHILE NOTHING FOLLOWS IT
+    # (D406). One claude process can run several turns: a turn that started a
+    # background shell is woken by the harness when the command finishes — a
+    # `<task-notification>` prompt this page never sent — and everything the
+    # agent then says is written to this same `out.jsonl`, after the `result`
+    # that closed the first turn. `done` used to latch True on that first
+    # `result` and stay there for the life of the run, so the woken turn was
+    # reported as a finished one: no working line, no streaming, an answer that
+    # only appeared on the next reload (Akshil, 2026-08-21 — the chat "showed
+    # nothing" until a few "continue"s later).
+    #
+    # So the answer is "the last thing in this file is a finished turn", which
+    # goes back to False the moment the wake writes its first row, and the page's
+    # standing live-run watch attaches to it like any other run it did not start.
+    # The alternative — done only at process exit — was rejected for what it does
+    # to the COMPOSER: the process outlives the turn for as long as the
+    # background command runs (an hour is not unusual), and the chat would sit
+    # busy, queueing everything the user typed, over a run that is not saying
+    # anything.
+    #
+    # Liveness is sampled BEFORE the read, and that order is the point: a process
+    # that dies between these two lines is read as alive for one more poll
+    # (400ms, and the tail is on disk by then), where the reverse order could
+    # call a run done over a file whose last rows had not been flushed yet.
+    alive = _alive(run_dir)
+    saw_result = False   # at least one turn of this run has finished
+    idle = False         # ...and nothing has been said since
     done = False
     error = ""
     tokens_done = 0      # output tokens of finished messages this turn
@@ -2508,6 +2591,11 @@ def _poll(run_id: str, file: str = "") -> dict:
             continue  # half-written last line; next poll gets it
         parsed.append(row)
         t = row.get("type")
+        # Anything at all after a `result` is the run waking up for another turn
+        # (the harness's hooks fire first, then `init`, then the reply), so the
+        # quiet-verb window closes on the first row of any kind — see `idle`.
+        if t != "result":
+            idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
         # `api_retry` ends it: the live retry state has to be transient, or the
@@ -2559,7 +2647,8 @@ def _poll(run_id: str, file: str = "") -> dict:
                 if block == "tool_use":
                     phase = "tooling"
         elif t == "result":
-            done = True
+            saw_result = True
+            idle = True
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
@@ -2574,12 +2663,15 @@ def _poll(run_id: str, file: str = "") -> dict:
     if retry is not None:
         phase = "retrying"
 
-    if not done and not _alive(run_dir):
+    # Finished: a `result` with nothing after it (the turn ended and no wake has
+    # started another), or a process that is simply gone (D406).
+    done = idle or not alive
+
+    if not saw_result and done:
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
         # even if some text streamed first. Report it as an error regardless
         # of partial text, so the UI doesn't render a truncated reply as a
         # clean success and the session-record guard below skips it.
-        done = True
         try:
             tail = open(os.path.join(run_dir, "err.log"), encoding="utf-8",
                         errors="replace").read().strip()
@@ -2685,7 +2777,11 @@ def _poll(run_id: str, file: str = "") -> dict:
     # accumulated stream; fall back to `result` only when nothing streamed
     # (older CLI without --include-partial-messages).
     text = "".join(text_parts)
-    if not text and done and result_text and not error:
+    # `saw_result`, not `done`: the fallback is about the row that carries the
+    # text, and a run whose process is still up between turns (D406) has that
+    # row already — waiting for the exit would blank a delta-less turn's reply
+    # for as long as the run stays awake.
+    if not text and saw_result and result_text and not error:
         text = result_text
     # `segments` is the authoritative record of the turn; `text` is the flat
     # legacy field, kept byte-identical to what it has always been for the
@@ -3230,7 +3326,16 @@ def _history(file: str, session_id: str) -> dict:
             # never saw it — showing them a screenful of JSON they don't
             # recognise is the whole reason it is stripped here.
             text = _strip_app_state(text)
-            if text.strip() and not text.startswith(("<local-command", "<command-name")):
+            # Claude Code's own synthetic `user` records are not turns: nobody
+            # typed them and the reader has no use for their XML. Two of them
+            # were named literally here; the rest — `<task-notification>` the
+            # loudest, a whole notification block rendered as a message bubble —
+            # were not, so they arrived on screen verbatim (D406). One list now,
+            # the same `_MACHINERY_DROP` the session names are filtered by.
+            # Everything filtered here falls to `stretch`, where
+            # `_segments_from_rows` turns a task-notification into its chip and
+            # ignores the others.
+            if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
                 close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text,
                               "uuid": str(row.get("uuid") or "")})

@@ -775,6 +775,28 @@ def test_thinking_is_a_details_rendered_as_markdown(probe):
                for n in _nodes(block))
 
 
+# --- the background-task notice (D406) ---------------------------------------
+
+
+def test_a_notice_segment_is_a_plain_text_system_chip(probe):
+    """The harness's wake, drawn as one line. NEVER markdown: the summary quotes
+    a command line, and a stray backtick in it must not restyle the chip."""
+    got = probe.render([{"kind": "notice", "status": "completed",
+                         "text": 'Background command `sleep 30` completed'}])
+    chip = _by_class(got["tree"], "seg-notice")[0]
+    assert got["mdCalls"] == []
+    assert "Background command `sleep 30` completed" in chip["text"]
+    assert not any(n.get("html") for n in _nodes(chip))
+
+
+def test_a_notice_between_two_replies_keeps_them_apart(probe):
+    got = probe.render([{"kind": "text", "text": "starting"},
+                        {"kind": "notice", "text": "the job finished"},
+                        {"kind": "text", "text": "it passed"}])
+    kids = got["tree"]["children"]
+    assert [k["cls"] for k in kids] == ["seg-text", "seg-notice", "seg-text"]
+
+
 # --- default-collapse policy: everything folded, the user's click excepted ---
 #
 # The rule the page implements: EVERY collapsible card (tool chip, thinking
