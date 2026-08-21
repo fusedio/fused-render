@@ -1645,8 +1645,8 @@ def test_the_hub_path_still_sends_the_token_when_the_hub_serves_the_blob(
 
 # -- the model mirror: our own codepath for a suggested model --------------------
 #
-# `download_snapshot` is the ONE decision point, below all nine runner call
-# sites, so nothing in a runner changes. What lands on disk is a normal hf cache
+# `download_snapshot` is the ONE decision point, below every runner call
+# site, so nothing in a runner changes. What lands on disk is a normal hf cache
 # entry either way — which is the whole design — so these tests assert on the
 # LAYOUT and on which host was asked, never on an internal flag.
 

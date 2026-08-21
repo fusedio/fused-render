@@ -6072,7 +6072,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   capability is validated and used unchanged, so this governs only the omitted
   case.
 - **AI-5l** **A SUGGESTED model may be fetched from OUR OWN distribution, and any
-  doubt goes to the Hub** (D406). CloudFront's access logs are then the answer to
+  doubt goes to the Hub** (D418). CloudFront's access logs are then the answer to
   "did this user download a model", with no telemetry in the app at all — one
   `manifest.json` request per download attempt, made before a single byte moves,
   and logged even on a cache hit. Two objects, not a protocol:
@@ -6088,8 +6088,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   `.fused-fetch-<commit>.json` record — which is the whole design: the loaders,
   the Local tab's inventory, disk usage, deletion and the AI-5k fast path all keep
   working untouched, because what they read is a normal hf cache entry.
-  **The branch lives in `download_snapshot` alone**, below all nine runner call
-  sites, so no runner changed and none can forget it; it is skipped under
+  **The branch lives in `download_snapshot` alone**, below every runner call
+  site, so no runner changed and none can forget it; it is skipped under
   `**kwargs` for AI-5k's reason, that an argument the function does not know about
   changes what a download IS. **Every failure degrades to today's Hub path** — a
   404, a 5xx, a host that does not answer, a body that is not JSON, an unknown
