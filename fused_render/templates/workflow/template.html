@@ -315,6 +315,82 @@
          background: var(--bg); border: 1px solid var(--line); border-radius: 4px;
          padding: 4px 6px; max-height: 180px; overflow: auto; }
   .out.bad { color: var(--bad-fg); border-color: var(--bad-line); }
+  .out-note { color: var(--note-fg); font-size: 11px; margin-bottom: 3px; }
+
+  /* ---- a result, rendered as what it IS ----
+     A tool result was one `white-space: pre-wrap` blob of up to 8000 characters,
+     which is what `search_mail`'s JSON looks like: a wall. When the text parses
+     as JSON it is drawn as a tree instead, and an array of uniform objects as a
+     table — the two shapes an MCP tool actually answers with. Anything that does
+     not parse (prose, or a result the 8000-character cap cut mid-object) keeps
+     the blob, which is the honest rendering of text that is text. */
+  .jsonv { font-size: 11px; background: var(--bg); border: 1px solid var(--line);
+           border-radius: 4px; padding: 4px 6px; max-height: 260px; overflow: auto; }
+  .jsonv details { padding-left: 11px; }
+  .jsonv > details { padding-left: 0; }
+  .jsonv summary { cursor: pointer; color: var(--ink-3); }
+  .jsonv summary:hover { color: var(--ink-2); }
+  .jsonv summary b { color: var(--ink-2); font-weight: 400; }
+  .jsonv .kv { display: flex; gap: 6px; padding-left: 11px; }
+  .jsonv .k { color: var(--ink-3); flex: 0 0 auto; }
+  .jsonv .v { color: var(--ink-2); white-space: pre-wrap; word-break: break-word; min-width: 0; }
+  .jsonv .v.num { color: var(--accent-dim); }
+  .jsonv .v.nul { color: var(--ink-3); }
+  .jsonv .more { color: var(--ink-3); padding-left: 11px; }
+  .jtable { border-collapse: collapse; width: 100%; }
+  .jtable th { text-align: left; font-weight: 600; color: var(--ink-3);
+               border-bottom: 1px solid var(--line-strong); padding: 2px 8px 2px 0;
+               white-space: nowrap; }
+  .jtable td { border-bottom: 1px solid var(--line); padding: 2px 8px 2px 0;
+               color: var(--ink-2); max-width: 200px; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---- the output surface ----
+     A terminal step's result WAS reachable only by clicking the node after the
+     run: the one thing a workflow is for was the one thing the canvas did not
+     show. So a step with no outgoing edge carries its result on the canvas, in a
+     card hung under the node — absolutely positioned, so the node's own box (and
+     therefore every wire endpoint) is unchanged. */
+  .out-card {
+    position: absolute;
+    left: 0;
+    top: 100%;
+    margin-top: 10px;
+    width: 320px;
+    background: var(--surface);
+    border: 1px solid var(--good-line);
+    border-radius: 7px;
+    padding: 5px 7px 7px;
+    cursor: default;
+    user-select: text;
+  }
+  .out-card.bad { border-color: var(--bad-line); }
+  .oc-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--ink-3);
+    display: block;
+  }
+  .oc-shape { font-size: 11px; color: var(--ink-3); margin-bottom: 3px; }
+
+  /* The run's closing paragraph — the one thing that read the WHOLE run. It sits
+     on the stage rather than in `#world`, because it belongs to the run and not
+     to any one node, and a card that panned off with the graph would be a card
+     nobody finds again. */
+  #summary {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    width: 400px;
+    max-width: calc(100% - 24px);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    padding: 6px 8px 8px;
+  }
+  #summary .sum-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  #summary .sum-head .oc-title { flex: 1 1 auto; }
 
   .note {
     border: 1px solid var(--note-line);
@@ -384,6 +460,9 @@
       <div id="nodes"></div>
     </div>
     <div id="hint"></div>
+    <!-- The run's closing paragraph. On the stage, not in `#world`: it describes
+         the run rather than a node, and it must not pan away. -->
+    <div id="summary" hidden></div>
   </div>
   <aside id="inspector"><h2>Step</h2><div id="inspector-body" class="empty">Nothing selected.</div></aside>
 </main>
@@ -447,6 +526,12 @@ let runDone = false;
 // so a per-tick flag left the closing message silent about the one thing the
 // user then has to Save.
 let runLearned = false;
+// The run's closing paragraph, from `poll`'s `summary`. Held here rather than
+// merged into the document: it describes ONE run, and the document describes the
+// workflow — `observedOutput` is the only thing a run teaches the file (WC-6).
+let runSummary = "";
+let runSummaryTruncated = false;
+let summaryDismissed = false;
 // The selected node's run state as last DRAWN by the inspector. `renderInspector`
 // re-syncs it, so any full render (a selection change, an edit) counts as drawn
 // and the poll loop only redraws on a real change. See the poll loop.
@@ -826,10 +911,218 @@ function note(message, bad, actionLabel, action) {
   return box;
 }
 
+// ------------------------------------------------------- rendering a result
+
+// How much of a JSON document is drawn. A tool result is capped at 8000
+// characters by run.py, which is still a few thousand tree rows for a deeply
+// nested one; this is what stops a poll tick from spending its frame building
+// DOM nobody scrolls to.
+const TREE_MAX_ROWS = 600;
+const TREE_MAX_DEPTH = 8;
+// Rows past this in one array or object are summarised as "+N more" instead of
+// drawn. An output card is evidence, not a data viewer.
+const TREE_MAX_CHILDREN = 60;
+const TREE_MAX_COLUMNS = 12;
+const CELL_CAP = 160;
+
+// WHICH DISCLOSURES THE READER OPENED, ACROSS RE-RENDERS. `renderNodes` runs on
+// every poll tick, so a tree rebuilt from scratch would slam shut every second
+// while the run is still going. Keyed by a stable path (node id + the JSON path
+// to the value), and only DEVIATIONS from the default are stored, so the sets
+// stay small and a graph that is never touched records nothing.
+const treeOpened = new Set();
+const treeClosed = new Set();
+
+function jsonScalarClass(value) {
+  if (value === null) return "v nul";
+  if (typeof value === "number" || typeof value === "boolean") return "v num";
+  return "v";
+}
+
+function jsonScalarText(value) {
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  return String(value);
+}
+
+function cellText(value) {
+  const raw = (value !== null && typeof value === "object")
+    ? JSON.stringify(value) : jsonScalarText(value);
+  return raw.length > CELL_CAP ? raw.slice(0, CELL_CAP) + "…" : raw;
+}
+
+// The columns of an array of UNIFORM objects, or null. Uniform means every entry
+// is a plain object with the same key set — the shape `search_mail` answers with,
+// and the one case where a table says more than a tree. Anything ragged falls
+// back to the tree rather than being forced into a grid with holes in it.
+function uniformColumns(value) {
+  if (!Array.isArray(value) || !value.length) return null;
+  let columns = null;
+  for (const row of value.slice(0, TREE_MAX_CHILDREN)) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+    const keys = Object.keys(row);
+    if (!keys.length || keys.length > TREE_MAX_COLUMNS) return null;
+    if (columns === null) { columns = keys; continue; }
+    if (keys.length !== columns.length) return null;
+    for (const key of keys) if (!columns.includes(key)) return null;
+  }
+  return columns;
+}
+
+function jsonTable(value, columns) {
+  const wrap = text("div", "");
+  const table = text("table", "jtable");
+  // THEAD/TBODY explicitly. A `<tr>` appended straight onto a `<table>` through
+  // the DOM is not the same thing the HTML parser builds, and the row-grouping
+  // it lands in is not something to leave to the browser.
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  for (const column of columns) head.appendChild(text("th", "", column));
+  thead.appendChild(head);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  const rows = value.slice(0, TREE_MAX_CHILDREN);
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    for (const column of columns) {
+      const cell = text("td", "", cellText(row[column]));
+      cell.title = cell.textContent;
+      tr.appendChild(cell);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  if (value.length > rows.length) {
+    wrap.appendChild(text("div", "more", "+" + (value.length - rows.length) + " more rows"));
+  }
+  return wrap;
+}
+
+function jsonBranch(key, value, path, depth, budget) {
+  const isArray = Array.isArray(value);
+  const entries = isArray
+    ? value.map((v, i) => [String(i), v])
+    : Object.keys(value).map((k) => [k, value[k]]);
+  const columns = isArray ? uniformColumns(value) : null;
+
+  const details = document.createElement("details");
+  // Default: the top level open, everything below it closed. A reader's own
+  // toggle wins over the default and survives the next poll tick.
+  const open = treeOpened.has(path) ? true
+    : (treeClosed.has(path) ? false : depth === 0);
+  details.open = open;
+  details.addEventListener("toggle", () => {
+    if (details.open) { treeOpened.add(path); treeClosed.delete(path); }
+    else { treeClosed.add(path); treeOpened.delete(path); }
+  });
+  const summary = document.createElement("summary");
+  if (key !== null) summary.appendChild(text("b", "", key + " "));
+  summary.appendChild(document.createTextNode(
+    isArray ? "[ " + value.length + (value.length === 1 ? " item ]" : " items ]")
+            : "{ " + entries.length + (entries.length === 1 ? " key }" : " keys }")));
+  details.appendChild(summary);
+  if (columns && columns.length) {
+    details.appendChild(jsonTable(value, columns));
+    return details;
+  }
+  const shown = entries.slice(0, TREE_MAX_CHILDREN);
+  for (const [childKey, childValue] of shown) {
+    if (budget.rows <= 0) break;
+    details.appendChild(jsonRow(childKey, childValue, path + "/" + childKey,
+      depth + 1, budget));
+  }
+  if (entries.length > shown.length) {
+    details.appendChild(text("div", "more",
+      "+" + (entries.length - shown.length) + " more"));
+  }
+  return details;
+}
+
+function jsonRow(key, value, path, depth, budget) {
+  budget.rows -= 1;
+  const nested = value !== null && typeof value === "object";
+  if (nested && depth < TREE_MAX_DEPTH && budget.rows > 0) {
+    return jsonBranch(key, value, path, depth, budget);
+  }
+  const row = text("div", "kv");
+  if (key !== null) row.appendChild(text("span", "k", key));
+  row.appendChild(text("span", nested ? "v" : jsonScalarClass(value),
+    nested ? cellText(value) : jsonScalarText(value)));
+  return row;
+}
+
+// One tool result, drawn as what it is. `opts.truncated` is the field run.py
+// sets when its 8000-character cap actually bit: a capped JSON payload is almost
+// never valid JSON, and "truncated" is the true thing to say about it where a
+// parse error would blame the tool for the cap.
+function renderOutput(box, value, opts) {
+  opts = opts || {};
+  const raw = String(value === null || value === undefined ? "" : value);
+  const blob = () => box.appendChild(
+    text("div", "out" + (opts.bad ? " bad" : ""), raw));
+  if (opts.truncated) {
+    box.appendChild(text("div", "out-note",
+      "Truncated — this is the first " + raw.length.toLocaleString() +
+      " characters, as text."));
+    blob();
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    blob();
+    return;
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    // A bare number or string is JSON, and a tree of one row says less about it
+    // than the text does.
+    blob();
+    return;
+  }
+  const tree = text("div", "jsonv");
+  tree.appendChild(jsonBranch(null, parsed, opts.path || "r", 0, { rows: TREE_MAX_ROWS }));
+  box.appendChild(tree);
+}
+
+// The `observedOutput` shape line — `run.py::_observed`'s summary, which is the
+// part that gets SAVED into the document. Shared by the inspector and the canvas
+// card so the two cannot drift.
+function shapeLine(observed) {
+  return text("div", "oc-shape", observed.kind +
+    (observed.keys && observed.keys.length
+      ? " { " + observed.keys.join(", ") + " }" : "") +
+    (observed.count ? " · " + observed.count : ""));
+}
+
+// THE RUN'S CLOSING PARAGRAPH. `run.py` used to read the `result` row only when
+// it carried an error and throw it away otherwise, so on every successful run
+// the one piece of text that had read the whole run — which steps ran, which
+// were skipped and why — was discarded. It is now kept, and this is where it
+// lands: a card on the stage, dismissible, because it belongs to the run rather
+// than to the document and the next Run replaces it.
+function renderSummary() {
+  const box = el("summary");
+  box.innerHTML = "";
+  if (!runSummary || summaryDismissed) { box.hidden = true; return; }
+  box.hidden = false;
+  const head = text("div", "sum-head");
+  head.appendChild(text("span", "oc-title", "Run summary"));
+  const close = text("button", "btn", "×");
+  close.title = "Dismiss";
+  close.setAttribute("aria-label", "Dismiss the run summary");
+  close.addEventListener("click", () => { summaryDismissed = true; renderSummary(); });
+  head.appendChild(close);
+  box.appendChild(head);
+  renderOutput(box, runSummary, { truncated: runSummaryTruncated, path: "summary" });
+}
+
 function renderAll() {
   renderPalette();
   renderNodes();
   renderInspector();
+  renderSummary();
   updateButtons();
 }
 
@@ -855,6 +1148,10 @@ function renderNodes() {
   // Derived here by the SAME rule — a topological order, stable on document
   // order — so the canvas and the prompt cannot disagree about what step 2 is.
   const order = executionOrder();
+  // A TERMINAL step is one nothing runs after, and its result is the workflow's
+  // answer. A graph can have several — a branch that fans out ends in more than
+  // one — so this is a set and every one of them gets a card.
+  const feedsSomething = new Set(doc.edges.map((e) => e.from));
   doc.nodes.forEach((node) => {
     const div = text("div", "node");
     div.dataset.id = node.id;
@@ -865,6 +1162,11 @@ function renderNodes() {
     div.setAttribute("role", "button");
     div.setAttribute("tabindex", "0");
     div.addEventListener("keydown", (event) => {
+      // ONLY THE NODE'S OWN KEYS. The output card hangs inside this element and
+      // holds focusable `<summary>` disclosures; without this guard, Space on
+      // one of them would be swallowed here and re-select the node instead of
+      // opening the branch the reader was on.
+      if (event.target !== div) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       select(node.id);
@@ -934,6 +1236,9 @@ function renderNodes() {
       (node.label || node.tool || "Prompt") + " — " +
       (prompt ? "prompt step" : node.tool) +
       (state ? " (" + state.status + ")" : ""));
+    if (!feedsSomething.has(node.id) && state && (state.output || state.error)) {
+      div.appendChild(outputCard(node, state));
+    }
     div.addEventListener("pointerdown", (e) => onNodePointerDown(e, node));
     nodesEl.appendChild(div);
   });
@@ -942,6 +1247,25 @@ function renderNodes() {
   // the document — a node's height depends on how many inputs it shows. So the
   // wire pass runs after layout rather than guessing a box size.
   requestAnimationFrame(renderWires);
+}
+
+// The card a terminal step wears once it has answered. A child of the node so it
+// travels with it under a drag; absolutely positioned so the node's own box —
+// and therefore every wire endpoint — is unchanged by it.
+function outputCard(node, state) {
+  const card = text("div", "out-card" + (state.error ? " bad" : ""));
+  card.appendChild(text("span", "oc-title", state.error ? "Failed with" : "Output"));
+  if (!state.error && node.observedOutput) card.appendChild(shapeLine(node.observedOutput));
+  renderOutput(card, state.error || state.output, {
+    bad: !!state.error,
+    truncated: !state.error && !!state.truncated,
+    path: "card:" + node.id,
+  });
+  // The card is TEXT, not a handle. Without this, selecting a line of the result
+  // drags the node out from under the pointer — and a click that missed the
+  // node would fall through to the stage and start a pan.
+  card.addEventListener("pointerdown", (event) => event.stopPropagation());
+  return card;
 }
 
 function shortApp(folder) {
@@ -1281,13 +1605,12 @@ function renderInspector() {
   if (state && (state.output || state.error)) {
     const box = text("div", "edge-row");
     box.appendChild(text("label", "", state.error ? "Failed with" : "Returned"));
-    if (node.observedOutput) {
-      box.appendChild(text("div", "n-tool", node.observedOutput.kind +
-        (node.observedOutput.keys && node.observedOutput.keys.length
-          ? " { " + node.observedOutput.keys.join(", ") + " }" : "")));
-    }
-    box.appendChild(text("div", "out" + (state.error ? " bad" : ""),
-      state.error || state.output));
+    if (!state.error && node.observedOutput) box.appendChild(shapeLine(node.observedOutput));
+    renderOutput(box, state.error || state.output, {
+      bad: !!state.error,
+      truncated: !state.error && !!state.truncated,
+      path: "insp:" + node.id,
+    });
     body.appendChild(box);
   }
 
@@ -1526,6 +1849,14 @@ async function run() {
   runNodes = {};
   runDone = false;
   runLearned = false;
+  // A new run's summary is not written yet, and last run's is not about it.
+  runSummary = "";
+  runSummaryTruncated = false;
+  summaryDismissed = false;
+  renderSummary();
+  // Every open disclosure was opened over a result this run is about to replace.
+  treeOpened.clear();
+  treeClosed.clear();
   // Retire any loop still in flight from a previous run before starting this
   // one's — the timer AND the generation, since an awaiting tick has no timer
   // to clear.
@@ -1586,6 +1917,11 @@ async function poll() {
     }
   }
   if (learned) { runLearned = true; mark(); }
+  if ((out.summary || "") !== runSummary) {
+    runSummary = out.summary || "";
+    runSummaryTruncated = !!out.summaryTruncated;
+    renderSummary();
+  }
   renderNodes();
   // THE INSPECTOR IS NOT REBUILT ON A TIMER. `renderInspector` starts with
   // `innerHTML = ""`, so calling it unconditionally every 1.5 s destroyed focus
