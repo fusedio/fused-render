@@ -7010,7 +7010,30 @@ an AI Models page that could say what was on disk but not what was *running*.
   happened to carry both a `model_index.json` and a root `.gguf` cannot read
   as this engine's. `torch_text._weights_here`'s refusal — which used to end
   at "a repo of GGUF files is llama.cpp's format" with nowhere to go — now
-  names this engine as the answer.
+  names this engine as the answer. **A fifth text runner, `llamacpp-text-vulkan`,
+  is this engine's GPU-accelerated variant on NVIDIA and AMD** (D406's
+  addendum), registered immediately below `llamacpp-text` and still below
+  every `transformers-text` row, sharing `runners/llama_text.py` and
+  `catalog.SUGGESTIONS["llamacpp-text"]` unchanged — a GGUF is one format and
+  one curated list whichever wheel loads it. It exists because the CPU
+  index's acceleration story is Apple-only (Metal, via that wheel's own
+  linked `libggml-metal.dylib`) and the maintainer publishes a separate
+  `vulkan` index with no ROCm/HIP index alongside it, making Vulkan the one
+  path that reaches both vendors. That index publishes wheels for exactly
+  two platform tags at the shared `0.3.29` pin —
+  `manylinux2014_x86_64.manylinux_2_17_x86_64` and `win_amd64`, audited by
+  D406's own method and passing — so `registry._vulkan` refuses every other
+  architecture outright. Where it differs from `_cuda`/`_rocm` is WHY a
+  missing device still needs a hard gate at all: a Vulkan wheel links its
+  GPU backend directly (`DT_NEEDED libvulkan.so.1` in `libggml-vulkan.so`,
+  `libggml.so`/`libllama.so` needing that in turn; the identical import on
+  `vulkan-1.dll` on Windows), so a machine with the wheel installed but no
+  Vulkan loader on its library path fails `import llama_cpp` itself rather
+  than degrading — refused before `uv sync` ever runs, the same way a
+  missing NVIDIA/AMD device already is. A loader present with no driver ICD
+  registered is not a load failure (the wheel also bundles ggml's ordinary
+  CPU backend, which answers instead), so that half is refused only for
+  buying nothing over the cheaper CPU-index wheel, not for being broken.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
