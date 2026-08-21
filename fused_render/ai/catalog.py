@@ -431,15 +431,17 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Qwen3.5 9B (Q8_0)",
             "size_gb": 9.5,
             "note": "The 9B at higher fidelity than Q4_K_M above, for nearly "
-                    "double the download.",
+                    "double the download — bigger than most laptop GPUs' "
+                    "VRAM, so expect a slower partial or CPU load there.",
         },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
-                    "the download — expect a bigger quality hit than the "
-                    "9B above.",
+                    "the download — expect a bigger quality hit than the 9B "
+                    "above, and a laptop GPU to run it mostly or entirely on "
+                    "the CPU rather than resident in VRAM.",
         },
     ],
     "diffusers-image": [

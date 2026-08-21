@@ -121,15 +121,7 @@ def test_a_repo_id_with_two_recipes_and_nothing_cached_is_refused_by_name(worker
 def test_load_also_resolves_a_repo_id_the_same_way(worker, monkeypatch):
     """`load`'s own curation check must not regress independently of
     `download`'s — both call `_resolve_model_id`."""
-    fake_llama_cpp = types.ModuleType("llama_cpp")
-
-    class Llama:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            self.metadata = {}
-
-    fake_llama_cpp.Llama = Llama
-    monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+    _fake_llama_cpp(monkeypatch)
     worker.worker_base.cached_files.add(
         ("unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q3_K_XL.gguf"))
 
@@ -450,22 +442,116 @@ def test_a_disconnected_write_propagates_with_nothing_left_running(worker):
 # -- device and memory --------------------------------------------------------
 
 
-def test_load_reports_cpu_unconditionally(worker, monkeypatch):
-    """No probe: unlike torch, there is no second device this process could
-    have landed on, so the field is set the same way every time."""
+def _fake_llama_cpp(monkeypatch, *, gpu_offload=False, fail_for=()):
+    """A fake `llama_cpp` module good enough for the offload-decision tests.
+
+    `gpu_offload` stands in for `llama_supports_gpu_offload()` — the real
+    llama.cpp API `load()` now asks before touching `n_gpu_layers`. `fail_for`
+    is the set of `n_gpu_layers` values this fake's `Llama` refuses to
+    construct with (raising, the same shape a real too-large GPU buffer
+    allocation raises) — everything else succeeds.
+    """
     fake_llama_cpp = types.ModuleType("llama_cpp")
+    fake_llama_cpp.llama_supports_gpu_offload = lambda: gpu_offload
+    calls = []
 
     class Llama:
         def __init__(self, **kwargs):
+            calls.append(kwargs["n_gpu_layers"])
+            if kwargs["n_gpu_layers"] in fail_for:
+                raise ValueError("Failed to load model from file: test")
             self.kwargs = kwargs
             self.metadata = {}
 
     fake_llama_cpp.Llama = Llama
+    fake_llama_cpp.calls = calls
     monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+    return fake_llama_cpp
+
+
+def test_load_reports_cpu_when_the_build_has_no_gpu_backend_at_all(worker, monkeypatch):
+    """`llama_supports_gpu_offload()` False (a CPU-only build, or a Vulkan
+    build with no usable driver) means exactly one attempt at `n_gpu_layers=0`
+    — no retry loop to enter, since there is no smaller candidate than CPU."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=False)
 
     worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
     assert worker.worker_base.recorded == {"device": "cpu"}
     assert worker._loaded["llm"].kwargs["model_path"] == "/blobs/model.gguf"
+    assert fake.calls == [0]
+
+
+def test_load_offloads_to_the_gpu_when_the_build_supports_it(worker, monkeypatch):
+    """The blocking defect this test guards against: `n_gpu_layers` used to
+    never be passed at all, which `llama-cpp-python` defaults to `0` — a
+    182MB Vulkan wheel that only ever ran on the CPU. A fake nonexistent path
+    means `formats.gguf_block_count` cannot read a header, so the schedule is
+    the two-tier `(-1, 0)` and the first attempt (`-1`, llama.cpp's own "all
+    layers" sentinel) succeeds outright."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True)
+
+    worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+    assert fake.calls == [-1]
+    assert worker._loaded["llm"].kwargs["n_gpu_layers"] == -1
+    assert worker.worker_base.recorded == {"device": "gpu"}
+
+
+def test_load_backs_off_to_cpu_when_full_offload_does_not_fit(worker, monkeypatch):
+    """The VRAM-sizing probe: a too-large GPU request raises (the same shape
+    a real allocation failure does — caught, not a process abort, per the
+    module docstring), and `load()` must retry smaller rather than let the
+    Load button fail outright. With no header to fraction against, the only
+    smaller candidate is `0`, so this also pins the "slow but working beats
+    an OOM'd Load" policy in its plainest form."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={-1})
+
+    worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+    assert fake.calls == [-1, 0]
+    assert worker.worker_base.recorded == {"device": "cpu"}
+
+
+def test_load_reports_partial_offload_when_fewer_than_all_layers_fit(
+        worker, monkeypatch, tmp_path):
+    """A real GGUF header this time (32 layers, `qwen35.block_count`), so the
+    schedule has an intermediate step between "all" and "0" — and landing on
+    it must say so rather than claiming a full GPU load."""
+    import struct
+
+    def make_gguf(pairs):
+        buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
+            struct.pack("<Q", len(pairs))
+        for key, value_type, value in pairs:
+            buf += struct.pack("<Q", len(key.encode())) + key.encode()
+            buf += struct.pack("<I", value_type)
+            if value_type == 8:  # string
+                buf += struct.pack("<Q", len(value.encode())) + value.encode()
+            else:  # uint32
+                buf += struct.pack("<I", value)
+        return buf
+
+    gguf_path = tmp_path / "model.gguf"
+    gguf_path.write_bytes(make_gguf([
+        ("general.architecture", 8, "qwen35"),
+        ("qwen35.block_count", 4, 32),
+    ]))
+
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={32})
+
+    worker.load("Qwen3.5-9B-Q4_K_M.gguf", str(gguf_path))
+    # 32 (all) fails, the next step in the schedule (2/3 of 32 = 21) succeeds.
+    assert fake.calls == [32, 21]
+    assert worker.worker_base.recorded == {"device": "gpu (partial)"}
+
+
+def test_load_does_not_swallow_a_failure_no_smaller_offload_can_fix(worker, monkeypatch):
+    """Every candidate failing — including `0` — is not a sizing problem, it
+    is a real one (a corrupt download, an unreadable file), and must reach
+    the caller rather than being retried forever or silently eaten."""
+    fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={-1, 0})
+
+    with pytest.raises(ValueError, match="Failed to load model"):
+        worker.load("Qwen3.5-9B-Q4_K_M.gguf", "/blobs/model.gguf")
+    assert fake.calls == [-1, 0]
 
 
 def test_memory_defers_entirely_to_rss(worker):

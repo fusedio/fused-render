@@ -315,6 +315,45 @@ def test_gguf_architecture_is_read_from_a_real_gguf_header(tmp_path):
     assert formats.gguf_architecture(missing_path) is None
 
 
+def test_gguf_block_count_is_read_from_a_real_gguf_header(tmp_path):
+    """`gguf_block_count`, the layer count `llama_text.py`'s offload backoff
+    sizes itself against — verified against real downloaded headers rather
+    than assumed: `unsloth/Qwen3.5-4B-GGUF` and `unsloth/Qwen3.5-9B-GGUF`
+    both carry `qwen35.block_count = 32`, and `unsloth/Qwen3.8-27B-GGUF`
+    carries `qwen35.block_count = 65`, all checked 2026-08-21. Matched by
+    SUFFIX (`.block_count`), not by requiring the caller to already know the
+    architecture prefix — see the function's own docstring."""
+    import struct
+
+    def make_gguf(pairs):
+        buf = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + \
+            struct.pack("<Q", len(pairs))
+        for key, value_type, value in pairs:
+            buf += struct.pack("<Q", len(key.encode())) + key.encode()
+            buf += struct.pack("<I", value_type)
+            if value_type == 8:  # GGUF string type
+                buf += struct.pack("<Q", len(value.encode())) + value.encode()
+            else:  # uint32
+                buf += struct.pack("<I", value)
+        return buf
+
+    with_layers = tmp_path / "with_layers.gguf"
+    with_layers.write_bytes(make_gguf([
+        ("general.architecture", 8, "qwen35"),
+        ("qwen35.block_count", 4, 32),
+        ("qwen35.context_length", 4, 262144),
+    ]))
+    no_layers = tmp_path / "no_layers.gguf"
+    no_layers.write_bytes(make_gguf([("general.architecture", 8, "qwen35")]))
+    bad_path = tmp_path / "bad.gguf"
+    bad_path.write_bytes(b"NOTGGUF")
+
+    assert formats.gguf_block_count(str(with_layers)) == 32
+    assert formats.gguf_block_count(str(no_layers)) is None
+    assert formats.gguf_block_count(str(bad_path)) is None
+    assert formats.gguf_block_count(str(tmp_path / "does-not-exist.gguf")) is None
+
+
 def test_a_gguf_inside_a_subfolder_is_not_a_root_level_snapshot():
     """`names` is the snapshot's TOP-LEVEL listing only (`ai_models.py` builds
     it with `os.listdir`, never a recursive walk) — a GGUF one directory down,
