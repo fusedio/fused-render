@@ -428,10 +428,10 @@ def speaker_for(start, end, turns, spans=None):
     labelled by its words.
 
     **None means "score the whole span", and that is the default on purpose.**
-    `faster_whisper`, `parakeet_mlx` and a non-VAD `mlx_whisper` run drop no
-    silence out of the middle of a segment, so for them a span is contiguous and
-    a mask could only be a no-op with a risk attached. They pass nothing and are
-    byte-identical to before this argument existed.
+    `faster_whisper` and a non-VAD `mlx_whisper` run drop no silence out of the
+    middle of a segment, so for them a span is contiguous and a mask could only
+    be a no-op with a risk attached. They pass nothing and are byte-identical
+    to before this argument existed.
 
     **Summed PER SPEAKER, not per turn.** One speaker can hold several turns
     inside one segment (a short interjection splits theirs in two), and taking

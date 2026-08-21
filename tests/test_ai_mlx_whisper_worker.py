@@ -232,8 +232,9 @@ def make_av(seconds=2.0, has_audio=True, samples=None):
 
     `samples` overrides `seconds` for the case measured in a handful of them — a
     file so short its duration rounds to zero, which is the shape that reached
-    the decode loop as `(0.0, None)`. Spelled the way `parakeet_mlx`'s harness
-    spells it, since it is the same file and the same bug.
+    the decode loop as `(0.0, None)`. Spelled the way the withdrawn
+    `parakeet_mlx` runner's harness (D406) spelled it, since it was the same
+    file and the same bug.
     """
     count = int(16000 * seconds) if samples is None else int(samples)
     flush = min(160, count)
@@ -1192,11 +1193,10 @@ def test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript(
     loop would have skipped in one line came back as a traceback on the job row
     instead of an empty transcript.
 
-    `parakeet_mlx/worker.py` already fixed exactly this, with two names for the
-    same seconds; this is the same split ported, and this test is its twin
-    (`test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript` over
-    there). Both routes into the clip list are driven, because both produced the
-    same `(0.0, None)`: a `None` from the detector and the `vad: false` skip.
+    The withdrawn `parakeet_mlx/worker.py` (D406) already fixed exactly this,
+    with two names for the same seconds — this is that same split, ported.
+    Both routes into the clip list are driven, because both produced the same
+    `(0.0, None)`: a `None` from the detector and the `vad: false` skip.
     """
     worker, transcribe = loaded(windows=(100,), samples=40,
                                 segments=[_segment(0.0, 1.0, "hi")])
