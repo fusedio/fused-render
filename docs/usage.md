@@ -183,10 +183,10 @@ where a first model comes from.
     loaded for its text, and its picture-reading half simply goes unused.
   - **Every kind of model runs on every supported desktop platform**, on the
     backend that suits it. On Apple Silicon that is MLX throughout — MLX LM for
-    chat, MLX FLUX for images, MLX Whisper for transcription (with Parakeet TDT
-    as an opt-in). Everywhere else, and on a Mac whose MLX backend is
-    unavailable, chat and images run on PyTorch and transcription on
-    CTranslate2. The Discover tab names which backend a suggestion will load on,
+    chat, MLX FLUX for images, MLX Whisper for transcription. Everywhere else,
+    and on a Mac whose MLX backend is unavailable, chat and images run on
+    PyTorch and transcription on CTranslate2. The Discover tab names which
+    backend a suggestion will load on,
     because the shortlists differ — an MLX checkpoint is packed for Metal and
     will not load on a PC, so you are never offered one there.
   - **The PyTorch backends come in three builds, and the default is the CPU

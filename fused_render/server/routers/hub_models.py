@@ -255,9 +255,10 @@ _UNRUNNABLE_LIBRARIES = frozenset({
     # Graph formats for other runtimes entirely. No runner imports any of them.
     "litert", "tflite", "coreml", "onnx", "openvino", "unity-sentis",
     "keras", "tf-keras",
-    # Speech stacks that are not the three this app has: a `.nemo` archive is
-    # the case worth naming, since `parakeet-mlx` reads the MLX CONVERSION of
-    # one (`library_name: "mlx"`) and never the archive itself.
+    # Speech stacks that are not the two this app has. `nemo` used to need a
+    # caveat here — `parakeet-mlx` read the MLX CONVERSION of a NeMo export
+    # (`library_name: "mlx"`), never the archive itself — but D406 withdrew
+    # that runner, so a `.nemo` archive is unloadable with no exception now.
     "nemo", "espnet", "speechbrain", "k2",
     # Classical NLP toolkits, which publish under supported pipeline tags.
     "spacy", "fasttext", "flair", "stanza", "allennlp", "sklearn", "paddlenlp",
