@@ -4216,6 +4216,31 @@ def test_onProgress_is_exempt_from_the_image_unknown_key_check():
     assert settled["ok"] is True, settled
 
 
+def test_the_bridge_checks_the_envelope_BEFORE_the_prompt_field():
+    """Ordering, matching the server: a call with an unknown option AND no
+    `prompt` must learn about the option, not about the missing prompt —
+    "add a prompt" would "fix" the error and land the caller right back in
+    the silent-drop illusion this change exists to end."""
+    settled = _run_ai_image(opts='{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    # The field error's specific text never appears — asserting the bare
+    # word "prompt" would pass by accident, since it is in the accepted-set
+    # listing too.
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridge_names_unknown_image_options_SORTED():
+    """The server's `_reject_unknown` sorts; the bridge must match, or the
+    same two-key mistake reads in a different order depending on how the
+    caller happened to write the object literal — the two layers' messages
+    stop being comparable."""
+    settled = _run_ai_image(
+        opts='{prompt: "a fox", strength: 0.6, image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image', 'strength'" in settled["message"]
+
+
 def _run_ai_transcribe_opts_only(opts):
     return _run_ai_transcribe('Promise.resolve(JSON.stringify({text: "hi", segments: []}))',
                               '{state: "done"}', opts=opts)
@@ -4241,6 +4266,15 @@ def test_onProgress_and_onSegment_are_exempt_from_the_transcribe_unknown_key_che
     settled = _run_ai_transcribe_opts_only(
         '{path: "a.m4a", onProgress: () => {}, onSegment: () => {}}')
     assert settled["ok"] is True, settled
+
+
+def test_the_bridge_checks_the_transcribe_envelope_BEFORE_the_path_field():
+    """Same ordering fix as `aiImage`: an unknown option and a missing
+    `path` must report the option, not the missing field."""
+    settled = _run_ai_transcribe_opts_only('{image: "photo.png"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'image' is not an option" in settled["message"]
+    assert "must be a non-empty string" not in settled["message"]
 
 
 def test_the_bridges_accepted_image_keys_match_the_servers_constant():
