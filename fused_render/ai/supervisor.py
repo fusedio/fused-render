@@ -1193,6 +1193,33 @@ _REAPER_TICK_S = 30.0
 _reaper_thread: threading.Thread | None = None
 
 
+#: Margin added to a call's own request timeout before a still-positive
+#: `in_flight` counter counts as LEAKED rather than busy. Generous on purpose:
+#: this only has to be bigger than the slop between "the worker replied" and
+#: "the supervisor finished decrementing", not tight.
+_LEAK_CEILING_MARGIN_S = 300.0
+
+
+def _leak_ceiling(capability: str, window: float) -> float:
+    """How stale `last_activity` must be, for a WORKER WITH `in_flight > 0`,
+    before it counts as leaked rather than busy (see `idle_workers`).
+
+    Derived from the request timeout that actually bounds a call on this
+    capability — `TRANSCRIBE_TIMEOUT_S` for `SPEECH_TO_TEXT`,
+    `GENERATE_TIMEOUT_S` for text and image otherwise — plus a margin: past
+    that bound `_worker_request` itself has already raised, so a counter
+    still reading positive cannot be a slow answer, only a leaked one.
+
+    `max(window, …)` rather than the timeout alone: a hand-set idle window
+    already longer than the request timeout (someone dialling the reaper out
+    to hours) must not be SHORTENED for a busy worker by this rule — the
+    ceiling for a busy worker is never tighter than the ceiling for an idle
+    one.
+    """
+    timeout = TRANSCRIBE_TIMEOUT_S if capability == registry.SPEECH_TO_TEXT else GENERATE_TIMEOUT_S
+    return max(window, timeout + _LEAK_CEILING_MARGIN_S)
+
+
 def idle_workers(now: float) -> list[Worker]:
     """Ready workers the idle window (AI-13) says to unload, evaluated against
     `now`.
@@ -1210,14 +1237,23 @@ def idle_workers(now: float) -> list[Worker]:
     (weights-only downloads, which never enter `_workers` at all — see its
     docstring) are untouched for the same reason.
 
-    **`in_flight` does not exempt a worker past its own idle window.** Every
-    yielded chunk re-stamps `last_activity` (`_touch`), so a genuinely live
-    stream is never stale — but a page that abandoned a stream without
-    closing it would otherwise pin `in_flight` at 1 forever, worse than no
-    idle unload at all (the leak the counter could introduce). One predicate,
-    the age of `last_activity` against the window, covers both a
-    busy-and-fresh worker (spared) and a leaked-and-stale one (reaped): no
-    separate "but it's busy" exemption to get wrong.
+    **`in_flight > 0` DOES exempt a worker past its own idle window, up to a
+    separate leak ceiling — this is NOT collapsible into one predicate.** The
+    tempting simplification is "every chunk re-stamps `last_activity`, so a
+    live call is never stale, so `in_flight` needs no exemption at all" — true
+    for `generate_text`, and **only** for `generate_text`. `generate_image`
+    and `generate_transcript` are single blocking `_worker_request` calls:
+    `_in_use` stamps once on entry and nothing ticks again until the reply
+    comes back, which can be up to `GENERATE_TIMEOUT_S` (900s) or
+    `TRANSCRIBE_TIMEOUT_S` (4h) later. Collapsing the predicate reaps a
+    90-minute transcription at the 10-minute mark, mid-decode — `_terminate`
+    kills the very process the request is waiting on, which is exactly the
+    failure `generate_transcript`'s lock-ordering comment is written to avoid
+    ("lost its transcript, failed its row with 'the transcription process did
+    not answer'"). So a busy worker is spared until `_leak_ceiling` — well
+    past any legitimate call's own timeout — and only THEN does a
+    still-positive `in_flight` mean a leaked stream (an abandoned
+    `generate_text` iterator) rather than a slow answer.
 
     The preference is read fresh on every call, not cached — a window edited
     mid-session, or an env override that comes and goes, applies on the very
@@ -1230,8 +1266,15 @@ def idle_workers(now: float) -> list[Worker]:
         return []
     window = minutes * 60
     with _lock:
-        return [w for w in _workers.values()
-                if w.state == "ready" and now - w.last_activity >= window]
+        idle = []
+        for w in _workers.values():
+            if w.state != "ready":
+                continue
+            age = now - w.last_activity
+            bound = _leak_ceiling(w.capability, window) if w.in_flight > 0 else window
+            if age >= bound:
+                idle.append(w)
+        return idle
 
 
 def reap_idle(now: float) -> list[str]:

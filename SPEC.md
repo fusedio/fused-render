@@ -7012,29 +7012,42 @@ an AI Models page that could say what was on disk but not what was *running*.
   one. The rate lives in the page's own state (not the prefs store, not the
   server): it is a what-if a reader is doing on numbers in front of them, and
   persisting it would make a guess look like a setting the app stands behind.
-- **AI-13** **A resident local model's tenancy is TIME-BOUNDED: nothing that has
-  used it for ten minutes (default) unloads itself, and the next `fused.ai(...)`
-  reloads it exactly as a cold first call already does.** Before this, the one
-  way a model's gigabytes came back was the user closing the app or picking a
-  different one — a page opened once at 9am and never used again holds its
-  weights until quit. `fused_render/ai/supervisor.py` stamps `last_activity` and
-  an `in_flight` counter on every `Worker` (`_in_use`, wrapped around all three
-  generation paths — `generate_text`, `generate_image`, `generate_transcript` —
-  and `_touch` re-stamping on every yielded chunk of a stream), and a reaper
-  thread ticks a pure `reap_idle(now)` predicate against the table roughly every
-  30s, unloading through the ordinary `unload()` (now taking a `reason`, so the
-  job row reads "Unloaded after 10 min idle" rather than looking like a crash).
-  **Only `state == "ready"` is eligible** — a `starting`/`venv`/`downloading`/
+- **AI-13** **A resident local model's tenancy is TIME-BOUNDED: a model
+  nothing has used for ten minutes (default) unloads itself, and the next
+  `fused.ai(...)` reloads it exactly as a cold first call already does.**
+  Before this, the one way a model's gigabytes came back was the user closing
+  the app or picking a different one — a page opened once at 9am and never
+  used again holds its weights until quit. `fused_render/ai/supervisor.py`
+  stamps `last_activity` and an `in_flight` counter on every `Worker`
+  (`_in_use`, wrapped around all three generation paths — `generate_text`,
+  `generate_image`, `generate_transcript` — and `_touch` re-stamping on every
+  yielded chunk of a stream), and a reaper thread ticks a pure `reap_idle(now)`
+  predicate against the table roughly every 30s, unloading through the
+  ordinary `unload()` (now taking a `reason`, so the job row reads "Unloaded
+  after 10 min idle" rather than looking like a crash). **Only
+  `state == "ready"` is eligible** — a `starting`/`venv`/`downloading`/
   `loading` worker (a 40-minute `uv sync`, an 8GB pull) is not holding a
   finished model, and killing it mid-build is hostile, not a memory win; a
   weights-only fetch (`_fetch_workers`) is a separate table this never touches
-  for the same reason `evict_stale_engines` leaves it alone. **`in_flight` does
-  not exempt a worker past its own idle window**: every yielded chunk re-stamps
-  `last_activity`, so a genuinely live stream — a 90-minute transcription
-  included — is never stale, but a page that abandons a stream without closing
-  it would otherwise pin the counter at 1 forever, which is worse than no idle
-  unload at all. One predicate, the age of `last_activity` against the window,
-  covers both cases. The window is a preference, `ai_idle_unload_minutes`
+  for the same reason `evict_stale_engines` leaves it alone. **`in_flight`
+  exempts a worker past its own idle window, but only up to a separate LEAK
+  CEILING — one predicate cannot cover both, because the three generation
+  paths are not symmetric.** `generate_text` streams and re-stamps
+  `last_activity` on every chunk, so a genuinely live call is never stale; but
+  `generate_image` and `generate_transcript` are single BLOCKING
+  `_worker_request` calls that go quiet for their whole duration — `_in_use`
+  stamps once on entry and nothing ticks again until the reply arrives, which
+  can be `GENERATE_TIMEOUT_S` (900s) or `TRANSCRIBE_TIMEOUT_S` (4h) later. A
+  predicate that judged `in_flight` purely by `last_activity`'s age against the
+  idle window would reap a 90-minute transcription at the ten-minute mark,
+  mid-decode — `_terminate` killing the very process the request is still
+  waiting on. So `_leak_ceiling(capability, window)` derives a second, longer
+  bound from the request timeout that actually governs the call (plus a
+  margin, and never less than the idle window itself), and a busy worker is
+  spared until THAT bound: past it, the request itself would already have
+  raised, so a still-positive `in_flight` can only be a leaked stream (a page
+  that abandoned a `generate_text` iterator without closing it) rather than a
+  legitimately slow answer. The window is a preference, `ai_idle_unload_minutes`
   (`shell/prefs.py`, default 10, `0` = never, `FUSED_RENDER_AI_IDLE_MINUTES`
   overrides it the same way `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides call
   retention), re-read fresh on every reaper tick and every `describe()` call —

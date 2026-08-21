@@ -2038,16 +2038,36 @@ def test_in_flight_with_a_fresh_stamp_is_spared(monkeypatch):
     assert supervisor.idle_workers(now) == []
 
 
-def test_in_flight_past_the_window_is_reaped_anyway(monkeypatch):
-    """The leak the `in_flight` counter could introduce: a page that abandons a
-    stream without closing it pins the counter at 1 forever. `_touch` re-stamps
-    on every real chunk, so a genuinely live stream is never stale — only a
-    leaked one is, and the SAME window that would idle-unload a quiet worker is
-    what stops a leaked one holding the model forever."""
+def test_a_mid_transcription_worker_is_spared_well_past_the_idle_window(monkeypatch):
+    """The bug a collapsed predicate would ship: `generate_transcript` is a
+    single blocking call, not a stream — nothing re-stamps `last_activity`
+    between the request going out and the reply coming back, which can be up
+    to `TRANSCRIBE_TIMEOUT_S` (4h) later. A 30-minute-old stamp on a
+    `SPEECH_TO_TEXT` worker with `in_flight == 1` is exactly what a real
+    90-minute transcription looks like at the 30-minute mark under a
+    10-minute window, and reaping it here is `_terminate` killing the
+    process the request is still waiting on."""
     from fused_render.shell import prefs
     monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
     now = time.monotonic()
-    _idle_worker(monkeypatch, last_activity=now - 700, in_flight=1)
+    _idle_worker(monkeypatch, last_activity=now - 30 * 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
+    assert supervisor.idle_workers(now) == []
+
+
+def test_a_transcription_worker_past_its_leak_ceiling_is_reaped(monkeypatch):
+    """The other half: `in_flight` is not a permanent exemption. Past a
+    ceiling derived from `TRANSCRIBE_TIMEOUT_S` itself, the request that set
+    `in_flight` would already have raised — `_worker_request` has its own
+    timeout — so a counter still reading positive is a leaked stream
+    (an abandoned `generate_text` iterator on another capability, say),
+    never a legitimately slow answer."""
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "effective_ai_idle_unload_minutes", lambda: 10)
+    now = time.monotonic()
+    ceiling = supervisor._leak_ceiling(registry.SPEECH_TO_TEXT, 600)
+    _idle_worker(monkeypatch, last_activity=now - ceiling - 60, in_flight=1,
+                 capability=registry.SPEECH_TO_TEXT)
     assert supervisor.idle_workers(now) != []
 
 
