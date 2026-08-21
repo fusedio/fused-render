@@ -31,7 +31,7 @@ type Phase =
   | { step: "recording" }
   | { step: "uploading"; name: string }
   | { step: "running"; started: TranscribeStarted; job: Job | null }
-  | { step: "done"; started: TranscribeStarted; text: string };
+  | { step: "done"; started: TranscribeStarted; text: string; readFailed?: boolean };
 
 function clock(seconds: number | undefined): string {
   if (seconds === undefined || !isFinite(seconds)) return "";
@@ -167,10 +167,15 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
     }
     try {
       const res = await fetch(rawUrl(started.outputText) + "&t=" + Date.now());
-      setPhase({ step: "done", started, text: res.ok ? await res.text() : "" });
+      if (res.ok) {
+        setPhase({ step: "done", started, text: await res.text() });
+        return;
+      }
     } catch {
-      setPhase({ step: "done", started, text: "" });
+      // Both artefacts unreadable — say THAT, below, never "no speech":
+      // a failed read is a fact about the read, not about the audio.
     }
+    setPhase({ step: "done", started, text: "", readFailed: true });
   };
 
   const land = async (data: Blob, name: string) => {
@@ -355,6 +360,14 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
           <div className="pg-segments">
             {phase.text.trim() ? (
               <p className="pg-transcript-text">{phase.text.trim()}</p>
+            ) : phase.readFailed ? (
+              // The read failed, not the recording — the transcript file is
+              // still saved beside the audio, so point there instead of
+              // asserting something about the sound.
+              <p className="pg-transcript-text pg-transcript-empty">
+                The run finished, but the transcript could not be read back — it is saved in
+                the transcripts folder.
+              </p>
             ) : (
               <p className="pg-transcript-text pg-transcript-empty">
                 No speech was detected in this recording.
