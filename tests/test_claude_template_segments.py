@@ -18,9 +18,8 @@ markdown probes they need a DOM. `_DOM` below is a hand-built minimal one
 (the same narrow-stub approach as tests/test_claude_app_state.py's `_DOM`,
 widened to what these functions touch: createElement/createTextNode,
 append/appendChild/remove/after/replaceWith/replaceChildren, focus,
-style (a bare bag) + scrollHeight/offsetHeight,
-getBoundingClientRect (over a settable `rect`) + lastElementChild,
-getComputedStyle (over a settable `computed`),
+style (a bare bag) + scrollHeight/offsetHeight/clientHeight,
+scrollTop + scrollIntoView (recorded on `scrolledIntoView`),
 className + classList,
 textContent, innerHTML, `open`). No jsdom — the dependency task 1 was told
 not to add, and not needed: nothing here lays out, parses HTML or measures.
@@ -109,15 +108,12 @@ function makeEl(tag) {
     // autoGrow writes a height and reads a scrollHeight. Neither is measured
     // here (there is no layout), but both have to EXIST or the shipping
     // function throws — and it is the shipping function these probes run.
-    style: {}, scrollHeight: 0, offsetHeight: 0, clientHeight: 0,
-    // What getComputedStyle hands back for this element. Only the properties a
-    // probe sets are here — the harness resolves no cascade.
-    computed: {},
-    // There is no layout here, so geometry is whatever a probe says it is:
-    // `rect` is the bag getBoundingClientRect hands back, which is how a test
-    // drives "the scroller has N pixels of slack left" without a browser.
-    rect: {top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0},
-    getBoundingClientRect() { return e.rect; },
+    style: {}, scrollHeight: 0, offsetHeight: 0, clientHeight: 0, scrollTop: 0,
+    // Recorded, not swallowed: keeping the row the user is typing in on screen
+    // is a REQUIREMENT of the "Other" box, so "it asked to be scrolled into
+    // view, and asked for `nearest`" is an assertion, not a detail.
+    scrolledIntoView: null,
+    scrollIntoView(opt) { e.scrolledIntoView = opt === undefined ? {} : opt; },
     appendChild(n) {
       if (n.parentElement) n.parentElement.removeChild(n);
       n.parentElement = e; e.children.push(n); return n;
@@ -180,12 +176,6 @@ function makeEl(tag) {
   Object.defineProperty(e, "firstChild", {get: () => e.children[0] || null});
   Object.defineProperty(e, "lastChild",
                         {get: () => e.children[e.children.length - 1] || null});
-  Object.defineProperty(e, "lastElementChild", {
-    get: () => {
-      const kids = e.children.filter((k) => k.nodeType === 1);
-      return kids[kids.length - 1] || null;
-    },
-  });
   e.classList = {
     add(...cs) {
       const have = e.className ? e.className.split(/\s+/) : [];
@@ -202,9 +192,6 @@ function makeEl(tag) {
   return e;
 }
 const document = {createElement: makeEl, createTextNode: textNode};
-// The card asks the scroller how tall it is ALLOWED to get (its max-height), so
-// the harness has to answer — from whatever the probe put on `.computed`.
-const getComputedStyle = (el) => (el && el.computed) || {};
 // Serialize a subtree for the python side. `text` is textContent, `html` is
 // innerHTML — separately, on purpose (see the module docstring).
 function dump(n) {
@@ -1746,71 +1733,108 @@ def test_shift_enter_breaks_the_line_and_a_multi_line_answer_keeps_its_newlines(
         "Alpha or Beta?": "first line\nsecond line"}
 
 
-def test_the_other_box_grows_into_the_room_the_card_can_spare(card):
-    """One line to start, taller as it fills, and never so tall that the CARD
-    has to scroll to hold it.
+def test_the_other_box_grows_to_a_flat_ceiling_and_keeps_the_caret_in_view(card):
+    """One line to start, taller as it fills, a flat 200px ceiling — the
+    composer's — and past it the box scrolls ITSELF.
 
-    The composer's ceiling is a flat 200px, which is right for a box that owns
-    the bottom of the pane. This one sits inside `.qscroll`, which exists to keep
-    the question list under 46vh so "Send answer" stays reachable — so a flat 200
-    pushed the list past its own limit and the card became the scroller, sliding
-    the row being typed in out of view while the textarea inside it had a
-    scrollbar too. Two nested scrollers, outer one moving.
+    Flat, not computed against the room `.qscroll` had left. That was tried and
+    shipped, and it is unfixable in the direction it was pointed: measured in a
+    real browser on a 460px-tall window, a four-option card is 452px of question
+    list under a 212px cap, so the list was over the cap before a character was
+    typed. There was no room to give, so the clamp bottomed out at its floor and
+    the answer was a 64px box that scrolled INSIDE a card that was also
+    scrolling. The card stops scrolling instead (the `:has` rule, pinned by
+    `test_only_one_thing_scrolls_while_the_other_box_is_open`), which leaves this
+    function nothing to measure against and nothing to be clever about.
 
-    So the ceiling is the slack the scroller actually has, clamped at both ends.
-    There is no layout in this harness, which is the point: the slack is dictated
-    rather than measured, so each regime of the clamp is asserted on its own.
+    Two things the composer's `autoGrow` does not do, both of them "the user can
+    see what they are typing": setting a height resets the textarea's scrollTop,
+    so a caret at the end has to be put back at the bottom afterwards or every
+    keystroke jumps the view to the first line (measured: 812 characters in,
+    caret at 812, scrollTop 0, in a 75px window on 426px of content); and the row
+    itself asks to be scrolled into view — `nearest`, so it moves the least it
+    can and does nothing when the row is already visible.
+
+    Driven on the multi-select card because that is the shape whose field is in
+    the DOM the whole time, closed as well as open — which is exactly the state
+    the re-measure on open exists for.
     """
     got = card.build(_MULTI, actions="""
   const list = byClass(card.el, "qopts")[0];
-  const scroll = byClass(card.el, "qscroll")[0];
   const field = byClass(card.el, "qtype")[0];
+  // Never measured while the row was closed: that is the reading that is 0.
+  extra.whileClosed = field.style.height === undefined ? null : field.style.height;
+  // The borders `grow` adds back on top of the padding-box scrollHeight.
+  field.offsetHeight = 14; field.clientHeight = 12;
+  field.scrollHeight = 96;                 // as if three lines were in it
   byTag(card.el, "INPUT")[3].checked = true;
   list._on.change.forEach((f) => f());
+  extra.onOpen = field.style.height;
+  extra.askedOnOpen = field.scrolledIntoView;
 
-  // `.qscroll` is auto-height with a max-height, so the room left is the gap
-  // between the list it already holds and the ceiling it is allowed. `used` is
-  // the list with the field flattened; `flat` is the footprint the flattened
-  // field is still taking, which is room it gets back.
-  scroll.computed = {maxHeight: "452px"};
-  const room = (used, flat) => {
-    scroll.scrollHeight = used;
-    field.offsetHeight = flat + 2;   // +2 = the borders `grow` adds back
-    field.clientHeight = flat;
-  };
-  const at = (content) => { field.scrollHeight = content; field.grow();
-                            return field.style.height; };
+  // Typing at the end, past the ceiling: capped, and scrolled to the bottom so
+  // the caret the user is typing at is the part on screen.
+  field.scrolledIntoView = null;
+  field.value = "a long answer";
+  field.selectionStart = field.selectionEnd = field.value.length;
+  field.scrollTop = 0;
+  field.scrollHeight = 4000;
+  field.grow();
+  extra.capped = field.style.height;
+  extra.atEnd = field.scrollTop;
+  extra.askedWhileTyping = field.scrolledIntoView;
 
-  room(100, 12);   extra.fits    = at(96);    // 364 to spare, 98 wanted
-  room(100, 12);   extra.capped  = at(4000);  // …and more wanted than the 200
-  room(400, 12);   extra.tight   = at(4000);  // only 64 of headroom left
-  room(700, 12);   extra.starved = at(4000);  // a list already past its ceiling
+  // …and a caret parked in the MIDDLE keeps the offset the browser already put
+  // on it, rather than being yanked to the bottom of someone else's text.
+  field.selectionStart = field.selectionEnd = 3;
+  field.scrollTop = 250;
+  field.grow();
+  extra.midway = field.scrollTop;
 """)
-    # Room to spare: the box is exactly as tall as what is in it, plus the
-    # borders scrollHeight does not count.
-    assert got["extra"]["fits"] == "98px"
-    # The composer's 200 is still the hard ceiling, never exceeded.
+    assert got["extra"]["whileClosed"] is None
+    # 96 of content plus the 2px of border scrollHeight does not count.
+    assert got["extra"]["onOpen"] == "98px"
+    # The composer's 200 is the ceiling, and it is FLAT — nothing about the card
+    # around it can talk it down.
     assert got["extra"]["capped"] == "200px"
-    # The fix: a list 400 tall under a 452 ceiling can spare 52, plus the 14 the
-    # flattened box was already holding — so 66, not the 200 that would have
-    # made the CARD scroll.
-    assert got["extra"]["tight"] == "66px"
-    # …and a list already past its ceiling does not squeeze the box out of
-    # existence: a floor of a couple of lines, and the card scrolls, which is
-    # what `.qscroll` is for.
-    assert got["extra"]["starved"] == "64px"
+    # Bottom of the box, so the caret is the part on screen.
+    assert got["extra"]["atEnd"] == 4000
+    assert got["extra"]["midway"] == 250
+    # The row asks to be brought into view, both on open and on every keystroke,
+    # and asks for the smallest move that does it.
+    assert got["extra"]["askedOnOpen"] == {"block": "nearest"}
+    assert got["extra"]["askedWhileTyping"] == {"block": "nearest"}
 
 
-def test_the_other_row_and_its_column_never_scroll_themselves(source):
-    """The box sizes itself and, past its ceiling, scrolls itself. A scrollbar on
-    the row or its column would be a second one for the same overflow, and the
-    outer of two nested scrollers is always the wrong one to move."""
+def test_only_one_thing_scrolls_while_the_other_box_is_open(source):
+    """The question list and the "Other" box are two scrollers stacked in the
+    same axis, and two of those cannot both be right: whichever one the wheel
+    lands on, the other is the one the user meant. So the list gives up its 46vh
+    cap for exactly as long as a box is open, and the box is the only scroller
+    inside the card.
+
+    A stylesheet test and not a DOM probe because there is no layout here — this
+    IS the fix, and the shape of it (which selector, which two properties) is
+    what a future edit could quietly undo. The measurements behind it are in the
+    D407 row and in the commit."""
     style = source[source.index("<style>"):source.index("</style>")]
     style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    # Capped by default, so "Send answer" stays reachable…
+    base = re.search(r"\.perm\.ask \.qscroll \{([^}]*)\}", style)
+    assert base, "the question list's own rule moved"
+    assert "max-height: 46vh" in base.group(1)
+    assert "overflow: auto" in base.group(1)
+    # …and not a scroller at all while a box is open. Keyed on the SAME class
+    # the row carries while it is being typed into, so the two cannot drift.
+    open_ = re.search(
+        r"\.perm\.ask \.qscroll:has\(\.qopt\.qother\.typing\) \{([^}]*)\}", style)
+    assert open_, "the rule that takes the cap off while the box is open is gone"
+    assert "max-height: none" in open_.group(1)
+    assert "overflow: visible" in open_.group(1)
+    # The row and its column never scroll either: the box does, vertically only.
     rule = re.search(r"\.perm \.qopt\.qother,\s*\.perm \.qopt\.qother \.qbody\s*\{([^}]*)\}",
                      style)
     assert rule and "overflow: visible" in rule.group(1), style[-400:]
-    # …and the field is the one that does scroll, vertically only.
     field = re.search(r"\.perm \.qopt \.qtype\s*\{([^}]*)\}", style)
     assert field, "the Other box's own rule moved"
     assert "overflow-y: auto" in field.group(1)
