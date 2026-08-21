@@ -37,6 +37,7 @@ function engine(over: Partial<NonNullable<AiModelRepo["engine"]>> = {}) {
     code: "mlx-lm",
     label: "MLX LM (Apple Silicon)",
     shortLabel: "MLX LM",
+    familyLabel: "MLX LM",
     available: true,
     reason: null,
     ...over,

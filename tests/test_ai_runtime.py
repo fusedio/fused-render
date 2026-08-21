@@ -881,6 +881,37 @@ def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
             assert row["effectiveShortLabel"] == runner.short
 
 
+def test_every_runner_names_its_family_with_no_hardware_in_it():
+    """A THIRD name per runner, and the card's tag is what it exists for.
+
+    The tag on a Local card is a FORMAT claim — "Diffusers" is exactly the
+    statement that these weights are safetensors a Diffusers pipeline opens —
+    and all three Diffusers rows read the identical file, so "(ROCm)" on that
+    tag answers a question nobody asked of a file on disk and leaks which
+    machine happens to be reading it. `family_label` is that claim with the
+    hardware taken out; the hardware-qualified `short_label` stays on the
+    tag's hover, so the full truth is one hover away rather than gone.
+
+    A prefix of `short_label` and never a regex over it, for `short_label`'s
+    own reason: derived names make the value a side effect of somebody's
+    punctuation. The prefix check is what keeps the pair one engine.
+    """
+    for runner in registry.all_runners():
+        assert runner.family_label, f"{runner.code} has no family name"
+        assert runner.family == runner.family_label
+        assert runner.short_label.startswith(runner.family_label), (
+            f"{runner.code}: {runner.family_label!r} is not the start of "
+            f"{runner.short_label!r}")
+        for qualifier in _HARDWARE_QUALIFIERS + ("(Apple Silicon)",):
+            assert qualifier not in runner.family_label, (
+                f"{runner.code}: {runner.family_label!r} carries {qualifier} — "
+                f"a tag that is a format claim must not name the hardware")
+    # And the field earns its existence: on a hardware variant it is genuinely
+    # a different string from the short name. Without a row like that the test
+    # above would pass on a registry that simply copied `short_label` across.
+    assert registry.by_code("diffusers-image-rocm").family_label == "Diffusers"
+
+
 def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
     """Sibling rows of one library are told apart by HARDWARE, never by format.
 

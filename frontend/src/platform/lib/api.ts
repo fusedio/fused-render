@@ -2238,8 +2238,16 @@ export interface AiModelRepo {
     code: string;
     /** The FULL name, for anything that must match the Preferences picker. */
     label: string;
-    /** Without the platform qualifier — what the card's tag shows. */
+    /** Without the platform qualifier — "Diffusers (CPU)". Which BUILD would
+     *  load this, so it is what the tag's hover and aria-label say. */
     shortLabel: string;
+    /** The engine FAMILY, hardware qualifier and all removed — "Diffusers".
+     *  What the card's TAG shows: the tag is a format claim ("these weights
+     *  are safetensors a Diffusers pipeline opens"), all three Diffusers rows
+     *  read the identical file, so the accelerator says nothing about the file
+     *  and leaks this machine's configuration into a sentence about the model.
+     *  The hover keeps `shortLabel`, so the build is one hover away. */
+    familyLabel: string;
     available: boolean;
     reason: string | null;
   } | null;

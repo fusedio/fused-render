@@ -1031,11 +1031,15 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
         status = serving.available()
         return {
             "code": serving.code,
-            # Both, named so a reader cannot pick the wrong one by accident: the
-            # card's tag wears the short name, and the full one stays here for
+            # All three, named so a reader cannot pick the wrong one by
+            # accident: the card's tag wears the FAMILY (a tag is a format
+            # claim, and the hardware qualifier is neither part of that claim
+            # nor a fact about the file), its hover wears the short name that
+            # says which build would load it, and the full one stays here for
             # anything that has to match the Preferences picker word for word.
             "label": serving.label,
             "shortLabel": serving.short,
+            "familyLabel": serving.family,
             "available": status.ok,
             "reason": status.reason or None,
         }, capability
@@ -1060,10 +1064,14 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
                   f"this format — switch it on the Engines tab")
     elif status.ok:
         reason = f"nothing serves {capability} on this machine"
+    # The same three names as the serving branch above — the card that wears
+    # this payload is the same card, and a tag left blank on exactly the repos
+    # that need explaining is the worst place to drop a key.
     return {
         "code": runner.code,
         "label": runner.label,
         "shortLabel": runner.short,
+        "familyLabel": runner.family,
         "available": False,
         "reason": reason,
     }, capability

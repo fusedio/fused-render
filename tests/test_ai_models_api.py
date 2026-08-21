@@ -1524,6 +1524,42 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
 
 
 @requires_symlinks
+def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
+        client, hub, monkeypatch):
+    """Three names on the wire, because the card wants two different things.
+
+    The card's TAG is a format claim, so it wears the family ("Diffusers") —
+    every Diffusers row reads the identical safetensors and "(CPU)" on a tag
+    describing a file on disk is noise plus a leak of which machine is reading
+    it. The tag's hover keeps the hardware-qualified `shortLabel`, so nothing
+    is lost. Both are asserted here rather than only in the registry because
+    the payload is built at TWO sites in this router — the serving engine and
+    the engine that merely reads the format — and one of them shipped without
+    a key before now.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    # The SERVING site: Diffusers CPU is the image engine on Linux.
+    serving = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert serving["shortLabel"] == "Diffusers (CPU)"
+    assert serving["familyLabel"] == "Diffusers"
+    # …and the OTHER site: on a Mac the image engine is MLX FLUX, so this repo
+    # comes back naming the engine that reads it with `available: false`. Same
+    # row, same two names — a payload missing the key here would leave the tag
+    # blank on exactly the cards that need explaining.
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert other["code"] == "diffusers-image" and other["available"] is False
+    assert other["shortLabel"] == "Diffusers (CPU)"
+    assert other["familyLabel"] == "Diffusers"
+
+
+@requires_symlinks
 def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkeypatch):
     """A capability holds one resident model and the registry picks which
     backend loads it — so on a Mac, whose image engine is MLX FLUX, a Diffusers

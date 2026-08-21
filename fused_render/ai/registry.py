@@ -131,6 +131,29 @@ class Runner:
     #: `code`, the folder, the pyproject, the catalog keys — the upstream
     #: spelling is load-bearing and must not be touched.
     short_label: str = ""
+    #: The engine FAMILY — the same name with any hardware qualifier gone
+    #: ("Diffusers" for all three Diffusers rows, "llama.cpp" for both
+    #: llama.cpp ones). For the one surface whose statement is about the FILE
+    #: rather than about this machine: the Local card's engine tag.
+    #:
+    #: **A tag that is a format claim must not carry a hardware qualifier.**
+    #: The tag says "Diffusers", meaning "these weights are safetensors a
+    #: Diffusers pipeline opens" — and all three Diffusers rows read the
+    #: identical file, so "(ROCm)" there answers nothing a reader could have
+    #: asked about a download sitting on disk, and leaks which machine happens
+    #: to be looking at it into a sentence about the model. The card keeps the
+    #: hardware-qualified `short_label` on the tag's hover and its aria-label,
+    #: so which build would actually load it is one hover away rather than
+    #: gone. Everywhere the statement IS about this machine — the loaded card,
+    #: the job row, the "Using …" line — still reads `short`.
+    #:
+    #: A FIELD, not `short_label` with a trailing parenthetical stripped, for
+    #: exactly the reason `short_label` is not `label` stripped: a regex makes
+    #: the name a side effect of how somebody punctuated another one, and the
+    #: first family whose own name contains brackets loses half of it with
+    #: nothing failing. `test_every_runner_names_its_family_with_no_hardware_in_it`
+    #: requires it on every registered row and forbids the qualifiers by name.
+    family_label: str = ""
     #: What using this backend is LIKE, for the page to say before anything is
     #: loaded. A standing fact about the runner, never a claim about this
     #: machine — the device a model actually got is the worker's to report
@@ -203,6 +226,17 @@ class Runner:
         would be a blank tag.
         """
         return self.short_label or self.label
+
+    @property
+    def family(self) -> str:
+        """`family_label`, falling back to the short name.
+
+        Same fallback and same reason as `short`: a Runner built in a test has
+        no opinion about display, and a blank tag is worse than a tag with a
+        qualifier on it. A REGISTERED runner must set the field, which
+        `test_every_runner_names_its_family_with_no_hardware_in_it` requires.
+        """
+        return self.family_label or self.short
 
     @property
     def worker(self) -> str:
@@ -884,6 +918,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mlx_text"),
         label="MLX LM (Apple Silicon)",
         short_label="MLX LM",
+        family_label="MLX LM",
         _available=_apple_silicon,
     ),
     Runner(
@@ -904,6 +939,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # `note` says the Mac case out loud so the two never disagree.
         label="Transformers (CPU)",
         short_label="Transformers (CPU)",
+        family_label="Transformers",
         # ONE LINE, and that is a hard constraint rather than a summary: it sits
         # under this engine's row on the Engines tab, in the space between one
         # picker and the next, and anything that wraps twice is something nobody
@@ -938,6 +974,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "transformers_text_cuda"),
         label="Transformers (CUDA)",
         short_label="Transformers (CUDA)",
+        family_label="Transformers",
         note="Much quicker on an NVIDIA GPU, for a much larger download.",
         _available=_cuda,
     ),
@@ -947,6 +984,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "transformers_text_rocm"),
         label="Transformers (ROCm)",
         short_label="Transformers (ROCm)",
+        family_label="Transformers",
         note="Much quicker on a supported AMD GPU under Linux, for a much "
              "larger download.",
         _available=_rocm,
@@ -988,6 +1026,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # says the Mac case out loud so the two never disagree.
         label="llama.cpp (CPU)",
         short_label="llama.cpp (CPU)",
+        family_label="llama.cpp",
         # ONE LINE, per the rule the transformers row states. Leads with the
         # reason to pick it (current-generation Qwen at a fraction of the bf16
         # download) and folds the packaging caveat into the same sentence,
@@ -1029,6 +1068,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # would render as one engine everywhere but the picker.
         label="llama.cpp (Vulkan)",
         short_label="llama.cpp (Vulkan)",
+        family_label="llama.cpp",
         note="Much quicker on an NVIDIA or AMD GPU under Windows or Linux, "
              "for a much larger download — see llama.cpp (CPU) for the "
              "CPU and Apple Silicon build.",
@@ -1058,6 +1098,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mflux_image"),
         label="MLX FLUX (Apple Silicon)",
         short_label="MLX FLUX",
+        family_label="MLX FLUX",
         # ONE LINE, per the rule the transformers row states. It describes the
         # DEFAULT rather than an opt-in, so the memory caveat leads: the reader
         # it exists for is someone on a small Mac deciding whether to switch
@@ -1074,6 +1115,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # "(CPU)" for the reason the transformers row above states.
         label="Diffusers (CPU)",
         short_label="Diffusers (CPU)",
+        family_label="Diffusers",
         # This row had no note while it was the only torch image engine and
         # there was nothing to distinguish it from. Now there is, and the thing
         # worth saying is the one that decides the choice: CPU diffusion is
@@ -1094,6 +1136,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "diffusers_image_cuda"),
         label="Diffusers (CUDA)",
         short_label="Diffusers (CUDA)",
+        family_label="Diffusers",
         note="Seconds per image on an NVIDIA GPU, for a much larger download.",
         _available=_cuda,
     ),
@@ -1131,6 +1174,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "diffusers_image_rocm"),
         label="Diffusers (ROCm)",
         short_label="Diffusers (ROCm)",
+        family_label="Diffusers",
         # The desktop clause is not padding — see THE SHARED RING above for the
         # kernel log that proved it. One line, so "much larger" pays for it.
         note="Seconds per image on a supported AMD GPU under Linux — larger "
@@ -1147,6 +1191,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mlx_whisper"),
         label="MLX Whisper (Apple Silicon)",
         short_label="MLX Whisper",
+        family_label="MLX Whisper",
         note="Transcribes on the GPU. Several times quicker than the CPU path "
              "on the same Mac.",
         _available=_apple_silicon,
@@ -1166,6 +1211,7 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "parakeet_mlx"),
         label="Parakeet TDT (Apple Silicon)",
         short_label="Parakeet TDT",
+        family_label="Parakeet TDT",
         # ONE LINE, per the rule the transformers row states — it sits under
         # this engine's row on the Engines tab, between one picker and the
         # next. It describes an OPT-IN, so what it leads with is the reason to
@@ -1182,6 +1228,7 @@ _RUNNERS: tuple[Runner, ...] = (
         # product names, and `code` above still carries the exact spelling.
         label="Faster Whisper (CTranslate2)",
         short_label="Faster Whisper",
+        family_label="Faster Whisper",
         # `_always`, and that is why speech to text SHIPPED on CTranslate2
         # rather than on MLX: text generation was already Apple-Silicon-only,
         # and a second capability that existed on a Mac and nowhere else would
@@ -1473,6 +1520,14 @@ def describe() -> list[dict]:
                 # got before — and a surface that wants the qualifier-free name
                 # asks for it. The alternative, quietly shortening `label`,
                 # would be a change no reader of the payload could see.
+                #
+                # **No `familyLabel` here, deliberately.** This payload feeds
+                # the Engines tab, where the reader is CHOOSING between builds
+                # of one library — a family name is the one thing that cannot
+                # tell "Diffusers (CUDA)" from "Diffusers (ROCm)", so the
+                # surface that would render it has no use for it. It is the
+                # Local card's tag that needs the qualifier gone, and that card
+                # reads the engine object `ai_models.py` builds per repo.
                 "label": runner.label,
                 "shortLabel": runner.short,
                 "note": runner.note or None,

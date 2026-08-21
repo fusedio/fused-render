@@ -5676,6 +5676,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   GPU on Apple Silicon, so the row keeps its name there and its `note` carries the
   Mac case (AI-11b). Renaming it would break a stored preference, which keys on
   `code`, and would leave the picker with two rows called the same thing.
+  **A THIRD name, `family_label`, exists for the one surface whose statement is
+  about the FILE rather than about this machine: the Local card's engine tag.**
+  That tag is a format claim — "Diffusers" says these weights are safetensors a
+  Diffusers pipeline opens — and all three Diffusers rows read the identical
+  file, so the accelerator there answers nothing a reader could ask about a
+  download on disk and leaks the machine's configuration into a sentence about
+  the model. The tag renders `familyLabel`; its `title` and `aria-label` keep
+  the hardware-qualified `shortLabel`, so which build would load it is one hover
+  away, and WCAG 2.5.3 still holds because the family is a PREFIX of the short
+  name. It is a field on every row, not a parenthetical stripped by regex, for
+  the reason `short_label` is not derived either. It is deliberately absent from
+  the Engines-tab payload (`registry.describe`): there the reader is choosing
+  BETWEEN builds of one library, and a family name is precisely the string that
+  cannot tell those rows apart.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
