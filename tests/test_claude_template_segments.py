@@ -18,7 +18,10 @@ markdown probes they need a DOM. `_DOM` below is a hand-built minimal one
 (the same narrow-stub approach as tests/test_claude_app_state.py's `_DOM`,
 widened to what these functions touch: createElement/createTextNode,
 append/appendChild/remove/after/replaceWith/replaceChildren, focus,
-style (a bare bag) + scrollHeight, className + classList,
+style (a bare bag) + scrollHeight/offsetHeight,
+getBoundingClientRect (over a settable `rect`) + lastElementChild,
+getComputedStyle (over a settable `computed`),
+className + classList,
 textContent, innerHTML, `open`). No jsdom — the dependency task 1 was told
 not to add, and not needed: nothing here lays out, parses HTML or measures.
 Two properties of the stub are load-bearing for the assertions:
@@ -106,7 +109,15 @@ function makeEl(tag) {
     // autoGrow writes a height and reads a scrollHeight. Neither is measured
     // here (there is no layout), but both have to EXIST or the shipping
     // function throws — and it is the shipping function these probes run.
-    style: {}, scrollHeight: 0,
+    style: {}, scrollHeight: 0, offsetHeight: 0, clientHeight: 0,
+    // What getComputedStyle hands back for this element. Only the properties a
+    // probe sets are here — the harness resolves no cascade.
+    computed: {},
+    // There is no layout here, so geometry is whatever a probe says it is:
+    // `rect` is the bag getBoundingClientRect hands back, which is how a test
+    // drives "the scroller has N pixels of slack left" without a browser.
+    rect: {top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0},
+    getBoundingClientRect() { return e.rect; },
     appendChild(n) {
       if (n.parentElement) n.parentElement.removeChild(n);
       n.parentElement = e; e.children.push(n); return n;
@@ -169,6 +180,12 @@ function makeEl(tag) {
   Object.defineProperty(e, "firstChild", {get: () => e.children[0] || null});
   Object.defineProperty(e, "lastChild",
                         {get: () => e.children[e.children.length - 1] || null});
+  Object.defineProperty(e, "lastElementChild", {
+    get: () => {
+      const kids = e.children.filter((k) => k.nodeType === 1);
+      return kids[kids.length - 1] || null;
+    },
+  });
   e.classList = {
     add(...cs) {
       const have = e.className ? e.className.split(/\s+/) : [];
@@ -185,6 +202,9 @@ function makeEl(tag) {
   return e;
 }
 const document = {createElement: makeEl, createTextNode: textNode};
+// The card asks the scroller how tall it is ALLOWED to get (its max-height), so
+// the harness has to answer — from whatever the probe put on `.computed`.
+const getComputedStyle = (el) => (el && el.computed) || {};
 // Serialize a subtree for the python side. `text` is textContent, `html` is
 // innerHTML — separately, on purpose (see the module docstring).
 function dump(n) {
@@ -1396,11 +1416,6 @@ def test_diff_colours_are_theme_variables_defined_in_both_themes(source):
 _CARD_CONSTS_START = "const WHOLE_TOOL_GRANTABLE = new Set(["
 _CARD_CONSTS_END = "const PLAN_NOTE_LIMIT = 2000;"
 _CARD_START = "function permChoices(tool, label, liveMode) {"
-# The composer's auto-growing-textarea helper, lifted verbatim rather than
-# stubbed: the "Other" row's field is a textarea that starts one line high and
-# grows, and it grows through THIS function. A stub would let the card and the
-# composer drift apart on the one behaviour they deliberately share.
-_GROW = ("function autoGrow(el) {", "  return grow;\n}")
 # buildPlanCard's last two lines — the LAST builder in the region, and unique to
 # it (the other two append their status differently), so the window closes on the
 # whole card region and an edit that moves the end is a test error, not a silent
@@ -1488,7 +1503,6 @@ class _CardProbe:
         self.consts = _block(source, _CARD_CONSTS_START, _CARD_CONSTS_END)
         self.perm = _block(source, _PERM_START, _PERM_END)
         self.cards = _block(source, _CARD_START, _CARD_END)
-        self.grow = _block(source, *_GROW)
         self._tmp_path = tmp_path
 
     def build(self, tool_input, actions="", reply=None, perm=None, params=None,
@@ -1513,8 +1527,8 @@ const before = cdump(card.el);
 })();
 """ % (json.dumps(request), json.dumps(reply if reply is not None else {}),
        json.dumps(params or {}), actions)
-        script = "\n".join([_DOM, _CARD_STUBS, self.grow, self.consts,
-                            self.perm, self.cards, body])
+        script = "\n".join([_DOM, _CARD_STUBS, self.consts, self.perm,
+                            self.cards, body])
         return _node(script, self._tmp_path)
 
 
@@ -1732,33 +1746,76 @@ def test_shift_enter_breaks_the_line_and_a_multi_line_answer_keeps_its_newlines(
         "Alpha or Beta?": "first line\nsecond line"}
 
 
-def test_the_other_box_grows_with_what_is_typed_into_it(card):
-    """One line to start, taller as it fills — the composer's own `autoGrow`,
-    not a second implementation of it. And it is re-measured when the row OPENS:
-    a display:none textarea reports a scrollHeight of 0, so a height taken while
-    the row was still closed would open it flat.
+def test_the_other_box_grows_into_the_room_the_card_can_spare(card):
+    """One line to start, taller as it fills, and never so tall that the CARD
+    has to scroll to hold it.
 
-    Driven on the multi-select card because that is the shape whose field is in
-    the DOM the whole time, closed as well as open — which is exactly the state
-    the re-measure exists for.
+    The composer's ceiling is a flat 200px, which is right for a box that owns
+    the bottom of the pane. This one sits inside `.qscroll`, which exists to keep
+    the question list under 46vh so "Send answer" stays reachable — so a flat 200
+    pushed the list past its own limit and the card became the scroller, sliding
+    the row being typed in out of view while the textarea inside it had a
+    scrollbar too. Two nested scrollers, outer one moving.
+
+    So the ceiling is the slack the scroller actually has, clamped at both ends.
+    There is no layout in this harness, which is the point: the slack is dictated
+    rather than measured, so each regime of the clamp is asserted on its own.
     """
     got = card.build(_MULTI, actions="""
   const list = byClass(card.el, "qopts")[0];
+  const scroll = byClass(card.el, "qscroll")[0];
   const field = byClass(card.el, "qtype")[0];
-  extra.whileClosed = field.style.height === undefined ? null : field.style.height;
-  field.scrollHeight = 96;               // as if three lines were in it
   byTag(card.el, "INPUT")[3].checked = true;
   list._on.change.forEach((f) => f());
-  extra.onOpen = field.style.height;
-  field.scrollHeight = 4000;             // …and past the composer's ceiling
-  field.grow();
-  extra.capped = field.style.height;
+
+  // `.qscroll` is auto-height with a max-height, so the room left is the gap
+  // between the list it already holds and the ceiling it is allowed. `used` is
+  // the list with the field flattened; `flat` is the footprint the flattened
+  // field is still taking, which is room it gets back.
+  scroll.computed = {maxHeight: "452px"};
+  const room = (used, flat) => {
+    scroll.scrollHeight = used;
+    field.offsetHeight = flat + 2;   // +2 = the borders `grow` adds back
+    field.clientHeight = flat;
+  };
+  const at = (content) => { field.scrollHeight = content; field.grow();
+                            return field.style.height; };
+
+  room(100, 12);   extra.fits    = at(96);    // 364 to spare, 98 wanted
+  room(100, 12);   extra.capped  = at(4000);  // …and more wanted than the 200
+  room(400, 12);   extra.tight   = at(4000);  // only 64 of headroom left
+  room(700, 12);   extra.starved = at(4000);  // a list already past its ceiling
 """)
-    # Never measured while it was closed — that is the reading that is 0.
-    assert got["extra"]["whileClosed"] is None
-    assert got["extra"]["onOpen"] == "96px"
-    # The 200px ceiling is autoGrow's, and it still applies here.
+    # Room to spare: the box is exactly as tall as what is in it, plus the
+    # borders scrollHeight does not count.
+    assert got["extra"]["fits"] == "98px"
+    # The composer's 200 is still the hard ceiling, never exceeded.
     assert got["extra"]["capped"] == "200px"
+    # The fix: a list 400 tall under a 452 ceiling can spare 52, plus the 14 the
+    # flattened box was already holding — so 66, not the 200 that would have
+    # made the CARD scroll.
+    assert got["extra"]["tight"] == "66px"
+    # …and a list already past its ceiling does not squeeze the box out of
+    # existence: a floor of a couple of lines, and the card scrolls, which is
+    # what `.qscroll` is for.
+    assert got["extra"]["starved"] == "64px"
+
+
+def test_the_other_row_and_its_column_never_scroll_themselves(source):
+    """The box sizes itself and, past its ceiling, scrolls itself. A scrollbar on
+    the row or its column would be a second one for the same overflow, and the
+    outer of two nested scrollers is always the wrong one to move."""
+    style = source[source.index("<style>"):source.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    rule = re.search(r"\.perm \.qopt\.qother,\s*\.perm \.qopt\.qother \.qbody\s*\{([^}]*)\}",
+                     style)
+    assert rule and "overflow: visible" in rule.group(1), style[-400:]
+    # …and the field is the one that does scroll, vertically only.
+    field = re.search(r"\.perm \.qopt \.qtype\s*\{([^}]*)\}", style)
+    assert field, "the Other box's own rule moved"
+    assert "overflow-y: auto" in field.group(1)
+    assert "overflow-x: hidden" in field.group(1)
+    assert "resize: none" in field.group(1)
 
 
 def test_an_empty_other_box_sends_nothing_and_escape_gives_the_options_back(card):

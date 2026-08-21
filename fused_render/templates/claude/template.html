@@ -1827,6 +1827,14 @@
      field's own width: 100% resolves against a box shrunk to the width of the
      word "Other…". */
   .perm .qopt.qother .qbody { flex: 1; min-width: 0; }
+  /* Neither the row nor its column ever scrolls: the box inside them sizes
+     itself and, past its ceiling, scrolls itself. A scrollbar out here would be
+     a second one for the same overflow, and the outer of two nested scrollers
+     is always the wrong one to move — it takes the row the user is typing in
+     out from under them. Stated rather than left to the initial value, because
+     this is a constraint on whatever gets added to the row next. */
+  .perm .qopt.qother,
+  .perm .qopt.qother .qbody { overflow: visible; }
   .perm .qopt.qother.typing {
     border-color: color-mix(in srgb, var(--accent) 60%, transparent);
     cursor: default;
@@ -11370,6 +11378,21 @@ function buildPermCard(p, run_id, liveMode) {
   return { el, resolve };
 }
 
+// How tall the "Other" box may get. The composer's `autoGrow` ceiling is a flat
+// 200px, which is right for a box that owns the bottom of the pane and wrong for
+// this one: it lives INSIDE `.qscroll`, whose whole job is to keep the question
+// list under 46vh so "Send answer" stays reachable. A flat 200 pushed the list
+// past that limit, so the CARD started scrolling — and then the row being typed
+// into slid out of view while the textarea inside it had a scrollbar of its own.
+// Two nested scrollers, and the outer one was the one that moved.
+//
+// So the ceiling is whatever the scroller can actually spare, clamped: never
+// more than the composer's 200, never less than OTHER_MIN_H (about two lines),
+// because a box that collapses to nothing to protect the list is worse than a
+// list that scrolls. Past the ceiling the TEXTAREA scrolls and the card does not.
+const OTHER_MIN_H = 64;
+const OTHER_MAX_H = 200;
+
 // AskUserQuestion — the model asking the USER something, parked on the same
 // bridge as an approval because the CLI routes it through the prompt tool (it is
 // gated on `requiresUserInteraction`, so `auto` and `acceptEdits` do not
@@ -11438,6 +11461,9 @@ function buildQuestionCard(p, run_id) {
   const controls = [];   // removed once the card resolves
   const widgets = [];    // disabled while an answer is in flight
   const blocks = [];     // { question, picked() }
+  // The question list's own scroller, once there is one. `growOther` measures
+  // against it to decide how much room an "Other" box may take.
+  let scroller = null;
 
   async function post(fields, optimistic) {
     widgets.forEach((w) => { w.disabled = true; });
@@ -11542,7 +11568,39 @@ function buildQuestionCard(p, run_id) {
     // `wrap` and the CSS below are the two halves of "never scroll sideways":
     // this one is what the value carries, that one is what is painted.
     field.wrap = "soft";
-    const grow = autoGrow(field);
+    // Same shape as the composer's `autoGrow` — measure from scrollHeight on
+    // every input — but the ceiling is computed rather than fixed (see
+    // OTHER_MAX_H). Flattened first so the measurement is of the CONTENT and
+    // not of the height the box already had.
+    const grow = () => {
+      field.style.height = "0px";
+      // How much TALLER the list may still get. `.qscroll` is an auto-height box
+      // with a max-height, so while it is under that cap its own bottom sits on
+      // its content and there is no gap to measure — the room is the distance
+      // from the content it has to the ceiling it is allowed, and nothing else
+      // reports that. With the box flattened, `scrollHeight` is that content
+      // height (and, once the list is genuinely overflowing, a number past the
+      // ceiling, which correctly comes out negative).
+      let room = OTHER_MAX_H;
+      if (scroller) {
+        const ceiling = parseFloat(getComputedStyle(scroller).maxHeight);
+        if (ceiling > 0) {
+          // …plus the footprint the flattened box is still taking, which is
+          // room it gets to have back.
+          room = (ceiling - scroller.scrollHeight) + field.offsetHeight;
+        }
+      }
+      field.style.height = "auto";
+      // scrollHeight is padding-box: it counts this element's padding but not
+      // its border, while the height being set is border-box. Without the
+      // difference added back the box lands one border-width short of its own
+      // content and reports a two-pixel overflow — a scrollbar on a box that
+      // holds exactly one line.
+      const wanted = field.scrollHeight + (field.offsetHeight - field.clientHeight);
+      const cap = Math.max(OTHER_MIN_H, Math.min(OTHER_MAX_H, room));
+      field.style.height = Math.min(cap, wanted) + "px";
+    };
+    field.addEventListener("input", grow);
     field.onkeydown = (ev) => {
       // Shift+Enter is a newline and nothing else — no preventDefault, so the
       // textarea inserts it itself, and `grow` runs off the input event.
@@ -11604,6 +11662,7 @@ function buildQuestionCard(p, run_id) {
     const scroll = document.createElement("div");
     scroll.className = "qscroll";
     el.appendChild(scroll);
+    scroller = scroll;
     questions.forEach((q, i) => {
       const block = document.createElement("div");
       block.className = "qblock";
