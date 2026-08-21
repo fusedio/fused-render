@@ -56,7 +56,9 @@
 # keeps `>=0.39` rather than gaining the installed patch, and `transformers`
 # carries a ceiling with NO floor added, because this runner has never declared one
 # and inventing one here would forbid versions that are currently allowed while
-# also disagreeing with `transformers_text`'s deliberate `>=4.51`. A ceiling only
+# also disagreeing with `transformers_text`'s deliberate floor (`>=5.15` since
+# its catalog moved to Qwen3.5; this runner needs no such floor because its own
+# suggestions do not turn on a transformers model class). A ceiling only
 # removes the future; a floor removes the present.
 #
 # What each earns:

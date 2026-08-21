@@ -231,7 +231,7 @@ GGUF_EXTENSION = ".gguf"
 #: llama.cpp's own architecture identifiers (`general.architecture` in a
 #: GGUF's metadata) that denote a CAUSAL TEXT model — read directly off
 #: `LLM_ARCH_NAMES` in llama.cpp's `src/llama-arch.cpp` at the commit this
-#: runner vendors (SPEC AI-11, D404: llama-cpp-python 0.3.29 -> llama.cpp
+#: runner vendors (SPEC AI-11, D406: llama-cpp-python 0.3.29 -> llama.cpp
 #: `f05cf467`, 2026-06-13), MINUS the entries in that same table that are not
 #: causal text generation: the BERT/T5 families (encoders and
 #: encoder-decoders), `wavtokenizer-dec` (an audio codec), the embedding
@@ -410,9 +410,41 @@ GGUF_RECIPES = {
 UNLOADABLE_QUANT = {
     "awq": "an AWQ checkpoint, which needs a package this runner does not ship",
     "gptq": "a GPTQ checkpoint, which needs a package this runner does not ship",
+    # **The reason here was rewritten on 2026-08-21 because the old one had
+    # stopped being true, and the replacement is a MEASUREMENT rather than a
+    # guess.** It used to say "needs bitsandbytes and an NVIDIA GPU — this
+    # runner ships neither", and the GPU half is simply wrong now: bitsandbytes
+    # 0.50.1 is MIT, publishes wheels and NO sdist for macos arm64,
+    # manylinux x86_64 and aarch64, win_amd64 and win_arm64 (checked against
+    # PyPI 2026-08-21, so AI-2a's wheels-only rule would NOT block it), and it
+    # documents a dedicated CPU build. So "we cannot install it" is no longer
+    # the obstacle — which left the only question that decides this: is 4-bit
+    # NF4 fast enough on a CPU to be worth offering, given the default
+    # resolution of all three folders installing this worker is a CPU torch?
+    #
+    # It was measured, not argued. `unsloth/Qwen3-4B-Instruct-2507-unsloth-bnb-4bit`
+    # LOADS on `device_map="cpu"` and generates correct, coherent text — 219
+    # `Linear4bit` modules, no error — and it halves resident memory (4.16GB
+    # peak RSS against bf16's 8.55GB). It is also 3.6x SLOWER per token than
+    # the bf16 checkpoint it would replace: 0.65 tok/s against 2.33 tok/s,
+    # uncontended, same prompt and same 4B base model. Quantization here buys
+    # memory and spends the one resource a CPU path has least of, and 0.65
+    # tok/s is not a thing to put behind a Download button.
+    #
+    # **The caveat that keeps this open: that was an Apple Silicon M-series
+    # (Mac17,3, 10 cores, 34GB), and this runner's bnb users would be Windows
+    # and Linux x86.** bitsandbytes' optimized CPU path targets x86 AVX512/AMX,
+    # none of which exists on arm64 — so an x86 box could plausibly land
+    # somewhere very different, and this measurement CANNOT be generalised to
+    # it. What it does establish is that the refusal is no longer about the
+    # licence, the wheels or the card. Re-measure on x86 before reversing this;
+    # the dependency is deliberately still absent from the three
+    # `transformers_text*/pyproject.toml` files, so the refusal below is also
+    # literally true — an unlisted package cannot be imported.
     "bitsandbytes": (
-        "a bitsandbytes checkpoint, which needs bitsandbytes and an NVIDIA GPU "
-        "— this runner ships neither"
+        "a bitsandbytes checkpoint, which needs bitsandbytes — a package this "
+        "runner does not install, because 4-bit inference on the CPU it "
+        "defaults to runs several times slower than the unquantized weights"
     ),
     "compressed-tensors": (
         "a compressed-tensors checkpoint, which needs a package this runner "

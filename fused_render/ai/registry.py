@@ -239,7 +239,7 @@ def _llamacpp_platform() -> Availability:
     """`llamacpp-text`'s supported platforms — a HARD exclusion, not the same
     shape as `_transformers_platform`'s Intel-macOS business decision.
 
-    The maintainer's CPU wheel index (`llamacpp_text/pyproject.toml`, D404)
+    The maintainer's CPU wheel index (`llamacpp_text/pyproject.toml`, D406)
     publishes `py3-none` wheels for a specific, checked tag set:
     `macosx_11_0_arm64`, `manylinux2014_{x86_64,aarch64}.manylinux_2_17_*`,
     `musllinux_1_2_{x86_64,aarch64}`, `win_amd64`, `linux_riscv64`, and a wasm
@@ -761,7 +761,7 @@ _RUNNERS: tuple[Runner, ...] = (
              "larger download.",
         _available=_rocm,
     ),
-    # A fourth text runner (SPEC AI-11, AI-2a, D404) — GGUF via llama.cpp,
+    # A fourth text runner (SPEC AI-11, AI-2a, D406) — GGUF via llama.cpp,
     # BELOW all three transformers rows so `auto` resolution never moves: on
     # every platform a bare "auto" reaches MLX or a transformers row exactly
     # as it did before this runner existed

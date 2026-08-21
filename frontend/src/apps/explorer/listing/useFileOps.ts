@@ -633,7 +633,8 @@ export function useFileOps({
   // (see openRowMenu in Listing.tsx). With several rows the entries that only
   // make sense for one — Open / Open in New Tab / Open With / Rename / Reveal /
   // Copy Claude session command — are dropped, and the batch entries count what
-  // they'll affect. A single FOLDER gets a deliberately minimal list; see below.
+  // they'll affect. A single row — file OR folder — gets the full list (D404;
+  // the two-item minimal menu of D398 survives only on ancestor crumbs, D399).
   const rowMenu = (row: RowCtx, rows: RowCtx[]): MenuEntry[] => {
     const dir = targetDirOf(row);
     const n = rows.length;
@@ -662,19 +663,6 @@ export function useFileOps({
         },
       ];
     }
-    // A FOLDER gets two items and nothing else: walk into it (here or in a new
-    // tab) or hand it to the OS file manager. Everything the full list offers a
-    // folder either duplicates the double-click (Open), is destructive on a
-    // whole tree from a single mis-click (Delete/Rename/Cut/Paste), or is a
-    // niche it was never worth carrying in the common menu — so the folder menu
-    // stops being a wall of items the reader has to scan past. Files keep the
-    // full list; so do the multi-row and background menus below.
-    if (row.isDir) {
-      return [
-        { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
-        { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(row.path) },
-      ];
-    }
     return [
       { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
       { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(row.path) },
@@ -684,14 +672,6 @@ export function useFileOps({
       "separator",
       { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
       { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate([row]) },
-      // The two folder-only entries below are UNREACHABLE while the folder menu
-      // is the two-item list above — kept, not deleted, because the actions
-      // themselves (doCompress/loadCompress, downloadAppFile) are wanted and
-      // still need a home; Export App File also lives on the app card menu
-      // (lib/appCardMenu) and the preview header, so only Compress is currently
-      // without a surface. Deleting the machinery to chase the dead branch is
-      // the bigger loss, and re-adding a folder entry here is a one-line change.
-      //
       // Folders only, in Finder's position (after Duplicate, before Cut/Copy).
       // Not on the multi-select or background menus: one archive per folder.
       ...(row.isDir
@@ -737,9 +717,8 @@ export function useFileOps({
     "separator",
     { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
-    // Beside Reveal, for the same reason it sits beside it in the folder ROW
-    // menu: both are "this folder, but elsewhere". Here the folder is the one
-    // being listed, so the new tab opens on the current directory.
+    // Beside Reveal: both are "this folder, but elsewhere". Here the folder is
+    // the one being listed, so the new tab opens on the current directory.
     {
       label: "Open in New Tab",
       icon: MenuIcons.newTab,

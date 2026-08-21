@@ -1,5 +1,5 @@
 # The llama.cpp / GGUF text runner's environment — OPT-IN, CPU-only (SPEC §40,
-# AI-2a, AI-11, D404).
+# AI-2a, AI-11, D406).
 #
 # **Why this folder exists at all when AI-11 refused llama.cpp outright.**
 # `llama-cpp-python` publishes an sdist and NO wheels on PyPI, which is what

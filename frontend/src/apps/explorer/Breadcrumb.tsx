@@ -537,7 +537,8 @@ export function BreadcrumbBar(props: {
 // it offered actions that would land two levels below where the user was
 // pointing, plus splits that had nothing to do with the crumb. Those crumbs now
 // name themselves to the owner, which answers with the ancestor pair (Reveal in
-// Finder / Open in New Tab) — the same two items a folder ROW gets.
+// Finder / Open in New Tab) — the only two verbs a folder you are pointing at,
+// rather than standing in, can answer for (see crumbMenu in lib/bar-menus).
 //
 // Ancestors only, by selector: the current folder's crumb is a <span> (and the
 // root's is `.last` when the listing IS the root), so "the crumb you are already
