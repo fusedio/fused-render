@@ -11,8 +11,19 @@ import type { RefObject } from "react";
 
 type Start = (release: () => void) => void;
 
+// How urgent a queued start is. `true` is a REAL GESTURE (a hover) and jumps
+// the queue outright. A GETTER is a claim that can change while the task waits
+// — "this card is on screen right now" — and is read at ADMISSION time rather
+// than at request time. That is what lets a card scrolled into view overtake
+// the lookahead cards queued ahead of it without its component re-requesting:
+// a re-request tears the iframe down and starts it again (usePreviewStart's
+// effect resets `started`), so promotion must never travel through the deps.
+type Priority = boolean | (() => boolean);
+
+const isHot = (p: Priority): boolean => (typeof p === "function" ? p() : p);
+
 export interface PreviewStartQueue {
-  request(start: Start, priority?: boolean): () => void;
+  request(start: Start, priority?: Priority): () => void;
   active(): number;
   pending(): number;
 }
@@ -20,13 +31,27 @@ export interface PreviewStartQueue {
 export function createPreviewStartQueue(limit: number): PreviewStartQueue {
   if (!Number.isInteger(limit) || limit < 1) throw new Error("preview start limit must be positive");
 
-  type Task = { start: Start; started: boolean; cancelled: boolean; release?: () => void };
+  type Task = {
+    start: Start;
+    priority: Priority;
+    started: boolean;
+    cancelled: boolean;
+    release?: () => void;
+  };
   const waiting: Task[] = [];
   let running = 0;
 
+  // The next task to admit: the oldest HOT one (see Priority), else the oldest
+  // task. Re-evaluated at every admission, so what ranks a task is its hotness
+  // at the moment a slot frees — not its hotness when it was queued.
+  const takeNext = (): Task => {
+    const hot = waiting.findIndex((t) => !t.cancelled && isHot(t.priority));
+    return waiting.splice(hot === -1 ? 0 : hot, 1)[0];
+  };
+
   const drain = () => {
     while (running < limit && waiting.length) {
-      const task = waiting.shift()!;
+      const task = takeNext();
       if (task.cancelled) continue;
       task.started = true;
       running += 1;
@@ -43,8 +68,10 @@ export function createPreviewStartQueue(limit: number): PreviewStartQueue {
 
   return {
     request(start, priority = false) {
-      const task: Task = { start, started: false, cancelled: false };
-      if (priority) waiting.unshift(task);
+      const task: Task = { start, priority, started: false, cancelled: false };
+      // A gesture goes to the HEAD as well as reading hot: the on-screen cards
+      // are hot too, and the hover has to outrank them.
+      if (priority === true) waiting.unshift(task);
       else waiting.push(task);
       drain();
       return () => {
@@ -71,23 +98,38 @@ const START_TIMEOUT_MS = 10_000;
 // surfaces, each of which owns its vertical scroller.
 const NEAR_VIEWPORT_MARGIN = "800px 0px";
 
-export function useNearViewport<T extends Element>(): [RefObject<T>, boolean] {
+// Two observers, not one: `near` (the 800px lookahead) decides whether an
+// iframe may exist at all, `visible` (the real viewport) decides which of the
+// waiting ones goes first. One observer cannot answer both — rootMargin is
+// fixed per observer — and the second is a per-card cost of one more entry in
+// the same callback machinery, against a whole iframe document per card.
+//
+// The third tuple slot is additive: callers that only gate mounting keep
+// destructuring `[ref, near]`.
+export function useNearViewport<T extends Element>(): [RefObject<T>, boolean, boolean] {
   const ref = useRef<T>(null);
   const [near, setNear] = useState(false);
+  const [visible, setVisible] = useState(false);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => setNear(entries[entries.length - 1].isIntersecting),
-      {
-        root: el.closest(".apps-page, .files-home, .home-page"),
-        rootMargin: NEAR_VIEWPORT_MARGIN,
-      },
-    );
-    io.observe(el);
-    return () => io.disconnect();
+    const root = el.closest(".apps-page, .files-home, .home-page");
+    const observe = (rootMargin: string, set: (v: boolean) => void) => {
+      const io = new IntersectionObserver(
+        (entries) => set(entries[entries.length - 1].isIntersecting),
+        { root, rootMargin },
+      );
+      io.observe(el);
+      return io;
+    };
+    const nearIo = observe(NEAR_VIEWPORT_MARGIN, setNear);
+    const visibleIo = observe("0px", setVisible);
+    return () => {
+      nearIo.disconnect();
+      visibleIo.disconnect();
+    };
   }, []);
-  return [ref, near];
+  return [ref, near, visible];
 }
 
 type IdleWindow = Window & {
@@ -95,9 +137,12 @@ type IdleWindow = Window & {
   cancelIdleCallback?: (id: number) => void;
 };
 
-// `priority` is for a real hover gesture. Background previews wait for an idle
-// turn so their iframe navigation cannot compete with Home's first React paint.
-export function usePreviewStart(enabled = true, priority = false): {
+// `priority` true is a real hover gesture — it skips the idle wait AND jumps
+// the queue. A GETTER (see Priority) only ranks the task among those already
+// waiting; it must be STABLE across renders, since this effect re-running
+// restarts the iframe. Background previews wait for an idle turn so their
+// iframe navigation cannot compete with the page's first React paint.
+export function usePreviewStart(enabled = true, priority: Priority = false): {
   started: boolean;
   settled: () => void;
 } {
@@ -135,7 +180,11 @@ export function usePreviewStart(enabled = true, priority = false): {
       }, priority);
     };
 
-    if (priority) {
+    // `=== true` deliberately, not truthiness: a getter is always truthy, and
+    // an on-screen card at first mount is exactly the decorative iframe work
+    // the idle wait exists to put after the page's own paint. It still gets
+    // admitted first — the queue reads the getter when a slot frees.
+    if (priority === true) {
       enqueue();
     } else if (idleWindow.requestIdleCallback) {
       idleId = idleWindow.requestIdleCallback(enqueue, { timeout: 500 });

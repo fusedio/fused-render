@@ -12,7 +12,7 @@
 // for an app never opened — appEntry.sortApps); filtering never reorders cards
 // relative to each other.
 import { useEffect, useMemo, useState } from "react";
-import { getApps } from "@platform/lib/api";
+import { getApps, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { sortApps } from "@platform/lib/appEntry";
@@ -27,7 +27,31 @@ import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 
-type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
+// The grid's three phases. "partial" is a REAL, OPENABLE prefix of the final
+// grid — Home's recent-first row (see the fetch effect) — not a placeholder:
+// sortApps is recency-first, so the cards it holds are the ones the exhaustive
+// catalog will also rank first, and the swap to "ok" appends rather than
+// reshuffles. Errors ride alongside in their own state rather than as a fourth
+// phase: a failed catalog fetch must not throw away a partial grid the user
+// can already click.
+type Loaded<T> =
+  | { status: "loading" }
+  | { status: "partial"; data: T }
+  | { status: "ok"; data: T };
+
+// How many cards the fast row asks for. The server caps it at HOME_APPS_LIMIT
+// (12) and its fast path only skips the exhaustive walk when the recents FILL
+// the request, so asking for more than a hub's first rows would buy nothing and
+// cost the walk twice — see /api/apps/home.
+const FAST_ROW = 12;
+
+// The last exhaustive catalog this tab fetched, kept at MODULE scope so it
+// outlives the page's unmount. Revisiting /apps is a common move (open an app,
+// come back) and a full grid drawn instantly from the previous answer, then
+// quietly replaced, beats a skeleton every time. Stale for as long as one
+// fetch takes: a card for an app deleted since is clickable and 404s on open,
+// the same as one deleted while the page sat open.
+let catalogCache: AppInfo[] | null = null;
 
 // Which facet the chips filter by. "category" reads each app's authored
 // metadata.json category; "repo" is the top-level workspace folder (tag):
@@ -90,7 +114,10 @@ function useShowcaseSync(onSynced: () => void): Set<string> {
 }
 
 export default function Apps({ config }: { config: Config }) {
-  const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
+  const [apps, setApps] = useState<Loaded<AppInfo[]>>(
+    catalogCache ? { status: "ok", data: catalogCache } : { status: "loading" },
+  );
+  const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   // The selected filter lives in the URL (`?category=` or `?tag=`), not in
   // state — the AiModels pattern: it makes the filter bookmarkable, survives a
@@ -148,11 +175,39 @@ export default function Apps({ config }: { config: Config }) {
     setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app, thumb) });
   };
 
+  // Two fetches, in parallel, drawing the grid in two steps.
+  //
+  // The exhaustive catalog (GET /api/apps) is a recursive workspace walk plus
+  // an index query — a few hundred ms cold — and the hub used to show nothing
+  // but a skeleton for all of it. Home's row endpoint answers the same shape
+  // from the two recents stores by explicit path, so firing it alongside puts
+  // the apps the user actually uses on screen (and, more to the point, starts
+  // their preview iframes, which is the slow part) while the walk finishes.
+  //
+  // PARALLEL, not sequential: the fast row is only fast for a user with a full
+  // recents store — with fewer than FAST_ROW valid recents the server falls
+  // back to the same exhaustive walk — so it must never be a gate in front of
+  // the catalog. Its failure is likewise silent: the catalog is the answer,
+  // this is a head start.
   useEffect(() => {
     let alive = true;
+    getHomeApps(FAST_ROW).then(
+      ({ apps: fast }) => {
+        // Never overwrite a full grid — a cached one from a previous visit, or
+        // a catalog that simply won this race.
+        if (!alive || fast.length === 0) return;
+        setApps((prev) => (prev.status === "loading" ? { status: "partial", data: fast } : prev));
+      },
+      () => undefined,
+    );
     getApps().then(
-      ({ apps }) => alive && setApps({ status: "ok", data: apps }),
-      (e: Error) => alive && setApps({ status: "error", message: e.message }),
+      ({ apps }) => {
+        if (!alive) return;
+        catalogCache = apps;
+        setError(null);
+        setApps({ status: "ok", data: apps });
+      },
+      (e: Error) => alive && setError(e.message),
     );
     return () => {
       alive = false;
@@ -163,7 +218,14 @@ export default function Apps({ config }: { config: Config }) {
   // community repo into <workspace>/showcase in the background on startup,
   // and the workspace scan picks it up like any other tag dir. No synthetic
   // chip, no separate catalog surface.
+  //
+  // `all` is the CATALOG — chips, the count and the empty state all speak for
+  // the whole workspace, so they stay empty until the exhaustive answer lands
+  // (a chip row derived from twelve recents would drop options as the rest
+  // arrived, which reads as the page mis-drawing itself). `cards` is whatever
+  // is drawable NOW, partial row included.
   const all = apps.status === "ok" ? apps.data : [];
+  const cards = apps.status === "loading" ? [] : apps.data;
   // Folders chips, minus the exported `.fused` rows — see repoChips for why an
   // app FILE contributes none.
   const tags = useMemo(() => repoChips(all), [all]);
@@ -182,7 +244,7 @@ export default function Apps({ config }: { config: Config }) {
   const shown = useMemo(
     () =>
       sortApps(
-        all.filter(
+        cards.filter(
           (a) =>
             (tag === null || a.tag === tag) &&
             (category === null || a.category === category) &&
@@ -193,7 +255,7 @@ export default function Apps({ config }: { config: Config }) {
               a.tag.toLowerCase().includes(q)),
         ),
       ),
-    [all, tag, category, q],
+    [cards, tag, category, q],
   );
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
@@ -269,21 +331,30 @@ export default function Apps({ config }: { config: Config }) {
           </div>
         </div>
 
-        {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
-        {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
-        {apps.status === "ok" && (
+        {error && <ErrorBanner>{error}</ErrorBanner>}
+        {/* Skeleton only while there is nothing drawable at all: once the fast
+            row has landed the cards themselves are the loading indicator, and
+            the count line below says the rest is still coming. */}
+        {apps.status === "loading" && !error && <SkeletonLines rows={4} label="Loading apps" />}
+        {apps.status !== "loading" && (
           <>
             <div className="apps-count">
-              {shown.length === all.length
-                ? `${all.length} app${all.length === 1 ? "" : "s"}`
-                : `${shown.length} of ${all.length} apps`}
+              {apps.status === "partial"
+                ? "Recently opened — loading all apps…"
+                : shown.length === all.length
+                  ? `${all.length} app${all.length === 1 ? "" : "s"}`
+                  : `${shown.length} of ${all.length} apps`}
             </div>
             {shown.length === 0 ? (
-              <div className="home-empty">
-                {all.length === 0
-                  ? "No apps yet. Describe one in the composer above to create it."
-                  : "No apps match — clear the search or filter."}
-              </div>
+              // Nothing to say yet during the partial phase: "no apps match" is
+              // a claim about the whole catalog, which has not arrived.
+              apps.status === "partial" ? null : (
+                <div className="home-empty">
+                  {all.length === 0
+                    ? "No apps yet. Describe one in the composer above to create it."
+                    : "No apps match — clear the search or filter."}
+                </div>
+              )
             ) : (
               <div className="apps-cards">
                 {shown.map((app) => (
