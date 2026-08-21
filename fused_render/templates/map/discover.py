@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import string
 import sys
@@ -44,7 +45,10 @@ RASTER = (
     ".hgt",
     ".grd",
     ".nc",
+    ".nc4",
     ".hdf",
+    ".hdf5",
+    ".he5",
     ".h5",
 )
 VECTOR = (
@@ -147,6 +151,25 @@ def _list_remote(src: str, path: str, cap: int = 5000) -> list[dict[str, Any]]:
             return entries[:cap]
 
 
+ZARR_MARKERS = ("zarr.json", ".zmetadata", ".zgroup", ".zarray")
+
+
+def _is_zarr_directory(path: str, name: str) -> bool:
+    """Whether a directory is a zarr store rather than a lookalike name.
+
+    A store always carries one of the metadata objects at its root. When the
+    directory cannot be read here — a remote listing arrives as names alone —
+    the name is all there is to go on, which is the old behaviour.
+    """
+    if not re.search(r"\.zarr(-[^.]*)?$", name.lower()):
+        return False
+    try:
+        entries = set(os.listdir(path))
+    except OSError:
+        return True
+    return any(marker in entries for marker in ZARR_MARKERS)
+
+
 def _payload(
     directory: str,
     triples: list[tuple[str, bool, int | None]],
@@ -156,7 +179,15 @@ def _payload(
     entries = []
     for name, is_directory, size in triples:
         full = os.path.join(directory, name)
-        item_kind = "dir" if is_directory else kind(name)
+        # A zarr store is a directory that opens like a file — but only a
+        # real one. Claiming every directory whose name ends in .zarr made an
+        # ordinary folder someone happened to call `experiments.zarr` into a
+        # dead end: the browser navigates on "dir" and nothing else, so it
+        # could neither be entered nor opened.
+        if is_directory and _is_zarr_directory(full, name):
+            item_kind = "raster"
+        else:
+            item_kind = "dir" if is_directory else kind(name)
         if item_kind == "other":
             continue
         entries.append(
@@ -164,10 +195,10 @@ def _payload(
                 "name": name,
                 "path": full,
                 "kind": item_kind,
-                "ext": "" if is_directory else os.path.splitext(name)[1].lower(),
+                "ext": "" if item_kind == "dir" else os.path.splitext(name)[1].lower(),
                 "size": None if is_directory else size,
                 "hidden": name.startswith("."),
-                "selectable": not is_directory and item_kind != "other",
+                "selectable": item_kind != "dir",
             }
         )
     entries.sort(key=lambda entry: (entry["kind"] != "dir", entry["name"].lower()))

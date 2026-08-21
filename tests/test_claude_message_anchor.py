@@ -178,7 +178,10 @@ def test_only_the_history_restore_can_render_an_anchorable_turn(code):
     assert with_uuid == ["stripBlocks(t.text), t.uuid"], with_uuid
     # And that one restore renders every turn synchronously before it looks, so
     # there is no moment where the turn exists but has not been looked for.
-    load = code[code.index("const { turns } = await fused.runPython(AGENT"):]
+    # The restore also destructures the transcript watermark the follower reads
+    # (D415), so this anchors on the call rather than on the shape of what it
+    # unpacks — the next key added there is not this test's business.
+    load = code[code.index('await fused.runPython(AGENT, { action: "history"'):]
     load = load[:load.index("} catch (err) {")]
     assert "for (const t of turns) {" in load
     assert "await" not in load.split("for (const t of turns) {")[1], \

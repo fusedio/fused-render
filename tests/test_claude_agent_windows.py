@@ -251,7 +251,12 @@ def test_poll_and_history_refuse_a_windows_escaping_id(tmp_path, monkeypatch):
     assert agent._poll(r"..\..\elsewhere")["error"] == "unknown run_id"
     target = tmp_path / "sample.html"
     target.write_text("<html></html>")
-    assert agent._history(str(target), r"..\..\elsewhere") == {"turns": []}
+    # No turns, and the transcript watermark the follower reads (D415) is the
+    # empty one — a refused id names no file, so there is nothing to stat and
+    # nothing for a later poll to read as movement.
+    refused = agent._history(str(target), r"..\..\elsewhere")
+    assert refused["turns"] == []
+    assert refused["transcript"] == agent._transcript_stat("")
 
 
 # ------------------------------------------------------------- transcript dir

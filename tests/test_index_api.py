@@ -82,6 +82,14 @@ def test_scan_rejects_a_path_that_is_not_a_directory(home, tmp_path):
     assert "not a directory" in resp.json()["error"]
 
 
+def test_scan_409s_while_indexing_is_off(home, tmp_path, monkeypatch):
+    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    resp = _client(tmp_path).post("/api/index/scan", json={"root": str(tmp_path)},
+                                  headers={"X-Fused": "1"})
+    assert resp.status_code == 409
+    assert "disabled" in resp.json()["error"]
+
+
 def test_cancel_of_an_unknown_run_is_a_400(home, tmp_path):
     resp = _client(tmp_path).post("/api/index/cancel", json={"run_id": "nope"},
                                   headers={"X-Fused": "1"})
@@ -680,6 +688,22 @@ def test_startup_scan_never_raises(home, tmp_path, monkeypatch):
     cfg.roots = [str(tmp_path)]
     index_router.save_config(cfg)
     index_router.run_startup_scan(start_dir=str(tmp_path))  # no exception
+
+
+def test_startup_scan_skips_every_root_while_indexing_is_off(home, tmp_path,
+                                                              monkeypatch):
+    """No scan ever starts from any trigger, including the one every boot
+    fires unconditionally."""
+    src = _tree(tmp_path)
+    started = []
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: started.append(root))
+    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+    assert started == []
 
 
 def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
@@ -1313,6 +1337,19 @@ def test_the_freshness_check_runs_at_most_one_at_a_time(
     # The slot frees once the check finishes, so the next open is checked again.
     threads[0]["target"](*threads[0]["args"])
     assert _real_note_folder_opened(str(tmp_path)) is True
+
+
+def test_note_folder_opened_starts_nothing_while_indexing_is_off(
+        home, tmp_path, monkeypatch):
+    """The one gate for every caller of this function (fs_read.py,
+    git_repos.py, exported_apps.py): a listing must never turn into a check,
+    let alone a scan, while the pref is off."""
+    threads = []
+    monkeypatch.setattr(index_router.threading, "Thread",
+                        lambda **kw: threads.append(kw) or _FakeThread())
+    monkeypatch.setattr(index_router, "indexing_enabled", lambda: False)
+    assert _real_note_folder_opened(str(tmp_path)) is False
+    assert threads == []
 
 
 class _FakeThread:

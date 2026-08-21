@@ -490,3 +490,68 @@ def test_a_run_that_died_mid_retry_keeps_the_overload_story(agent, run_dir):
     data = _poll(agent, run_dir, rows, alive=False)
     assert "rate limited" in data["error"]
     assert "Your Claude plan" not in data["error"]
+
+
+# --------------------------------- when a turn ends but the run does not (D415)
+#
+# One claude process can run several turns: a turn that started a background
+# shell is woken by the harness when the command finishes, and the reply to that
+# wake is written after the `result` that closed the first turn. `done` used to
+# latch on that first `result`, so the woken turn was reported as a finished one
+# and the page showed nothing at all until the next reload.
+
+_DONE = {"type": "result", "session_id": "s", "result": "there"}
+
+
+def test_a_result_with_nothing_after_it_ends_the_turn(agent, run_dir):
+    assert _poll(agent, run_dir, [_text("there"), _DONE])["done"] is True
+
+
+def test_a_result_the_run_has_spoken_past_is_not_the_end(agent, run_dir):
+    """The wake's own rows — hooks, `init`, the reply — all reopen the turn."""
+    woken = _poll(agent, run_dir, [
+        _text("there"), _DONE,
+        {"type": "system", "subtype": "task_notification", "status": "completed",
+         "summary": "Background command \"pytest -q\" completed"},
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        _text("the tests passed"),
+    ])
+    assert woken["done"] is False
+    assert woken["error"] == ""
+    assert woken["text"].endswith("the tests passed")
+
+
+def test_the_second_turns_own_result_ends_the_run_again(agent, run_dir):
+    data = _poll(agent, run_dir, [
+        _text("there"), _DONE,
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        _text("the tests passed"),
+        {"type": "result", "session_id": "s", "result": "the tests passed"},
+    ])
+    assert data["done"] is True
+
+
+def test_a_dead_process_ends_the_run_whatever_the_rows_say(agent, run_dir):
+    """The wake that never came: the process is gone, so nothing more can be
+    written and the page must not sit on a working line for ever."""
+    data = _poll(agent, run_dir, [
+        _text("there"), _DONE,
+        {"type": "system", "subtype": "init", "session_id": "s"},
+    ], alive=False)
+    assert data["done"] is True
+    # ...and a run that DID finish a turn is not reported as a crash, however
+    # abruptly its process went away afterwards.
+    assert data["error"] == ""
+
+
+def test_a_live_run_with_no_result_yet_is_still_running(agent, run_dir):
+    assert _poll(agent, run_dir, [_text("thinking about it")])["done"] is False
+
+
+def test_a_delta_less_turn_shows_its_text_before_the_process_exits(agent, run_dir):
+    """The `result` fallback is about the row that carries the text, not about
+    the process: an older CLI's reply must not stay blank while the run is
+    awake between turns."""
+    data = _poll(agent, run_dir, [{"type": "result", "session_id": "s",
+                                   "result": "hello"}])
+    assert data["text"] == "hello"

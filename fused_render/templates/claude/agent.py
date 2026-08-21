@@ -41,6 +41,7 @@ Actions:
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       custom=<json string, the "Other" text per question, AskUserQuestion only>,
        note=<free text, ExitPlanMode deny only>)
                                       -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
@@ -361,7 +362,7 @@ def _multi_answer_ok(value: str, labels: list) -> bool:
     return False
 
 
-def _answers_from(questions, answers):
+def _answers_from(questions, answers, custom=None):
     """The answer record that may be latched, or None — which means deny.
 
     MUST stay identical to `_answers_from` in permission_server.py: this copy
@@ -374,10 +375,23 @@ def _answers_from(questions, answers):
     exact question, because the alternative failure is the model acting on a
     choice the user never made. An omitted question is allowed (the CLI reads it
     as unanswered, which is true); an invented one is not.
+
+    `custom` is the one way a value that the model did not author gets through:
+    the card's "Other" box (D407), keyed by the same question text, carrying what
+    the USER typed. It is folded in as one extra option for that question and
+    nothing more — the answer still has to match the option list exactly, the
+    typed string still has to come last in a multi-select join, and free text for
+    a question nobody asked is refused like any other invented answer. The
+    distinction that survives is authorship: a label the model offered, or a
+    sentence the user wrote — never a string neither of them ever produced.
     """
     if not isinstance(questions, list) or not questions:
         return None
     if not isinstance(answers, dict) or not answers:
+        return None
+    if custom is None:
+        custom = {}
+    if not isinstance(custom, dict):
         return None
     asked = {}
     for question in questions:
@@ -395,6 +409,22 @@ def _answers_from(questions, answers):
         if not labels or text in asked:
             return None
         asked[text] = (labels, bool(question.get("multiSelect")))
+    # The typed answers, each folded in as one more option for its own question.
+    # Validated first and as a whole, on the same all-or-nothing rule as the
+    # labels: free text for a question that was never asked is the same
+    # fabrication as an invented label, and an empty box is not an answer.
+    for text, typed in custom.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(typed, str) or not typed:
+            return None
+        labels, multi = asked[text]
+        # Typing out an option's own wording is not a second option: appending it
+        # would let "Alpha, Alpha" match a multi-select join.
+        if typed not in labels:
+            # LAST, because the multi-select join is matched in option order and
+            # the card puts the typed answer after everything ticked.
+            asked[text] = (labels + [typed], multi)
     out = {}
     for text, value in answers.items():
         if not isinstance(text, str) or text not in asked:
@@ -1216,7 +1246,8 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
-            mode: str = "", answers: str = "", note: str = "") -> dict:
+            mode: str = "", answers: str = "", note: str = "",
+            custom: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -1259,12 +1290,21 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
             # one is recorded as a deny rather than as an allow the model would
             # read as "the user did not answer the questions". Validated against
             # the parked request's own questions, never against what was sent.
-            picked = _answers_from(asked.get("questions"), _as_answers(answers))
+            typed = _as_answers(custom)
+            picked = _answers_from(asked.get("questions"), _as_answers(answers),
+                                   typed)
             if picked is None:
                 payload = {"decision": "deny", "scope": "once",
                            "message": BAD_ANSWER}
             else:
                 payload["answers"] = picked
+                # Latched BESIDE the answer, not folded into it: the answer is
+                # one string per question either way, and permission_server
+                # re-validates from scratch — so it needs to be told which part
+                # of that string the user typed rather than inferring it back
+                # out of a join it must not try to split (D407).
+                if typed:
+                    payload["custom"] = typed
         # Anywhere else `answers` is simply not a field: dropping it here is what
         # keeps the page from adding keys to a tool input it does not own.
     else:
@@ -1414,6 +1454,40 @@ _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
     r"<(%s)>.*?</\1>\s*" % "|".join(_MACHINERY_TAGS), re.DOTALL)
 _LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
+# The DROP half alone, for `_history`: those records are Claude Code writing on
+# the user's behalf and are never a turn, where a STRIP tag is a block this page
+# prepended to words the user really did type and must not take the turn with it.
+_LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
+
+# A synthetic `user` record the HARNESS writes when a background shell the turn
+# started finishes (or is stopped): it wakes the run, and everything the agent
+# says afterwards is the answer to it. Nobody typed it, so it may never render as
+# a user bubble — it used to, as a screenful of raw XML — but it may not be
+# silently dropped either, because it is the only explanation on screen for a
+# reply that arrives with no message above it (D415).
+_TASK_NOTIFICATION_OPEN = "<task-notification>"
+_TASK_FIELD = re.compile(r"<(summary|status)>(.*?)</\1>", re.DOTALL)
+
+
+def _task_notification(text: str) -> dict | None:
+    """`{"summary", "status"}` for a task-notification record, else None.
+
+    Matched on the OPENING tag only, and only at the head: the block is the
+    whole record in practice, and a message that merely mentions the tag
+    somewhere in its prose is a human writing about this feature, not the
+    harness. A record whose `<summary>` is missing or empty still answers — with
+    the status alone as its words — because the chip's job is to account for the
+    turn underneath it, and "a background task finished" says that much."""
+    if not isinstance(text, str) or not text.lstrip().startswith(_TASK_NOTIFICATION_OPEN):
+        return None
+    found = {m.group(1): m.group(2).strip() for m in _TASK_FIELD.finditer(text)}
+    status = found.get("status", "")
+    summary = found.get("summary", "")
+    if not summary:
+        summary = ("Background task %s" % status) if status \
+            else "A background task woke the agent"
+    return {"summary": summary, "status": status}
+
 
 # `formatAnnotations`' preamble, which has no tag at all — the inverse of
 # template.html's `stripAnnBlock`, anchored on the json fence for the same
@@ -2409,6 +2483,28 @@ def _segments_from_rows(rows: list) -> list:
                     by_tool_id[tool_id] = seg
                     if tool_id in orphans:
                         settle(seg, orphans.pop(tool_id))
+        elif t == "system" and row.get("subtype") == "task_notification":
+            # The harness waking the run because a background shell it started
+            # has finished or been stopped (D415). It is not the model speaking
+            # and it is not a tool call, so it is neither text nor a chip — it
+            # is the REASON the turn that follows exists, and without it a reply
+            # appears out of nowhere under a message the user never sent. One
+            # line, from the CLI's own `summary`; the page draws it as a system
+            # chip (buildNoticeView).
+            #
+            # This is the LIVE shape, the row `out.jsonl` carries. The persisted
+            # transcript records the same event as a synthetic `user` row of
+            # `<task-notification>` XML — the branch below — and both land here
+            # so a restored conversation and a streaming one show the same chip.
+            note = str(row.get("summary") or "").strip()
+            if note:
+                segments.append({"kind": "notice", "text": [note],
+                                 "status": str(row.get("status") or "")})
+        elif t == "user" and isinstance(content, str):
+            note = _task_notification(content)
+            if note:
+                segments.append({"kind": "notice", "text": [note["summary"]],
+                                 "status": note["status"]})
         elif t == "user" and isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
@@ -2475,6 +2571,33 @@ def _poll(run_id: str, file: str = "") -> dict:
     text_parts = []
     result_text = None
     new_session = ""
+    # `done` IS PER TURN, AND A `result` ONLY ENDS ONE WHILE NOTHING FOLLOWS IT
+    # (D415). One claude process can run several turns: a turn that started a
+    # background shell is woken by the harness when the command finishes — a
+    # `<task-notification>` prompt this page never sent — and everything the
+    # agent then says is written to this same `out.jsonl`, after the `result`
+    # that closed the first turn. `done` used to latch True on that first
+    # `result` and stay there for the life of the run, so the woken turn was
+    # reported as a finished one: no working line, no streaming, an answer that
+    # only appeared on the next reload (Akshil, 2026-08-21 — the chat "showed
+    # nothing" until a few "continue"s later).
+    #
+    # So the answer is "the last thing in this file is a finished turn", which
+    # goes back to False the moment the wake writes its first row, and the page's
+    # standing live-run watch attaches to it like any other run it did not start.
+    # The alternative — done only at process exit — was rejected for what it does
+    # to the COMPOSER: the process outlives the turn for as long as the
+    # background command runs (an hour is not unusual), and the chat would sit
+    # busy, queueing everything the user typed, over a run that is not saying
+    # anything.
+    #
+    # Liveness is sampled BEFORE the read, and that order is the point: a process
+    # that dies between these two lines is read as alive for one more poll
+    # (400ms, and the tail is on disk by then), where the reverse order could
+    # call a run done over a file whose last rows had not been flushed yet.
+    alive = _alive(run_dir)
+    saw_result = False   # at least one turn of this run has finished
+    idle = False         # ...and nothing has been said since
     done = False
     error = ""
     tokens_done = 0      # output tokens of finished messages this turn
@@ -2508,6 +2631,11 @@ def _poll(run_id: str, file: str = "") -> dict:
             continue  # half-written last line; next poll gets it
         parsed.append(row)
         t = row.get("type")
+        # Anything at all after a `result` is the run waking up for another turn
+        # (the harness's hooks fire first, then `init`, then the reply), so the
+        # quiet-verb window closes on the first row of any kind — see `idle`.
+        if t != "result":
+            idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
         # `api_retry` ends it: the live retry state has to be transient, or the
@@ -2559,7 +2687,8 @@ def _poll(run_id: str, file: str = "") -> dict:
                 if block == "tool_use":
                     phase = "tooling"
         elif t == "result":
-            done = True
+            saw_result = True
+            idle = True
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
@@ -2574,12 +2703,15 @@ def _poll(run_id: str, file: str = "") -> dict:
     if retry is not None:
         phase = "retrying"
 
-    if not done and not _alive(run_dir):
+    # Finished: a `result` with nothing after it (the turn ended and no wake has
+    # started another), or a process that is simply gone (D415).
+    done = idle or not alive
+
+    if not saw_result and done:
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
         # even if some text streamed first. Report it as an error regardless
         # of partial text, so the UI doesn't render a truncated reply as a
         # clean success and the session-record guard below skips it.
-        done = True
         try:
             tail = open(os.path.join(run_dir, "err.log"), encoding="utf-8",
                         errors="replace").read().strip()
@@ -2685,7 +2817,11 @@ def _poll(run_id: str, file: str = "") -> dict:
     # accumulated stream; fall back to `result` only when nothing streamed
     # (older CLI without --include-partial-messages).
     text = "".join(text_parts)
-    if not text and done and result_text and not error:
+    # `saw_result`, not `done`: the fallback is about the row that carries the
+    # text, and a run whose process is still up between turns (D415) has that
+    # row already — waiting for the exit would blank a delta-less turn's reply
+    # for as long as the run stays awake.
+    if not text and saw_result and result_text and not error:
         text = result_text
     # `segments` is the authoritative record of the turn; `text` is the flat
     # legacy field, kept byte-identical to what it has always been for the
@@ -3151,6 +3287,22 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
     return res
 
 
+def _transcript_stat(path: str) -> dict:
+    """`{path, mtime, size}` for a session transcript — the page's watermark.
+
+    Its two readers are `_history` (which stats BEFORE it reads, see there) and
+    the page, which hands `path` to `/api/claude-sessions/liveness` on every lap
+    of its live watch and compares the pair. A missing file answers zeroes rather
+    than raising: a chat can be open on a session whose transcript does not exist
+    yet, and "0, 0" is the honest watermark for one — the first row written moves
+    it."""
+    try:
+        st = os.stat(path)
+        return {"path": path, "mtime": st.st_mtime, "size": st.st_size}
+    except OSError:
+        return {"path": path, "mtime": 0.0, "size": 0}
+
+
 def _history(file: str, session_id: str) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
@@ -3176,12 +3328,23 @@ def _history(file: str, session_id: str) -> dict:
     turn a person clicked instead of to the top of the conversation. "" on a
     record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
-        return {"turns": []}
+        return {"turns": [], "transcript": _transcript_stat("")}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
+    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
+    # is the watermark the page follows the conversation by — it re-renders when
+    # the file moves past it — and a stat taken AFTER the read would describe
+    # rows this payload may not contain, which is a turn silently swallowed. Taken
+    # first, a write that lands mid-read shows up as a watermark the very next lap
+    # disagrees with: one redundant re-render, never a missed one.
+    #
+    # The PATH rides back for `/api/claude-sessions/liveness`: resolving an id to
+    # a transcript belongs here (the line above is the only place that knows the
+    # folder this chat is open on), and the endpoint refuses to do it.
+    stat = _transcript_stat(path)
     if not os.path.isfile(path):
-        return {"turns": []}
+        return {"turns": [], "transcript": stat}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
@@ -3230,7 +3393,16 @@ def _history(file: str, session_id: str) -> dict:
             # never saw it — showing them a screenful of JSON they don't
             # recognise is the whole reason it is stripped here.
             text = _strip_app_state(text)
-            if text.strip() and not text.startswith(("<local-command", "<command-name")):
+            # Claude Code's own synthetic `user` records are not turns: nobody
+            # typed them and the reader has no use for their XML. Two of them
+            # were named literally here; the rest — `<task-notification>` the
+            # loudest, a whole notification block rendered as a message bubble —
+            # were not, so they arrived on screen verbatim (D415). One list now,
+            # the same `_MACHINERY_DROP` the session names are filtered by.
+            # Everything filtered here falls to `stretch`, where
+            # `_segments_from_rows` turns a task-notification into its chip and
+            # ignores the others.
+            if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
                 close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text,
                               "uuid": str(row.get("uuid") or "")})
@@ -3251,7 +3423,7 @@ def _history(file: str, session_id: str) -> dict:
                 else:
                     turns.append({"role": "assistant", "text": text})
     close_stretch()
-    return {"turns": turns}
+    return {"turns": turns, "transcript": stat}
 
 
 def _cancel(run_id: str) -> dict:
@@ -3297,7 +3469,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
-         answers: str = "", note: str = "") -> dict:
+         answers: str = "", note: str = "", custom: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -3319,8 +3491,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         # below — params cross into python string-shaped — and is only read for
         # an AskUserQuestion request (see _decide). `note` is the plan card's
         # equivalent: free text the user typed next to "keep planning", read only
-        # for an ExitPlanMode deny and only ever as part of its message.
-        return _decide(run_id, request_id, decision, scope, mode, answers, note)
+        # for an ExitPlanMode deny and only ever as part of its message. `custom`
+        # is the question card's sibling of both: a JSON record, keyed by the
+        # same question text as `answers`, of what the user typed into "Other".
+        return _decide(run_id, request_id, decision, scope, mode, answers, note,
+                       custom)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is

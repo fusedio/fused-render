@@ -33,6 +33,7 @@ import AiModelsEngines from "./AiModelsEngines";
 import AiModelsUsage from "./AiModelsUsage";
 import { ModelProgress } from "./AiProgress";
 import { groupRepos, loadRefusal, noEngineReason } from "@shell/aiModelGroups";
+import { unloadCountdown } from "@shell/engines";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
@@ -279,6 +280,11 @@ function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
     // own memory still knows where it put the weights, and an early return on
     // the memory figure alone would have thrown the device away with it.
     if (!loaded.residentBytes && !loaded.device) return null;
+    // AI-13: null whenever the idle window is disabled — by the stored pref,
+    // by an env override, or (rarely) by neither on a machine with no reaper
+    // running — and the page has no reason to tell those apart, since none
+    // of them counts down.
+    const countdown = unloadCountdown(loaded.unloadsInSeconds);
     return (
       <div className="am-card-runtime am-card-runtime-ready">
         {loaded.residentBytes ? (
@@ -290,6 +296,7 @@ function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
             }
           >
             {formatSize(loaded.residentBytes)} in memory
+            {countdown ? ` — ${countdown}` : ""}
           </span>
         ) : null}
         {loaded.device && <DeviceNote device={loaded.device} />}
@@ -454,9 +461,12 @@ function RepoCard({
               tabIndex={repo.engine.available ? undefined : 0}
               /* Says the STATE in words, because the tag's own text no longer
                  does and colour must not be the only signal. It opens with the
-                 visible label so the accessible name still contains what is on
-                 screen (WCAG 2.5.3), which is what keeps "click the Diffusers
-                 tag" a workable instruction for voice control. */
+                 hardware-qualified name, which STARTS WITH the family the tag
+                 renders — that is why the accessible name still contains what
+                 is on screen (WCAG 2.5.3) even though the two strings differ,
+                 and why "click the Diffusers tag" stays a workable instruction
+                 for voice control. `family_label` being a prefix of
+                 `short_label` is asserted in the registry's own tests. */
               aria-label={
                 repo.engine.available
                   ? undefined
@@ -476,7 +486,16 @@ function RepoCard({
                   : `This is a ${repo.engine.shortLabel} model, and it cannot be loaded here: ${repo.engine.reason ?? "unavailable"}.`
               }
             >
-              {repo.engine.shortLabel}
+              {/* The FAMILY, not the build. An engine tag IS a format claim
+                  (see the library tag below, which stands down when this one
+                  is present), and all three Diffusers rows read the identical
+                  safetensors — so "(ROCm)" here answers nothing a reader could
+                  ask about a file on disk, and puts this machine's
+                  configuration into a sentence about the model. The build is
+                  not lost: the title and aria-label above name the
+                  hardware-qualified engine, which is where a reader who has
+                  stopped to ask reads it. */}
+              {repo.engine.familyLabel}
             </span>
           ) : (
             <span
@@ -543,7 +562,9 @@ function RepoCard({
         )}
         {/* The weight FORMAT, and only where nothing else on the row already
             said it. An engine tag IS a format claim — "MLX LM" is exactly the
-            statement that these weights are mlx — so printing both put the
+            statement that these weights are mlx, which is also why the tag
+            renders the engine FAMILY and leaves the accelerator to the hover —
+            so printing both put the
             word "MLX" on the card three times (tag, format, `mlx-community/`
             in the name) and told the reader nothing on the second and third.
             A repo with no engine tag is the case this survives for: there the

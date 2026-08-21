@@ -29,6 +29,7 @@ MAP_TEMPLATE = (
 )
 sys.path.insert(0, str(MAP_TEMPLATE))
 
+import geo_paths
 import vector_engine
 from daemon import Handler, MapServer
 from vector_engine import VectorEngine
@@ -334,7 +335,7 @@ def test_branch_mount_vector_uses_the_range_proxy(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_BRANCH", "feat/map")
     source_url = "http://127.0.0.1:1777/api/fs/raw?path=mounted-vector"
 
-    resolved = vector_engine._resolve_source(
+    resolved = geo_paths.resolve_source(
         {
             "target": str(source),
             "source_url": source_url,
@@ -365,4 +366,4 @@ def test_branch_mount_vector_uses_the_range_proxy(tmp_path, monkeypatch):
 def test_uppercase_remote_vectors_are_not_resolved_as_local_paths(
     target, expected
 ):
-    assert vector_engine._resolve_source({"target": target}, target) == expected
+    assert geo_paths.resolve_source({"target": target}, target) == expected

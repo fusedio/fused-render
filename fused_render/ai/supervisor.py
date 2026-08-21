@@ -217,6 +217,15 @@ class Worker:
     device: str = ""
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
+    #: `time.monotonic()` of the last thing this worker did, and how many turns
+    #: are doing it right now. Seeded at construction — not left `None` until
+    #: first use — so a model nobody has generated on yet still has a well-formed
+    #: idle age rather than a crash in `reap_idle` (AI-13). Monotonic, not
+    #: `time.time()`: see Key decisions in the AI-13 plan — wall-clock jumps
+    #: (DST, NTP, a laptop's clock stepping on wake) must not make a model look
+    #: idle for longer than it was, or fresher than it is.
+    last_activity: float = field(default_factory=time.monotonic)
+    in_flight: int = 0
     #: Set when the user cancels or a newer load evicts this one. The bring-up
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
@@ -298,6 +307,50 @@ def _health(worker: Worker) -> dict | None:
             return json.loads(response.read().decode() or "{}")
     except (OSError, ValueError):
         return None
+
+
+def _touch(worker: Worker) -> None:
+    """Re-stamp `last_activity` mid-turn, without touching `in_flight`.
+
+    For the events inside a long stream: `_in_use` alone would only mark the
+    worker busy at the START of a generation, and a transcription running
+    twenty minutes on one request would look no fresher at minute nineteen
+    than at minute one. The idle reaper (AI-13) reads only this stamp for a
+    `ready` worker with nothing in flight, so a still-busy worker never needs
+    this call to be spared — but the plan wraps every yielded chunk in it
+    anyway, since a stalled loop on the worker side (no chunks, `in_flight`
+    still 1) is exactly the leak `reap_idle`'s ceiling is for.
+    """
+    with _lock:
+        worker.last_activity = time.monotonic()
+
+
+@contextlib.contextmanager
+def _in_use(worker: Worker):
+    """Bracket one turn of generation on `worker`, for the idle reaper (AI-13).
+
+    Stamps and increments on entry, stamps and decrements in `finally` — both
+    under `_lock`, since `reap_idle` reads `last_activity` and `in_flight` from
+    the reaper thread while a generation may be mutating them from its own.
+
+    **The `finally` is what makes a client disconnect mid-stream release the
+    counter.** `generate_text` is a generator built around this context
+    manager: a page that stops iterating without calling `close()` still
+    unwinds through here when the generator is garbage-collected, because a
+    `with` block inside a generator runs its `finally` on `GeneratorExit` same
+    as on a normal return. Without it, one abandoned stream would pin
+    `in_flight` at 1 and hold the model resident forever — worse than no idle
+    unload at all (see the leak-ceiling decision).
+    """
+    with _lock:
+        worker.last_activity = time.monotonic()
+        worker.in_flight += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            worker.last_activity = time.monotonic()
+            worker.in_flight -= 1
 
 
 # ------------------------------------------------------------------- lifecycle
@@ -760,6 +813,24 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.device = str(health.get("device") or "")
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
+                    # AI-13: the idle clock starts HERE, not at construction.
+                    # `last_activity` is otherwise seeded once, in the
+                    # `Worker` dataclass, at the moment `_start_resident`
+                    # builds the object — before this loop's `uv sync`, pull
+                    # and load even begin. A first-ever multi-GB download
+                    # that takes longer than the idle window would then
+                    # become `ready` already past it, and the reaper's very
+                    # next tick (<=30s) would unload it before a single
+                    # request had used it — `generate_text` looping
+                    # ModelNotReady -> load -> ready -> reaped forever, and
+                    # the image/transcript paths worse still, since
+                    # `_wait_ready` would hand back a worker the reaper is
+                    # about to kill out from under the request. Every
+                    # generation path re-stamps on its own first touch
+                    # anyway (`_in_use`), so this only matters for the
+                    # window between becoming ready and someone asking —
+                    # which is exactly the window a slow bring-up ate.
+                    worker.last_activity = time.monotonic()
                     _report(job, state="done", detail="Model loaded")
                     return
                 if worker.state == "error":
@@ -1107,20 +1178,53 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
 
-def unload(model: str | None = None, capability: str | None = None) -> bool:
-    """Stop a resident worker. True if there was one to stop."""
+def _claim_for_removal(match) -> list[Worker]:
+    """Atomically find-and-pop every worker `match(worker)` accepts.
+
+    The shared atomic core `unload()` and `reap_idle()` both build on: the
+    SELECTION and the POP happen inside one `_lock` hold, so whatever
+    `match` decided stays true for every worker in the returned list — no
+    caller re-scans `_workers` by name afterward, which is what would let a
+    DIFFERENT worker that has since claimed the same capability be swept up
+    by mistake, or let a worker's `in_flight`/`last_activity` change between
+    being decided and being removed (see `reap_idle`'s docstring for the
+    concrete failure that gap caused).
+
+    Deliberately does NOT terminate or report here: `_terminate` does network
+    I/O (a `/quit` POST, a process wait) and must run OUTSIDE `_lock`, or
+    reaping one idle worker would block every other table operation for as
+    long as that teardown takes.
+    """
     with _lock:
-        targets = [
-            w for w in _workers.values()
-            if (model is None or w.model == model)
-            and (capability is None or w.capability == capability)
-        ]
+        targets = [w for w in _workers.values() if match(w)]
         for worker in targets:
             worker.stopping = True
             _workers.pop(worker.capability, None)
+        return targets
+
+
+def _remove(targets: list[Worker], reason: str) -> None:
+    """Tear down every worker in `targets` — already popped from `_workers` by
+    `_claim_for_removal`, so this runs outside `_lock` with nothing left to
+    race: `_terminate`'s I/O and `_report`'s job-row write."""
     for worker in targets:
         _terminate(worker)
-        _report(job_id_for(worker.model), state="done", detail="Unloaded")
+        _report(job_id_for(worker.model), state="done", detail=reason)
+
+
+def unload(model: str | None = None, capability: str | None = None,
+          reason: str = "Unloaded") -> bool:
+    """Stop a resident worker. True if there was one to stop.
+
+    `reason` lands verbatim in the job row's `detail`, so every caller — a
+    page's explicit unload, `evict_stale_engines`, a newer load claiming the
+    capability, shutdown, and the idle reaper (AI-13) — can say which of them
+    it was, without a parallel teardown for each.
+    """
+    targets = _claim_for_removal(
+        lambda w: (model is None or w.model == model)
+        and (capability is None or w.capability == capability))
+    _remove(targets, reason)
     return bool(targets)
 
 
@@ -1157,6 +1261,199 @@ def evict_stale_engines() -> list[str]:
     for worker in stale:
         unload(model=worker.model, capability=worker.capability)
     return [worker.model for worker in stale]
+
+
+#: How often the reaper thread wakes up to evaluate `reap_idle` (AI-13). The
+#: promise is "about ten minutes", not a deadline, so a coarse tick is the
+#: right trade: worst case is one tick of overshoot, and the job row's
+#: "Unloaded after N min idle" detail is worded so an overshoot never reads as
+#: a crash. Kept well under any plausible idle window so a `1`-minute window
+#: does not wait half its own length to fire.
+_REAPER_TICK_S = 30.0
+
+_reaper_thread: threading.Thread | None = None
+
+
+#: Margin added to a call's own request timeout before a still-positive
+#: `in_flight` counter counts as LEAKED rather than busy. Generous on purpose:
+#: this only has to be bigger than the slop between "the worker replied" and
+#: "the supervisor finished decrementing", not tight.
+_LEAK_CEILING_MARGIN_S = 300.0
+
+
+def _leak_ceiling(capability: str, window: float) -> float:
+    """How stale `last_activity` must be, for a WORKER WITH `in_flight > 0`,
+    before it counts as leaked rather than busy (see `idle_workers`).
+
+    Derived from the request timeout that actually bounds a call on this
+    capability — `TRANSCRIBE_TIMEOUT_S` for `SPEECH_TO_TEXT`,
+    `GENERATE_TIMEOUT_S` for text and image otherwise — plus a margin: past
+    that bound `_worker_request` itself has already raised, so a counter
+    still reading positive cannot be a slow answer, only a leaked one.
+
+    `max(window, …)` rather than the timeout alone: a hand-set idle window
+    already longer than the request timeout (someone dialling the reaper out
+    to hours) must not be SHORTENED for a busy worker by this rule — the
+    ceiling for a busy worker is never tighter than the ceiling for an idle
+    one.
+    """
+    timeout = TRANSCRIBE_TIMEOUT_S if capability == registry.SPEECH_TO_TEXT else GENERATE_TIMEOUT_S
+    return max(window, timeout + _LEAK_CEILING_MARGIN_S)
+
+
+def _is_idle(worker: Worker, now: float, window: float) -> bool:
+    """Pure predicate: is `worker` past ITS OWN idle bound at `now`, given a
+    window already resolved to seconds?
+
+    Shared by `idle_workers` (a read-only report over a locked snapshot) and
+    `reap_idle` (which must decide and remove in the SAME lock hold — see its
+    docstring) so the two can never quietly diverge on what "idle" means.
+
+    **Only `state == "ready"` is eligible.** A `starting` / `venv` /
+    `downloading` / `loading` worker is not holding a finished model yet — a
+    40-minute `uv sync` or an 8GB pull is activity, holds little memory, and
+    killing it mid-build is hostile, not a memory win. `_fetch_workers`
+    (weights-only downloads, which never enter `_workers` at all — see its
+    docstring) are untouched for the same reason, simply by never appearing
+    in what this is called over.
+
+    **`in_flight > 0` DOES exempt a worker past its own idle window, up to a
+    separate leak ceiling — this is NOT collapsible into one predicate.** The
+    tempting simplification is "every chunk re-stamps `last_activity`, so a
+    live call is never stale, so `in_flight` needs no exemption at all" — true
+    for `generate_text`, and **only** for `generate_text`. `generate_image`
+    and `generate_transcript` are single blocking `_worker_request` calls:
+    `_in_use` stamps once on entry and nothing ticks again until the reply
+    comes back, which can be up to `GENERATE_TIMEOUT_S` (900s) or
+    `TRANSCRIBE_TIMEOUT_S` (4h) later. Collapsing the predicate reaps a
+    90-minute transcription at the 10-minute mark, mid-decode — `_terminate`
+    kills the very process the request is waiting on, which is exactly the
+    failure `generate_transcript`'s lock-ordering comment is written to avoid
+    ("lost its transcript, failed its row with 'the transcription process did
+    not answer'"). So a busy worker is spared until `_leak_ceiling` — well
+    past any legitimate call's own timeout — and only THEN does a
+    still-positive `in_flight` mean a leaked stream (an abandoned
+    `generate_text` iterator) rather than a slow answer.
+    """
+    if worker.state != "ready":
+        return False
+    return now - worker.last_activity >= _idle_bound(worker, window)
+
+
+def _idle_bound(worker: Worker, window: float) -> float:
+    """How stale `worker.last_activity` must be, in seconds, before it counts
+    as idle — `_leak_ceiling` for a busy worker, the bare window otherwise.
+
+    Split out of `_is_idle` so `describe()` can compute the SAME bound for
+    `unloadsInSeconds`: a countdown computed against the bare window alone
+    would count a busy transcription down to "unloads in under a minute" and
+    then leave it sitting there, wrongly promising an unload the reaper's own
+    predicate will not perform.
+    """
+    return _leak_ceiling(worker.capability, window) if worker.in_flight > 0 else window
+
+
+def idle_workers(now: float) -> list[Worker]:
+    """Ready workers the idle window (AI-13) says to unload, evaluated against
+    `now`. A REPORT, not a decision anything acts on directly — see
+    `reap_idle` for why the reaper does not call this and then `unload()`.
+
+    Pure and side-effect-free: `now` is a caller-supplied `time.monotonic()`
+    reading, never read internally, so a test can drive it with a synthetic
+    clock and the reaper thread can drive it with the real one — no sleeping,
+    no clock freezing, none of the timing-dependent flakes this repo's
+    scheduling tests have a history of.
+
+    The preference is read fresh on every call, not cached — a window edited
+    mid-session, or an env override that comes and goes, applies on the very
+    next tick.
+    """
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    if minutes <= 0:
+        return []
+    window = minutes * 60
+    with _lock:
+        return [w for w in _workers.values() if _is_idle(w, now, window)]
+
+
+def reap_idle(now: float) -> list[str]:
+    """Unload every worker the idle window (AI-13) names, evaluated against
+    `now`. Returns the models stopped.
+
+    **Decides and removes under ONE lock hold — deliberately NOT
+    `idle_workers(now)` followed by a separate `unload()`.** That two-call
+    shape has a real race: between `idle_workers` releasing `_lock` and
+    `unload()` re-acquiring it to pop, the table is briefly unlocked, and a
+    request can call `ready_worker()`, enter `_in_use()` and start a
+    90-minute transcription on the very worker the reaper just condemned.
+    `unload()` matches by model+capability alone and never re-checks
+    `in_flight` or a fresher `last_activity`, so it would terminate the
+    process that request is now waiting on — the exact failure the
+    `in_flight` exemption exists to prevent, arriving back through the gap
+    between deciding and acting rather than through the predicate itself.
+
+    Holding `_lock` across the read AND the pop closes that gap by
+    construction: `_in_use`'s entry also takes `_lock`, so nothing else can
+    change `in_flight` or `last_activity` while this loop is deciding — a
+    worker is either evaluated and removed atomically here, or a concurrent
+    `_in_use` call finished first (blocking this call until it releases the
+    lock) and this loop sees the fresh, post-increment state and spares it.
+    There is no window for a third outcome.
+
+    Built on the same `_claim_for_removal`/`_remove` pair `unload()` uses,
+    not on `unload()` ITSELF: `unload()` re-scans `_workers` by NAME
+    (model/capability), which would reopen a narrower version of the same
+    hole if called a second time after this loop's own decision — it could
+    match a DIFFERENT worker that has since claimed the same capability, and
+    pin "Unloaded after N min idle" on a model that was never idle at all.
+    `_claim_for_removal` takes a PREDICATE instead, evaluated once, atomically,
+    over the exact snapshot this loop already decided against — so the
+    workers reaped here are precisely the ones `_is_idle` said were idle,
+    never a re-lookup that could answer a different question by the time it
+    runs.
+    """
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    if minutes <= 0:
+        return []
+    window = minutes * 60
+    reason = f"Unloaded after {minutes} min idle"
+    targets = _claim_for_removal(lambda w: _is_idle(w, now, window))
+    _remove(targets, reason)
+    return [worker.model for worker in targets]
+
+
+def start_reaper() -> None:
+    """Start the idle-reaper thread, once per process.
+
+    Idempotent via a module-level handle rather than a lock-guarded flag: the
+    startup hook that calls this (server/app.py) can run more than once across
+    the test suite's many `create_app` calls in one process, and a second
+    thread ticking the same table is pure waste, not a correctness bug — but
+    a waste that compounds by one thread per app instance created in a long
+    test session.
+
+    The body is `sleep` then `reap_idle(time.monotonic())` — no wall clock, so
+    a laptop that sleeps mid-tick loses no window (Key decisions: the whole
+    feature is built on the monotonic clock never advancing across a suspend).
+    """
+    global _reaper_thread
+    if _reaper_thread is not None and _reaper_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            time.sleep(_REAPER_TICK_S)
+            try:
+                reap_idle(time.monotonic())
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("idle-reaper tick failed")
+
+    _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
+    _reaper_thread.start()
 
 
 def unload_all() -> None:
@@ -1260,20 +1557,23 @@ def generate_text(model: str, body: dict):
         started = load(model, registry.TEXT_GENERATION)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
-    try:
-        response = _worker_request(worker, "/generate", body=body,
-                                   timeout=GENERATE_TIMEOUT_S)
-    except (OSError, ValueError) as e:
-        raise SupervisorError(f"the model process did not answer: {e}") from e
-    with response:
-        for line in response:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line.decode())
-            except ValueError:
-                continue
+    with _in_use(worker):
+        try:
+            response = _worker_request(worker, "/generate", body=body,
+                                       timeout=GENERATE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the model process did not answer: {e}") from e
+        with response:
+            for line in response:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line.decode())
+                except ValueError:
+                    continue
+                _touch(worker)
+                yield event
 
 
 def _wait_ready(model: str, capability: str, job: str,
@@ -1360,16 +1660,17 @@ def generate_image(model: str, request: dict, job: str) -> dict:
     if worker is None:
         worker = _wait_ready(model, registry.IMAGE_GENERATION, job)
 
-    try:
-        response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                   timeout=GENERATE_TIMEOUT_S)
-    except (OSError, ValueError) as e:
-        raise SupervisorError(f"the image process did not answer: {e}") from e
-    with response:
+    with _in_use(worker):
         try:
-            payload = json.loads(response.read().decode() or "{}")
-        except ValueError as e:
-            raise SupervisorError("the image process sent a malformed reply") from e
+            response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                       timeout=GENERATE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the image process did not answer: {e}") from e
+        with response:
+            try:
+                payload = json.loads(response.read().decode() or "{}")
+            except ValueError as e:
+                raise SupervisorError("the image process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
@@ -1509,17 +1810,18 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
             # evicted row.
             worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job,
                                  row=request.get("row"))
-        try:
-            response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                       timeout=TRANSCRIBE_TIMEOUT_S)
-        except (OSError, ValueError) as e:
-            raise SupervisorError(f"the transcription process did not answer: {e}") from e
-        with response:
+        with _in_use(worker):
             try:
-                payload = json.loads(response.read().decode() or "{}")
-            except ValueError as e:
-                raise SupervisorError(
-                    "the transcription process sent a malformed reply") from e
+                response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                           timeout=TRANSCRIBE_TIMEOUT_S)
+            except (OSError, ValueError) as e:
+                raise SupervisorError(f"the transcription process did not answer: {e}") from e
+            with response:
+                try:
+                    payload = json.loads(response.read().decode() or "{}")
+                except ValueError as e:
+                    raise SupervisorError(
+                        "the transcription process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
@@ -1594,6 +1896,14 @@ def resident_models() -> set[str]:
 def describe() -> dict:
     """The runtime as the API reports it."""
     refresh_memory()
+    # Read once for the whole snapshot rather than per row: the reaper's own
+    # window (AI-13), so "unloads in…" on the page is the same countdown that
+    # actually fires, not a second copy of the precedence rule.
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    window = minutes * 60 if minutes > 0 else None
+    now = time.monotonic()
     with _lock:
         loaded = [
             {
@@ -1611,6 +1921,22 @@ def describe() -> dict:
                 "loadedAt": w.loaded_at,
                 "startedAt": w.started_at,
                 "jobId": job_id_for(w.model),
+                # How long since anything used this worker, and — when the idle
+                # window is on — how much longer it has. Null rather than a
+                # number that never counts down: a page must not draw a
+                # countdown for a window that is disabled.
+                "idleSeconds": max(0.0, now - w.last_activity),
+                # Against `_idle_bound` — the SAME bound `_is_idle` reaps
+                # by — never the bare window: a busy worker (`in_flight > 0`)
+                # is spared until `_leak_ceiling`, and counting down against
+                # `window` alone would run a 90-minute transcription's card
+                # to "unloads in under a minute" and leave it sitting there
+                # for the rest of the hour, wrongly promising an unload the
+                # reaper will not perform.
+                "unloadsInSeconds": (
+                    None if window is None
+                    else max(0.0, _idle_bound(w, window) - (now - w.last_activity))
+                ),
             }
             for w in _workers.values()
         ]
