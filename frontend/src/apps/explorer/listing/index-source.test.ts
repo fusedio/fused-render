@@ -26,6 +26,16 @@ describe("what to do with a ranked answer", () => {
     expect(at({ reason: "ignored" })).toBe("walk");
   });
 
+  test("a disabled index goes to the live walk, never scan or poll", () => {
+    // If this asked for a scan, it would burn UNCOVERED_GRACE against one
+    // that will never start; if it polled, it would burn all 80 polls
+    // against one that will never end. There is no server signal to poll
+    // for "the user turned indexing back on", so the walk is the only
+    // source available, same as mount/package/ignored.
+    expect(at({ reason: "disabled" })).toBe("walk");
+    expect(at({ reason: "disabled", asked: true, sinceAsk: 99 })).toBe("walk");
+  });
+
   test("an uncovered folder is scanned, once", () => {
     expect(at({ reason: "uncovered" })).toBe("scan");
     expect(at({ reason: "uncovered", asked: true })).toBe("poll");

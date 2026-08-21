@@ -71,6 +71,130 @@ def test_renicing_really_lowers_a_real_process_priority():
     assert int(out.stdout.strip()) >= worker.SCAN_NICE_INCREMENT
 
 
+def test_the_worker_sets_a_background_io_policy_at_startup(monkeypatch, tmp_path):
+    """Nicing only yields CPU; the scan must also yield the disk queue, or an
+    interactive rank's read_parquet still queues behind the scan's stat pool
+    and compaction I/O."""
+    seen = []
+    monkeypatch.setattr(worker, "_set_background_io_policy",
+                        lambda: seen.append(True) or True)
+    ran = []
+    monkeypatch.setattr(worker, "run_scan", ran.append)
+    assert worker.main([str(tmp_path)]) == 0
+    assert seen == [True]
+    assert ran == [str(tmp_path)]
+
+
+def test_set_background_io_policy_invokes_setiopolicy_np_on_darwin(monkeypatch):
+    """The ctypes call must ask for IOPOL_TYPE_DISK / IOPOL_SCOPE_PROCESS /
+    IOPOL_THROTTLE — the constants from <sys/resource.h>."""
+    calls = []
+
+    class FakeLib:
+        def setiopolicy_np(self, iotype, scope, policy):
+            calls.append((iotype, scope, policy))
+            return 0
+
+    monkeypatch.setattr(worker.sys, "platform", "darwin")
+    monkeypatch.setattr(worker.ctypes, "CDLL", lambda *a, **k: FakeLib())
+    assert worker._set_background_io_policy() is True
+    assert calls == [(worker.IOPOL_TYPE_DISK, worker.IOPOL_SCOPE_PROCESS,
+                       worker.IOPOL_THROTTLE)]
+
+
+@pytest.mark.parametrize("machine,nr", [("x86_64", 251), ("aarch64", 30)])
+def test_set_background_io_policy_invokes_ioprio_set_on_linux(monkeypatch,
+                                                                machine, nr):
+    """`ioprio_set` has no libc wrapper, so this goes through the raw
+    syscall table — the number is arch-specific."""
+    calls = []
+
+    class FakeLib:
+        def syscall(self, *args):
+            calls.append(args)
+            return 0
+
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker.platform, "machine", lambda: machine)
+    monkeypatch.setattr(worker.ctypes, "CDLL", lambda *a, **k: FakeLib())
+    assert worker._set_background_io_policy() is True
+    expected_prio = (worker.IOPRIO_CLASS_IDLE << worker.IOPRIO_CLASS_SHIFT) | 0
+    assert calls == [(nr, worker.IOPRIO_WHO_PROCESS, 0, expected_prio)]
+
+
+def test_set_background_io_policy_skips_unknown_linux_arch(monkeypatch):
+    """An arch this repo hasn't mapped a syscall number for is a silent
+    no-op, not a guess at the wrong number."""
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    monkeypatch.setattr(worker.platform, "machine", lambda: "riscv64")
+    # If this reached ctypes at all the test should fail loudly, not by
+    # coincidence, so make CDLL blow up.
+    monkeypatch.setattr(worker.ctypes, "CDLL",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert worker._set_background_io_policy() is False
+
+
+def test_set_background_io_policy_invokes_set_priority_class_on_win32(
+        monkeypatch):
+    """Windows has no `os.nice` at all, so this is its first scan
+    mitigation, not just its I/O half — PROCESS_MODE_BACKGROUND_BEGIN."""
+    calls = []
+
+    class FakeKernel32:
+        def GetCurrentProcess(self):
+            return 1234
+
+        def SetPriorityClass(self, handle, flag):
+            calls.append((handle, flag))
+            return 1  # nonzero == success, per SetPriorityClass's contract
+
+    class FakeWindll:
+        kernel32 = FakeKernel32()
+
+    monkeypatch.setattr(worker.sys, "platform", "win32")
+    monkeypatch.setattr(worker.ctypes, "windll", FakeWindll(), raising=False)
+    assert worker._set_background_io_policy() is True
+    assert calls == [(1234, worker.PROCESS_MODE_BACKGROUND_BEGIN)]
+
+
+def test_an_unmatched_platform_is_a_silent_no_op(monkeypatch):
+    monkeypatch.setattr(worker.sys, "platform", "some-future-os")
+    assert worker._set_background_io_policy() is False
+
+
+def test_a_worker_where_io_policy_fails_still_scans(monkeypatch, tmp_path):
+    """Best-effort on every platform: a missing symbol or a raise must
+    never take the scan down with it."""
+    class FakeLib:
+        def setiopolicy_np(self, *a, **k):
+            raise AttributeError("no such symbol")
+
+    monkeypatch.setattr(worker.sys, "platform", "darwin")
+    monkeypatch.setattr(worker.ctypes, "CDLL", lambda *a, **k: FakeLib())
+    assert worker._set_background_io_policy() is False
+    ran = []
+    monkeypatch.setattr(worker, "run_scan", ran.append)
+    assert worker.main([str(tmp_path)]) == 0
+    assert ran == [str(tmp_path)]
+
+
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="setiopolicy_np is a macOS-only syscall wrapper")
+def test_the_io_policy_really_lands_on_a_real_process():
+    """The monkeypatched tests above prove the helper is wired in; this one
+    proves the syscall actually sticks, in a subprocess (policy changes are
+    one-way, so pytest must not do this to itself)."""
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import ctypes;"
+         "from fused_render.index.worker import _set_background_io_policy;"
+         "_set_background_io_policy();"
+         "lib = ctypes.CDLL(None, use_errno=True);"
+         "print(lib.getiopolicy_np(0, 0))"],
+        capture_output=True, text=True, check=True)
+    assert int(out.stdout.strip()) == 3  # IOPOL_THROTTLE
+
+
 def test_the_compaction_connection_caps_its_threads():
     con = store.background_connect()
     got = int(con.execute("SELECT current_setting('threads')").fetchone()[0])
