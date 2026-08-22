@@ -1,5 +1,5 @@
-// Shared sidebar chassis: brand row (logo + owner-supplied title + version),
-// draggable width, collapse strip, and the resize handle. Owns NO body — each
+// Shared sidebar chassis: brand row (logo + owner-supplied title), draggable
+// width, collapse strip, and the resize handle. Owns NO body — each
 // sub-app (and the shell itself) renders its own sidebar by composing this
 // frame with its own sections, so the platform stays ignorant of bookmarks,
 // recents, and app lists. Width/collapsed state is shared across all owners
@@ -59,8 +59,6 @@ export interface SidebarRailItem {
 export interface SidebarFrameProps {
   /** Brand text next to the cube mark — names the owning context. */
   title: string;
-  /** Version chip after the title — shown only by the shell ("Render"). */
-  version?: string;
   /** Where the brand click lands; the front door of the owning app. */
   homeHref?: string;
   /** Section icons for the collapsed rail. Optional — a sidebar without them
@@ -116,7 +114,7 @@ export function NavItem({
   );
 }
 
-export function SidebarFrame({ title, version, homeHref = "/apps", rail, children }: SidebarFrameProps) {
+export function SidebarFrame({ title, homeHref = "/apps", rail, children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. The state lives in the
   // shared store (platform/lib/sidebarstate) rather than here so that a
@@ -354,7 +352,6 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           </span>{" "}
           <span className="brand-title">{title}</span>
         </a>
-        {version && <span className="brand-version">v{version}</span>}
         <button
           type="button"
           className="icon-btn sidebar-collapse-btn"
