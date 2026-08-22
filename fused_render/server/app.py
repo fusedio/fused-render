@@ -59,6 +59,7 @@ from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
+from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
@@ -461,6 +462,13 @@ def create_app(start_dir: str) -> FastAPI:
     # that change that. Reads unguarded; the three POSTs start processes and
     # write gigabytes, so they carry the D3 X-Fused guard.
     app.include_router(ai_runtime_router)
+    # The AI Models page's Benchmark tab (routers/ai_benchmark.py, SPEC AI-14):
+    # run a fixed per-capability workload against a local model and keep the
+    # throughput/memory/load figures forever. The read is unguarded; the run and
+    # the delete carry the D3 X-Fused guard — the first spends minutes of GPU
+    # time, the second destroys measurements that cannot be recomputed for an
+    # app version that has moved on.
+    app.include_router(ai_benchmark_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability

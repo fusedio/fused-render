@@ -1600,3 +1600,476 @@
   border-radius: 999px;
   vertical-align: 1px;
 }
+
+/* -- Benchmark (the Benchmark tab, SPEC AI-14) --------------------------------
+   Laid out in the Local tab's vocabulary — .am-section per capability, the
+   .am-section-head / .am-section-title pair for the heading — so a capability
+   means the same thing on either tab. What is here is only what those classes
+   have no answer for: a model row that carries a measurement, a line chart, and
+   the run archive under it.
+
+   Every colour is a global token (tokens.css), so both themes come for free the
+   way the rest of this file gets them — including the chart's lines, which is
+   what `--series-1..6` was added to that palette for: a categorical scale is
+   the one thing the status tokens could not stand in for. */
+
+.am-bench {
+  /* One capability's numbers are read against another's; a wide measure would
+     put a model name and its throughput at opposite ends of the window. */
+  max-width: 1000px;
+}
+
+/* Each capability is now a distinct PANEL, not just a heading with a rule
+   under it — the four capabilities used to blur into one scroll of sections
+   that differed only by their headings. The card face is the same one
+   `.am-card` uses elsewhere on this page, so a reader who already knows what
+   a card means on the Local tab does not have to learn a second visual
+   vocabulary for this one. Scoped to `.am-bench .am-section` rather than
+   changing `.am-section` itself, which the rest of the page's own sections
+   (not panels) still use. */
+.am-bench .am-section {
+  padding: 16px 20px 20px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* The border-bottom rule `.am-section-head` normally draws would sit oddly
+   flush against this panel's own border a few pixels below it; a plain gap
+   reads as separation just as well inside a panel that already has an edge. */
+.am-bench .am-section-head {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+/* The unit, stated once per section in the heading's right-hand slot, as a
+   small badge rather than plain text — it is metadata about the section, not
+   a second heading, and a pill face says so at a glance. */
+.am-bench-metric {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-group-note a {
+  color: var(--accent-soft);
+}
+
+.am-bench-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--am-gap-head);
+}
+
+/* One model, one line: who, the bar, the number, the button. Compacted from a
+   two-line row (a headline plus a full sentence of detail) specifically so a
+   failed run's error paragraph — which used to dump straight into this row —
+   cannot dominate the section; it lives behind `.am-bench-rowdetail` now. */
+.am-bench-row {
+  display: grid;
+  grid-template-columns: minmax(0, 16ch) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-model {
+  min-width: 0;
+  font-size: 12px;
+  /* The short name still doesn't always fit an org+repo id in 16ch; truncate
+     rather than wrap, since a wrapped row breaks the one-line promise this
+     redesign exists to keep. The full id is the row's `title`. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A model whose weights are gone but whose runs are not. Not an error colour —
+   nothing failed; the history simply outlived its subject. Its own line under
+   the name, since the name column is now too narrow to fit both. */
+.am-bench-gone {
+  display: block;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+.am-bench-latest {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* The leaderboard bar. A track the full width of its own slot in the row and a
+   fill scaled by `barFraction` (lib/benchmark.ts `leaderboard`) — never by the
+   raw number, which is what makes one section's tok/s comparable to another's
+   texts/s: both fill relative to their OWN section's best. */
+.am-bench-bar {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.am-bench-barfill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-soft);
+}
+
+.am-bench-headline {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* "Never benchmarked" — the absence of a measurement, said quietly. It is the
+   normal state of a fresh machine, not a warning. */
+.am-bench-never {
+  color: var(--fg-muted);
+}
+
+/* A run in flight. A plain spinner line, NOT `.am-card-runtime`/ModelProgress:
+   that draws a job row's detail and byte counts, and a benchmark deliberately
+   has no job row (see BenchmarkTab.tsx). There is genuinely nothing to report
+   until the held-open request returns, and an invented percentage is what makes
+   live work read as frozen. The reused `.am-runtime-dot` is the one honest
+   signal — something is happening. */
+.am-bench-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* The detail tucked behind "Details"/"Failed — details" — TTFT, load time,
+   device, or a failed run's full error text. Collapsed by default for the
+   same reason the run archive below is: it is evidence for a row whose
+   headline already gave the answer, not something every reader needs open. */
+.am-bench-rowdetail {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.am-bench-rowdetail > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+
+.am-bench-rowdetail > summary:hover {
+  color: var(--fg);
+}
+
+.am-bench-rowdetail > p {
+  margin: 4px 0 0;
+  max-width: 60ch;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+
+/* A run stopped from outside — `fused.ai.cancel()` from another page reaching
+   the shared worker. Muted, not `--error`: nothing failed and the model is not
+   at fault, so it reads as an explanation rather than as a fault. Deliberately
+   not the ErrorBanner for the same reason. */
+.am-bench-stopped {
+  margin: 0 0 var(--am-gap-head);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The change against the last comparable run. Colour comes from `better`, never
+   from the sign: on an image section a negative change is the improvement, so a
+   green-for-plus rule would be wrong on one section in four. */
+.am-bench-delta {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.am-bench-delta.better {
+  color: var(--success-bright);
+}
+
+.am-bench-delta.worse {
+  color: var(--warning-soft);
+}
+
+/* A link-shaped button — it changes a view, so it is a <button>, but it reads
+   as the sentence it sits inside. */
+.am-bench-linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-soft);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* -- the chart, the tab's hero instrument ------------------------------------
+   Chart-first: this sits ABOVE the leaderboard rows in the DOM (BenchmarkTab's
+   `CapabilitySection`), because the trend is the first question this tab
+   answers and the ranked list is the second. */
+
+.am-bench-chart {
+  margin-bottom: var(--am-gap-head);
+}
+
+/* The y-axis label column plus the plot, side by side. Both children share the
+   plot's own fixed height (`--am-bench-plot-h`) so a tick label's `top: N%` and
+   the gridline it names land on the same pixel. */
+.am-bench-chartbody {
+  --am-bench-plot-h: 220px;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.am-bench-yaxis {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: var(--am-bench-plot-h);
+}
+
+.am-bench-ytick {
+  position: absolute;
+  right: 0;
+  left: 0;
+  /* Centred on its gridline rather than sitting above it, so the label reads
+     as "this line" and not "the line below me". */
+  transform: translateY(-50%);
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-bench-plotwrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
+   plot fills whatever width the column has without the component measuring
+   anything (see BenchmarkChart.tsx). */
+.am-bench-plot {
+  display: block;
+  width: 100%;
+  height: var(--am-bench-plot-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-axis-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  /* The viewBox is stretched horizontally, which would scale a stroke with it. */
+  vector-effect: non-scaling-stroke;
+}
+
+/* The gridlines above zero — lighter than the baseline, since the baseline is
+   the one that carries the domain's promise (the axis starts at zero) and the
+   others are just its equal-step siblings. */
+.am-bench-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.am-bench-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.am-bench-dot {
+  fill: currentColor;
+  stroke: var(--bg);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The six series colours, from the shared categorical palette (tokens.css
+   --series-1..6, which carries both themes). `color` rather than `stroke`/`fill`
+   directly, so the line, the dots and the end label all inherit ONE
+   declaration — an end label whose colour is declared separately from its line
+   is a label that can disagree with the chart. */
+.am-bench-series.c0,
+.am-bench-endlabel.c0 {
+  color: var(--series-1);
+}
+.am-bench-series.c1,
+.am-bench-endlabel.c1 {
+  color: var(--series-2);
+}
+.am-bench-series.c2,
+.am-bench-endlabel.c2 {
+  color: var(--series-3);
+}
+.am-bench-series.c3,
+.am-bench-endlabel.c3 {
+  color: var(--series-4);
+}
+.am-bench-series.c4,
+.am-bench-endlabel.c4 {
+  color: var(--series-5);
+}
+.am-bench-series.c5,
+.am-bench-endlabel.c5 {
+  color: var(--series-6);
+}
+
+/* One label per series, anchored to its own latest point — see
+   BenchmarkChart's comment on why this is HTML positioned by percentage
+   rather than SVG `<text>`. Replaces the old separate legend row: a label that
+   already names its model needs no key beside the chart to decode it. */
+.am-bench-endlabel {
+  position: absolute;
+  transform: translate(-50%, -135%);
+  white-space: nowrap;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* The date ticks, in a row UNDER the plot rather than as <text> inside a
+   stretched viewBox — the same reason UsageChart puts its axis in a sibling
+   div. Left-aligned first tick, right-aligned last, so each date sits under
+   the edge of the plot it actually names; a middle tick (3 runs or more) reads
+   fine centred between them. */
+.am-bench-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-left: 46px; /* clears the y-axis label column */
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* -- the run archive -------------------------------------------------------- */
+
+/* Collapsed by default. The rows above are the answer and this is the evidence,
+   so it opens on request — the summary says how many runs are folded, which is
+   what keeps "collapsed" from meaning "hidden". */
+.am-bench-history {
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+.am-bench-history > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px 0;
+}
+
+/* The table is wider than a narrow window on purpose (eight columns of facts),
+   so it scrolls INSIDE this box rather than making the page scroll sideways. */
+.am-bench-tablewrap {
+  overflow-x: auto;
+  margin-top: 6px;
+}
+
+.am-bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.am-bench-table th,
+.am-bench-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Numbers right-aligned and tabular, so a column of them can be compared by
+   eye — which is the entire reason this table exists. */
+.am-bench-table th.num,
+.am-bench-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-table thead th {
+  padding: 0;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+/* The whole header cell is the sort control, so the hit target is the column
+   heading rather than a few pixels of text inside it. */
+.am-bench-sort {
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.am-bench-sort:hover {
+  color: var(--fg);
+}
+
+.am-bench-sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A run that failed. Tinted rather than hidden: "this model OOMs on this
+   laptop" is a result, and it has to be legible as one. */
+.am-bench-table tr.failed td {
+  color: var(--error);
+}
+
+/* A run measured under a different workload version — the comparability seam.
+   Marked so a reader knows why no delta is drawn across it. */
+.am-bench-rev {
+  color: var(--warning-soft);
+  font-size: 11px;
+}
+
+.am-bench-forget {
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.am-bench-forget:hover {
+  color: var(--error);
+  border-color: var(--border);
+}
+
+.am-bench-forget:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
