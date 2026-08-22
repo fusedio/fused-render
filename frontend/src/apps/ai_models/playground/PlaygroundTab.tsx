@@ -9,8 +9,8 @@
 // named placeholder here rather than a blank.
 //
 // The sidebar is `GET /api/ai/catalog`, verbatim — the same payload every
-// page's model picker reads (D323), so a model downloaded from Discover is in
-// the playground with no curation edit. Rows show the curated `nickname`
+// page's model picker reads (D323), so a model downloaded from the Local tab's
+// Hub search is in the playground with no curation edit. Rows show the curated `nickname`
 // (catalog.py) with the full label one hover away.
 //
 // SELECTING IS NOT LOADING. One model per capability is resident and loading
@@ -261,8 +261,9 @@ export default function PlaygroundTab() {
           // The catalog's curated half, in its own smallest-first order, notes
           // and all — but the RECOMMENDED subset of it (D425), because this tab
           // is where someone types a sentence rather than shops for a download:
-          // see `pick.ts`. The Discover tab still shows the whole shortlist,
-          // which is the surface for "what could I have".
+          // see `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
+          // capability carousels beside what this disk already holds, with the
+          // Hub search above them for anything the curation never named (D426).
           //
           // The uncurated repos this disk happens to hold (D323's union) are
           // still playable but sit apart under their own quiet caption — they
@@ -294,7 +295,7 @@ export default function PlaygroundTab() {
                   {modelName(model)}
                 </span>
                 {/* The curator's sentence — why you would pick this one. The
-                    same `note` Discover prints on its suggestion cards; for
+                    same `note` a recommended card carries on the Local tab; for
                     the reader with no AI vocabulary it is the only line here
                     that answers "which one do I click". */}
                 {model.note && <span className="pg-model-note">{model.note}</span>}
@@ -375,7 +376,7 @@ export default function PlaygroundTab() {
           <p className="cc-empty">
             {blockedAsk
               ? `${groupLabel(blockedAsk.row.capability)} is not available here — ${blockedAsk.reason}`
-              : "No models to try yet — the Discover tab is where a first one comes from."}
+              : "No models to try yet — the Local tab is where a first one comes from."}
           </p>
         ) : (
           <>

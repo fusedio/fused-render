@@ -1,13 +1,14 @@
 // The Hugging Face cache walk, and everything derived from it — held ONCE for
 // the whole page, above the tab strip.
 //
-// **This is why the tabs are not five independent routes.** The scan is a
-// filesystem crawl over every blob in the cache, and its answer is what THREE
-// tabs read: Local draws the cards, Discover asks it "do I already have this
-// one" (`onDisk` — one listing, one definition of on-this-machine, and no
-// window where the two tabs disagree about the same repo), and the page's own
-// caption states the cache path and total. Mounting each tab as its own page
-// would mean either three walks or three answers.
+// **This is why the tabs are not four independent routes.** The scan is a
+// filesystem crawl over every blob in the cache, and its answer is what BOTH
+// faces of the Local tab read — the capability carousels, and the Hub search
+// results that ask it "do I already have this one" (D426: one listing, one
+// definition of on-this-machine, and no window where the two faces disagree
+// about the same repo) — plus the page's own caption, which states the cache
+// path and total. Mounting each tab as its own page would mean either three
+// walks or three answers.
 //
 // It was inline in `AiModels.tsx`, tangled with the Local tab's delete dialogs
 // and expander state. What moved here is only the part that is SHARED; what
@@ -38,10 +39,6 @@ export interface CacheScan {
   loadedById: Map<string, AiLoadedModel>;
   /** Download-manager rows by model id. */
   jobByModel: Map<string, Job>;
-  /** id → on-disk path for every repo with a materialised snapshot, or null
-   *  while the walk has not answered — so a Discover card says neither "you
-   *  have this" nor "you don't" before the page has any idea. */
-  onDisk: Map<string, string> | null;
   /** Model ids with a pull in flight. */
   downloading: Set<string>;
   /** Models whose pull has ended but whose confirming walk has not landed. */
@@ -114,9 +111,9 @@ export function useCacheScan(): CacheScan {
 
   const anyBusy = isBusy(runtime);
   useEffect(() => {
-    // Held at the PAGE level, not per tab: a Download started from Discover is
-    // a job row Discover draws on its own cards, and gating the poll on the
-    // Local tab left those cards frozen on "Starting…".
+    // Held at the PAGE level, not per tab: a Download started from the
+    // playground's own picker is a job row the Local tab draws on its cards, and
+    // gating the poll on one tab left the other's cards frozen on "Starting…".
     // Only while something is live: the manager already polls these for its own
     // list, and a second poller on an idle machine is two requests a second for
     // an empty array.
@@ -179,18 +176,16 @@ export function useCacheScan(): CacheScan {
   // second copy of the rule in TypeScript would drift from the Python one the
   // moment either changed.
   const jobByModel = new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j]));
-  // What Discover means by "you already have this one". A MATERIALISED
-  // snapshot, not merely a folder: huggingface_hub creates `models--org--name/`
-  // the moment a pull starts, so a set built from folder names alone flipped a
-  // suggestion to "✓ downloaded" seconds after Download was pressed.
-  //
-  // A MAP, id → path, not a set of ids: the same walk that knows we have a
-  // model knows where it is, and Discover's Explore link needs the second half.
-  // Read from the search reply instead, that path was frozen at the moment of
-  // the search and went stale the instant a download finished (`localCopy`).
-  const onDisk = data
-    ? new Map(repos.filter((r) => r.revisions > 0).map((r) => [r.id, r.path]))
-    : null;
+  // What "you already have this one" MEANS is deliberately NOT answered here.
+  // It was, once — a map of id → path for every repo with a materialised
+  // snapshot, held at this level so the Local and Discover tabs could not
+  // disagree. Since D424 there are two questions and this map answered neither
+  // well: "this machine HAS the model" (a ✓, a settled Download click) is not
+  // "this model already has a card here", which a cancelled download also
+  // satisfies. The reading lives in `aiModelGroups.diskCards` now, next to the
+  // merge that consumes it, and the one surface that used this map is drawn from
+  // that one (D426) — so there is still exactly one definition per page, it is
+  // simply the right one.
   const downloading = new Set(runtime.downloading.map((d) => d.model));
 
   return {
@@ -199,7 +194,6 @@ export function useCacheScan(): CacheScan {
     repos,
     loadedById,
     jobByModel,
-    onDisk,
     downloading,
     settling,
     runtime,

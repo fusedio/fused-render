@@ -39,11 +39,11 @@ test("the strip is Playground / Local / Engines / Usage, and Discover is gone", 
   expect([...AI_MODELS_TABS]).toEqual(["playground", "local", "engines", "usage"]);
 });
 
-test("the unrouted discover path lands on the default like any stale link", () => {
-  // The Local tab answers Discover's question now (D423), so it left the strip.
-  // The code did not leave the tree, and the point of THIS test is that its old
-  // address behaves like any other unknown sub-path rather than erroring or
-  // reaching a tab nothing links to.
+test("the retired discover path lands on the default like any stale link", () => {
+  // The Local tab answers Discover's question now — its recommendations at D423,
+  // its Hub search at D426, which is when the directory left the tree too. The
+  // point of THIS test is that the old address behaves like any other unknown
+  // sub-path rather than erroring or reaching a tab nothing links to.
   expect(tabFromPath("/ai-models/discover")).toBe(DEFAULT_TAB);
   expect((AI_MODELS_TABS as readonly string[]).includes("discover")).toBe(false);
 });

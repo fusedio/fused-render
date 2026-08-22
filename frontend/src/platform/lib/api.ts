@@ -2455,6 +2455,14 @@ export interface HubSearchResult {
   authenticated?: boolean;
 }
 
+/** The orderings the Hub's LIST endpoint can perform — the server's own
+ *  allowlist, mirrored (`_SORTS` in routers/hub_models.py), so a value it would
+ *  reject cannot be typed at a call site.
+ *
+ *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
+ *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
+ *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
+ *  it reaches this function only through `wireSort`. */
 export type HubSort = "downloads" | "likes" | "updated" | "created";
 
 export function searchHubModels(opts: {

@@ -184,7 +184,7 @@ export function engineNote(row: CapabilityEngine): string | null {
  *
  *  The Engines tab uses it to decide whether to WARN before writing: a switch
  *  that changes the effective engine unloads that capability's resident model
- *  and rewrites the suggestions on the Discover tab beside it, and neither
+ *  and rewrites the recommendations on the Local tab beside it, and neither
  *  should be a surprise. Choosing an unusable runner changes what is stored and
  *  nothing else, so it earns no warning.
  *

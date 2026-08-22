@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import type { HubModel } from "@platform/lib/api";
 import {
   _forgetTotalSizes,
+  hubSizeBytes,
   hubSizeLabel,
   hubSizeTitle,
   knownTotalSize,
   lookupTotalSize,
 } from "./hubSize";
+import { formatSize } from "@platform/lib/format";
 
-// The Discover tab shows two different measurements in one cell — the weights
+// A Hub search result shows two different measurements in one cell — the weights
 // the Hub's dtype map describes, and (when there is no dtype map) the Hub's
 // total for the whole repo. These tests are about telling them apart, and about
 // the traffic the second one is allowed to cost: one request per repo, ever.
@@ -54,6 +56,47 @@ describe("hubSizeLabel", () => {
 
   it("is a dash while nothing is known", () => {
     expect(hubSizeLabel(row(), null)).toBeNull();
+  });
+});
+
+// The bytes a size SORT ranks by (D426). One rule: whatever the card is showing,
+// because that number is the only evidence a reader has that the sort worked.
+describe("hubSizeBytes", () => {
+  it("ranks by exactly the figure the card shows", () => {
+    // The same precedence as `hubSizeLabel`, asserted against it rather than
+    // restated: the two drifting apart is a grid ordered by a number nobody can
+    // see, sitting next to a column of numbers that does not ascend.
+    for (const [est, total] of [
+      [16_000_000_000, null],
+      [16_000_000_000, 20_000_000_000],
+      [null, 4_619_599_193],
+      [null, null],
+    ] as const) {
+      const m = row({ estimatedSize: est });
+      const bytes = hubSizeBytes(m, total);
+      expect(bytes === null || bytes === undefined).toBe(hubSizeLabel(m, total) === null);
+      if (typeof bytes === "number") expect(hubSizeLabel(m, total)).toBe(`≈${formatSize(bytes)}`);
+    }
+  });
+
+  it("prefers the weights estimate, which most results carry for free", () => {
+    // Why a size sort is not two dozen outbound requests: the estimate rode in
+    // on the search reply, and only the repos without one have to be asked
+    // about — exactly the repos a card would have asked about anyway.
+    expect(hubSizeBytes(row({ estimatedSize: 16_000_000_000 }), 20_000_000_000)).toBe(
+      16_000_000_000,
+    );
+  });
+
+  it("keeps 'nobody asked' apart from 'the Hub has no total'", () => {
+    // Neither is a number and both sort last, but the caller deciding what to
+    // MEASURE needs the difference — a null is answered, an undefined is not.
+    expect(hubSizeBytes(row(), undefined)).toBeUndefined();
+    expect(hubSizeBytes(row(), null)).toBeNull();
+    // A zero estimate is not an estimate: the server reports no size rather than
+    // a guessed one (HS-6), so falling through to the total is the honest read —
+    // and it is what `hubSizeLabel` does with the same input.
+    expect(hubSizeBytes(row({ estimatedSize: 0 }), 5_000)).toBe(5_000);
   });
 });
 
