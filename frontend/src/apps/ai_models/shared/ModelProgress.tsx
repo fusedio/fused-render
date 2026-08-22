@@ -1,10 +1,11 @@
-// One drawing of "this model is busy", shared by both tabs of /ai-models.
+// One drawing of "this model is busy", shared by every card on /ai-models that
+// can be waiting for one.
 //
-// It exists because the two tabs ask the same question from opposite sides: the
-// Local tab shows a repo it already has coming into memory, and Discover shows
-// a repo it does not have arriving on disk. Same job row, same bytes, same bar —
-// and when they were drawn separately, one of them said "Downloaded" while the
-// other was still counting.
+// It exists because those cards ask the same question from opposite sides: a
+// repo this machine already has coming into memory, and a repo it does not have
+// — a recommendation, or a Hub search result — arriving on disk. Same job row,
+// same bytes, same bar — and when they were drawn separately, one of them said
+// "Downloaded" while the other was still counting.
 //
 // The byte counts are the JOB's, never the runtime's. The runtime knows what is
 // happening; only the worker doing the fetching knows how far it has got, and it

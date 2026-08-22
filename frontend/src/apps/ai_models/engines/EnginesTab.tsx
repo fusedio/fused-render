@@ -3,8 +3,8 @@
 //
 // **It lived on Preferences, and moving it is the point of this module.** The
 // setting is about MODELS, and every consequence of changing it is on this
-// page: which cards can be loaded, what their engine tags say, and what
-// Discover suggests. On the settings page a user had to know that "Inference
+// page: which cards can be loaded, what their engine tags say, and what the
+// Local tab recommends. On the settings page a user had to know that "Inference
 // engines" was the answer to "why can't I load this?" — a question they were
 // asking with the unloadable card in front of them, two navigations away from
 // the control. Here the control and its consequences are one page apart by a

@@ -6,7 +6,7 @@
 //   "/explorer/embed/<path>" -> chrome-free embed variant
 //   "/claude-config"         -> Claude config panel (native, no mount)
 //   "/claude-md"             -> legacy; redirects into the panel's MD Files tab
-//   "/ai-models/<tab>"       -> AI Models (playground/local/discover/engines/usage);
+//   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
@@ -713,7 +713,8 @@ export default function App({ config }: { config: Config }) {
     // path change in this dispatcher remounts; a hop between two of this page's
     // tabs must not. The walk they share is a filesystem crawl over every blob
     // in the Hugging Face cache (lib/useCacheScan.ts), and a remount would
-    // re-run it and throw away whatever was typed into Discover's search. One
+    // re-run it and throw away whatever was typed into the Local tab's Hub
+    // search (D426). One
     // branch, one mount, the page reading the path itself. Arriving from any
     // OTHER route still mounts it fresh: the branches differ in their children,
     // so React replaces the subtree regardless.

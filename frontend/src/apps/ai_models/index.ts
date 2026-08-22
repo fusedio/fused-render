@@ -2,8 +2,8 @@
 //
 // Native React over the server's AI routers: the cache inventory
 // (`/api/ai-models`), the runtime and catalog (`/api/ai/*`) and the Hub search
-// (`/api/ai-models/hub/*`). One sidebar route, `/ai-models`, whose five tabs
-// are five sub-paths beneath it (routes.ts) — the shell dispatches the whole
+// (`/api/ai-models/hub/*`). One sidebar route, `/ai-models`, whose four tabs
+// are four sub-paths beneath it (routes.ts) — the shell dispatches the whole
 // prefix to a single lazy-loaded page (shell/App.tsx).
 //
 // It lived flat in `shell/` as eighteen `Ai*`/`Playground*` files interleaved
