@@ -385,9 +385,9 @@
   }
   #toast.warn { border-left-color: var(--warn); }
   #toast.bad { border-left-color: var(--bad); }
-  #toast .tx { flex: 1; }
+  #toast .tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   #toast .tx b { display: block; margin-bottom: 2px; }
-  #toast .tclose { background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; }
+  #toast .tclose { flex: none; background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer; }
   .hidden { display: none !important; }
   .mono { font-family: var(--mono); }
   #boot-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; z-index: 30; }
