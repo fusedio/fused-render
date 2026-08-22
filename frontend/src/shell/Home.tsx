@@ -164,6 +164,15 @@ const PLAYGROUND_GLYPHS: Record<string, ReactNode> = {
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
     </svg>
   ),
+  embeddings: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="7" />
+      <path d="M20.5 20.5 15.6 15.6" />
+      <circle cx="8" cy="9" r="0.4" />
+      <circle cx="12.8" cy="8.2" r="0.4" />
+      <circle cx="10.2" cy="13" r="0.4" />
+    </svg>
+  ),
 };
 
 // One card per playground task: the header names it, the body says what it

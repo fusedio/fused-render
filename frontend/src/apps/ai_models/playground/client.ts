@@ -198,6 +198,42 @@ export function startImage(request: ImageRequest): Promise<ImageStarted> {
   return postJson<ImageStarted>("/api/ai/image", request);
 }
 
+// -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
+
+export interface EmbedResult {
+  vectors: number[][];
+  dim: number;
+  model: string;
+}
+
+/** One batch of texts into the model's vector space. Vectors come back
+ *  unit-length (embed_common.unit_normalize, applied by both workers), so a
+ *  dot product between two of them IS their cosine similarity. The reply is
+ *  wrapped (`{ok, result}`) unlike image/transcribe, and a cold model answers
+ *  the same model_loading 409 the chat route does — thrown as `ModelLoading`
+ *  for the caller's own watch-and-retry. */
+export async function embedTexts(model: string, texts: string[]): Promise<EmbedResult> {
+  const res = await fetch("/api/ai/embed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ model, texts }),
+  });
+  const data = (await res.json().catch(() => null)) as {
+    ok?: boolean;
+    result?: EmbedResult;
+    error?: { type?: string; message?: string; jobId?: string };
+  } | null;
+  if (!res.ok || !data?.ok) {
+    const error = data?.error;
+    if (res.status === 409 && error?.type === "model_loading") {
+      throw new ModelLoading(error.message || "model is loading", error.jobId ?? null);
+    }
+    throw new Error(error?.message || `embedding failed (${res.status})`);
+  }
+  if (!data.result) throw new Error("the reply carried no result");
+  return data.result;
+}
+
 // -- Transcription (POST /api/ai/transcribe, AI-10) ---------------------------
 
 export interface TranscribeRequest {

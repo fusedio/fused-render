@@ -71,6 +71,13 @@ export function buildAppSeed(model: AiCatalogModel, capability: string): string 
         "path is an audio/video file on disk, segments stream through onSegment. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
+  } else if (capability === "embeddings") {
+    lines.push(
+      "It turns text or images into vectors that place similar meanings near each other. " +
+        `Call it from the page with await fused.ai.embed({ texts, model: ${JSON.stringify(model.id)} }) ` +
+        "(or { paths } for image files) — it resolves with { vectors, dim }. Vectors come back " +
+        "unit-length, so the dot product of two of them scores how alike their meanings are.",
+    );
   }
   // Addressed to the CLAUDE SESSION the composer spawns, not to the user: the
   // `fused-render-ai` skill is the authoritative contract for these calls

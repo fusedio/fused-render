@@ -27,6 +27,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChatStage } from "./ChatStage";
 import { ImageStage } from "./ImageStage";
 import { TranscribeStage } from "./TranscribeStage";
+import { EmbedStage } from "./EmbedStage";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
@@ -414,6 +415,12 @@ export default function PlaygroundTab() {
               />
             ) : selected.row.capability === "automatic-speech-recognition" ? (
               <TranscribeStage key={selected.model.id} model={selected.model.id} />
+            ) : selected.row.capability === "embeddings" ? (
+              <EmbedStage
+                key={selected.model.id}
+                model={selected.model.id}
+                downloaded={selected.model.downloaded}
+              />
             ) : (
               // A capability a future runner adds before this tab learns it:
               // named, never blank — the same posture the group labels take.

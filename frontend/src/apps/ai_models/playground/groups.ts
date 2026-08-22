@@ -31,4 +31,11 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: "Transcription",
     blurb: "Turn speech into written words.",
   },
+  // Last on purpose: Home renders `slice(0, shown)`, so the array's tail is
+  // what a narrow window drops — and this is the card chosen to go first.
+  {
+    capability: "embeddings",
+    label: "Search by meaning",
+    blurb: "Find text that matches by meaning, not wording.",
+  },
 ];

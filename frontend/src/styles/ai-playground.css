@@ -1132,6 +1132,110 @@
   color: var(--fg-muted);
 }
 
+/* -- the embeddings stage ---------------------------------------------------------- */
+
+.pg-embed {
+  gap: 14px;
+}
+
+.pg-embed-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+  max-width: 60ch;
+}
+
+.pg-embed-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-embed-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+
+.pg-embed-lines {
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pg-embed-ask {
+  display: flex;
+  gap: 8px;
+}
+
+.pg-embed-ask input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 12px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-size: 13.5px;
+}
+
+.pg-embed-ask .btn {
+  flex: none;
+}
+
+.pg-embed-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-embed-row {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+/* The match strength, drawn as a wash behind the line — scaled to the best
+   match (see EmbedStage), so the top row is always full and the rest read
+   relative to it. */
+.pg-embed-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(var(--accent-rgb), 0.1);
+  pointer-events: none;
+}
+
+.pg-embed-text {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.pg-embed-score {
+  position: relative;
+  flex: none;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+
 /* -- narrow windows -------------------------------------------------------------- */
 
 @media (max-width: 760px) {
