@@ -1,17 +1,22 @@
 """What an engine cannot do, refused in one place (`runners/engine_options.py`).
 
 The module exists because two very different readers ask the same question: the
-transcribe endpoint, deciding whether to open a job at all, and the worker,
-deciding whether to decode. What is pinned here is the SHARED-ness and the
-rule's shape — that a refusal is a refusal in both doors and that the sentence
-is one sentence, not two that can drift.
+image/transcribe endpoints, deciding whether to open a job at all, and the
+worker, deciding whether to decode/render. What is pinned here is the
+SHARED-ness and the rule's shape — that a refusal is a refusal in both doors
+and that the sentence is one sentence, not two that can drift.
 
-`UNSUPPORTED` is empty as of D406, which withdrew the one engine
-(`parakeet-mlx`) that ever populated it — both remaining speech-to-text
-runners, `mlx-whisper` and `faster-whisper`, answer every option
-`fused.ai.transcribe` takes. What is pinned here now is that the table stays
-VALID and the mechanism stays LIVE with nothing in it, rather than either
-being deleted along with the one engine that used it.
+`UNSUPPORTED` was empty for TRANSCRIBE options from D406 (which withdrew the
+one engine, `parakeet-mlx`, that ever populated it for that call — both
+remaining speech-to-text runners, `mlx-whisper` and `faster-whisper`, answer
+every option `fused.ai.transcribe` takes) until the mflux-only base-image edit
+option gave it its first real rows: the three diffusers image codes each
+refuse `image`, because whether the diffusers pipeline RENDERS a correct
+edit is unverified on any machine this app has run on — its call SIGNATURE
+is known (`Flux2KleinPipeline.__call__` takes `image` first, defaulting to
+None for a plain render). What is pinned here now is
+that the table stays VALID and the mechanism stays LIVE — for a table with
+real rows in it, not an empty one kept warm for a hypothetical.
 
 Read alongside `tests/test_ai_runtime.py` (the endpoint's half).
 """
@@ -36,25 +41,40 @@ def test_every_runner_code_named_here_is_a_registered_runner():
     registry and not here would silently stop being refused anything, and every
     option it cannot honour would be accepted and quietly ignored.
 
-    Trivially true while the table is empty (D406) — kept so a future entry is
-    checked the moment it is added, rather than the first time a runner is
-    renamed after that."""
+    Was trivially true while the table was empty (D406 withdrew the last row
+    that populated it); D428 gave it three real rows (the diffusers image
+    family's `image` refusal), so this is now exercised for real rather than
+    kept warm for a hypothetical."""
     codes = {runner.code for runner in registry.all_runners()}
     assert set(engine_options.UNSUPPORTED) <= codes
 
 
-def test_the_table_is_empty_now_that_no_engine_refuses_anything():
-    """Pinned explicitly rather than left implicit: an empty `UNSUPPORTED` is
-    the correct state since D406 withdrew `parakeet-mlx`, not a regression
-    waiting to be noticed. If this fails because something was added, that is
-    fine — update this test alongside the entry."""
-    assert engine_options.UNSUPPORTED == {}
+def test_the_table_holds_exactly_the_diffusers_image_refusal():
+    """Pinned explicitly rather than left implicit: three rows, one per
+    diffusers image code, all refusing `image` and nothing else — the state
+    since the mflux-only base-image edit option shipped. If this fails
+    because something else was added, that is fine — update this test
+    alongside the entry."""
+    assert set(engine_options.UNSUPPORTED) == {
+        "diffusers-image", "diffusers-image-cuda", "diffusers-image-rocm"}
+    for code, rules in engine_options.UNSUPPORTED.items():
+        assert set(rules) == {"image"}, code
+
+
+def test_the_three_diffusers_codes_carry_the_IDENTICAL_sentence():
+    """A hardware variant reads the same pipeline class as the CPU row and
+    would answer `image` identically if it were ever wired up — the fact is
+    about the LIBRARY, not the wheel, so the three rows must not drift into
+    three different sentences over time."""
+    sentences = {rules["image"] for rules in engine_options.UNSUPPORTED.values()}
+    assert len(sentences) == 1
 
 
 def test_an_engine_with_nothing_to_refuse_refuses_nothing():
     """The common case, and the honest default for a code this table has never
     heard of: an exception list says nothing about what is not in it. Every
-    registered engine currently falls in this bucket."""
+    speech-to-text engine currently falls in this bucket, and so does mflux —
+    the one image engine that DOES honour `image`."""
     assert engine_options.unsupported_or_raise(
         "mlx-whisper", task="translate", language="en",
         initial_prompt="Acme Corp") is None
@@ -63,6 +83,22 @@ def test_an_engine_with_nothing_to_refuse_refuses_nothing():
         initial_prompt="Acme Corp") is None
     assert engine_options.unsupported_or_raise(
         "some-future-runner", task="translate") is None
+    assert engine_options.unsupported_or_raise(
+        "mflux-image", image="/tmp/base.png") is None
+
+
+@pytest.mark.parametrize("code", [
+    "diffusers-image", "diffusers-image-cuda", "diffusers-image-rocm"])
+def test_diffusers_image_refuses_the_edit_option(code):
+    """The real entry, not a fake one: every diffusers image code — CPU and
+    both hardware variants — refuses `image` with a sentence naming the way
+    out (the mflux engine, on the Engines tab)."""
+    with pytest.raises(ValueError, match="Diffusers image engine"):
+        engine_options.unsupported_or_raise(code, image="/tmp/base.png")
+    with pytest.raises(ValueError, match="Engines tab"):
+        engine_options.unsupported_or_raise(code, image="/tmp/base.png")
+    # Absent `image` is an ordinary prompt-only render — never refused.
+    assert engine_options.unsupported_or_raise(code, image=None) is None
 
 
 def test_the_module_reads_the_same_BY_PATH_as_it_does_through_the_package(monkeypatch):

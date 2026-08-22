@@ -200,13 +200,30 @@ el.dataset.seed = img.seed;
 | `steps` | `28` | **1–100** | clamped; not a number → 400 |
 | `guidance` | `4.0` | **0–20** | clamped; not a number → 400 |
 | `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
+| `image` | — | one existing file, page-relative | edit this base image instead of rendering from `prompt` alone — **mflux only** (see below). A single string; an array or any other type → 400 |
 | `onProgress(job)` | — | — | per denoising step |
 
-**That is the whole surface**: no negative prompt, no image-to-image or inpainting, no batch count, no scheduler or LoRA. One prompt in, one PNG out; two pictures means two calls. Pass an option that is not in the table above — `image`, `strength`, a typo — and the call is refused `bad_request` rather than quietly rendering text-to-image and ignoring what you asked for; the request envelope is closed, both in the bridge and on the server, so a page cannot get a plausible-looking picture back from an option that was never honoured (D413).
+**No negative prompt, no batch count, no scheduler or LoRA, and no `strength`** — the edit mechanism `image` uses does not take a strength knob at all, so there is nothing to pass. One prompt in, one PNG out; two pictures means two calls. Pass an option that is not in the table above — `strength`, a typo — and the call is refused `bad_request` rather than quietly rendering text-to-image and ignoring what you asked for; the request envelope is closed, both in the bridge and on the server, so a page cannot get a plausible-looking picture back from an option that was never honoured (D413).
 
-Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for.
+Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that will actually happen, not the one you asked for.
 
-- **`seed` comes back whether or not you passed one**, so "make that one again" is always one call away.
+### Editing a base image: `{image}` — mflux only (D428)
+
+```js
+const edited = await fused.ai.image({
+  prompt: "make the sky stormy",
+  image: "photo.png",   // beside this page, like fused.ai.transcribe's `path`
+});
+```
+
+- **This is an mflux-only capability.** The Diffusers engine — the default off Apple Silicon, and what a Mac switches to — refuses `image` outright rather than answering best-effort: `bad_request`, naming the Engines tab. **A page written on a Mac with mflux selected can fail on Linux with the identical call**, which is the one engine asymmetry worth testing for before you ship a page that relies on `image` — check the error's `.message` and degrade to a plain prompt (or tell the user to switch engines) rather than assuming every machine can edit.
+- **`image` is one existing file, a single string.** Page-relative exactly like `fused.ai.transcribe`'s `path` (RH-1) — `"photo.png"` means beside this page, not beside wherever the server was launched from. A missing file, a directory, or anything that is not a plain string (an array included) is `bad_request` before a job opens.
+- **`width`/`height` default from the base image, not from 1024².** The image is fit to a longest side of 1024 without upscaling, snapped down to a multiple of 16, floored at 256 — read the reply rather than assuming your own file's dimensions survive unchanged. An explicit `width`/`height` still wins. **The 256 floor overrides aspect on an extreme ratio**: a very wide or very tall base (a 20:1 banner, say) does not come back 20:1 — its short side floors at 256 regardless, so the reply's shape can be noticeably squarer than the file you sent. This is the arithmetic as confirmed on hardware, not a bug to route around; read `width`/`height` off the reply rather than assuming the ratio held.
+- **`steps`/`guidance` default to `4`/`1.0` for an edit, not the `28`/`4.0` a plain render defaults to.** Omitting them on an edit gets the numbers tuned for editing; passing your own still works the same way it does for a plain render.
+- **There is no `strength` option, and none is planned as an "unexercised knob".** The edit mechanism this app drives does not use image strength at all — it is instruction-following editing, not img2img blending — so there is nothing to defer.
+- **On mflux, "make that one again" (below) means the same recorded seed, not the same pixels** — see that bullet for why, and note it holds for a plain render on this engine too, not only for an edit.
+
+- **`seed` comes back whether or not you passed one**, so a page can always ask for the SAME SEED again. **On mflux, that is not the same as asking for the same PICTURE again.** Two bare mflux renders with an identical seed, prompt, step count and guidance came back different PNGs on the hardware D428 was verified on — a fact about that engine as it ships today, present for a plain render exactly as much as for an edit, and neither caused nor fixed by the `image` option. Treat a repeated `seed` on mflux as "the request you asked for again", not "the picture you got again"; this codebase has not verified either way whether the Diffusers engine reproduces byte-identically, so do not assume it does either — check for yourself before building a "regenerate identically" feature on any engine.
 - **The server owns where the PNG goes**: `<home>/ai/images/<YYYYmmdd-HHMMSS>-<uid>.png` under `~/.fused-render`, never beside the page (which may be read-only), time-ordered so the folder sorts chronologically. **It outlives the tab** — a page that navigated away mid-render can still open `path`. Nothing cleans these up, so a page that renders in a loop fills a directory the user browses.
 - **One row and one file per render.** Two calls get two `jobId`s and two paths; nothing overwrites.
 
