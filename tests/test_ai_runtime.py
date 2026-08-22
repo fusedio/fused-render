@@ -3361,6 +3361,74 @@ def test_releasing_a_share_twice_gives_back_only_one(monkeypatch):
     assert cancelled == ["shared-key"]
 
 
+def test_a_rehold_landing_before_the_cancel_call_stops_it(monkeypatch):
+    """The window `_release_install` used to leave open: worker A is the only
+    waiter on a key, pops it under the lock — and, before it ever reaches
+    `envinstall.cancel`, an entirely fresh `load()` runs `envinstall.start()`,
+    finds the install still alive, and joins it via `_hold_install`. Cancel
+    then fires anyway, because it has no way to know a joiner just arrived —
+    and that joiner's next poll reads the "cancelled" error nobody asked for.
+
+    Reproduced deterministically, not by hoping a thread scheduler lands two
+    threads in the right order: `_install_waiters.pop` is the last thing
+    `_release_install` does before giving up `_lock`, so hooking it lets a
+    SEPARATE thread run the entire rejoin (`_hold_install`) to completion
+    right there, using the real lock to force the ordering rather than a
+    sleep. That models "A got preempted for the length of a whole
+    `envinstall.start` round trip", which is what the bug narrative describes
+    — a `dict.pop` and a couple of statements later, not a same-thread
+    reentrant call.
+    """
+    from fused_render import envinstall
+
+    cancelled = []
+    monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
+
+    owner = supervisor.Worker(model="a", capability=registry.TEXT_GENERATION,
+                              runner_code="r", token="t1")
+    rejoiner = supervisor.Worker(model="b", capability=registry.TEXT_GENERATION,
+                                 runner_code="r", token="t2")
+    key = "shared-key"
+    supervisor._hold_install(owner, key, True)
+
+    class _PopHook(dict):
+        """Stands in for `_install_waiters`, whose real `pop` is the only
+        thing both the buggy and fixed `_release_install` call on their way
+        out of the lock — the one seam that exists in either version."""
+
+        fired = False
+
+        def pop(self, k, *default):
+            result = super().pop(k, *default)
+            if k == key and not _PopHook.fired:
+                _PopHook.fired = True
+                # `_release_install` is still inside `with _lock:` here (this
+                # IS that block's last statement) — drop it just long enough
+                # for a genuinely different thread to run the whole rejoin,
+                # then take it back, exactly as `with _lock:`'s `__exit__`
+                # expects to find it.
+                supervisor._lock.release()
+                try:
+                    t = threading.Thread(
+                        target=supervisor._hold_install, args=(rejoiner, key, False))
+                    t.start()
+                    t.join(timeout=5)
+                    assert not t.is_alive(), "the rejoin never completed"
+                finally:
+                    supervisor._lock.acquire()
+            return result
+
+    monkeypatch.setattr(supervisor, "_install_waiters", _PopHook(supervisor._install_waiters))
+
+    supervisor._release_install(owner, cancel=True)
+
+    assert cancelled == [], \
+        "cancelled an install a fresh load() had already rejoined"
+    assert supervisor._install_waiters.get(key) == 1, \
+        "the rejoiner's own share went missing"
+    assert rejoiner.install_key == key
+
+
 def test_a_worker_past_the_venv_phase_cancels_nothing(monkeypatch, tmp_path):
     """Ownership is cleared with the key, so a worker that is now downloading
     cannot cancel an unrelated install later under a stale flag — the same

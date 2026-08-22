@@ -540,6 +540,33 @@ def _release_install(worker: Worker, cancel: bool = True) -> None:
         return
     from fused_render import envinstall
 
+    # Re-checked in a SECOND lock hold rather than folded into the one above,
+    # because `envinstall.cancel` signals a pid and writes a small file, and
+    # this module never holds `_lock` across I/O (see `ready_worker`,
+    # `_claim_for_removal`) — doing so here would serialise every table
+    # operation behind one process's local disk write.
+    #
+    # The gap that leaves is real: `_install_waiters.pop` above can be
+    # followed by an entirely fresh `_hold_install` for this same key — a
+    # `load()` that raced our departure, ran `envinstall.start()`, found the
+    # install still alive, and joined it — all before we reach the line
+    # below. `envinstall.cancel` has no way to tell that apart from an install
+    # nobody wants any more (see its docstring: it only refuses an already-
+    # DONE record), so calling it unconditionally is what let a cancel-then-
+    # reload kill the very install the reload just joined.
+    #
+    # `key in _install_waiters` is that check: `_hold_install` re-adds `key`
+    # the instant it registers a new waiter, so its presence here means a
+    # fresh claim already exists and this worker's departure is no longer the
+    # last word on the install's fate — cancelling would be undoing someone
+    # else's join, exactly the bug this closes. This does not shrink the
+    # window to zero (a rehold landing in the few bytecodes between releasing
+    # the lock above and re-acquiring it here would still slip through), but
+    # it closes the one that mattered in practice: an entire `envinstall.start`
+    # round trip's worth of time, not a handful of instructions.
+    with _lock:
+        if key in _install_waiters:
+            return
     envinstall.cancel(key)
 
 
