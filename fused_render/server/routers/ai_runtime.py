@@ -86,10 +86,20 @@ _IMAGE_OPTIONS = frozenset({
 # smaller or larger request, it is one h3 cannot run at all.
 _MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
 _MAX_VIDEO_PIXELS = 768 * 1344
-#: `frames = 5 + 17*n`. n=5 -> 90 frames, ~3.75s at 24fps, and is the default.
+#: `frames = 5 + 17*n`, and `n` ranges 1..21 (aligned 22..362) — VERIFIED
+#: against the built binary's own `h3_align_frame_count`/`h3_valid_params`
+#: (h3_host.c, h3.c): `n=0` (5 frames, one VAE chunk with no decoder history)
+#: is refused at generation time with "generation requires at least one
+#: trained 22-frame decoder chunk", and anything aligning above 362 is
+#: refused as outside "the released 5..362 range". n=5 -> 90 frames, ~3.75s
+#: at 24fps, and is the default.
 _FRAMES_STEP, _FRAMES_BASE = 17, 5
-_MIN_FRAMES_N, _MAX_FRAMES_N, _DEFAULT_FRAMES_N = 0, 20, 5
-_MAX_VIDEO_STEPS = 50
+_MIN_FRAMES_N, _MAX_FRAMES_N, _DEFAULT_FRAMES_N = 1, 21, 5
+#: [2, 1000] is h3's own hard floor/ceiling ("denoising steps must be in
+#: [2, 1000]", h3.c `h3_valid_params`) — 1 step is not merely slow, it is a
+#: request the binary refuses outright. The app's own ceiling (50) is far
+#: inside that and is ours to pick; the floor is not.
+_MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
 # No `guidance` here — H3 is CFG-distilled and takes no such parameter. A
 # caller passing one hits `_reject_unknown` like any other unsupported option.
 _VIDEO_OPTIONS = frozenset({
@@ -189,17 +199,31 @@ def _clamp_video_canvas(width: int, height: int) -> tuple[int, int]:
 
 
 def _snap_frames(value) -> int:
-    """The nearest value on h3's frame grid, `5 + 17n`.
+    """The value on h3's frame grid, `5 + 17n`, that the binary would ACTUALLY
+    RENDER for `value` — rounded UP to the next grid point, never to the
+    nearest one.
 
-    Not a min/max clamp like the other numeric fields: a value off the grid
-    (say 100) is not "a bit too many frames", it is a request h3 cannot run at
-    all, so this rounds to the closest n rather than merely bounding it.
+    Mirrors `h3_align_frame_count` (h3_host.c) exactly: `value = max(5,
+    requested)`, then rounded up to the next `5 + 17n`. Matching the
+    direction matters, not only the grid — h3 aligns UP, so a server that
+    rounded to nearest would report a smaller `frames` than the render it
+    just started for any request whose distance-below its nearest grid point
+    is shorter than its distance to the one above (e.g. 100 renders as 107,
+    not the "closer" 90 a nearest-rounding server would have claimed).
+    Bounded to `n` in `[1, 21]` (aligned 22..362) — h3's own hard range;
+    below it there is no generation to run at all (h3.c's "requires at
+    least one trained 22-frame decoder chunk"), and the app has no reason
+    to offer anything above it.
     """
     try:
         frames = int(value)
     except (TypeError, ValueError):
         return _FRAMES_BASE + _FRAMES_STEP * _DEFAULT_FRAMES_N
-    n = round((frames - _FRAMES_BASE) / _FRAMES_STEP)
+    frames = max(_FRAMES_BASE, frames)
+    remainder = (frames - _FRAMES_BASE) % _FRAMES_STEP
+    if remainder:
+        frames += _FRAMES_STEP - remainder
+    n = (frames - _FRAMES_BASE) // _FRAMES_STEP
     n = max(_MIN_FRAMES_N, min(_MAX_FRAMES_N, n))
     return _FRAMES_BASE + _FRAMES_STEP * n
 
@@ -870,7 +894,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
                       or "no video model is configured", status=409)
 
     try:
-        steps = max(1, min(_MAX_VIDEO_STEPS, int(body.get("steps") or 20)))
+        steps = max(_MIN_VIDEO_STEPS, min(_MAX_VIDEO_STEPS, int(body.get("steps") or 20)))
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
     frames = _snap_frames(body.get("frames"))
@@ -882,8 +906,13 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _error("'seed' must be a whole number", status=400)
     seed = max(0, min(_MAX_SEED, seed))
 
-    width = _video_side(body.get("width"), 768)
-    height = _video_side(body.get("height"), 768)
+    # 864x480 — VERIFIED as h3's own default canvas (the built binary's
+    # `--help`: "Output width (default: 864)" / "Output height (default:
+    # 480)"), not a guess: a bare call should render at the shape h3 itself
+    # is tuned for, the same way the image route's 1024x1024 default matches
+    # its own pipelines' square default rather than an arbitrary size.
+    width = _video_side(body.get("width"), 864)
+    height = _video_side(body.get("height"), 480)
     width, height = _clamp_video_canvas(width, height)
 
     uid = secrets.token_hex(6)

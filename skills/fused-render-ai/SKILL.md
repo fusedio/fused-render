@@ -270,9 +270,9 @@ video.src = vid.url;   // ready-made /api/fs/raw url, with audio muxed in
 |---|---|---|---|
 | `prompt` | — | non-empty | trimmed; empty or non-string is `bad_request` **before** a job opens |
 | `model` | the `text-to-video` row's `default` (`null` if this machine cannot serve the capability at all) | the H3 FL2VA checkpoint | there is only one curated model in this build |
-| `width` / `height` | `768` | **256–1344**, and `width * height <= 768 * 1344` | clamped, then **snapped DOWN to a multiple of 32**; an over-large canvas is shrunk further to fit the pixel ceiling |
-| `frames` | `90` (~3.75s at 24fps) | h3's own grid, `5 + 17n` | **rounded to the nearest valid value**, not merely clamped — `100` becomes `107`, not refused |
-| `steps` | `20` | **1–50** | clamped; not a number → 400 |
+| `width` / `height` | `864` / `480` — h3's own default | **256–1344**, and `width * height <= 768 * 1344` | clamped, then **snapped DOWN to a multiple of 32**; an over-large canvas is shrunk further to fit the pixel ceiling |
+| `frames` | `90` (~3.75s at 24fps) | h3's own grid, `5 + 17n`, `n` 1–21 (22–362 frames) | **rounded UP to the next valid value** — never down, and never to "nearest" — `100` becomes `107`, `30` becomes `39`; a value below 22 becomes 22 (h3 has no 5-frame render, only the grid's second point up) |
+| `steps` | `20` | **2–50** | clamped; not a number → 400. The floor is 2, not 1 — h3 refuses a 1-step request outright |
 | `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
 | `onProgress(job)` | — | — | per denoising step |
 

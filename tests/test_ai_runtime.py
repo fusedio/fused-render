@@ -3920,9 +3920,14 @@ def test_video_frames_default_to_90(client, fake_video_runner):
     _wait_job(reply["jobId"])
 
 
-def test_video_frames_snap_to_the_nearest_valid_grid_value(client, fake_video_runner):
-    # 5 + 17n grid: 5, 22, 39, 56, 73, 90, 107, ...
-    for asked, expected in ((5, 5), (30, 22), (40, 39), (95, 90), (2, 5)):
+def test_video_frames_align_UP_to_the_nearest_valid_grid_value(client, fake_video_runner):
+    """Matches the built `h3` binary's own `h3_align_frame_count` exactly
+    (verified against antirez/h3.c @ 8974cc0): round UP to the next `5 +
+    17n`, never to the nearest one, and n=0 (5 frames, aligned) is below the
+    binary's own floor — "requires at least one trained 22-frame decoder
+    chunk" — so the grid this route offers starts at 22."""
+    # 5 + 17n grid, n=1..21: 22, 39, 56, 73, 90, 107, ...
+    for asked, expected in ((5, 22), (2, 22), (30, 39), (40, 56), (95, 107), (90, 90)):
         reply = client.post("/api/ai/video", json={"prompt": "x", "frames": asked},
                             headers={"X-Fused": "1"}).json()
         assert reply["frames"] == expected, (asked, reply["frames"])
@@ -3933,6 +3938,39 @@ def test_video_steps_default_to_20(client, fake_video_runner):
     reply = client.post("/api/ai/video", json={"prompt": "x"},
                         headers={"X-Fused": "1"}).json()
     assert reply["steps"] == 20
+    _wait_job(reply["jobId"])
+
+
+def test_video_steps_floor_is_2_not_1(client, fake_video_runner):
+    """VERIFIED against the built `h3` binary: 1 denoising step is not merely
+    slow, it is a request h3 itself refuses outright ("denoising steps must
+    be in [2, 1000]", h3.c `h3_valid_params`) — so the app's own floor must
+    not offer a value the binary cannot run."""
+    reply = client.post("/api/ai/video", json={"prompt": "x", "steps": 1},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["steps"] == 2
+    _wait_job(reply["jobId"])
+
+
+def test_video_frames_floor_is_22_not_5(client, fake_video_runner):
+    """VERIFIED against the built `h3` binary: the aligned-5-frames case (one
+    VAE chunk, n=0) is refused at generation time — "generation requires at
+    least one trained 22-frame decoder chunk" — so this route's grid starts
+    at n=1 (22 frames), never at n=0."""
+    for asked in (1, 5, 21):
+        reply = client.post("/api/ai/video", json={"prompt": "x", "frames": asked},
+                            headers={"X-Fused": "1"}).json()
+        assert reply["frames"] == 22, (asked, reply["frames"])
+        _wait_job(reply["jobId"])
+
+
+def test_video_default_canvas_matches_h3s_own_default(client, fake_video_runner):
+    """864x480 — VERIFIED as the built `h3` binary's own default (`--help`:
+    "Output width (default: 864)" / "Output height (default: 480)"), not a
+    guess: a bare call should render at the shape h3 itself is tuned for."""
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert (reply["width"], reply["height"]) == (864, 480)
     _wait_job(reply["jobId"])
 
 
