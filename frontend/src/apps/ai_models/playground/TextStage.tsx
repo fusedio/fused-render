@@ -46,10 +46,14 @@ const LIMITS = {
 // it steers verbosity and reasoning length, never persona — and fully
 // editable/clearable in the advanced panel (a cleared prompt round-trips as
 // `system=`).
+// It also names the surface's contract: one prompt, one answer, Markdown out,
+// and any deliberation inside a <thinking> tag — which splitThink below lifts
+// into the collapsible fold instead of leaving it in the reply.
 const DEFAULT_SYSTEM =
-  "You are a helpful general-purpose assistant. Answer directly and keep replies " +
-  "short — expand only when asked for detail. If you reason before answering, " +
-  "keep the reasoning brief.";
+  "You are a helpful assistant answering a single one-off prompt. Answer directly " +
+  "in Markdown and keep it short — expand only when asked for detail. If you need " +
+  "to reason first, put that reasoning inside a <thinking>...</thinking> tag " +
+  "before the answer, and keep it brief.";
 
 const STARTERS = [
   "Explain how a language model predicts the next word, simply",
@@ -58,18 +62,24 @@ const STARTERS = [
   "Give me three dinner ideas from rice, eggs and spinach",
 ];
 
-/** Split one reply into the deliberation and the answer. A <think> block still
- *  open (mid-stream) is all deliberation — the answer has not started. */
+/** Split one reply into the deliberation and the answer. A block still open
+ *  (mid-stream) is all deliberation — the answer has not started. Two spellings:
+ *  <think> is what reasoning-tuned models emit on their own, <thinking> is what
+ *  the default system prompt asks plain models for. Longer tag checked first so
+ *  "<thinking>" is never misread as "<think>" plus stray text. */
 function splitThink(text: string): { think: string | null; answer: string; thinking: boolean } {
-  const open = text.indexOf("<think>");
-  if (open < 0) return { think: null, answer: text, thinking: false };
-  const close = text.indexOf("</think>");
-  if (close < 0) return { think: text.slice(open + 7), answer: "", thinking: true };
-  return {
-    think: text.slice(open + 7, close).trim(),
-    answer: text.slice(close + 8).replace(/^\s+/, ""),
-    thinking: false,
-  };
+  for (const tag of ["thinking", "think"]) {
+    const open = text.indexOf(`<${tag}>`);
+    if (open < 0) continue;
+    const close = text.indexOf(`</${tag}>`);
+    if (close < 0) return { think: text.slice(open + tag.length + 2), answer: "", thinking: true };
+    return {
+      think: text.slice(open + tag.length + 2, close).trim(),
+      answer: text.slice(close + tag.length + 3).replace(/^\s+/, ""),
+      thinking: false,
+    };
+  }
+  return { think: null, answer: text, thinking: false };
 }
 
 function replyStats(usage: ChatUsage | null | undefined): string | null {
