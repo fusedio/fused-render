@@ -369,26 +369,14 @@ a.pg-hero-repo:hover {
   gap: 12px;
 }
 
-/* The invitation over the composer: a heading that says what this surface is
-   for, with the load-state line under it (moved up from the empty state so it
-   survives the first run). */
-.pg-work-head {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
+/* The invitation over the composer: ONE line naming the action. The hero card
+   above it already carries the model's name and load state, so this says
+   neither. */
 .pg-work-title {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
-}
-
-.pg-work-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
 }
 
 /* Common parameters, inline under the composer: the choices a first run

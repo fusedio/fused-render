@@ -474,7 +474,6 @@ export default function PlaygroundTab() {
                 key={selected.model.id}
                 model={selected.model.id}
                 modelLabel={modelName(selected.model)}
-                ready={!!selectedResident && selectedResident.state === "ready"}
                 downloaded={selected.model.downloaded}
               />
             ) : selected.row.capability === "text-to-image" ? (

@@ -97,12 +97,10 @@ interface Reply {
 export function TextStage({
   model,
   modelLabel,
-  ready,
   downloaded,
 }: {
   model: string;
   modelLabel: string;
-  ready: boolean;
   downloaded: boolean;
 }) {
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
@@ -247,19 +245,10 @@ export function TextStage({
 
   return (
     <div className="pg-work">
-      {/* The invitation, standing above the fold whether or not a reply is on
-          screen — the empty state used to carry it, but it belongs to the
-          surface, not to emptiness. */}
-      <div className="pg-work-head">
-        <h2 className="pg-work-title">Try {modelLabel}</h2>
-        <p className="pg-work-sub">
-          {ready
-            ? "Loaded and ready — everything runs on this machine."
-            : downloaded
-              ? "The first run loads it into memory, then replies are instant to start."
-              : "The first run downloads it — that is the slow part, and it happens once."}
-        </p>
-      </div>
+      {/* One line, naming the ACTION — the hero card directly above already
+          names the model and its load state, so repeating either here was the
+          same fact three times down one column. */}
+      <h2 className="pg-work-title">Try a prompt</h2>
 
       <div className="pg-composer">
         <textarea
