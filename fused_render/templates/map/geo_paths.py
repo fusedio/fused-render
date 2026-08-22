@@ -174,7 +174,7 @@ def zarr_store(source: str) -> str:
     return head[: -(len(name) + 1)] + separator + query
 
 
-def _base_home() -> Path:
+def base_home() -> Path:
     return Path(
         os.environ.get("FUSED_RENDER_HOME") or Path.home() / ".fused-render"
     ).expanduser()
@@ -201,7 +201,7 @@ def is_managed_mount(value: str) -> bool:
     if not value or is_remote_path(value):
         return False
     candidate = Path(value).expanduser().absolute()
-    base = _base_home().absolute()
+    base = base_home().absolute()
     roots = [base / "mounts"]
     branch = _branch_ref()
     if branch:

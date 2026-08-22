@@ -96,11 +96,6 @@ $env:PYTHONPATH = $WT
 $env:FUSED_RENDER_HOME = $devHome
 $env:FUSED_RENDER_CORE_TEMPLATES = $override
 $env:FUSED_RENDER_BRANCH = ""
-# The map template derives its tile cache from Path.home(), not
-# FUSED_RENDER_HOME, so without this a dev server would read/write the shared
-# ~/.fused-render/cache/map-v2 (serving stale tiles rendered by the real app).
-# Pin it inside the isolated home so tiles never cross over.
-$env:FUSED_RENDER_MAP_CACHE = Join-Path $devHome "cache\map-v2"
 
 # HARD pre-flight: a child interpreter, inheriting exactly what the server will,
 # must confirm the isolation actually took. This is what makes a wipe of the

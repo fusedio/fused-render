@@ -32,6 +32,7 @@ for _path in (str(HERE), str(SHARED)):
         sys.path.insert(0, _path)
 
 from geo_paths import (
+    base_home,
     is_managed_mount,
     is_remote_path,
     multidim_suffix,
@@ -39,10 +40,7 @@ from geo_paths import (
 )
 
 CACHE_DIR = Path(
-    os.environ.get(
-        "FUSED_RENDER_MAP_CACHE",
-        Path.home() / ".fused-render" / "cache" / "map-v2",
-    )
+    os.environ.get("FUSED_RENDER_MAP_CACHE", base_home() / "cache" / "map-v2")
 ).expanduser()
 ARTIFACT_DIR = CACHE_DIR / "artifacts"
 DAEMON = HERE / "daemon.py"
