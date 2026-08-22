@@ -3,8 +3,10 @@
 // Everything else on /ai-models is ABOUT models — what is on disk, what could
 // be, which backend serves it. This tab is the one that answers the first
 // question a person has ("what can this thing actually do?") by letting them
-// do it: a chat box for a text model, a prompt-to-picture stage for an image
-// model, a record-and-transcribe stage for a speech model. The stage is chosen
+// do it: a one-shot prompt for a text model, a prompt-to-picture stage for an
+// image model, a record-and-transcribe stage for a speech model. Every stage
+// is the same API-surface shape — input, Run, the result of that run — on the
+// hero card's centered column. The stage is chosen
 // by the selected model's capability, so a capability added server-side gets a
 // named placeholder here rather than a blank.
 //
@@ -24,7 +26,7 @@
 // non-default settings, written with `replaceSearch` because browsing models
 // is not history the back button should replay.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChatStage } from "./ChatStage";
+import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
@@ -497,7 +499,7 @@ export default function PlaygroundTab() {
               <ModelProgress detail={selectedResident?.detail} job={jobForSelected} />
             )}
             {selected.row.capability === "text-generation" ? (
-              <ChatStage
+              <TextStage
                 key={selected.model.id}
                 model={selected.model.id}
                 modelLabel={modelName(selected.model)}

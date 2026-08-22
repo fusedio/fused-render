@@ -23,7 +23,7 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { RailSection } from "./controls";
+import { AdvancedPanel } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -52,7 +52,6 @@ export function TranscribeStage({ model }: { model: string }) {
   });
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [railOpen, setRailOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -289,8 +288,7 @@ export function TranscribeStage({ model }: { model: string }) {
     segments.map((s) => s.text ?? "").join(" ").trim();
 
   return (
-    <div className={"pg-work" + (railOpen ? " rail-open" : "")}>
-      <div className="pg-main pg-transcribe">
+    <div className="pg-work">
         {phase.step === "recording" ? (
           <div className="pg-recording">
             <button type="button" className="pg-rec-btn live" onClick={() => recorderRef.current?.stop()}>
@@ -374,6 +372,55 @@ export function TranscribeStage({ model }: { model: string }) {
             )}
           </div>
         )}
+
+        {/* Task is the one common choice; language and decoding switches are
+            the Advanced tail, same shape as every other stage. */}
+        <div className="pg-params">
+          <label className="pg-ctl">
+            <span className="pg-ctl-head">
+              <span className="pg-ctl-label">Task</span>
+            </span>
+            <select
+              className="pg-rail-input"
+              value={task}
+              onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
+            >
+              <option value="transcribe">Transcribe — same language</option>
+              <option value="translate">Translate into English</option>
+            </select>
+          </label>
+        </div>
+
+        <AdvancedPanel>
+          <label className="pg-ctl">
+            <span className="pg-ctl-head">
+              <span className="pg-ctl-label">Language</span>
+            </span>
+            <input
+              className="pg-rail-input"
+              type="text"
+              value={language}
+              placeholder="Detected automatically"
+              onChange={(e) => setLanguage(e.target.value)}
+            />
+            <span className="pg-ctl-hint">Set it only when detection gets it wrong.</span>
+          </label>
+          <label className="pg-ctl pg-ctl-row">
+            <input type="checkbox" checked={vad} onChange={(e) => setVad(e.target.checked)} />
+            <span>
+              <span className="pg-ctl-label">Skip silence</span>
+              <span className="pg-ctl-hint">Much faster on recordings with gaps. Turn off if it clips speech.</span>
+            </span>
+          </label>
+          <label className="pg-ctl pg-ctl-row">
+            <input type="checkbox" checked={words} onChange={(e) => setWords(e.target.checked)} />
+            <span>
+              <span className="pg-ctl-label">Word timestamps</span>
+              <span className="pg-ctl-hint">Per-word timings in the saved transcript. Slower.</span>
+            </span>
+          </label>
+        </AdvancedPanel>
+
         {error && <p className="pg-error">{error}</p>}
 
         {source && phase.step !== "recording" && (
@@ -442,9 +489,6 @@ export function TranscribeStage({ model }: { model: string }) {
         ) : null}
 
         <div className="pg-under">
-          <button type="button" className="pg-ghost-btn pg-rail-toggle" onClick={() => setRailOpen((v) => !v)}>
-            {railOpen ? "Hide controls" : "Controls"}
-          </button>
           {phase.step === "done" && (
             <button
               type="button"
@@ -462,54 +506,6 @@ export function TranscribeStage({ model }: { model: string }) {
             </button>
           )}
         </div>
-      </div>
-
-      <aside className="pg-rail" aria-label="Transcription settings">
-        <RailSection title="Output">
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Task</span>
-            </span>
-            <select
-              className="pg-rail-input"
-              value={task}
-              onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
-            >
-              <option value="transcribe">Transcribe — same language</option>
-              <option value="translate">Translate into English</option>
-            </select>
-          </label>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Language</span>
-            </span>
-            <input
-              className="pg-rail-input"
-              type="text"
-              value={language}
-              placeholder="Detected automatically"
-              onChange={(e) => setLanguage(e.target.value)}
-            />
-            <span className="pg-ctl-hint">Set it only when detection gets it wrong.</span>
-          </label>
-        </RailSection>
-        <RailSection title="Decoding">
-          <label className="pg-ctl pg-ctl-row">
-            <input type="checkbox" checked={vad} onChange={(e) => setVad(e.target.checked)} />
-            <span>
-              <span className="pg-ctl-label">Skip silence</span>
-              <span className="pg-ctl-hint">Much faster on recordings with gaps. Turn off if it clips speech.</span>
-            </span>
-          </label>
-          <label className="pg-ctl pg-ctl-row">
-            <input type="checkbox" checked={words} onChange={(e) => setWords(e.target.checked)} />
-            <span>
-              <span className="pg-ctl-label">Word timestamps</span>
-              <span className="pg-ctl-hint">Per-word timings in the saved transcript. Slower.</span>
-            </span>
-          </label>
-        </RailSection>
-      </aside>
     </div>
   );
 }

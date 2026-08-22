@@ -116,8 +116,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
   const best = ranked?.length ? Math.max(ranked[0].score, 1e-6) : 1;
 
   return (
-    <div className="pg-work">
-      <div className="pg-main pg-embed">
+    <div className="pg-work pg-embed">
         <p className="pg-embed-intro">
           This model turns text into a position in a "meaning space", so lines can be ranked by
           how close their meaning is to a search — even when they share no words with it. Run the
@@ -173,7 +172,6 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
             ))}
           </ol>
         )}
-      </div>
     </div>
   );
 }

@@ -1,14 +1,15 @@
-/* The Playground tab of /ai-models (AiModelsPlayground.tsx + the three stage
- * components + PlaygroundControls.tsx). Page chrome and buttons come from the
- * cc- and btn families like the rest of the page; everything here is the tab's
- * own three-zone layout — model sidebar, work area, settings rail — and the
- * stage furniture. Prefixed pg-.
+/* The Playground tab of /ai-models (PlaygroundTab.tsx + the four stage
+ * components + controls.tsx). Page chrome and buttons come from the cc- and
+ * btn families like the rest of the page; everything here is the tab's own
+ * two-zone layout — model sidebar, stage — and the stage furniture. Prefixed
+ * pg-.
  *
- * The zones follow the playground convention the research settled on: the
- * OUTPUT gets the most real estate, one primary action (accent), parameters
- * subordinate in a right rail as slider+number pairs with a one-line hint.
- * The rail is persistent on wide windows and collapses behind a "Controls"
- * toggle below ~1100px; the model sidebar stacks below ~760px. */
+ * Every stage is the SAME shape: one centered column on the hero card's
+ * gutter (min(680px, 100% - 64px)) reading as an API surface — input, Run,
+ * the result of that run. Common parameters sit inline under the composer;
+ * everything else is behind a closed-by-default Advanced <details>. The old
+ * right rail, the chat transcript and the image gallery died in this
+ * unification. The model sidebar stacks below ~760px. */
 
 /* On the playground the page's own <main> stops scrolling and becomes a flex
  * column (.pg-fill), so this tab OWNS the viewport height — the sidebar and
@@ -220,6 +221,9 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* The stage is the scroller now — a one-shot column has no inner log to
+     scroll, so the hero rides along with the content. */
+  overflow-y: auto;
 }
 
 /* The stage header as a card, centered with wide side margins — the model
@@ -352,84 +356,51 @@ a.pg-hero-repo:hover {
   color: var(--fg-muted);
 }
 
-/* Work area = main column + settings rail. */
+/* The work area: one centered column on the hero card's own gutter, so every
+   stage lines up under the header it belongs to. */
 
 .pg-work {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  gap: 20px;
-  align-items: stretch;
-}
-
-.pg-main {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pg-rail {
-  flex: 0 0 248px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(var(--tint), 0.02);
-  align-self: flex-start;
-  max-height: 100%;
-  overflow-y: auto;
-}
-
-.pg-rail-toggle {
-  display: none;
-}
-
-@media (max-width: 1100px) {
-  .pg-work {
-    flex-direction: column;
-  }
-
-  .pg-rail {
-    display: none;
-    flex: none;
-    width: 100%;
-    max-height: none;
-  }
-
-  .pg-work.rail-open .pg-rail {
-    display: flex;
-  }
-
-  .pg-rail-toggle {
-    display: inline-block;
-  }
-}
-
-/* -- rail controls ------------------------------------------------------------ */
-
-.pg-rail-section {
+  width: min(680px, calc(100% - 64px));
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.pg-rail-section + .pg-rail-section {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+/* Common parameters, inline under the composer: the choices a first run
+   actually makes, before the Advanced fold. */
+.pg-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.pg-rail-title {
-  margin: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+.pg-params > .pg-ctl {
+  max-width: 420px;
+}
+
+/* The Advanced fold: closed by default so the surface above it reads as one
+   simple call. */
+.pg-advanced > summary {
+  font-size: 12px;
   color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pg-advanced > summary:hover {
+  color: var(--fg);
+}
+
+.pg-advanced-body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.02);
 }
 
 .pg-ctl {
@@ -559,18 +530,6 @@ a.pg-hero-repo:hover {
   color: var(--fg);
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.1);
-}
-
-.pg-custom summary {
-  font-size: 12px;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.pg-custom[open] {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 /* -- shared stage furniture ---------------------------------------------------- */
@@ -721,42 +680,17 @@ a.pg-hero-repo:hover {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
-/* -- chat ---------------------------------------------------------------------- */
+/* -- text ---------------------------------------------------------------------- */
 
-.pg-chat {
-  flex: 1;
-  min-height: 0;
-}
-
-.pg-chat .pg-chat-log {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 4px 2px;
-}
-
-.pg-turn-user {
-  align-self: flex-end;
-  max-width: 72%;
-  padding: 8px 13px;
-  border-radius: 14px 14px 4px 14px;
-  background: rgba(var(--accent-rgb), 0.1);
-  border: 1px solid rgba(var(--accent-rgb), 0.18);
-  font-size: 13.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.pg-turn-model {
-  align-self: stretch;
-  max-width: 100%;
+/* The one reply, rendered — the text stage's output card. */
+.pg-answer {
   font-size: 13.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--bg-alt);
 }
 
 .pg-turn-foot {
@@ -965,30 +899,6 @@ a.pg-hero-repo:hover {
   color: var(--fg);
 }
 
-.pg-image-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.pg-image-strip img {
-  height: 84px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  cursor: pointer;
-  opacity: 0.8;
-}
-
-.pg-image-strip img:hover {
-  opacity: 1;
-}
-
-.pg-image-strip img.active {
-  opacity: 1;
-  border-color: var(--accent);
-}
-
 /* -- transcription ------------------------------------------------------------------ */
 
 .pg-dropzone {
@@ -1151,11 +1061,6 @@ a.pg-hero-repo:hover {
 .pg-meter-bar.lit {
   background: var(--success-bright);
   height: 16px;
-}
-
-.pg-transcribe {
-  flex: 1;
-  min-height: 0;
 }
 
 /* The recording itself, playable, with the re-run action beside it — the
@@ -1368,8 +1273,11 @@ a.pg-hero-repo:hover {
     max-height: 38vh;
   }
 
-  .pg-turn-user {
-    max-width: 88%;
+  /* The 64px gutter is hero-card breathing room; on a phone it is dead
+     space. */
+  .pg-hero,
+  .pg-work {
+    width: 100%;
   }
 }
 

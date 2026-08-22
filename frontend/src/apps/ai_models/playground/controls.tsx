@@ -1,19 +1,21 @@
-// The Playground's settings rail vocabulary, shared by the three stages.
+// The Playground's parameter vocabulary, shared by the stages.
 //
-// The layout research settled on the hosted-playground convention (OpenAI, AI
-// Studio, LM Studio): parameters live in a RIGHT RAIL beside the work area,
-// each as a slider+number pair with a one-line plain-language hint under the
-// label, defaults baked in and a quiet per-control reset when a value has
-// moved. On narrow windows the rail collapses behind a "Controls" toggle —
-// the stage owns that state; these are only the controls themselves.
+// The unified stage shape (all four capabilities) is one centered column that
+// reads as an API surface: prompt, Run, result. The COMMON parameters sit
+// inline above the fold (`.pg-params`); everything else lives behind an
+// <details> Advanced panel. Each control is a slider+number pair with a
+// one-line plain-language hint, defaults baked in and a quiet per-control
+// reset when a value has moved.
 import type { ReactNode } from "react";
 
-export function RailSection({ title, children }: { title: string; children: ReactNode }) {
+/** The fold everything uncommon goes behind. Closed by default on purpose:
+ *  the panel's job is to make the surface above it read as a simple call. */
+export function AdvancedPanel({ children }: { children: ReactNode }) {
   return (
-    <section className="pg-rail-section">
-      <h5 className="pg-rail-title">{title}</h5>
-      {children}
-    </section>
+    <details className="pg-advanced">
+      <summary>Advanced</summary>
+      <div className="pg-advanced-body">{children}</div>
+    </details>
   );
 }
 
