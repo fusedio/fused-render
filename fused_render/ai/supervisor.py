@@ -196,6 +196,16 @@ class Worker:
     #: actually doing, and quitting the app during a first-ever runner build left
     #: gigabytes downloading with nothing left to cancel them.
     install_key: str = ""
+    #: Whether THIS worker is the one that claimed the install named above, as
+    #: opposed to one that joined an install already running. Only an owner may
+    #: cancel it: `install_key` names the SHARED install (`envinstall.start` is
+    #: single-flight per key), so cancelling on the key alone tore down the build
+    #: every other download of that runner was waiting on — and with no pinned
+    #: interpreter yet the key is the machine-global `PYTHON_BOOTSTRAP_KEY`, so
+    #: the blast radius was every runner rather than this one. Set from
+    #: `envinstall.start`'s own `claimed`, never inferred, and always set and
+    #: cleared together with `install_key`.
+    install_owned: bool = False
     state: str = "starting"  # starting | venv | downloading | loading | ready | error
     detail: str = ""
     error: str = ""
@@ -470,8 +480,13 @@ def _terminate(worker: Worker) -> None:
     if worker.install_key:
         from fused_render import envinstall
 
-        envinstall.cancel(worker.install_key)
+        # Only the install this worker CLAIMED. An eviction or `unload_all()`
+        # used to cancel whatever key was recorded, so shutting one worker down
+        # killed a build another worker of the same runner was joined to.
+        if worker.install_owned:
+            envinstall.cancel(worker.install_key)
         worker.install_key = ""
+        worker.install_owned = False
     if worker.port:
         try:
             _worker_request(worker, "/quit", body={}, timeout=2.0).close()
@@ -773,9 +788,14 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         # phase the install IS the work, and it belongs to a detached process
         # that outlives us unless something says otherwise.
         worker.install_key = key
+        worker.install_owned = bool(started.get("claimed"))
         while True:
             if worker.stopping or _cancel_requested(job):
-                envinstall.cancel(key)
+                # A JOINER stops waiting and reports its own row cancelled, and
+                # that is all: the install belongs to whoever claimed it, and
+                # every other download of this runner is waiting on the same one.
+                if worker.install_owned:
+                    envinstall.cancel(key)
                 raise SupervisorError("cancelled")
             record = envinstall.progress(key) or {}
             if record.get("done"):
@@ -786,6 +806,7 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
                     detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
             time.sleep(0.5)
         worker.install_key = ""
+        worker.install_owned = False
         if envinstall.is_installed(runner.folder):
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")

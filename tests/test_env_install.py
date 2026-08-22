@@ -777,6 +777,36 @@ def test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed(
 
 
 @requires_fused
+def test_start_says_whether_THIS_CALL_claimed_the_install(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`claimed` is what makes "may I cancel this?" a fact rather than a guess.
+
+    The key identifies the SHARED install, not the caller's share of it, so a
+    caller holding only a key could not tell an owner from a joiner — and the AI
+    supervisor, cancelling on the key, tore down an install every other download
+    of that runner was waiting on (each of which then failed with a cancellation
+    it never asked for).
+
+    Deliberately not in `progress()`: it is a fact about THIS CALL, and a polled
+    record carrying it would mean something different on the next read.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    first = envinstall.start(proj)
+    assert first["claimed"] is True, "the caller that spawned the installer owns it"
+
+    # The claim is still in place, so a second caller joins rather than spawning.
+    def never(*a, **kw):
+        raise AssertionError("a joiner spawned a second installer")
+
+    monkeypatch.setattr(envinstall, "_spawn", never)
+    assert envinstall.start(proj)["claimed"] is False
+    assert "claimed" not in (envinstall.progress(first["key"]) or {})
+
+
+@requires_fused
 def test_the_resolved_script_interpreter_reaches_the_worker(
     tmp_path, monkeypatch, _fresh_script_python
 ):
