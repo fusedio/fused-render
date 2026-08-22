@@ -302,7 +302,17 @@ export function messageTone(m: TaskMessage): MessageTone {
           return { column: "in_progress", failed: false, label: "Running…" };
         // "done", "idle", or whatever a newer server writes — the turn ended.
         default:
-          return { column: "done", failed: false, label: "Ran" };
+          // A run the USER stopped (the queue card's ✕, which really kills the
+          // process — schedule.py `_turn_tick`). It is a settled outcome and
+          // therefore Done, not a fault: the stop was asked for, so flying a
+          // red mark would ask the reader to deal with their own decision. What
+          // it is not is indistinguishable from a run that finished — the dock
+          // and the schedule list both say "Stopped", and a board saying "Ran"
+          // for the same run is two surfaces describing one outcome with
+          // opposite words. Same word, same lane, one fact.
+          return m.turn === "cancelled"
+            ? { column: "done", failed: false, label: "Stopped" }
+            : { column: "done", failed: false, label: "Ran" };
       }
   }
 }
@@ -2740,6 +2750,54 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
     at,
     text: `next ${relativeWhen(at, now)}`,
     title: `Next run ${messageStamp(at)}`,
+  };
+}
+
+// ---- "and that one was stopped" ----------------------------------------------
+// A run the user STOPPED settles in Done, which is the right lane — the stop was
+// asked for, so it is an outcome and not a fault, and a red mark would ask the
+// reader to deal with their own decision. What that lane cannot say is that the
+// work did not finish, and the ring cannot either: it is the same green ring a
+// completed run wears (Akshil, 2026-08-21 — "in done lane there is no tag").
+//
+// So the row and the card say the word. A TAG and not a status of its own: the
+// lane is still Done, the sort is unchanged, and nothing else about the task
+// moves — this is one fact added to a line that was missing it, in the same
+// quiet register as `nextRunChip` beside it.
+//
+// Deliberately NOT a new ring colour or a fourth glyph. Three arrangements of an
+// unread mark have already been through the card's title slot and the head, and
+// the conclusion each time was that a card is three short lines with no room for
+// another symbol to decode. A word costs nothing to read and is the one thing a
+// screen reader gets for free.
+
+export interface OutcomeTag {
+  /** What the tag prints. */
+  text: string;
+  /** The tooltip: the same fact, said in full. */
+  title: string;
+}
+
+/**
+ * The word a settled task's last run needs beside it, or null when the lane
+ * already says everything.
+ *
+ * Read off the ACTIVE message — the newest one that actually started
+ * (`activeMessage`) — because that is the run the task's status is about; an
+ * older stopped run under a newer completed one is history, and the lane is
+ * describing the newer one.
+ *
+ * `cancelled` is currently the only word: every other outcome is either already
+ * in the lane (done, upcoming, in progress) or already on the ring (failed,
+ * stopped reporting). The shape is a tag rather than a boolean so the next
+ * outcome that needs a word does not need a second mechanism.
+ */
+export function outcomeTag(task: Task): OutcomeTag | null {
+  const active = activeMessage(task);
+  if (!active || active.turn !== "cancelled") return null;
+  return {
+    text: "Stopped",
+    title: "You stopped this run before it finished",
   };
 }
 

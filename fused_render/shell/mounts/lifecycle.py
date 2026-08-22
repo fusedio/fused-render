@@ -1193,7 +1193,7 @@ def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
         # Remote rejects writes (see mount_read_only); unflagged legacy
         # records read as rw, the pre-flag behavior.
         "read_only": bool(m.get("read_only")),
-        # Shipped-with-the-app mount (see ensure_learn_mount); the UI can
+        # Shipped-with-the-app mount (see ensure_builtin_mounts); the UI can
         # treat it differently from a user-created mount (e.g. hide delete).
         "builtin": bool(m.get("builtin")),
         # Why a Restart rclone would help (params drift / re-authed creds), or
