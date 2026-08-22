@@ -22,6 +22,7 @@ import {
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { AdvancedPanel, RailSlider, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
@@ -96,6 +97,7 @@ export function TextStage({
 }) {
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
   const [reply, setReply] = useState<Reply | null>(null);
+  const [copied, setCopied] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -221,6 +223,20 @@ export function TextStage({
 
   return (
     <div className="pg-work">
+      {/* The invitation, standing above the fold whether or not a reply is on
+          screen — the empty state used to carry it, but it belongs to the
+          surface, not to emptiness. */}
+      <div className="pg-work-head">
+        <h2 className="pg-work-title">Try {modelLabel}</h2>
+        <p className="pg-work-sub">
+          {ready
+            ? "Loaded and ready — everything runs on this machine."
+            : downloaded
+              ? "The first run loads it into memory, then replies are instant to start."
+              : "The first run downloads it — that is the slow part, and it happens once."}
+        </p>
+      </div>
+
       <div className="pg-composer">
         <textarea
           ref={boxRef}
@@ -250,14 +266,14 @@ export function TextStage({
             title="Enter to run · Shift+Enter for a new line"
             onClick={() => void send()}
           >
-            Run
+            Run <kbd className="pg-kbd">⏎</kbd>
           </button>
         )}
       </div>
 
-      {/* The two knobs a first run actually reaches for; everything else is
-          behind Advanced, so the surface reads as a call, not a cockpit. */}
-      <div className="pg-params">
+      {/* EVERY knob is behind the Config fold — the surface above it is
+          prompt and Run, nothing else. */}
+      <AdvancedPanel>
         <RailSlider
           label="Temperature"
           hint="Lower is focused and repeatable; higher is varied and creative."
@@ -278,9 +294,6 @@ export function TextStage({
           fallback={DEFAULTS.max_tokens}
           onChange={setMaxTokens}
         />
-      </div>
-
-      <AdvancedPanel>
         <label className="pg-ctl">
           <span className="pg-ctl-head">
             <span className="pg-ctl-label">System prompt</span>
@@ -314,22 +327,37 @@ export function TextStage({
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
 
+      {/* The invitation itself lives in the head above; empty means only the
+          starters have anything left to say. */}
       {!reply && !status && (
         <div className="pg-empty-stage">
-          <p className="pg-empty-title">Try {modelLabel}</p>
-          <p className="pg-empty-sub">
-            {ready
-              ? "Loaded and ready — everything runs on this machine."
-              : downloaded
-                ? "The first run loads it into memory, then replies are instant to start."
-                : "The first run downloads it — that is the slow part, and it happens once."}
-          </p>
           <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void send(p)} />
         </div>
       )}
 
       {reply && shown && (
         <div className="pg-answer">
+          {!reply.pending && reply.text && (
+            <button
+              type="button"
+              className="pg-copy-btn"
+              title={copied ? "Copied" : "Copy the reply"}
+              aria-label="Copy the reply"
+              onClick={() => {
+                void navigator.clipboard.writeText(shown.answer || reply.text);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1200);
+              }}
+            >
+              {copied ? (
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              ) : (
+                MenuIcons.copy
+              )}
+            </button>
+          )}
           {shown.think !== null && (
             <details className="pg-think">
               <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
@@ -341,23 +369,9 @@ export function TextStage({
           ) : reply.pending && !shown.thinking ? (
             <span className="pg-cursor" aria-label="Generating" />
           ) : null}
-          {!reply.pending && (reply.text || stats) && (
+          {!reply.pending && stats && (
             <div className="pg-turn-foot">
-              <button
-                type="button"
-                className="pg-ghost-btn"
-                onClick={(e) => {
-                  void navigator.clipboard.writeText(shown.answer || reply.text);
-                  const button = e.currentTarget;
-                  button.textContent = "Copied";
-                  window.setTimeout(() => {
-                    button.textContent = "Copy";
-                  }, 1200);
-                }}
-              >
-                Copy
-              </button>
-              {stats && <span>{stats}</span>}
+              <span>{stats}</span>
             </div>
           )}
         </div>

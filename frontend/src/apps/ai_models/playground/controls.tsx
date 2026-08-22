@@ -12,9 +12,9 @@ import type { ReactNode } from "react";
  *  the panel's job is to make the surface above it read as a simple call. */
 export function AdvancedPanel({ children }: { children: ReactNode }) {
   return (
-    <details className="pg-advanced">
-      <summary>Advanced</summary>
-      <div className="pg-advanced-body">{children}</div>
+    <details className="pg-config">
+      <summary>Config</summary>
+      <div className="pg-config-body">{children}</div>
     </details>
   );
 }

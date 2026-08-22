@@ -232,7 +232,9 @@
    windows too. */
 .pg-hero {
   width: min(680px, calc(100% - 64px));
-  margin: 0 auto;
+  /* Extra room below: the stage's own gap reads too tight under a card this
+     heavy, and the work column needs to start as its own thing. */
+  margin: 0 auto 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -367,8 +369,30 @@ a.pg-hero-repo:hover {
   gap: 12px;
 }
 
+/* The invitation over the composer: a heading that says what this surface is
+   for, with the load-state line under it (moved up from the empty state so it
+   survives the first run). */
+.pg-work-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pg-work-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pg-work-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
 /* Common parameters, inline under the composer: the choices a first run
-   actually makes, before the Advanced fold. */
+   actually makes, before the Config fold. */
 .pg-params {
   display: flex;
   flex-direction: column;
@@ -379,28 +403,58 @@ a.pg-hero-repo:hover {
   max-width: 420px;
 }
 
-/* The Advanced fold: closed by default so the surface above it reads as one
-   simple call. */
-.pg-advanced > summary {
+/* The Config fold: closed by default so the surface above it reads as one
+   simple call. Drawn as a card whose summary is the header row — same caret
+   idiom as the sidebar's capability groups (.pg-group-head). */
+.pg-config {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+.pg-config > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
   font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
   color: var(--fg-muted);
   cursor: pointer;
   user-select: none;
+  list-style: none;
 }
 
-.pg-advanced > summary:hover {
+.pg-config > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pg-config > summary::after {
+  content: "";
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--fg-muted);
+  border-bottom: 1.5px solid var(--fg-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.pg-config[open] > summary::after {
+  transform: rotate(45deg);
+}
+
+.pg-config > summary:hover {
   color: var(--fg);
 }
 
-.pg-advanced-body {
-  margin-top: 10px;
+.pg-config-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(var(--tint), 0.02);
+  gap: 14px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border);
 }
 
 .pg-ctl {
@@ -545,7 +599,21 @@ a.pg-hero-repo:hover {
 }
 
 .pg-composer:focus-within {
-  border-color: var(--ctl-quiet-border-hover);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
+}
+
+/* The Enter hint riding inside the Run button — the shortcut IS the label's
+   second half, not a tooltip secret. */
+.pg-kbd {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 5px;
+  margin-left: 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .pg-composer textarea {
@@ -684,13 +752,43 @@ a.pg-hero-repo:hover {
 
 /* The one reply, rendered — the text stage's output card. */
 .pg-answer {
+  position: relative;
   font-size: 13.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 14px 16px;
+  /* Right padding leaves the first line clear of the copy button. */
+  padding: 14px 44px 14px 16px;
   background: var(--bg-alt);
+}
+
+/* Copy, as an icon pinned to the card's top-right corner. */
+.pg-copy-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pg-copy-btn:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: rgba(var(--tint), 0.06);
+}
+
+.pg-copy-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .pg-turn-foot {
