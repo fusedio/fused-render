@@ -1,4 +1,4 @@
-"""Built-in mounts ("learn", "sessions"), each staged from a bundled zip and
+"""Built-in mounts ("sessions"), each staged from a bundled zip and
 attached automatically at startup."""
 
 import json
@@ -16,7 +16,6 @@ from .store import _ismount, _store_lock, _write, mountpoint
 logger = logging.getLogger(__name__)
 
 
-LEARN_MOUNT_NAME = "learn"
 SESSIONS_MOUNT_NAME = "sessions"
 
 # Every builtin mount: bundled zip basename + the env var that overrides its
@@ -24,7 +23,6 @@ SESSIONS_MOUNT_NAME = "sessions"
 # steps (build_dmg.sh, build_windows_installer.ps1, supervisor/paths.py,
 # scripts/dev.sh).
 BUILTIN_MOUNTS = {
-    LEARN_MOUNT_NAME: ("learn.zip", "FUSED_RENDER_LEARN_ZIP"),
     SESSIONS_MOUNT_NAME: ("sessions.zip", "FUSED_RENDER_SESSIONS_ZIP"),
 }
 
@@ -68,18 +66,10 @@ def builtin_zip_path(name: str) -> str | None:
     return None
 
 
-def learn_zip_path() -> str | None:
-    return builtin_zip_path(LEARN_MOUNT_NAME)
-
-
 def ensure_builtin_mounts() -> None:
     """Upsert every builtin mount record (BUILTIN_MOUNTS)."""
     for name in BUILTIN_MOUNTS:
         _ensure_builtin_mount(name)
-
-
-def ensure_learn_mount() -> None:
-    _ensure_builtin_mount(LEARN_MOUNT_NAME)
 
 
 def _ensure_builtin_mount(name: str) -> None:
@@ -87,8 +77,8 @@ def _ensure_builtin_mount(name: str) -> None:
     (v1.74) mounts the bundled zip read-only through the same mounts
     surface as any remote (D123).
 
-    Builtin records carry `"builtin": "learn"` so they're distinguishable
-    from a user-created mount that happens to be named "learn" — that user
+    Builtin records carry `"builtin": <name>` so they're distinguishable
+    from a user-created mount that happens to share the name — that user
     mount is never touched. The remote embeds the zip's absolute path inside
     the app bundle, which changes across versions/relocations, so an existing
     record's remote is refreshed every startup; the record is removed only
@@ -104,17 +94,17 @@ def _ensure_builtin_mount(name: str) -> None:
     must not break the user's own mounts.
 
     BUGBOT (2026-07-21): rcd survives server restarts (module docstring), so
-    an already-live mount at the learn mountpoint is never naturally
+    an already-live mount at a builtin mountpoint is never naturally
     refreshed. Two staleness paths that opened:
       - the bundle relocates (remote string changes) — a live mount still
         serves the OLD fs, and attach_mount would then reject the new record
         outright (fs mismatch — see attach_mount's already-mounted branch);
-      - an in-place app upgrade overwrites learn.zip at the SAME path — the
+      - an in-place app upgrade overwrites the builtin zip at the SAME path — the
         remote string never changes, so nothing signalled a refresh was
         needed at all, and the live VFS + on-disk cache kept serving last
         version's bytes indefinitely.
     Fixed the same way for both: whenever a live rcd mount already sits at
-    the learn mountpoint, force-detach it here (best-effort) so run_automount's
+    a builtin mountpoint, force-detach it here (best-effort) so run_automount's
     normal per-mount loop right after this call does a fresh attach_mount —
     unconditionally, not just when the remote string happens to differ, since
     content can change under an unchanged path. Cheap: this is a small local
@@ -182,10 +172,6 @@ def _ensure_builtin_mount(name: str) -> None:
         logger.exception("ensure_builtin_mount(%r) failed", name)
 
 
-def learn_mount_ready() -> bool:
-    return builtin_mount_ready(LEARN_MOUNT_NAME)
-
-
 def sessions_mount_ready() -> bool:
     return builtin_mount_ready(SESSIONS_MOUNT_NAME)
 
@@ -200,7 +186,7 @@ def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:
     """Best-effort unmount of a builtin mountpoint if rcd (or the
     kernel) still has one live from a prior server run, so the caller's
     upserted record gets a genuinely fresh mount/mount instead of being
-    silently adopted with stale fs/content — see ensure_learn_mount's BUGBOT
+    silently adopted with stale fs/content — see _ensure_builtin_mount's BUGBOT
     note. Runs OUTSIDE any lock the caller already holds being irrelevant
     here since detach_mount only talks to rcd/the kernel, never mounts.json.
 
@@ -232,7 +218,7 @@ def _force_detach_builtin_mount(builtin: dict, old_remote: str) -> None:
     escalates to _force_unmount when the rc `mount/unmount` call itself
     FAILS; it never re-checks os.path.ismount after a call that reports
     success. reconnect_mount already has to guard against exactly this on
-    macOS (learn is attached via nfsmount): rc's mount/unmount can report
+    macOS (a builtin is attached via nfsmount): rc's mount/unmount can report
     success while the kernel NFS mount lingers, and reconnect_mount
     re-checks os.path.ismount afterward for that reason. Mirror that same
     re-check here, rather than trusting detach_mount's return value alone.

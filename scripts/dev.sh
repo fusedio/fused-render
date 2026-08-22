@@ -547,12 +547,13 @@ trap 'dev_shutdown; exit 143' TERM
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
-# Stage the builtin-mount zips (learn.zip, sessions.zip) so a
-# dev server gets the Learn/Sessions sub-apps just like the packaged
+# Stage the builtin-mount zips (sessions.zip) so a dev server gets the
+# Sessions sub-app just like the packaged
 # app. The packaged builds create these at DMG/installer time (build_dmg.sh
 # step 4e and its Windows mirror); a dev checkout only has the loose content
-# dirs, so without this the builtin mounts never resolve a zip and the sidebar
-# entries hide. The staging itself lives in scripts/stage_builtin_zips.sh
+# dirs, so without this the builtin mounts never resolve a zip and the
+# surfaces that link into them hide. The staging itself lives in
+# scripts/stage_builtin_zips.sh
 # (gitignored .dev-zips/ output, same exclusions as the packaged zips) because
 # TWO callers need it: this startup pass, and dev_server_run.sh before every
 # watchfiles server restart — which is what makes a core_apps/ edit land in a
@@ -562,7 +563,7 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # mount at their own zip (stage_builtin_zips.sh skips those too).
 DEV_ZIPS="$REPO_ROOT/.dev-zips"
 bash "$REPO_ROOT/scripts/stage_builtin_zips.sh"
-for pair in learn:FUSED_RENDER_LEARN_ZIP sessions:FUSED_RENDER_SESSIONS_ZIP; do
+for pair in sessions:FUSED_RENDER_SESSIONS_ZIP; do
   name="${pair%%:*}" var="${pair#*:}"
   if [[ -z "${!var:-}" && -f "$DEV_ZIPS/$name.zip" ]]; then
     export "$var=$DEV_ZIPS/$name.zip"
