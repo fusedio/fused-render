@@ -5,10 +5,11 @@ registry, XYZ tile cache, and background COG jobs.  The service is intentionally
 independent of DuckDB: a missing vector extension can never prevent a raster
 from opening.
 
-The fused-render server owns this process (fused_render/server/map_engine.py):
-it hands over a --status path to publish {port, token, pid, version} to, proxies
-every request through its own origin, health-checks, restarts, and kills it at
-app shutdown. Nothing here manages its own lifecycle any more.
+The fused-render server owns this process as a managed engine
+(fused_render/server/engine_host.py): it hands over a --status path to publish
+{port, token, pid, version} to, proxies every request through its own origin,
+health-checks, restarts, and kills it at app shutdown. Nothing here manages its
+own lifecycle any more.
 """
 from __future__ import annotations
 

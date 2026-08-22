@@ -367,7 +367,7 @@ def test_tiles_ride_the_stable_server_origin(viewer, server, azure):
     # daemon death then broke every tile the page held, invisibly.
     page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
     assert page.wait_for_tiles(), "the raster produced no tiles"
-    stray = [u for u in page.tile_urls if not u.startswith(f"{server}/api/map/tiles/")]
+    stray = [u for u in page.tile_urls if not u.startswith(f"{server}/api/engines/map/proxy/tiles/")]
     assert not stray, f"tiles bypassed the server origin: {stray[:3]}"
 
 
@@ -421,7 +421,7 @@ def test_the_same_tile_url_survives_an_engine_restart(viewer, server, azure):
     # child and replays its described sources underneath it.
     page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
     assert page.wait_for_tiles(), "the raster produced no tiles"
-    url = next(u for u in page.tile_urls if "/api/map/tiles/" in u)
+    url = next(u for u in page.tile_urls if "/api/engines/map/proxy/tiles/" in u)
     with urllib.request.urlopen(url, timeout=120) as before:
         assert before.status == 200
     if not _kill_map_daemons(server):

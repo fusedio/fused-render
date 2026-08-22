@@ -1460,8 +1460,8 @@ function rasterIds(L) {
   return rasterIdsFromSafe(safe);
 }
 
-// Descriptor tile URLs are server-relative /api/map/... paths (stable across
-// tile-daemon restarts); MapLibre wants them absolute.
+// Descriptor tile URLs are server-relative /api/engines/map/proxy/... paths
+// (stable across tile-daemon restarts); MapLibre wants them absolute.
 function absTiles(url) {
   return url.startsWith("/") ? location.origin + url : url;
 }
@@ -1754,7 +1754,7 @@ map.on("idle", () => {
   }
   if (changed) renderLayerCards();
 });
-// Tile URLs are stable /api/map/... paths, and the server restarts a dead or
+// Tile URLs are stable /api/engines/map/proxy/... paths, and the server restarts a dead or
 // wedged tile daemon underneath them — replaying the sources it knew. The one
 // gap is a source whose replay could not re-register it (a transient open
 // failure): its tiles 404 here. Re-describe once to register it again and
@@ -2066,9 +2066,9 @@ function removeLayer(key) {
   const d = (state.layers.get(key) || {}).descriptor;
   const sourceId = d && d.data && d.data.source_id;
   if (sourceId && (d.kind === "raster_tiles" || d.kind === "vector_tiles_mvt")) {
-    fetch("/api/map/forget", { method: "POST",
+    fetch("/api/engines/map/forget", { method: "POST",
       headers: { "Content-Type": "application/json", "X-Fused": "1" },
-      body: JSON.stringify({ source: sourceId }) }).catch(() => {});
+      body: JSON.stringify({ key: sourceId }) }).catch(() => {});
   }
   state.layers.delete(key);
   if (state.selected === key) state.selected = null;

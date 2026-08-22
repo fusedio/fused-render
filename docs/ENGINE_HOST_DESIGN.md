@@ -1,15 +1,35 @@
-# Map engine as a server-managed subprocess, tiles served through :1777
+# Template engines as server-managed subprocesses, served through :1777
 
-**Status: implemented** (`server/map_engine.py`, `server/routers/map_tiles.py`;
-deviations from the original plan are marked *as built* below). This is the
-plan for fixing the map template's "Loading visible tiles… forever" failure at
-its root, by moving the map tile engine's *ownership* into the fused-render
-server (`:1777`) and serving tiles through the stable server origin instead of
-the daemon's ephemeral port.
+**Status: implemented and generalized** (`server/engine_host.py`,
+`server/routers/engines.py`). This began as a fix for the map template's
+"Loading visible tiles… forever" failure — moving the tile engine's *ownership*
+into the fused-render server (`:1777`) and serving tiles through the stable
+server origin instead of the daemon's ephemeral port — and was then lifted into
+a **generic, template-agnostic engine host** so the server carries no
+map-specific code.
 
-Scope decided with the requester: **map only, but built as a pattern the other
-tile daemons (geotiff, zarr_aoi, netcdf, pyramid) can adopt later** — not a
-same-change migration of all five.
+**Current shape (separation of concerns).** The server owns a reusable
+subsystem keyed by an opaque `engine_id`:
+
+- `server/engine_host.py` — spawn/status-poll/reap/kill/restart of one child per
+  engine id; validates the interpreter (home venv store) and daemon path
+  (`<templates-root>/<engine_id>/daemon.py`); replays opaque *reinit* requests on
+  restart. Knows nothing about tiles or descriptors.
+- `server/routers/engines.py` — `POST /api/engines/{id}/ensure`,
+  `/reinit`, `/forget`, and an opaque `ANY /api/engines/{id}/proxy/{path...}`
+  passthrough (heal-on-failure, cancel-on-disconnect; proxied POST needs X-Fused,
+  GET is an open read).
+
+All map-specific knowledge lives in the template: `templates/map/map_render.py`
+posts to `/api/engines/map/…`, rewrites its own descriptor URLs to
+`/api/engines/map/proxy/…` paths, and registers each describe as a reinit for
+replay. The only place `"map"` appears on the server is as an id the template
+passes in. The next tile daemons (geotiff, zarr_aoi, netcdf, pyramid) adopt the
+host by picking an engine id — no server change.
+
+The sections below are the original map-framed design record; read
+`engine_host`/`engines` for `map_engine`/`map_tiles` and
+`/api/engines/map/proxy/…` for `/api/map/…`.
 
 ---
 

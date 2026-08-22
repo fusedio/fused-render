@@ -82,7 +82,7 @@ def test_ensure_hands_the_server_this_interpreter_and_daemon(mr, monkeypatch):
     )
     mr._ensure_service()
     path, payload = posts[0]
-    assert path == "/api/map/ensure"
+    assert path == "/api/engines/map/ensure"
     assert payload["python"] == sys.executable
     assert payload["daemon"] == str(mr.DAEMON)
     assert payload["version"] == mr.VERSION
@@ -95,7 +95,7 @@ def test_describe_goes_through_the_server_origin(mr, monkeypatch, tmp_path):
 
     def server_post(path, payload, timeout):
         posts.append(path)
-        if path == "/api/map/ensure":
+        if path.endswith("/ensure"):
             return {"ok": True}
         return {"status": "ok", "kind": "vector_tiles_mvt",
                 "bounds": [0, 0, 1, 1], "data": {}, "warnings": []}
@@ -103,7 +103,7 @@ def test_describe_goes_through_the_server_origin(mr, monkeypatch, tmp_path):
     monkeypatch.setattr(mr, "_server_post", server_post)
     descriptor = mr.main(target=str(target))
     assert descriptor["status"] == "ok"
-    assert posts == ["/api/map/ensure", "/api/map/describe"]
+    assert posts == ["/api/engines/map/ensure", "/api/engines/map/proxy/describe"]
 
 
 def test_without_a_server_origin_the_ensure_fails_loudly(mr, monkeypatch):

@@ -1,33 +1,37 @@
-"""The map template's tile daemon, owned by this server (docs/MAP_ENGINE_SERVER_DESIGN.md).
+"""Managed template daemons, owned by this server (docs/ENGINE_HOST_DESIGN.md).
 
-One supervisor in the :1777 process holding exactly one templates/map/daemon.py
-child. The child binds :0 and publishes {port, token, pid, version} to a status
-file — binding in the child and reporting back is the only version with no
-race — and the supervisor keeps the Popen so it can reap via poll() (never
+A template that needs a long-lived worker (the map viewer's tile daemon is the
+first) hands one over here and the :1777 process owns its whole lifecycle. Each
+engine_id names one child: it binds :0 and publishes {port, token, pid, version}
+to a status file — binding in the child and reporting back is the only version
+with no race — and the host keeps the Popen so it can reap via poll() (never
 os.kill(pid, 0), which kills the process on Windows), replace a wedged child,
 and kill the whole tree from the app's shutdown event. The browser never sees
-the port or token: routers/map_tiles.py proxies everything through the stable
+the port or token: routers/engines.py proxies everything through the stable
 server origin.
 
-The interpreter is the caller's, not this process's. map_render.py runs inside
-the map template's project venv (PY-16/D276) — the only interpreter on the
-machine holding the geo stack — so it hands over its own sys.executable via
-POST /api/map/ensure. The handoff is validated rather than trusted: the python
-must live in the home venv store and the daemon inside a known templates root.
+The interpreter is the caller's, not this process's. A template's render entry
+point runs inside its project venv (PY-16/D276) — the only interpreter on the
+machine holding that template's extra stack — so it hands over its own
+sys.executable. The handoff is validated rather than trusted: the python must
+live in the home venv store, and the daemon must be <templates-root>/<engine_id>
+/daemon.py under a known templates root.
 
-A restarted child starts with an empty source registry, so the descriptors the
-pages hold would all 404. `remember()` keeps the describe request that produced
-each source id, and a restart replays them into the fresh child before any tile
-is retried — that replay is what makes a daemon death invisible to the page.
+A restarted child starts empty, so any descriptor the pages hold would 404.
+`reinit()` records the requests that registered a template's state, and a restart
+replays them into the fresh child before any request is retried — that replay is
+what makes a daemon death invisible to the page. The host never reads what it
+replays: the request path and body are opaque, chosen by the template.
 
-Map-specific for now, but the supervisor half (spawn/status-poll/reap/kill/
-restart) is the liftable seam for geotiff/zarr_aoi/netcdf when they follow.
+Nothing here knows what a "tile" is; the engine_id and the reinit requests are
+the only template-specific data, and both are supplied by the caller.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -35,6 +39,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
@@ -43,18 +48,22 @@ logger = logging.getLogger(__name__)
 BOOTSTRAP_TIMEOUT_S = 120.0
 BOOTSTRAP_POLL_S = 0.25
 PING_TIMEOUT_S = 2.0
-#: How many describe requests a restart will replay. Bounded so a long session
-#: scrubbing through hundreds of timesteps cannot turn one restart into an
-#: unbounded re-describe storm; the page re-describes anything evicted.
-REMEMBER_LIMIT = 64
+#: How many reinit requests a restart will replay per engine. Bounded so a long
+#: session (e.g. scrubbing through hundreds of timesteps) cannot turn one restart
+#: into an unbounded replay storm; the page re-registers anything evicted.
+REINIT_LIMIT = 64
+#: engine_id is joined into a filesystem path, so it must be a bare identifier —
+#: no separators or dots that could climb out of a templates root.
+_ENGINE_ID = re.compile(r"^[a-z0-9_]+$")
 
 
-class MapEngineError(RuntimeError):
+class EngineError(RuntimeError):
     """Something the caller can be told verbatim."""
 
 
 @dataclass
 class Child:
+    engine_id: str
     python: str
     daemon: str
     cache: str
@@ -68,16 +77,18 @@ class Child:
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
-#: Guards the _child pointer and the _described registry only — both fast, and
-#: never held across the blocking spawn/ping/replay I/O below, so remember() and
+#: Guards the _children pointers and the _reinit registry only — both fast, and
+#: never held across the blocking spawn/ping/replay I/O below, so reinit() and
 #: current() never wait on a cold start.
 _lock = threading.Lock()
-#: Serializes bring-up so two callers can never spawn two children; the only
-#: lock held across network I/O, and only ensure()/restart() contend on it.
+#: Serializes bring-up so two callers can never spawn two children for one
+#: engine; the only lock held across network I/O, and only ensure()/restart()
+#: contend on it.
 _spawn_lock = threading.Lock()
-_child: Child | None = None
-#: source_id -> the describe request that registered it, in insertion order.
-_described: dict[str, dict] = {}
+#: engine_id -> its one live child.
+_children: dict[str, Child] = {}
+#: engine_id -> {key -> {"path": str, "payload": dict}}, in insertion order.
+_reinit: dict[str, "OrderedDict[str, dict]"] = {}
 
 SPAWN_KWARGS = (
     {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
@@ -87,18 +98,20 @@ SPAWN_KWARGS = (
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 
-def _validate(python: str, daemon: str) -> None:
+def _validate(engine_id: str, python: str, daemon: str) -> None:
     from fused_render import core_templates
     from fused_render.shell.storage import home_dir
 
-    # The fused engine runs map_render in the template's project venv; the
-    # builtin executor owns no venv machinery and runs it on this app's own
-    # interpreter. Both are ours; anything else is refused.
+    if not _ENGINE_ID.match(engine_id):
+        raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
+    # The fused engine runs the render entry point in the template's project
+    # venv; the builtin executor owns no venv machinery and runs it on this
+    # app's own interpreter. Both are ours; anything else is refused.
     venvs = os.path.realpath(os.path.join(home_dir(), "venvs"))
     requested = os.path.realpath(python)
     if (requested != os.path.realpath(sys.executable)
             and not requested.startswith(venvs + os.sep)):
-        raise MapEngineError(
+        raise EngineError(
             f"refusing to spawn {python!r}: not an interpreter from the "
             f"project venv store ({venvs})")
     roots = [core_templates.PACKAGE_TEMPLATES_DIR,
@@ -108,11 +121,11 @@ def _validate(python: str, daemon: str) -> None:
     if override:
         roots.append(override)
     target = os.path.realpath(daemon)
-    allowed = {os.path.realpath(os.path.join(root, "map", "daemon.py"))
+    allowed = {os.path.realpath(os.path.join(root, engine_id, "daemon.py"))
                for root in roots}
     if target not in allowed:
-        raise MapEngineError(
-            f"refusing to run {daemon!r}: not the map template's daemon")
+        raise EngineError(
+            f"refusing to run {daemon!r}: not the {engine_id!r} template's daemon")
 
 
 def _alive(child: Child) -> bool:
@@ -213,8 +226,9 @@ def _spawn(child: Child) -> None:
     while time.monotonic() < deadline and not child.port:
         if proc.poll() is not None:
             stderr = _tail(log)
-            raise MapEngineError(
-                f"the map engine exited before it started (code {proc.returncode})"
+            raise EngineError(
+                f"the {child.engine_id} engine exited before it started "
+                f"(code {proc.returncode})"
                 + (f"\n{stderr}" if stderr.strip() else ""))
         try:
             with open(status, encoding="utf-8") as handle:
@@ -236,43 +250,49 @@ def _spawn(child: Child) -> None:
         if _ping(child):
             return
         if proc.poll() is not None:
-            raise MapEngineError(
-                f"the map engine exited while starting (code {proc.returncode})")
+            raise EngineError(
+                f"the {child.engine_id} engine exited while starting "
+                f"(code {proc.returncode})")
         time.sleep(BOOTSTRAP_POLL_S)
     _terminate(child)
-    raise MapEngineError("the map engine never became reachable")
+    raise EngineError(f"the {child.engine_id} engine never became reachable")
 
 
-def _replay_describes(child: Child) -> None:
-    """Re-register every remembered source into a fresh child, best-effort —
-    a source that fails to replay simply 404s until the page re-describes it."""
+def _replay(child: Child) -> None:
+    """Re-issue every remembered reinit request into a fresh child, best-effort —
+    one that fails to replay simply 404s until the page re-registers it. The
+    path and body are the template's; the host only re-POSTs them."""
     with _lock:
-        requests = list(_described.values())
-    for request in requests:
-        body = json.dumps(request).encode("utf-8")
+        requests = list(_reinit.get(child.engine_id, {}).values())
+    for entry in requests:
+        body = json.dumps(entry["payload"]).encode("utf-8")
         req = urllib.request.Request(
-            _url(child, "/describe"), data=body,
+            _url(child, entry["path"]), data=body,
             headers={"Content-Type": "application/json"}, method="POST")
         try:
             urllib.request.urlopen(req, timeout=60).close()
         except (OSError, ValueError):
-            logger.warning("map engine: could not replay a describe after restart")
+            logger.warning("%s engine: could not replay a reinit after restart",
+                           child.engine_id)
 
 
-def remember(source_id: str, request: dict) -> None:
-    """Keep the describe request that registered `source_id`, for replay."""
+def reinit(engine_id: str, key: str, path: str, payload: dict) -> None:
+    """Record a request that registers template state, so a restart replays it."""
     with _lock:
-        _described.pop(source_id, None)
-        _described[source_id] = request
-        while len(_described) > REMEMBER_LIMIT:
-            _described.pop(next(iter(_described)))
+        registry = _reinit.setdefault(engine_id, OrderedDict())
+        registry.pop(key, None)
+        registry[key] = {"path": path, "payload": payload}
+        while len(registry) > REINIT_LIMIT:
+            registry.popitem(last=False)
 
 
-def forget(source_id: str) -> None:
-    """Drop a source the page has removed, so a restart does not replay a
-    describe (a real remote open) for a layer nothing will ask tiles for."""
+def forget(engine_id: str, key: str) -> None:
+    """Drop a registration the page has removed, so a restart does not replay a
+    request (a real remote open) for state nothing will ask for."""
     with _lock:
-        _described.pop(source_id, None)
+        registry = _reinit.get(engine_id)
+        if registry is not None:
+            registry.pop(key, None)
 
 
 def _matches(child: Child, python: str, daemon: str, cache: str, version: str) -> bool:
@@ -280,76 +300,85 @@ def _matches(child: Child, python: str, daemon: str, cache: str, version: str) -
             and child.daemon == daemon and child.cache == cache)
 
 
-def current() -> Child | None:
-    return _child
+def current(engine_id: str) -> Child | None:
+    return _children.get(engine_id)
 
 
-def ensure(python: str, daemon: str, cache: str, version: str) -> Child:
-    """A live child matching the request, reusing the current one when it answers.
+def ensure(engine_id: str, python: str, daemon: str, cache: str,
+           version: str) -> Child:
+    """A live child for engine_id matching the request, reusing the current one
+    when it answers.
 
     The reuse check compares python/daemon/cache as well as version so a caller
     asking for a different bring-up is never handed a mismatched child.
     """
-    _validate(python, daemon)
-    global _child
-    existing = _child
+    _validate(engine_id, python, daemon)
+    existing = _children.get(engine_id)
     if (existing is not None and _matches(existing, python, daemon, cache, version)
             and _alive(existing) and _ping(existing)):
         return existing
-    # Only the spawn serializes; _child/_described stay reachable meanwhile.
+    # Only the spawn serializes; _children/_reinit stay reachable meanwhile.
     with _spawn_lock:
-        existing = _child
+        existing = _children.get(engine_id)
         if (existing is not None and _matches(existing, python, daemon, cache, version)
                 and _alive(existing) and _ping(existing)):
             return existing
         if existing is not None:
             _terminate(existing)
-        child = Child(python=python, daemon=daemon, cache=cache, version=version)
+        child = Child(engine_id=engine_id, python=python, daemon=daemon,
+                      cache=cache, version=version)
         _spawn(child)
         with _lock:
-            _child = child
+            _children[engine_id] = child
         return child
 
 
-def restart(failed: Child | None = None) -> Child:
-    """Kill and respawn the child, replaying its described sources.
+def restart(engine_id: str, failed: Child | None = None) -> Child:
+    """Kill and respawn the child, replaying its reinit requests.
 
     `failed` is the child the caller's request died against: when another
     request already replaced it, the fresh child is returned as-is instead of
-    being restarted again — a broken viewport fails a whole burst of tiles at
+    being restarted again — a broken viewport fails a whole burst of requests at
     once, and each of them calls here.
 
-    The new child's sources are replayed BEFORE it is published, so a tile
+    The new child's state is replayed BEFORE it is published, so a request
     retried mid-replay waits on the spawn lock rather than seeing a child whose
     registry is still empty.
     """
-    global _child
-    existing = _child
+    existing = _children.get(engine_id)
     if (failed is not None and existing is not None and existing is not failed
             and _alive(existing) and _ping(existing)):
         return existing
     with _spawn_lock:
-        existing = _child
+        existing = _children.get(engine_id)
         if existing is None:
-            raise MapEngineError("the map engine has never been started")
+            raise EngineError(f"the {engine_id} engine has never been started")
         if (failed is not None and existing is not failed
                 and _alive(existing) and _ping(existing)):
             return existing
         _terminate(existing)
-        child = Child(python=existing.python, daemon=existing.daemon,
-                      cache=existing.cache, version=existing.version)
+        child = Child(engine_id=engine_id, python=existing.python,
+                      daemon=existing.daemon, cache=existing.cache,
+                      version=existing.version)
         _spawn(child)
-        _replay_describes(child)
+        _replay(child)
         with _lock:
-            _child = child
+            _children[engine_id] = child
         return child
 
 
-def stop() -> None:
-    """Kill the child; called from the app's shutdown event."""
-    global _child
+def stop(engine_id: str) -> None:
+    """Kill one engine's child."""
     with _lock:
-        child = _child
-        _child = None
+        child = _children.pop(engine_id, None)
     if child is not None:
+        _terminate(child)
+
+
+def stop_all() -> None:
+    """Kill every managed child; called from the app's shutdown event."""
+    with _lock:
+        children = list(_children.values())
+        _children.clear()
+    for child in children:
         _terminate(child)

@@ -3,10 +3,11 @@
 The shell invokes this module in a short-lived worker inside the map template's
 project venv — the interpreter that holds the geo stack. Heavy geospatial work
 and XYZ raster tiles live in one loopback daemon that the fused-render server
-owns (fused_render/server/map_engine.py): this module hands the server its own
-sys.executable over /api/map/ensure, then describes through /api/map/describe.
-Tiles reach the page as stable /api/map/... paths on the server origin, so a
-daemon death or restart never invalidates a URL the page holds.
+owns as a generic managed engine (fused_render/server/engine_host.py): this
+module hands the server its own sys.executable over /api/engines/map/ensure,
+then describes through the engine proxy and rewrites the descriptor's tile URLs
+to stable /api/engines/map/proxy/... paths on the server origin, so a daemon
+death or restart never invalidates a URL the page holds.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 if "__file__" not in globals():
@@ -46,6 +48,13 @@ ARTIFACT_DIR = CACHE_DIR / "artifacts"
 DAEMON = HERE / "daemon.py"
 WORKER = HERE / "worker.py"
 SERVICE_START_TIMEOUT = 120
+# The server hosts this template's daemon under a generic engine id
+# (fused_render/server/engine_host.py); tiles ride /api/engines/map/proxy/...
+ENGINE_ID = "map"
+PROXY_BASE = f"/api/engines/{ENGINE_ID}/proxy"
+# The daemon emits absolute child URLs for these keys; each is rewritten to a
+# stable proxy path here, since their shape is this template's knowledge.
+_URL_KEYS = ("tile_url", "vtile_url", "job_url", "optimize_url")
 # Every module the daemon imports, because VERSION is a hash of these and a
 # module left out here can be edited without the running daemon being retired —
 # it would keep serving the old code. test_map_daemon.py walks the imports.
@@ -162,7 +171,7 @@ def _ensure_service() -> dict:
     """Ask the server to have the managed daemon running, on THIS interpreter —
     the project venv is the only one on the machine holding the geo stack."""
     return _server_post(
-        "/api/map/ensure",
+        f"/api/engines/{ENGINE_ID}/ensure",
         {
             "python": sys.executable,
             "daemon": str(DAEMON),
@@ -173,8 +182,33 @@ def _ensure_service() -> dict:
     )
 
 
+def _stable_url(url: str) -> str:
+    """Rewrite a child's absolute URL to a stable server-origin proxy path,
+    dropping the ephemeral origin and the token the browser must never see."""
+    return PROXY_BASE + urlsplit(url).path
+
+
 def _describe_service(request: dict) -> dict:
-    return _server_post("/api/map/describe", request, timeout=300)
+    """Describe through the proxy, then rewrite the descriptor's live URLs to
+    stable paths and register the describe for replay, so a daemon restart is
+    invisible to the page. The URL shape is this template's knowledge, so the
+    rewrite lives here rather than in the generic engine host."""
+    descriptor = _server_post(f"{PROXY_BASE}/describe", request, timeout=300)
+    data = descriptor.get("data") if isinstance(descriptor, dict) else None
+    if not isinstance(data, dict):
+        return descriptor
+    for key in _URL_KEYS:
+        url = data.get(key)
+        if isinstance(url, str) and url.startswith("http"):
+            data[key] = _stable_url(url)
+    source_id = data.get("source_id")
+    if descriptor.get("status") == "ok" and source_id:
+        _server_post(
+            f"/api/engines/{ENGINE_ID}/reinit",
+            {"key": str(source_id), "path": "/describe", "payload": request},
+            timeout=SERVICE_START_TIMEOUT,
+        )
+    return descriptor
 
 
 def _artifact_exists(descriptor: dict) -> bool:

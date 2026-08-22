@@ -1,12 +1,13 @@
-"""Shared fixtures for the server-owned map engine tests.
+"""Shared fixtures for the server-owned engine-host tests.
 
-The supervisor (fused_render/server/map_engine.py) only spawns an interpreter
-from the home venv store and a daemon from a templates root, so the fixtures
-build both inside a throwaway FUSED_RENDER_HOME: a bare `python -m venv` under
-<home>/venvs and a stdlib stand-in daemon under <home>/templates. The stand-in
-speaks the real daemon's contract (--status/--cache/--version, token-guarded
-/ping /describe /tiles /vtiles /jobs /optimize) plus a /wedge switch that makes
-it stop answering — the failure mode the whole architecture exists to heal.
+The host (fused_render/server/engine_host.py) only spawns an interpreter from
+the home venv store and a daemon from <templates-root>/<engine_id>/daemon.py, so
+the fixtures build both inside a throwaway FUSED_RENDER_HOME: a bare
+`python -m venv` under <home>/venvs and a stdlib stand-in daemon under
+<home>/templates/map. The stand-in speaks the real daemon's contract
+(--status/--cache/--version, token-guarded /ping /describe /tiles /vtiles /jobs
+/optimize) plus a /wedge switch that makes it stop answering — the failure mode
+the whole architecture exists to heal.
 """
 import atexit
 import json
@@ -152,7 +153,7 @@ def stub_python():
 @pytest.fixture(scope="session")
 def stub_daemon():
     """The stand-in daemon, at the map template's path inside the user templates
-    root — where the supervisor's validation looks for exactly map/daemon.py."""
+    root — where the host's validation looks for exactly map/daemon.py."""
     from fused_render.shell.storage import home_dir
 
     folder = os.path.join(home_dir(), "templates", "map")
@@ -164,13 +165,13 @@ def stub_daemon():
 
 
 @pytest.fixture
-def map_engine():
-    """The supervisor module, with its one child stopped after each test."""
-    from fused_render.server import map_engine as module
+def engine_host():
+    """The engine-host module, with every managed child stopped after each test."""
+    from fused_render.server import engine_host as module
 
-    module.stop()
+    module.stop_all()
     yield module
-    module.stop()
+    module.stop_all()
 
 
 def _child_get(child, path: str, timeout: float = 5.0):

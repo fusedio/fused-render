@@ -447,15 +447,26 @@ def test_small_local_vector_keeps_oneshot_fallback_when_ui_supplies_proxy(
 def test_map_render_owns_no_daemon_lifecycle(monkeypatch):
     # The spawn-storm era: detached spawns from short-lived runPython workers,
     # hand-rolled locks and state files, 18 orphans at the last count. The
-    # server's map_engine supervisor owns the one daemon now; the template must
-    # never grow its own spawn path back.
+    # server's engine host owns the one daemon now; the template must never grow
+    # its own spawn path back.
     map_render = _load("map_render")
     for name in ("_spawn_daemon", "_retire", "_retire_superseded",
                  "_already_serving", "_wait_for_service", "START_LOCK", "STATE"):
         assert not hasattr(map_render, name), (
-            f"map_render.{name} is back; the server supervisor "
-            "(fused_render/server/map_engine.py) owns the daemon"
+            f"map_render.{name} is back; the server engine host "
+            "(fused_render/server/engine_host.py) owns the daemon"
         )
+
+
+def test_map_render_rewrites_child_urls_to_stable_proxy_paths():
+    # The descriptor URL rewrite lives in the template now, not the server: a
+    # child's absolute URL becomes a stable proxy path with no port or token.
+    map_render = _load("map_render")
+    child = "http://127.0.0.1:54321/vtiles/abc/{z}/{x}/{y}.pbf?t=secret"
+    stable = map_render._stable_url(child)
+    assert stable == "/api/engines/map/proxy/vtiles/abc/{z}/{x}/{y}.pbf"
+    assert "127.0.0.1" not in stable
+    assert "t=secret" not in stable
 
 
 def test_remote_table_urls_are_not_converted_to_local_paths(monkeypatch):
