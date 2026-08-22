@@ -38,6 +38,11 @@ import {
   lookupTotalSize,
 } from "@apps/ai_models/lib/hubSize";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
+import {
+  liveSizeOverride,
+  modelSizeHint,
+  modelSizeLabel,
+} from "@apps/ai_models/shared/modelSize";
 import { type AiCatalogModel, type HubModel } from "@platform/lib/api";
 import { timeAgo } from "@platform/lib/format";
 import { isRunning, type Job } from "@platform/lib/jobs";
@@ -212,6 +217,12 @@ export function RecommendedCard({
   onDownload: () => void;
   onCancel: (job: Job) => void;
 }) {
+  // The live pull's own total wins over the catalog's constant wherever this
+  // card names a size. `size_gb` is an approximate hand-written number and the
+  // row is the fetcher's own sum, so a card showing both at once — `~64 GB`
+  // beside `68 GB / 68 GB` — read as a download overrunning its own size (see
+  // `shared/modelSize`).
+  const size = modelSizeHint(model.size_gb, job);
   return (
     <ModelCard
       variant="am-reccard"
@@ -227,13 +238,17 @@ export function RecommendedCard({
       }}
       size={{
         /* Same slot, same figure, one difference: this one is what the download
-           WILL cost, and an unmeasured size is a dash rather than a guess —
-           nobody plans a multi-GB fetch around a number somebody invented. */
-        text: model.size_gb === null ? "—" : `${model.size_gb} GB`,
+           WILL cost — the catalog's approximate constant until the pull starts,
+           and then the fetcher's own total, which is the number the progress row
+           below is counting towards. An unmeasured size is a dash rather than a
+           guess: nobody plans a multi-GB fetch around an invented number. */
+        text: modelSizeLabel(model.size_gb, job),
         title:
-          model.size_gb === null
+          size === null
             ? "Nobody has recorded this one's download size yet."
-            : `About ${model.size_gb} GB to download`,
+            : size.approx
+              ? `About ${size.text} to download`
+              : `${size.text} — the size this download is actually fetching`,
       }}
       /* A recommendation for a capability nothing can serve is still worth
          showing (hiding it leaves somebody hunting for a feature that never
@@ -258,7 +273,9 @@ export function RecommendedCard({
             disabled={!runner?.available}
             title={
               runner?.available
-                ? `Download ${model.id}${model.size_gb === null ? "" : ` (~${model.size_gb} GB)`}`
+                ? `Download ${model.id}${
+                    size === null ? "" : ` (${size.approx ? "~" : ""}${size.text})`
+                  }`
                 : `${model.id} cannot be loaded here: ${runner?.reason ?? "no engine serves this capability on this machine"}.`
             }
             aria-label={
@@ -383,7 +400,14 @@ export function HubResultCard({
     };
   }, [model.id, wantsTotal]);
 
-  const size = hubSizeLabel(model, total);
+  // The Hub's own measurement — until a pull of this repo starts reporting its
+  // own total, which is the one number on this card that is not an estimate
+  // (`shared/modelSize`). Without this the cell said "≈16 GB" beside a progress
+  // row counting to 17 GB, on one card, about one download.
+  const size = liveSizeOverride(job) ?? {
+    text: hubSizeLabel(model, total) ?? "—",
+    title: hubSizeTitle(model, total),
+  };
   // What the Hub asks before it will hand this one over, when it asks anything.
   // Never on a copy we already hold: a gate is a condition on GETTING the model.
   const gate = disk.state === "downloaded" ? null : gateChrome(model.gated, authenticated);
@@ -428,7 +452,7 @@ export function HubResultCard({
           )}
         </>
       }
-      size={{ text: size ?? "—", title: hubSizeTitle(model, total) }}
+      size={size}
       what={
         disk.state === "partial" ? (
           /* The tag `RepoCard` wears for the same state, in the slot the engine

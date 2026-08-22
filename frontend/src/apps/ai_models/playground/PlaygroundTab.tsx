@@ -29,6 +29,7 @@ import { ImageStage } from "./ImageStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
+import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
@@ -184,6 +185,15 @@ export default function PlaygroundTab() {
   const jobForSelected = selected
     ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
     : undefined;
+  // Rows by MODEL, for the sidebar's own size cells — the same title match
+  // `jobForSelected` uses one line up, and for the same reason: the job id
+  // derivation sanitises characters and a second copy of that rule in
+  // TypeScript would drift from the Python one. A live pull's own total is the
+  // size that card shows (see `shared/modelSize`).
+  const jobByModel = useMemo(
+    () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
+    [jobs],
+  );
 
   const runDownload = async () => {
     if (!selected) return;
@@ -223,6 +233,11 @@ export default function PlaygroundTab() {
     return <ErrorBanner>{catalog.message}</ErrorBanner>;
   }
 
+  // The size to name for the selected model, wherever this page names one: the
+  // live pull's own total once the job reports one, else the catalog's
+  // approximate constant, else nothing to say at all (see `shared/modelSize`).
+  const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
+
   // The state line under the model name: what is TRUE right now, in words. The
   // sidebar dots carry the same facts; this is where they are spelled out.
   const stateLine = !selected
@@ -235,8 +250,8 @@ export default function PlaygroundTab() {
         ? "Downloading…"
         : selected.model.downloaded
           ? "Downloaded — loads on first use."
-          : selected.model.size_gb != null
-            ? `Not downloaded — ${selected.model.size_gb} GB to fetch.` +
+          : selectedSize
+            ? `Not downloaded — ${selectedSize.text} to fetch.` +
               // The fit verdict, spelled out where the Download decision is
               // being made — the badge says "too big here", this says why.
               (selected.model.fit === "no"
@@ -277,6 +292,10 @@ export default function PlaygroundTab() {
             const resident = runtime.loaded.some(
               (m) => m.model === model.id && m.state === "ready",
             );
+            // A live pull's own total, else the catalog's approximate constant
+            // (see `shared/modelSize`).
+            const job = jobByModel.get(model.id);
+            const size = modelSizeHint(model.size_gb, job);
             return (
               <button
                 type="button"
@@ -307,12 +326,12 @@ export default function PlaygroundTab() {
                   <span
                     className={"pg-fit" + (model.fit ? " " + model.fit : "")}
                     title={
-                      model.size_gb != null
-                        ? `${model.size_gb} GB download — judged against this machine's memory`
+                      size
+                        ? `${size.text} download — judged against this machine's memory`
                         : undefined
                     }
                   >
-                    {model.size_gb != null ? `${model.size_gb} GB` : "—"}
+                    {modelSizeLabel(model.size_gb, job)}
                     {model.fit === "easy"
                       ? " · runs easily"
                       : model.fit === "tight"
@@ -417,7 +436,7 @@ export default function PlaygroundTab() {
                 </button>
                 {!selected.model.downloaded && !selectedDownloading && (
                   <button type="button" className="btn btn-secondary" onClick={runDownload}>
-                    Download{selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
+                    Download{selectedSize ? ` (${selectedSize.text})` : ""}
                   </button>
                 )}
                 {selected.model.downloaded && !selectedResident && (
