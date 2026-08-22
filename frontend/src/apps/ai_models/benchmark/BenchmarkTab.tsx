@@ -27,8 +27,8 @@
 // as if it were a save. Only the pressed capability's buttons go dead; the rest
 // of the page stays live.
 //
-// **There is no download-manager row for a benchmark, and this tab must not
-// reach for one.** Server job rows are keyed by TITLE (`useCacheScan` maps
+// **A benchmark opens no download-manager row, and this tab must not reach for
+// one.** Server job rows are keyed by TITLE (`useCacheScan` maps
 // `job.title -> job`) and `supervisor.load` already owns the row titled with the
 // model id, so a benchmark row either cannot be found or shadows the load's —
 // which put the manager's only ✕ on the load and let a cold run spin to its

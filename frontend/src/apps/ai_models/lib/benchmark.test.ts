@@ -342,9 +342,16 @@ describe("stoppedNote", () => {
     expect(note).not.toContain("error");
   });
 
-  it("names the likely cause, since the user did not stop it themselves", () => {
+  it("gives an example cause without asserting one", () => {
     // There is no cancel control on a benchmark, so "cancelled" with no
-    // explanation reads as a bug. The shared resident worker is the real cause.
-    expect(stoppedNote("org/model")).toContain("fused.ai.cancel()");
+    // explanation reads as a bug — but the client cannot tell WHICH of the three
+    // possible cancels happened (`fused.ai.cancel()`, the ✕ on the load's own
+    // download row, or the ✕ on a queued-transcription row a speech benchmark
+    // inherited). An earlier draft claimed the first and was wrong for the other
+    // two, so the wording offers it as an example instead.
+    const note = stoppedNote("org/model");
+    expect(note).toContain("fused.ai.cancel()");
+    expect(note).toContain("for example");
+    expect(note).not.toContain("most likely");
   });
 });

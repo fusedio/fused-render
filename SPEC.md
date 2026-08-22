@@ -7949,9 +7949,23 @@ an AI Models page that could say what was on disk but not what was *running*.
     AI Models page down, and a per-reader guard is a rule the next reader has to
     be told about. It is deliberately NOT a schema check — a metric added
     server-side must never start deleting the runs recorded before it.
-  - **AI-14j** **A benchmark deliberately creates NO download-manager job row,
+  - **AI-14j** **A benchmark deliberately OPENS no download-manager job row,
     returns no job id, and offers no ✕.** The tab shows its own in-tab spinner
     for the duration, and that is the whole progress story.
+
+    "Opens none" rather than "has none", because there is one row it can
+    INHERIT and the difference is worth stating precisely. A speech benchmark
+    queued behind a real transcription goes through
+    `supervisor._await_turn`, whose queue report carries a title — so a row
+    genuinely is created under the private job id, and once it exists the
+    worker's otherwise-refused titleless ticks start landing on it. Two
+    mitigations, both inside the benchmark so that `ai/supervisor.py` is not
+    touched: the synthesized audio is named `fused-benchmark-tone.wav`, since that
+    basename is what titles the row and "benchmark.wav" could be a file the user
+    dropped in; and every long call ends with a TITLELESS terminal report, which
+    closes a row that exists and — because `jobs.upsert` refuses a first report
+    with no title — cannot bring one into being. So no benchmark leaves a row
+    running, and the ordinary path still creates none.
 
     The reason is a namespace conflict, and it is worth stating in full because
     it took three attempts to see: **server job rows are keyed by TITLE.** A
@@ -7984,12 +7998,27 @@ an AI Models page that could say what was on disk but not what was *running*.
     Two consequences follow and are deliberate. The supervisor calls that require
     a job id positionally are given a private one that names no row — non-empty,
     because `worker_base.report`'s `job or JOB_ID` fallback would otherwise paint
-    benchmark ticks onto the model's load row. And a benchmark has no cancel
-    control at all, so a run reported as cancelled was stopped from OUTSIDE
-    (`fused.ai.cancel()` from any page reaches the same resident worker, since one
-    model per capability is shared): the tab says so in a muted note that names
-    the likely cause and states that nothing was recorded, rather than leaving
-    several minutes of waiting to end in silence.
+    benchmark ticks onto the model's load row, and minted through
+    `jobs.SERVER_ID_PREFIX` rather than by assembling the reserved prefix here.
+    And a benchmark has no cancel control of its own, so a run reported as
+    cancelled was stopped from OUTSIDE: `fused.ai.cancel()` from any page reaches
+    the same resident worker (one model per capability is shared), and so does the
+    ✕ on the load's own download row or on an inherited queue row. The client
+    cannot tell those apart, so the tab's muted note gives an EXAMPLE cause
+    rather than asserting one, and states that nothing was recorded — several
+    minutes of waiting must not end in silence.
+
+    **The wait watches the load's own record, not only whether it became ready.**
+    `_bring_up` answers both a failure and a ✕ by stamping `state="error"` on the
+    pending worker and deleting it from the table, so a readiness-only poll saw
+    nothing change and ran the full hour-long timeout — holding the request open,
+    holding the per-capability claim so every other benchmark of that capability
+    was refused for the hour, and then recording
+    `ok:false, "did not finish loading in time"`. A failed load is now the
+    loader's own sentence, immediately, and recorded (it IS a fact about this
+    model on this machine); a cancelled one is `Cancelled` and recorded nowhere;
+    an eviction says it was unloaded. The timeout remains only as the backstop for
+    a bring-up that neither succeeds nor reports.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

@@ -366,11 +366,17 @@ export function runButtonState(
 
 /** What to tell the user when a run came back stopped rather than measured.
  *
- *  **Nobody pressed anything here.** A benchmark has no cancel control — it owns
- *  no download-manager row, deliberately (see `ai/benchmark.py`) — so a run that
- *  ends `cancelled` was stopped by something else reaching the same resident
- *  worker, which one model per capability is shared by the whole app makes
- *  possible: `fused.ai.cancel()` from any open page does it.
+ *  **The cause is elsewhere in the app, and the note does not guess which.** A
+ *  benchmark owns no download-manager row and offers no ✕ of its own (see
+ *  `ai/benchmark.py`), so a run that ends `cancelled` was stopped by something
+ *  reaching the model it was using — which one resident model per capability,
+ *  shared by the whole app, makes possible. `fused.ai.cancel()` from any open
+ *  page does it; so does the ✕ on a download row the load opened, and so does
+ *  the ✕ on a queued-transcription row a speech benchmark can inherit. The
+ *  client cannot tell those apart, so the wording names the SHAPE of the cause
+ *  and offers the commonest one as an example rather than asserting it — an
+ *  earlier draft said "most likely fused.ai.cancel()" and was simply wrong for
+ *  the two ✕ cases.
  *
  *  Without this the failure was silent in the worst way: nothing appended, no
  *  error set, the button quietly re-enabled — so somebody who pressed Run and
@@ -384,8 +390,9 @@ export function runButtonState(
  */
 export function stoppedNote(model: string): string {
   return (
-    `The ${model} benchmark was stopped before it finished — most likely by ` +
-    `fused.ai.cancel() from another page, since one model per capability is ` +
-    `shared. Nothing was recorded; press Run again to retry.`
+    `The ${model} benchmark was stopped before it finished — the model it was ` +
+    `using was cancelled elsewhere in the app (for example by ` +
+    `fused.ai.cancel() on another page, or a ✕ on its row in the download ` +
+    `manager). Nothing was recorded; press Run again to retry.`
   );
 }
