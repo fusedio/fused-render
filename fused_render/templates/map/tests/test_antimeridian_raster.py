@@ -117,6 +117,17 @@ def test_both_sides_of_the_seam_return_data(eng, tmp_path):
     assert _opaque_count(wrapped_tile) > 500
 
 
+def test_crossing_maxzoom_reflects_true_resolution(eng, tmp_path):
+    # rio-tiler derives maxzoom from the bounds reprojected to Web Mercator; the
+    # wrap makes this 256px / 19deg grid look world-wide, deflating maxzoom to
+    # ~z0 so the viewer cannot zoom in past a coarse thumbnail (the MODIS Fiji
+    # tile capped at z3). Recomputed from the unwrapped extent it is ~z4.
+    path = tmp_path / "crossing.tif"
+    _crossing_cog(path)
+    descriptor = _describe(eng, path)
+    assert descriptor["maxzoom"] >= 4
+
+
 def test_tiles_off_the_data_are_still_transparent(eng, tmp_path):
     path = tmp_path / "crossing.tif"
     _crossing_cog(path)

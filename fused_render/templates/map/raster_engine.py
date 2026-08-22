@@ -104,6 +104,29 @@ def _web_mercator_x(lon: float) -> float:
     return math.radians(lon) * 6378137.0
 
 
+def _web_mercator_y(lat: float) -> float:
+    """Web Mercator (EPSG:3857) northing for a latitude, clamped to the
+    projection's valid range so a near-polar bound stays finite."""
+    lat = max(-85.051129, min(85.051129, lat))
+    return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * 6378137.0
+
+
+def _crossing_maxzoom(tms: Any, bounds: list[float], width: int, height: int) -> int:
+    """Native maxzoom for an antimeridian-crossing raster.
+
+    rio-tiler derives maxzoom from the dataset's bounds reprojected to Web
+    Mercator, but a grid that runs east across 180 reprojects to a
+    world-spanning box: its width reads as the whole globe, so the per-pixel
+    resolution comes out ~(360/span)x too coarse and the layer caps a handful of
+    zooms short of native (an h35 MODIS tile lands at z3). Recompute the
+    resolution from the true unwrapped extent instead."""
+    west, south, east, north = bounds[0], bounds[1], bounds[2], bounds[3]
+    east_continuous = east if east >= west else east + 360.0
+    x_res = (_web_mercator_x(east_continuous) - _web_mercator_x(west)) / width
+    y_res = (_web_mercator_y(north) - _web_mercator_y(south)) / height
+    return int(tms.zoom_for_res(max(x_res, y_res)))
+
+
 def error_descriptor(
     artifact_id: str, message: str, detected_type: str = "raster"
 ) -> dict[str, Any]:
@@ -762,6 +785,10 @@ class RasterEngine:
                 warnings.simplefilter("ignore", NoOverviewWarning)
                 with Reader(locator) as reader:
                     minzoom, maxzoom = int(reader.minzoom), int(reader.maxzoom)
+                    if crosses_antimeridian:
+                        maxzoom = _crossing_maxzoom(
+                            reader.tms, bounds, dataset.width, dataset.height
+                        )
 
             # The size only decides whether to build a local pyramid, which a
             # source that already has overviews never needs. Asking for it costs
