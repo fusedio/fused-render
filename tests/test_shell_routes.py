@@ -23,6 +23,13 @@ from fastapi.testclient import TestClient
 from fused_render.server import create_app
 
 _APP_TSX = os.path.join("frontend", "src", "shell", "App.tsx")
+# The AI Models page is the one route App.tsx does NOT compare as a literal: its
+# five tabs are sub-paths, so the dispatcher asks a predicate
+# (`isAiModelsPath`) instead of `pathname === "..."`. Scraping App.tsx alone
+# would therefore check none of them — and this file exists precisely because
+# that gap is invisible until someone presses ⌘R. So the tab list is derived
+# from the frontend module that OWNS it, the same posture as the App.tsx scrape.
+_AI_MODELS_ROUTES_TS = os.path.join("frontend", "src", "apps", "ai_models", "routes.ts")
 
 
 @pytest.fixture(scope="module")
@@ -39,6 +46,7 @@ def shell_routes() -> list[str]:
     with open(_APP_TSX, encoding="utf-8") as f:
         source = f.read()
     found = re.findall(r'(?:location\.)?pathname === "([^"]+)"', source)
+    found += ai_models_routes()
     # Order-preserving dedupe: the same sentinel can be compared twice.
     seen, routes = set(), []
     for path in found:
@@ -48,6 +56,22 @@ def shell_routes() -> list[str]:
     return routes
 
 
+def ai_models_routes() -> list[str]:
+    """`/ai-models` and one path per tab, read out of the frontend's own codec.
+
+    Parsed from the `AI_MODELS_TABS` array rather than restated here, so a
+    sixth tab added to the page is requested by this test without anyone
+    remembering to come back."""
+    with open(_AI_MODELS_ROUTES_TS, encoding="utf-8") as f:
+        source = f.read()
+    prefix = re.search(r'AI_MODELS_PREFIX = "([^"]+)"', source)
+    block = re.search(r"AI_MODELS_TABS[^=]*=\s*\[(.*?)\]", source, re.S)
+    assert prefix and block, "routes.ts no longer declares its prefix and tabs"
+    tabs = re.findall(r'"([^"]+)"', block.group(1))
+    assert tabs, "routes.ts declares no tabs"
+    return [prefix.group(1)] + [f"{prefix.group(1)}/{tab}" for tab in tabs]
+
+
 def test_the_shell_actually_declares_routes():
     """A guard on the guard: if the `pathname ===` idiom is ever replaced, this
     file would silently assert nothing at all."""
@@ -55,6 +79,9 @@ def test_the_shell_actually_declares_routes():
     assert len(routes) >= 8, routes
     assert "/tasks" in routes, "the page this test was written for"
     assert "/mounts" in routes
+    # The predicate-dispatched page, which the App.tsx scrape cannot see.
+    assert "/ai-models" in routes
+    assert "/ai-models/playground" in routes
 
 
 @pytest.mark.parametrize("path", shell_routes())

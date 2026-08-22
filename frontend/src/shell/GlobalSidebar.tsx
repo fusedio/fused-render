@@ -1,9 +1,9 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks, plus Canvases once this machine is signed
-// in to Fused), the explorer's Bookmarks below it, and a single Settings
-// trigger pinned to the bottom that opens a menu holding everything else
-// (Config for now, plus Templates / Mounts / AI Models /
+// primary nav on top (Home / Tasks / AI Models, plus Canvases once this
+// machine is signed in to Fused), the explorer's Bookmarks below it, and a
+// single Settings trigger pinned to the bottom that opens a menu holding
+// everything else (Config for now, plus Templates / Mounts /
 // Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
@@ -18,7 +18,8 @@ import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
-import { useAiRuntime } from "@shell/aiRuntime";
+import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
@@ -227,6 +228,14 @@ function PreferencesPopover({
   );
 }
 
+// Where the sidebar row points: the page's DEFAULT tab by name, not the bare
+// prefix. Both work — App.tsx redirects the bare one — but a nav link that is
+// rewritten the moment it lands puts a URL in the address bar that the user
+// never clicked, and leaves the row's href disagreeing with where it went. An
+// empty search, deliberately: this is an entry point, not a tab switch, so
+// there is nothing to carry (see `tabHref`).
+const AI_MODELS_HOME = tabHref("playground", "");
+
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
@@ -238,7 +247,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — surfaced as a dot on the
-  // bottom trigger now that AI Models lives inside the menu.
+  // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
   const residentDot = residentModels.length ? (
@@ -261,6 +270,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
   const canvasesActive = pathname === "/canvases";
+  // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
+  // through a different tab, not a second destination, so every one of the five
+  // lights the row. (The bare prefix is redirected to the default tab before
+  // this runs, so it is matched for completeness rather than in practice.)
+  const aiModelsActive = isAiModelsPath(pathname);
   // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
   // would lead to a sign-in wall — the menu entry is the right weight for
   // "there is a thing here you could set up"; a top-of-sidebar row is for a
@@ -371,7 +385,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // someone looks for a named destination — and `prefsActive` below drops it
     // instead, so the two never light at once.
     { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
-    { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
+    // No /ai-models entry either, and unlike Canvases it is dropped outright:
+    // its primary row is ungated, so a menu copy would only ever be the
+    // double-selection the Tasks note rejects.
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
 
@@ -426,6 +442,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         ]
       : []),
     {
+      key: "ai-models",
+      label: "AI Models",
+      icon: AI_MODELS_ICON,
+      href: AI_MODELS_HOME,
+      active: aiModelsActive,
+      badge: residentDot,
+    },
+    {
       key: "preferences",
       label: "Preferences",
       icon: PREFERENCES_ICON,
@@ -437,10 +461,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       onClick: (e) => togglePrefsMenu(e.currentTarget),
     },
   ];
-
-  // The trigger's own dot mirrors the strongest signal inside the menu, so
-  // it is not silently hidden while the menu is closed.
-  const triggerDot = residentDot;
 
   return (
     <>
@@ -474,6 +494,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={canvasesActive}
             />
           )}
+          <NavItem
+            href={AI_MODELS_HOME}
+            id="ai-models-link"
+            label="AI Models"
+            icon={AI_MODELS_ICON}
+            active={aiModelsActive}
+            extra={residentDot}
+            trailing={
+              // Beta while the surface (playground foremost) is still settling —
+              // the chip skin is the shared one, the modifier only recolours it.
+              <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+            }
+          />
         </div>
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
@@ -487,7 +520,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               slot the Tasks row states its count in. */}
           <PreferencesTrigger
             open={prefsPos !== null}
-            dot={triggerDot}
             active={prefsActive}
             trailing={
               config.version ? (

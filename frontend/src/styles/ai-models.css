@@ -336,6 +336,15 @@
   text-decoration: none;
 }
 
+/* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
+ * chrome beside Explore, widened for a word instead of a glyph. */
+.am-card-try {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  text-decoration: none;
+}
+
 /* A card's controls are ALWAYS visible — the delete ✕ and the revisions
    chevron included, which were hidden at `opacity: 0` until the card was
    hovered or focused.
@@ -580,6 +589,12 @@
   overflow: hidden;
 }
 
+/* Worn by two different elements: the page's tab strip, whose tabs are <a>
+   since D420 made each one an address, and the Usage tab's window picker,
+   which is still <button>. So it resets BOTH defaults — the button's border
+   and font, and the link's underline and visited colour. Without the
+   text-decoration line the strip renders as five underlined links inside a
+   pill, which reads as prose rather than as a control. */
 .am-tab {
   padding: 5px 12px;
   font: inherit;
@@ -588,6 +603,7 @@
   background: transparent;
   border: 0;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .am-tab + .am-tab {

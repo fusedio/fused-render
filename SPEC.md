@@ -5019,6 +5019,23 @@ Goal: the models, datasets and Spaces this machine has downloaded from the
 Hugging Face Hub are visible and accounted for, from a sidebar entry, without
 anyone having to remember where the cache lives or run `du` on it.
 
+**Where it lives (D420).** The page is a sub-app, `frontend/src/apps/ai_models/`
+— `AiModelsPage.tsx` (chrome, tab strip, dispatch), `routes.ts` (the path
+codec), `lib/` (the runtime poll, the engine registry reader, the grouping, the
+shared cache walk in `useCacheScan.ts`, URL params), and one directory per tab:
+`local/`, `discover/`, `engines/`, `usage/`, `playground/`. Server-side the cache
+walk is `fused_render/ai/hub_cache.py`, beside `catalog.py`/`registry.py`/
+`supervisor.py`; `server/routers/ai_models.py` is the three route decorators
+over it. Every `/api/*` URL is unchanged.
+
+**Five tabs, five paths**: `/ai-models/playground` (the default — bare
+`/ai-models` redirects to it), `/ai-models/local`, `/discover`, `/engines`,
+`/usage`. `?model=` and `?cap=` still seed the playground's picker and are
+carried across a tab switch; only the tab itself left the query string. An
+unrecognised sub-path falls back to the default tab silently, and there is no
+alias for the old `?tab=` shape (D420). The five tabs share ONE mounted
+component and one cache walk — see D420 for why they are not five routes.
+
 The cache is shared and invisible: a `transformers` import in a page's Python,
 a `diffusers` pipeline, a template someone pasted in, or an `hf download` in a
 terminal all write into the same tree, and nothing in the app has ever named
@@ -6126,7 +6143,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   capability is validated and used unchanged, so this governs only the omitted
   case.
 - **AI-5l** **A SUGGESTED model may be fetched from OUR OWN distribution, and any
-  doubt goes to the Hub** (D420). CloudFront's access logs are then the answer to
+  doubt goes to the Hub** (D421). CloudFront's access logs are then the answer to
   "did this user download a model", with no telemetry in the app at all — one
   `manifest.json` request per download attempt, made before a single byte moves,
   and logged even on a cache hit. Two objects, not a protocol:
@@ -6264,17 +6281,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   valid `HF_TOKEN` that same test would have PASSED by downloading a real repo.
   **`FUSED_MODEL_MIRROR` ships ON**, defaulting to `https://render.fused.io/mirror`
   (`mirror.DEFAULT_BASE`) when unset; the documented opt-out is setting it to
-  `""` (D420 amendment). The per-model permission above is unchanged by that —
+  `""` (D421 amendment). The per-model permission above is unchanged by that —
   a default base names no repo by itself — and every failure mode still falls
   back to the Hub, which is what makes shipping this default safe before every
-  suggested model has a mirror object (see D420). Explicitly out of scope:
+  suggested model has a mirror object (see D421). Explicitly out of scope:
   component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
   tens of megabytes and not the "downloaded a model" signal; and the mirror pins a
   commit, so a suggested model updated upstream keeps installing the pinned one
   until the build script reruns — reproducibility, at the cost of lagging a
   fix.
 - **AI-5m** **ONE FILE off the mirror is a SECOND object with a WEAKER claim, not
-  a relaxed manifest** (D421). AI-5l's branch lives in `download_snapshot` alone,
+  a relaxed manifest** (D422). AI-5l's branch lives in `download_snapshot` alone,
   and `llama_text.download` does not go through it: it fetches one GGUF with
   `download_file`, because a GGUF repo publishes dozens of quantizations of the
   same model (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB file).
@@ -7480,7 +7497,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
   were the same picture — as were a working chat box and one whose every call
   timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
-  covering one hour, plus since-start totals, and `/ai-models?tab=usage` draws
+  covering one hour, plus since-start totals, and `/ai-models/usage` draws
   it. FOUR counters, because volume answers only the first question anybody
   has: **tokens and completions** (the graph), **failures by kind** (a page
   whose calls all fail has generated zero tokens, which is the same empty graph

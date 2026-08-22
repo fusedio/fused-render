@@ -123,7 +123,7 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai.registry import capability_for_task, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
-from fused_render.server.routers.ai_models import (
+from fused_render.ai.hub_cache import (
     _FRIENDLIER_TAGS,
     _TASK_HELP,
     _entry_is_dir,

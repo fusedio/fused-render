@@ -27,8 +27,9 @@ from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
-from fused_render.server.routers import ai_models, ai_runtime
-from fused_render.server.routers.ai_models import CachedModel
+from fused_render.ai import hub_cache as ai_models
+from fused_render.ai.hub_cache import CachedModel
+from fused_render.server.routers import ai_runtime
 # `no_egress` is imported for its SIDE EFFECT: it is an autouse fixture, so
 # binding the name in this module installs it for every test here, including
 # the model-mirror tests below. See its docstring — Windows CI proved that

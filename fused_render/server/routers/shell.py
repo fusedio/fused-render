@@ -44,8 +44,10 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 @router.get("/preferences")
 @router.get("/templates")
 @router.get("/mounts")
-# The Hugging Face cache inventory (SPEC §37) — a client-side page like the
-# rest, and reachable by URL even where the sidebar hides its entry.
+# AI Models (SPEC §37) — a client-side page like the rest, and reachable by URL
+# even where the sidebar hides its entry. The bare prefix is what the sidebar
+# links to; its five TABS are sub-paths (`/ai-models/local`, …) served by the
+# wildcard below.
 @router.get("/ai-models")
 # Tasks (SPEC §41) — served at `/scheduled` until 2026-08-18 and renamed with NO
 # redirect behind it: the page is called Tasks everywhere a person reads it, and
@@ -67,6 +69,16 @@ def shell_page(shell_path: str = Depends(get_shell_path)):
 
 @router.get("/canvases/{name}")
 def shell_canvas_workspace(name: str, shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
+# The AI Models tabs. A wildcard rather than five literals because the tab set
+# is the FRONTEND's list (apps/ai_models/routes.ts) and the server has no
+# business holding a second copy of it — an unknown tab falls back to the
+# default in the client, which is the same forgiving posture a stale `?tab=`
+# had. One level only: this page has no second.
+@router.get("/ai-models/{tab}")
+def shell_ai_models_tab(tab: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 # Pre-rename URL shapes; the client rewrites them in place at boot

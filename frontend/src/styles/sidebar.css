@@ -331,6 +331,17 @@ a.sidebar-rail-btn {
   letter-spacing: normal;
 }
 
+/* The AI Models row's "Beta" tag: same chip element, recoloured to the accent
+   so it reads as a label about the feature rather than a count of anything. */
+.sidebar-beta-chip {
+  font-size: 9px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
 /* -- "N running" ---------------------------------------------------------------
    The In Progress hue (--status-progress: the status ring's own yellow, so the
    sidebar and the page name the state in one colour), with the ink SHIMMERING

@@ -6,7 +6,7 @@
 // Lives in the shell layer on purpose: it composes builder cards
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
@@ -23,6 +23,8 @@ import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
+import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
+import { tabHref } from "@apps/ai_models/routes";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -137,6 +139,65 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+// The capability glyphs for the AI Playground strip — plain strokes on the
+// current color, so the tinted body well colours them for free.
+const PLAYGROUND_GLYPHS: Record<string, ReactNode> = {
+  "text-generation": (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.8-.8L3 20l1-4.1a8.4 8.4 0 1 1 17-4.4z" />
+      <path d="M8 10h8M8 13.5h5" />
+    </svg>
+  ),
+  "text-to-image": (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <circle cx="9" cy="10" r="2" />
+      <path d="M3 17.5 8.5 13l4 3.5 3.5-3 5 4.5" />
+    </svg>
+  ),
+  "automatic-speech-recognition": (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+    </svg>
+  ),
+  embeddings: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="7" />
+      <path d="M20.5 20.5 15.6 15.6" />
+      <circle cx="8" cy="9" r="0.4" />
+      <circle cx="12.8" cy="8.2" r="0.4" />
+      <circle cx="10.2" cy="13" r="0.4" />
+    </svg>
+  ),
+};
+
+// One card per playground task: the header names it, the body says what it
+// does. Static on purpose — the strip advertises the SURFACE, not this
+// machine's downloads, so it costs Home no catalog fetch. The link carries
+// only the capability (`?cap=`); the playground itself resolves that to its
+// vetted default model, so the choice lives in one place.
+function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
+  const href = tabHref("playground", `?cap=${encodeURIComponent(group.capability)}`);
+  return (
+    <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
+      <span className="fhb-card-head">
+        <span className="fh-card-icon home-pg-icon" aria-hidden="true">
+          {PLAYGROUND_GLYPHS[group.capability]}
+        </span>
+        <span className="fh-card-text">
+          <span className="fh-card-name">{group.label}</span>
+          <span className="fh-card-path">Runs on this machine</span>
+        </span>
+      </span>
+      <span className="home-pg-body" aria-hidden="true">
+        <span className="home-pg-glyph">{PLAYGROUND_GLYPHS[group.capability]}</span>
+        <span className="home-pg-blurb">{group.blurb}</span>
+      </span>
+    </a>
   );
 }
 
@@ -278,6 +339,14 @@ export default function Home({ config }: { config: Config }) {
                   {appsError ?? "No apps yet. Build one and it'll show up here."}
                 </p>
               )}
+            </Section>
+
+            <Section title="AI Playground" seeAllHref={tabHref("playground", "")}>
+              <div className="home-row">
+                {PLAYGROUND_GROUPS.slice(0, shown).map((group) => (
+                  <PlaygroundPreviewCard key={group.capability} group={group} />
+                ))}
+              </div>
             </Section>
 
             <Section title="Claude Sessions" seeAllHref="/explorer?tab=sessions">

@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from fused_render.server import create_app
 from fused_render.ai import catalog
 from fused_render.ai import registry as _ai_registry
-from fused_render.server.routers import ai_models as ai_models_mod
+from fused_render.ai import hub_cache as ai_models_mod
 
 # Windows makes symlinks a privileged operation, and huggingface_hub itself
 # falls back to copies there — the dedup rule under test is a POSIX-cache one.
