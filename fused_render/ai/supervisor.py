@@ -1133,25 +1133,13 @@ def _transcribe_row(title: str, detail: str) -> dict:
 
 
 def _transcribe_title(request: dict, model: str) -> str:
-    """The row's title: the caller's, if it gave one — otherwise the FILE.
+    """The row's title: the FILE, not the model.
 
     The manager may be showing several of these at once and "meeting-2024.m4a"
     is what tells them apart. Shared by the row's opening report and by every
     queue tick, which must agree — a tick carrying a different title would
     rename the row under the user each time it reopened.
-
-    **`request["row"]` wins where it is present, because that payload IS the
-    caller's statement of what this row is called** (`transcribe_row_fields`) and
-    a second answer derived here is precisely the drift the shared payload exists
-    to prevent. `start_transcribe` computes this title BEFORE attaching the row,
-    so for that caller the two are the same string and nothing changes. The
-    caller it matters for is one whose row is not about a recording at all: the
-    AI benchmark decodes a throwaway temp file, and `_await_turn`'s queued-row
-    report was renaming its row to "benchmark.wav" mid-run.
     """
-    row = request.get("row")
-    if isinstance(row, dict) and row.get("title"):
-        return str(row["title"])[:80]
     return (os.path.basename(str(request.get("path") or "")) or model)[:80]
 
 
