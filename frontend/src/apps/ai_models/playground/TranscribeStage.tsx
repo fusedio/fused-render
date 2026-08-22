@@ -78,6 +78,12 @@ export function TranscribeStage({ model }: { model: string }) {
   }, [task, language, vad, words, source]);
 
   const abortRef = useRef<AbortController | null>(null);
+  // `land()` awaits the config, the mkdir and the upload before it starts a
+  // job at all, so an unmount inside that window runs the cleanup below while
+  // the continuation is still queued — it would then start a watch against a
+  // controller the cleanup has already come and gone for, leaking a 1/s poll
+  // from a dead component. The flag is what the continuation checks.
+  const aliveRef = useRef(true);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const meterRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
@@ -93,6 +99,7 @@ export function TranscribeStage({ model }: { model: string }) {
 
   useEffect(
     () => () => {
+      aliveRef.current = false;
       abortRef.current?.abort();
       recorderRef.current?.stream.getTracks().forEach((t) => t.stop());
       stopMeter();
@@ -128,6 +135,12 @@ export function TranscribeStage({ model }: { model: string }) {
   }, [running]);
 
   const transcribePath = async (path: string) => {
+    if (!aliveRef.current) return;
+    // Published BEFORE the first await, for the same reason ImageStage does
+    // it: an unmount during this POST used to leave the ref null, so nothing
+    // aborted the watch that the continuation went on to start.
+    const controller = new AbortController();
+    abortRef.current = controller;
     const started = await startTranscribe({
       path,
       model,
@@ -138,14 +151,20 @@ export function TranscribeStage({ model }: { model: string }) {
     });
     setSegments([]);
     setPhase({ step: "running", started, job: null });
-    const controller = new AbortController();
-    abortRef.current = controller;
     try {
-      await watchJob(started.jobId, controller.signal, (job) =>
+      const outcome = await watchJob(started.jobId, controller.signal, (job) =>
         setPhase((p) =>
           p.step === "running" && p.started.jobId === started.jobId ? { ...p, job } : p,
         ),
       );
+      // Stop was pressed. Falling through would read back two artefacts that
+      // were never written and then report "the transcript could not be read
+      // back — it is saved in the transcripts folder", which is a lie about a
+      // run the user themselves killed.
+      if (outcome.state === "cancelled") {
+        setPhase({ step: "idle" });
+        return;
+      }
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       setError((e as Error).message);

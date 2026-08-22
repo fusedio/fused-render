@@ -30,6 +30,15 @@ import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 // a slider cannot ask for a value the request would 400 on. 1024 max tokens is
 // also the WORKER's own default — the slider states the truth of a bare call.
 const DEFAULTS = { temperature: 0.7, top_p: 0.95, max_tokens: 1024 };
+// The server's `_SAMPLING` bounds, restated because it REJECTS an out-of-range
+// value rather than clamping it — so a hand-edited or stale link has to be
+// clamped on the way IN, or every message on that link 400s. Keep in step with
+// server/ai.py; the rail's sliders already carry the same numbers.
+const LIMITS = {
+  temperature: [0, 2],
+  top_p: [0, 1],
+  max_tokens: [1, 32768],
+} as const;
 
 // A standing system prompt by default, not a blank: small local models drift
 // into rambling or page-long <think> blocks without one, and the person this
@@ -95,9 +104,13 @@ export function ChatStage({
   const [streaming, setStreaming] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
 
-  const [temperature, setTemperature] = useState(() => numParam("temp", DEFAULTS.temperature));
-  const [topP, setTopP] = useState(() => numParam("topp", DEFAULTS.top_p));
-  const [maxTokens, setMaxTokens] = useState(() => numParam("maxtok", DEFAULTS.max_tokens));
+  const [temperature, setTemperature] = useState(() =>
+    numParam("temp", DEFAULTS.temperature, ...LIMITS.temperature),
+  );
+  const [topP, setTopP] = useState(() => numParam("topp", DEFAULTS.top_p, ...LIMITS.top_p));
+  const [maxTokens, setMaxTokens] = useState(() =>
+    numParam("maxtok", DEFAULTS.max_tokens, ...LIMITS.max_tokens),
+  );
   // `??`, not `||`: an EMPTY `system=` param is the user having cleared the
   // default on purpose, and must stay cleared on reload.
   const [system, setSystem] = useState(() => readParam("system") ?? DEFAULT_SYSTEM);
@@ -195,9 +208,13 @@ export function ChatStage({
             : "Downloading the model — the first message pays for this once…",
         );
         if (e.jobId) {
-          await watchJob(e.jobId, controller.signal, (job) =>
+          const outcome = await watchJob(e.jobId, controller.signal, (job) =>
             setStatus(job.detail || "Loading the model…"),
           );
+          // Someone stopped the load from the Activity panel. Retrying would
+          // just earn a second 409 and surface it as a stream error, so say
+          // what actually happened.
+          if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
         }
         setStatus(null);
         result = await run();
@@ -374,8 +391,8 @@ export function ChatStage({
           <RailSlider
             label="Temperature"
             hint="Lower is focused and repeatable; higher is varied and creative."
-            min={0}
-            max={2}
+            min={LIMITS.temperature[0]}
+            max={LIMITS.temperature[1]}
             step={0.05}
             value={temperature}
             fallback={DEFAULTS.temperature}
@@ -384,8 +401,8 @@ export function ChatStage({
           <RailSlider
             label="Top-p"
             hint="How much of the probability mass the model may sample from."
-            min={0}
-            max={1}
+            min={LIMITS.top_p[0]}
+            max={LIMITS.top_p[1]}
             step={0.01}
             value={topP}
             fallback={DEFAULTS.top_p}
@@ -394,8 +411,8 @@ export function ChatStage({
           <RailSlider
             label="Max tokens"
             hint="The longest reply allowed. One token is roughly ¾ of a word."
-            min={1}
-            max={32768}
+            min={LIMITS.max_tokens[0]}
+            max={LIMITS.max_tokens[1]}
             step={1}
             value={maxTokens}
             fallback={DEFAULTS.max_tokens}

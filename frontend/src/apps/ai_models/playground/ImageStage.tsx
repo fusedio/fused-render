@@ -32,6 +32,11 @@ const SERVER_STEPS = 28;
 // guidance-distilled (FLUX.2 klein bakes the prompt-following in — CFG on top
 // only slows it down and overcooks the colours).
 const DEFAULTS = { width: 512, height: 512, guidance: 1.0 };
+// The rail's slider bounds, in one place so a URL value and a dragged value
+// cannot disagree about what the control's scale is.
+const SIZE_RANGE = [256, 2048] as const;
+const STEPS_RANGE = [1, 100] as const;
+const GUIDANCE_RANGE = [0, 20] as const;
 
 // Multiple-of-16 pairs on the same small-by-default footing as DEFAULTS.
 // The chip writes this pair into the same `w`/`h` params the custom sliders
@@ -69,10 +74,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       : null;
 
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
-  const [width, setWidth] = useState(() => numParam("w", DEFAULTS.width));
-  const [height, setHeight] = useState(() => numParam("h", DEFAULTS.height));
-  const [steps, setSteps] = useState(() => numParam("steps", modelSteps));
-  const [guidance, setGuidance] = useState(() => numParam("guidance", DEFAULTS.guidance));
+  // Clamped to the rail's own ranges. The image route SETTLES what it is sent
+  // rather than refusing it, so a wild number here is not the 400 the chat
+  // stage risks — but a slider pinned off its own scale by a URL is still a
+  // control that lies about what will run.
+  const [width, setWidth] = useState(() => numParam("w", DEFAULTS.width, ...SIZE_RANGE));
+  const [height, setHeight] = useState(() => numParam("h", DEFAULTS.height, ...SIZE_RANGE));
+  const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
+  const [guidance, setGuidance] = useState(() =>
+    numParam("guidance", DEFAULTS.guidance, ...GUIDANCE_RANGE),
+  );
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
   const [railOpen, setRailOpen] = useState(false);
   const [run, setRun] = useState<Run | null>(null);
@@ -98,11 +109,17 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
+  // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
+  // object was torn down and rebuilt each second and the 1500ms timer never
+  // lived long enough to fire once — the live preview never advanced. Same
+  // shape TranscribeStage uses for its partial-transcript tail.
+  const rendering = run && !run.done ? run.started : null;
   useEffect(() => {
-    if (!run || run.done) return;
+    if (!rendering) return;
     const timer = window.setInterval(() => setPreviewTick((n) => n + 1), 1500);
     return () => window.clearInterval(timer);
-  }, [run]);
+  }, [rendering]);
 
   const aspect = ASPECTS.find((a) => a.width === width && a.height === height)?.value ?? null;
   const speed = speedChips?.find((c) => c.steps === steps)?.value ?? null;
@@ -114,6 +131,13 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     setError(null);
     setPreviewLive(false);
     try {
+      // Published BEFORE the first await: unmounting while this POST is in
+      // flight used to leave the ref null, so the cleanup aborted nothing and
+      // the watch below polled /api/jobs once a second from a dead component
+      // for the whole render. watchJob checks the signal on entry, so an abort
+      // that lands during the POST throws AbortError straight out.
+      const controller = new AbortController();
+      abortRef.current = controller;
       const started = await startImage({
         prompt: wanted,
         model,
@@ -127,12 +151,17 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
       });
       setRun({ started, job: null, done: false });
-      const controller = new AbortController();
-      abortRef.current = controller;
       try {
-        await watchJob(started.jobId, controller.signal, (job) =>
+        const outcome = await watchJob(started.jobId, controller.signal, (job) =>
           setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, job } : r)),
         );
+        // Stop was pressed. The worker died before writing the output, so
+        // marking this done would render an <img> at a path that holds
+        // nothing and file the dead render in the gallery strip.
+        if (outcome.state === "cancelled") {
+          setRun(null);
+          return;
+        }
         setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, done: true } : r));
         setGallery((g) => [started, ...g.filter((i) => i.jobId !== started.jobId)].slice(0, 12));
       } catch (e) {
@@ -299,8 +328,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             <RailSlider
               label="Width"
               hint="Snapped to a multiple of 16 by the server."
-              min={256}
-              max={2048}
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
               step={16}
               value={width}
               fallback={DEFAULTS.width}
@@ -309,8 +338,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             <RailSlider
               label="Height"
               hint="Bigger is slower and needs more memory."
-              min={256}
-              max={2048}
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
               step={16}
               value={height}
               fallback={DEFAULTS.height}
@@ -336,8 +365,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 ? "This model is distilled for few steps — more is slower, rarely better."
                 : "Denoising passes — more is slower and usually cleaner."
             }
-            min={1}
-            max={100}
+            min={STEPS_RANGE[0]}
+            max={STEPS_RANGE[1]}
             step={1}
             value={steps}
             fallback={modelSteps}
@@ -346,8 +375,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           <RailSlider
             label="Guidance"
             hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
-            min={0}
-            max={20}
+            min={GUIDANCE_RANGE[0]}
+            max={GUIDANCE_RANGE[1]}
             step={0.5}
             value={guidance}
             fallback={DEFAULTS.guidance}

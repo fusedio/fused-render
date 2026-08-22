@@ -12,18 +12,37 @@
 // — the page shell reads `?cap=` through the same door (see routes.ts).
 import { replaceSearch } from "@platform/lib/router";
 
-/** Read one query param off the CURRENT url. */
-export function readParam(key: string): string | null {
-  return new URLSearchParams(location.search).get(key);
+/** Read one query param off the CURRENT url. The second argument exists so
+ *  tests can drive this without a `location`, the same three-argument trick
+ *  `tabHref` takes in routes.ts and for the same reason. */
+export function readParam(key: string, search: string = location.search): string | null {
+  return new URLSearchParams(search).get(key);
 }
 
 /** A numeric param, defensively: a shared link is exactly where a malformed or
- *  empty value arrives, and `Number("")` is 0 — a temperature nobody chose. */
-export function numParam(key: string, fallback: number): number {
-  const raw = readParam(key);
+ *  empty value arrives, and `Number("")` is 0 — a temperature nobody chose.
+ *
+ *  `min`/`max` CLAMP rather than reject, and passing them is not optional
+ *  politeness wherever the server validates the same number. The sampling
+ *  route REFUSES an out-of-range value (`_sampling_problem`, server/ai.py)
+ *  instead of clamping it, so `?temp=5` used to seed the rail with 5 and then
+ *  400 on every single message — a link that opens a permanently broken chat.
+ *  The rail's own number input already clamps to the same bounds; this closes
+ *  the door the URL left open. */
+export function numParam(
+  key: string,
+  fallback: number,
+  min?: number,
+  max?: number,
+  search?: string,
+): number {
+  const raw = readParam(key, search ?? location.search);
   if (raw === null || raw.trim() === "") return fallback;
   const value = Number(raw);
-  return Number.isFinite(value) ? value : fallback;
+  if (!Number.isFinite(value)) return fallback;
+  if (min !== undefined && value < min) return min;
+  if (max !== undefined && value > max) return max;
+  return value;
 }
 
 /** Rewrite query params in place — null deletes. `replaceSearch`, not

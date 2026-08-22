@@ -53,6 +53,7 @@ import {
   type HubTask,
 } from "@platform/lib/api";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { tabHref } from "@apps/ai_models/routes";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import type { Job } from "@platform/lib/jobs";
 import { formatParams, timeAgo } from "@platform/lib/format";
@@ -83,6 +84,15 @@ const SORTS: { value: HubSort; label: string; title: string }[] = [
   { value: "updated", label: "Updated", title: "Changed most recently" },
   { value: "created", label: "New", title: "Published most recently" },
 ];
+
+
+/** Where a Try button goes: the playground, this model selected, and none of
+ *  Discover's own query string carried across. The Local tab's RepoCard has
+ *  the same one-liner — both exist so the bare `/ai-models` prefix is never
+ *  hand-spelled here. */
+function tryHref(id: string): string {
+  return tabHref("playground", "?model=" + encodeURIComponent(id));
+}
 
 function count(n: number | null): string | null {
   if (n === null || n === undefined) return null;
@@ -317,13 +327,13 @@ function HubCard({
           {have && model.capability && (
             <a
               className="am-card-explore-link"
-              href={`/ai-models?model=${encodeURIComponent(model.id)}`}
+              href={tryHref(model.id)}
               title={`Try ${model.id} in the Playground`}
               onClick={(e) => {
                 if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
                   return;
                 e.preventDefault();
-                navigateUrl(`/ai-models?model=${encodeURIComponent(model.id)}`);
+                navigateUrl(tryHref(model.id));
               }}
             >
               Try
@@ -495,13 +505,13 @@ function Suggested({
                     {group.available && (
                       <a
                         className="am-card-explore-link"
-                        href={`/ai-models?model=${encodeURIComponent(m.id)}`}
+                        href={tryHref(m.id)}
                         title={`Try ${m.label} in the Playground`}
                         onClick={(e) => {
                           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
                             return;
                           e.preventDefault();
-                          navigateUrl(`/ai-models?model=${encodeURIComponent(m.id)}`);
+                          navigateUrl(tryHref(m.id));
                         }}
                       >
                         Try

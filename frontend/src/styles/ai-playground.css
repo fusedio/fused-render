@@ -1257,3 +1257,13 @@
     max-width: 88%;
   }
 }
+
+/* The URL asked for a capability this machine cannot run, and the stage below
+ * is the substitute. Quiet, not alarming: nothing failed, and the sidebar is
+ * already showing the same reason against the group that is out. */
+.pg-blocked-ask {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
