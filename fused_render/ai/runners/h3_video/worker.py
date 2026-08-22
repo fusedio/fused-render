@@ -201,7 +201,8 @@ def generate(body):
     # `close_fds=False` (posix_spawn instead of fork()+exec), and no `cwd=`.
     proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1, close_fds=False, env=env,
+        text=True, encoding="utf-8", errors="replace",
+        bufsize=1, close_fds=False, env=env,
     )
     # Both are typed `IO | None` on `Popen` because either can be absent —
     # neither is here, since the call above always passes both as PIPE. The

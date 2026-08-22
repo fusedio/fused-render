@@ -104,6 +104,9 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={"model.gguf"}, dirnames=set(), config={},
         torch_weights=False, gguf_architecture="qwen35"))
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(), dirnames={formats.H3_COMPONENT},
+        config={}, torch_weights=False))
     # `mlx-embed`/`transformers-embed` short-circuit too (see `loaders()`'s own
     # comment on the branch), so — like the MLX whisper and Parakeet cases
     # above — a code reachable only from below it would otherwise look absent.
