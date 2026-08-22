@@ -274,29 +274,51 @@ class _IgnoreOracle:
 
     A stalled child (an `index.lock` another process is holding, `gc --auto`,
     a degraded filesystem) is the same shape of failure, just slower to show
-    up: `ignored()` bounds its OWN wait at `DEADLINE_S`, marks broken, and
-    returns the same "nothing ignored" rather than hanging the request thread
-    forever. POSIX only (`select` on a pipe) — see `_read_field` for why
-    Windows is left unbounded, same as before this existed.
+    up: every read that comes back with bytes pushes a rolling deadline
+    forward by `DEADLINE_S`, so `ignored()` gives up only when NOTHING has
+    arrived for that long, marks the oracle broken, and returns the same
+    "nothing ignored" rather than hanging the request thread forever. POSIX
+    only (`select` on a pipe) — see `_read_chunk` for why Windows is left
+    unbounded, same as before this existed.
     """
 
     # Queries per write/read cycle: bounded so git's stdout can't fill the
     # pipe while we are still writing stdin (classic co-process deadlock).
     CHUNK = 200
 
-    # The wall-clock budget for one whole `ignored()` call, not per read(): a
-    # batch that is genuinely large but progressing should finish inside this,
-    # since check-ignore answers in ~14µs/query (measured) and even a few
-    # thousand queries is milliseconds; a STALLED child instead blocks on the
-    # very first read and eats the whole budget doing nothing, which is
-    # exactly the case this exists to catch. Matches the one-shot calls'
-    # `timeout=5` elsewhere in this file for the same git-is-hung shape of
-    # failure.
+    # `read1`'s request size, pulled out as a name rather than a repeated
+    # literal: `_read_chunk` compares a read's length against this to decide
+    # whether more may already be sitting in the BufferedReader's own buffer
+    # (see the note there) — a magic-number `65536` in two places would be a
+    # trap for whoever changes one and not the other.
+    _READ1_SIZE = 65536
+
+    # How long `ignored()` may go with NO PROGRESS before it gives up on the
+    # co-process.
+    #
+    # This is a PER-READ deadline that gets pushed forward by every read that
+    # returns bytes, not a budget for the whole call: a big batch is
+    # genuinely slow-but-fine (index_gitignore.py's own docstring puts a
+    # home-sized sweep at ~1.5s, scaling past 4s on a 571k-entry corpus) and
+    # must not be killed just for taking a while while it keeps making
+    # progress — the earlier version of this bound was a flat per-call
+    # timeout, and a big sweep tripping it would have silently turned OFF
+    # gitignore filtering for the whole batch, which is exactly the failure
+    # index_gitignore.py's header calls unacceptable (a gitignored `dist/` of
+    # 100k files flooding search). A STALLED child, by contrast, produces
+    # nothing at all on its very first read and trips this immediately.
+    # Matches the one-shot calls' `timeout=5` elsewhere in this file for the
+    # same git-is-hung shape of failure.
     DEADLINE_S = 5.0
 
     def __init__(self, repo_root):
         self.root = repo_root
         self.broken = False
+        # Whether the last successful read might have left bytes sitting in
+        # `self.proc.stdout`'s OWN internal buffer — see `_read_chunk`.
+        # `False` here is correct at start-of-day: nothing has been read yet,
+        # so there is nothing to assume is buffered.
+        self._may_have_buffered = False
         # Real repo (a .git exists at or above the root): plain `git -C`.
         # Standalone-.gitignore directory (no repo): graft the dir onto a
         # shared empty GIT_DIR as its work tree, which makes check-ignore
@@ -329,21 +351,40 @@ class _IgnoreOracle:
             self.broken = True
         self._buf = b""
 
-    def _read_field(self, deadline):
+    def _read_field(self):
         while True:
             cut = self._buf.find(b"\0")
             if cut != -1:
                 field = self._buf[:cut]
                 self._buf = self._buf[cut + 1:]
                 return field
-            chunk = self._read_chunk(deadline)
+            chunk = self._read_chunk()
             if not chunk:
                 raise OSError("check-ignore stream closed")
             self._buf += chunk
 
-    def _read_chunk(self, deadline):
-        """Up to 65536 bytes from the co-process, bounded by `deadline` (a
-        `time.monotonic()` timestamp shared across the whole `ignored()` call).
+    def _read_chunk(self):
+        """Up to `_READ1_SIZE` bytes from the co-process, bounded by
+        `self._deadline` (a `time.monotonic()` timestamp, pushed forward by
+        every read that returns bytes — see `DEADLINE_S`).
+
+        `select()` polls the underlying FD, but `self.proc.stdout` is a
+        `BufferedReader` (`Popen` is created with no `bufsize`, so it defaults
+        to `io.DEFAULT_BUFFER_SIZE` — 128 KiB on the machine this was found
+        on) with its OWN buffer, invisible to `select`. When that buffer is
+        empty, filling it does ONE raw read sized to the WHOLE buffer, which
+        can pull in far more than the `_READ1_SIZE` this method hands back —
+        `check-ignore -v` echoes the queried path back in full, so one
+        `CHUNK`-sized batch (200 queries) of ordinary path lengths can exceed
+        64 KiB by itself. `select` would then see the FD genuinely empty
+        (everything already moved into the BufferedReader's buffer) and block
+        for the rest of the deadline on bytes that were already in hand.
+        `read1(n)` returning exactly `n` is therefore treated as "there may be
+        more waiting in that buffer" and the NEXT read skips `select`
+        entirely; a short read means the buffer was actually drained, so the
+        read after THAT one goes through `select` again. `peek()` was
+        considered and rejected: on an empty buffer it performs a raw read
+        and blocks, which reintroduces exactly the hang this exists to avoid.
 
         POSIX only: `select.select` is the portable way to put a timeout on a
         blocking pipe read, but it does not work on pipes on Windows at all
@@ -355,19 +396,24 @@ class _IgnoreOracle:
         where the reported hang actually happened.
         """
         if sys.platform == "win32":
-            return self.proc.stdout.read1(65536)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 or not select.select(
-                [self.proc.stdout], [], [], remaining)[0]:
-            raise TimeoutError(
-                f"check-ignore did not answer within {self.DEADLINE_S}s")
-        return self.proc.stdout.read1(65536)
+            return self.proc.stdout.read1(self._READ1_SIZE)
+        if not self._may_have_buffered:
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0 or not select.select(
+                    [self.proc.stdout], [], [], remaining)[0]:
+                raise TimeoutError(
+                    f"check-ignore made no progress for {self.DEADLINE_S}s")
+        chunk = self.proc.stdout.read1(self._READ1_SIZE)
+        self._may_have_buffered = len(chunk) == self._READ1_SIZE
+        if chunk:
+            self._deadline = time.monotonic() + self.DEADLINE_S
+        return chunk
 
     def ignored(self, rel_paths):
         """Subset of `rel_paths` (POSIX, relative to repo root) git ignores."""
         if self.broken or not rel_paths:
             return set()
-        deadline = time.monotonic() + self.DEADLINE_S
+        self._deadline = time.monotonic() + self.DEADLINE_S
         out = set()
         try:
             for i in range(0, len(rel_paths), self.CHUNK):
@@ -381,10 +427,10 @@ class _IgnoreOracle:
                     # NEGATED pattern ("!keep.log") is also echoed with its
                     # source under -v — that match means explicitly NOT
                     # ignored, so test the pattern's sign, not mere presence.
-                    source = self._read_field(deadline)
-                    self._read_field(deadline)
-                    pattern = self._read_field(deadline)
-                    self._read_field(deadline)
+                    source = self._read_field()
+                    self._read_field()
+                    pattern = self._read_field()
+                    self._read_field()
                     if source and not pattern.startswith(b"!"):
                         out.add(r)
             return out
@@ -453,10 +499,10 @@ def _repo_toplevel(path):
     (the walk, `_is_repo_root`, the index's gitignore filter) ask about the
     same handful of paths over and over on a single browsing session or a
     single rank request escalated across both search passes."""
-    now = time.monotonic()
     with _toplevel_lock:
         cached = _toplevel_cache.get(path)
-        if cached is not None and (now - cached[0]) < _TOPLEVEL_MAX_AGE_S:
+        if cached is not None and \
+                (time.monotonic() - cached[0]) < _TOPLEVEL_MAX_AGE_S:
             _toplevel_cache.move_to_end(path)
             return cached[1]
 
@@ -468,8 +514,13 @@ def _repo_toplevel(path):
     cacheable, top = _repo_toplevel_uncached(path)
 
     if cacheable:
+        # Stamped with the time AFTER the spawn returns, not before it
+        # started: `_repo_toplevel_uncached` can take up to its own 5s
+        # timeout, and stamping on entry would insert the entry already
+        # partway aged — under contention, by as much as the TTL's own
+        # ceiling.
         with _toplevel_lock:
-            _toplevel_cache[path] = (now, top)
+            _toplevel_cache[path] = (time.monotonic(), top)
             _toplevel_cache.move_to_end(path)
             while len(_toplevel_cache) > _TOPLEVEL_CACHE_SIZE:
                 _toplevel_cache.popitem(last=False)

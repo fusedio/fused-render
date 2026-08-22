@@ -274,6 +274,99 @@ def test_ignored_does_not_time_out_on_a_slow_but_progressing_stream(tmp_path):
     oracle.close()
 
 
+@pytestmark_win
+def test_ignored_survives_a_chunk_cycle_bigger_than_64kib(tmp_path):
+    """Integration-level regression: one CHUNK (200 queries) of ordinary-
+    length paths, echoed back in full by `check-ignore -v`, can exceed the
+    65536 bytes `read1` asks for in a single call — `Popen`'s default
+    `bufsize` gives `stdout` a 128 KiB internal buffer, so the extra bytes can
+    land there, invisible to `select()` on the fd. Before the
+    buffered-awareness fix, a read that landed on such a residue would wait
+    on `select` for bytes already sitting in Python's own buffer, burn the
+    whole deadline, and come back broken with the batch silently unfiltered.
+
+    This exercises the real oracle end-to-end with a batch big enough to make
+    that possible, but whether it actually LANDS on the buggy path depends on
+    how the kernel pipe happens to buffer git's writes on this machine — it
+    is not a reliable trigger by itself.
+    `test_read_chunk_skips_select_while_the_buffer_may_still_hold_data` below
+    pins the exact mechanism deterministically; this one just proves nothing
+    broke in the real, non-mocked path for a batch of this size."""
+    _make_repo(tmp_path)
+    oracle = _gi._IgnoreOracle(str(tmp_path))
+    # 200 paths of ~400 bytes each (git echoes the full path back for every
+    # query under -v) totals well past 64 KiB for one write/read cycle.
+    long_paths = [f"deep/{'x' * 380}/{i}.txt" for i in range(oracle.CHUNK)]
+    assert sum(len(p) for p in long_paths) > 65536
+    oracle.DEADLINE_S = 3.0  # generous — this must finish fast if correct
+    result = oracle.ignored(long_paths + ["debug.log"])
+    assert oracle.broken is False
+    assert result == {"debug.log"}
+    oracle.close()
+
+
+@pytestmark_win
+def test_read_chunk_skips_select_while_the_buffer_may_still_hold_data(monkeypatch):
+    """Deterministic unit test of the exact heuristic `_read_chunk` uses,
+    independent of real pipe/kernel buffering timing: a `read1` that returns
+    a FULL `_READ1_SIZE` means the BufferedReader's own buffer may still hold
+    more, so the very next read must be tried directly. If it instead went
+    through `select()`, this would hang against a starved fd until
+    DEADLINE_S and raise TimeoutError."""
+
+    class _FakeStdout:
+        def __init__(self, chunks, starved_fd):
+            self._chunks = list(chunks)
+            self._starved_fd = starved_fd
+            self._drained_sentinel = False
+
+        def fileno(self):
+            return self._starved_fd
+
+        def read1(self, n):
+            # A real `read1` on a real BufferedReader drains the underlying
+            # fd; this fake doesn't touch it at all, so the sentinel byte
+            # written to make the FIRST select() see the fd ready would
+            # otherwise sit there forever, making every later select() falsely
+            # "ready" too and hiding exactly the bug this test exists to
+            # catch. Drain it once, on the first call only.
+            if not self._drained_sentinel:
+                self._drained_sentinel = True
+                os.read(self._starved_fd, 1)
+            return self._chunks.pop(0) if self._chunks else b""
+
+    oracle = _gi._IgnoreOracle.__new__(_gi._IgnoreOracle)
+    oracle.broken = False
+    oracle._buf = b""
+    oracle._may_have_buffered = False
+    read_fd, write_fd = os.pipe()
+    try:
+        # One real byte so the FIRST `select()` — legitimately needed, since
+        # nothing is known yet — sees the fd ready immediately. `read1` is
+        # faked separately below and never actually consumes it; it only
+        # exists to satisfy `select`.
+        os.write(write_fd, b"?")
+        first = b"x" * oracle._READ1_SIZE          # a FULL read1
+        second = b"y" * 10                         # residue: a short read
+        oracle.proc = types.SimpleNamespace(
+            stdout=_FakeStdout([first, second], read_fd))
+        oracle.DEADLINE_S = 0.3
+        oracle._deadline = time.monotonic() + oracle.DEADLINE_S
+
+        got_first = oracle._read_chunk()
+        assert got_first == first
+        assert oracle._may_have_buffered is True
+
+        start = time.monotonic()
+        got_second = oracle._read_chunk()
+        elapsed = time.monotonic() - start
+        assert got_second == second
+        assert elapsed < 0.1, "second read went through select() and stalled"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_repo_toplevel_cache_is_bounded(tmp_path, monkeypatch):
     calls = _spy_on_subprocess_run(monkeypatch)
     monkeypatch.setattr(_gi, "_TOPLEVEL_CACHE_SIZE", 2)
