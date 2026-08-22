@@ -5019,6 +5019,23 @@ Goal: the models, datasets and Spaces this machine has downloaded from the
 Hugging Face Hub are visible and accounted for, from a sidebar entry, without
 anyone having to remember where the cache lives or run `du` on it.
 
+**Where it lives (D420).** The page is a sub-app, `frontend/src/apps/ai_models/`
+— `AiModelsPage.tsx` (chrome, tab strip, dispatch), `routes.ts` (the path
+codec), `lib/` (the runtime poll, the engine registry reader, the grouping, the
+shared cache walk in `useCacheScan.ts`, URL params), and one directory per tab:
+`local/`, `discover/`, `engines/`, `usage/`, `playground/`. Server-side the cache
+walk is `fused_render/ai/hub_cache.py`, beside `catalog.py`/`registry.py`/
+`supervisor.py`; `server/routers/ai_models.py` is the three route decorators
+over it. Every `/api/*` URL is unchanged.
+
+**Five tabs, five paths**: `/ai-models/playground` (the default — bare
+`/ai-models` redirects to it), `/ai-models/local`, `/discover`, `/engines`,
+`/usage`. `?model=` and `?cap=` still seed the playground's picker and are
+carried across a tab switch; only the tab itself left the query string. An
+unrecognised sub-path falls back to the default tab silently, and there is no
+alias for the old `?tab=` shape (D420). The five tabs share ONE mounted
+component and one cache walk — see D420 for why they are not five routes.
+
 The cache is shared and invisible: a `transformers` import in a page's Python,
 a `diffusers` pipeline, a template someone pasted in, or an `hf download` in a
 terminal all write into the same tree, and nothing in the app has ever named
@@ -7222,7 +7239,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
   were the same picture — as were a working chat box and one whose every call
   timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
-  covering one hour, plus since-start totals, and `/ai-models?tab=usage` draws
+  covering one hour, plus since-start totals, and `/ai-models/usage` draws
   it. FOUR counters, because volume answers only the first question anybody
   has: **tokens and completions** (the graph), **failures by kind** (a page
   whose calls all fail has generated zero tokens, which is the same empty graph

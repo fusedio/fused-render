@@ -27,8 +27,9 @@ from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
-from fused_render.server.routers import ai_models, ai_runtime
-from fused_render.server.routers.ai_models import CachedModel
+from fused_render.ai import hub_cache as ai_models
+from fused_render.ai.hub_cache import CachedModel
+from fused_render.server.routers import ai_runtime
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.

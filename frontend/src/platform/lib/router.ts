@@ -30,15 +30,15 @@ export function rewriteLegacyUrl(url: string): string {
   const p = qIdx === -1 ? url : url.slice(0, qIdx);
   const q = qIdx === -1 ? "" : url.slice(qIdx);
   const mapped = LEGACY_SENTINELS[p];
-  // A tab that MOVED PAGES, which the sentinel table cannot express: Inference
-  // engines is the Engines tab of /ai-models now (shell/AiModelsEngines.tsx).
-  // Without this, `?tab=engines` reaches a Preferences that no longer knows the
-  // name and silently falls back to its default tab — a bookmark that looks
-  // like the setting was deleted rather than moved. Applied to the MAPPED path
-  // so the pre-rename `/view/_prefs?tab=engines` is caught by the same line.
-  if ((mapped ?? p) === "/preferences" && new URLSearchParams(q).get("tab") === "engines") {
-    return "/ai-models?tab=engines";
-  }
+  // `/preferences?tab=engines` USED to be rewritten here — Inference engines
+  // moved to the Engines tab of /ai-models, and the sentinel table cannot
+  // express a tab that changed pages. It is gone with the `?tab=` scheme it was
+  // written against (apps/ai_models/routes.ts): the AI Models page names its
+  // tabs in the path now, so the rule's own destination no longer exists, and
+  // the owner's call on the migration was to keep NO alias for either shape. A
+  // stale engines bookmark lands on Preferences, which falls back to its
+  // default tab — the forgiving failure this table exists to avoid, accepted
+  // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
   return url;

@@ -92,6 +92,11 @@ from fused_render.ai import registry
 #: which the card shows as "—" rather than inventing a figure from parameter
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
+#: `nickname` is the short human name the Playground sidebar shows — the
+#: model without its quantization/engine qualifier. A curated FIELD, never
+#: derived by stripping the label's parenthetical at runtime, for the reason
+#: `short_label` and `family_label` are fields too (AI-2c): a stripped name
+#: is a value nobody owns and no test can see.
 #:
 #: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
 #: sentences is a wall nobody reaches the end of — so each note carries the
@@ -200,6 +205,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
+            "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — quick "
                     "to fetch and to answer, and weaker than every other row.",
@@ -207,6 +213,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
+            "nickname": "Qwen3.5 4B",
             "size_gb": 4.0,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
@@ -234,6 +241,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
             "label": "LFM2.5 8B-A1B (MLX 4-bit)",
+            "nickname": "LFM2.5 8B-A1B",
             "size_gb": 4.9,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -242,6 +250,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
             "label": "Gemma 4 E4B (4-bit)",
+            "nickname": "Gemma 4 E4B",
             "size_gb": 5.2,
             "note": "A second family at much the same size as the Qwen 4B, "
                     "worth trying on a prompt Qwen handles badly.",
@@ -261,6 +270,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
+            "nickname": "Ternary Bonsai 27B",
             # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
             # the completed download MEASURES on disk, reported by the AI Models
             # page's own scan. Where the two disagree the measurement wins —
@@ -275,6 +285,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
+            "nickname": "Qwen3.5 9B",
             "size_gb": 8.2,
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
@@ -286,6 +297,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.8-27B-4bit",
             "label": "Qwen3.8 27B (MLX 4-bit)",
+            "nickname": "Qwen3.8 27B",
             # Measured from the repo's blob sizes, not estimated.
             "size_gb": 16.1,
             "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
@@ -304,6 +316,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
+            "nickname": "Qwen3.6 27B",
             "size_gb": 20.0,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
@@ -413,6 +426,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
+            "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — a "
                     "hybrid architecture built for CPU decode, so it answers "
@@ -421,6 +435,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Qwen3.5-4B-Q4_K_M.gguf",
             "label": "Qwen3.5 4B (Q4_K_M)",
+            "nickname": "Qwen3.5 4B",
             "size_gb": 2.7,
             "note": "The first row here strong enough for real work: current-"
                     "gen Qwen, and a fifth of the unquantized 4B's download.",
@@ -428,6 +443,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "gemma-4-E4B-it-Q4_K_M.gguf",
             "label": "Gemma 4 E4B (Q4_K_M)",
+            "nickname": "Gemma 4 E4B",
             "size_gb": 5.0,
             "note": "A second family, worth trying on a prompt the Qwen 4B "
                     "above handles badly — it answers above its size class "
@@ -453,6 +469,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
             "label": "LFM2.5 8B-A1B (Q4_K_M)",
+            "nickname": "LFM2.5 8B-A1B",
             "size_gb": 5.2,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -461,6 +478,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
+            "nickname": "Qwen3.8 27B",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
@@ -472,6 +490,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
             "label": "FLUX.2 klein 4B (int8)",
+            "nickname": "FLUX.2 klein 4B",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
             # `usedStorage` (2026-08-20 Hub metadata), and here that number IS
             # the download — one repo, no component repo, and no skipped
@@ -503,6 +522,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "One self-contained repo with an int8-quantized "
                     "transformer: several GB less to fetch and to hold than the "
                     "bf16 FLUX.2 pipeline it is built from.",
+            # klein is a step-distilled model: D310's benchmark ran it at 4
+            # steps (~34s an image on the reference Mac), and the server's
+            # generic 28-step default turns a first image into minutes for no
+            # quality a distilled model can spend. The Playground reads this
+            # hint; a model without one keeps the server's default.
+            "defaults": {"steps": 4},
         },
     ],
     # The same model, converted for MLX — and unloadable by the runner above,
@@ -516,9 +541,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/FLUX.2-Klein-4B-4bit",
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
+            "nickname": "FLUX.2 klein 4B",
             "size_gb": 4.6,
             "note": "One repo instead of the Diffusers split, and quicker per "
                     "image — but it reserves far more memory while running.",
+            # The same distilled model; the same D310 4-step benchmark.
+            "defaults": {"steps": 4},
         },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
@@ -547,6 +575,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
             "label": "Whisper tiny English (MLX 8-bit)",
+            "nickname": "Whisper tiny English",
             "size_gb": 0.05,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -555,6 +584,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-small-mlx",
             "label": "Whisper small (MLX)",
+            "nickname": "Whisper small",
             "size_gb": 0.5,
             "note": "The smallest here, and what a bare transcribe call loads — "
                     "quick, but it drops names and punctuation turbo gets "
@@ -563,6 +593,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-large-v3-turbo",
             "label": "Whisper large-v3 turbo (MLX)",
+            "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
             "note": "The best value here: large-v3 accuracy at a fraction of "
                     "its decoding cost, and faster than real time by a wide "
@@ -571,6 +602,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-large-v3-mlx",
             "label": "Whisper large-v3 (MLX)",
+            "nickname": "Whisper large-v3",
             "size_gb": 3.1,
             "note": "The full model, for a recording turbo handles badly — "
                     "twice turbo's disk and several times its decoding.",
@@ -600,6 +632,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Systran/faster-whisper-tiny.en",
             "label": "Whisper tiny English (CT2)",
+            "nickname": "Whisper tiny English",
             "size_gb": 0.08,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -608,6 +641,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Systran/faster-whisper-small",
             "label": "Whisper small (CT2)",
+            "nickname": "Whisper small",
             "size_gb": 0.5,
             "note": "Light enough for an old machine, but it drops names and "
                     "punctuation turbo gets right.",
@@ -615,6 +649,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
             "label": "Whisper large-v3 turbo (CT2)",
+            "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
             "note": "The best value here: large-v3 accuracy at roughly a "
                     "quarter of its decoding cost. Usable on CPU — a laptop "

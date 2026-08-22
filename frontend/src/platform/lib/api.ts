@@ -2577,6 +2577,21 @@ export function getAiRuntime(): Promise<AiRuntime> {
 export interface AiCatalogModel {
   id: string;
   label: string;
+  /** The short human name the Playground sidebar shows — the model without its
+   *  quantization/engine qualifier. A curated field beside `label`, never a
+   *  stripped copy of it (catalog.py states why); absent on a cached entry,
+   *  where the fallback is `label`. */
+  nickname?: string | null;
+  /** Curated per-model generation hints (catalog.py) — today only `steps`, the
+   *  denoise count a distilled image model was benchmarked at. Absent on
+   *  cached entries and on models nobody has measured; the consumer keeps the
+   *  server's default then. */
+  defaults?: { steps?: number } | null;
+  /** Will this model sit comfortably on THIS machine — the server's judgement
+   *  over the size and the machine's RAM ("easy" | "tight" | "no"), or null
+   *  when either half is unknown. A judgement, not a measurement; the page
+   *  words it as one. */
+  fit?: "easy" | "tight" | "no" | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;

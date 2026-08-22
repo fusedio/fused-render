@@ -16,7 +16,7 @@
 // of the section headings the Local tab just gained.
 //
 // The rendering is four lines of JSX per row; the SENTENCES are where this can
-// be wrong, and they live in `@shell/engines` with `engines.test.ts` driving
+// be wrong, and they live in `@apps/ai_models/lib/engines` with `engines.test.ts` driving
 // them. Not one of them changed in the move. What the move DID add there is
 // `switchOutcome`: on Preferences the consequences of a switch were on another
 // page and arriving here refetched them, and now they are the tab next door.
@@ -45,7 +45,7 @@ import {
   servingLine,
   strandedSelection,
   switchOutcome,
-} from "@shell/engines";
+} from "@apps/ai_models/lib/engines";
 
 // One capability's engine: a <select> holding Automatic and every backend.
 //
@@ -310,7 +310,7 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
  *  request nothing on it uses. The tab is not mounted until it is selected, so
  *  the fetch happens on the click.
  */
-export default function AiModelsEngines({ onSwitched }: { onSwitched: () => void }) {
+export default function EnginesTab({ onSwitched }: { onSwitched: () => void }) {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
 

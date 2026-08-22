@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.ai import registry
 from fused_render.server import create_app
-from fused_render.server.routers import ai_models as ai_models_mod
+from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.server.routers import hub_models as hub
 
 

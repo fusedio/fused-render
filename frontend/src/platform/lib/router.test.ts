@@ -169,18 +169,18 @@ test("legacy settings sentinels map to their plain routes", () => {
   expect(rewriteLegacyUrl("/view/_account")).toBe("/preferences");
 });
 
-// The Inference engines tab moved from Preferences to /ai-models, so this is a
-// tab that no longer exists on the page the url names. Left alone, Preferences
-// silently falls back to its default tab — which looks like the setting was
-// removed rather than moved, and is exactly the dead end this rewrite exists
-// to prevent.
-test("the engines tab is redirected to the page that owns it now", () => {
-  expect(rewriteLegacyUrl("/preferences?tab=engines")).toBe("/ai-models?tab=engines");
-  // Through the OLDER shape too: a bookmark from before the sentinel rename
-  // carries the same query, and mapping it to /preferences first would land it
-  // on a tab that is gone.
-  expect(rewriteLegacyUrl("/view/_prefs?tab=engines")).toBe("/ai-models?tab=engines");
-  // Every other Preferences tab is still a Preferences tab.
+// `?tab=engines` used to be redirected to /ai-models — the Inference engines
+// tab moved pages, and a sentinel table keyed on pathname alone cannot say so.
+// The rule is GONE with the `?tab=` scheme it pointed at: AI Models names its
+// tabs in the path now (apps/ai_models/routes.ts), and the migration
+// deliberately carries no alias for either the old query or the old
+// destination. This test pins that the query is now passed through untouched,
+// so a future reader finds the decision rather than a silent absence.
+test("a Preferences tab query is carried, not rewritten", () => {
+  expect(rewriteLegacyUrl("/preferences?tab=engines")).toBe("/preferences?tab=engines");
+  // Through the OLDER shape too: the sentinel maps the path and leaves the
+  // query alone.
+  expect(rewriteLegacyUrl("/view/_prefs?tab=engines")).toBe("/preferences?tab=engines");
   expect(rewriteLegacyUrl("/preferences?tab=indexing")).toBe("/preferences?tab=indexing");
   expect(rewriteLegacyUrl("/preferences")).toBe("/preferences");
 });

@@ -4,7 +4,7 @@
 // cannot load look identical once they are both wearing a dead-end tag.
 import { describe, expect, it } from "bun:test";
 import type { AiModelRepo } from "@platform/lib/api";
-import { UNRECOGNISED, groupRepos, loadRefusal, noEngineReason } from "@shell/aiModelGroups";
+import { UNRECOGNISED, groupRepos, loadRefusal, noEngineReason } from "@apps/ai_models/lib/aiModelGroups";
 
 function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
   return {

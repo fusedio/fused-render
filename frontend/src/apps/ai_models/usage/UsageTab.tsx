@@ -367,7 +367,7 @@ function TierLine({ tier, counts }: { tier: AiUsageTier; counts: AiUsageCounts }
   );
 }
 
-export default function AiModelsUsage() {
+export default function UsageTab() {
   const [minutes, setMinutes] = useState<number>(15);
   const [usage, setUsage] = useState<AiUsage | null>(null);
   const [error, setError] = useState<string | null>(null);
