@@ -311,9 +311,9 @@ export default function PlaygroundTab() {
                   <span className="pg-model-size">
                     {model.size_gb != null ? `${model.size_gb} GB` : "—"}
                   </span>
-                  {model.downloaded ? (
-                    <span className="pg-model-have">Downloaded</span>
-                  ) : (
+                  {/* On disk = nothing to say: the CTA exists only while there
+                      is an action to take. */}
+                  {!model.downloaded && (
                     <button
                       type="button"
                       className="pg-model-dl"
