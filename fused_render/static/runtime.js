@@ -112,6 +112,19 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
+ *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
+ *     Text OR images into one vector space, locally (SPEC §40) — a dual
+ *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
+ *     `paths` (files on this machine, resolved beside this page when
+ *     relative, like readFile/rawUrl) — up to 64 items. Every vector is
+ *     UNIT-NORMALIZED, so cosine similarity between two of them is a plain dot
+ *     product. Not job-backed: a batch this size is one forward pass, over
+ *     before a progress row would have drawn, so the reply IS the result —
+ *     no onProgress, no jobId on success. Rejects .type "bad_request" |
+ *     "model_loading" (the model is not resident; .jobId is the load this
+ *     call just started — watch it and retry, exactly like the first
+ *     fused.ai(...) on a cold local model) | "ai_error" | "unavailable" (no
+ *     embedding runner on this machine).
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source, path, maxSeconds, title})
@@ -3110,6 +3123,88 @@
     });
   }
 
+  // fused.ai.embed({texts|paths, model}) -> Promise<{vectors, dim, model}>
+  //
+  // Text OR an image into one vector space, locally — a dual encoder, not a
+  // chat model, so there is nothing to stream and nothing to watch a job for:
+  // a batch of at most 64 short items is one forward pass, over before a
+  // progress row would have drawn. The reply IS the result, the way
+  // `fused.ai`'s non-streaming reply is — this is that same shape's sibling,
+  // not `aiImage`/`aiTranscribe`'s (no `jobId` in the resolved object, because
+  // there is no file and no run outliving this call).
+  //
+  // Vectors are UNIT-NORMALIZED, so a cosine similarity between two of them is
+  // a plain dot product — `a[i]*b[i]` summed, no separate magnitude to divide
+  // by.
+  //
+  // Exactly one of `texts`/`paths`, never both — refused here, before the
+  // request even reaches the server, for the same reason `aiTranscribe`'s
+  // `speakers` check is: a call that will certainly be refused should not pay
+  // for the trip first. `paths` are page-relative, exactly like
+  // `aiTranscribe`'s `path` (RH-1).
+  //
+  // The 409 here can mean the model is LOADING RATHER THAN UNAVAILABLE —
+  // unlike `aiImage`/`aiTranscribe`, which load inside their own job and never
+  // surface this — so this does not go through the generic `aiPost` (whose
+  // blanket "409 -> unavailable" would drop the job id on the floor). It reads
+  // the same `{ok, result|error:{type,message,jobId}}` wire shape `fused.ai`
+  // itself does, and `fail()` below is that function's own error mapping,
+  // copied rather than shared for the reason `mlx_embed/worker.py`'s
+  // `_pin_stream` is: the two live in different modules with no import between
+  // them, HTTP is the only contract, and duplicating five lines is cheaper
+  // than inventing one.
+  function aiEmbed(opts) {
+    opts = opts || {};
+    const hasTexts = Array.isArray(opts.texts) && opts.texts.length > 0;
+    const hasPaths = Array.isArray(opts.paths) && opts.paths.length > 0;
+    if (hasTexts === hasPaths) {
+      const err = new Error(
+        "fused.ai.embed({texts|paths}): pass exactly one of 'texts' or "
+          + "'paths' — a non-empty array of strings",
+      );
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const body = {};
+    if (hasTexts) body.texts = opts.texts;
+    if (hasPaths) body.paths = opts.paths;
+    if (opts.model !== undefined) body.model = opts.model;
+    // Page-relative paths resolve beside THIS page, exactly like
+    // `aiTranscribe`'s `path` and for the same reason (RH-1): "beside wherever
+    // the server was launched from" is a trap for a relative path a page
+    // author wrote meaning "beside this page".
+    if (hasPaths) {
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) body.base = ownPath;
+    }
+    return fetch("/api/ai/embed", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+    })
+      // `.catch(() => ({}))` on the parse, and the status carried past it, for
+      // `aiPost`'s reason: a reply that never reached this route's own handler
+      // — a proxy's 502, a framework 500, an HTML error page — is not JSON, and
+      // a raw SyntaxError with no `.type` is the one rejection a page written
+      // against the table above cannot read.
+      .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || !data.ok) {
+          const error = data.error || {};
+          const err = new Error(
+            error.message || res.statusText || "the embedding failed");
+          err.type = error.type
+            || (res.status === 409 ? "unavailable" : "ai_error");
+          // A local model that is not resident yet answers 409 with the id of
+          // the load this call just started — the same field `fused.ai`'s own
+          // `fail()` carries through for exactly the same reason (SPEC AI-5).
+          if (error.jobId) err.jobId = error.jobId;
+          throw err;
+        }
+        return data.result;
+      });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
@@ -3138,6 +3233,7 @@
   ai.models = aiModels;
   ai.image = aiImage;
   ai.transcribe = aiTranscribe;
+  ai.embed = aiEmbed;
   // Stop the generation in flight on a local model, keeping it loaded — the
   // next message answers straight away. Resolves false when there was nothing
   // to stop, which is not an error: a Stop pressed as the last token lands

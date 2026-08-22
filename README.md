@@ -133,6 +133,10 @@ Any `.html` file can call it and bind the result to the URL:
   language is auto-detected unless you name one. It runs for minutes, so
   `onProgress` fires with seconds of audio and the download manager's ✕ really
   stops it, and the transcript is written to a file so it outlives the tab.
+- `fused.ai.embed({texts|paths, ...})` — text or images into one vector space,
+  locally: resolves with `{vectors, dim, model}`, unit-normalized so cosine
+  similarity is a plain dot product. Pass one or the other, never both — a
+  batch of up to 64 strings or file paths at a time.
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).
