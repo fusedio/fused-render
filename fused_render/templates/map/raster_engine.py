@@ -45,6 +45,10 @@ PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
 MAX_IDLE_PER_LOCATOR = int(os.environ.get("MAP_VIEWER_READER_POOL", "4"))
 MAX_IDLE_READERS = int(os.environ.get("MAP_VIEWER_READER_POOL_IDLE", "24"))
+# Half the Web Mercator world width in metres (EPSG:3857 spans [-x, x]); a whole
+# world is 2x. A raster crossing 180 is read by shifting a tile's mercator bounds
+# by a full world so it lands in the dataset's real (unwrapped) longitude domain.
+WEBMERC_HALF_WIDTH = 20037508.342789244
 RASTER_SUFFIXES = {
     ".tif",
     ".tiff",
@@ -93,6 +97,11 @@ def transparent_tile() -> bytes:
         Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(output, "PNG")
         _TRANSPARENT_TILE = output.getvalue()
     return _TRANSPARENT_TILE
+
+
+def _web_mercator_x(lon: float) -> float:
+    """Web Mercator (EPSG:3857) easting for a longitude, unclamped past ±180."""
+    return math.radians(lon) * 6378137.0
 
 
 def error_descriptor(
@@ -329,6 +338,7 @@ class RasterSource:
     colormap: str
     rescale: list[list[float]]
     indexes: list[int] = field(default_factory=lambda: [1])
+    crosses_antimeridian: bool = False
     true_color: bool = False
     auto_rescale: bool = True
     render_mode: str = "single"
@@ -660,6 +670,11 @@ class RasterEngine:
                     dataset.crs, "EPSG:4326", *dataset.bounds, densify_pts=21
                 )
             ]
+            # A sinusoidal (or any) grid whose extent runs east across 180 comes
+            # back with west > east once longitudes wrap into [-180, 180]; a plain
+            # 4326 grid stored with an east edge past 180 keeps east > 180. Either
+            # way tiles on the wrapped hemisphere need the shifted read in tile().
+            crosses_antimeridian = bounds[2] < bounds[0] or bounds[2] > 180.0 + 1e-9
             overviews = dataset.overviews(1) if dataset.count else []
             image_structure = dataset.tags(ns="IMAGE_STRUCTURE")
             block_shapes = [list(shape) for shape in dataset.block_shapes]
@@ -778,6 +793,7 @@ class RasterEngine:
                 colormap=str(opts.get("colormap") or "viridis"),
                 rescale=rescale,
                 indexes=index_list,
+                crosses_antimeridian=crosses_antimeridian,
                 true_color=true_color,
                 auto_rescale=auto_rescale,
                 render_mode=render_mode,
@@ -824,7 +840,16 @@ class RasterEngine:
         if not record.has_overviews and not record.preview_path:
             record.optimization = {"status": "available", "progress": 0}
 
-        needs_preparation = not record.has_overviews and not record.preview_path
+        # A COG derivative is warped to Web Mercator, which drops every pixel east
+        # of 180; a crossing source stays served from the original through tile()'s
+        # shifted read instead of a broken pyramid.
+        if record.crosses_antimeridian:
+            record.optimization = {"status": "not_needed", "progress": 100}
+        needs_preparation = (
+            not record.has_overviews
+            and not record.preview_path
+            and not record.crosses_antimeridian
+        )
         auto_optimize = (
             needs_preparation
             and record.source_size is not None
@@ -947,6 +972,7 @@ class RasterEngine:
                 "categories": record.categories,
                 "indexes": list(record.indexes),
                 "true_color": record.true_color,
+                "crosses_antimeridian": record.crosses_antimeridian,
             },
             "style": {
                 "opacity": 0.9,
@@ -1208,6 +1234,75 @@ class RasterEngine:
     def transparent_tile(self) -> bytes:
         return transparent_tile()
 
+    @staticmethod
+    def _over_crs(crs: Any) -> Any:
+        """Same projection, with PROJ's ``+over`` so longitudes are not wrapped.
+
+        Warping a 180-crossing source through a plain CRS clamps every coordinate
+        into [-180, 180] and drops the pixels east of the seam. ``+over`` on both
+        ends of the pipeline keeps them, so a tile bounds shifted a whole world
+        east reads the wrapped hemisphere from the dataset's real domain. The
+        EPSG:3857 definition carries ``+nadgrids=@null``, which re-wraps longitude
+        and cancels ``+over``, so that token is dropped.
+        """
+        from rasterio.crs import CRS
+
+        proj4 = crs.to_proj4()
+        if not proj4:
+            return crs
+        tokens = [
+            token
+            for token in proj4.split()
+            if not token.startswith("+nadgrids")
+        ]
+        if "+over" not in tokens:
+            tokens.append("+over")
+        return CRS.from_proj4(" ".join(tokens))
+
+    def _crossing_tile(
+        self, reader: Any, x: int, y: int, z: int, indexes: Any,
+        resampling_method: str, bounds: list[float],
+    ) -> Any:
+        """Read one XYZ tile of an antimeridian-crossing raster.
+
+        The tile whose geographic longitude lies on the far side of the data is
+        read with its Web Mercator bounds shifted by a full world, landing it in
+        the dataset's continuous (unwrapped) longitude domain — the wrapped tile
+        and the ground point past 180 are the same place. Output stays a normal
+        256px Mercator tile, so the render path below is unchanged.
+        """
+        import numpy as np
+        from morecantile import Tile
+        from rio_tiler.errors import TileOutsideBounds
+
+        src_over = self._over_crs(reader.dataset.crs)
+        dst_over = self._over_crs(reader.tms.rasterio_crs)
+        tile_bounds = reader.tms.xy_bounds(Tile(x=x, y=y, z=z))
+        west, east = bounds[0], bounds[2]
+        east_continuous = east if east >= west else east + 360.0
+        data_xmin = _web_mercator_x(west)
+        data_xmax = _web_mercator_x(east_continuous)
+        full_world = 2 * WEBMERC_HALF_WIDTH
+
+        for offset in (0.0, full_world, -full_world):
+            left = tile_bounds.left + offset
+            right = tile_bounds.right + offset
+            if right <= data_xmin or left >= data_xmax:
+                continue
+            image = reader.part(
+                (left, tile_bounds.bottom, right, tile_bounds.top),
+                dst_crs=dst_over,
+                bounds_crs=dst_over,
+                width=256,
+                height=256,
+                indexes=indexes,
+                resampling_method=resampling_method,
+                vrt_options={"src_crs": src_over},
+            )
+            if not np.ma.getmaskarray(image.array).all():
+                return image
+        raise TileOutsideBounds(f"Tile(x={x}, y={y}, z={z}) is outside bounds")
+
     def tile(self, source_id: str, z: int, x: int, y: int) -> bytes | None:
         import numpy as np
         from rio_tiler.colormap import cmap
@@ -1244,27 +1339,30 @@ class RasterEngine:
             colormap_name = record.colormap
             inferred_nodata = record.inferred_nodata
             category_colors = record.category_colors
+            crosses_antimeridian = record.crosses_antimeridian
+            geo_bounds = record.bounds
 
+        # Categorical class codes must never blend into bogus intermediate
+        # values, including at the lower-resolution preview derivative.
+        resampling_method = (
+            "nearest"
+            if categorical
+            or not (record.preview_path and locator == record.preview_path)
+            else "bilinear"
+        )
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
                 with _gdal_env(open_path), self.readers.borrow(open_path) as reader:
-                    image = reader.tile(
-                        x,
-                        y,
-                        z,
-                        indexes=indexes,
-                        # Categorical class codes must never blend into
-                        # bogus intermediate values, including at the
-                        # lower-resolution preview derivative.
-                        resampling_method=(
-                            "nearest"
-                            if categorical or not (
-                                record.preview_path and locator == record.preview_path
-                            )
-                            else "bilinear"
-                        ),
-                    )
+                    if crosses_antimeridian:
+                        image = self._crossing_tile(
+                            reader, x, y, z, indexes, resampling_method, geo_bounds
+                        )
+                    else:
+                        image = reader.tile(
+                            x, y, z, indexes=indexes,
+                            resampling_method=resampling_method,
+                        )
             if inferred_nodata is not None:
                 invalid = np.all(
                     image.array.data == inferred_nodata, axis=0
