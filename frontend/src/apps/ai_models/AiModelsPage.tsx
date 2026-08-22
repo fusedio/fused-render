@@ -1,18 +1,19 @@
 // /ai-models — the page chrome, the tab strip, and the dispatch. Nothing else.
 //
-// Four surfaces share this heading, and only this heading: a playground (pick a
+// Five surfaces share this heading, and only this heading: a playground (pick a
 // local model and use it), the Local inventory (what the Hugging Face cache
-// holds, what to download next, and the deletions that free it), Engines (which
-// backend serves each capability) and Usage (what this process has generated).
-// Each owns a directory beside this file; this file owns the frame they hang in.
+// holds, what to download next, and the deletions that free it), Benchmark (how
+// fast each of those runs here, on a fixed workload), Engines (which backend
+// serves each capability) and Usage (what this process has generated). Each owns
+// a directory beside this file; this file owns the frame they hang in.
 //
-// There was a fifth, Discover, and its directory is still here — unrouted, see
+// There was a sixth, Discover, and its directory is still here — unrouted, see
 // routes.ts. The Local tab answers its question now.
 //
 // **A tab is a PATH, not a query param** (`/ai-models/local`, routes.ts) — but
 // still one mounted component, unkeyed by the nav epoch. The reason is in
-// lib/useCacheScan.ts: the cache walk is a filesystem crawl that two of the four
-// tabs read, and a remount on every tab click would re-walk every blob in the
+// lib/useCacheScan.ts: the cache walk is a filesystem crawl that three of the
+// five tabs read, and a remount on every tab click would re-walk every blob in the
 // Hugging Face cache. The URL is where the CHOICE lives (so the back button
 // undoes it, and so every tab has an address); the mount is where the SHARED
 // WORK lives.
@@ -28,6 +29,7 @@
 // readers it always had: the caption, which only links a cache directory that
 // is really there, and the empty state, which says WHICH nothing it found.
 import { useMemo } from "react";
+import { BenchmarkTab } from "./benchmark/BenchmarkTab";
 import EnginesTab from "./engines/EnginesTab";
 import { LocalTab } from "./local/LocalTab";
 import PlaygroundTab from "./playground/PlaygroundTab";
@@ -40,9 +42,10 @@ import { formatSize } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 
 /** The strip's label and hover for each tab, in strip order (AI_MODELS_TABS).
- *  A table rather than four near-identical <a> blocks: the links differed only
- *  in these two strings and the tab they named, and four copies of the same
- *  markup is four places to forget an aria attribute. */
+ *  A table rather than one near-identical <a> block per tab: the links differed
+ *  only in these two strings and the tab they named, and five copies of the same
+ *  markup is five places to forget an aria attribute. A `Record` over the union,
+ *  so adding a tab to `AiModelsTab` fails to compile until it has a label. */
 const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
   playground: {
     label: "Playground",
@@ -52,6 +55,12 @@ const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
   // ends in the curation's recommendations, so this is no longer only an
   // inventory of what is already here (D423).
   local: { label: "Local", title: "Models on this machine, and what to get next" },
+  // "on this machine" is the whole promise: a benchmark number is not portable,
+  // so the hover says whose laptop it is about before the tab is even opened.
+  benchmark: {
+    label: "Benchmark",
+    title: "How fast each downloaded model runs on this machine",
+  },
   engines: { label: "Engines", title: "Which backend runs each kind of local model" },
   usage: { label: "Usage", title: "Tokens this app has generated since the server started" },
 };
@@ -103,12 +112,19 @@ export default function AiModelsPage() {
             <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
               {tab === "playground" ? (
                 // What the tab is FOR: trying a model, not managing one — the
-                // other three tabs are the managing.
+                // other tabs are the managing.
                 "Pick a local model and try it — chat, images, transcription"
               ) : tab === "usage" ? (
                 // The window, stated in the chrome, because every figure on the
                 // tab is bounded by it and none of them is a lifetime total.
                 "Tokens, speed and failures through fused.ai since this server started"
+              ) : tab === "benchmark" ? (
+                // The caption says the two things a number here cannot say for
+                // itself: the work is FIXED (which is what makes two models
+                // comparable at all) and the answer is about THIS machine
+                // (which is why it does not travel). Not the cache path, for
+                // the reason the Engines branch below gives.
+                "A fixed workload per capability, timed on this machine"
               ) : tab === "engines" ? (
                 // Not the cache path: this tab is not about the disk, and a
                 // caption naming a directory over a panel of engine pickers is
@@ -202,11 +218,17 @@ export default function AiModelsPage() {
         {/* Mounted only while selected, every one of them. Each tab holds a
             subscription of its own that has no business running behind a tab
             nobody is looking at — the playground reads the catalog and the
-            runtime, Local reads the catalog too, Usage polls every five
-            seconds. The one thing that DOES run across all four is the cache
-            walk, and that is exactly why it lives above them (useCacheScan). */}
+            runtime, Local reads the catalog too, Benchmark reads the catalog and
+            the run history, Usage polls every five seconds. The one thing that
+            DOES run across all five is the cache walk, and that is exactly why
+            it lives above them (useCacheScan). */}
         {tab === "playground" && <PlaygroundTab />}
         {tab === "local" && <LocalTab scan={scan} />}
+        {/* Takes the same `scan` the Local tab does rather than re-walking the
+            cache: "which models could I benchmark" is the very question that
+            walk already answers, and a second crawl behind this tab would be
+            the cost useCacheScan exists to avoid. */}
+        {tab === "benchmark" && <BenchmarkTab scan={scan} />}
         {tab === "engines" && <EnginesTab onSwitched={onEnginesSwitched} />}
         {tab === "usage" && <UsageTab />}
       </main>

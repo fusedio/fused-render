@@ -2,6 +2,7 @@
 //
 //   /ai-models/playground   (the default — bare /ai-models redirects here)
 //   /ai-models/local
+//   /ai-models/benchmark
 //   /ai-models/engines
 //   /ai-models/usage
 //
@@ -47,16 +48,23 @@
  *  App.tsx redirects to the default tab. */
 export const AI_MODELS_PREFIX = "/ai-models";
 
-export type AiModelsTab = "playground" | "local" | "engines" | "usage";
+export type AiModelsTab = "playground" | "local" | "benchmark" | "engines" | "usage";
 
 /** Tab order is TAB-STRIP order, and the first entry is the default. Playground
  *  leads because it is what an empty machine should land on: the sidebar entry
  *  is unconditional (HF-8, D265), so a machine with no cache still has a door,
  *  and the door opens on "pick a model and try it" rather than on an empty
- *  inventory listing. */
+ *  inventory listing.
+ *
+ *  Benchmark sits directly after Local because it is the next question about
+ *  the same things: Local says what is on the disk, Benchmark says how fast
+ *  those are here. Beside Engines it would read as being about backends, and
+ *  beside Usage as being about what this process happened to do — which is the
+ *  passive counterpart it deliberately is not (SPEC AI-16). */
 export const AI_MODELS_TABS: readonly AiModelsTab[] = [
   "playground",
   "local",
+  "benchmark",
   "engines",
   "usage",
 ] as const;
