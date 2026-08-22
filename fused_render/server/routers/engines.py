@@ -15,6 +15,7 @@ the engine_id and the proxied paths are opaque.
 import asyncio
 import contextlib
 import http.client
+import json
 import socket
 from urllib.parse import quote
 
@@ -118,7 +119,14 @@ async def _forward(engine_id: str, request: Request, path: str, body: bytes):
             status=409)
     response = await _proxy(child, request, path, body)
     if response is None:
-        child = await asyncio.to_thread(engine_host.restart, engine_id, child)
+        try:
+            child = await asyncio.to_thread(engine_host.restart, engine_id, child)
+        except engine_host.EngineError:
+            # The engine was torn down between current() and the restart (e.g.
+            # app shutdown cleared it); report it as gone, not a 500.
+            return _error(
+                f"the {engine_id} engine is not running; register the layer again",
+                status=409)
         response = await _proxy(child, request, path, body)
     if response is _GONE:
         return Response(status_code=204)
@@ -177,8 +185,24 @@ def api_engine_forget(engine_id: str, payload: dict = Body(...),
     methods=["GET", "HEAD", "POST"],
 )
 async def api_engine_proxy(engine_id: str, path: str, request: Request,
-                           x_fused: str | None = Header(default=None)):
+                           x_fused: str | None = Header(default=None),
+                           x_engine_reinit: str | None = Header(default=None)):
+    # /ping is the daemon's private liveness path (engine_host probes it directly
+    # with the token); it is never a page resource, so it is not proxied.
+    if path == "ping":
+        return _error("not found", status=404)
     if request.method == "POST" and (error := _require_fused(x_fused)) is not None:
         return error
     body = await request.body() if request.method == "POST" else b""
-    return await _forward(engine_id, request, "/" + path, body)
+    response = await _forward(engine_id, request, "/" + path, body)
+    # A POST the caller marks replayable (X-Engine-Reinit: <key>) that the child
+    # accepted is recorded here, atomically with the request — so a restart
+    # re-runs it and the registration can never be lost to a separate call. The
+    # body is opaque; the host only re-POSTs it.
+    if (request.method == "POST" and x_engine_reinit
+            and isinstance(response, Response)
+            and 200 <= response.status_code < 300 and response.status_code != 204):
+        with contextlib.suppress(ValueError):
+            engine_host.reinit(engine_id, x_engine_reinit, "/" + path,
+                               json.loads(body or b"{}"))
+    return response

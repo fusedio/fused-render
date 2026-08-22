@@ -149,14 +149,15 @@ def _process_options() -> dict:
     return options
 
 
-def _server_post(path: str, payload: dict, timeout: float) -> dict:
+def _server_post(path: str, payload: dict, timeout: float,
+                 headers: dict | None = None) -> dict:
     origin = os.environ.get("FUSED_RENDER_ORIGIN", "")
     if not origin:
         raise RuntimeError("FUSED_RENDER_ORIGIN is not set")
     request = urllib.request.Request(
         origin.rstrip("/") + path,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-Fused": "1"},
+        headers={"Content-Type": "application/json", "X-Fused": "1", **(headers or {})},
         method="POST",
     )
     try:
@@ -190,10 +191,21 @@ def _stable_url(url: str) -> str:
 
 def _describe_service(request: dict) -> dict:
     """Describe through the proxy, then rewrite the descriptor's live URLs to
-    stable paths and register the describe for replay, so a daemon restart is
-    invisible to the page. The URL shape is this template's knowledge, so the
-    rewrite lives here rather than in the generic engine host."""
-    descriptor = _server_post(f"{PROXY_BASE}/describe", request, timeout=300)
+    stable paths, so a daemon restart is invisible to the page. The URL shape is
+    this template's knowledge, so the rewrite lives here rather than in the
+    generic engine host.
+
+    Replay registration rides the describe request itself (X-Engine-Reinit): the
+    server records it atomically when the child accepts the describe, so it can
+    never be lost to a separate call. The key is a digest of the request, stable
+    across re-describes of the same layer; the page forgets by it (reinit_key)."""
+    reinit_key = hashlib.sha256(
+        json.dumps(request, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:24]
+    descriptor = _server_post(
+        f"{PROXY_BASE}/describe", request, timeout=300,
+        headers={"X-Engine-Reinit": reinit_key},
+    )
     data = descriptor.get("data") if isinstance(descriptor, dict) else None
     if not isinstance(data, dict):
         return descriptor
@@ -201,13 +213,8 @@ def _describe_service(request: dict) -> dict:
         url = data.get(key)
         if isinstance(url, str) and url.startswith("http"):
             data[key] = _stable_url(url)
-    source_id = data.get("source_id")
-    if descriptor.get("status") == "ok" and source_id:
-        _server_post(
-            f"/api/engines/{ENGINE_ID}/reinit",
-            {"key": str(source_id), "path": "/describe", "payload": request},
-            timeout=SERVICE_START_TIMEOUT,
-        )
+    if descriptor.get("status") == "ok" and data.get("source_id"):
+        data["reinit_key"] = reinit_key
     return descriptor
 
 

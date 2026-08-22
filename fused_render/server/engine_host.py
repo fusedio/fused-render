@@ -368,9 +368,10 @@ def restart(engine_id: str, failed: Child | None = None) -> Child:
 
 
 def stop(engine_id: str) -> None:
-    """Kill one engine's child."""
+    """Kill one engine's child and drop its replay registry."""
     with _lock:
         child = _children.pop(engine_id, None)
+        _reinit.pop(engine_id, None)
     if child is not None:
         _terminate(child)
 
@@ -380,5 +381,6 @@ def stop_all() -> None:
     with _lock:
         children = list(_children.values())
         _children.clear()
+        _reinit.clear()
     for child in children:
         _terminate(child)

@@ -93,7 +93,7 @@ def test_describe_goes_through_the_server_origin(mr, monkeypatch, tmp_path):
     target.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
     posts = []
 
-    def server_post(path, payload, timeout):
+    def server_post(path, payload, timeout, headers=None):
         posts.append(path)
         if path.endswith("/ensure"):
             return {"ok": True}

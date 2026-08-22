@@ -2061,14 +2061,14 @@ function moveLayer(key, dir) {
 }
 
 function removeLayer(key) {
-  // Tell the server it can stop replaying this source on a restart. Only the
-  // daemon-backed kinds have a server source; a client-side COG has none.
+  // Tell the server it can stop replaying this source on a restart. The reinit
+  // key is what the describe registered under; a client-side COG has none.
   const d = (state.layers.get(key) || {}).descriptor;
-  const sourceId = d && d.data && d.data.source_id;
-  if (sourceId && (d.kind === "raster_tiles" || d.kind === "vector_tiles_mvt")) {
+  const reinitKey = d && d.data && d.data.reinit_key;
+  if (reinitKey && (d.kind === "raster_tiles" || d.kind === "vector_tiles_mvt")) {
     fetch("/api/engines/map/forget", { method: "POST",
       headers: { "Content-Type": "application/json", "X-Fused": "1" },
-      body: JSON.stringify({ key: sourceId }) }).catch(() => {});
+      body: JSON.stringify({ key: reinitKey }) }).catch(() => {});
   }
   state.layers.delete(key);
   if (state.selected === key) state.selected = null;

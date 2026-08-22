@@ -19,7 +19,6 @@ fastapi_testclient = pytest.importorskip("fastapi.testclient")
 
 ENGINE = "map"
 ENSURE = f"/api/engines/{ENGINE}/ensure"
-REINIT = f"/api/engines/{ENGINE}/reinit"
 DESCRIBE = f"/api/engines/{ENGINE}/proxy/describe"
 PROXY = f"/api/engines/{ENGINE}/proxy"
 
@@ -51,15 +50,14 @@ def _ensure(client, stub_python, stub_daemon, tmp_path, version="v1"):
 
 
 def _describe(client, target="scene.tif", register=True):
-    response = client.post(DESCRIBE, json={"target": target}, headers={"X-Fused": "1"})
-    assert response.status_code == 200, response.text
-    descriptor = response.json()
+    # Replay registration rides the describe via X-Engine-Reinit (the fold the
+    # template uses), so the proxy records it atomically on the child's 200.
+    headers = {"X-Fused": "1"}
     if register:
-        source = descriptor["data"]["source_id"]
-        client.post(REINIT, json={"key": source, "path": "/describe",
-                                  "payload": {"target": target}},
-                    headers={"X-Fused": "1"}).raise_for_status()
-    return descriptor
+        headers["X-Engine-Reinit"] = "rk-" + target
+    response = client.post(DESCRIBE, json={"target": target}, headers=headers)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _proxy_tile(descriptor):
@@ -146,3 +144,10 @@ def test_a_wedged_child_is_restarted_by_the_retry(
 def test_a_tile_without_a_running_engine_says_so(client):
     response = client.get(f"{PROXY}/tiles/nope/0/0/0.png")
     assert response.status_code == 409
+
+
+def test_the_ping_liveness_path_is_not_proxied(client, stub_python, stub_daemon, tmp_path):
+    # /ping is the host's private health probe; a page must not reach it through
+    # the proxy (it would leak the daemon's version and pid unauthenticated).
+    _ensure(client, stub_python, stub_daemon, tmp_path)
+    assert client.get(f"{PROXY}/ping").status_code == 404
