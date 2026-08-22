@@ -34,6 +34,7 @@ import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
 import { capabilityIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
+import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import {
@@ -383,22 +384,65 @@ export default function PlaygroundTab() {
           </p>
         ) : (
           <>
-            <div className="pg-stage-head">
-              <div>
-                <h3 className="pg-stage-title">
-                  {modelName(selected.model)}
-                  <span className="pg-stage-kind"> · {groupLabel(selected.row.capability)}</span>
-                </h3>
-                {/* The curator's sentence, in full — the sidebar clamps it.
-                    For the zero-jargon reader this is the model introducing
-                    itself; the mechanics (loaded, downloading) stay on the
-                    quieter line below it. */}
-                {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-                <p className="pg-stage-state">
-                  {stateLine}
-                  {evicts ? ` ${evicts}` : ""}
-                </p>
+            <section className="pg-hero">
+              <div className="pg-hero-head">
+                <span className="pg-hero-icon">{capabilityIcon(selected.row.capability)}</span>
+                <div className="pg-hero-names">
+                  <h3 className="pg-stage-title">
+                    {modelName(selected.model)}
+                    <span className="pg-stage-kind"> · {groupLabel(selected.row.capability)}</span>
+                  </h3>
+                  {/* The full repo id — author/name as Hugging Face knows it.
+                      A link only when it IS a repo id: llama.cpp entries are
+                      keyed by bare .gguf filename (formats.GGUF_RECIPES), and
+                      huggingface.co/<filename> is a 404 dressed as a link. */}
+                  {selected.model.id.includes("/") ? (
+                    <a
+                      className="pg-hero-repo"
+                      href={hubModelUrl(selected.model.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {selected.model.id}
+                    </a>
+                  ) : (
+                    <span className="pg-hero-repo">{selected.model.id}</span>
+                  )}
+                </div>
               </div>
+              {(selected.model.params ||
+                selected.model.quantization ||
+                selected.model.size_gb != null) && (
+                <dl className="pg-hero-facts">
+                  {selected.model.params && (
+                    <div className="pg-hero-fact">
+                      <dt>Parameters</dt>
+                      <dd>{selected.model.params}</dd>
+                    </div>
+                  )}
+                  {selected.model.quantization && (
+                    <div className="pg-hero-fact">
+                      <dt>Quantization</dt>
+                      <dd>{selected.model.quantization}</dd>
+                    </div>
+                  )}
+                  {selected.model.size_gb != null && (
+                    <div className="pg-hero-fact">
+                      <dt>Download</dt>
+                      <dd>{selected.model.size_gb} GB</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              {/* The curator's sentence, in full — the sidebar clamps it.
+                  For the zero-jargon reader this is the model introducing
+                  itself; the mechanics (loaded, downloading) stay on the
+                  quieter line below it. */}
+              {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
+              <p className="pg-stage-state">
+                {stateLine}
+                {evicts ? ` ${evicts}` : ""}
+              </p>
               <div className="pg-stage-actions">
                 {/* The playground's exit ramp: everything tried here is one
                     `fused.ai` call in a page, and this hands the /apps
@@ -439,7 +483,7 @@ export default function PlaygroundTab() {
                   </button>
                 )}
               </div>
-            </div>
+            </section>
             {(selectedDownloading || (selectedResident && selectedResident.state !== "ready")) && (
               <ModelProgress detail={selectedResident?.detail} job={jobForSelected} />
             )}
