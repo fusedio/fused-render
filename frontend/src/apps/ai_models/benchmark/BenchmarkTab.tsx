@@ -41,25 +41,32 @@ import { BenchmarkChart } from "./BenchmarkChart";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { tabHref } from "@apps/ai_models/routes";
 import {
   DASH,
+  failureReason,
   formatLoad,
   formatMemory,
   formatPrimary,
   latestByModel,
+  leaderboard,
   orderCapabilities,
   primaryMetric,
   primaryValue,
+  rowDetail,
+  rowHeadline,
   runButtonState,
   runsFor,
+  shortModelName,
   stoppedNote,
-  summaryLine,
+  type LeaderboardRow,
   type ModelLatest,
   type RunButtonState,
   type RunsInFlight,
 } from "@apps/ai_models/lib/benchmark";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { navigateUrl } from "@platform/lib/router";
 import {
   deleteAiBenchmarks,
   getAiBenchmarks,
@@ -264,6 +271,16 @@ function CapabilitySection({
   // has since been deleted is still a fact, and it belongs under its own
   // capability rather than nowhere.
   const orphans = [...latest.keys()].filter((model) => !repos.some((r) => r.id === model));
+  const gone = new Set(orphans);
+
+  // Ranked best-first: the leaderboard is the reason this tab shows a list at
+  // all, and `leaderboard` (lib/benchmark.ts) owns the ordering and every
+  // bar's length so the rule about which way a metric points is tested once
+  // rather than guessed again here.
+  const ranked: LeaderboardRow[] = leaderboard(capability, [
+    ...repos.map((r) => ({ model: r.id, row: latest.get(r.id) ?? null })),
+    ...orphans.map((model) => ({ model, row: latest.get(model) ?? null })),
+  ]);
 
   return (
     <section className="am-section">
@@ -280,39 +297,55 @@ function CapabilitySection({
         <SkeletonLines rows={2} label={`Loading ${capabilityLabel(capability)} benchmarks`} />
       ) : repos.length === 0 && orphans.length === 0 ? (
         // Answered, and empty. It says WHICH nothing — no model rather than no
-        // benchmark — because the two have different next steps.
-        <p className="am-group-note">No {capabilityLabel(capability).toLowerCase()} model is downloaded yet.</p>
+        // benchmark — and points at the next step rather than leaving the
+        // reader to guess where a model would come from.
+        <p className="am-group-note">
+          No {capabilityLabel(capability).toLowerCase()} model is downloaded yet. Get one from the{" "}
+          <a
+            href={tabHref("local")}
+            onClick={(e) => {
+              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+                return;
+              e.preventDefault();
+              navigateUrl(tabHref("local"));
+            }}
+          >
+            Local tab
+          </a>
+          .
+        </p>
       ) : (
-        <div className="am-bench-rows">
-          {repos.map((repo) => {
-            const button = runButtonState(capability, repo.id, inFlight,
-                                          latest.has(repo.id));
-            return (
-              <BenchmarkRow
-                key={repo.id}
-                model={repo.id}
-                row={latest.get(repo.id) ?? null}
-                button={button}
-                onRun={() => onRun(repo.id, capability)}
-              />
-            );
-          })}
-          {orphans.map((model) => (
-            <BenchmarkRow key={model} model={model} row={latest.get(model)!} gone />
-          ))}
-        </div>
-      )}
-
-      {/* Siblings of the rows, not children of them: the rows are the current
-          answer, and these two are the evidence behind it. The chart draws
-          nothing until something has been measured — it returns null rather
-          than an empty axis, which would read as a measurement of zero. */}
-      {runs !== null && runs.length > 0 && (
         <>
-          <BenchmarkChart capability={capability} runs={runs} />
-          <RunTable capability={capability} runs={runs} onForget={onForget} />
+          {/* THE HERO: the chart leads the section, not the model list — the
+              trend is the first question this tab answers, and the list below
+              is the second one. It draws nothing until something has been
+              measured, returning null rather than an empty axis (which would
+              read as a measurement of zero). */}
+          {runs !== null && runs.length > 0 && <BenchmarkChart capability={capability} runs={runs} />}
+          <div className="am-bench-rows">
+            {ranked.map(({ model, row, barFraction }) => {
+              const button = gone.has(model)
+                ? undefined
+                : runButtonState(capability, model, inFlight, row !== null);
+              return (
+                <BenchmarkRow
+                  key={model}
+                  model={model}
+                  row={row}
+                  barFraction={barFraction}
+                  button={button}
+                  gone={gone.has(model)}
+                  onRun={() => onRun(model, capability)}
+                />
+              );
+            })}
+          </div>
         </>
       )}
+
+      {/* The archive, under the leaderboard: the ranked rows are the current
+          answer, and this is the evidence behind it. */}
+      {runs !== null && runs.length > 0 && <RunTable capability={capability} runs={runs} onForget={onForget} />}
     </section>
   );
 }
@@ -320,12 +353,17 @@ function CapabilitySection({
 function BenchmarkRow({
   model,
   row,
+  barFraction,
   button,
   gone,
   onRun,
 }: {
   model: string;
   row: ModelLatest | null;
+  /** 0..1 against the section's best model, or null for no bar — see
+   *  `leaderboard`. Decided there, not here, for the same reason `button` is:
+   *  which way a metric points is exactly the thing a screenshot cannot check. */
+  barFraction: number | null;
   /** What the Run button says and whether it can be pressed — decided by
    *  `runButtonState`, never here: the rule about which run blocks which button
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
@@ -335,10 +373,16 @@ function BenchmarkRow({
   gone?: boolean;
   onRun?: () => void;
 }) {
+  // The one line beyond the headline — TTFT, load time, device, or a failed
+  // run's own error — behind an expander so it never dominates the row. Only
+  // drawn when there is something to say: a row whose whole story fits the
+  // headline gets no expander at all.
+  const detail = row ? (row.latest.ok ? rowDetail(row.latest) : failureReason(row.latest)) : null;
+
   return (
     <div className="am-bench-row">
-      <div className="am-bench-model">
-        <span className="cc-mono">{model}</span>
+      <div className="am-bench-model" title={model}>
+        <span className="cc-mono">{shortModelName(model)}</span>
         {gone && <span className="am-bench-gone">not on this machine any more</span>}
       </div>
       <div className="am-bench-latest">
@@ -354,7 +398,16 @@ function BenchmarkRow({
           </span>
         ) : row ? (
           <>
-            <span className="am-bench-summary">{summaryLine(row.latest)}</span>
+            {/* The bar: width proportional to how this model compares to the
+                section's best (`leaderboard`), never drawn for a failed or
+                unmeasured latest run — a bar of length zero would read as
+                "measured, and terrible" rather than "nothing to compare". */}
+            {barFraction !== null && (
+              <span className="am-bench-bar" aria-hidden="true">
+                <span className="am-bench-barfill" style={{ width: `${barFraction * 100}%` }} />
+              </span>
+            )}
+            <span className="am-bench-headline">{rowHeadline(row.latest)}</span>
             {row.delta && (
               // The sign is not the meaning — on an image section a negative
               // change is the improvement — so `better` decides the class and
@@ -363,6 +416,12 @@ function BenchmarkRow({
                 {row.delta.percent >= 0 ? "+" : ""}
                 {row.delta.percent.toFixed(1)}%
               </span>
+            )}
+            {detail && (
+              <details className="am-bench-rowdetail">
+                <summary>{row.latest.ok ? "Details" : "Failed — details"}</summary>
+                <p>{detail}</p>
+              </details>
             )}
           </>
         ) : (
