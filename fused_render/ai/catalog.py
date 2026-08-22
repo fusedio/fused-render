@@ -127,10 +127,20 @@ from fused_render.ai import registry
 #: why reintroducing one under this name would be the same mistake wearing a new
 #: word. What the flag means is "the one to TRY on this engine": strong enough
 #: that a first answer is a fair picture of what local inference does here, small
-#: enough that the download is not the experience. That is why it is neither end
-#: of a list — the smallest text entry is quick and weaker than every row above
+#: enough that the download is not the experience.
+#:
+#: **Where that lands is per LIST and is nobody's formula.** On the text lists it
+#: is neither end — the smallest entry is quick and weaker than every row above
 #: it, and a 20GB model can be the best row in its list and still be a poor first
-#: click.
+#: click. On `mlx-whisper` it IS the head: a 0.05GB tiny.en downloads in seconds
+#: and transcribes clear speech well enough to show what the feature does, which
+#: is exactly the "the download is not the experience" half of the rule winning
+#: outright. So the marked entry sometimes coincides with `default_for()` and
+#: sometimes does not, and that is not a bug either way — the two axes are
+#: independent, not opposed, and nothing may derive one from the other. Note that
+#: the two whisper lists disagree today (MLX marks tiny.en, CTranslate2 marks
+#: turbo); an engine's list is its own editorial judgement, so that is allowed
+#: rather than a drift to reconcile.
 #:
 #: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
 #: sentences is a wall nobody reaches the end of — so each note carries the
@@ -614,6 +624,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "mlx-community/whisper-tiny.en-8bit",
             "label": "Whisper tiny English (MLX 8-bit)",
             "nickname": "Whisper tiny English",
+            "recommended": True,
             "size_gb": 0.05,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -630,7 +641,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-large-v3-turbo",
-            "recommended": True,
             "label": "Whisper large-v3 turbo (MLX)",
             "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,

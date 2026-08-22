@@ -7597,11 +7597,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   **It is NOT the default and does not touch the ordering.** `default` is still
   position 0 and position 0 is still the smallest entry (AI-11a) — the flag is
   deliberately not the `default: True` field that rule rejected, wearing a new
-  name. The two genuinely diverge in shipping curation — speech to text
-  recommends the turbo model while its default is the unrecommended smallest
-  entry two rows above it — so the Playground's fallback is "the catalog default
-  if it is drawn, else the first row that is": never a reordering of the curation
-  and never a curated model selected invisibly. A `?model=` link naming an
+  name. The two are INDEPENDENT rather than opposed, and shipping curation has it
+  both ways: the text lists mark a middle row while their default is the smallest,
+  and `mlx-whisper` marks its head, where the smallest entry genuinely is the one
+  to try. So the Playground's fallback is "the catalog default if it is drawn,
+  else the first row that is" — which covers both without either axis deriving
+  from the other, and is never a reordering of the curation or a curated model
+  selected invisibly. A `?model=` link naming an
   unoffered model falls back the same silent way (PT-9), rather than smuggling a
   one-off row into a sidebar that would then differ per visitor. **The count is
   pinned by a test and the choice deliberately is not**: which model is marked is
