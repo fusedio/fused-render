@@ -2,8 +2,11 @@
 (fused_render/server.py) — files matched by .gitignore inside a git work tree
 are flagged so the shell can dim them. Non-repos, and installs without git,
 degrade to `ignored: False` everywhere (dimming is a hint, never required)."""
+import os
 import shutil
 import subprocess
+import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -178,6 +181,97 @@ def test_repo_toplevel_cache_expires_after_the_ttl(tmp_path, monkeypatch):
     fake_now[0] += 2
     assert _gi._repo_toplevel(str(tmp_path)) is not None
     assert len(calls) == 2  # TTL elapsed, re-asked
+
+
+# -- _IgnoreOracle deadline ---------------------------------------------------
+#
+# `_read_field` used to block forever on `self.proc.stdout.read1` with no
+# timeout at all. A stalled check-ignore child (an index.lock held elsewhere,
+# gc --auto, a degraded filesystem) would hang the request thread
+# indefinitely. These are POSIX-only (select() on a pipe doesn't work on
+# Windows), matching the class's own `_read_chunk` fallback.
+
+import types
+
+pytestmark_win = pytest.mark.skipif(
+    sys.platform == "win32", reason="deadline uses select() on a pipe, POSIX only")
+
+
+class _NullStdin:
+    def write(self, data):
+        pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytestmark_win
+def test_ignored_gives_up_on_a_stalled_child_within_the_deadline(tmp_path, monkeypatch):
+    _make_repo(tmp_path)
+    oracle = _gi._IgnoreOracle(str(tmp_path))
+    assert not oracle.broken
+    real_proc = oracle.proc
+
+    # Swap in a pipe whose write end is never written to: read1 (and the
+    # select() guarding it) will block exactly as a stalled git would.
+    read_fd, write_fd = os.pipe()
+    oracle.proc = types.SimpleNamespace(
+        stdin=_NullStdin(),
+        stdout=os.fdopen(read_fd, "rb"),
+        terminate=lambda: None,
+    )
+    monkeypatch.setattr(oracle, "DEADLINE_S", 0.2)
+
+    start = time.monotonic()
+    result = oracle.ignored(["keep.txt"])
+    elapsed = time.monotonic() - start
+
+    assert result == set()
+    assert oracle.broken is True
+    assert elapsed < 2.0  # bounded well under a real hang, generous for CI jitter
+
+    os.close(write_fd)
+    real_proc.kill()
+    real_proc.wait(timeout=5)
+
+
+@pytestmark_win
+def test_a_broken_oracle_after_a_stall_answers_nothing_ignored_from_then_on(
+        tmp_path, monkeypatch):
+    _make_repo(tmp_path)
+    oracle = _gi._IgnoreOracle(str(tmp_path))
+    real_proc = oracle.proc
+    read_fd, write_fd = os.pipe()
+    oracle.proc = types.SimpleNamespace(
+        stdin=_NullStdin(),
+        stdout=os.fdopen(read_fd, "rb"),
+        terminate=lambda: None,
+    )
+    monkeypatch.setattr(oracle, "DEADLINE_S", 0.2)
+    oracle.ignored(["debug.log"])
+    assert oracle.broken is True
+
+    # Further calls must not try to read from the (now-closed) stream again —
+    # they short-circuit on `self.broken`.
+    assert oracle.ignored(["debug.log"]) == set()
+
+    os.close(write_fd)
+    real_proc.kill()
+    real_proc.wait(timeout=5)
+
+
+@pytestmark_win
+def test_ignored_does_not_time_out_on_a_slow_but_progressing_stream(tmp_path):
+    # A generous deadline must not fire just because a real (fast) call takes
+    # a normal amount of time — no false positive on the happy path.
+    _make_repo(tmp_path)
+    oracle = _gi._IgnoreOracle(str(tmp_path))
+    assert oracle.ignored(["debug.log", "keep.txt"]) == {"debug.log"}
+    assert oracle.broken is False
+    oracle.close()
 
 
 def test_repo_toplevel_cache_is_bounded(tmp_path, monkeypatch):

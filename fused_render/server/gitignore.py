@@ -7,6 +7,9 @@ import threading
 import time
 from collections import OrderedDict
 
+if sys.platform != "win32":
+    import select
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------- how git is run
@@ -268,11 +271,28 @@ class _IgnoreOracle:
     oracle broken and it answers "nothing ignored" from then on — gitignore
     pruning is an optimization, never a hard dependency (same posture as
     _git_ignored's dimming).
+
+    A stalled child (an `index.lock` another process is holding, `gc --auto`,
+    a degraded filesystem) is the same shape of failure, just slower to show
+    up: `ignored()` bounds its OWN wait at `DEADLINE_S`, marks broken, and
+    returns the same "nothing ignored" rather than hanging the request thread
+    forever. POSIX only (`select` on a pipe) — see `_read_field` for why
+    Windows is left unbounded, same as before this existed.
     """
 
     # Queries per write/read cycle: bounded so git's stdout can't fill the
     # pipe while we are still writing stdin (classic co-process deadlock).
     CHUNK = 200
+
+    # The wall-clock budget for one whole `ignored()` call, not per read(): a
+    # batch that is genuinely large but progressing should finish inside this,
+    # since check-ignore answers in ~14µs/query (measured) and even a few
+    # thousand queries is milliseconds; a STALLED child instead blocks on the
+    # very first read and eats the whole budget doing nothing, which is
+    # exactly the case this exists to catch. Matches the one-shot calls'
+    # `timeout=5` elsewhere in this file for the same git-is-hung shape of
+    # failure.
+    DEADLINE_S = 5.0
 
     def __init__(self, repo_root):
         self.root = repo_root
@@ -309,22 +329,45 @@ class _IgnoreOracle:
             self.broken = True
         self._buf = b""
 
-    def _read_field(self):
+    def _read_field(self, deadline):
         while True:
             cut = self._buf.find(b"\0")
             if cut != -1:
                 field = self._buf[:cut]
                 self._buf = self._buf[cut + 1:]
                 return field
-            chunk = self.proc.stdout.read1(65536)
+            chunk = self._read_chunk(deadline)
             if not chunk:
                 raise OSError("check-ignore stream closed")
             self._buf += chunk
+
+    def _read_chunk(self, deadline):
+        """Up to 65536 bytes from the co-process, bounded by `deadline` (a
+        `time.monotonic()` timestamp shared across the whole `ignored()` call).
+
+        POSIX only: `select.select` is the portable way to put a timeout on a
+        blocking pipe read, but it does not work on pipes on Windows at all
+        (only sockets). This repo ships on Windows (`_spawn_kwargs`'s
+        `CREATE_NO_WINDOW`), so on that platform this falls back to the old,
+        unbounded `read1` — a stalled git still hangs the request thread there,
+        same as before this existed. Fixing that would need a reader thread or
+        overlapped I/O, which is a bigger change than this bug fix; POSIX is
+        where the reported hang actually happened.
+        """
+        if sys.platform == "win32":
+            return self.proc.stdout.read1(65536)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select(
+                [self.proc.stdout], [], [], remaining)[0]:
+            raise TimeoutError(
+                f"check-ignore did not answer within {self.DEADLINE_S}s")
+        return self.proc.stdout.read1(65536)
 
     def ignored(self, rel_paths):
         """Subset of `rel_paths` (POSIX, relative to repo root) git ignores."""
         if self.broken or not rel_paths:
             return set()
+        deadline = time.monotonic() + self.DEADLINE_S
         out = set()
         try:
             for i in range(0, len(rel_paths), self.CHUNK):
@@ -338,14 +381,19 @@ class _IgnoreOracle:
                     # NEGATED pattern ("!keep.log") is also echoed with its
                     # source under -v — that match means explicitly NOT
                     # ignored, so test the pattern's sign, not mere presence.
-                    source = self._read_field()
-                    self._read_field()
-                    pattern = self._read_field()
-                    self._read_field()
+                    source = self._read_field(deadline)
+                    self._read_field(deadline)
+                    pattern = self._read_field(deadline)
+                    self._read_field(deadline)
                     if source and not pattern.startswith(b"!"):
                         out.add(r)
             return out
         except OSError:
+            # TimeoutError is an OSError subclass, so a stalled stream lands
+            # here exactly like a broken pipe: the whole batch this call was
+            # answering is discarded (the buffer's field boundaries are no
+            # longer trustworthy once a read is abandoned mid-stream) rather
+            # than returned partial, and the oracle stops trying git at all.
             self.broken = True
             self.close()
             return set()
