@@ -21,10 +21,14 @@ def _home(tmp_path, monkeypatch):
 
 
 def _run(run_id: str, started_at: float = 1.0) -> dict:
-    """A minimal run record. The store is deliberately schema-agnostic — it
-    persists whatever `benchmark.run()` produced — so these tests only pin the
-    two keys the store itself reads: `id` (delete) and nothing else."""
-    return {"id": run_id, "startedAt": started_at, "capability": "text-generation"}
+    """A minimal READABLE run record.
+
+    The store stays schema-agnostic about the metrics themselves — it persists
+    whatever `benchmark.run()` produced — but it does guarantee the three keys
+    every reader dereferences (`id`, and the two objects the page reaches into),
+    so a fixture standing for a real record has to carry them."""
+    return {"id": run_id, "startedAt": started_at, "capability": "text-generation",
+            "workload": {"name": "w", "revision": 1, "params": {}}, "metrics": {}}
 
 
 # -- bench_store ----------------------------------------------------------------
@@ -164,3 +168,58 @@ def test_machine_reports_this_host_without_touching_the_network():
     assert isinstance(info["arch"], str)
     assert info["cpuCount"] is None or info["cpuCount"] >= 1
     assert info["totalMemoryBytes"] is None or info["totalMemoryBytes"] > 0
+
+
+# -- what the store may hand the page -------------------------------------------
+#
+# The docstring promises "a hand-edited file must not be able to take the AI
+# Models page down" and D426 restates it, but the filter was `isinstance(run,
+# dict)` alone — so a record missing `metrics` or `workload` reached the tab,
+# where `lib/benchmark.ts` dereferences `run.metrics[key]` and
+# `run.workload.revision` and threw a TypeError mid-render. The promise is kept
+# HERE rather than by guarding every reader: this function is the one door every
+# consumer comes through, and a per-reader guard is a rule the next reader has to
+# be told about.
+
+
+def test_a_record_missing_the_keys_the_page_dereferences_is_dropped(tmp_path,
+                                                                   monkeypatch):
+    home = _home(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    (home / "ai_benchmarks.json").write_text(json.dumps({"version": 1, "runs": [
+        {"id": "good", "capability": "text-generation",
+         "workload": {"name": "w", "revision": 1, "params": {}}, "metrics": {}},
+        {"id": "no-metrics", "workload": {"name": "w", "revision": 1}},
+        {"id": "no-workload", "metrics": {}},
+        {"id": "metrics-not-an-object", "metrics": 7, "workload": {}},
+        {"id": "workload-not-an-object", "metrics": {}, "workload": "v1"},
+        {"no-id-at-all": True, "metrics": {}, "workload": {}},
+        "not even an object",
+    ]}), encoding="utf-8")
+    assert [r["id"] for r in bench_store.read()] == ["good"]
+
+
+def test_every_record_read_carries_the_keys_a_reader_dereferences(tmp_path,
+                                                                 monkeypatch):
+    """The property stated positively, so it survives a refactor of the filter:
+    whatever comes out of `read()` can be rendered without a guard."""
+    _home(tmp_path, monkeypatch)
+    bench_store.append(_run("a"))
+    for run in bench_store.read():
+        assert isinstance(run.get("id"), str)
+        assert isinstance(run.get("metrics"), dict)
+        assert isinstance(run.get("workload"), dict)
+
+
+def test_an_unreadable_record_is_pruned_by_the_next_append(tmp_path, monkeypatch):
+    """Read-modify-write means a malformed record does not merely go unshown, it
+    goes. Self-healing is the right direction for a disposable measurement log —
+    and stated rather than left as a surprise."""
+    home = _home(tmp_path, monkeypatch)
+    home.mkdir(parents=True)
+    path = home / "ai_benchmarks.json"
+    path.write_text(json.dumps({"version": 1, "runs": [{"id": "broken"}]}),
+                    encoding="utf-8")
+    bench_store.append(_run("fresh"))
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert [r["id"] for r in on_disk["runs"]] == ["fresh"]

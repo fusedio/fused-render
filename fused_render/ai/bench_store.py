@@ -26,17 +26,32 @@ axis — the UI draws runs in the order they were taken — so nothing here sort
 re-keys or dedupes. Two runs of the same model on the same workload are two
 rows on purpose: that pair is the delta the page shows.
 
-The store is **schema-agnostic about a run**: it persists whatever
-`benchmark.run()` built and reads only `id`, for delete. The record's shape is
-that module's business, and keeping it out of here means adding a metric never
-touches storage.
+The store is **schema-agnostic about the METRICS** — it persists whatever
+`benchmark.run()` built, so adding a metric never touches storage — but it is
+not schema-agnostic about the three keys its readers dereference. `read()`
+guarantees `id` (a string) and `metrics`/`workload` (objects), and drops a record
+that lacks them.
+
+That line is drawn here rather than in each reader because **this function is the
+one door every consumer comes through**, and because the promise below is
+otherwise not kept. The filter was `isinstance(run, dict)` alone, which let a
+hand-edited record with no `metrics` reach the Benchmark tab — where
+`lib/benchmark.ts` does `run.metrics[key]` and `run.workload.revision` and threw
+a `TypeError` mid-render, taking the page down. A guard in the reader would have
+fixed that one reader; a guard here fixes the next one too, which will not have
+been told the rule.
 
 A corrupt or absent file reads as **no runs, never a raise** — same contract
 `storage.read_json` already gives for both. The history endpoint is a GET that
 has to answer on a machine which has never benchmarked anything, and a
-hand-edited file must not be able to take the AI Models page down; the cost is
-that a truly corrupt file is silently replaced by the next append, which for a
-disposable measurement log is the right trade (it is not the bookmarks).
+hand-edited file must not be able to take the AI Models page down.
+
+Two costs, both accepted and neither hidden: a truly corrupt file is silently
+replaced by the next append, and an unreadable RECORD is likewise dropped from
+disk by the next append (`append`/`delete` are read-modify-write over `read()`).
+Self-healing is the right direction for a disposable measurement log — it is not
+the bookmarks — and the alternative, carrying a record forward that no reader can
+render, is a file that stays broken forever.
 """
 from __future__ import annotations
 
@@ -59,15 +74,37 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "ai_benchmarks.json")
 
 
+def _readable(run) -> bool:
+    """Can a consumer render this record without guarding every field?
+
+    The three keys every reader dereferences, and nothing else — this is not a
+    schema check and must never grow into one, or adding a metric server-side
+    would start silently deleting the runs recorded before it. `id` because
+    `delete` and every React key need it; `metrics` and `workload` because the
+    page reaches INTO them (`run.metrics[key]`, `run.workload.revision`) and a
+    missing one is a `TypeError` mid-render rather than a blank cell.
+    """
+    return (
+        isinstance(run, dict)
+        and isinstance(run.get("id"), str)
+        and isinstance(run.get("metrics"), dict)
+        and isinstance(run.get("workload"), dict)
+    )
+
+
 def read() -> list[dict]:
-    """Every stored run, oldest first. Absent, corrupt or wrong-shaped → `[]`."""
+    """Every stored run, oldest first. Absent, corrupt or wrong-shaped → `[]`.
+
+    Records that no reader could render are dropped rather than passed on — see
+    `_readable` and the module docstring.
+    """
     data = storage.read_json(_path())
     if not isinstance(data, dict):
         return []
     runs = data.get("runs")
     if not isinstance(runs, list):
         return []
-    return [run for run in runs if isinstance(run, dict)]
+    return [run for run in runs if _readable(run)]
 
 
 def _write(runs: list[dict]) -> None:
