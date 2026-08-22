@@ -3268,7 +3268,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed"}
+        "mlx-embed", "transformers-embed", "h3-video"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -6872,10 +6872,17 @@ def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
 
 def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub, safetensors_text_engine):
     """The invariant that does hold unconditionally, stated as itself: wherever a
-    curated entry exists, index 0 is curated — so `models[0]` and `default` agree
-    and a bare call cannot reach an unvetted repo."""
+    curated entry exists AND the capability is servable here, index 0 is curated
+    — so `models[0]` and `default` agree and a bare call cannot reach an unvetted
+    repo. Video generation is the one capability that can be curated-but-
+    unavailable on the machine running this test (h3.c is Metal-only and this
+    Mac may have no binary staged) — `default` is None there by design
+    (`catalog.describe`), which is a different claim from this one and is
+    covered on the registry side instead."""
     _text_repo(hub, "some-org/aaa-alphabetically-first", size=1)
     for row in _catalog(client).values():
+        if not row["available"]:
+            continue
         if any(m["source"] == "curated" for m in row["models"]):
             assert row["models"][0]["source"] == "curated"
             assert row["models"][0]["id"] == row["default"]
@@ -6920,8 +6927,12 @@ def test_the_recommended_flag_does_not_move_the_default_or_the_order(client):
         if not curated:
             continue
         # The head is still the default, and it is still the head whether or not
-        # it is the marked one.
-        assert curated[0]["id"] == row["default"]
+        # it is the marked one — EXCEPT when nothing here can serve the
+        # capability at all (video generation, on a machine with no h3 binary
+        # staged), where `default` is None regardless of what the list's head
+        # is. That is a claim about availability, not about this relationship.
+        if row["available"]:
+            assert curated[0]["id"] == row["default"]
         sizes = [(m["size_gb"] is None, m["size_gb"] or 0.0) for m in curated]
         assert sizes == sorted(sizes), row["capability"]
 

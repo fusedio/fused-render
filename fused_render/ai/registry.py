@@ -65,6 +65,8 @@ from __future__ import annotations
 import glob
 import os
 import platform
+import shutil
+import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -85,6 +87,14 @@ SPEECH_TO_TEXT = "automatic-speech-recognition"
 #: those vectors and not what the runner returns, so borrowing it would have
 #: named the capability after a use case it does not implement.
 EMBEDDINGS = "embeddings"
+#: The Hub's own tag, like `IMAGE_GENERATION` and `SPEECH_TO_TEXT` are — a
+#: diffusers text-to-video pipeline's `_class_name` folds onto "video
+#: generation" (`hub_cache.py`'s `_diffusers_task`), and that label maps here.
+#: The FIRST capability with no "everywhere" row: h3.c is Metal-only, so
+#: unlike text/image/speech/embeddings there is no cross-platform fallback —
+#: off Apple Silicon this capability has zero runners able to serve it, and
+#: `catalog()` reports `default: null` for it there.
+VIDEO_GENERATION = "text-to-video"
 
 RUNNERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runners")
 
@@ -280,6 +290,50 @@ def _apple_silicon() -> Availability:
         False,
         f"needs Apple Silicon — MLX runs on Metal only (this is {system.lower()}/{machine})",
     )
+
+
+def h3_bin() -> str | None:
+    """Path to the bundled `h3.c` (antirez) Metal binary, or None if this
+    machine has none.
+
+    Resolution order, modeled on `rclone_bin()` (`shell/mounts/rcd.py:571`):
+    1. `FUSED_RENDER_H3_BIN`, a real file — the supervisor's
+       `child_environment` sets this to the payload's copy in a packaged
+       build; an override that is not a file is ignored so it cannot shadow a
+       real binary in a dev checkout.
+    2. The packaged macOS app bundle (`sys.frozen == "macosx_app"`):
+       `Contents/Resources/bin/h3`, staged by `build_dmg.sh` the same way
+       rclone is.
+    3. `shutil.which("h3")` — a dev checkout that built the binary by hand.
+    """
+    override = os.environ.get("FUSED_RENDER_H3_BIN")
+    if override and os.path.isfile(override):
+        return override
+    if getattr(sys, "frozen", None) == "macosx_app":
+        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+        bundled = os.path.join(contents, "Resources", "bin", "h3")
+        if os.path.isfile(bundled):
+            return bundled
+    return shutil.which("h3")
+
+
+def _h3_available() -> Availability:
+    """`h3-video`'s gate: Apple Silicon AND a resolvable binary.
+
+    Two independent conditions, so the reason names both — a Mac with no
+    binary staged is not the same failure as an Intel Mac, and a page showing
+    the wrong one sends someone down the wrong fix.
+    """
+    silicon = _apple_silicon()
+    if not silicon.ok:
+        return silicon
+    if h3_bin() is None:
+        return Availability(
+            False,
+            "the h3 binary is not available (bundled build missing, and no "
+            "h3 on PATH)",
+        )
+    return Availability(True)
 
 
 def _always() -> Availability:
@@ -1271,6 +1325,26 @@ _RUNNERS: tuple[Runner, ...] = (
              "either way, since one item is a single forward pass.",
         _available=_torch_platform,
     ),
+    # Video generation, the fifth capability and the first with no
+    # "everywhere" row: h3.c is a Metal binary and the only engine that can
+    # run MiniMax H3 (see the plan's "Engine = h3.c, bundled" decision — mlx-
+    # video cannot run H3, ComfyUI on MPS falls back to bf16 speed, h3.c-ane's
+    # compile cache is ~19GB per shape, Phosphene is an app whose deps do not
+    # survive a bare `uv sync`). One row, gated on BOTH Apple Silicon and a
+    # resolvable binary (`_h3_available`), so off a Mac — or on a Mac whose
+    # build never staged the binary — `catalog()` reports `default: null`
+    # for this capability for the first time.
+    Runner(
+        code="h3-video",
+        capability=VIDEO_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "h3_video"),
+        label="H3 (Apple Silicon)",
+        short_label="H3",
+        family_label="H3",
+        note="Text-to-video with audio, on the GPU. No fallback exists on "
+             "other platforms.",
+        _available=_h3_available,
+    ),
 )
 
 
@@ -1303,6 +1377,10 @@ _TASK_CAPABILITIES = {
     # have taken the Load button off the very models the Discover tab suggests —
     # the gemma bug that table's own comment describes, in a new modality.
     "zero-shot image classification": EMBEDDINGS,
+    # A diffusers text-to-video (or image-to-video) pipeline's `_class_name`
+    # folds onto this label (`hub_cache.py::_diffusers_task`), the same way
+    # its image sibling folds onto "image generation" above.
+    "video generation": VIDEO_GENERATION,
 }
 
 #: The other half of the same decision: labels nothing here serves, listed
@@ -1338,7 +1416,6 @@ NO_RUNNER_YET = frozenset({
     "embeddings", "sentence embeddings",
     "zero-shot text classification", "image segmentation", "object detection",
     "depth estimation", "image to image", "image to text", "audio classification",
-    "video generation",
     # An audio-language model: a recording and a prompt in, text out. It is
     # NOT speech recognition — it is asked questions about the audio rather
     # than asked to transcribe it — and mlx-lm has no module for one, so

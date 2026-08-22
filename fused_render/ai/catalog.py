@@ -761,6 +761,25 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
+    # v1's only checkpoint: FL2VA (frame + language to video + audio), the
+    # variant h3.c's Metal path is built against. `size_gb` is the WHOLE
+    # snapshot including the Qwen3-VL-32B text encoder H3 embeds prompts
+    # with — metadata only here, never fetched by this app's own build or
+    # tests (see the hard "never download the H3 model" constraint). Whoever
+    # ships this must re-measure `size_gb` against the Hub's real per-file
+    # sums before release, the same "measured, not assumed" rule every other
+    # entry in this file follows.
+    "h3-video": [
+        {
+            "id": "MiniMaxAI/MiniMax-H3-FL2VA",
+            "recommended": True,
+            "label": "MiniMax H3 FL2VA",
+            "nickname": "MiniMax H3",
+            "size_gb": 62.0,
+            "note": "Text-to-video with audio. One resident model — no ref2va "
+                    "checkpoint is offered in this build.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`
@@ -967,8 +986,19 @@ def describe() -> list[dict]:
                 "runnerNote": runner.note or None if runner else None,
                 "available": status.ok,
                 "reason": status.reason or None,
+                # Gated on `status.ok`, which every capability before video
+                # generation made irrelevant: each of them has an
+                # "everywhere" row, so SOME runner was always available and
+                # this was always non-null in practice. Video is the first
+                # capability that can be genuinely unservable here — h3.c is
+                # Metal-only with no fallback — and a caller with no model
+                # specified must be told there is nothing to load, not handed
+                # an id `default_for()` would then fail to load anyway. The
+                # suggestion LIST still shows the entry either way (`models`
+                # below) — a repo worth downloading once you have a Mac is
+                # still worth listing today, per `_runner_for`'s own fallback.
                 "default": for_capability(capability)[0]["id"]
-                if for_capability(capability) else None,
+                if status.ok and for_capability(capability) else None,
                 "models": for_capability(capability),
             }
         )
