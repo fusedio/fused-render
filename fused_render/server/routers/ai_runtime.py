@@ -20,9 +20,11 @@ Four routes and one rule each:
   page, where the verb is "Download" and the user is not asking to run anything
   yet.
 
-Plus the two routes that make a capability DO something rather than be resident:
-`POST /api/ai/image` and `POST /api/ai/transcribe`. Both answer with a job id
-and a path, because both run for minutes and both produce a file.
+Plus the three routes that make a capability DO something rather than be
+resident: `POST /api/ai/image`, `POST /api/ai/transcribe` and
+`POST /api/ai/video`. All three answer with a job id and a path, because all
+three run for minutes (video: potentially hours — see `supervisor.
+VIDEO_TIMEOUT_S`) and all three produce a file.
 
 The POSTs mutate — they start processes and write gigabytes — so every one of
 them carries the D3 `X-Fused` guard. The reads do not, like every other read in
@@ -76,6 +78,22 @@ _MAX_SEED = 2**31 - 1
 # below is what stops the two from drifting apart.
 _IMAGE_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "steps", "guidance", "seed"})
+# Bounds for a video request. Narrower canvas than an image's — `w*h <=
+# 768*1344` — because H3's FL2VA checkpoint is the only one this app can load
+# and that is the shape it was benchmarked at; a caller asking for more gets
+# clamped down to it rather than an OOM minutes into a render. `frames` snaps
+# to h3's own valid grid, `5 + 17n`, because a value off that grid is not a
+# smaller or larger request, it is one h3 cannot run at all.
+_MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
+_MAX_VIDEO_PIXELS = 768 * 1344
+#: `frames = 5 + 17*n`. n=5 -> 90 frames, ~3.75s at 24fps, and is the default.
+_FRAMES_STEP, _FRAMES_BASE = 17, 5
+_MIN_FRAMES_N, _MAX_FRAMES_N, _DEFAULT_FRAMES_N = 0, 20, 5
+_MAX_VIDEO_STEPS = 50
+# No `guidance` here — H3 is CFG-distilled and takes no such parameter. A
+# caller passing one hits `_reject_unknown` like any other unsupported option.
+_VIDEO_OPTIONS = frozenset({
+    "prompt", "model", "width", "height", "frames", "steps", "seed"})
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words"})
@@ -129,6 +147,61 @@ def _images_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "images")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+def _videos_dir() -> str:
+    """Where rendered videos land: `<home>/ai/videos`. See `_images_dir`."""
+    from fused_render.shell.storage import home_dir
+
+    directory = os.path.join(home_dir(), "ai", "videos")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _video_side(value, default: int) -> int:
+    """One dimension, clamped to H3's range and snapped DOWN to a multiple of
+    32 — `_side`'s rule, with video's own bounds."""
+    try:
+        side = int(value)
+    except (TypeError, ValueError):
+        side = default
+    side = max(_MIN_VIDEO_SIDE, min(_MAX_VIDEO_SIDE, side))
+    return side - (side % _VIDEO_SIDE_STEP)
+
+
+def _clamp_video_canvas(width: int, height: int) -> tuple[int, int]:
+    """`(width, height)`, each already snapped by `_video_side`, brought under
+    `w*h <= 768*1344` by shaving the LARGER side down by one step at a time.
+
+    Alternating on the larger side (rather than always the same one) keeps an
+    over-asked SQUARE canvas square rather than silently favouring one axis —
+    an 1344x1344 ask should shrink toward a still-roughly-square frame, not
+    collapse to `1344 x <minimum>`.
+    """
+    while width * height > _MAX_VIDEO_PIXELS:
+        if width >= height and width > _MIN_VIDEO_SIDE:
+            width -= _VIDEO_SIDE_STEP
+        elif height > _MIN_VIDEO_SIDE:
+            height -= _VIDEO_SIDE_STEP
+        else:
+            break
+    return width, height
+
+
+def _snap_frames(value) -> int:
+    """The nearest value on h3's frame grid, `5 + 17n`.
+
+    Not a min/max clamp like the other numeric fields: a value off the grid
+    (say 100) is not "a bit too many frames", it is a request h3 cannot run at
+    all, so this rounds to the closest n rather than merely bounding it.
+    """
+    try:
+        frames = int(value)
+    except (TypeError, ValueError):
+        return _FRAMES_BASE + _FRAMES_STEP * _DEFAULT_FRAMES_N
+    n = round((frames - _FRAMES_BASE) / _FRAMES_STEP)
+    n = max(_MIN_FRAMES_N, min(_MAX_FRAMES_N, n))
+    return _FRAMES_BASE + _FRAMES_STEP * n
 
 
 #: How long a preview frame has to sit untouched before a sweep takes it.
@@ -756,6 +829,98 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "height": request["height"],
         "steps": steps,
         "guidance": guidance,
+        "seed": seed,
+    }
+
+
+@router.post("/api/ai/video")
+def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Render one video (with audio). Returns everything about it except the
+    bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
+    `guidance` (H3 is CFG-distilled) and `previewPath` (no live preview in
+    this build), plus `frames`.
+
+    The 409 case is the one this route has that the image route does not:
+    video generation is the first capability with no "everywhere" row, so on
+    anything but Apple Silicon (or a Mac with no h3 binary staged) this always
+    answers with `registry.unavailable_reason` rather than ever reaching a
+    default model.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Checked first, so an unknown option (`guidance`, say) is reported even
+    # when another field is also wrong — see `_reject_unknown`.
+    rejection = _reject_unknown(body, _VIDEO_OPTIONS, "/api/ai/video")
+    if rejection is not None:
+        return rejection
+
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("'prompt' must be a non-empty string", status=400)
+
+    model = _model_of(body) or catalog.default_for(registry.VIDEO_GENERATION)
+    if not model:
+        # No Apple Silicon, or no h3 binary staged — `catalog.default_for`
+        # answers None either way (`catalog.describe`'s `default` is gated on
+        # availability), and the runner's own reason is the actionable one:
+        # "needs Apple Silicon" or "the h3 binary is not available".
+        return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
+                      or "no video model is configured", status=409)
+
+    try:
+        steps = max(1, min(_MAX_VIDEO_STEPS, int(body.get("steps") or 20)))
+    except (TypeError, ValueError):
+        return _error("'steps' must be a number", status=400)
+    frames = _snap_frames(body.get("frames"))
+    # A seed the caller did not choose is chosen HERE and reported back, so
+    # "make that one again" is always possible — same rule `/api/ai/image` uses.
+    try:
+        seed = int(body["seed"]) if body.get("seed") is not None else secrets.randbelow(_MAX_SEED)
+    except (TypeError, ValueError):
+        return _error("'seed' must be a whole number", status=400)
+    seed = max(0, min(_MAX_SEED, seed))
+
+    width = _video_side(body.get("width"), 768)
+    height = _video_side(body.get("height"), 768)
+    width, height = _clamp_video_canvas(width, height)
+
+    uid = secrets.token_hex(6)
+    job = supervisor.video_job_id(uid)
+    videos = _videos_dir()
+    # Time-ordered and unique, like the image route's filename.
+    path = os.path.join(videos, f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.mp4")
+
+    request = {
+        "prompt": prompt.strip(),
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
+        "seed": seed,
+        "out": path,
+    }
+    try:
+        supervisor.start_video(model, request, job)
+    except supervisor.SupervisorError as e:
+        # 409 for the same reason a load does: the request was well-formed and
+        # the answer is a fact about this machine, not a server fault.
+        return _error(str(e), status=409)
+    # The settled request, not the one that came in: `width`/`height` may have
+    # been snapped, `frames` rounded to h3's grid, `steps` clamped, `seed`
+    # invented. A caller that echoes these back gets the render it actually
+    # got, not the one it asked for.
+    return {
+        "jobId": job,
+        # Canonical, like every other path this API hands back.
+        "path": canonical_fs_path(path),
+        "model": model,
+        "prompt": request["prompt"],
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
         "seed": seed,
     }
 

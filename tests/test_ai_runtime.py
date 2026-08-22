@@ -193,6 +193,76 @@ FAKE_IMAGE_WORKER = textwrap.dedent('''
 ''')
 
 
+FAKE_VIDEO_WORKER = textwrap.dedent('''
+    import argparse, http.server, json, os, socketserver, sys, threading, time
+
+    TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+    STATE = {"state": "loading", "model": "", "detail": "", "error": "",
+             "resident_bytes": None, "loaded_at": None}
+    # A tiny placeholder mp4 — not a real container, just enough bytes for the
+    # test to assert the server hands back a path that actually resolves.
+    MP4 = b"\\x00\\x00\\x00\\x18ftypmp42fake video bytes"
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def ok(self):
+            if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
+                return True
+            self.send_response(403); self.send_header("Content-Length","0"); self.end_headers()
+            return False
+        def _json(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if not self.ok(): return
+            self._json(STATE)
+        def do_POST(self):
+            if not self.ok(): return
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            body = json.loads(raw or b"{}")
+            if self.path.startswith("/quit"):
+                self._json({"ok": True})
+                threading.Thread(target=lambda: (time.sleep(0.05), os._exit(0)), daemon=True).start()
+                return
+            if self.path.startswith("/generate"):
+                if os.environ.get("FAKE_VIDEO_FAILS") == "1":
+                    self._json({"ok": False, "error": "h3 exited nonzero"}); return
+                out = body["out"]
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                with open(out, "wb") as f: f.write(MP4)
+                self._json({"ok": True, "result": {
+                    "path": out, "seconds": 0.1, "seed": body.get("seed"),
+                    "width": body.get("width"), "height": body.get("height"),
+                    "frames": body.get("frames"), "steps": body.get("steps")}})
+                return
+            self._json({"ok": True})
+
+    class S(socketserver.ThreadingTCPServer):
+        daemon_threads = True; allow_reuse_address = True
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--model"); p.add_argument("--status", default="")
+    p.add_argument("--job", default=""); p.add_argument("--download-only", action="store_true")
+    a = p.parse_args()
+    if a.download_only:
+        sys.exit(0)
+    STATE["model"] = a.model
+    srv = S(("127.0.0.1", 0), H)
+    with open(a.status, "w") as f:
+        json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
+    def ready():
+        time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
+        STATE.update(state="ready", resident_bytes=6543, loaded_at=time.time())
+    threading.Thread(target=ready, daemon=True).start()
+    srv.serve_forever()
+''')
+
+
 # A transcription worker: loads instantly, answers /health, and writes the two
 # transcript files where the request tells it to. Stands in for
 # faster_whisper/worker.py's CONTRACT — a single JSON reply and files on disk —
@@ -318,6 +388,38 @@ def fake_image_runner(tmp_path, monkeypatch):
     # MACHINE, and these tests are about the supervisor. Stubbed rather than
     # faked piecemeal so the suite passes identically on a host that has
     # neither — the check itself is tested on its own, below.
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_video_runner(tmp_path, monkeypatch):
+    """A registry whose ONLY runner serves video generation, with the fake
+    worker and this interpreter — so no h3 binary, no weights, no ffmpeg.
+
+    Deliberately does NOT gate on Apple Silicon or a resolvable `h3_bin()` —
+    the fake runner's own `_available` always says yes, which is what lets
+    these tests exercise the ROUTE's behaviour (clamping, job shape, error
+    surfacing) on any machine running the suite. The platform/binary gate
+    itself is `test_ai_registry.py`'s job, tested directly against `_h3_
+    available` rather than through this fixture.
+    """
+    folder = tmp_path / "fake_video_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER)
+    runner = registry.Runner(
+        code="fake-video", capability=registry.VIDEO_GENERATION,
+        folder=str(folder), label="Fake video",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    # See `fake_image_runner`: the catalog is keyed by runner since D293, so
+    # the fake backend brings its own default.
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-video", [
+        {"id": "org/fake-video", "label": "Fake video", "size_gb": None, "note": ""},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
     yield runner
     supervisor.unload()
@@ -3283,7 +3385,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
-                 "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe"):
+                 "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
+                 "/api/ai/video"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -3766,6 +3869,176 @@ def test_a_model_taken_away_mid_wait_still_says_it_was_unloaded(fake_image_runne
         supervisor._wait_ready("org/paints", registry.IMAGE_GENERATION,
                                supervisor.IMAGE_JOB_PREFIX + "waiter")
     assert "unloaded before it could be used" in str(caught.value)
+
+
+# -- video generation (SPEC §40) ------------------------------------------------
+# `/api/ai/video`, `api_ai_image`'s twin — job-backed for the same reason, with
+# an H3-shaped canvas/frame grid instead of an arbitrary width/height/guidance,
+# and (uniquely among these routes) a 409 that is the ORDINARY case off Apple
+# Silicon rather than an edge one.
+
+
+def test_a_video_renders_to_disk_and_the_job_finishes(client, fake_video_runner):
+    response = client.post("/api/ai/video", json={"prompt": "a fox running"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    started = response.json()
+
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
+    assert open(started["path"], "rb").read(4) == b"\x00\x00\x00\x18"
+
+
+def test_the_video_reply_describes_the_render_that_will_actually_happen(
+        client, fake_video_runner):
+    """Clamped and snapped, not echoed — same rule the image route's own
+    version of this test states."""
+    body = {"prompt": "x", "width": 99999, "height": 1344, "frames": 100, "steps": 500}
+    reply = client.post("/api/ai/video", json=body, headers={"X-Fused": "1"}).json()
+    # width clamped to 1344 then shaved down to fit `w*h <= 768*1344` against a
+    # height already at the ceiling.
+    assert reply["width"] * reply["height"] <= 768 * 1344
+    assert reply["width"] % 32 == 0 and reply["height"] % 32 == 0
+    assert reply["frames"] == 107      # nearest 5+17n to 100 is n=6 -> 107
+    assert reply["steps"] == 50        # clamped to _MAX_VIDEO_STEPS
+    _wait_job(reply["jobId"])
+
+
+def test_video_width_and_height_snap_down_to_a_multiple_of_32(client, fake_video_runner):
+    reply = client.post("/api/ai/video", json={"prompt": "x", "width": 1000, "height": 700},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["width"] == 992   # 1000 - (1000 % 32)
+    assert reply["height"] == 672  # 700 - (700 % 32)
+    _wait_job(reply["jobId"])
+
+
+def test_video_frames_default_to_90(client, fake_video_runner):
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["frames"] == 90
+    _wait_job(reply["jobId"])
+
+
+def test_video_frames_snap_to_the_nearest_valid_grid_value(client, fake_video_runner):
+    # 5 + 17n grid: 5, 22, 39, 56, 73, 90, 107, ...
+    for asked, expected in ((5, 5), (30, 22), (40, 39), (95, 90), (2, 5)):
+        reply = client.post("/api/ai/video", json={"prompt": "x", "frames": asked},
+                            headers={"X-Fused": "1"}).json()
+        assert reply["frames"] == expected, (asked, reply["frames"])
+        _wait_job(reply["jobId"])
+
+
+def test_video_steps_default_to_20(client, fake_video_runner):
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["steps"] == 20
+    _wait_job(reply["jobId"])
+
+
+def test_video_seed_is_invented_when_not_given_and_echoed_when_it_is(client, fake_video_runner):
+    one = client.post("/api/ai/video", json={"prompt": "a"}, headers={"X-Fused": "1"}).json()
+    two = client.post("/api/ai/video", json={"prompt": "b", "seed": 1234},
+                      headers={"X-Fused": "1"}).json()
+    assert isinstance(one["seed"], int)
+    assert two["seed"] == 1234
+    _wait_job(one["jobId"]); _wait_job(two["jobId"])
+
+
+def test_a_video_needs_a_prompt(client, fake_video_runner):
+    for body in ({}, {"prompt": ""}, {"prompt": "   "}, {"prompt": 7}):
+        response = client.post("/api/ai/video", json=body, headers={"X-Fused": "1"})
+        assert response.status_code == 400, body
+
+
+def test_an_unrecognised_video_option_is_a_400_naming_it(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "strength": 0.6},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "strength" in message
+    assert "not an option" in message
+
+
+def test_guidance_is_rejected_as_an_unknown_video_option(client, fake_video_runner):
+    """H3 is CFG-distilled and takes no such parameter — the plan is explicit
+    that there is no separate check for it, because the unknown-option
+    rejection already handles anyone passing it."""
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "guidance": 4.0},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "guidance" in response.json()["error"]
+
+
+def test_the_video_envelope_is_checked_before_any_field_validation(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "bogus": "x.png", "steps": "nonsense"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "'bogus' is not an option" in message
+    assert "must be a number" not in message
+
+
+def test_every_documented_video_option_is_still_accepted(client, fake_video_runner):
+    body = {
+        "prompt": "a fox", "model": "org/x", "width": 768, "height": 768,
+        "frames": 90, "steps": 20, "seed": 7,
+    }
+    response = client.post("/api/ai/video", json=body, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
+def test_a_failing_video_render_reports_the_reason_on_the_row(client, fake_video_runner,
+                                                               monkeypatch):
+    monkeypatch.setenv("FAKE_VIDEO_FAILS", "1")
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error"
+    assert "h3 exited" in row["message"]
+
+
+def test_a_video_on_a_machine_with_no_video_runner_says_why(client, monkeypatch):
+    """The ordinary case, not the edge one — video generation is the first
+    capability with no "everywhere" row, so a machine with no h3 binary
+    staged (or no Apple Silicon) always answers 409 here, never opening a row
+    for work that was never going to start."""
+    ghost = registry.Runner(
+        code="ghost-video", capability=registry.VIDEO_GENERATION,
+        folder="/nowhere", label="Ghost video",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    response = client.post("/api/ai/video", json={"prompt": "x"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "not built yet" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs() if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_a_video_off_apple_silicon_says_so(client, monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("h3-video"),))
+    response = client.post("/api/ai/video", json={"prompt": "x"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "Apple Silicon" in response.json()["error"]
+
+
+def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video_runner,
+                                                              monkeypatch):
+    """Same reasoning as the image route's own version of this test: a video
+    caller already has a job to watch, so a cold load happens INSIDE it."""
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    assert supervisor.describe()["loaded"] == []
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"], timeout=40)
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
 
 
 # -- transcription (SPEC §40) ---------------------------------------------------
