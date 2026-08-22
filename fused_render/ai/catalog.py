@@ -761,23 +761,34 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
-    # v1's only checkpoint: FL2VA (frame + language to video + audio), the
-    # variant h3.c's Metal path is built against. `size_gb` is the WHOLE
-    # snapshot including the Qwen3-VL-32B text encoder H3 embeds prompts
-    # with — metadata only here, never fetched by this app's own build or
-    # tests (see the hard "never download the H3 model" constraint). Whoever
-    # ships this must re-measure `size_gb` against the Hub's real per-file
-    # sums before release, the same "measured, not assumed" rule every other
-    # entry in this file follows.
+    # v1's only checkpoint: FL2VA (frame + language to video + audio), one
+    # of the two top-level trees `MiniMaxAI/MiniMax-H3` actually ships —
+    # NOT its own repo (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist; that
+    # id 401s). The real repo is 498.5GB whole (measured against the Hub's
+    # per-file byte sums, 2026-08-23) because it carries BOTH checkpoints —
+    # `FL2VA/` (144.05GB) and `Ref2VA/` (144.05GB) — plus a second, unused
+    # copy of their shared components at the repo root
+    # (`text_encoder/`+`transformer/`+`transformer_ref/`+`vae/`+`audio_vae/`,
+    # ~210GB more). h3.c's loader (`h3_load_dir` in h3.c, read at the pinned
+    # commit) never opens a bare root path — every file it touches is
+    # `FL2VA/…` or `Ref2VA/…` — so `FL2VA/*` is both NECESSARY and
+    # SUFFICIENT for this v1's prompt-only path, and `h3_video/worker.py`'s
+    # `download()` passes it as `allow_patterns` rather than fetching the
+    # whole 498.5GB repo. `size_gb` here is `FL2VA/`'s own measured total
+    # (144,051,182,625 bytes across its 81 files) — the whole of what a
+    # Download actually fetches, per this file's own `size_gb` rule — and
+    # is metadata only: never fetched by this app's own build or tests (see
+    # the hard "never download the H3 model" constraint).
     "h3-video": [
         {
-            "id": "MiniMaxAI/MiniMax-H3-FL2VA",
+            "id": "MiniMaxAI/MiniMax-H3",
             "recommended": True,
             "label": "MiniMax H3 FL2VA",
             "nickname": "MiniMax H3",
-            "size_gb": 62.0,
-            "note": "Text-to-video with audio. One resident model — no ref2va "
-                    "checkpoint is offered in this build.",
+            "size_gb": 144.1,
+            "note": "Text-to-video with audio. One resident model — the ref2va "
+                    "checkpoint (a second 144GB tree in the same repo) is not "
+                    "fetched or offered in this build.",
         },
     ],
 }

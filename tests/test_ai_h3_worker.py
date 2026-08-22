@@ -29,7 +29,7 @@ WORKER_PATH = os.path.join(
 )
 FAKE_H3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "fake_h3.py")
 
-MODEL = "MiniMaxAI/MiniMax-H3-FL2VA"
+MODEL = "MiniMaxAI/MiniMax-H3"
 
 
 class Cancelled(Exception):
@@ -64,6 +64,7 @@ class FakeBase:
         self.state.update(fields)
 
     def download_snapshot(self, model_id, **kwargs):
+        self.download_kwargs = kwargs
         return f"/snapshots/{model_id}"
 
     def serve(self, **kwargs):
@@ -132,6 +133,20 @@ def test_load_accepts_a_plain_snapshot_and_sets_device(monkeypatch, base, tmp_pa
     worker = load_worker(monkeypatch, base)
     worker.load(MODEL, snapshot(tmp_path))
     assert base.state.get("device") == "mps"
+
+
+def test_download_fetches_only_the_fl2va_tree(monkeypatch, base, h3_env):
+    """MiniMaxAI/MiniMax-H3 is a 498.5GB whole repo carrying BOTH the FL2VA
+    and Ref2VA checkpoints, plus a second unused copy of their shared
+    components at the repo root — VERIFIED against the built h3.c source
+    (h3.c's h3_load_dir): every path it ever opens is 'FL2VA/...' or
+    'Ref2VA/...', never a bare root path. This build offers prompt-only
+    FL2VA rendering, so a download must fetch the FL2VA/ tree ONLY —
+    fetching the other ~354GB (Ref2VA plus the duplicate root components)
+    would be silent waste, not merely a slower correct download."""
+    worker = load_worker(monkeypatch, base)
+    worker.download(MODEL)
+    assert base.download_kwargs == {"allow_patterns": ["FL2VA/*"]}
 
 
 # ---------------------------------------------------------------- happy path

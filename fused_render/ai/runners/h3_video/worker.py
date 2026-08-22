@@ -58,10 +58,25 @@ _STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 _DIFFUSERS_MARKER = "model_index.json"
 
 
+#: h3.c's own checkpoint layout puts EVERY file it ever opens under one of
+#: two top-level trees, `FL2VA/` or `Ref2VA/` — VERIFIED by reading every
+#: `h3_path(ctx->model_dir, …)` call site in h3.c at the pinned commit: none
+#: of them names a bare root path. `MiniMaxAI/MiniMax-H3` (the real repo —
+#: `MiniMaxAI/MiniMax-H3-FL2VA` does not exist) ships BOTH trees plus a
+#: second, unused copy of their shared components at the repo root, for a
+#: 498.5GB whole-repo download. This build offers prompt-only FL2VA
+#: rendering and no ref2va checkpoint (see the plan's deferred list), so
+#: `FL2VA/*` is both the necessary and the sufficient pattern — fetching the
+#: other ~354GB would be silent waste, not a smaller version of correctness.
+_ALLOW_PATTERNS = ["FL2VA/*"]
+
+
 def download(model_id):
-    """The whole repo, and nothing clever — h3.c reads its checkpoint as one
-    directory, exactly like `mflux_image`'s single-repo download."""
-    return worker_base.download_snapshot(model_id)
+    """Only the `FL2VA/` tree — see `_ALLOW_PATTERNS`. `allow_patterns`
+    reaches both the segmented fetch and the huggingface_hub fallback
+    (`worker_base.download_snapshot`'s own contract), so a resumed or
+    fallback download never reaches for the ref2va tree either."""
+    return worker_base.download_snapshot(model_id, allow_patterns=_ALLOW_PATTERNS)
 
 
 def load(model_id, fetched):
@@ -123,6 +138,12 @@ def _drain_stderr(proc, sink):
     real failure `subprocess.PIPE` on both streams invites, and the reason a
     canned `CompletedProcess` in a test could never have caught it.
     """
+    # `Popen.stderr` is typed `IO | None` because a `Popen` built with no
+    # `stderr=` has none — this one always is (`generate` always passes
+    # `stderr=subprocess.PIPE`), so the None case here is a caller bug, not a
+    # runtime possibility, and the assert says so instead of letting a type
+    # checker's worst case read as a real one.
+    assert proc.stderr is not None, "_drain_stderr requires stderr=PIPE"
     try:
         for line in proc.stderr:
             sink.append(line)
@@ -182,6 +203,12 @@ def generate(body):
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, bufsize=1, close_fds=False, env=env,
     )
+    # Both are typed `IO | None` on `Popen` because either can be absent —
+    # neither is here, since the call above always passes both as PIPE. The
+    # assert documents that invariant for a reader (and a type checker)
+    # rather than leaving `proc.stdout`/`proc.stderr` looking like they could
+    # be optional two lines below.
+    assert proc.stdout is not None and proc.stderr is not None
     stderr_lines = []
     stderr_thread = threading.Thread(
         target=_drain_stderr, args=(proc, stderr_lines), daemon=True)

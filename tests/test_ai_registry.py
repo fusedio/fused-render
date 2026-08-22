@@ -24,6 +24,20 @@ def _linux(monkeypatch):
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
 
 
+def _runner(code):
+    """`registry.by_code(code)`, asserted present.
+
+    `by_code` returns `Runner | None` — real when a code is misspelled, but
+    every code this file names is a row this test suite itself registers, so
+    a `None` here is a real regression (a runner renamed or removed) and
+    should fail LOUDLY on the missing code rather than as an opaque
+    `AttributeError` two lines later on whatever attribute was read first.
+    """
+    runner = registry.by_code(code)
+    assert runner is not None, code
+    return runner
+
+
 def test_embeddings_is_a_registered_capability():
     assert registry.EMBEDDINGS == "embeddings"
     assert registry.EMBEDDINGS in registry.capabilities()
@@ -44,11 +58,11 @@ def test_mlx_embed_is_registered_before_transformers_embed():
 
 def test_mlx_embed_is_gated_to_apple_silicon(monkeypatch):
     _windows(monkeypatch)
-    assert not registry.by_code("mlx-embed").available().ok
+    assert not _runner("mlx-embed").available().ok
     _linux(monkeypatch)
-    assert not registry.by_code("mlx-embed").available().ok
+    assert not _runner("mlx-embed").available().ok
     _mac_arm(monkeypatch)
-    assert registry.by_code("mlx-embed").available().ok
+    assert _runner("mlx-embed").available().ok
 
 
 def test_transformers_embed_runs_everywhere(monkeypatch):
@@ -57,7 +71,7 @@ def test_transformers_embed_runs_everywhere(monkeypatch):
     embeddings does too."""
     for setter in (_mac_arm, _windows, _linux):
         setter(monkeypatch)
-        assert registry.by_code("transformers-embed").available().ok
+        assert _runner("transformers-embed").available().ok
 
 
 def test_apple_silicon_resolves_to_mlx_embed(monkeypatch):
@@ -144,18 +158,18 @@ def test_h3_video_row_present_on_apple_silicon_with_a_binary(monkeypatch, tmp_pa
     this one's."""
     _mac_arm(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
-    assert registry.by_code("h3-video")._available().ok
+    assert _runner("h3-video")._available().ok
 
 
 def test_h3_video_row_absent_off_apple_silicon(monkeypatch, tmp_path):
     _windows(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
-    status = registry.by_code("h3-video")._available()
+    status = _runner("h3-video")._available()
     assert not status.ok
     assert "Apple Silicon" in status.reason
 
     _linux(monkeypatch)
-    status = registry.by_code("h3-video")._available()
+    status = _runner("h3-video")._available()
     assert not status.ok
     assert "Apple Silicon" in status.reason
 
@@ -163,7 +177,7 @@ def test_h3_video_row_absent_off_apple_silicon(monkeypatch, tmp_path):
 def test_h3_video_row_absent_with_no_binary(monkeypatch):
     _mac_arm(monkeypatch)
     _without_h3_binary(monkeypatch)
-    status = registry.by_code("h3-video")._available()
+    status = _runner("h3-video")._available()
     assert not status.ok
     assert "h3" in status.reason.lower()
 
@@ -210,7 +224,7 @@ def test_catalog_defaults_to_the_fl2va_entry_on_apple_silicon(monkeypatch, tmp_p
     rows = {row["capability"]: row for row in catalog.describe()}
     video = rows[registry.VIDEO_GENERATION]
     assert video["available"]
-    assert video["default"] == "MiniMaxAI/MiniMax-H3-FL2VA"
+    assert video["default"] == "MiniMaxAI/MiniMax-H3"
 
 
 def test_catalog_default_is_null_when_unavailable(monkeypatch):

@@ -7874,13 +7874,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   subprocess never has to find one on a PATH a supervisor child may not
   even have.
 - **AI-14b** **The curated catalog entry is metadata only, and stays that
-  way through every test in this build.** MiniMax H3's FL2VA checkpoint is
-  a ~62GB download (the Qwen3-VL-32B text encoder included); no test,
-  build step, or CI run may fetch it or run a real render — every worker
-  test drives a REAL executable fake standing in for the h3 binary (a
-  script that writes a tiny mp4 and prints real progress lines over a real
-  pipe, never a canned subprocess result), and the one real end-to-end
-  render happens later, on an M3, by a human.
+  way through every test in this build.** The real repo,
+  `MiniMaxAI/MiniMax-H3` (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist — a
+  401), is 498.5GB WHOLE: it carries both the FL2VA and Ref2VA checkpoints
+  (144.05GB each) plus a second, unused copy of their shared components at
+  the repo root (~210GB more). h3.c's own loader (VERIFIED by reading
+  h3.c's `h3_load_dir` at the pinned commit) never opens a path outside
+  `FL2VA/` or `Ref2VA/`, so this build's prompt-only FL2VA path downloads
+  ONLY the `FL2VA/` tree (`allow_patterns=["FL2VA/*"]` on
+  `h3_video/worker.py`'s `download()`) at its own measured 144.05GB
+  (`catalog.py`'s `size_gb: 144.1`), never the whole repo. No test, build
+  step, or CI run may fetch it or run a real render either way — every
+  worker test drives a REAL executable fake standing in for the h3 binary
+  (a script that writes a tiny mp4 and prints real progress lines over a
+  real pipe, never a canned subprocess result), and the one real
+  end-to-end render happens later, on an M3, by a human.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

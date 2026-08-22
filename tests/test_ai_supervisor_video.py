@@ -55,7 +55,7 @@ def test_leak_ceiling_uses_the_video_timeout_for_video_generation():
         supervisor.GENERATE_TIMEOUT_S + supervisor._LEAK_CEILING_MARGIN_S)
 
 
-def _fake_worker(capability, model="MiniMaxAI/MiniMax-H3-FL2VA"):
+def _fake_worker(capability, model="MiniMaxAI/MiniMax-H3"):
     worker = supervisor.Worker(model=model, capability=capability,
                                runner_code="h3-video", token="tok-video")
     worker.state = "ready"
@@ -104,7 +104,7 @@ def test_start_video_raises_before_opening_a_job_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     with pytest.raises(supervisor.SupervisorError, match="Apple Silicon"):
-        supervisor.start_video("MiniMaxAI/MiniMax-H3-FL2VA", {"prompt": "x"},
+        supervisor.start_video("MiniMaxAI/MiniMax-H3", {"prompt": "x"},
                                "sys:ai-video:test")
 
 
@@ -113,7 +113,7 @@ def test_child_env_injects_the_resolved_h3_binary_for_video(monkeypatch, tmp_pat
     fake.write_text("#!/bin/sh\n")
     fake.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_H3_BIN", str(fake))
-    env = supervisor._child_env("tok", "MiniMaxAI/MiniMax-H3-FL2VA", registry.VIDEO_GENERATION)
+    env = supervisor._child_env("tok", "MiniMaxAI/MiniMax-H3", registry.VIDEO_GENERATION)
     assert env["FUSED_RENDER_H3_BIN"] == str(fake)
 
 
@@ -133,5 +133,5 @@ def test_child_env_omits_h3_binary_when_nothing_resolves(monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_H3_BIN", raising=False)
     monkeypatch.setattr(registry.shutil, "which", lambda name: None)
     monkeypatch.setattr(registry.sys, "frozen", None, raising=False)
-    env = supervisor._child_env("tok", "MiniMaxAI/MiniMax-H3-FL2VA", registry.VIDEO_GENERATION)
+    env = supervisor._child_env("tok", "MiniMaxAI/MiniMax-H3", registry.VIDEO_GENERATION)
     assert "FUSED_RENDER_H3_BIN" not in env
