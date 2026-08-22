@@ -7181,7 +7181,11 @@ def test_neither_spawn_site_forgets_the_model(monkeypatch):
              and getattr(node.func, "id", None) == "_child_env"]
     assert len(calls) == 2, f"{len(calls)} `_child_env` call sites, expected 2"
     for call in calls:
-        assert len(call.args) == 2, (
+        # >= 2, not == 2: the resident spawn site also passes `worker.capability`
+        # (the h3-video env injection's own gate) as a third positional
+        # argument — a call this test must not silently accept with a MISSING
+        # model, which is what the >= keeps checking below.
+        assert len(call.args) >= 2, (
             f"_child_env at line {call.lineno} passes no model, so that worker "
             f"can never use the mirror")
         # …and passes the model being FETCHED, not some other string. A worker
