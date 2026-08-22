@@ -1931,3 +1931,151 @@ def test_loading_a_component_is_refused_by_name(client, hub):
 
     assert reading.cached is True and reading.capability is None
     assert reading.looks_like == "a speech detector that belongs to MLX Whisper"
+
+
+# -- a download that never finished (D424) ----------------------------------------
+# The reading is POSITIVE EVIDENCE ONLY, and every test here is about one of the
+# two halves of that: the residue of a stopped fetch says "partial", and nothing
+# else is allowed to — least of all a format no engine reads, which is what a
+# perfectly complete SigLIP tower looks like.
+
+
+@requires_symlinks
+def test_a_part_file_marks_the_repo_partly_downloaded(client, hub):
+    """The bug this whole reading exists for.
+
+    Our fetcher publishes each blob and links it into `snapshots/<commit>/` as
+    that FILE lands, so a cancel halfway through a repo leaves a real revision
+    beside a part file — and the revision alone read as "downloaded", which took
+    the recommendation and its working Download button off the page and left a
+    card with no weights, no engine and a disabled Load.
+    """
+    repo = _repo(hub, "models--mlx-community--whisper-tiny.en-8bit",
+                 blobs={"cfg": 10}, snapshots={"c1": {"config.json": "cfg"}})
+    # The 4.6GB of weights that never arrived, mid-flight when the ✕ was pressed.
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 64)
+
+    row = _repo_row(client, "mlx-community/whisper-tiny.en-8bit")
+
+    assert row["partial"] is True
+    # And NOT because the revision is missing: it is there, which is exactly why
+    # the count could not answer this question.
+    assert row["revisions"] == 1
+
+
+@requires_symlinks
+def test_hugging_faces_own_incomplete_file_counts_too(client, hub):
+    """The cache is shared. A pull by `hf`, transformers or a template a user
+    pasted in leaves `.incomplete`, and this page reads that cache too."""
+    repo = _repo(hub, "models--org--m", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+    (repo / "blobs" / "abc123.incomplete").write_bytes(b"x" * 8)
+
+    assert _repo_row(client, "org/m")["partial"] is True
+
+
+def test_a_repo_with_no_snapshot_at_all_is_partly_downloaded(client, hub):
+    """A folder with blobs and nothing to open — a cancel that landed before the
+    first file did. hub search has always called this partial; the listing now
+    says the same word."""
+    _repo(hub, "models--org--m", blobs={"w": 10})
+
+    assert _repo_row(client, "org/m")["partial"] is True
+
+
+@requires_symlinks
+def test_a_completed_repo_no_engine_reads_is_NOT_partial(client, hub):
+    """The false positive that would have been worse than the bug.
+
+    A SigLIP tower or an ACE-Step checkpoint downloads perfectly and no runner
+    here opens it: `engine` is null and `capability` may be too. Reading THAT as
+    "partly downloaded" would offer to resume a download that finished months
+    ago — so the format never enters the question.
+    """
+    repo = _repo(hub, "models--google--siglip2-base", blobs={"w": 10},
+                 snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["Siglip2Model"]}))
+
+    row = _repo_row(client, "google/siglip2-base")
+
+    assert row["engine"] is None
+    assert row["partial"] is False
+
+
+@requires_symlinks
+def test_a_repo_pinned_at_a_commit_is_not_partial_for_having_no_ref(client, hub):
+    """The other tempting reading, and the other false positive: neither hf nor
+    `_write_ref` writes a ref named after a sha, so "no refs/" is the ordinary
+    state of a repo fetched at a pinned commit."""
+    _repo(hub, "models--org--pinned", blobs={"w": 10},
+          snapshots={"deadbeef": {"model.safetensors": "w"}})
+
+    assert _repo_row(client, "org/pinned")["partial"] is False
+
+
+@requires_symlinks
+def test_a_repo_this_app_never_fetched_is_not_partial(client, hub):
+    """`.fused-fetch-<commit>.json` is written only by our own fetcher, so its
+    ABSENCE describes every repo pulled by the `hf` CLI or by a build older than
+    the record — none of which is half-downloaded."""
+    _repo(hub, "models--org--legacy", blobs={"w": 10},
+          snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    assert _repo_row(client, "org/legacy")["partial"] is False
+
+
+def test_a_dataset_is_never_partly_downloaded(client, hub):
+    """A dataset with no snapshot is not something this page can resume, and the
+    card it would draw the state on has no Download button."""
+    _repo(hub, "datasets--squad", blobs={"a": 10})
+
+    assert _repo_row(client, "squad")["partial"] is False
+
+
+def test_the_part_suffix_is_the_fetchers_own(client):
+    """Two modules, one name. This module reads a cache the fetcher writes, and
+    the constant is duplicated deliberately (see `_PART_SUFFIXES`) — so the
+    duplication is pinned rather than trusted."""
+    from fused_render.ai.runners import worker_base
+
+    assert worker_base.PART_SUFFIX in ai_models_mod._PART_SUFFIXES
+
+
+@requires_symlinks
+def test_deleting_a_partly_downloaded_repo_frees_it_and_it_leaves_the_listing(
+        client, hub):
+    """The second of the two ways out. Discarding the bytes is what puts the
+    model back among the recommendations, so it has to actually work on a repo
+    whose snapshot is incomplete."""
+    repo = _repo(hub, "models--org--m", blobs={"cfg": 10},
+                 snapshots={"c1": {"config.json": "cfg"}})
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 128)
+    assert _repo_row(client, "org/m")["partial"] is True
+
+    r = client.post("/api/ai-models/delete", headers={"X-Fused": "1"},
+                    json={"targets": [{"dir": "models--org--m"}]})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["failures"] == []
+    assert body["freed"] >= 128
+    assert [row["id"] for row in body["repos"]] == []
+    assert not repo.exists()
+
+
+@requires_symlinks
+def test_cached_models_does_not_offer_half_a_snapshot(client, hub):
+    """`cached_models()` is what `/api/ai/catalog` and every page's picker read
+    (D323). A repo whose download stopped is not a model this disk HAS, and a
+    picker offering one is a Load that fails."""
+    repo = _repo(hub, "models--org--chat", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    assert "org/chat" in {m.repo_id for m in ai_models_mod.cached_models()}
+
+    # The same repo, one interrupted fetch later.
+    (repo / "blobs" / "shard2.fusedpart").write_bytes(b"x" * 32)
+
+    assert "org/chat" not in {m.repo_id for m in ai_models_mod.cached_models()}

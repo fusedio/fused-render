@@ -5028,13 +5028,20 @@ walk is `fused_render/ai/hub_cache.py`, beside `catalog.py`/`registry.py`/
 `supervisor.py`; `server/routers/ai_models.py` is the three route decorators
 over it. Every `/api/*` URL is unchanged.
 
-**Five tabs, five paths**: `/ai-models/playground` (the default — bare
-`/ai-models` redirects to it), `/ai-models/local`, `/discover`, `/engines`,
-`/usage`. `?model=` and `?cap=` still seed the playground's picker and are
-carried across a tab switch; only the tab itself left the query string. An
-unrecognised sub-path falls back to the default tab silently, and there is no
-alias for the old `?tab=` shape (D420). The five tabs share ONE mounted
-component and one cache walk — see D420 for why they are not five routes.
+**Four tabs, four paths**: `/ai-models/playground` (the default — bare
+`/ai-models` redirects to it), `/ai-models/local`, `/engines`, `/usage`.
+`?model=` and `?cap=` still seed the playground's picker and are carried across a
+tab switch; only the tab itself left the query string. An unrecognised sub-path
+falls back to the default tab silently, and there is no alias for the old `?tab=`
+shape (D420). The four tabs share ONE mounted component and one cache walk — see
+D420 for why they are not four routes.
+
+**`discover/` is still here and is not routed (D423).** The Local tab answers its
+question now — see HF-20 — so a fifth strip entry whose whole content is a second,
+emptier version of that answer costs a reader a click to learn nothing.
+`/ai-models/discover` is therefore an unknown sub-path and lands on the default
+like any other stale link. The Hub-search code, its view logic and its tests stay
+in the tree: the judgement is about the STRIP, not about the code.
 
 The cache is shared and invisible: a `transformers` import in a page's Python,
 a `diffusers` pipeline, a template someone pasted in, or an `hf download` in a
@@ -5230,6 +5237,43 @@ is for, and the cache states it nowhere:
   refs** (HF-15) and cached per snapshot directory, keyed by its mtime — a
   snapshot's contents are immutable once written, so a Refresh over forty repos
   re-reads nothing.
+- **HF-20** **One row per capability, holding what this machine has AND what to
+  get next (D423).** A capability's row reads: the loaded model, then what has
+  been downloaded for it most recently (`lastUsed` descending, nulls last, ties
+  keeping the listing's order — so a `noatime` volume degrades to the old sort
+  rather than to a shuffle), then the curation's recommendations for the same
+  capability, each with a Download button. A capability with NOTHING on disk but
+  something recommended still gets a row, which is the whole point: a fresh
+  machine's answer to "what should I get" is drawn where the answer to "what do I
+  have" will appear, so the page fills up in place instead of sending anybody to
+  a second grid on another tab. That is why the Discover tab is unrouted.
+  A recommendation is suppressed by **"this model already has a card here"**, not
+  by "this disk has the model" — the two stopped being one question at AI-7f: a
+  partly downloaded repo is not a model anybody can load, but its card is on
+  screen carrying its own Download, and recommending the same model beside it
+  would draw one model twice. Deleting that repo is what brings the
+  recommendation back.
+  The byte figure beside a heading is **disk bytes only**, and omitted at zero: it
+  is a claim about this machine (D249/D251), and counting models nobody has
+  downloaded would make it the one number on the page that cannot be checked
+  against the cache. "Fetched by engines" (AI-7e) is its own row below with no
+  recommendations, because nobody chooses a component.
+- **HF-21** **The row is a CAROUSEL, and its arrows are measured, never assumed.**
+  Cards are exact thirds, so the old "there is more" signal — a card half in view
+  — is gone and the row has to say it scrolls. Each edge-fade arrow exists only
+  while there is content on its side, decided by comparing `scrollWidth` against
+  `clientWidth` on scroll, on resize (`ResizeObserver`) and on every render — a
+  finished download replaces a card and changes `scrollWidth` with no resize
+  firing. **Never a width breakpoint**: the row's width and its overflow are
+  different facts, and a threshold gets both wrong at once on a narrow window with
+  two cards and on a wide one with twelve. The arrows float over the row's edge so
+  appearing and disappearing move no layout, and a click scrolls by exactly one
+  card so the reader keeps their place.
+  A wrapping grid was what this replaced. It turned each capability into a block
+  of unknown height, so on a page whose whole job is to be swept the THIRD heading
+  was reliably below the fold. One row per capability keeps every heading on
+  screen at once and puts the length inside the row, where a horizontal scroll is
+  the reader's own business.
 
 ---
 
@@ -5467,10 +5511,14 @@ three weeks ago, and would cost nothing to open.
   the local scan before it is returned, so a card says **downloaded** (with what
   it costs on disk and when it was last read), **partly downloaded**, or
   **not downloaded**. `partial` is a real state and not a rounding of the other
-  two: an interrupted pull leaves a repo folder holding blobs and no
-  materialised snapshot, and calling that "downloaded" sends someone to a model
-  that cannot load. The line is "has at least one snapshot" — and the page holds
-  the same line, so only a **downloaded** result opens its model card. A partial
+  two: an interrupted pull leaves bytes behind, and calling those "downloaded"
+  sends someone to a model that cannot load. The line was "has at least one
+  snapshot" and **is now "no residue of a stopped fetch" (D424)**: a snapshot
+  directory is materialised FILE BY FILE, so the first small file to land handed
+  a cancelled pull a revision and with it the very verdict this state exists to
+  withhold. What answers instead is the part file an interrupted fetch
+  deliberately keeps (AI-5i) — and the page holds the same line, so only a
+  **downloaded** result opens its model card. A partial
   one links to the Hub like an absent one does, because there is no revision for
   the card to describe and linking there would hand someone the very failure the
   distinction exists to prevent.
@@ -6481,10 +6529,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   still listed, with its reason. **Downloading is offered here** (D258,
   superseding HS-1's read-only posture): the job-backed machinery HS-1 named as
   the prerequisite now exists, so the ✕ in the manager really stops a pull.
-  The ✓ means a **materialised snapshot**, never merely a repo folder:
+  The ✓ means a **materialised snapshot AND a fetch that finished**, never merely
+  a repo folder and — since D424 — never a revision alone:
   `huggingface_hub` creates `models--org--name/` on the first byte, so a set
   built from folder names flipped a suggestion to "✓ downloaded" seconds
-  after Download was pressed, over a 4.6GB pull that had barely started. While
+  after Download was pressed, over a 4.6GB pull that had barely started; and the
+  snapshot those files link into is built one file at a time, so the revision
+  count said the same thing one small file later. A repo carrying the residue of
+  a stopped fetch is **partly downloaded**, which is a state with its own card
+  (AI-7f) rather than a ✓ or an absence. While
   the pull runs the card shows that pull's progress instead — the same three
   states the Hub result cards already draw. And the cache answer is the PAGE's
   one walk, handed down, not a second walk Discover runs for itself: two walks
@@ -6527,6 +6580,31 @@ an AI Models page that could say what was on disk but not what was *running*.
   FILENAME back out of it rather than keeping a second copy, and a test asserts
   every recipe's component repo appears there, so a new recipe cannot
   reintroduce an unexplained row.
+- **AI-7f** **A download that never finished is its own card state, with two ways
+  out and no Load** (D424). Cancelling a first download — or quitting, or losing
+  the network — leaves a repo folder holding part of a snapshot, and the page used
+  to read it as a model this machine HAS: the recommendation with its Download
+  button disappeared, and what stood in its place wore the quiet "no engine" tag
+  over a disabled Load, because no runner reads a snapshot whose weights have not
+  arrived. Both statements were true of the format and false about the download,
+  and the only escape was deleting the repo by hand.
+  So the listing carries **`partial`**, read from the residue of the stopped fetch
+  — a part file in `blobs/` (ours or `huggingface_hub`'s), or no snapshot at all
+  — and **never from the format**: "nothing here reads this" is AI-7e's answer for
+  a repo that downloaded perfectly, and offering to resume THAT would be the same
+  lie in the other direction. The card drops the engine tag and the Load for a
+  **partly downloaded** tag and a **Download that RESUMES** (AI-5i's part file is
+  what makes that cheap), with the trash beside it as the second way out: discard
+  the bytes and the model goes back to being a recommendation. The repo stays
+  visible while it is in that state, for AI-7e's reason — the page's job includes
+  showing what is eating the disk. `partial` also removes the repo from
+  `cached_models()`, so no page's picker and no `/api/ai/catalog` row offers to
+  load half a snapshot.
+  **Cleaning the cache up on cancel was rejected**, and it was the first thing
+  tried: it contradicts D275/AI-5i, whose part files exist precisely so that a
+  cancel, a crash or a quit RESUMES instead of restarting, and it could not have
+  fixed the state anyway — a quit mid-download produces the identical card with no
+  cancel anywhere in it.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second

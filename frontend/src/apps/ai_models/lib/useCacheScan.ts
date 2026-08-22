@@ -47,6 +47,14 @@ export interface CacheScan {
   /** Models whose pull has ended but whose confirming walk has not landed. */
   settling: Set<string>;
   runtime: ReturnType<typeof useAiRuntime>;
+  /** Which generation of the walk this is. Exposed so a tab with its OWN
+   *  server-side answer to refresh can ride the same trigger rather than invent
+   *  a second one — the Local tab's curated catalog is the case: a finished
+   *  download changes which models are worth recommending, and an engine switch
+   *  replaces the shortlist rather than reordering it, which are exactly the two
+   *  things that bump this. Riding it is what keeps a recommended card and the
+   *  repo card that replaces it from being one poll apart. */
+  scanEpoch: number;
   /** Re-walk the cache. Not a Refresh button (D256) — every caller is the app
    *  noticing that the listing it holds is no longer true. */
   bumpScan: () => void;
@@ -195,6 +203,7 @@ export function useCacheScan(): CacheScan {
     downloading,
     settling,
     runtime,
+    scanEpoch: scan,
     bumpScan: () => setScan((n) => n + 1),
     publishListing: (result) => setLoad({ status: "ok", data: result }),
   };

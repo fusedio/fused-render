@@ -171,6 +171,24 @@ def test_a_half_pulled_repo_is_partial_not_downloaded(client, hub_cache, monkeyp
     assert models[0]["local"]["state"] == "partial"
 
 
+def test_a_repo_with_a_revision_and_an_unfinished_fetch_is_partial_too(
+    client, hub_cache, monkeypatch
+):
+    """"Has at least one snapshot" was the wrong line (D424).
+
+    Our own fetcher links each file into `snapshots/<commit>/` as it lands, so a
+    cancelled pull has a revision — and this tab said "downloaded" over a repo
+    holding a part file and no weights. The residue of the stopped fetch is what
+    answers now, and it is the AI Models listing's own reading, so the two tabs
+    cannot disagree about one folder.
+    """
+    repo = _cached_repo(hub_cache, "models--org--partial")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 32)
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/partial")]))
+
+    assert _search(client).json()["models"][0]["local"]["state"] == "partial"
+
+
 def test_the_join_costs_what_the_results_cost_not_what_the_cache_costs(
     client, hub_cache, monkeypatch
 ):
