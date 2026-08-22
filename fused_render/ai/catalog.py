@@ -99,29 +99,38 @@ from fused_render.ai import registry
 #: is a value nobody owns and no test can see.
 #:
 #: **`recommended` IS A SECOND AXIS, AND IT IS THE ONLY ONE THE PLAYGROUND
-#: READS.** Absent on most entries and `True` on a few, opt-in: every entry here
-#: is a model this app stands behind on the AI Models page, and the marked subset
-#: is the shorter list the Playground offers — recommended-or-downloaded is what
-#: its sidebar draws (D425). The two surfaces want different lengths for the same
-#: curation. The AI Models page is a place to SHOP: eight text entries from 0.7GB
-#: to 20GB is the range someone comparing downloads needs, and its Local tab
-#: exists to say what a disk already holds. The Playground is a place to TRY,
-#: reached by someone who wants to type a sentence and see what comes back — and
-#: a sidebar of eight rows, five of which are a multi-gigabyte download away
-#: from answering, is a decision where a text box was wanted.
+#: READS.** Opt-in, absent almost everywhere: every entry here is a model this
+#: app stands behind on the AI Models page, and the marked one is what the
+#: Playground offers — recommended-or-downloaded is what its sidebar draws
+#: (D425). The two surfaces want different lengths for the same curation. The AI
+#: Models page is a place to SHOP: eight text entries from 0.7GB to 20GB is the
+#: range someone comparing downloads needs, and its Local tab exists to say what
+#: a disk already holds. The Playground is a place to TRY, reached by someone who
+#: wants to type a sentence and see what comes back — and a sidebar of eight
+#: rows, most of them a multi-gigabyte download away from answering, is a
+#: decision where a text box was wanted.
 #:
-#: **It is NOT "the best ones", and it is NOT the default.** `default_for()` is
+#: **EXACTLY ONE PER LIST — one per capability AND engine, since that is what a
+#: list IS — and a test pins the count both ways.** Not "a handful", which is
+#: what this started as (three of the eight text entries, two of the four MLX
+#: whispers) and which was the owner's call to cut: a shortlist of three is still
+#: a comparison, and the reader who came to type a sentence has no way to make
+#: it. One row is an ANSWER. It also makes the flag's meaning checkable by eye —
+#: "the model to try on this engine" has one correct value per list, where "a
+#: good first click" had as many as somebody felt like marking. The floor and the
+#: ceiling matter for different reasons: no marked entry leaves the Playground's
+#: group empty on a machine with nothing downloaded, and two puts the choice back.
+#:
+#: **It is NOT "the best one", and it is NOT the default.** `default_for()` is
 #: still position 0, still the smallest, and a recommended entry has no bearing
 #: on it — see the module docstring on why there is no `default: True` field and
 #: why reintroducing one under this name would be the same mistake wearing a new
-#: word. What the flag means is "a first thing to try": the quick one that
-#: answers on any machine, the one worth real work, and a second family to try a
-#: bad answer against. A 20GB model can be the best row in its list and still be
-#: a poor first click.
-#:
-#: **Each list needs at least one, and a test pins that** — an unmarked list
-#: leaves the Playground's group empty on a machine with nothing downloaded,
-#: which is the one state this filter must not produce.
+#: word. What the flag means is "the one to TRY on this engine": strong enough
+#: that a first answer is a fair picture of what local inference does here, small
+#: enough that the download is not the experience. That is why it is neither end
+#: of a list — the smallest text entry is quick and weaker than every row above
+#: it, and a 20GB model can be the best row in its list and still be a poor first
+#: click.
 #:
 #: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
 #: sentences is a wall nobody reaches the end of — so each note carries the
@@ -229,7 +238,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # still load it once.
         {
             "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
-            "recommended": True,
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
             "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
@@ -276,7 +284,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
-            "recommended": True,
             "label": "Gemma 4 E4B (4-bit)",
             "nickname": "Gemma 4 E4B",
             "size_gb": 5.2,
@@ -453,7 +460,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # this file's own "every line is somebody's answer" test.
         {
             "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
-            "recommended": True,
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
             "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
@@ -472,7 +478,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "gemma-4-E4B-it-Q4_K_M.gguf",
-            "recommended": True,
             "label": "Gemma 4 E4B (Q4_K_M)",
             "nickname": "Gemma 4 E4B",
             "size_gb": 5.0,
@@ -616,7 +621,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-small-mlx",
-            "recommended": True,
             "label": "Whisper small (MLX)",
             "nickname": "Whisper small",
             "size_gb": 0.5,
@@ -675,7 +679,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Systran/faster-whisper-small",
-            "recommended": True,
             "label": "Whisper small (CT2)",
             "nickname": "Whisper small",
             "size_gb": 0.5,
@@ -742,7 +745,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "google/siglip2-so400m-patch14-384",
-            "recommended": True,
             "label": "SigLIP2 so400m (384px)",
             "size_gb": 4.6,
             "note": "Noticeably better matches than the base model, for three "

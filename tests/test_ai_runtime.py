@@ -1923,18 +1923,24 @@ def test_every_suggestion_list_is_ordered_smallest_first():
             f"{[(e['id'], e['size_gb']) for e in entries]}")
 
 
-def test_every_suggestion_list_recommends_at_least_one_model():
-    """The Playground draws `recommended or downloaded` (D425), so an unmarked
-    list is an EMPTY group on a machine that has downloaded nothing — the one
-    outcome that filter must not be able to produce. Asserted per runner rather
-    than in total, because a list is what one machine sees: a Mac reads
-    `mlx-text` and nothing else, and a total would let a Windows-only list go
-    unmarked behind a well-marked Apple one.
+def test_every_suggestion_list_recommends_exactly_one_model():
+    """One per list, which is one per capability AND engine (D425).
+
+    Both bounds are load-bearing and they fail differently. NONE leaves the
+    Playground's group empty on a machine that has downloaded nothing — the one
+    outcome that filter must not be able to produce. TWO puts a comparison back
+    in front of the reader who came to type a sentence, which is the whole thing
+    the flag was cut down to prevent.
+
+    Asserted per runner rather than in total, because a list is what ONE machine
+    sees: a Mac reads `mlx-text` and nothing else, and a total would let a
+    Windows-only list go unmarked behind a well-marked Apple one.
     """
     for code, entries in catalog.SUGGESTIONS.items():
-        assert any(e.get("recommended") for e in entries), (
-            f"{code} recommends nothing, so the Playground's group for it is "
-            f"empty until the user downloads something: {[e['id'] for e in entries]}")
+        marked = [e["id"] for e in entries if e.get("recommended")]
+        assert len(marked) == 1, (
+            f"{code} recommends {len(marked)} models ({marked}); the Playground "
+            f"offers exactly one per engine, out of {[e['id'] for e in entries]}")
 
 
 def test_recommended_is_written_opt_in_and_never_as_a_false():
@@ -1951,29 +1957,6 @@ def test_recommended_is_written_opt_in_and_never_as_a_false():
                 assert entry["recommended"] is True, (
                     f"{code}/{entry['id']} writes recommended={entry['recommended']!r}; "
                     "leave the key out instead")
-
-
-def test_the_recommended_subset_is_shorter_than_the_shortlist_it_marks():
-    """The flag has to DIVIDE a list to be worth having.
-
-    A list where everything is recommended says the two surfaces want the same
-    length, and then the Playground filter is a no-op that only looks like
-    curation. Asserted where there is room for the distinction — a list of two
-    is allowed to recommend both, since "shop" and "try" cannot meaningfully
-    differ over two entries — and the text lists, the long ones this exists
-    for, are checked by name.
-    """
-    for code, entries in catalog.SUGGESTIONS.items():
-        marked = [e for e in entries if e.get("recommended")]
-        if len(entries) > 4:
-            assert len(marked) < len(entries), (
-                f"{code} recommends all {len(entries)} of its entries, so the "
-                "Playground shows the same list the AI Models page does")
-    for code in ("mlx-text", "llamacpp-text"):
-        entries = catalog.SUGGESTIONS[code]
-        assert 2 <= len([e for e in entries if e.get("recommended")]) <= 4, (
-            f"{code}'s recommended subset should be a handful — a sidebar to "
-            "pick from, not a catalog to read")
 
 
 def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch):
@@ -6922,27 +6905,25 @@ def test_the_catalog_marks_the_curated_subset_and_never_a_cached_repo(
                     "some-org/mine-alone")["recommended"] is False
 
 
-def test_a_recommended_entry_is_not_the_default_and_does_not_reorder_the_list(
-        client, monkeypatch):
-    """The two axes stay separate, end to end.
+def test_the_recommended_flag_does_not_move_the_default_or_the_order(client):
+    """The two axes stay separate, end to end — asserted as a RELATIONSHIP and
+    never against a model name.
 
-    `default` is position 0 and position 0 is the SMALLEST entry, whatever the
-    recommended subset says (catalog.py's module docstring on why there is no
-    `default: True` field). This pins the case that proves they are independent:
-    speech to text recommends `small` and `turbo` and its default is the
-    unrecommended `tiny.en` above them, which the Playground handles by falling
-    back to the first row it draws rather than by the curation being bent.
+    `default` is position 0 and position 0 is the smallest entry, whatever is
+    marked (catalog.py's module docstring on why there is no `default: True`
+    field). Naming the ids here would make re-curating a shortlist an edit to
+    this file, which is the wrong thing to make expensive: the curation is data,
+    and what a test may own is the mechanism it feeds.
     """
-    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
-    row = _catalog(client)[registry.SPEECH_TO_TEXT]
-    assert row["default"] == "mlx-community/whisper-tiny.en-8bit"
-    head = row["models"][0]
-    assert head["id"] == row["default"] and head["recommended"] is False
-    # …and the marked ones are still in the catalog's own size order behind it.
-    marked = [m["id"] for m in row["models"] if m["recommended"]]
-    assert marked == ["mlx-community/whisper-small-mlx",
-                      "mlx-community/whisper-large-v3-turbo"]
+    for row in _catalog(client).values():
+        curated = [m for m in row["models"] if m["source"] == "curated"]
+        if not curated:
+            continue
+        # The head is still the default, and it is still the head whether or not
+        # it is the marked one.
+        assert curated[0]["id"] == row["default"]
+        sizes = [(m["size_gb"] is None, m["size_gb"] or 0.0) for m in curated]
+        assert sizes == sorted(sizes), row["capability"]
 
 
 def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
