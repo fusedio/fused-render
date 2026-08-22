@@ -136,31 +136,63 @@ export function cancelGeneration(capability?: string): Promise<{ cancelled: bool
   return postJson<{ cancelled: boolean }>("/api/ai/cancel", capability ? { capability } : {});
 }
 
-/** Watch one job row until it leaves "running". Resolves with the terminal
- *  row; a row that VANISHES resolves null (the manager retired it — for a
- *  finished load that is the ordinary end). Rejects only on an error state,
- *  with the row's own message. */
+/** How many polls in a row may fail before the watch gives up. A blip while
+ *  the server is busy is ordinary and the next tick asks again; ten seconds of
+ *  silence is an outage, and a watch that polls a dead server forever is a
+ *  spinner nobody can dismiss. The throw lands in each caller's own catch. */
+const MAX_POLL_FAILURES = 10;
+
+/** Why a watch ended. Three outcomes, not two, because the callers genuinely
+ *  need to tell them apart and a `Job | null` cannot say it:
+ *
+ *  - `done`      — the row reached a terminal non-error state. The artefact,
+ *                  if the job makes one, is on disk.
+ *  - `cancelled` — somebody stopped it. NO artefact was written, so a caller
+ *                  must not render an output path or claim a saved file.
+ *  - `gone`      — the row vanished between polls. `FINISHED_TTL_S` is 30s
+ *                  against a 1s poll, so this is the manager retiring a row we
+ *                  simply took too long to read; treat it as `done` unless the
+ *                  caller can check the artefact itself.
+ *
+ *  A FAILED poll is none of these and never ends the watch — that conflation
+ *  is what made a single flaky `/api/jobs` read resolve as success. Rejects on
+ *  an error state (with the row's own message), on abort, and after
+ *  `MAX_POLL_FAILURES` consecutive failures. */
+export type WatchOutcome =
+  | { state: "done"; job: Job }
+  | { state: "cancelled"; job: Job }
+  | { state: "gone" };
+
 export async function watchJob(
   jobId: string,
   signal: AbortSignal,
   onTick?: (job: Job) => void,
-): Promise<Job | null> {
+): Promise<WatchOutcome> {
+  let failures = 0;
   for (;;) {
     if (signal.aborted) throw new DOMException("aborted", "AbortError");
     let row: Job | undefined;
     try {
       const snapshot = await fetchJobs(signal);
+      failures = 0;
       row = snapshot.jobs.find((j) => j.id === jobId);
       if (row && onTick) onTick(row);
+      // Read, and the row is not there: the manager retired it.
+      if (!row) return { state: "gone" };
+      if (row.state !== "running") {
+        if (row.state === "error") throw new Error(row.message || "the job failed");
+        return { state: row.state === "cancelled" ? "cancelled" : "done", job: row };
+      }
     } catch (e) {
       if ((e as Error).name === "AbortError") throw e;
+      // A terminal row throws its own message out of the try — that is the
+      // job failing, not the poll, and it must not be retried.
+      if (row) throw e;
+      if (++failures >= MAX_POLL_FAILURES) {
+        throw new Error("lost contact with the job list while waiting for this to finish");
+      }
       // One failed poll is not news; the next tick asks again.
     }
-    if (row && row.state !== "running") {
-      if (row.state === "error") throw new Error(row.message || "the job failed");
-      return row;
-    }
-    if (!row) return null;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }

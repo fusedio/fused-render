@@ -137,20 +137,42 @@ export default function PlaygroundTab() {
   // `model` always wins, and an unknown cap value falls through silently.
   const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
   const selected = useMemo(() => {
-    for (const row of capabilities) {
+    // Only a row the SIDEBAR ACTUALLY DRAWS is selectable. An unavailable
+    // capability renders its reason in place of its model buttons (HF-8), so
+    // selecting into one lit up nothing, and the first Send died on a raw
+    // engine error while the real explanation sat one group away, unread.
+    const usable = capabilities.filter((r) => r.available && r.models.length);
+    for (const row of usable) {
       const hit = row.models.find((m) => m.id === asked);
       if (hit) return { row, model: hit };
     }
-    const rows = [
-      ...capabilities.filter((r) => r.capability === askedCap),
-      ...capabilities,
-    ];
+    const rows = [...usable.filter((r) => r.capability === askedCap), ...usable];
     for (const row of rows) {
       const fallback =
         row.models.find((m) => m.id === row.default) ?? row.models[0];
       if (fallback) return { row, model: fallback };
     }
     return null;
+  }, [capabilities, asked, askedCap]);
+
+  // What the URL asked for, when this machine cannot give it. Home's strip is
+  // the STATIC `PLAYGROUND_GROUPS` list, not the catalog, so every machine
+  // shows a "Search by meaning" card whether or not it has an embeddings
+  // engine — and answering that click by silently opening a chat box is a
+  // worse answer than naming the reason. Same for a `?model=` link to a model
+  // whose capability is ruled out here.
+  const blockedAsk = useMemo(() => {
+    if (!asked && !askedCap) return null;
+    const row =
+      capabilities.find((r) => r.models.some((m) => m.id === asked)) ??
+      capabilities.find((r) => r.capability === askedCap);
+    if (!row || row.available) return null;
+    // The reason comes off the catalog and is a server sentence that may or
+    // may not be punctuated; this line puts another one after it.
+    // The fallback must not restate the lead-in — "X is not available here —
+    // it is not available on this machine" says nothing twice.
+    const reason = row.reason?.trim() || "no engine for it is installed.";
+    return { row, reason: /[.!?]$/.test(reason) ? reason : reason + "." };
   }, [capabilities, asked, askedCap]);
 
   const select = (id: string) => {
@@ -333,9 +355,20 @@ export default function PlaygroundTab() {
 
       <div className="pg-stage">
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
+        {blockedAsk && selected && (
+          // Not an ErrorBanner: nothing failed and nothing the user did is
+          // wrong — the link simply named a task this machine cannot run, and
+          // the stage below is the substitute, said out loud.
+          <p className="pg-blocked-ask">
+            {groupLabel(blockedAsk.row.capability)} is not available here — {blockedAsk.reason}{" "}
+            Showing {groupLabel(selected.row.capability)} instead.
+          </p>
+        )}
         {!selected ? (
           <p className="cc-empty">
-            No models to try yet — the Discover tab is where a first one comes from.
+            {blockedAsk
+              ? `${groupLabel(blockedAsk.row.capability)} is not available here — ${blockedAsk.reason}`
+              : "No models to try yet — the Discover tab is where a first one comes from."}
           </p>
         ) : (
           <>

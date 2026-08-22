@@ -84,9 +84,12 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
             : "Downloading the model — the first run pays for this once…",
         );
         if (e.jobId) {
-          await watchJob(e.jobId, controller.signal, (job) =>
+          const outcome = await watchJob(e.jobId, controller.signal, (job) =>
             setStatus(job.detail || "Loading the model…"),
           );
+          // Stopped from the Activity panel — asking again only earns a second
+          // 409 (the same reasoning as the chat stage's dance).
+          if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
         }
         setStatus(null);
         result = await ask();
