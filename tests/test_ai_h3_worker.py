@@ -247,9 +247,31 @@ def test_generate_without_a_load_is_refused(monkeypatch, base, tmp_path, h3_env)
 
 def test_cancellation_kills_the_real_child_process(monkeypatch, base, tmp_path, h3_env):
     """The ✕: `report_or_cancel` raises after the first tick, and the fake h3
-    script sleeps between steps and installs a real SIGTERM handler that
-    writes a marker file — so this test proves an actual signal reached an
-    actual process, not merely that the worker returned quickly."""
+    script sleeps between steps — so this test proves an actual OS-level kill
+    reached an actual process, not merely that the worker returned quickly.
+
+    **POSIX and Windows diverge on what "killed" looks like, and the
+    assertion has to follow that rather than paper over it.** `Popen.
+    terminate()` is SIGTERM on POSIX — a signal the fake script catches to
+    write a marker file, proving the signal was actually delivered and
+    handled — but on Windows it is `TerminateProcess`, which ends the
+    process outright with no chance for any Python signal handler (or
+    anything else in the target) to run first; there is no marker to write
+    there BY CONSTRUCTION, not because the kill failed. So POSIX keeps the
+    stronger, marker-based proof, and Windows asserts the honest cross-
+    platform equivalent this worker actually guarantees everywhere: the
+    real child process it spawned is confirmed GONE (`proc.poll()` no
+    longer `None`) after `generate()` unwinds, and it never got to write
+    the output file it was mid-render on.
+
+    (This matters only for the test double, not for production: the real
+    `h3-video` runner is Apple-Silicon-only, so this worker never actually
+    runs on Windows — the concern here is purely a portable TEST SUITE that
+    also runs on that platform, not a real cleanup path h3.c depends on
+    there.)
+    """
+    import subprocess as subprocess_module
+
     marker = tmp_path / "terminated.marker"
     monkeypatch.setenv("H3_FAKE_TERM_MARKER", str(marker))
     monkeypatch.setenv("H3_FAKE_STEP_SLEEP", "2")
@@ -258,11 +280,40 @@ def test_cancellation_kills_the_real_child_process(monkeypatch, base, tmp_path, 
     worker = load_worker(monkeypatch, base)
     worker.load(MODEL, snapshot(tmp_path))
 
+    # Captured via a thin wrap around the worker's OWN `subprocess.Popen`
+    # (not a fake — the real call still runs) so the test can inspect the
+    # real child process after `generate()` unwinds, which owns no
+    # reference to `proc` once it has raised.
+    spawned = []
+    real_popen = subprocess_module.Popen
+
+    def capturing_popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(worker.subprocess, "Popen", capturing_popen)
+
     with pytest.raises(Cancelled):
         worker.generate(_request(tmp_path, steps=10))
 
-    assert marker.read_text() == "terminated\n"
+    assert len(spawned) == 1, spawned
+    proc = spawned[0]
+    # True on every platform: `generate` calls `proc.wait()` (with a
+    # `.kill()` fallback past a 5s timeout) before re-raising `Cancelled`,
+    # so by the time this line runs the child is not merely asked to stop,
+    # it IS stopped.
+    assert proc.poll() is not None, "the child process is still running"
+
+    if sys.platform == "win32":
+        # No marker — see the docstring. The output file is the other
+        # witness available on every platform, checked below.
+        pass
+    else:
+        assert marker.read_text() == "terminated\n"
+
     # The long sleep between steps means a real 10-step run would still be
     # going; a written output file would mean the child was not actually
-    # stopped before it finished.
+    # stopped before it finished. True on every platform regardless of
+    # which kill signal got it there.
     assert not os.path.exists(str(tmp_path / "fox.mp4"))
