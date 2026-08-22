@@ -169,7 +169,9 @@ export default function PlaygroundTab() {
     if (!row || row.available) return null;
     // The reason comes off the catalog and is a server sentence that may or
     // may not be punctuated; this line puts another one after it.
-    const reason = row.reason?.trim() || "it is not available on this machine";
+    // The fallback must not restate the lead-in — "X is not available here —
+    // it is not available on this machine" says nothing twice.
+    const reason = row.reason?.trim() || "no engine for it is installed.";
     return { row, reason: /[.!?]$/.test(reason) ? reason : reason + "." };
   }, [capabilities, asked, askedCap]);
 

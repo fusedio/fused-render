@@ -97,15 +97,20 @@ export function TranscribeStage({ model }: { model: string }) {
     setLevel(0);
   };
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on the way IN as well as cleared on the way out. The app does not
+    // mount under StrictMode today, but its dev double-mount reuses the same
+    // instance and its refs — a flag only ever cleared would latch false on
+    // the simulated unmount and kill transcription for the rest of the
+    // session. Two other modules here already guard that double invocation.
+    aliveRef.current = true;
+    return () => {
       aliveRef.current = false;
       abortRef.current?.abort();
       recorderRef.current?.stream.getTracks().forEach((t) => t.stop());
       stopMeter();
-    },
-    [],
-  );
+    };
+  }, []);
 
   // The elapsed counter while recording — the second half of "it hears me".
   useEffect(() => {
