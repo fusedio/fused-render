@@ -1078,7 +1078,10 @@ export default function AiModels() {
 
   return (
     <div className="cc-root">
-      <main className="cc-main">
+      {/* The playground fills the viewport and scrolls its own columns (the
+          sidebar, the chat log) — the other tabs stay ordinary scrolling
+          pages, so the flex column is scoped to the one tab that wants it. */}
+      <main className={"cc-main" + (tab === "playground" ? " pg-fill" : "")}>
         <div className="cc-page-head">
           <div>
             <h2 className="cc-heading">AI Models</h2>
