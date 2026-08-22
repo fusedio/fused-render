@@ -366,7 +366,7 @@ def fake_refusing_runner(tmp_path, monkeypatch):
     Until D406, this used the real `parakeet-mlx` code and its real table
     entry; that engine was withdrawn and no registered TRANSCRIBE runner
     refuses anything today (the table itself is no longer empty overall —
-    D419 gave the diffusers image engines a real `image` row — just still
+    D428 gave the diffusers image engines a real `image` row — just still
     empty on this capability), so the refusal PATH is exercised here with a
     fake entry instead of a real one — the mechanism, not any particular
     engine, is what this file pins."""

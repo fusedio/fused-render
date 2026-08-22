@@ -1129,7 +1129,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     # argument and no text conditioning; D406 withdrew it, so the two engines
     # sharing THIS capability today (MLX Whisper, Faster Whisper) both answer
     # everything below and neither carries a row in `engine_options.
-    # UNSUPPORTED` — that table is no longer empty overall (D419 gave the
+    # UNSUPPORTED` — that table is no longer empty overall (D428 gave the
     # diffusers image engines their own `image` refusal), just still empty
     # for transcribe — but the check stays, for the next transcribe engine
     # that needs one.
