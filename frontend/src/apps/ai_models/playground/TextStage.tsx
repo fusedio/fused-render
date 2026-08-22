@@ -22,8 +22,7 @@ import {
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
-import { MenuIcons } from "@platform/ui/MenuIcons";
-import { AdvancedPanel, RailSlider, StarterPrompts } from "./controls";
+import { AdvancedPanel, CopyButton, RailSlider, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
@@ -101,7 +100,6 @@ export function TextStage({
 }) {
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
   const [reply, setReply] = useState<Reply | null>(null);
-  const [copied, setCopied] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
@@ -220,7 +218,6 @@ export function TextStage({
     setPrompt("");
     setReply(null);
     setError(null);
-    setCopied(false);
     const box = boxRef.current;
     if (box) {
       box.style.height = "auto";
@@ -353,25 +350,7 @@ export function TextStage({
           <p className="pg-answer-label">Response</p>
           <div className="pg-answer">
           {!reply.pending && reply.text && (
-            <button
-              type="button"
-              className="pg-copy-btn"
-              title={copied ? "Copied" : "Copy the reply"}
-              aria-label="Copy the reply"
-              onClick={() => {
-                void navigator.clipboard.writeText(shown.answer || reply.text);
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 1200);
-              }}
-            >
-              {copied ? (
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              ) : (
-                MenuIcons.copy
-              )}
-            </button>
+            <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
           )}
           {shown.think !== null && (
             <details className="pg-think">

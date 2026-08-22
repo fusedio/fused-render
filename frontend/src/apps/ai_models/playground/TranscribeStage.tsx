@@ -23,7 +23,7 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { AdvancedPanel } from "./controls";
+import { AdvancedPanel, CopyButton } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -287,8 +287,18 @@ export function TranscribeStage({ model }: { model: string }) {
     (phase.step === "done" && phase.text.trim()) ||
     segments.map((s) => s.text ?? "").join(" ").trim();
 
+  const clear = () => {
+    setSource(null);
+    setSegments([]);
+    setError(null);
+    setPhase({ step: "idle" });
+  };
+
   return (
     <div className="pg-work">
+        {/* The action only: the hero card above names the model and its state. */}
+        <h2 className="pg-work-title">Transcribe a recording</h2>
+
         {phase.step === "recording" ? (
           <div className="pg-recording">
             <button type="button" className="pg-rec-btn live" onClick={() => recorderRef.current?.stop()}>
@@ -373,9 +383,7 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
 
-        {/* Task is the one common choice; language and decoding switches are
-            the Advanced tail, same shape as every other stage. */}
-        <div className="pg-params">
+        <AdvancedPanel>
           <label className="pg-ctl">
             <span className="pg-ctl-head">
               <span className="pg-ctl-label">Task</span>
@@ -389,9 +397,6 @@ export function TranscribeStage({ model }: { model: string }) {
               <option value="translate">Translate into English</option>
             </select>
           </label>
-        </div>
-
-        <AdvancedPanel>
           <label className="pg-ctl">
             <span className="pg-ctl-head">
               <span className="pg-ctl-label">Language</span>
@@ -450,62 +455,52 @@ export function TranscribeStage({ model }: { model: string }) {
                 {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
               </button>
             )}
+            {!busy && (
+              <button
+                type="button"
+                className="pg-ghost-btn pg-clear"
+                title="Drop this recording and start over"
+                onClick={clear}
+              >
+                Clear
+              </button>
+            )}
           </div>
         )}
 
-        {segments.length > 0 ? (
-          <div className="pg-segments">
-            {segments.map((segment, index) => (
-              <div key={index} className="pg-segment">
-                <span className="pg-segment-time">{clock(segment.start)}</span>
-                <span className="pg-segment-text">
-                  {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
-                  {segment.text}
-                </span>
-              </div>
-            ))}
+        {(segments.length > 0 || phase.step === "done") && (
+          <div className="pg-answer-block">
+            <p className="pg-answer-label">Transcript</p>
+            <div className="pg-segments">
+              {phase.step === "done" && finalText() && (
+                <CopyButton text={finalText()} label="Copy the transcript" />
+              )}
+              {segments.length > 0 ? (
+                segments.map((segment, index) => (
+                  <div key={index} className="pg-segment">
+                    <span className="pg-segment-time">{clock(segment.start)}</span>
+                    <span className="pg-segment-text">
+                      {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
+                      {segment.text}
+                    </span>
+                  </div>
+                ))
+              ) : phase.step === "done" && phase.text.trim() ? (
+                <p className="pg-transcript-text">{phase.text.trim()}</p>
+              ) : phase.step === "done" && phase.readFailed ? (
+                // The read failed, not the recording — the file is still saved.
+                <p className="pg-transcript-text pg-transcript-empty">
+                  The run finished, but the transcript could not be read back — it is saved in
+                  the transcripts folder.
+                </p>
+              ) : (
+                <p className="pg-transcript-text pg-transcript-empty">
+                  No speech was detected in this recording.
+                </p>
+              )}
+            </div>
           </div>
-        ) : phase.step === "done" ? (
-          // A finished run must always SHOW its words, even when no segment
-          // view exists (the joined text is the fallback artefact) — and an
-          // empty transcript is said out loud, not left as a blank pane.
-          <div className="pg-segments">
-            {phase.text.trim() ? (
-              <p className="pg-transcript-text">{phase.text.trim()}</p>
-            ) : phase.readFailed ? (
-              // The read failed, not the recording — the transcript file is
-              // still saved beside the audio, so point there instead of
-              // asserting something about the sound.
-              <p className="pg-transcript-text pg-transcript-empty">
-                The run finished, but the transcript could not be read back — it is saved in
-                the transcripts folder.
-              </p>
-            ) : (
-              <p className="pg-transcript-text pg-transcript-empty">
-                No speech was detected in this recording.
-              </p>
-            )}
-          </div>
-        ) : null}
-
-        <div className="pg-under">
-          {phase.step === "done" && (
-            <button
-              type="button"
-              className="pg-ghost-btn"
-              onClick={(e) => {
-                void navigator.clipboard.writeText(finalText());
-                const button = e.currentTarget;
-                button.textContent = "Copied";
-                window.setTimeout(() => {
-                  button.textContent = "Copy transcript";
-                }, 1200);
-              }}
-            >
-              Copy transcript
-            </button>
-          )}
-        </div>
+        )}
     </div>
   );
 }

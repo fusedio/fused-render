@@ -19,6 +19,7 @@
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, ModelLoading, watchJob } from "./client";
+import { AdvancedPanel } from "./controls";
 
 // The prefill: a query about food against lines where the matches say
 // "delicious" and "bakery", not "food" — a keyword search finds nothing here,
@@ -117,22 +118,14 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
 
   return (
     <div className="pg-work pg-embed">
+        {/* The action only: the hero card above names the model and its state. */}
+        <h2 className="pg-work-title">Search lines by meaning</h2>
         <p className="pg-embed-intro">
-          This model turns text into a position in a "meaning space", so lines can be ranked by
-          how close their meaning is to a search — even when they share no words with it. Run the
-          example, then swap in your own lines.
+          Lines are ranked by how close their meaning is to the search, even when they share no
+          words with it. Run the example, then swap the lines in Config for your own.
         </p>
-        <label className="pg-embed-field">
-          <span className="pg-embed-label">Lines to search</span>
-          <textarea
-            className="pg-embed-lines"
-            rows={7}
-            value={lines}
-            placeholder="One line per entry"
-            onChange={(e) => setLines(e.target.value)}
-          />
-        </label>
-        <div className="pg-embed-ask">
+
+        <div className="pg-composer">
           <input
             type="text"
             value={query}
@@ -142,35 +135,66 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
               if (e.key === "Enter") void run();
             }}
           />
+          {ranked && !busy && (
+            <button
+              type="button"
+              className="pg-ghost-btn pg-clear"
+              title="Clear the results"
+              onClick={() => setRanked(null)}
+            >
+              Clear
+            </button>
+          )}
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-primary pg-send"
             disabled={busy || !query.trim() || !lines.trim()}
+            title="Enter to run"
             onClick={() => void run()}
           >
-            {busy ? "Searching…" : "Search by meaning"}
+            {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
           </button>
         </div>
+
+        <AdvancedPanel>
+          <label className="pg-ctl">
+            <span className="pg-ctl-head">
+              <span className="pg-ctl-label">Lines to search</span>
+            </span>
+            <textarea
+              className="pg-embed-lines"
+              rows={7}
+              value={lines}
+              placeholder="One line per entry"
+              onChange={(e) => setLines(e.target.value)}
+            />
+            <span className="pg-ctl-hint">One line per entry, up to {MAX_LINES}.</span>
+          </label>
+        </AdvancedPanel>
+
         {status && <p className="pg-status">{status}</p>}
         {error && <p className="pg-error">{error}</p>}
         {ranked && !busy && (
-          <ol className="pg-embed-results">
-            {ranked.map((row, at) => (
-              <li
-                key={at}
-                className="pg-embed-row"
-                title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
-              >
-                <span
-                  className="pg-embed-bar"
-                  style={{ width: `${Math.max(0, (row.score / best) * 100)}%` }}
-                  aria-hidden="true"
-                />
-                <span className="pg-embed-text">{row.text}</span>
-                <span className="pg-embed-score">{row.score.toFixed(2)}</span>
-              </li>
-            ))}
-          </ol>
+          <div className="pg-answer-block">
+            <p className="pg-answer-label">Ranked by meaning</p>
+            <ol className="pg-embed-results">
+              {ranked.map((row, at) => (
+                <li
+                  key={at}
+                  className="pg-embed-row"
+                  title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
+                >
+                  <span
+                    className="pg-embed-bar"
+                    style={{ width: `${Math.max(0, (row.score / best) * 100)}%` }}
+                    aria-hidden="true"
+                  />
+                  <span className="pg-embed-text">{row.text}</span>
+                  <span className="pg-embed-score">{row.score.toFixed(2)}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
         )}
     </div>
   );

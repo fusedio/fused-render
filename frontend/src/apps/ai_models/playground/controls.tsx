@@ -1,11 +1,11 @@
 // The Playground's parameter vocabulary, shared by the stages.
 //
-// The unified stage shape (all four capabilities) is one centered column that
-// reads as an API surface: prompt, Run, result. Text and image put every
-// parameter behind the Config fold (D430, D431); transcription keeps its Task
-// select inline (`.pg-params`). Each control is a slider+number pair with a
-// one-line hint, defaults baked in and a per-control reset once a value moves.
-import type { ReactNode } from "react";
+// Every stage is one centered column reading as an API surface: input, Run,
+// result — with all four capabilities' parameters behind the Config fold
+// (D430, D431). Each control is a slider+number pair with a one-line hint,
+// defaults baked in and a per-control reset once a value moves.
+import { useState, type ReactNode } from "react";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 
 /** The fold everything uncommon goes behind. Closed by default on purpose:
  *  the panel's job is to make the surface above it read as a simple call. */
@@ -15,6 +15,39 @@ export function AdvancedPanel({ children }: { children: ReactNode }) {
       <summary>Config</summary>
       <div className="pg-config-body">{children}</div>
     </details>
+  );
+}
+
+/** Copy, as an icon in a result card's top-right corner. */
+export function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="pg-copy-btn"
+      title={copied ? "Copied" : label}
+      aria-label={label}
+      onClick={() => {
+        void navigator.clipboard.writeText(text);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      }}
+    >
+      {copied ? (
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M20 6L9 17l-5-5" />
+        </svg>
+      ) : (
+        MenuIcons.copy
+      )}
+    </button>
   );
 }
 

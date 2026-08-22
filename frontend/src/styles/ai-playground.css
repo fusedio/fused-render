@@ -377,18 +377,6 @@ a.pg-hero-repo:hover {
   letter-spacing: -0.01em;
 }
 
-/* Inline params under the composer. Text and image put every knob behind the
-   fold (D430, D431); only TranscribeStage's Task select still uses this. */
-.pg-params {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pg-params > .pg-ctl {
-  max-width: 420px;
-}
-
 /* Closed by default, and deliberately flat — no card, no background. */
 .pg-config > summary {
   display: inline-flex;
@@ -593,8 +581,10 @@ a.pg-hero-repo:hover {
   opacity: 0.55;
 }
 
-.pg-composer textarea {
+.pg-composer textarea,
+.pg-composer input {
   flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   color: var(--fg);
@@ -1205,6 +1195,7 @@ a.pg-hero-repo:hover {
 }
 
 .pg-segments {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1212,8 +1203,9 @@ a.pg-hero-repo:hover {
   min-height: 140px;
   overflow-y: auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 14px;
+  border-radius: 12px;
+  /* Right padding keeps the first line clear of the copy button. */
+  padding: 12px 44px 12px 14px;
   background: var(--bg-alt);
 }
 
@@ -1263,20 +1255,6 @@ a.pg-hero-repo:hover {
   max-width: 60ch;
 }
 
-.pg-embed-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pg-embed-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-muted);
-}
-
 .pg-embed-lines {
   resize: vertical;
   border: 1px solid var(--border);
@@ -1286,26 +1264,6 @@ a.pg-hero-repo:hover {
   color: var(--fg);
   font-size: 13px;
   line-height: 1.6;
-}
-
-.pg-embed-ask {
-  display: flex;
-  gap: 8px;
-}
-
-.pg-embed-ask input {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 9px 12px;
-  background: var(--bg-alt);
-  color: var(--fg);
-  font-size: 13.5px;
-}
-
-.pg-embed-ask .btn {
-  flex: none;
 }
 
 .pg-embed-results {
