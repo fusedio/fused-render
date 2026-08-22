@@ -7788,17 +7788,25 @@ an AI Models page that could say what was on disk but not what was *running*.
     guard is per capability and the UI reflects exactly that: a run on one
     capability leaves the other three pressable.
   - **AI-14h** **A run that FAILED is a result, and it is stored — a run that was
-    CANCELLED is neither.** "This model OOMs on this laptop" is exactly what
-    somebody benchmarks to find out, so a raising runner is recorded as
-    `ok: false` with the message and appears in the history beside the successful
-    runs; its `metrics` is empty rather than a dict of nulls, and the HTTP status
-    describes the request while `ok` describes the model (a failed run is a 200).
-    But the ✕, and an interpreter-level exit (`KeyboardInterrupt`/`SystemExit`
-    arriving on the threadpool thread), measured nothing and are NOT appended:
-    recording either would write a fake "this model failed here" row into the one
-    history this feature exists to keep trustworthy. An interpreter-level exit is
-    additionally re-raised rather than swallowed, so a Ctrl-C still stops the
-    process.
+    CANCELLED is neither stored NOR returned.** "This model OOMs on this laptop"
+    is exactly what somebody benchmarks to find out, so a raising runner is
+    recorded as `ok: false` with the message and appears in the history beside the
+    successful runs; its `metrics` is empty rather than a dict of nulls, and the
+    HTTP status describes the request while `ok` describes the model (a failed run
+    is a 200). But a cancel measured nothing, so it is a **distinct answer on the
+    wire** — `200 {"cancelled": true}` carrying no `run` at all, which the page
+    detects by the ABSENCE of `run` and never by matching an error string.
+    Reporting it as an `ok:false` record instead put a phantom
+    "Failed — cancelled" row in the page's history that became the model's latest
+    (so the delta and the summary compared against it) until a reload; and a 4xx
+    would have been wrong in the other direction, since the request was fine and
+    the user did this deliberately. An interpreter-level exit
+    (`KeyboardInterrupt`/`SystemExit` arriving on the threadpool thread) is
+    likewise not recorded, and is additionally re-raised rather than swallowed so
+    a Ctrl-C still stops the process. A generation the WORKER reports as cancelled
+    (`cancelled: true` on its own terminal frame, `ok: true` beside it — what
+    `fused.ai.cancel()` from any page produces on the shared worker) is the same
+    case: not a measurement, however many tokens it produced first.
   - **AI-14i** **Bounded by a hard run cap, not by a ring, and the store hands
     the page nothing it cannot render.** Unlike AI-12c's fixed bucket ring, runs
     are individually meaningful and cannot be merged, so the store keeps the
@@ -7811,21 +7819,41 @@ an AI Models page that could say what was on disk but not what was *running*.
     be told about. It is deliberately NOT a schema check — a metric added
     server-side must never start deleting the runs recorded before it.
   - **AI-14j** **Every run OPENS a download-manager job row before it starts
-    anything, and closes it.** `jobs.upsert` refuses a first report that carries
-    no `title` and `supervisor._report` swallows that refusal, so a reporter that
-    only ever ticks `detail=` reports nothing at all, silently — which is what
-    made the `jobId` returned by `POST /api/ai/benchmark` name a row that did not
-    exist, defeating both `ModelProgress` and the `fused.watchJob(jobId)`
-    contract, and dropping the image worker's own (titleless) per-step ticks with
-    it. So the row is opened first with a title, exactly as
-    `supervisor.start_image`/`start_transcribe` do; the row's IDENTITY is
+    anything, titles it with the BARE MODEL ID, and closes it.** `jobs.upsert`
+    refuses a first report that carries no `title` and `supervisor._report`
+    swallows that refusal, so a reporter that only ever ticks `detail=` reports
+    nothing at all, silently. The row is therefore opened first with a title,
+    exactly as `supervisor.start_image`/`start_transcribe` do; its IDENTITY is
     restated on every report, because `jobs._sweep` can evict it at any tick and
     any report may therefore be a first one; the transcription request carries
     that identity as `row` so the worker's own out-of-process ticks are not
     refused; and the run always ends by reporting `done`, `error` or `cancelled`,
-    so no benchmark can leave a row running forever. The row is `cancellable`
-    because the ✕ is genuinely honoured on every phase — `_load_to_ready` polls
-    for it, and the image and transcription workers read the same row themselves.
+    so no benchmark can leave a row running forever.
+  - **AI-14k** **The row's title IS the lookup key, so it is the bare model id
+    and nothing else.** A page's only route to a server-owned job row is
+    `useCacheScan.ts`'s map of `job.title → job` — keyed by title deliberately,
+    because re-deriving the sanitised job id in TypeScript would be a second copy
+    of a Python rule — and the tab then asks for it by model id. A decorated
+    title ("Benchmark: <model>", which this shipped as) produces a row that
+    exists, reports correctly, and can never be found: `ModelProgress` renders
+    with no job for the whole multi-minute run, with no error anywhere and no
+    fallback, since the endpoint returns the `jobId` only once the run has
+    finished. Both sides are pinned against each other by a test that reads the
+    TypeScript sources, in the same posture `test_shell_routes.py` takes for
+    client-side routes — a guarantee spanning two languages needs a test that
+    spans them, not one on each side.
+  - **AI-14l** **The row advertises `cancellable` exactly while the ✕ is
+    honoured, which is not the whole run for every capability.** The load phase is
+    cancellable for all four (`_load_to_ready` polls the flag, and the load is the
+    phase that can last an hour). Through the MEASUREMENT it depends on the
+    runner: `generate_image` and `generate_transcript` are handed the job id and
+    their workers abort themselves, so those rows stay cancellable; but
+    `generate_text` and `generate_embed` take no job and poll nothing, so the row
+    DROPS `cancellable` when their measurement starts rather than drawing an
+    operable ✕ over a run that would finish and be recorded anyway. Advertising a
+    cancel that does nothing is the failure `transcribe_row_fields` documents in
+    reverse — an inert control is worse than an absent one, because a user who
+    presses it believes the work stopped.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
