@@ -1,14 +1,16 @@
 // /ai-models — the page chrome, the tab strip, and the dispatch. Nothing else.
 //
 // Five surfaces share this heading, and only this heading: a playground (pick a
-// local model and use it), the Local inventory (what the Hugging Face cache
-// holds, what to download next, and the deletions that free it), Benchmark (how
-// fast each of those runs here, on a fixed workload), Engines (which backend
-// serves each capability) and Usage (what this process has generated). Each owns
-// a directory beside this file; this file owns the frame they hang in.
+// local model and use it), the Local view (what the Hugging Face cache holds,
+// what to download next, a search of the whole Hub, and the deletions that free
+// the disk), Benchmark (how fast each of those runs here, on a fixed workload),
+// Engines (which backend serves each capability) and Usage (what this process has
+// generated). Each owns a directory beside this file; this file owns the frame
+// they hang in.
 //
-// There was a sixth, Discover, and its directory is still here — unrouted, see
-// routes.ts. The Local tab answers its question now.
+// There was a sixth, Discover. The Local tab answers its question now — the
+// curated half at D423, the Hub search at D426 — and its directory is gone (see
+// routes.ts).
 //
 // **A tab is a PATH, not a query param** (`/ai-models/local`, routes.ts) — but
 // still one mounted component, unkeyed by the nav epoch. The reason is in
@@ -52,9 +54,10 @@ const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
     title: "Try a local model — chat, images, transcription",
   },
   // "and what to get next" is the tab's whole change: the row per capability
-  // ends in the curation's recommendations, so this is no longer only an
-  // inventory of what is already here (D423).
-  local: { label: "Local", title: "Models on this machine, and what to get next" },
+  // ends in the curation's recommendations (D423) and the box at the top
+  // searches the Hub itself (D426), so this is no longer only an inventory of
+  // what is already here.
+  local: { label: "Local", title: "Models on this machine, what to get next, and the Hub" },
   // "on this machine" is the whole promise: a benchmark number is not portable,
   // so the hover says whose laptop it is about before the tab is even opened.
   benchmark: {
@@ -70,7 +73,7 @@ export default function AiModelsPage() {
   // bookmarkable and — the reason it is worth doing — it puts the toggle on the
   // BACK BUTTON, which is where a user reaches for "put it back how it was".
   // `useNavEpoch` is the subscription: it counts pushState and popstate alike,
-  // so a back out of Discover re-reads the path and lands where it was.
+  // so a back out of any tab re-reads the path and lands where it was.
   const navEpoch = useNavEpoch();
   const tab = useMemo(() => tabFromPath(location.pathname), [navEpoch]);
 

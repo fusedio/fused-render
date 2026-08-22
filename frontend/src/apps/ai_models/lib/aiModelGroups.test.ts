@@ -7,7 +7,10 @@ import type { AiCatalogCapability, AiCatalogModel, AiModelRepo } from "@platform
 import {
   PARTIAL_TAG,
   UNRECOGNISED,
-  cardedOnDisk,
+  type DiskCard,
+  diskCards,
+  resultDisk,
+  runnersByCapability,
   groupRepos,
   loadRefusal,
   mergeSections,
@@ -222,6 +225,11 @@ function curated(id: string, over: Partial<AiCatalogModel> = {}): AiCatalogModel
     // that started trusting them would fail here rather than in a release.
     downloaded: false,
     loaded: false,
+    // Ditto: `recommended` is the PLAYGROUND's filter (D425) and this page
+    // recommends the whole curated shortlist, so a seed of false here is the
+    // right kind of wrong — a reader that started filtering the Local tab on it
+    // would find these rows missing.
+    recommended: false,
     ...over,
   };
 }
@@ -249,8 +257,8 @@ function capability(
  *  disk card. The module's OWN function, not a re-implementation — the two
  *  readings of "on disk" are the thing under test in the last describe below,
  *  and a fixture with its own idea of them would hide exactly that. */
-function disked(repos: AiModelRepo[]): Map<string, string> {
-  return cardedOnDisk(repos);
+function disked(repos: AiModelRepo[]): Map<string, DiskCard> {
+  return diskCards(repos);
 }
 
 /** The page's `loadedById`, membership only — a resident worker per id. */
@@ -643,12 +651,15 @@ describe("a download that never finished", () => {
     // NOT because it is downloaded — the server drops it from `cached_models()`
     // and hub search calls it `partial`. Because it is a CARD, and one model must
     // not appear twice in one row.
-    expect(cardedOnDisk([WHISPER_PARTIAL]).get(WHISPER_PARTIAL.id)).toBe(WHISPER_PARTIAL.path);
+    expect(diskCards([WHISPER_PARTIAL]).get(WHISPER_PARTIAL.id)).toEqual({
+      state: "partial",
+      path: WHISPER_PARTIAL.path,
+    });
     // Neither materialised nor stalled — the shape the map still has to exclude,
     // because counting a bare folder is what flipped a suggestion to
     // "downloaded" seconds after Download was pressed.
     const bare = repo({ id: "org/nothing-here", revisions: 0, partial: false });
-    expect([...cardedOnDisk([bare]).keys()]).toEqual([]);
+    expect([...diskCards([bare]).keys()]).toEqual([]);
   });
 
   it("keeps its disk card and drops the recommendation for the same model", () => {
@@ -703,5 +714,118 @@ describe("a download that never finished", () => {
     const halfDataset = repo({ id: "squad", kind: "dataset", partial: true });
     expect(resumable(halfDataset)).toBe(false);
     expect(loadRefusal(halfDataset)).toContain("dataset");
+  });
+});
+
+// What a HUB SEARCH RESULT reports about this disk (D426). The join is the
+// feature: huggingface.co cannot tell you that the model you are reading about
+// is already in your cache, and this is the reading that lets the page say so —
+// from its OWN listing, never from the `local` field on the search reply, which
+// is frozen at the moment of the search.
+describe("the disk verdict on a search result", () => {
+  const HERE = repo({ id: "org/have", path: "/c/models--org--have", revisions: 2 });
+  const HALF = repo({ id: "org/half", path: "/c/models--org--half", revisions: 1, partial: true });
+  const cards = diskCards([HERE, HALF]);
+
+  it("says nothing at all while the walk has not answered", () => {
+    // `null` is "no idea yet", not "you don't have it". Both the ✓ and the
+    // Download button are CLAIMS, and a card must make neither for the length of
+    // the first walk — which is how a model already on disk showed a Download.
+    expect(resultDisk("org/have", null)).toEqual({ state: "unknown", path: null });
+  });
+
+  it("reports a finished download, with somewhere to open it", () => {
+    expect(resultDisk("org/have", cards)).toEqual({
+      state: "downloaded",
+      path: "/c/models--org--have",
+    });
+  });
+
+  it("reports a stopped one as PARTIAL, and offers nowhere to open", () => {
+    // The state that has to survive the trip from the carousels to the results
+    // grid: a repo with bytes and no materialised snapshot is not a model
+    // anybody can load, so there is no revision for a model card to describe
+    // and linking there would hand someone a view that cannot load. Its card
+    // offers a Download that RESUMES instead (D424).
+    expect(resultDisk("org/half", cards)).toEqual({ state: "partial", path: null });
+  });
+
+  it("reports a model nobody has as absent — the one state with a Download", () => {
+    expect(resultDisk("org/never-heard-of-it", cards)).toEqual({
+      state: "absent",
+      path: null,
+    });
+  });
+
+  it("never hands out an empty path as if it were a location", () => {
+    // Explore builds a URL out of this, and a link to nowhere is worse than no
+    // link: it looks like an answer and lands on an error.
+    const nowhere = diskCards([repo({ id: "a/b", path: "", revisions: 1 })]);
+    expect(resultDisk("a/b", nowhere)).toEqual({ state: "downloaded", path: null });
+  });
+
+  it("is the SAME map the recommendations are filtered against", () => {
+    // One definition of on-disk per page. Two would be two moments they were
+    // true — the bug being that a model downloaded from the search results kept
+    // its Download button until somebody typed again.
+    for (const id of ["org/have", "org/half"]) {
+      expect(cards.has(id)).toBe(true);
+      expect(resultDisk(id, cards).state).not.toBe("absent");
+    }
+  });
+});
+
+// Which engine serves each capability — one table, read by the recommended cards
+// through their section and by a search result through its `capability`.
+describe("runnersByCapability", () => {
+  const OFF = { available: false, reason: "no Apple Silicon here" };
+
+  it("answers with what the catalog said, per capability", () => {
+    const runners = runnersByCapability([
+      capability("text-generation", []),
+      capability("text-to-image", [], OFF),
+    ]);
+    expect(runners.get("text-generation")).toEqual({
+      shortLabel: "MLX LM",
+      available: true,
+      reason: null,
+    });
+    expect(runners.get("text-to-image")).toEqual({
+      shortLabel: "MLX LM",
+      available: false,
+      reason: "no Apple Silicon here",
+    });
+  });
+
+  it("has no opinion where the catalog has none", () => {
+    // A capability only this disk knows about, and the whole catalog being
+    // unread. Neither is a runner, and neither may be invented: the tag it
+    // would draw is a claim about what can be loaded here, and a Download
+    // offered under it is a claim that the bytes would be usable.
+    expect(runnersByCapability([]).get("text-generation")).toBe(undefined);
+    expect(runnersByCapability(null).size).toBe(0);
+  });
+
+  it("resolves ONE runner for a capability the catalog listed twice", () => {
+    const twice = runnersByCapability([
+      capability("text-generation", []),
+      capability("text-generation", [], OFF),
+    ]);
+    expect(twice.size).toBe(1);
+    expect(twice.get("text-generation")?.available).toBe(true);
+  });
+
+  it("is the same answer mergeSections gives a section", () => {
+    // Not a second table: a recommended card and a Hub result for the same
+    // capability sit on the same page and must name the same engine.
+    const cat = [capability("text-generation", [curated("mlx-community/Qwen3-4B")])];
+    const section = mergeSections(
+      groupRepos([repo({ id: "org/m", capability: "text-generation", revisions: 1 })]).models
+        .groups,
+      cat,
+      new Map(),
+      new Map(),
+    )[0];
+    expect(section.runner).toEqual(runnersByCapability(cat).get("text-generation") ?? null);
   });
 });

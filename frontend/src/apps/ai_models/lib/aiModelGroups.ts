@@ -259,7 +259,20 @@ function orderDisk(repos: AiModelRepo[], loaded: ReadonlyMap<string, unknown>): 
   return [...repos].sort((a, b) => recency(b) - recency(a));
 }
 
-/** id → path for every model that already has a DISK CARD on this page.
+/** Which of the two disk states a card is in. Not a boolean, since D424: a
+ *  finished download and the residue of a stopped one are both cards, and they
+ *  offer different things — so the same map that answers "does this model
+ *  already have a card" answers "and which one". */
+export type DiskState = "downloaded" | "partial";
+
+export interface DiskCard {
+  state: DiskState;
+  /** Where the repo lives. Meaningful to OPEN only for "downloaded" — a
+   *  partial has no materialised snapshot for a model card to describe. */
+  path: string;
+}
+
+/** id → the disk CARD every model on this page already has, if it has one.
  *
  *  **A MATERIALISED snapshot OR an unfinished download, which is two conditions
  *  where there used to be one (D424).** `huggingface_hub` creates
@@ -285,11 +298,83 @@ function orderDisk(repos: AiModelRepo[], loaded: ReadonlyMap<string, unknown>): 
  *  for the model is something other than the button speaking for the pull, and
  *  that has to be true of a pull that was cancelled as well as one that landed,
  *  or the click stays held over a recommendation that comes back later.
+ *
+ *  ONE map for the whole page, and since D426 that includes the Hub search
+ *  results drawn in place of these rows: `resultDisk` below reads it, so a
+ *  result and a recommendation for the same repo cannot disagree about whether
+ *  this machine has it. A repo that is BOTH (a part file beside a revision that
+ *  materialised) is partial, because that is the state with something left to
+ *  do.
  */
-export function cardedOnDisk(repos: AiModelRepo[]): Map<string, string> {
+export function diskCards(repos: AiModelRepo[]): Map<string, DiskCard> {
   return new Map(
-    repos.filter((r) => r.revisions > 0 || r.partial).map((r) => [r.id, r.path]),
+    repos
+      .filter((r) => r.revisions > 0 || r.partial)
+      .map((r) => [r.id, { state: r.partial ? "partial" : "downloaded", path: r.path }]),
   );
+}
+
+/** What a HUB SEARCH RESULT says about this disk: the ✓, the "partly
+ *  downloaded" tag, the Download button's absence, and where Explore goes.
+ *
+ *  **One definition of on-disk per page** (D426). The search reply carries its
+ *  own `local` field, and reading it here would be a second answer to a question
+ *  the page already has: that reply is frozen at the moment of the search, so
+ *  downloading a model from these very results left the card claiming the model
+ *  was absent until somebody typed again. The listing is the live answer, it is
+ *  the one the carousels below are drawn from, and it is the one that notices a
+ *  delete.
+ *
+ *  FOUR states because "we have not looked yet" is not "you do not have it":
+ *  a walk in flight must show neither the ✓ nor a Download, since both are
+ *  claims. `path` is null for everything but a finished download — there is no
+ *  revision for a model card to describe on a partial, and linking there hands
+ *  someone a view that cannot load. An empty path is treated as no path, because
+ *  Explore builds a URL out of it and a link to nowhere is worse than no link.
+ */
+export type ResultDiskState = DiskState | "unknown" | "absent";
+
+export interface ResultDisk {
+  state: ResultDiskState;
+  /** Where our copy is, when there is one to open. */
+  path: string | null;
+}
+
+export function resultDisk(
+  id: string,
+  cards: ReadonlyMap<string, DiskCard> | null,
+): ResultDisk {
+  if (!cards) return { state: "unknown", path: null };
+  const card = cards.get(id);
+  if (!card) return { state: "absent", path: null };
+  if (card.state === "partial") return { state: "partial", path: null };
+  return { state: "downloaded", path: card.path || null };
+}
+
+/** Which backend serves each capability here, from the catalog.
+ *
+ *  Every card that wears an engine tag and did not come off the disk reads this:
+ *  a recommended card gets it through its section, and a Hub search result gets
+ *  it by its `capability` (D426). One table for both, because "which engine
+ *  loads a text-generation model on this machine" cannot have two answers on one
+ *  page — and the search results are drawn beside the very rows this feeds.
+ *
+ *  First entry wins, so a catalog that ever listed a capability twice still
+ *  resolves one runner for it.
+ */
+export function runnersByCapability(
+  catalog: AiCatalogCapability[] | null,
+): Map<string, SectionRunner> {
+  const runners = new Map<string, SectionRunner>();
+  for (const entry of catalog ?? []) {
+    if (runners.has(entry.capability)) continue;
+    runners.set(entry.capability, {
+      shortLabel: entry.runnerShortLabel,
+      available: entry.available,
+      reason: entry.reason,
+    });
+  }
+  return runners;
 }
 
 /** The Local tab's capability rows: disk and curation in one order.
@@ -302,7 +387,7 @@ export function cardedOnDisk(repos: AiModelRepo[]): Map<string, string> {
  *  fills up in place instead of switching views.
  *
  *  Recommended entries are the CURATED half only, minus anything that already
- *  has a card — `cardedOnDisk`, the page's own walk and not the catalog's
+ *  has a card — `diskCards`, the page's own walk and not the catalog's
  *  `downloaded` flag: two definitions of "downloaded" on one page are two
  *  moments they were true, and this page has cards drawn from both halves side
  *  by side. Note that the filter is "has a card", not "is downloaded": a partly
@@ -320,7 +405,10 @@ export function mergeSections(
   groups: RepoGroup[],
   catalog: AiCatalogCapability[] | null,
   loadedById: ReadonlyMap<string, unknown>,
-  onDisk: ReadonlyMap<string, string> | null,
+  // Only MEMBERSHIP is read, so the value type is deliberately open: the page
+  // hands down `diskCards`, whose values also say WHICH disk state each card is
+  // in — a fact the search results need and this merge does not.
+  onDisk: ReadonlyMap<string, unknown> | null,
 ): MergedSection[] {
   // First entry wins, so a catalog that ever listed a capability twice cannot
   // recommend the same model twice under one heading.
@@ -329,8 +417,10 @@ export function mergeSections(
     if (!byCapability.has(entry.capability)) byCapability.set(entry.capability, entry);
   }
 
-  const runnerOf = (entry: AiCatalogCapability | undefined): SectionRunner | null =>
-    entry ? { shortLabel: entry.runnerShortLabel, available: entry.available, reason: entry.reason } : null;
+  // The same table the search results read (`runnersByCapability`), so a
+  // recommended card and a Hub hit for the same capability cannot name two
+  // different engines side by side in one page.
+  const runners = runnersByCapability(catalog);
 
   const recommendedFor = (key: string): AiCatalogModel[] => {
     if (!onDisk) return [];
@@ -346,7 +436,7 @@ export function mergeSections(
     disk: orderDisk(group.repos, loadedById),
     recommended: recommendedFor(group.key),
     size: group.size,
-    runner: runnerOf(byCapability.get(group.key)),
+    runner: runners.get(group.key) ?? null,
   }));
 
   // Capabilities the DISK has never heard of. Appended in the catalog's order
@@ -368,7 +458,7 @@ export function mergeSections(
       disk: [],
       recommended,
       size: 0,
-      runner: runnerOf(entry),
+      runner: runners.get(entry.capability) ?? null,
     });
   }
 

@@ -6,23 +6,26 @@
 //   /ai-models/engines
 //   /ai-models/usage
 //
-// **There is no /ai-models/discover, and the Hub-search code is still here**
-// (discover/, lib/discoverView.ts). The Local tab answers Discover's question
-// now — each capability's row ends in the curation's recommendations with a
+// **There is no /ai-models/discover and no discover/ directory left** — the
+// Local tab answers both halves of what that tab was for. Its RECOMMENDATIONS
+// moved first (D423): each capability's row ends in the curation's picks with a
 // Download button, so "what should I get" is drawn where "what do I have"
-// appears (D423) — and a tab whose whole content is a second, emptier version of
-// that is a strip entry that costs a reader a click to learn nothing. Unrouted
-// rather than deleted: the Hub search is a real surface with real tests, and the
-// judgement being made here is about the STRIP, not about the code. It falls out
-// of `AI_MODELS_TABS` below, so `/ai-models/discover` is an unknown sub-path and
-// lands on the default like any other stale link.
+// appears, and a tab whose whole content is a second, emptier version of that is
+// a strip entry that costs a reader a click to learn nothing. Its SEARCH moved
+// after (D426): the box sits at the top of the Local tab, and a query replaces
+// that tab's sections with one grid of Hub results (local/HubResults.tsx). The
+// tab was left unrouted in between as a parking lot for code that had real tests
+// and nowhere yet to live; there is nothing left in it to park.
+//
+// `/ai-models/discover` therefore falls out of `AI_MODELS_TABS` below as an
+// unknown sub-path, and lands on the default like any other stale link.
 //
 // It used to be `?tab=`, with the default expressed as the ABSENCE of the
 // param so that `/ai-models` stayed the page's URL. That is the trade this
-// replaces: a tab is a PAGE here — five unrelated surfaces (a chat client, a
-// disk inventory, a Hub search, an engine picker, a usage graph) that share
-// only a heading — and naming four of them in a query string while the fifth
-// had no name at all made the page's own address ambiguous. Bare
+// replaces: a tab is a PAGE here — five unrelated surfaces at the time (a chat
+// client, a disk inventory, a Hub search, an engine picker, a usage graph) that
+// shared only a heading — and naming four of them in a query string while the
+// fifth had no name at all made the page's own address ambiguous. Bare
 // `/ai-models` now redirects (App.tsx, the same render-time `replaceState`
 // the shell uses for `/` → `/home`), so every tab has exactly one address and
 // the default has a name like the rest.
@@ -30,8 +33,8 @@
 // **The tabs still do not each get their own React route.** One `AiModelsPage`
 // stays mounted across a tab switch, unkeyed by the nav epoch — see the branch
 // in App.tsx for why (a remount re-walks every blob in the Hugging Face cache
-// and throws away Discover's typed search). What changed is where the choice
-// is WRITTEN, not how it is rendered.
+// and throws away whatever was typed into the Local tab's search). What changed
+// is where the choice is WRITTEN, not how it is rendered.
 //
 // **Query params survive the move and mean what they always did.** `?model=`
 // and `?cap=` seed the playground's picker (Home's cards link in with `cap`,

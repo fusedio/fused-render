@@ -375,6 +375,15 @@ def _catalog_with_downloads() -> list[dict]:
     supervisor rather than from the memoised scan, because residency changes on a
     second's notice and the disk inventory does not.
 
+    `recommended` is a THIRD, and it is the curation's own second axis rather than
+    anything this join computes: True on the subset of curated entries a person
+    marked as a first thing to try, always False on a cached one — nobody wrote a
+    recommendation for a repo the user found themselves, the same reason `note` is
+    null there. Normalised to a bool on both halves so a consumer can filter on it
+    without reading absence as an answer; the Playground draws
+    recommended-or-on-disk and every other picker keeps reading the whole list
+    (D425).
+
     **One runner's curated ids are FILENAMES, not repo ids, and this function is
     where that stops being invisible.** `formats.GGUF_RECIPES` keys
     `llamacpp-text`'s catalog entries by the GGUF's own filename — the module
@@ -416,7 +425,12 @@ def _catalog_with_downloads() -> list[dict]:
     for row in rows:
         curated = [
             dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
-                 loaded=entry["id"] in resident)
+                 loaded=entry["id"] in resident,
+                 # Normalised to a bool HERE rather than left absent, because
+                 # the curation writes it opt-in (`catalog.py`) and a consumer
+                 # that filters on it must not have to tell "not recommended"
+                 # from "an older server that had never heard of the field".
+                 recommended=bool(entry.get("recommended")))
             for entry in row["models"]
         ]
         curated_ids = {entry["id"] for entry in curated}
@@ -442,6 +456,12 @@ def _catalog_with_downloads() -> list[dict]:
                 "note": None,
                 "source": "cached",
                 "downloaded": True,
+                # Never recommended: `recommended` is a curator's mark and
+                # nobody has made one about a repo the user found themselves.
+                # It costs the Playground nothing — a cached entry is on the
+                # disk by definition, and downloaded is the other half of what
+                # that sidebar draws.
+                "recommended": False,
                 "loaded": model.repo_id in resident,
             }
             for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)

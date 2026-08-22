@@ -142,29 +142,31 @@ function Section({
   );
 }
 
-// The capability glyphs for the AI Playground strip — plain strokes on the
-// current color, so the tinted body well colours them for free.
-const PLAYGROUND_GLYPHS: Record<string, ReactNode> = {
-  "text-generation": (
+// The AI Playground strip's glyph vocabulary — plain strokes on the current
+// color, so the tinted body well colours them for free. Keyed by the THING a
+// task reads or writes rather than by the capability, because the card body
+// draws each task as the pair it maps between (see PLAYGROUND_FLOWS).
+const MEDIA_GLYPHS = {
+  chat: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.8-.8L3 20l1-4.1a8.4 8.4 0 1 1 17-4.4z" />
       <path d="M8 10h8M8 13.5h5" />
     </svg>
   ),
-  "text-to-image": (
+  image: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3" y="4" width="18" height="16" rx="2.5" />
       <circle cx="9" cy="10" r="2" />
       <path d="M3 17.5 8.5 13l4 3.5 3.5-3 5 4.5" />
     </svg>
   ),
-  "automatic-speech-recognition": (
+  speech: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="9" y="3" width="6" height="11" rx="3" />
       <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
     </svg>
   ),
-  embeddings: (
+  meaning: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="10.5" cy="10.5" r="7" />
       <path d="M20.5 20.5 15.6 15.6" />
@@ -173,7 +175,35 @@ const PLAYGROUND_GLYPHS: Record<string, ReactNode> = {
       <circle cx="10.2" cy="13" r="0.4" />
     </svg>
   ),
+} satisfies Record<string, ReactNode>;
+
+type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
+
+// What each task takes in and hands back. The body renders it literally —
+// in-glyph, arrow, out-glyph — so the card shows "speech becomes text" without
+// leaning on the blurb, and chat → chat still reads as a mapping (rewriting)
+// rather than a doubled icon.
+const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
+  "text-generation": ["chat", "chat"],
+  "text-to-image": ["chat", "image"],
+  "automatic-speech-recognition": ["speech", "chat"],
+  embeddings: ["chat", "meaning"],
 };
+
+// The header's single glyph names the task itself, which is not always the
+// flow's output — Transcription is filed under the mic, not under text.
+const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
+  "text-generation": "chat",
+  "text-to-image": "image",
+  "automatic-speech-recognition": "speech",
+  embeddings: "meaning",
+};
+
+const FLOW_ARROW = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4 12h15M13.5 6.5 20 12l-6.5 5.5" />
+  </svg>
+);
 
 // One card per playground task: the header names it, the body says what it
 // does. Static on purpose — the strip advertises the SURFACE, not this
@@ -182,11 +212,15 @@ const PLAYGROUND_GLYPHS: Record<string, ReactNode> = {
 // vetted default model, so the choice lives in one place.
 function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
   const href = tabHref("playground", `?cap=${encodeURIComponent(group.capability)}`);
+  // A group added without a flow still renders (Home must not crash on a
+  // vocabulary edit): it falls back to the header glyph on both sides.
+  const head = PLAYGROUND_HEADS[group.capability] ?? "chat";
+  const flow = PLAYGROUND_FLOWS[group.capability] ?? [head, head];
   return (
     <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
       <span className="fhb-card-head">
         <span className="fh-card-icon home-pg-icon" aria-hidden="true">
-          {PLAYGROUND_GLYPHS[group.capability]}
+          {MEDIA_GLYPHS[head]}
         </span>
         <span className="fh-card-text">
           <span className="fh-card-name">{group.label}</span>
@@ -194,7 +228,11 @@ function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
         </span>
       </span>
       <span className="home-pg-body" aria-hidden="true">
-        <span className="home-pg-glyph">{PLAYGROUND_GLYPHS[group.capability]}</span>
+        <span className="home-pg-flow">
+          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[0]]}</span>
+          <span className="home-pg-arrow">{FLOW_ARROW}</span>
+          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[1]]}</span>
+        </span>
         <span className="home-pg-blurb">{group.blurb}</span>
       </span>
     </a>

@@ -1141,13 +1141,14 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, reader: {enabled}, model: {default,
+  fused_available}, reader: {enabled}, canvases: {enabled}, model: {default,
   choices}, calls: {…}}` — and no
   `log` block (PF-5), and no `deploy` block. *(A `deploy: {enabled}` block —
   the `deploy_enabled` pref, formerly §20.4/PF-8 — was removed along with §19;
   see that section's tombstone.)* `PUT /api/prefs`
   (X-Fused) applies a **partial** update — any of `engine`,
-  `reader_enabled`, `default_model`, `calls_enabled`, `calls_params` or
+  `reader_enabled`, `canvases_enabled`, `default_model`, `calls_enabled`,
+  `calls_params` or
   `calls_retention_days` present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value,
   or a body naming no known preference → 400; the file merges
@@ -1216,9 +1217,23 @@ never imports server).
   incidental guarantee that `worker_base` was stdlib-only *because hf was absent
   from CI*, so that rule is now enforced by reading the module's own imports
   (`test_ai_worker_base.py`).
+- **PF-1g** **`canvases_enabled` is a feature switch over the shell's ENTRY
+  POINTS to Canvases, not over its routes** (D427). Default **off**, boolean,
+  any non-`true` stored value reading as off, so an existing install — signed in
+  to Fused or not — has to opt in. On, the shell offers Canvases in the two
+  places it ever did: the sidebar's primary row and rail icon (which keep their
+  own additional sign-in gate — the row is `enabled && logged_in`) and the
+  Settings menu entry (gated on this pref **alone**, since that entry has always
+  been the affordance for a feature you have not set up yet). `/canvases` and
+  `/canvases/<name>` answer regardless, exactly as they do signed out: a
+  bookmark, a deep link and an open workspace survive the switch, and the page
+  explains its own state. The shell reads the flag through a standalone module
+  (`@apps/canvases/feature-flag`, not the app barrel — the same main-bundle
+  reason as the sign-in probe) with **one fetch and a publish** rather than a
+  poll, since the only writer is the Preferences page in the same window.
 - **PF-1a** The **Render preferences** tab renders its sections in this order:
   **Appearance**, **Call log**,
-  **Accessibility**, and last
+  **Accessibility**, **Canvases** (PF-1g), and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). **Default model** and **Hugging Face** are NOT here:
@@ -5246,7 +5261,10 @@ is for, and the cache states it nowhere:
   something recommended still gets a row, which is the whole point: a fresh
   machine's answer to "what should I get" is drawn where the answer to "what do I
   have" will appear, so the page fills up in place instead of sending anybody to
-  a second grid on another tab. That is why the Discover tab is unrouted.
+  a second grid on another tab. That is why the Discover tab left the strip — and
+  why, at D426, its search moved to the top of THIS tab and its directory left the
+  tree (§39): a query replaces every row described here with one grid of Hub
+  results, and clearing the box brings them back.
   A recommendation is suppressed by **"this model already has a card here"**, not
   by "this disk has the model" — the two stopped being one question at AI-7f: a
   partly downloaded repo is not a model anybody can load, but its card is on
@@ -5376,13 +5394,28 @@ loads weights, imports a framework, or touches the network.
 
 ---
 
-## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313, D314)
+## 39. Hub Search — The Hub, Narrowed to What This App Can Run (D255, D313, D314, D426)
 
 Goal: §37 answers "what did I already download". This answers the other half —
 "what is out there" — and the two are only worth anything **together**, because
 the Hub does not know your disk and a browser tab open on huggingface.co cannot
 tell you that the model you are reading about is already cached, was last read
 three weeks ago, and would cost nothing to open.
+
+**AMENDED (D426): this is a FACE of the Local page, not a tab of its own.** Every
+rule below was written for a Discover tab and every one of them survives the
+move; what changed is which surface they are rules about. The controls sit at the
+top of the Local tab (§37/HF-20), an empty settled query renders that tab exactly
+as it was, and an active one replaces its sections with the ONE results grid this
+section describes — same either/or (HS-0b), same self-naming heading (HS-0c),
+same debounce and clearing rule (HS-0b/D317). Read "the tab" below as "the search
+face", and "the curated shortlist" as the Local tab's own capability rows, which
+is where the curation is drawn now (D423). The **together** the goal asks for is
+no longer two tabs of one page: it is one page with two faces and ONE listing
+behind both, which is what lets a result report ✓ downloaded, partly downloaded or
+absent from the same walk that drew the carousels (`lib/aiModelGroups`'
+`diskCards` and `resultDisk`). Endpoints, payloads and the server's whole half are
+untouched.
 
 - **HS-0** **Everything on this tab is RUNNABLE HERE, and the constraint is the
   feature** (D313, narrowed by D316). A repo runs here only if a registered
@@ -5439,29 +5472,38 @@ three weeks ago, and would cost nothing to open.
   **over-fetches (4x, capped) and truncates AFTER filtering**, so `limit` means
   "rows you will be shown"; with a task filter the Hub has already constrained
   and the request asks for exactly what it shows.
-- **HS-0b** **One grid at a time, and the search box is at the top** (D313). A
-  curated shortlist answers "what should I even get" — the question somebody
-  has BEFORE they know what to type — so results REPLACE the suggestions rather
-  than stacking under them, and clearing the box brings them back. The box sits
-  above the sections because it is what the tab is for; underneath them, the
-  only way to reach it was to scroll past the thing it is an alternative to.
+- **HS-0b** **One grid at a time, and the search box is at the top** (D313,
+  *retargeted by D426*). The curation answers "what should I even get" — the
+  question somebody has BEFORE they know what to type — so results REPLACE it
+  rather than stacking under it, and clearing the box brings it back. Since D426
+  what they replace is the whole of the Local page's own content, every capability
+  row and "Fetched by engines" with them, rather than a shortlist on a tab of its
+  own: the rule and its reason are unchanged, the scope is bigger, and the way
+  back is louder for it. The box sits above that content because it is the one
+  control that changes what the page IS; underneath it, the only way to reach the
+  search was to scroll past the thing it is an alternative to.
   **The way back is a CONTROL, not a thing to work out** (D317): "clearing the
   box" is only obvious for a query somebody typed, and the state that stranded
   people was a task picked from the select with an empty box — nothing to
   clear, no suggestions, and the route back is guessing that the menu's first
   option restores them. Two affordances, both resetting **query and task
-  together in one act** (`showsReset`, and `clearSearch` in the component): an
-  ✕ inside the search field, and "← Back to suggested models" in the results
+  together in one act** (`showsReset`, and `clearSearch` in `LocalTab`): an
+  ✕ inside the search field, and "← Back to models" in the results
   heading row. Escape in the box does the same. A control that emptied only the
   text would be the worst of the three outcomes — the reader does the obvious
   thing, the box goes empty, and the suggestions still do not come back — which
   is why the platform's own `type="search"` ✕ is hidden rather than relied on.
 - **HS-0c** **Each face names itself, in the same slot, in the same words'
-  worth of chrome** (D314). One grid replacing another is only legible if the
-  new one says what it is: "Suggested models" and "Search results", each with
-  one muted right-hand fact — `11 picked for this machine` against
-  `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
-  one line. **The count states what came back, never what did not**: it is
+  worth of chrome** (D314, *retargeted by D426*). One grid replacing another is
+  only legible if the new one says what it is: "Search results", in the slot and
+  the treatment of the sections it displaced ("User downloaded models", "Fetched
+  by engines"), carrying one muted right-hand fact — `"whisper" · 24 on
+  huggingface.co`, the count and the PROVENANCE in one line, where those rows put
+  a byte subtotal. Before D426 the pair was "Suggested models" against "Search
+  results" on one tab and `11 picked for this machine` was the shortlist's half of
+  it; the shortlist is the Local page's own rows now, each naming its capability,
+  so the results heading is the only one this module decides — one string, and
+  null in the idle face, which is what keeps the page from claiming to be both. **The count states what came back, never what did not**: it is
   absent while a request is in flight, and absent again when the search FAILED.
   A soft failure answers 200 with an `error` and `models: []`, and a count taken
   from that array's length reads `0 on huggingface.co` — the heading reporting
@@ -5477,23 +5519,32 @@ three weeks ago, and would cost nothing to open.
   happen, so a reader who searched, scrolled and looked back up had nothing on
   screen telling them which grid they were in. The heading is one string, not
   two conditions (`chrome.heading`), so the page cannot claim to be both. **It
-  is the SECTION tier, and the capabilities under it are subgroups** — the
-  Local tab's exact shape, where "User downloaded models" sits over a rule and
-  its capability rows are quieter ALL-CAPS titles with no rule of their own.
+  is the SECTION tier** — the Local tab's exact shape, where "User downloaded
+  models" sits over a rule and its capability rows are quieter ALL-CAPS titles
+  with no rule of their own. (Its own capability SUBGROUPS went with the
+  shortlist at D426: a result set is one flat answer to one question, so it is one
+  **wrapping grid** rather than a carousel per capability — a carousel reads a few
+  cards deep and puts the rest behind a horizontal scroll, which is the page
+  withholding what it was just asked for.)
   Drawn as a second `.am-section-head` the view's name and `TEXT GENERATION`
   were twins (same caps, same weight, same muted suffix, same full-width line),
   and two levels rendered identically are no levels at all. The heading, that
   line, the grid and the host disclosure are one decision in one place
-  (`shell/discoverView.ts`), since every way they can disagree is the page
-  making a false claim about itself.
+  (`apps/ai_models/lib/hubSearchView.ts` — `discoverView.ts` retargeted and
+  renamed at D426), since every way they can disagree is the page making a false
+  claim about itself.
 - **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
   unchanged.** The original rule was that a download needs a progress surface, a
   cancel and an answer for a half-finished pull — none of which existed, so the
-  button did not either. Local inference (§40) built exactly that, so Discover
-  now downloads through it — from the search results as well as the shortlist
-  since D313. This module still never writes to the cache itself: it asks the
+  button did not either. Local inference (§40) built exactly that, so the search
+  downloads through it — from the results as well as the curated cards since
+  D313, and since D426 through the Local tab's OWN plumbing prop for prop
+  (`runDownload`, one `jobByModel`, one three-way `downloading ∪ starting ∪
+  settling` guard), because a pull started from the results is the same pull as
+  one started from a carousel and two spellings of "busy" would be two answers
+  about it. This module still never writes to the cache itself: it asks the
   runner's worker to, and the job registry shows it.
-- **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
+- **HS-1a** **Search is a guarded POST; the rest of this surface is an ordinary
   read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
   is D36's: a foreign page can fire a request but the browser will not let it
   read the reply. That protects the RESPONSE and says nothing about the REQUEST
@@ -5510,7 +5561,14 @@ three weeks ago, and would cost nothing to open.
 - **HS-2** **The join is the feature.** Every result is cross-referenced against
   the local scan before it is returned, so a card says **downloaded** (with what
   it costs on disk and when it was last read), **partly downloaded**, or
-  **not downloaded**. `partial` is a real state and not a rounding of the other
+  **not downloaded**. *One definition of on-disk per page, and since D426 it is
+  the PAGE'S* — D255's own lesson, one step further: the reply's `local` field is
+  frozen at the moment of the search, so a model downloaded from these very
+  results went on offering a Download button until somebody typed again. The card
+  reads the same live listing the carousels beside it are drawn from (`diskCards`
+  → `resultDisk`), which also notices a delete. The server half stays exactly as
+  described below, and stays the answer for any consumer with no listing of its
+  own. `partial` is a real state and not a rounding of the other
   two: an interrupted pull leaves bytes behind, and calling those "downloaded"
   sends someone to a model that cannot load. The line was "has at least one
   snapshot" and **is now "no residue of a stopped fetch" (D424)**: a snapshot
@@ -5529,12 +5587,36 @@ three weeks ago, and would cost nothing to open.
   mirror override `huggingface_hub` honours) the one exception, and it is still
   checked to be an http(s) URL before it is used. The query is **encoded**, never
   concatenated: a search for `a&b=c` is a search, not a second parameter. The
-  sort is a **fixed set** of names, so a client can never pass a raw field
-  through to the Hub.
-- **HS-4** **Nothing reaches the network until Discover is opened, and nothing
-  at all until something is typed.** The app is a local file explorer; a page
-  that quietly queried a third party on mount would be a surprise. Selecting the
-  tab is the consent, the caption names the host being asked, and the query is
+  sort is a **fixed set** of names — downloads, likes, updated, created — so a
+  client can never pass a raw field through to the Hub. *The page offers a fifth,
+  **Size**, and it never appears here (D426).* The Hub cannot rank a list by size
+  and will not even report one on a list: it refuses `expand[]=usedStorage` with a
+  400, so a size is one request per repo (HS-6's second measurement). So Size is
+  ranked on the PAGE — the request goes out as `downloads`, which is the candidate
+  set anybody would have got by default, and the results are reordered once by the
+  figure each card is SHOWING: the weights estimate that rode in on this reply
+  where there is one, the Hub's repo total where there is not (the same precedence
+  the cell itself uses). That number is the only evidence a reader has that the
+  sort worked, so ranking by anything else leaves a column of sizes that does not
+  ascend; and it means only the repos with no estimate are asked about, which is
+  exactly the set a card would have asked about on its own. The fixed set is what
+  makes that safe to state rather than hope for: the page's sort union is a
+  superset of this one and reaches the wire only through a mapper, so the value
+  the server would reject cannot be typed at a call site. **Ascending**, because
+  every card here carries a Download button and the question behind a size sort is
+  "what fits", with the unmeasured repos last; and reordered **once**, not as each
+  measurement lands — cards shuffling under the reader two dozen times is worse
+  than a moment of waiting, so the grid holds the server's order, dimmed the way a
+  refetch dims it, and the heading says what it is waiting for.
+- **HS-4** **Nothing reaches the network until the Local tab is open, and
+  nothing at all until something is typed** (*tightened by D426*). The app is a
+  local file explorer; a page that quietly queried a third party on mount would be
+  a surprise. TYPING is the consent now, which is a stricter line than the one
+  this inherited and had to be: selecting a tab was itself an act, and the Local
+  tab is opened by people who came to look at their own disk. The only thing the
+  surface asks for unprompted is `hub/tasks`, a static glossary served off a table
+  that touches no network at all (HS-7). The results note names the host being
+  asked, and the query is
   debounced — a burst of typing is one request — with identical queries inside a
   short TTL answered from memory, because search-as-you-type would otherwise put
   one request per keystroke on a public API. An EMPTY box makes no request at
@@ -5559,7 +5641,7 @@ three weeks ago, and would cost nothing to open.
   model cannot be 16GB on one tab and 8GB on the other. A repo with no
   safetensors metadata reports **no size** rather than a guessed one: a number
   someone plans a 16GB download around must not be invented.
-- **HS-7** **One vocabulary across both tabs.** A result's task label and its
+- **HS-7** **One vocabulary across both faces.** A result's task label and its
   hover sentence come from the same glossary the cached cards use (HF-18), so
   "image + text to text" means the same thing wherever it appears. The task
   FILTERS, though, are the Hub's own `pipeline_tag` values, listed explicitly in
@@ -6520,12 +6602,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   file explorer — leaving the path as text asks the user to copy it into the
   very thing they are looking at — and the host is the one place the app
   discloses who it queries, which is worth being able to go and check.
-- **AI-7b** **Discover suggests, and the suggestions know what you have.** A
+- **AI-7b** **The page suggests, and the suggestions know what you have.** A
   short curated list per capability — moved out of the apps that used to carry
   it privately — with size, the reason you would pick each one, and a **✓** on
   the ones already downloaded. It shows only when the search box is empty,
   because it answers "what should I even get", which is the question you have
-  *before* you know what to type. A capability this machine cannot serve is
+  *before* you know what to type. *It was the Discover tab's own grid; since D423
+  it is the tail of each capability row on the Local tab, and since D426 the
+  search box whose emptiness it depends on is at the top of THAT tab (§39). The
+  rule is the same rule.* A capability this machine cannot serve is
   still listed, with its reason. **Downloading is offered here** (D258,
   superseding HS-1's read-only posture): the job-backed machinery HS-1 named as
   the prerequisite now exists, so the ✕ in the manager really stops a pull.
@@ -6540,11 +6625,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   (AI-7f) rather than a ✓ or an absence. While
   the pull runs the card shows that pull's progress instead — the same three
   states the Hub result cards already draw. And the cache answer is the PAGE's
-  one walk, handed down, not a second walk Discover runs for itself: two walks
-  meant two definitions of "on this machine" and a window where the tabs
-  disagreed about the same repo. That handed-down answer is a **map of id →
-  path, and it answers the whole of what a card says about the local copy** —
-  the ✓, the absent Download button, *and* Explore's destination (`localCopy`).
+  one walk, handed down, not a second walk the search runs for itself: two walks
+  meant two definitions of "on this machine" and a window where two surfaces
+  disagreed about the same repo. That handed-down answer is a **map of id → what
+  this disk holds, and it answers the whole of what a card says about the local
+  copy** — the ✓, the absent Download button, *and* Explore's destination
+  (`diskCards` → `resultDisk`; `localCopy` before D426 renamed it and gave it
+  D424's third verdict to report).
   Explore used to read `local.path` from the **search reply** instead, which is
   frozen at the moment of the search: download a model from the results and the
   re-walk turned the ✓ on while Explore stayed hidden, so the one card most
@@ -7569,6 +7656,46 @@ an AI Models page that could say what was on disk but not what was *running*.
   `test_every_shipped_platform_keeps_a_local_text_engine` over an enumerated
   platform table rather than left to be inferred — the coverage on Windows and
   Linux is now one runner deep, so a future removal has to argue with a test.
+- **AI-11i** **`recommended` is a SECOND curation axis on a catalog entry —
+  EXACTLY ONE per runner list, which is one per capability and engine — and the
+  Playground is the only surface that filters on it: it draws that model plus the
+  models this machine already has, and nothing else** (D425). One curation, two surfaces that want different lengths of it.
+  The AI Models page is where someone SHOPS — its Local and Discover tabs answer
+  "what could I have on this disk", for which the whole shortlist's range (eight
+  text entries from 0.7GB to 20GB) is the point. The Playground is where someone
+  TRIES: they came to type a sentence, and five of those eight rows are a
+  multi-gigabyte download away from answering, which makes a sidebar of them a
+  procurement decision where a text box was wanted. So `catalog.py` marks ONE
+  entry per runner list — the one to try on that engine: strong enough that a
+  first answer is a fair picture of what local inference does here, small enough
+  that the download is not the experience — and
+  `/api/ai/catalog` carries the flag beside AI-11e's `source`/`downloaded`/
+  `loaded`, normalised to a bool on both halves so a consumer never has to read
+  absence as an answer. **False on every cached entry**, always: a
+  recommendation is a person's mark and nobody made one about a repo the user
+  found themselves — and it costs that repo nothing, since it is on the disk by
+  definition and the disk is the filter's other half.
+  **The disk half is what makes the filter safe rather than merely shorter**:
+  anything downloaded stays playable whether or not a curator ever marked it, and
+  `loaded` is in the predicate beside `downloaded` because the two are read from
+  different places (a live supervisor, a memoised scan) and a model answering
+  questions right now must not vanish from the sidebar during the window where
+  they disagree.
+  **It is NOT the default and does not touch the ordering.** `default` is still
+  position 0 and position 0 is still the smallest entry (AI-11a) — the flag is
+  deliberately not the `default: True` field that rule rejected, wearing a new
+  name. The two are INDEPENDENT rather than opposed, and shipping curation has it
+  both ways: the text lists mark a middle row while their default is the smallest,
+  and `mlx-whisper` marks its head, where the smallest entry genuinely is the one
+  to try. So the Playground's fallback is "the catalog default if it is drawn,
+  else the first row that is" — which covers both without either axis deriving
+  from the other, and is never a reordering of the curation or a curated model
+  selected invisibly. A `?model=` link naming an
+  unoffered model falls back the same silent way (PT-9), rather than smuggling a
+  one-off row into a sidebar that would then differ per visitor. **The count is
+  pinned by a test and the choice deliberately is not**: which model is marked is
+  DATA a curator edits, so no test names one — none is an empty Playground group
+  on a fresh machine, and two is the comparison this was cut down to remove.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
@@ -7714,7 +7841,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   existing `model_loading` handling already covers it.
 - **AI-14** **A local model can be BENCHMARKED on demand: a fixed workload per
   capability, run against one model, recorded forever with its throughput, its
-  memory, its load time and the machine it ran on** (D425, D426, D427). The AI
+  memory, its load time and the machine it ran on** (D428, D429, D430). The AI
   Models page's Benchmark tab (`/ai-models/benchmark`) draws one section per
   capability listing that capability's downloaded models with a Run button;
   `fused_render/ai/benchmark.py` performs the run and

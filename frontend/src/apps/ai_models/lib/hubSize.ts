@@ -1,5 +1,6 @@
 // The number beside a search result's name: which figure it is, what it
-// measures, and how the second one gets asked for.
+// measures, and how the second one gets asked for. Read by the Local tab's
+// search face (local/RecommendedCard.tsx's `HubResultCard`).
 //
 // There are TWO sizes on this page and they are not the same measurement.
 //
@@ -22,9 +23,9 @@
 // "computed from the parameter counts" would be a sentence about work that
 // never happened.
 //
-// Here rather than in the component for the reason `discoverView.ts` is: there
+// Here rather than in the component for the reason `hubSearchView.ts` is: there
 // is no DOM harness in this repo by design, so the part with a rule in it lives
-// in a module that can be driven. What stays in `HubCard` is the
+// in a module that can be driven. What stays in `HubResultCard` is the
 // IntersectionObserver — the one piece that genuinely needs a DOM node.
 import type { HubModel } from "@platform/lib/api";
 import { getHubModelSize } from "@platform/lib/api";
@@ -37,6 +38,32 @@ export function hubSizeLabel(model: HubModel, total: number | null): string | nu
   if (model.estimatedSize) return `≈${formatSize(model.estimatedSize)}`;
   if (total !== null) return `≈${formatSize(total)}`;
   return null;
+}
+
+/** The bytes a SIZE SORT ranks a result by: whatever figure the card is showing.
+ *
+ *  **The same precedence as `hubSizeLabel`, and that is the whole point.** The
+ *  number beside a name is the only evidence a reader has that a size sort
+ *  worked, so ordering the grid by a different measurement — the Hub's repo
+ *  total, say, while the card shows the weights estimate — produces a column of
+ *  numbers that does not ascend. Correct, invisible, and indistinguishable from a
+ *  broken sort. Mixing the two measurements in one ordering is the cost, and it
+ *  is a cost this cell already pays: it holds either figure, says which on hover,
+ *  and hedges both with `≈`.
+ *
+ *  It also means a sort asks the Hub for exactly the repos a card would have
+ *  asked about anyway — the ones with no estimate — instead of one request per
+ *  result.
+ *
+ *  `undefined` (nobody has asked, or asking failed) is passed through rather than
+ *  flattened to null: the sort keeps those apart from "the Hub has no total for
+ *  this repo" only in as much as neither is a number, but the caller deciding
+ *  what to measure needs the distinction. */
+export function hubSizeBytes(
+  model: Pick<HubModel, "estimatedSize">,
+  total: number | null | undefined,
+): number | null | undefined {
+  return model.estimatedSize ? model.estimatedSize : total;
 }
 
 /** What that number MEASURES, on hover. Three states, because there are three
@@ -96,7 +123,7 @@ export function knownTotalSize(id: string): number | null | undefined {
  *  goes out of its way not to cache its own Hub errors so that the next card
  *  can find out for itself; caching them here would undo exactly that, and a
  *  transient 429 would read as "this repo has no size" until the tab closed.
- *  Whether anything asks again is the caller's business (see `HubCard`); this
+ *  Whether anything asks again is the caller's business (see `HubResultCard`); this
  *  only promises not to stand in the way.
  */
 export function lookupTotalSize(

@@ -98,6 +98,50 @@ from fused_render.ai import registry
 #: `short_label` and `family_label` are fields too (AI-2c): a stripped name
 #: is a value nobody owns and no test can see.
 #:
+#: **`recommended` IS A SECOND AXIS, AND IT IS THE ONLY ONE THE PLAYGROUND
+#: READS.** Opt-in, absent almost everywhere: every entry here is a model this
+#: app stands behind on the AI Models page, and the marked one is what the
+#: Playground offers — recommended-or-downloaded is what its sidebar draws
+#: (D425). The two surfaces want different lengths for the same curation. The AI
+#: Models page is a place to SHOP: eight text entries from 0.7GB to 20GB is the
+#: range someone comparing downloads needs, and its Local tab exists to say what
+#: a disk already holds. The Playground is a place to TRY, reached by someone who
+#: wants to type a sentence and see what comes back — and a sidebar of eight
+#: rows, most of them a multi-gigabyte download away from answering, is a
+#: decision where a text box was wanted.
+#:
+#: **EXACTLY ONE PER LIST — one per capability AND engine, since that is what a
+#: list IS — and a test pins the count both ways.** Not "a handful", which is
+#: what this started as (three of the eight text entries, two of the four MLX
+#: whispers) and which was the owner's call to cut: a shortlist of three is still
+#: a comparison, and the reader who came to type a sentence has no way to make
+#: it. One row is an ANSWER. It also makes the flag's meaning checkable by eye —
+#: "the model to try on this engine" has one correct value per list, where "a
+#: good first click" had as many as somebody felt like marking. The floor and the
+#: ceiling matter for different reasons: no marked entry leaves the Playground's
+#: group empty on a machine with nothing downloaded, and two puts the choice back.
+#:
+#: **It is NOT "the best one", and it is NOT the default.** `default_for()` is
+#: still position 0, still the smallest, and a recommended entry has no bearing
+#: on it — see the module docstring on why there is no `default: True` field and
+#: why reintroducing one under this name would be the same mistake wearing a new
+#: word. What the flag means is "the one to TRY on this engine": strong enough
+#: that a first answer is a fair picture of what local inference does here, small
+#: enough that the download is not the experience.
+#:
+#: **Where that lands is per LIST and is nobody's formula.** On the text lists it
+#: is neither end — the smallest entry is quick and weaker than every row above
+#: it, and a 20GB model can be the best row in its list and still be a poor first
+#: click. On `mlx-whisper` it IS the head: a 0.05GB tiny.en downloads in seconds
+#: and transcribes clear speech well enough to show what the feature does, which
+#: is exactly the "the download is not the experience" half of the rule winning
+#: outright. So the marked entry sometimes coincides with `default_for()` and
+#: sometimes does not, and that is not a bug either way — the two axes are
+#: independent, not opposed, and nothing may derive one from the other. Note that
+#: the two whisper lists disagree today (MLX marks tiny.en, CTranslate2 marks
+#: turbo); an engine's list is its own editorial judgement, so that is allowed
+#: rather than a drift to reconcile.
+#:
 #: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
 #: sentences is a wall nobody reaches the end of — so each note carries the
 #: single thing that would change the choice and stops, with the rest left to
@@ -212,6 +256,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
             "nickname": "Qwen3.5 4B",
             "size_gb": 4.0,
@@ -434,6 +479,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.5-4B-Q4_K_M.gguf",
+            "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
             "nickname": "Qwen3.5 4B",
             "size_gb": 2.7,
@@ -489,6 +535,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "diffusers-image": [
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
+            "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
             "nickname": "FLUX.2 klein 4B",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
@@ -540,6 +587,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "mflux-image": [
         {
             "id": "mlx-community/FLUX.2-Klein-4B-4bit",
+            "recommended": True,
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
             "nickname": "FLUX.2 klein 4B",
             "size_gb": 4.6,
@@ -576,6 +624,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "mlx-community/whisper-tiny.en-8bit",
             "label": "Whisper tiny English (MLX 8-bit)",
             "nickname": "Whisper tiny English",
+            "recommended": True,
             "size_gb": 0.05,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -648,6 +697,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
+            "recommended": True,
             "label": "Whisper large-v3 turbo (CT2)",
             "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
@@ -696,6 +746,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "transformers-embed": [
         {
             "id": "google/siglip2-base-patch16-384",
+            "recommended": True,
             "label": "SigLIP2 base (384px)",
             "size_gb": 1.5,
             "note": "The smallest here and what a bare embed call loads — "

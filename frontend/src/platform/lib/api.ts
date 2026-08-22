@@ -746,6 +746,10 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
+  // the shell's entry points to it (the sidebar row and the Settings menu
+  // entry), not the /canvases routes, which keep answering a deep link.
+  canvases: { enabled: boolean };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -920,6 +924,10 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
@@ -2455,6 +2463,14 @@ export interface HubSearchResult {
   authenticated?: boolean;
 }
 
+/** The orderings the Hub's LIST endpoint can perform — the server's own
+ *  allowlist, mirrored (`_SORTS` in routers/hub_models.py), so a value it would
+ *  reject cannot be typed at a call site.
+ *
+ *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
+ *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
+ *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
+ *  it reaches this function only through `wireSort`. */
 export type HubSort = "downloads" | "likes" | "updated" | "created";
 
 export function searchHubModels(opts: {
@@ -2628,6 +2644,19 @@ export interface AiCatalogModel {
   /** Whether a worker is holding it RIGHT NOW — read live from the supervisor,
    *  unlike `downloaded`, which comes from a memoised disk scan. */
   loaded: boolean;
+  /** Whether the curation marks this as a first thing to TRY (D425) — a
+   *  per-model flag on the wire, unrelated to the Local tab's
+   *  `MergedSection.recommended`, which is that page's own name for "curated
+   *  and not on this disk".
+   *
+   *  The Playground sidebar is the only surface that filters on it (models
+   *  recommended OR already on the disk); every other picker reads the whole
+   *  list, because "what could I have" and "what should I try first" are
+   *  different questions asked by different people. Always false on a cached
+   *  entry — a recommendation is a person's mark, and nobody made one about a
+   *  repo the user found themselves. NOT the default: `default` is still the
+   *  smallest entry and owes nothing to this flag. */
+  recommended: boolean;
 }
 
 export interface AiCatalogCapability {

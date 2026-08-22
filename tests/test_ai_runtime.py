@@ -1923,6 +1923,42 @@ def test_every_suggestion_list_is_ordered_smallest_first():
             f"{[(e['id'], e['size_gb']) for e in entries]}")
 
 
+def test_every_suggestion_list_recommends_exactly_one_model():
+    """One per list, which is one per capability AND engine (D425).
+
+    Both bounds are load-bearing and they fail differently. NONE leaves the
+    Playground's group empty on a machine that has downloaded nothing — the one
+    outcome that filter must not be able to produce. TWO puts a comparison back
+    in front of the reader who came to type a sentence, which is the whole thing
+    the flag was cut down to prevent.
+
+    Asserted per runner rather than in total, because a list is what ONE machine
+    sees: a Mac reads `mlx-text` and nothing else, and a total would let a
+    Windows-only list go unmarked behind a well-marked Apple one.
+    """
+    for code, entries in catalog.SUGGESTIONS.items():
+        marked = [e["id"] for e in entries if e.get("recommended")]
+        assert len(marked) == 1, (
+            f"{code} recommends {len(marked)} models ({marked}); the Playground "
+            f"offers exactly one per engine, out of {[e['id'] for e in entries]}")
+
+
+def test_recommended_is_written_opt_in_and_never_as_a_false():
+    """`recommended` is present-and-True or absent, never `False` in the source.
+
+    Two ways to write "no" is how a curator ends up believing one of them means
+    something else — the route normalises absence to `False` on the wire
+    (`_catalog_with_downloads`), which is where the bool a consumer filters on
+    comes from, so the literal in this file has exactly one job.
+    """
+    for code, entries in catalog.SUGGESTIONS.items():
+        for entry in entries:
+            if "recommended" in entry:
+                assert entry["recommended"] is True, (
+                    f"{code}/{entry['id']} writes recommended={entry['recommended']!r}; "
+                    "leave the key out instead")
+
+
 def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch):
     """`default_for` is position 0, and position 0 is the smallest — end to end.
 
@@ -6843,6 +6879,51 @@ def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub, s
         if any(m["source"] == "curated" for m in row["models"]):
             assert row["models"][0]["source"] == "curated"
             assert row["models"][0]["id"] == row["default"]
+
+
+def test_the_catalog_marks_the_curated_subset_and_never_a_cached_repo(
+        client, hub, safetensors_text_engine):
+    """`recommended` on the wire: a bool on every entry, True only where the
+    curation put it, False on a repo the user found themselves (D425).
+
+    The absent-vs-False distinction is the point of asserting the KEY rather
+    than its truth — a consumer filtering on it (the Playground sidebar) reads a
+    missing key as "not recommended", so the route must never let absence stand
+    in for an answer.
+    """
+    _text_repo(hub, "some-org/mine-alone", size=1)
+    rows = _catalog(client)
+    for row in rows.values():
+        for entry in row["models"]:
+            assert isinstance(entry["recommended"], bool), entry["id"]
+            if entry["source"] == "cached":
+                assert entry["recommended"] is False, entry["id"]
+    text = rows[registry.TEXT_GENERATION]
+    assert any(m["recommended"] for m in text["models"]), \
+        "text generation recommends nothing, so the Playground has nothing to offer"
+    assert _offered(client, registry.TEXT_GENERATION,
+                    "some-org/mine-alone")["recommended"] is False
+
+
+def test_the_recommended_flag_does_not_move_the_default_or_the_order(client):
+    """The two axes stay separate, end to end — asserted as a RELATIONSHIP and
+    never against a model name.
+
+    `default` is position 0 and position 0 is the smallest entry, whatever is
+    marked (catalog.py's module docstring on why there is no `default: True`
+    field). Naming the ids here would make re-curating a shortlist an edit to
+    this file, which is the wrong thing to make expensive: the curation is data,
+    and what a test may own is the mechanism it feeds.
+    """
+    for row in _catalog(client).values():
+        curated = [m for m in row["models"] if m["source"] == "curated"]
+        if not curated:
+            continue
+        # The head is still the default, and it is still the head whether or not
+        # it is the marked one.
+        assert curated[0]["id"] == row["default"]
+        sizes = [(m["size_gb"] is None, m["size_gb"] or 0.0) for m in curated]
+        assert sizes == sorted(sizes), row["capability"]
 
 
 def test_a_second_revision_landing_in_an_EXISTING_repo_updates_its_size(
