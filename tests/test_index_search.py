@@ -255,6 +255,22 @@ def test_rank_route_answers_ranked_hits(home, tmp_path):
     assert body["total"] == len(body["hits"])
 
 
+def test_rank_route_logs_the_request_total_at_debug(home, tmp_path, caplog):
+    """The next slow report should be attributable server-side instead of
+    inferred: this is the total the per-phase DEBUG lines add up against."""
+    import logging as _logging
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md"])
+    with caplog.at_level(_logging.DEBUG,
+                        logger="fused_render.server.routers.index"):
+        body = client.get("/api/index/rank",
+                          params={"root": root, "q": "readme"}).json()
+    assert body["ok"] is True
+    totals = [r for r in caplog.records if "answered in" in r.message]
+    assert len(totals) == 1
+    assert totals[0].levelno == _logging.DEBUG
+
+
 def test_rank_route_does_not_return_positions(home, tmp_path):
     """The client re-runs fuzzyMatch over the ~200 rows it got back, so
     fuzzy.ts stays the single source of truth for what highlights — and the
@@ -495,6 +511,20 @@ def test_it_escalates_to_the_subsequence_pass_when_substring_hits_run_short(tmp_
     out = search_ranked(cfg, "/r", "alpha", limit=5)
     assert [h["rel"] for h in out["hits"]] == ["alpha.txt", "a-l-p-h-a.txt"]
     assert out["escalated"] is True
+
+
+def test_stage_a_logs_a_debug_line_per_pass(tmp_path, caplog):
+    """No server-side timing on the rank path used to mean a slow report could
+    only be diagnosed by inference. Both passes get their own DEBUG line
+    (never louder — this fires on every keystroke)."""
+    import logging as _logging
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
+    with caplog.at_level(_logging.DEBUG, logger="fused_render.index.query"):
+        search_ranked(cfg, "/r", "alpha", limit=5)
+    stage_a = [r for r in caplog.records if "stage A" in r.message]
+    assert all(r.levelno == _logging.DEBUG for r in stage_a)
+    kinds = {r.message.split("(")[1].split(")")[0] for r in stage_a}
+    assert kinds == {"substring", "subsequence"}
 
 
 def test_the_escalation_ladder_is_lossless(tmp_path):
