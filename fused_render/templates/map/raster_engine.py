@@ -119,7 +119,10 @@ def _crossing_maxzoom(tms: Any, bounds: list[float], width: int, height: int) ->
     world-spanning box: its width reads as the whole globe, so the per-pixel
     resolution comes out ~(360/span)x too coarse and the layer caps a handful of
     zooms short of native (an h35 MODIS tile lands at z3). Recompute the
-    resolution from the true unwrapped extent instead."""
+    resolution from the true unwrapped extent instead. GDAL's own
+    calculate_default_transform is no help here: even through a ``+over`` Web
+    Mercator it re-wraps the crossing extent and reports the world-wide (z0)
+    resolution, so this estimate off the unwrapped bbox is the pragmatic one."""
     west, south, east, north = bounds[0], bounds[1], bounds[2], bounds[3]
     east_continuous = east if east >= west else east + 360.0
     x_res = (_web_mercator_x(east_continuous) - _web_mercator_x(west)) / width

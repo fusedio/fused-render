@@ -117,6 +117,25 @@ def test_both_sides_of_the_seam_return_data(eng, tmp_path):
     assert _opaque_count(wrapped_tile) > 500
 
 
+def test_east_edge_past_180_is_detected_and_serves(eng, tmp_path):
+    # The second crossing clause: a plain EPSG:4326 grid stored with an east edge
+    # past 180 keeps east > 180 (it does NOT wrap into negatives like the
+    # sinusoidal case). It must still be flagged and serve the wrapped hemisphere.
+    path = tmp_path / "east_past_180.tif"
+    _write_cog(path, "EPSG:4326", 170.0, -20.0, 190.0, -10.0)
+    descriptor = _describe(eng, path)
+    assert descriptor["status"] == "ok"
+    assert descriptor["stats"]["crosses_antimeridian"] is True
+    west, _, east, _ = descriptor["bounds"]
+    assert west < east and east > 180  # not wrapped, unlike the sinusoidal case
+
+    source_id = descriptor["data"]["source_id"]
+    # z3 y4 covers lat 0..-21.9. x0 is lon -180..-135 == 180..225 wrapped, where
+    # the 180..190 portion of the data lives; without the fix it is transparent.
+    assert _opaque_count(eng.tile(source_id, 3, 0, 4)) > 500
+    assert _opaque_count(eng.tile(source_id, 3, 7, 4)) > 500  # the 170..180 side
+
+
 def test_crossing_maxzoom_reflects_true_resolution(eng, tmp_path):
     # rio-tiler derives maxzoom from the bounds reprojected to Web Mercator; the
     # wrap makes this 256px / 19deg grid look world-wide, deflating maxzoom to

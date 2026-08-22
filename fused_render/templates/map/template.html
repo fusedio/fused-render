@@ -1063,6 +1063,7 @@ function monitorVectorSummary(L) {
       }
     } catch (error) {
       d.warnings = [...(d.warnings || []), "Couldn't monitor the overview build: " + error.message];
+      renderStyleDock();
     } finally {
       L._jobMonitor = false;
     }
