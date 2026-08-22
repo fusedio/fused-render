@@ -675,7 +675,6 @@ function TemplatePreview({
   templates,
   conditions,
   onRenderedTitle,
-  hideHeader,
   actionsInTopbar,
 }: {
   fsPath: string;
@@ -683,7 +682,6 @@ function TemplatePreview({
   templates: TemplateEntry[];
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
-  hideHeader?: boolean;
   actionsInTopbar?: boolean;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
@@ -1395,15 +1393,13 @@ function TemplatePreview({
       {actionsInTopbar ? (
         <TopbarActions>{headerActions}</TopbarActions>
       ) : (
-        !hideHeader && (
-          <Header
-            fsPath={fsPath}
-            stat={stat}
-            onContextMenu={fileMenu.onContextMenu}
-          >
-            {headerActions}
-          </Header>
-        )
+        <Header
+          fsPath={fsPath}
+          stat={stat}
+          onContextMenu={fileMenu.onContextMenu}
+        >
+          {headerActions}
+        </Header>
       )}
       <div className="preview-body">
         {isPending(entry) ? (
@@ -1789,9 +1785,6 @@ interface PreviewProps {
   // better tab title than the filename can use it (App's StatView). Undefined
   // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
   onRenderedTitle?: (title: string | null) => void;
-  // Chrome-free render (the /learn page): no preview header, no mode switcher —
-  // the content fills the body directly.
-  hideHeader?: boolean;
   // Explorer variant: no preview header bar; the mode switcher actions
   // portal into the breadcrumb bar's #topbar-mode-slot instead.
   actionsInTopbar?: boolean;
@@ -1799,12 +1792,11 @@ interface PreviewProps {
   // FallbackPreview's RegistryFixNotice calls this after a fix succeeds, so a
   // file that starts rendering again (e.g. "_render" is back) does so without
   // a manual refresh. Undefined for callers that don't wire up StatView's
-  // reload (e.g. the learn page), where FallbackPreview simply omits the
-  // "reloading…" step.
+  // reload, where FallbackPreview simply omits the "reloading…" step.
   onReload?: () => void;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar, onReload }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -1893,7 +1885,6 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
         templates={visible}
         conditions={conditions}
         onRenderedTitle={onRenderedTitle}
-        hideHeader={hideHeader}
         actionsInTopbar={actionsInTopbar}
       />
     );

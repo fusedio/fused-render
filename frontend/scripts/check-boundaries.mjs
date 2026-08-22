@@ -26,7 +26,7 @@ const files = [];
 })(SRC);
 
 // Layer of a src-relative path: "platform", "shell", "apps/<name>", or null (root).
-// An app's package root ("apps/learn", from a bare "@apps/learn" import) is
+// An app's package root ("apps/explorer", from a bare "@apps/explorer" import) is
 // part of that app's layer, hence the optional trailing segment.
 function layerOf(rel) {
   if (rel === "platform" || rel.startsWith("platform/")) return "platform";

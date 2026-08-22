@@ -553,7 +553,7 @@ def test_ismount_detects_winfsp_reparse_mount(monkeypatch):
     monkeypatch.setattr(mounts_mod.os, "lstat", lambda p: St())
     monkeypatch.setattr(mounts_mod.os, "readlink",
                         lambda p: "\\Device\\Volume{5c3e4b06-8982}\\")
-    assert mounts_mod._ismount("/mounts/learn") is True
+    assert mounts_mod._ismount("/mounts/data") is True
 
 
 def test_ismount_plain_junction_is_not_a_mount(monkeypatch):
@@ -598,7 +598,7 @@ def test_ismount_survives_ismount_oserror_on_disconnected_winfsp(monkeypatch):
     monkeypatch.setattr(mounts_mod.os, "lstat", lambda p: St())
     monkeypatch.setattr(mounts_mod.os, "readlink",
                         lambda p: "\\Device\\Volume{5c3e4b06-8982}\\")
-    assert mounts_mod._ismount("/mounts/learn") is True
+    assert mounts_mod._ismount("/mounts/data") is True
 
 
 def test_mount_wedged_win32_dead_reparse_point(monkeypatch):
@@ -1695,16 +1695,16 @@ def test_delete_unmounts_and_removes(client, rcd):
 
 
 def test_delete_rejects_builtin_mount(client, rcd, tmp_path, monkeypatch):
-    # BUGBOT: nothing stopped the shipped Learn mount from being deleted like
+    # BUGBOT: nothing stopped a shipped builtin mount from being deleted like
     # any other mount — the record only reappears at the next full SERVER
-    # restart, while the already-open Sidebar's learnMountReady state never
-    # rechecks once true, leaving a dead Learn link for the rest of the
+    # restart, while an already-open surface's cached readiness state never
+    # rechecks once true, leaving a dead link for the rest of the
     # session. Bundled read-only content shouldn't be removable by a user
     # action in the first place.
-    zp = tmp_path / "learn.zip"
+    zp = tmp_path / "sessions.zip"
     zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
-    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
-    mounts_mod.ensure_learn_mount()
+    monkeypatch.setenv("FUSED_RENDER_SESSIONS_ZIP", str(zp))
+    mounts_mod.ensure_builtin_mounts()
     builtin = next(m for m in mounts_mod.list_mounts() if m.get("builtin"))
     r = client.delete(f"/api/mounts/{builtin['id']}", headers=FUSED)
     assert r.status_code == 400
@@ -3841,27 +3841,27 @@ def test_run_automount_skips_already_mounted(home, rcd):
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
 
 
-def test_run_automount_syncs_serves_after_learn_removal(home, rcd, tmp_path, monkeypatch):
-    # BUGBOT: when the learn zip disappears and it was the only mount,
-    # ensure_learn_mount removes the record (and stops its rc serve
-    # directly via _force_detach_learn_mount), but serves.json on disk is
+def test_run_automount_syncs_serves_after_builtin_removal(home, rcd, tmp_path, monkeypatch):
+    # BUGBOT: when a builtin's zip disappears and it was the only mount,
+    # ensure_builtin_mounts removes the record (and stops its rc serve
+    # directly via _force_detach_builtin_mount), but serves.json on disk is
     # ONLY ever rewritten by sync_serves — an early return before it (the
     # old run_automount behavior, taken because list_mounts() is now empty)
     # would leave a stale {mountpoint: dead_url} entry that serve_url_for
     # keeps resolving forever.
-    zp = tmp_path / "learn.zip"
+    zp = tmp_path / "sessions.zip"
     zp.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty-zip EOCD; content unused
-    monkeypatch.setenv("FUSED_RENDER_LEARN_ZIP", str(zp))
+    monkeypatch.setenv("FUSED_RENDER_SESSIONS_ZIP", str(zp))
     mounts_mod.run_automount()
-    learn_mp = mounts_mod.mountpoint({"name": "learn"})
+    builtin_mp = mounts_mod.mountpoint({"name": "sessions"})
     with open(mounts_mod.serves_path()) as f:
-        assert learn_mp in json.load(f)
+        assert builtin_mp in json.load(f)
 
     zp.unlink()
-    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
-    mounts_mod.run_automount()  # learn was the only mount -> list_mounts() is now empty
+    monkeypatch.delenv("FUSED_RENDER_SESSIONS_ZIP")
+    mounts_mod.run_automount()  # the builtin was the only mount -> list_mounts() is now empty
     with open(mounts_mod.serves_path()) as f:
-        assert learn_mp not in json.load(f)
+        assert builtin_mp not in json.load(f)
 
 
 # -- http serves (the duckdb reader's mounted-parquet fast path) -----------------
