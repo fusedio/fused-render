@@ -379,8 +379,10 @@ a.pg-hero-repo:hover {
   letter-spacing: -0.01em;
 }
 
-/* Common parameters, inline under the composer: the choices a first run
-   actually makes, before the Config fold. */
+/* Common parameters, inline under the composer. The text and image stages put
+   every knob behind the fold instead (D430, D431); transcription keeps its one
+   Task choice out here, because recording and translating are two different
+   errands rather than one tuned run. */
 .pg-params {
   display: flex;
   flex-direction: column;
@@ -433,6 +435,14 @@ a.pg-hero-repo:hover {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* Chip rows leading the fold — tighter than the slider stack around them,
+   because the two rows are one decision about the shape of the picture. */
+.pg-config-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .pg-ctl {
@@ -678,19 +688,6 @@ a.pg-hero-repo:hover {
   padding: 4px 16px 24px;
 }
 
-.pg-empty-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.pg-empty-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  max-width: 46ch;
-}
-
 .pg-starter {
   margin-top: 14px;
   display: flex;
@@ -732,11 +729,9 @@ a.pg-hero-repo:hover {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
-/* -- text ---------------------------------------------------------------------- */
-
-/* The one reply, rendered — the text stage's output card. */
-/* Label + card, so "Response" can wear the Config summary's voice without
-   being mistaken for a fold. */
+/* A result: label above, card below — so "Response" / "Result" can wear the
+   Config summary's voice without being mistaken for a fold. Both the text and
+   the image stage wrap their output in this. */
 .pg-answer-block {
   display: flex;
   flex-direction: column;
@@ -750,6 +745,9 @@ a.pg-hero-repo:hover {
   color: var(--fg-muted);
 }
 
+/* -- text ---------------------------------------------------------------------- */
+
+/* The one reply, rendered — the text stage's output card. */
 .pg-answer {
   position: relative;
   font-size: 13.5px;
@@ -950,6 +948,34 @@ a.pg-hero-repo:hover {
   border: 1px solid var(--border);
   align-self: flex-start;
   background: var(--bg-alt);
+}
+
+/* The finished picture wears its Save affordance the way the text stage's card
+   wears Copy — top-right, inside the frame. The frame exists only to give that
+   button something to be absolute against, so it hugs the image. */
+.pg-image-frame {
+  position: relative;
+  align-self: flex-start;
+  max-width: 100%;
+  line-height: 0;
+}
+
+/* Sitting on arbitrary photo pixels, not on a themed background: a fixed dark
+   scrim and white glyph is the only pair that survives both a snow scene and a
+   night scene, in either theme. */
+.pg-image-save {
+  top: 10px;
+  right: 10px;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.55);
+  text-decoration: none;
+}
+
+.pg-image-save:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .pg-image-wait {

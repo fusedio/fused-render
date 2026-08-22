@@ -1,5 +1,10 @@
 // The image stage: prompt in, picture out (SPEC AI-9).
 //
+// Shaped like the text stage (D431): the surface is a heading, a prompt and
+// Generate — nothing else. EVERY parameter, the aspect and speed chips
+// included, lives behind the Config fold, because a first render only needs
+// the prompt and the chips were reading as required setup.
+//
 // The controls follow what the image playgrounds converged on (fal, Midjourney
 // web, Ideogram, Leonardo): ASPECT RATIO chips, not raw width×height sliders —
 // people think in shapes, developer forms think in pixels — with the exact
@@ -21,6 +26,7 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { AdvancedPanel, RailChips, RailSlider, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
@@ -105,7 +111,17 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   }, [prompt, width, height, steps, guidance, seed, modelSteps]);
 
   const abortRef = useRef<AbortController | null>(null);
+  const boxRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // The box grows with the prompt up to a ceiling — Shift+Enter is a newline,
+  // and a newline you cannot see is half a feature. Same as the text stage.
+  const grow = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight, 180) + "px";
+  };
 
   // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
   // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
@@ -171,6 +187,21 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     }
   };
 
+  // Back to the empty state once the picture has been looked at. The render's
+  // own settings (size, steps, seed) stay put — clearing is about the prompt
+  // and its result, not about undoing the setup.
+  const clear = () => {
+    setPrompt("");
+    setRun(null);
+    setError(null);
+    setPreviewLive(false);
+    const box = boxRef.current;
+    if (box) {
+      box.style.height = "auto";
+      box.focus();
+    }
+  };
+
   const busy = !!run && !run.done;
   const job = busy ? run.job : null;
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
@@ -178,12 +209,20 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   return (
     <div className="pg-work">
+      {/* One line, naming the ACTION — the hero card above already says which
+          model this is and whether it is loaded. */}
+      <h2 className="pg-work-title">Describe a picture</h2>
+
       <div className="pg-composer">
           <textarea
-            rows={1}
+            ref={boxRef}
+            rows={2}
             value={prompt}
             placeholder="Describe the picture…"
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => {
+              setPrompt(e.target.value);
+              grow();
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -191,6 +230,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               }
             }}
           />
+          {!busy && run && (
+            <button
+              type="button"
+              className="pg-ghost-btn pg-clear"
+              title="Clear the prompt and the picture"
+              onClick={clear}
+            >
+              Clear
+            </button>
+          )}
           {busy ? (
             <button
               type="button"
@@ -204,40 +253,41 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               type="button"
               className="btn btn-primary pg-send"
               disabled={!prompt.trim()}
+              title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
-              Generate
+              Generate <kbd className="pg-kbd">⏎</kbd>
             </button>
           )}
       </div>
 
-      {/* Shape and speed are the two choices a first render actually makes;
-          exact sizes, steps, guidance and the seed live behind Advanced. */}
-      <div className="pg-params">
-        <RailChips
-          options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
-          active={aspect}
-          onPick={(value) => {
-            const pick = ASPECTS.find((a) => a.value === value);
-            if (pick) {
-              setWidth(pick.width);
-              setHeight(pick.height);
-            }
-          }}
-        />
-        {speedChips && (
+      {/* EVERY knob is behind the fold, chips included: shape and speed are
+          choices worth making, but not choices worth making FIRST. The chip
+          rows lead because they are the ones with a picture in mind. */}
+      <AdvancedPanel>
+        <div className="pg-config-chips">
           <RailChips
-            options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
-            active={speed}
+            options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
+            active={aspect}
             onPick={(value) => {
-              const pick = speedChips.find((c) => c.value === value);
-              if (pick) setSteps(pick.steps);
+              const pick = ASPECTS.find((a) => a.value === value);
+              if (pick) {
+                setWidth(pick.width);
+                setHeight(pick.height);
+              }
             }}
           />
-        )}
-      </div>
-
-      <AdvancedPanel>
+          {speedChips && (
+            <RailChips
+              options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
+              active={speed}
+              onPick={(value) => {
+                const pick = speedChips.find((c) => c.value === value);
+                if (pick) setSteps(pick.steps);
+              }}
+            />
+          )}
+        </div>
         <RailSlider
           label="Width"
           hint="Snapped to a multiple of 16 by the server."
@@ -302,26 +352,40 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {error && <p className="pg-error">{error}</p>}
 
+      {/* The invitation is the heading above; empty means only the starters
+          have anything left to say. */}
       {!run && (
           <div className="pg-empty-stage">
-            <p className="pg-empty-title">Make a picture with {entry.nickname || entry.label}</p>
-            <p className="pg-empty-sub">
-              {entry.defaults?.steps != null
-                ? "Runs entirely on this machine — the Quick setting is what this model was benchmarked at."
-                : "Runs entirely on this machine."}
-            </p>
             <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void generate(p)} />
           </div>
         )}
 
         {run && (
+          <div className="pg-answer-block">
+          {/* Same voice as the Config summary, so the two labels read as
+              siblings — one folds, this one just names the card below it. */}
+          <p className="pg-answer-label">Result</p>
           <figure className="pg-image-result">
             {run.done ? (
-              <img
-                src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
-                alt={run.started.prompt}
-                style={{ aspectRatio: `${run.started.width} / ${run.started.height}` }}
-              />
+              <div className="pg-image-frame">
+                <img
+                  src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
+                  alt={run.started.prompt}
+                  style={{ aspectRatio: `${run.started.width} / ${run.started.height}` }}
+                />
+                {/* Save, where the text stage puts Copy: the picture's own
+                    top-right corner. A plain download link — the file is
+                    already on disk and the server serves it. */}
+                <a
+                  className="pg-copy-btn pg-image-save"
+                  href={rawUrl(run.started.path)}
+                  download={run.started.path.split("/").pop() || "picture.png"}
+                  title="Save this picture"
+                  aria-label="Save this picture"
+                >
+                  {MenuIcons.download}
+                </a>
+              </div>
             ) : (
               <>
                 <img
@@ -372,6 +436,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               ) : null}
             </figcaption>
           </figure>
+          </div>
         )}
     </div>
   );
