@@ -45,9 +45,7 @@ PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
 MAX_IDLE_PER_LOCATOR = int(os.environ.get("MAP_VIEWER_READER_POOL", "4"))
 MAX_IDLE_READERS = int(os.environ.get("MAP_VIEWER_READER_POOL_IDLE", "24"))
-# Half the Web Mercator world width in metres (EPSG:3857 spans [-x, x]); a whole
-# world is 2x. A raster crossing 180 is read by shifting a tile's mercator bounds
-# by a full world so it lands in the dataset's real (unwrapped) longitude domain.
+# Half the Web Mercator world width in metres (EPSG:3857 spans [-x, x]).
 WEBMERC_HALF_WIDTH = 20037508.342789244
 RASTER_SUFFIXES = {
     ".tif",
@@ -105,24 +103,15 @@ def _web_mercator_x(lon: float) -> float:
 
 
 def _web_mercator_y(lat: float) -> float:
-    """Web Mercator (EPSG:3857) northing for a latitude, clamped to the
-    projection's valid range so a near-polar bound stays finite."""
+    """Web Mercator northing for a latitude, clamped to the valid range."""
     lat = max(-85.051129, min(85.051129, lat))
     return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * 6378137.0
 
 
 def _crossing_maxzoom(tms: Any, bounds: list[float], width: int, height: int) -> int:
-    """Native maxzoom for an antimeridian-crossing raster.
-
-    rio-tiler derives maxzoom from the dataset's bounds reprojected to Web
-    Mercator, but a grid that runs east across 180 reprojects to a
-    world-spanning box: its width reads as the whole globe, so the per-pixel
-    resolution comes out ~(360/span)x too coarse and the layer caps a handful of
-    zooms short of native (an h35 MODIS tile lands at z3). Recompute the
-    resolution from the true unwrapped extent instead. GDAL's own
-    calculate_default_transform is no help here: even through a ``+over`` Web
-    Mercator it re-wraps the crossing extent and reports the world-wide (z0)
-    resolution, so this estimate off the unwrapped bbox is the pragmatic one."""
+    """Native maxzoom estimated off the unwrapped extent. rio-tiler (and GDAL's
+    calculate_default_transform, even through +over) reprojects a 180-crossing
+    grid to a world-spanning box and caps it far short of native (h35 -> z3)."""
     west, south, east, north = bounds[0], bounds[1], bounds[2], bounds[3]
     east_continuous = east if east >= west else east + 360.0
     x_res = (_web_mercator_x(east_continuous) - _web_mercator_x(west)) / width
@@ -479,9 +468,8 @@ class RasterEngine:
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
         self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
-        # Preparations run on one PERSISTENT thread, never an ephemeral one: a
-        # thread that has done /vsicurl work deadlocks the whole process at its
-        # exit on Windows (loader lock against the GIL — see daemon.RENDER_POOL).
+        # One persistent worker: an ephemeral /vsicurl thread deadlocks at exit
+        # on Windows (loader lock vs the GIL - see daemon.RENDER_POOL).
         self.prepare_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="prepare"
         )
@@ -696,10 +684,8 @@ class RasterEngine:
                     dataset.crs, "EPSG:4326", *dataset.bounds, densify_pts=21
                 )
             ]
-            # A sinusoidal (or any) grid whose extent runs east across 180 comes
-            # back with west > east once longitudes wrap into [-180, 180]; a plain
-            # 4326 grid stored with an east edge past 180 keeps east > 180. Either
-            # way tiles on the wrapped hemisphere need the shifted read in tile().
+            # Crosses 180: either it wrapped (west > east) or it is stored with
+            # an east edge past 180. Both need the shifted read in tile().
             crosses_antimeridian = bounds[2] < bounds[0] or bounds[2] > 180.0 + 1e-9
             overviews = dataset.overviews(1) if dataset.count else []
             image_structure = dataset.tags(ns="IMAGE_STRUCTURE")
@@ -870,9 +856,8 @@ class RasterEngine:
         if not record.has_overviews and not record.preview_path:
             record.optimization = {"status": "available", "progress": 0}
 
-        # A COG derivative is warped to Web Mercator, which drops every pixel east
-        # of 180; a crossing source stays served from the original through tile()'s
-        # shifted read instead of a broken pyramid.
+        # A COG derivative warped to Web Mercator drops every pixel east of 180,
+        # so a crossing source stays on the original via tile()'s shifted read.
         if record.crosses_antimeridian:
             record.optimization = {"status": "not_needed", "progress": 100}
         needs_preparation = (
@@ -1266,15 +1251,9 @@ class RasterEngine:
 
     @staticmethod
     def _over_crs(crs: Any) -> Any:
-        """Same projection, with PROJ's ``+over`` so longitudes are not wrapped.
-
-        Warping a 180-crossing source through a plain CRS clamps every coordinate
-        into [-180, 180] and drops the pixels east of the seam. ``+over`` on both
-        ends of the pipeline keeps them, so a tile bounds shifted a whole world
-        east reads the wrapped hemisphere from the dataset's real domain. The
-        EPSG:3857 definition carries ``+nadgrids=@null``, which re-wraps longitude
-        and cancels ``+over``, so that token is dropped.
-        """
+        """Same projection with PROJ's ``+over`` so longitudes are not wrapped
+        into [-180, 180]. ``+nadgrids=@null`` (in EPSG:3857) re-wraps and cancels
+        ``+over``, so it is dropped."""
         from rasterio.crs import CRS
 
         proj4 = crs.to_proj4()
@@ -1293,14 +1272,9 @@ class RasterEngine:
         self, reader: Any, x: int, y: int, z: int, indexes: Any,
         resampling_method: str, bounds: list[float],
     ) -> Any:
-        """Read one XYZ tile of an antimeridian-crossing raster.
-
-        The tile whose geographic longitude lies on the far side of the data is
-        read with its Web Mercator bounds shifted by a full world, landing it in
-        the dataset's continuous (unwrapped) longitude domain — the wrapped tile
-        and the ground point past 180 are the same place. Output stays a normal
-        256px Mercator tile, so the render path below is unchanged.
-        """
+        """Read one XYZ tile of a 180-crossing raster: shift the tile's mercator
+        bounds by whole worlds until they land in the dataset's unwrapped domain,
+        then read a normal 256px tile there."""
         import numpy as np
         from morecantile import Tile
         from rio_tiler.errors import TileOutsideBounds

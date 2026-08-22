@@ -95,6 +95,11 @@ VECTOR_RUNTIME = {
 }
 
 
+# _read_detail sentinel: the bbox holds more than MAX_TILE_FEATURES, as opposed
+# to None which means genuinely empty.
+_TILE_TOO_DENSE = object()
+
+
 class TileCancelled(Exception):
     """The tile's client went away mid-render; the work was abandoned."""
 
@@ -1104,7 +1109,9 @@ class VectorEngine:
                 layer=source.layer,
                 **kwargs,
             )
-        if table.num_rows == 0 or table.num_rows > MAX_TILE_FEATURES:
+        if table.num_rows > MAX_TILE_FEATURES:
+            return _TILE_TOO_DENSE
+        if table.num_rows == 0:
             return None
         return metadata, table
 
@@ -1198,7 +1205,7 @@ class VectorEngine:
             return TileResult(b"")
         if table.num_rows <= MAX_TILE_FEATURES:
             detail = self._read_detail(source, bbox, None)
-            if detail is None:
+            if not isinstance(detail, tuple):
                 return TileResult(b"")
             return TileResult(self._detail_tile(source, *detail, z, x, y))
         name = self._geometry_column(metadata, table)
@@ -1241,7 +1248,7 @@ class VectorEngine:
         if cancel is not None and cancel.is_set():
             raise TileCancelled(f"vector tile {z}/{x}/{y}")
         detail = self._read_detail(source, source_bbox, fids)
-        if detail is None:
+        if not isinstance(detail, tuple):
             return TileResult(b"")
         metadata, table = detail
         return TileResult(self._detail_tile(source, metadata, table, z, x, y))
@@ -1274,14 +1281,15 @@ class VectorEngine:
         if cancel is not None and cancel.is_set():
             raise TileCancelled(f"vector tile {z}/{x}/{y}")
         detail = self._read_detail(source, source_bbox, None)
-        if detail is None:
-            # The float32 summary undercounted this tile against GDAL's exact
-            # bbox filter; draw the overview from the summary rather than blank.
+        if detail is _TILE_TOO_DENSE:
+            # float32 summary undercounted vs GDAL's exact filter; draw overview.
             return TileResult(
                 self._overview_from_summary(
                     source, summary, source_bbox, z, x, y, inside
                 )
             )
+        if detail is None:
+            return TileResult(b"")
         metadata, table = detail
         return TileResult(self._detail_tile(source, metadata, table, z, x, y))
 

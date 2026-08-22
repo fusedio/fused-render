@@ -1035,8 +1035,7 @@ function monitorOptimization(L) {
   })();
 }
 
-// A non-GeoPackage vector source draws a coarse sample while the server builds
-// its one-time feature overview. Poll until it is ready, then bump the tile
+// Poll the server's one-time overview build; when ready, bump the tile
 // revision so MapLibre refetches the exact overview in place.
 function monitorVectorSummary(L) {
   const d = L && L.descriptor;
@@ -1074,20 +1073,16 @@ function fitTo(bounds) {
   if (!bounds) return;
   let [w, s, e, n] = bounds;
   if (![w, s, e, n].every(Number.isFinite)) return;
-  // A tile that straddles the antimeridian describes as west > east (e.g. a
-  // MODIS sinusoidal tile near 180°). Carry east past 180 so fitBounds spans
-  // the ~20° of real data rather than the whole world the other way round.
+  // Antimeridian-crossing extent (west > east): carry east past 180 so
+  // fitBounds spans the real data, not the whole world the other way round.
   if (w > e) e += 360;
   if (w === e && s === n) { map.flyTo({ center: [w, s], zoom: Math.max(map.getZoom(), 13) }); return; }
   map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
 }
 
-// MapLibre clips every tile against a source `bounds` whose west > east (an
-// antimeridian-crossing extent), so a source with such bounds renders nothing.
-// Drop the bounds in that case — the daemon already returns transparent tiles
-// outside the true extent, so nothing over-renders. Returns a spec fragment to
-// spread: an explicit `bounds: undefined` key fails MapLibre's style
-// validation and the whole source is silently never added.
+// MapLibre renders nothing for a source whose bounds have west > east, so drop
+// the bounds there (the daemon serves transparent tiles outside the extent).
+// Returns a spec fragment to spread — `bounds: undefined` fails validation.
 function safeBounds(b) {
   if (!Array.isArray(b) || b.length !== 4 || !b.every(Number.isFinite)) return {};
   return b[0] <= b[2] ? { bounds: b } : {};
@@ -1478,8 +1473,7 @@ function removeRasterSource(sourceId) {
 
 function boundsFeature(bounds) {
   let [west, south, east, north] = bounds;
-  // An antimeridian-crossing extent (west > east) would otherwise outline the
-  // whole world the wrong way round; carrying east past 180 draws the real box.
+  // Crossing extent (west > east): carry east past 180 to draw the real box.
   if (west > east) east += 360;
   return {
     type: "Feature",
@@ -1755,12 +1749,9 @@ map.on("idle", () => {
   }
   if (changed) renderLayerCards();
 });
-// Tile URLs are stable /api/engines/map/proxy/... paths, and the server restarts a dead or
-// wedged tile daemon underneath them — replaying the sources it knew. The one
-// gap is a source whose replay could not re-register it (a transient open
-// failure): its tiles 404 here. Re-describe once to register it again and
-// rebind, latched so one broken viewport recovers a single time; `_recovered`
-// clears on the next successful sourcedata, so a later failure recovers again.
+// Proxy tile URLs are stable, but a source whose replay never re-registered
+// (a transient open failure) 404s here. Re-describe once to rebind it; latched
+// so one broken viewport recovers once, cleared on the next good sourcedata.
 async function recoverTiles(L) {
   if (L._recovering) return;
   L._recovering = true;
