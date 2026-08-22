@@ -29,6 +29,7 @@ import { PlaygroundImage } from "./PlaygroundImage";
 import { PlaygroundTranscribe } from "./PlaygroundTranscribe";
 import { ModelProgress } from "./AiProgress";
 import { capabilityLabel } from "@shell/engines";
+import { PLAYGROUND_GROUPS } from "@shell/playgroundGroups";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   downloadAiModel,
@@ -46,22 +47,15 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // What the groups are called HERE: the capability vocabulary is exact
 // ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
 // ("Speech to text") — this tab is the one surface named for what a person
-// DOES, so it gets the doing words. An unknown capability falls back to the
-// shared label, so a new runner appears (plainly named) instead of vanishing.
-const GROUP_LABELS: Record<string, string> = {
-  "text-generation": "Chat",
-  "text-to-image": "Images",
-  "automatic-speech-recognition": "Transcription",
-};
-
-// One plain sentence under each group title, for the reader this tab exists
-// for — someone with no AI vocabulary at all. It says what the models DO, in
-// the words of the task, never of the technology.
-const GROUP_BLURBS: Record<string, string> = {
-  "text-generation": "Ask questions, write and rewrite text.",
-  "text-to-image": "Turn a description into a picture.",
-  "automatic-speech-recognition": "Turn speech into written words.",
-};
+// DOES, so it gets the doing words (PLAYGROUND_GROUPS, shared with the Home
+// strip). An unknown capability falls back to the shared label, so a new
+// runner appears (plainly named) instead of vanishing.
+const GROUP_LABELS: Record<string, string> = Object.fromEntries(
+  PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
+);
+const GROUP_BLURBS: Record<string, string> = Object.fromEntries(
+  PLAYGROUND_GROUPS.map((g) => [g.capability, g.blurb]),
+);
 
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
@@ -240,22 +234,32 @@ export default function AiModelsPlayground() {
   // the page, not an error) — and the fallback is `default`, never models[0],
   // which catalog.py's ordering rule makes the smallest vetted model.
   const asked = useMemo(() => readParam("model"), [urlVersion]);
+  // `?cap=` names a capability, not a model — the Home strip's cards land
+  // here with only a task in mind. It only steers the fallback: an explicit
+  // `model` always wins, and an unknown cap value falls through silently.
+  const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
   const selected = useMemo(() => {
     for (const row of capabilities) {
       const hit = row.models.find((m) => m.id === asked);
       if (hit) return { row, model: hit };
     }
-    for (const row of capabilities) {
+    const rows = [
+      ...capabilities.filter((r) => r.capability === askedCap),
+      ...capabilities,
+    ];
+    for (const row of rows) {
       const fallback =
         row.models.find((m) => m.id === row.default) ?? row.models[0];
       if (fallback) return { row, model: fallback };
     }
     return null;
-  }, [capabilities, asked]);
+  }, [capabilities, asked, askedCap]);
 
   const select = (id: string) => {
     setActionError(null);
-    writeParams({ model: id });
+    // cap dies with the first explicit pick — leaving it would make a shared
+    // URL claim a task the user has since clicked away from.
+    writeParams({ model: id, cap: null });
   };
 
   const residentRow = selected
