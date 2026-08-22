@@ -5917,7 +5917,55 @@ an AI Models page that could say what was on disk but not what was *running*.
   write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
   that makes them true: snapshot the cursors, **fsync the data, then write the
   sidecar** — a recorded byte is always a durable byte, so a resume never
-  skips one that was still in flight. **The sidecar carries its own version
+  skips one that was still in flight. **A platform with no `os.pwrite` —
+  Windows, and nothing else — fetches each file on ONE append-only stream
+  instead, which is the same guarantee by another route rather than a weaker
+  one.** `pwrite` is required because segments write OUT OF ORDER into a
+  pre-sized file, where a buffered seek-and-write would let the count run ahead
+  of the disk; with a single `O_APPEND` stream there is no out-of-order write
+  left to make, so the file's LENGTH is the progress and a resume is a `Range`
+  from that length. The pre-sized file goes with it, and so do the two things
+  that existed for it: no sparse-filesystem requirement on this route, and a bar
+  that can read the length rather than the allocated blocks (AI-5b). The sidecar
+  still LICENSES the resume, and the one segment this plan derives is also what
+  refuses to append into a part file the segmented path left — many recorded
+  segments against one derived, so the layout check discards it exactly like no
+  sidecar at all — with the refusal holding in the other direction too, since a
+  segmented run finds an appended part file shorter than the pre-sized one it
+  requires. The recorded cursor and the file are then made to AGREE before a
+  byte moves, by truncating the file back to the cursor: appending cannot
+  overwrite an un-fsynced tail the way a positional write does, so that tail
+  goes rather than being counted, which costs at most one flush interval of
+  re-fetched bytes. The serialization is per FILE and not repo-wide — two files
+  are two fds and nothing between them is out of order — so a repo of shards
+  still moves on `MAX_CONNECTIONS` connections and only a single huge shard
+  loses its parallelism. It was a flat refusal until this, and the refusal was
+  invisible exactly where it mattered: the model mirror's only transport is this
+  fetch, so a win32 client declined every time and no Windows acquisition ever
+  reached the access logs the mirror exists to produce (AI-5l). **That route is
+  also the first code here to need `O_BINARY` and a LENGTH check, and it needed
+  both for the same reason.** Windows opens an `os.open` fd in the CRT's default
+  TEXT mode, so every `0x0a` written becomes `0x0d 0x0a`: a part file longer than
+  the file it describes and wrong in content, while the cursors — which count
+  what was handed to `os.write` — go on saying the download is complete. The flag
+  was missing from the segmented call site too and always had been, harmlessly,
+  because `os.pwrite` does not exist on the one platform that translates, so no
+  `os.open` here had ever written a byte there; the first route that did was
+  green on POSIX and corrupted every blob it fetched on win32. Since `_BINARY` is
+  0 on POSIX, a correct call is indistinguishable from one missing the flag by
+  any means a run on this platform has, so the rule is enforced by reading the
+  module's own AST — the same mechanism as the stdlib-only rule, and for the same
+  reason. **The length check is the other half**: on the append-only route the
+  part file's length is an INDEPENDENT witness, because the cursors count what
+  was handed to the kernel and the length is what the kernel kept, so the two
+  disagreeing is exactly the class of corruption neither a cursor nor a
+  `Content-Length` can notice. It is worth a syscall because the HUB path
+  carries no digest — the mirror's sha256 did catch the translated blob, but on
+  the Hub path the same bytes would have been published under a real etag and
+  served out of the cache forever. On the segmented route that check would be
+  theatre, the file being pre-sized before a byte arrives, which is why
+  publishing there is gated on the cursors alone. **The sidecar
+  carries its own version
   number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
   list MEANS — fixed pieces rather than equal shares — so a sidecar written
   before this existed can have the right etag and size and a self-consistent
@@ -5928,7 +5976,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
   hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
   are written out of order,
-  and handing it one would produce a silently corrupt blob. Resume demands that
+  and handing it one would produce a silently corrupt blob. (A prefix, on the
+  append-only route — but which of the two wrote a given part file is not
+  something hf could tell, so the suffix stays ours on both and the fallback
+  deletes them rather than offering hf a file whose meaning depends on the
+  platform.) Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
   therefore three-valued**, because two rules turn on the difference between a
@@ -5961,9 +6013,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   before a byte arrives, so a sparse file of pure holes measures exactly right.
   No hash, like huggingface_hub itself, which relies on TLS and `Content-Length`.
   **Every failure and every incapability falls back to `snapshot_download` /
-  `hf_hub_download`** — no range support, a Hub API that moved, a platform with
-  no `os.pwrite`, a cache filesystem that allocates rather than holding a sparse
-  file, an argument ours does not understand — logging the reason to stderr and
+  `hf_hub_download`** — no range support, a Hub API that moved, a cache
+  filesystem that allocates rather than holding a sparse file (asked only where
+  a file is pre-sized, so not on the append-only route), an argument ours does
+  not understand; a platform with no `os.pwrite` was on this list and is not any
+  more — logging the reason to stderr and
   clearing our part files first, because a download that got faster and sometimes
   broken would be a bad trade. Resume therefore covers the app being killed, quit
   or crashed — the case that motivated it — and not a fetch that fell back, which
@@ -6088,6 +6142,210 @@ an AI Models page that could say what was on disk but not what was *running*.
   step reads the local cache or a module constant. An explicitly passed
   capability is validated and used unchanged, so this governs only the omitted
   case.
+- **AI-5l** **A SUGGESTED model may be fetched from OUR OWN distribution, and any
+  doubt goes to the Hub** (D421). CloudFront's access logs are then the answer to
+  "did this user download a model", with no telemetry in the app at all — one
+  `manifest.json` request per download attempt, made before a single byte moves,
+  and logged even on a cache hit. Two objects, not a protocol:
+  `/models/<org>/<name>/manifest.json` (mutable, short TTL — the commit, every
+  file's name, size, etag and sha256, and a `complete` flag) and
+  `/models/<org>/<name>/<commit>/<etag>` (immutable, one per distinct etag,
+  range-fetched by the existing chunk queue).
+  Deliberately NOT `HF_ENDPOINT`, which is a protocol switch: the mirror would owe
+  `/api/models/…`, the `x-linked-etag`/`x-linked-size`/`x-repo-commit` resolve
+  headers and Xet's `xet-read-token`, none of which our two shapes have. **What
+  lands on disk is hf's cache layout, byte for byte** — blob under its etag, a
+  relative symlink from `snapshots/<commit>/`, `refs/main`, and this app's own
+  `.fused-fetch-<commit>.json` record — which is the whole design: the loaders,
+  the Local tab's inventory, disk usage, deletion and the AI-5k fast path all keep
+  working untouched, because what they read is a normal hf cache entry.
+  **The branch lives in `download_snapshot` alone**, below every runner call
+  site, so no runner changed and none can forget it; it is skipped under
+  `**kwargs` for AI-5k's reason, that an argument the function does not know about
+  changes what a download IS. A one-FILE download (`download_file`, which is how
+  llama.cpp fetches a GGUF) does not pass through here at all and has its own
+  object, its own reader and its own weaker claim — see **AI-5m**, which is where
+  everything below about `complete` stops applying. **Every failure degrades to today's Hub path** — a
+  404, a 5xx, a host that does not answer, a body that is not JSON, an unknown
+  schema version, a manifest whose fields do not hold up, a mid-download drop, a
+  hash mismatch — and says which path gave up on stderr. A mirror that is down
+  costs a slower download, never a failed one, and only `Cancelled` escapes (AI-5e:
+  a ✕ must never be answered by starting a download somewhere else). **That
+  promise does not rest on having enumerated the exceptions a URL library
+  raises**: `http.client.HTTPException` is neither an `OSError` nor a
+  `ValueError`, so `IncompleteRead` off a truncated chunked body escaped the
+  client's own guard AND the branch's, and a misbehaving mirror host FAILED a
+  download the Hub could have served — so the client names that family (as
+  `_TRANSIENT` always did) and the whole branch, manifest call included, sits
+  inside one guard. **A 401 or 403 on a mirror blob is never re-resolved against
+  the Hub.** On the Hub path a 401 means an expired presigned URL and re-resolving
+  is right; here the blob URL is commit-pinned and immutable, so there is nothing
+  to refresh and the ordinary retry budget is the whole answer. Re-resolving
+  anyway did two silent harms: a request to huggingface.co in the middle of the
+  one download that must not make one, and — because Hub metadata carries no
+  `sha256` and the replacement was wholesale — the disappearance of the hash
+  check below, with the etag/size/commit guard still passing because a mirror
+  etag IS an hf blob name. The digest is therefore fixed at plan time rather than
+  read from the live metadata at publish time, so no later reassignment can turn
+  it off again. **The
+  manifest is a trust boundary and is validated field by field**, because the
+  failure that matters is not a 500 but a manifest that is plausible and wrong: a
+  commit that is not 40 lower-case hex names no snapshot directory, an etag that
+  is not hex can name a path inside `blobs/`, a file name containing `..` writes
+  outside the snapshot, and a size or digest that lies puts bad bytes under a real
+  etag. Rejection reads as NO MIRROR rather than as an error. A size of ZERO is
+  accepted, though: an empty file is legal on the Hub, hf caches it like any
+  other, and the fetcher already handles a zero-length segment — refusing the
+  manifest over one would take a whole model off the mirror because of a file
+  with nothing in it. **A manifest must also assert `complete: true`**, meaning
+  it lists every file in the repo at that commit, and the client refuses one that
+  does not. This is not ceremony: the client writes an AI-5k fetch record from
+  that file list, and a list taken from the same document being trusted would
+  make the record self-certifying — a manifest missing `config.json` downloads a
+  subset, records the subset as complete at that scope, and every later bring-up
+  is served a snapshot that cannot load, with nothing left that would refetch it.
+  The client cannot settle completeness itself (the only independent authority is
+  the Hub, and asking it defeats the feature), so the proof lives at BUILD time
+  and this flag is where it is recorded. **Blobs are hashed
+  on the mirror path and not on the Hub path**, and the asymmetry is the point:
+  here we are the origin, so nobody else would notice a bad byte we shipped, and a
+  wrong blob under a real etag is permanent — hf's own loaders serve it out of the
+  cache forever and no later download refetches it. One read of the finished part
+  file, before `os.replace` publishes anything, so a mismatch leaves nothing in
+  the cache and takes the repo to the Hub; the part file and sidecar go too, or the
+  next run resumes into bytes already known to be wrong. **The permission is
+  PER-MODEL and arrives from the supervisor**, which sets `FUSED_MODEL_MIRROR_OK`
+  to the repo id only when `catalog.all_suggested_ids()` contains it, at BOTH spawn
+  sites (a serving worker and a download-only worker), and strips an inherited one
+  rather than passing it on. That is a privacy choice rather than an optimisation:
+  probing for an arbitrary id would tell us which models a user downloads, and
+  gating it to the curated list is what means we never learn that. `catalog` is
+  also unreachable from a runner's interpreter, which imports `worker_base` and
+  `mirror` as bare modules with no `fused_render` package on `sys.path` — so both
+  are **stdlib-only**, enforced by reading their own source. **The manifest is
+  GENERATED from a real hf cache directory** (`scripts/build_model_mirror.py`:
+  commit from `refs/main`, etags from the blob filenames, sizes and sha256 from the
+  blobs, names through the single `wire_name` boundary that makes a manifest name
+  `/`-separated on every platform), never transcribed — that is the one part of
+  this that would otherwise fail silently and permanently — and `tests/test_build_model_mirror.py` round-trips
+  the generated manifest through the client, which is what keeps the two halves
+  honest. **The generator proves completeness against the Hub's own listing at
+  that commit and refuses to publish a partial snapshot**, which is what earns the
+  `complete` flag; on a build machine a Hub round trip tells huggingface.co
+  nothing about any user, so the check costs only the thing it is worth. "The
+  folder exists" is explicitly NOT that proof and was the original bug:
+  `torch_image` fetches its image models with `allow_patterns=recipe["keep"]`, so
+  any build machine that ever LOADED one holds a deliberately partial cache for
+  it, and `--fetch-missing` therefore completes every model unconditionally rather
+  than only when the folder is absent. hf's own `.cache/` bookkeeping inside a
+  snapshot is skipped rather than published as repo content, and **any model
+  skipped is a non-zero exit** — the loop stays tolerant so one absent model does
+  not stop the other nineteen, but publishing 19 of 20 green is how a suggested
+  model goes missing from the mirror unnoticed, since its download quietly staying
+  on the Hub is invisible by design. The generator's companion, `--check
+  BASE_URL`, is the read-only half of that same guarantee applied to a LIVE
+  mirror rather than a local cache: it fetches every suggested target's
+  manifest over plain HTTP and hands it to the client's own
+  `mirror.validate_manifest`/`validate_file_manifest` rather than re-checking
+  `schema`/`complete` itself, on the same reasoning as the round-trip test
+  above — a drift check that accepted a manifest the runtime client would
+  refuse would report a target published when nothing that ever runs that
+  code could read it. It needs neither `aws` nor `huggingface_hub` and writes
+  nothing, so it is meant to gate a release the way the version bump in
+  `making-a-release` does. **Windows fetches from the mirror like every other platform**, and that is a
+  change from how this shipped. The mirror's only transport is
+  `_segmented_fetch`, which used to refuse outright without `os.pwrite`, so a
+  win32 client made the one manifest request, declined, and took the Hub path
+  like any other download — which decided what the access logs MEANT, since
+  Windows acquisitions were invisible to them and the count is the entire point
+  of the feature. That transport now degrades to a single append-only stream
+  rather than refusing (AI-5i), so the count is complete across platforms and
+  what Windows gives up is parallelism within one file, not the mirror. The
+  generator/client round-trip test is still split in two, an agreement half and
+  a fetch half, but no longer BY PLATFORM: both halves run everywhere, and the
+  fetch half is what exercises a real Windows download end to end. **What
+  Windows found the first time it ran one is worth recording, because it is not
+  the failure this rule used to describe**: the route ran, fetched the whole
+  repo, and was refused by its own sha256 — the part file had been opened in the
+  CRT's default TEXT mode, so every `0x0a` in the weights arrived as `0x0d 0x0a`
+  (AI-5i, `_BINARY`). A mirror declining is the degradation working exactly as
+  specified; a mirror declining *for that reason* is a bug, and the distance
+  between those two readings of one stderr line is most of what hashing on this
+  path is for. The cost of learning the old behaviour the hard way was a
+  Windows CI failure reporting a 401
+  from huggingface.co: the mirror declined, the download fell through to a REAL
+  Hub listing, and the test had no business being able to leave the machine at
+  all. Every test in this feature now runs under a fixture that refuses a
+  non-loopback `connect` or `getaddrinfo`, so a broken mirror path fails saying
+  so instead of reporting somebody else's status code — and on a machine with a
+  valid `HF_TOKEN` that same test would have PASSED by downloading a real repo.
+  **`FUSED_MODEL_MIRROR` ships ON**, defaulting to `https://render.fused.io/mirror`
+  (`mirror.DEFAULT_BASE`) when unset; the documented opt-out is setting it to
+  `""` (D421 amendment). The per-model permission above is unchanged by that —
+  a default base names no repo by itself — and every failure mode still falls
+  back to the Hub, which is what makes shipping this default safe before every
+  suggested model has a mirror object (see D421). Explicitly out of scope:
+  component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
+  tens of megabytes and not the "downloaded a model" signal; and the mirror pins a
+  commit, so a suggested model updated upstream keeps installing the pinned one
+  until the build script reruns — reproducibility, at the cost of lagging a
+  fix.
+- **AI-5m** **ONE FILE off the mirror is a SECOND object with a WEAKER claim, not
+  a relaxed manifest** (D422). AI-5l's branch lives in `download_snapshot` alone,
+  and `llama_text.download` does not go through it: it fetches one GGUF with
+  `download_file`, because a GGUF repo publishes dozens of quantizations of the
+  same model (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB file).
+  Since D416 made llama.cpp the only local text engine on Windows and Linux, that
+  left every suggested TEXT model on those platforms off the mirror entirely —
+  invisibly, since a download that never asks is a perfectly normal download.
+  Routing it through `download_snapshot(allow_patterns=[file])` is NOT the fix:
+  the per-repo manifest is accepted only when it asserts `complete: true` for the
+  whole repo, so serving one file that way would mean mirroring 147.81GB, and
+  weakening the assertion would break AI-5k. So there is a third object,
+  `/models/<org>/<name>/files/<filename>/manifest.json` — mutable and short-TTL
+  like the repo manifest, listing EXACTLY ONE named file, whose **blob stays at
+  the existing `/models/<org>/<name>/<commit>/<etag>`**, so a repo published both
+  ways stores one copy of each blob and either manifest's URL is the other's.
+  **Its reader is separate rather than relaxed** (`mirror.file_manifest` beside
+  `mirror.manifest`): same validation vocabulary, same "every rejection reads as
+  NO MIRROR", same per-model permission and the same one-guard/`Cancelled`-only
+  degradation, but it requires exactly one entry whose `name` IS the file that was
+  asked for, and it neither requires nor reads `complete`. Two claims, two
+  readers, so relaxing one cannot relax the other. **The absent completeness
+  assertion is safe because of what the CALLER does next, not because one file is
+  small**: `download_file` writes NO AI-5k fetch record and never has — one file
+  is not a scope a later bring-up can be told is complete — so there is no record
+  for a partial answer to self-certify, which is the entire harm that assertion
+  prevents. The worst a wrong per-file manifest can do is serve the wrong bytes,
+  and the sha256 check keeps those out of the cache. Adding a fetch record to this
+  path would take that argument away and put the assertion back in scope.
+  **The permission has to be TRANSLATED, or the hook is dead code for every real
+  model**: `llamacpp-text`'s catalog ids are bare `.gguf` FILENAMES (that is how
+  the AI Models page keys a repo publishing many quantizations) while the worker
+  names the recipe's REPO to the mirror, and `mirror.allowed` compares against
+  `_REPO_ID` (`org/name`) — so a permission carrying the filename is refused by
+  the client forever. `catalog.mirror_id` maps a suggested id to the repo the
+  worker will name and `supervisor._mirror_ok` returns that id rather than a
+  boolean. The privacy rule is untouched: nothing outside
+  `catalog.all_suggested_ids()` is ever granted, the lookup is in the CURATED
+  recipe table so an uncurated GGUF gets nothing, and the worker still learns the
+  answer for one model. This lives in the server process because `catalog` and
+  `formats` are unreachable from a runner's interpreter, and because the whole
+  point of AI-5l's permission is that the worker cannot decide it. The test that
+  matters is parametrized over the REAL curated rows: the pre-existing
+  `test_a_suggested_model_may_use_the_mirror` asserted equality with the catalog
+  id and passed while describing a value the client refuses. The generator gains
+  the matching mode (`--model org/name --file NAME`), which reads one file out of
+  a cache holding only that file, asks the Hub nothing (there is no completeness
+  to prove) and validates the name as the single URL path segment it becomes;
+  `--fetch-missing` fetches the one file. A default run now expands each curated
+  GGUF id into a `(repo, file)` target, which also fixes a run that could not
+  succeed: those ids were looked up as `models--<filename>` cache folders, printed
+  SKIPPED and made every default invocation exit 1. Still out of scope, and
+  unchanged by this: **component repos stay on the Hub** — the FLUX GGUF
+  transformer comes out of `unsloth/FLUX.2-klein-4B-GGUF` while the permitted id
+  is the base repo, so the component's `download_file` finds no permission by
+  construction rather than by a rule anyone has to remember.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was

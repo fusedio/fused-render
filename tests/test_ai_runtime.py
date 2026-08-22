@@ -30,6 +30,12 @@ from fused_render.server import create_app
 from fused_render.ai import hub_cache as ai_models
 from fused_render.ai.hub_cache import CachedModel
 from fused_render.server.routers import ai_runtime
+# `no_egress` is imported for its SIDE EFFECT: it is an autouse fixture, so
+# binding the name in this module installs it for every test here, including
+# the model-mirror tests below. See its docstring — Windows CI proved that
+# "every test stubs the Hub" is not the same claim as "no test reaches the
+# network".
+from test_ai_hub_fetch import no_egress  # noqa: F401
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.
@@ -6878,3 +6884,217 @@ def test_the_size_walk_is_not_repeated_while_a_repo_sits_still(client, hub, monk
     # …and the size cache still answers, because nothing about the repo moved. This
     # is the assertion that would fail if the walk were keyed on time.
     assert len(walks) == 1
+
+
+# -- the model mirror's permission is handed down per model (AI-5l) --------------
+#
+# `mirror.base_url()` now falls back to a real address (`render.fused.io`) when
+# `FUSED_MODEL_MIRROR` is unset, so an unset env var no longer means "no
+# mirror" — it means "the default mirror". None of the tests below currently
+# call `mirror.manifest()` (the function that makes the HTTP request), which
+# is why they have gotten away without a network guard so far, but that is
+# safety by coincidence: the next mirror test added to this file, or a change
+# to one of these that starts exercising `manifest()`, would reach the real
+# `render.fused.io` with nothing stopping it. The `no_egress` import above is
+# what closes that gap — do not remove it because "nothing here does
+# networking".
+
+
+def _suggested_id():
+    """One id from the curated list, whatever it is today.
+
+    Taken from the catalog rather than hardcoded: the shortlist is refreshed
+    every few releases, and a test naming a model that has since been dropped
+    would assert about a repo the app no longer offers.
+    """
+    return sorted(catalog.all_suggested_ids())[0]
+
+
+def test_a_suggested_model_may_use_the_mirror(monkeypatch, tmp_path):
+    """The permission is a REPO ID THE CLIENT ACCEPTS, not a bare flag.
+
+    Carrying an id is what stops a value that arrived some other way from
+    licensing a probe for whatever the next download happens to be — the worker
+    checks it against the model it was sent to fetch. But the id it checks is
+    the one it NAMES to the mirror, which for `llamacpp-text` is the recipe's
+    repo and not the catalog's bare `.gguf` filename. So the assertion is the
+    shape `mirror.allowed` accepts rather than equality with the catalog id:
+    this test asserted equality and passed while the permission it described was
+    a value the client refuses, for every model in that list (AI-5m).
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "https://mirror.example")
+    granted = supervisor._child_env("t", _suggested_id())["FUSED_MODEL_MIRROR_OK"]
+
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", granted)
+    assert _mirror_client().allowed(granted) is True
+
+
+def _mirror_client():
+    """The runner-side mirror client, to check a permission against.
+
+    Imported here rather than reasoned about: the whole failure this section
+    guards is a permission that looks right in a dict and is refused by the one
+    function that reads it.
+    """
+    from fused_render.ai.runners import mirror
+
+    return mirror
+
+
+@pytest.mark.parametrize("entry", catalog.SUGGESTIONS["llamacpp-text"],
+                         ids=lambda entry: entry["id"])
+def test_a_curated_gguf_gets_its_repo_as_the_permission(entry, monkeypatch,
+                                                        tmp_path):
+    """Without this translation the hook is dead code for EVERY real llama.cpp
+    model (AI-5m).
+
+    `llamacpp-text`'s catalog ids are bare `.gguf` FILENAMES — that is how the AI
+    Models page keys them, since one repo publishes many quantizations — but
+    `llama_text.download` names the recipe's REPO to `download_file`, and the
+    repo id is therefore what `mirror.allowed` compares the permission against.
+    Handed the filename, the client refuses it against `_REPO_ID` (`org/name`)
+    and declines forever: no manifest request, no mirrored download, and nothing
+    in the app's behaviour that would say so. Since D416 llama.cpp is the only
+    local text engine on Windows and Linux, so that is every suggested text
+    model on those platforms.
+
+    Parametrized over the REAL curated list, because a synthetic id is exactly
+    what would keep passing while this stayed broken.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "https://mirror.example")
+    mirror = _mirror_client()
+
+    env = supervisor._child_env("t", entry["id"])
+    granted = env["FUSED_MODEL_MIRROR_OK"]
+
+    # The id the WORKER will name — `llama_text.download` passes
+    # `recipe["repo"]` to `worker_base.download_file` — and not the catalog id.
+    assert granted == formats.GGUF_RECIPES[entry["id"]]["repo"]
+    assert granted != entry["id"]
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", granted)
+    assert mirror.allowed(granted) is True, (
+        f"the worker is handed {granted!r} and the client refuses it, so "
+        f"{entry['id']} can never come off the mirror")
+    # …and the untranslated id would have been refused, which is the whole point.
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", entry["id"])
+    assert mirror.allowed(entry["id"]) is False
+
+
+def test_a_suggested_repo_id_is_still_handed_down_verbatim(monkeypatch, tmp_path):
+    """Every OTHER runner's ids are already repo ids, and the translation must
+    leave them exactly as they were — this is a lookup for one runner's id shape,
+    not a rewrite of the permission."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    repo_id = next(model for model in sorted(catalog.all_suggested_ids())
+                   if "/" in model)
+
+    env = supervisor._child_env("t", repo_id)
+
+    assert env["FUSED_MODEL_MIRROR_OK"] == repo_id
+
+
+def test_a_gguf_the_user_found_themselves_is_never_translated(monkeypatch,
+                                                              tmp_path):
+    """The translation is a lookup in the CURATED table, so it cannot widen the
+    privacy rule: an uncurated GGUF has no recipe row and no permission, and a
+    repo id nobody suggested is refused whether or not it holds a GGUF."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+    for model in ("some-model-Q4_K_M.gguf", "somebody/a-gguf-repo-we-never-suggested"):
+        env = supervisor._child_env("t", model)
+        assert "FUSED_MODEL_MIRROR_OK" not in env, model
+
+
+def test_the_permission_still_names_ONE_repo_and_not_a_switch(monkeypatch,
+                                                              tmp_path):
+    """A worker fetching one curated GGUF learns the answer for that model's repo
+    and for nothing else — the translation adds a lookup, not a second repo."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "https://mirror.example")
+    mirror = _mirror_client()
+    entry = catalog.SUGGESTIONS["llamacpp-text"][0]
+    other = next(recipe["repo"] for key, recipe in formats.GGUF_RECIPES.items()
+                 if recipe["repo"] != formats.GGUF_RECIPES[entry["id"]]["repo"])
+
+    granted = supervisor._child_env("t", entry["id"])["FUSED_MODEL_MIRROR_OK"]
+
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", granted)
+    assert mirror.allowed(other) is False
+
+
+def test_a_model_the_user_found_themselves_may_not(monkeypatch, tmp_path):
+    """A Discover model is never NAMED to our distribution.
+
+    This is the privacy choice the whole per-model design exists for, not an
+    optimisation: the probe itself is what would tell us which models a user
+    downloads.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    env = supervisor._child_env("t", "somebody/a-model-we-never-suggested")
+    assert "FUSED_MODEL_MIRROR_OK" not in env
+
+
+def test_a_worker_with_no_model_gets_no_permission(monkeypatch, tmp_path):
+    """The default argument, which is what every other `_child_env` caller
+    gets. No model, no permission — never a permission for everything."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    assert "FUSED_MODEL_MIRROR_OK" not in supervisor._child_env("t")
+
+
+def test_an_inherited_permission_is_stripped_rather_than_passed_on(monkeypatch,
+                                                                   tmp_path):
+    """This environment is a COPY of the server's.
+
+    So a variable an operator or a parent process exported would otherwise reach
+    every worker for every model, which is exactly the global switch this design
+    refused. Stripped, the only way it is ever set is the decision above.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "somebody/anything")
+    env = supervisor._child_env("t", "somebody/a-model-we-never-suggested")
+    assert "FUSED_MODEL_MIRROR_OK" not in env
+
+
+def test_an_operator_set_base_url_reaches_the_worker(monkeypatch, tmp_path):
+    """`FUSED_MODEL_MIRROR` is left exactly as it was found — pointing it at a
+    staging distribution is the supported way to use this. Unset now falls
+    back to the shipped default (`mirror.DEFAULT_BASE`) rather than to no
+    mirror at all; the per-model permission below is what still gates it."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "https://mirror.example/staging")
+    env = supervisor._child_env("t", _suggested_id())
+    assert env["FUSED_MODEL_MIRROR"] == "https://mirror.example/staging"
+
+    monkeypatch.delenv("FUSED_MODEL_MIRROR")
+    assert "FUSED_MODEL_MIRROR" not in supervisor._child_env("t", _suggested_id())
+
+
+def test_neither_spawn_site_forgets_the_model(monkeypatch):
+    """Both spawn sites, in lockstep.
+
+    One of them forgetting it is a mirror that works for a Download button and
+    not for a load-triggered fetch — the same model, downloaded two ways, taking
+    two different paths — and nothing in the app's behaviour would say so.
+    Checked on the SOURCE because that is the shape of the mistake: an argument
+    with a default is exactly the kind a call site silently omits.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(supervisor))
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and getattr(node.func, "id", None) == "_child_env"]
+    assert len(calls) == 2, f"{len(calls)} `_child_env` call sites, expected 2"
+    for call in calls:
+        assert len(call.args) == 2, (
+            f"_child_env at line {call.lineno} passes no model, so that worker "
+            f"can never use the mirror")
+        # …and passes the model being FETCHED, not some other string. A worker
+        # handed the wrong id gets no permission at all, since the id is what
+        # `mirror.allowed` compares against.
+        assert ast.unparse(call.args[1]) in ("worker.model", "model"), (
+            f"_child_env at line {call.lineno} passes "
+            f"{ast.unparse(call.args[1])!r} as the model")
