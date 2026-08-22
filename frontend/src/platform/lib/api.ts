@@ -13,16 +13,14 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts). The sidebar's "Learn"
-  // entry navigates to `${mounts_root}/learn`, the builtin read-only mount
-  // of the bundled learn.zip (D123) — same dir every mount lives under.
+  // Root of the mounts dir (~/.fused-render/mounts). A builtin read-only
+  // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
+  // every mount lives under.
   mounts_root: string;
-  // Whether the builtin learn mount record exists yet — the sidebar only
-  // renders the Learn entry when this is true, so it's never a dead link
+  // Whether the builtin sessions mount record exists yet — a surface linking
+  // into it renders only when this is true, so it's never a dead link
   // (unpackaged dev run with no zip, or the brief window before startup's
   // background automount thread has upserted the record).
-  learn_mount_ready: boolean;
-  // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
@@ -1143,7 +1141,7 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
-  // True for a bundled default mount (currently only Learn, D123) that the
+  // True for a bundled default mount (currently only Sessions, D123/D227) that the
   // server re-creates on every startup — the API rejects deleting it, so the
   // Mounts view hides Delete for it too (unmount still works).
   builtin: boolean;

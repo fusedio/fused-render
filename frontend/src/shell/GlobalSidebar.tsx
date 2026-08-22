@@ -3,7 +3,7 @@
 // primary nav on top (Home / Tasks, plus Canvases once this machine is signed
 // in to Fused), the explorer's Bookmarks below it, and a single Settings
 // trigger pinned to the bottom that opens a menu holding everything else
-// (Config / App Basics for now, plus Templates / Mounts / AI Models /
+// (Config for now, plus Templates / Mounts / AI Models /
 // Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
@@ -13,10 +13,9 @@ import { useEffect, useRef, useState } from "react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
+import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useAiRuntime } from "@shell/aiRuntime";
@@ -124,6 +123,7 @@ function PreferencesTrigger({
   open,
   dot,
   active,
+  trailing,
   onToggle,
 }: {
   open: boolean;
@@ -131,6 +131,9 @@ function PreferencesTrigger({
   /** The current route is one of the menu's destinations — the trigger is
       the only sidebar chrome that can show it. */
   active: boolean;
+  /** Trailing-edge content, same slot NavItem gives Tasks its count — this
+      row's is the version chip. */
+  trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
   return (
@@ -146,6 +149,7 @@ function PreferencesTrigger({
         {dot}
       </span>{" "}
       Settings
+      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
     </button>
   );
 }
@@ -227,9 +231,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
 
-  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
-  // No sessions-mount gate any more: the one entry it guarded (Inbox) is gone
-  // from the sidebar. The route and its mount are untouched.
+  // No builtin-mount gate any more: the entries they guarded (Inbox, App
+  // Basics) are gone from the sidebar — the learn content ships as a community
+  // app now. The sessions route and its mount are untouched.
   const claudeConfigAvailable = useClaudeConfigAvailable();
 
   // A model resident in memory is the one piece of app state that costs
@@ -345,13 +349,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ) : undefined;
 
   // Everything that is not primary nav lives in the bottom menu for now:
-  // the former sidebar entries (Config / App Basics), then the settings
+  // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
-    ...(learnMountReady ? [{ href: "/learn", label: "App Basics", icon: <LearnIcon /> }] : []),
   ];
   if (menuEntries.length > 0) menuEntries.push("separator");
   menuEntries.push(
@@ -441,7 +444,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   return (
     <>
-      <SidebarFrame title="Render" version={config.version} homeHref="/home" rail={rail}>
+      <SidebarFrame title="Render" homeHref="/home" rail={rail}>
         <div className="sidebar-section sidebar-group">
           <NavItem
             href="/home"
@@ -475,10 +478,24 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* The version rides the Settings row's trailing edge rather than the
+              brand row it used to sit in. Two reasons it moved: the brand row is
+              one click target for Home, so a version glued to the title read as
+              part of the app's NAME; and it competed for the line the title
+              ellipsises on when the sidebar is dragged narrow. Down here it is
+              what it is — a footnote about this install, in the same trailing
+              slot the Tasks row states its count in. */}
           <PreferencesTrigger
             open={prefsPos !== null}
             dot={triggerDot}
             active={prefsActive}
+            trailing={
+              config.version ? (
+                <span className="version-chip" title={`Fused Render v${config.version}`}>
+                  v{config.version}
+                </span>
+              ) : undefined
+            }
             onToggle={togglePrefsMenu}
           />
         </div>

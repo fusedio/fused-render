@@ -11,7 +11,7 @@ Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
 for the full design.
 
-![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](core_apps/learn/assets/open_with_right_click.gif)
+![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](docs/screenshots/open_with_right_click.gif)
 
 Right-click a file in Explorer → **Open with** → fused-render, and it opens in
 your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
@@ -133,6 +133,10 @@ Any `.html` file can call it and bind the result to the URL:
   language is auto-detected unless you name one. It runs for minutes, so
   `onProgress` fires with seconds of audio and the download manager's ✕ really
   stops it, and the transcript is written to a file so it outlives the tab.
+- `fused.ai.embed({texts|paths, ...})` — text or images into one vector space,
+  locally: resolves with `{vectors, dim, model}`, unit-normalized so cosine
+  similarity is a plain dot product. Pass one or the other, never both — a
+  batch of up to 64 strings or file paths at a time.
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).

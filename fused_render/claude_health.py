@@ -9,9 +9,10 @@ can be told *before* a prompt has been typed:
   * is it new enough for the flag set `server/ai.py:_ai_cmd` spawns it with
   * is it signed in
 
-`/api/config` already establishes the pattern: it publishes `learn_mount_ready`
-so the sidebar's Learn entry renders only when it works, "so it's never a dead
-link". Claude Code had no equivalent, so every Claude-dependent surface rendered
+`/api/config` already establishes the pattern: it publishes
+`sessions_mount_ready` so a link into a bundled mount renders only when it
+works, "so it's never a dead link". Claude Code had no equivalent, so every
+Claude-dependent surface rendered
 as available and found out otherwise on click.
 
 **This module is the one place in the package that names an install directory.**
@@ -67,7 +68,7 @@ BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # the *user* PATH afterwards stays invisible until the next sign-in.
 #
 # This is the UNION of the four lists that used to exist independently across
-# server/ai.py, claude_config/lib.py, core_apps/learn/check_env.py and
+# server/ai.py, claude_config/lib.py, the learn content's check_env.py and
 # core_apps/sessions/analyze.py. A directory only one of them knew about was a
 # directory where the app disagreed with itself.
 #
@@ -254,7 +255,7 @@ def _shell_probe() -> Optional[str]:
     binary somewhere no list will ever guess, and all of them work by editing
     the user's shell profile. Asking that profile is what finds them.
 
-    Ported from core_apps/learn/check_env.py, which has been doing this
+    Ported from the learn content's check_env.py, which had been doing this
     correctly and alone. Its two hard-won details are kept:
 
       * PYTHONHOME/PYTHONPATH are scrubbed. The packaged app runs a bundled

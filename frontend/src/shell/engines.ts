@@ -30,6 +30,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "text-generation": "Text generation",
   "text-to-image": "Image generation",
   "automatic-speech-recognition": "Speech to text",
+  "embeddings": "Embeddings",
 };
 
 export function capabilityLabel(capability: string): string {
