@@ -32,6 +32,7 @@ import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
+import { capabilityIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -185,15 +186,20 @@ export default function PlaygroundTab() {
     ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
     : undefined;
 
-  const runDownload = async () => {
-    if (!selected) return;
+  // The sidebar cards and the stage header share this: same call, same error
+  // surface (the stage's banner — the card has no room for a sentence).
+  const runDownloadFor = async (id: string, capability: string) => {
     setActionError(null);
     try {
-      await downloadAiModel(selected.model.id, selected.row.capability);
+      await downloadAiModel(id, capability);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);
     }
+  };
+  const runDownload = () => {
+    if (!selected) return;
+    return runDownloadFor(selected.model.id, selected.row.capability);
   };
   const runLoad = async () => {
     if (!selected) return;
@@ -258,76 +264,80 @@ export default function PlaygroundTab() {
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
         {capabilities.map((row) => {
-          // The catalog's curated half, in its own smallest-first order, notes
-          // and all — but the RECOMMENDED subset of it (D425), because this tab
-          // is where someone types a sentence rather than shops for a download:
-          // see `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
+          // The catalog's curated half, in its own smallest-first order — but
+          // the RECOMMENDED subset of it (D425), because this tab is where
+          // someone types a sentence rather than shops for a download: see
+          // `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
           // capability carousels beside what this disk already holds, with the
           // Hub search above them for anything the curation never named (D426).
           //
           // The uncurated repos this disk happens to hold (D323's union) are
           // still playable but sit apart under their own quiet caption — they
-          // have no curator and no note, and mixed in they read as
-          // recommendations nobody made.
+          // have no curator, and mixed in they read as recommendations nobody
+          // made.
           const offered = playgroundModels(row);
           const curated = offered.filter((m) => m.source === "curated");
           const cached = offered.filter((m) => m.source !== "curated");
           const draw = (model: AiCatalogModel) => {
             const active = selected?.model.id === model.id;
-            const resident = runtime.loaded.some(
-              (m) => m.model === model.id && m.state === "ready",
-            );
+            const downloading = runtime.downloading.some((d) => d.model === model.id);
+            const name = modelName(model);
+            // The full name under the nickname — the label, or for a cached
+            // entry (where the label IS the display name) the repo id, so the
+            // second line never just repeats the first.
+            const fullName = model.label !== name ? model.label : model.id !== name ? model.id : null;
+            // The card is a div-as-button, not a <button>: the Download CTA
+            // lives inside it, and a button inside a button is markup browsers
+            // are free to mangle.
             return (
-              <button
-                type="button"
+              <div
                 key={model.id}
+                role="button"
+                tabIndex={0}
                 className={"pg-model" + (active ? " active" : "")}
                 aria-pressed={active}
                 onClick={() => select(model.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    select(model.id);
+                  }
+                }}
                 title={model.label}
               >
-                <span className="pg-model-name">
-                  {resident ? (
-                    <span className="pg-dot loaded" aria-hidden="true" />
-                  ) : model.downloaded ? (
-                    <span className="pg-dot disk" aria-hidden="true" />
-                  ) : null}
-                  {modelName(model)}
-                </span>
-                {/* The curator's sentence — why you would pick this one. The
-                    same `note` a recommended card carries on the Local tab; for
-                    the reader with no AI vocabulary it is the only line here
-                    that answers "which one do I click". */}
-                {model.note && <span className="pg-model-note">{model.note}</span>}
-                <span className="pg-model-meta">
-                  <span>{resident ? "Ready" : model.downloaded ? "On this machine" : ""}</span>
-                  {/* The size, translated: "will this melt my laptop" is the
-                      question a newcomer is actually asking of a GB figure,
-                      so the verdict leads and the number stays for hover. */}
-                  <span
-                    className={"pg-fit" + (model.fit ? " " + model.fit : "")}
-                    title={
-                      model.size_gb != null
-                        ? `${model.size_gb} GB download — judged against this machine's memory`
-                        : undefined
-                    }
-                  >
+                <span className="pg-model-name">{name}</span>
+                {fullName && <span className="pg-model-full">{fullName}</span>}
+                <span className="pg-model-foot">
+                  <span className="pg-model-size">
                     {model.size_gb != null ? `${model.size_gb} GB` : "—"}
-                    {model.fit === "easy"
-                      ? " · runs easily"
-                      : model.fit === "tight"
-                        ? " · tight fit"
-                        : model.fit === "no"
-                          ? " · too big here"
-                          : ""}
                   </span>
+                  {model.downloaded ? (
+                    <span className="pg-model-have">Downloaded</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="pg-model-dl"
+                      disabled={downloading}
+                      onClick={(e) => {
+                        // Selecting too is fine; a second click must not be.
+                        e.stopPropagation();
+                        select(model.id);
+                        void runDownloadFor(model.id, row.capability);
+                      }}
+                    >
+                      {downloading ? "Downloading…" : "Download"}
+                    </button>
+                  )}
                 </span>
-              </button>
+              </div>
             );
           };
           return (
-            <section key={row.capability} className="pg-group">
-              <h4 className="pg-group-title">{groupLabel(row.capability)}</h4>
+            <details key={row.capability} className="pg-group" open>
+              <summary className="pg-group-head">
+                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
+                <span className="pg-group-title">{groupLabel(row.capability)}</span>
+              </summary>
               {GROUP_BLURBS[row.capability] && (
                 <p className="pg-group-blurb">{GROUP_BLURBS[row.capability]}</p>
               )}
@@ -356,7 +366,7 @@ export default function PlaygroundTab() {
                   {cached.map(draw)}
                 </>
               )}
-            </section>
+            </details>
           );
         })}
       </aside>

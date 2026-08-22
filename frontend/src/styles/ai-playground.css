@@ -34,29 +34,68 @@
 /* -- the model sidebar ------------------------------------------------------ */
 
 .pg-side {
-  flex: 0 0 264px;
+  flex: 0 0 300px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   border-right: 1px solid var(--border);
   padding-right: 18px;
   min-height: 0;
   overflow-y: auto;
 }
 
+/* A capability section: a <details>, open by default, its summary the
+ * icon + task-word header. The default disclosure triangle is replaced by a
+ * caret on the right so the icon owns the left edge. */
 .pg-group {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 8px;
+}
+
+.pg-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--fg-muted);
+}
+
+.pg-group-head::-webkit-details-marker {
+  display: none;
+}
+
+.pg-group-head::after {
+  content: "";
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--fg-muted);
+  border-bottom: 1.5px solid var(--fg-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.pg-group[open] > .pg-group-head::after {
+  transform: rotate(45deg);
+}
+
+.pg-group-head:hover {
+  color: var(--fg);
+}
+
+.pg-group-icon {
+  display: inline-flex;
+  flex: none;
 }
 
 .pg-group-title {
-  margin: 0 0 4px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
 }
 
 .pg-group-off {
@@ -85,29 +124,17 @@
   color: var(--fg-muted);
 }
 
-/* The curator's one-liner on a sidebar row — clamped to two lines; the stage
- * header carries it in full. */
-.pg-model-note {
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--fg-muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* A row, not a card: LM Studio / Jan style — quiet until hovered, the active
- * one carried by an accent edge and a wash rather than a boxed border. */
+/* A CARD now, reversing the old "row, not a card" call (D428): spacious,
+ * bordered, four facts and nothing else — nickname, full name, size, and the
+ * Download CTA. The active one is carried by an accent border + wash. */
 .pg-model {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 6px 9px 6px 11px;
-  border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0 7px 7px 0;
-  background: transparent;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -116,12 +143,12 @@
 }
 
 .pg-model:hover {
-  background: rgba(var(--tint), 0.05);
+  border-color: var(--ctl-quiet-border-hover);
 }
 
 .pg-model.active {
-  border-left-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.07);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .pg-model:focus-visible {
@@ -131,47 +158,57 @@
 
 .pg-model-name {
   font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 6px;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.pg-model-meta {
+/* The full name, quiet under the nickname; a cached row shows its repo id
+ * here instead so the two lines never repeat each other. */
+.pg-model-full {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-model-foot {
+  margin-top: 6px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
   font-size: 11.5px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
-/* The fit verdict rides the size figure: quiet colour, no chip chrome — it is
- * metadata that answers "will this melt my laptop", not a state light. */
-.pg-fit.easy {
+.pg-model-have {
   color: var(--success-soft);
 }
 
-.pg-fit.tight {
-  color: var(--warning-soft);
+.pg-model-dl {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
 }
 
-.pg-fit.no {
-  color: var(--error);
+.pg-model-dl:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
-.pg-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.pg-dot.loaded {
-  background: var(--success-bright);
-}
-
-.pg-dot.disk {
-  border: 1.5px solid var(--fg-muted);
+.pg-model-dl:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* -- the stage shell --------------------------------------------------------- */
