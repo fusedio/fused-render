@@ -4,8 +4,6 @@ from __future__ import annotations
 import builtins
 import importlib.util
 import sys
-import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,12 +70,11 @@ def test_map_render_routes_uppercase_url_without_local_path_conversion(
     observed = {}
     monkeypatch.setattr(map_render, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(map_render, "ARTIFACT_DIR", tmp_path / "artifacts")
-    monkeypatch.setattr(map_render, "_ensure_service", lambda: {"port": 1})
+    monkeypatch.setattr(map_render, "_ensure_service", lambda: {"ok": True})
     monkeypatch.setattr(
         map_render,
-        "_post",
-        lambda _state, _path, request: observed.update(request)
-        or {"status": "ok"},
+        "_describe_service",
+        lambda request: observed.update(request) or {"status": "ok"},
     )
 
     result = map_render.main(target="HTTP://Example.test/Data/Scene.TIF")
@@ -447,47 +444,29 @@ def test_small_local_vector_keeps_oneshot_fallback_when_ui_supplies_proxy(
     )
 
 
-def test_map_daemon_spawns_are_serialized_by_a_kernel_lock(monkeypatch, tmp_path):
-    # The hand-rolled start lock (claim + stale-after timers) let a follower
-    # decide a lock was stale and spawn anyway — 20 orphaned daemons, each
-    # holding the geo stack. The kernel lock cannot go stale: it is released
-    # when its holder exits, so a follower blocks and then reuses the daemon
-    # the winner started.
+def test_map_render_owns_no_daemon_lifecycle(monkeypatch):
+    # The spawn-storm era: detached spawns from short-lived runPython workers,
+    # hand-rolled locks and state files, 18 orphans at the last count. The
+    # server's engine host owns the one daemon now; the template must never grow
+    # its own spawn path back.
     map_render = _load("map_render")
-    monkeypatch.setattr(map_render, "CACHE_DIR", tmp_path)
-    monkeypatch.setattr(map_render, "START_LOCK", tmp_path / "daemon.spawn.lock")
+    for name in ("_spawn_daemon", "_retire", "_retire_superseded",
+                 "_already_serving", "_wait_for_service", "START_LOCK", "STATE"):
+        assert not hasattr(map_render, name), (
+            f"map_render.{name} is back; the server engine host "
+            "(fused_render/server/engine_host.py) owns the daemon"
+        )
 
-    started = {"port": 5, "token": "t", "version": map_render.VERSION}
-    box = {"state": None}
-    spawns = []
-    monkeypatch.setattr(map_render, "_read_state", lambda: box["state"])
-    monkeypatch.setattr(map_render, "_ping", lambda state, timeout=2.0: bool(state))
-    monkeypatch.setattr(map_render, "_retire_superseded", lambda: None)
 
-    def spawn():
-        spawns.append(1)
-        time.sleep(0.3)
-        box["state"] = started
-
-    monkeypatch.setattr(map_render, "_spawn_daemon", spawn)
-    monkeypatch.setattr(map_render, "_wait_for_service", lambda _timeout: box["state"])
-
-    results = []
-    threads = [
-        threading.Thread(target=lambda: results.append(map_render._ensure_service()))
-        for _ in range(2)
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(30)
-
-    assert spawns == [1], "a concurrent render spawned a second daemon"
-    assert results == [started, started]
-    assert map_render._ensure_service.__module__ == map_render.__name__
-    assert not hasattr(map_render, "_claim_start_lock"), (
-        "the hand-rolled start lock is back; file_lock is the whole point"
-    )
+def test_map_render_rewrites_child_urls_to_stable_proxy_paths():
+    # The descriptor URL rewrite lives in the template now, not the server: a
+    # child's absolute URL becomes a stable proxy path with no port or token.
+    map_render = _load("map_render")
+    child = "http://127.0.0.1:54321/vtiles/abc/{z}/{x}/{y}.pbf?t=secret"
+    stable = map_render._stable_url(child)
+    assert stable == "/api/engines/map/proxy/vtiles/abc/{z}/{x}/{y}.pbf"
+    assert "127.0.0.1" not in stable
+    assert "t=secret" not in stable
 
 
 def test_remote_table_urls_are_not_converted_to_local_paths(monkeypatch):
@@ -548,7 +527,7 @@ def test_map_render_retries_after_a_transient_error(tmp_path, monkeypatch):
     monkeypatch.setattr(map_render, "ARTIFACT_DIR", tmp_path / "artifacts")
     monkeypatch.setattr(map_render, "_ensure_service", lambda: {})
 
-    def describe(_state, _path, _request):
+    def describe(_request):
         attempts.append(True)
         if len(attempts) == 1:
             return {
@@ -566,7 +545,7 @@ def test_map_render_retries_after_a_transient_error(tmp_path, monkeypatch):
             "warnings": [],
         }
 
-    monkeypatch.setattr(map_render, "_post", describe)
+    monkeypatch.setattr(map_render, "_describe_service", describe)
 
     first = map_render.main(target=str(target))
     recovered = map_render.main(target=str(target))
