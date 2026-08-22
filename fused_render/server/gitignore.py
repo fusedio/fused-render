@@ -286,12 +286,10 @@ class _IgnoreOracle:
     # pipe while we are still writing stdin (classic co-process deadlock).
     CHUNK = 200
 
-    # `read1`'s request size, pulled out as a name rather than a repeated
-    # literal: `_read_chunk` compares a read's length against this to decide
-    # whether more may already be sitting in the BufferedReader's own buffer
-    # (see the note there) — a magic-number `65536` in two places would be a
-    # trap for whoever changes one and not the other.
-    _READ1_SIZE = 65536
+    # The `os.read` request size — arbitrary beyond "large enough that a
+    # normal batch needs few calls"; unlike `read1`, this number bounds
+    # nothing about correctness (see `_read_chunk`).
+    _READ_SIZE = 65536
 
     # How long `ignored()` may go with NO PROGRESS before it gives up on the
     # co-process.
@@ -314,11 +312,6 @@ class _IgnoreOracle:
     def __init__(self, repo_root):
         self.root = repo_root
         self.broken = False
-        # Whether the last successful read might have left bytes sitting in
-        # `self.proc.stdout`'s OWN internal buffer — see `_read_chunk`.
-        # `False` here is correct at start-of-day: nothing has been read yet,
-        # so there is nothing to assume is buffered.
-        self._may_have_buffered = False
         # Real repo (a .git exists at or above the root): plain `git -C`.
         # Standalone-.gitignore directory (no repo): graft the dir onto a
         # shared empty GIT_DIR as its work tree, which makes check-ignore
@@ -364,47 +357,47 @@ class _IgnoreOracle:
             self._buf += chunk
 
     def _read_chunk(self):
-        """Up to `_READ1_SIZE` bytes from the co-process, bounded by
+        """Up to `_READ_SIZE` bytes from the co-process, bounded by
         `self._deadline` (a `time.monotonic()` timestamp, pushed forward by
         every read that returns bytes — see `DEADLINE_S`).
 
-        `select()` polls the underlying FD, but `self.proc.stdout` is a
-        `BufferedReader` (`Popen` is created with no `bufsize`, so it defaults
-        to `io.DEFAULT_BUFFER_SIZE` — 128 KiB on the machine this was found
-        on) with its OWN buffer, invisible to `select`. When that buffer is
-        empty, filling it does ONE raw read sized to the WHOLE buffer, which
-        can pull in far more than the `_READ1_SIZE` this method hands back —
-        `check-ignore -v` echoes the queried path back in full, so one
-        `CHUNK`-sized batch (200 queries) of ordinary path lengths can exceed
-        64 KiB by itself. `select` would then see the FD genuinely empty
-        (everything already moved into the BufferedReader's buffer) and block
-        for the rest of the deadline on bytes that were already in hand.
-        `read1(n)` returning exactly `n` is therefore treated as "there may be
-        more waiting in that buffer" and the NEXT read skips `select`
-        entirely; a short read means the buffer was actually drained, so the
-        read after THAT one goes through `select` again. `peek()` was
-        considered and rejected: on an empty buffer it performs a raw read
-        and blocks, which reintroduces exactly the hang this exists to avoid.
+        Reads the fd directly with `os.read`, NOT `self.proc.stdout.read1` —
+        `stdout` is a `BufferedReader` (`Popen` is created with no `bufsize`),
+        and `select()` only sees the underlying fd, not that object's own
+        internal buffer. If anything ever pulled bytes through the
+        `BufferedReader` into its buffer, `select` reporting the fd "not
+        ready" would stop meaning "no bytes available" — it would mean "no
+        bytes available AND none already sitting in a buffer select can't
+        see", and a read landing on that residue would wait out the whole
+        deadline for bytes already in hand. `os.read` never populates such a
+        buffer because nothing here ever asks `self.proc.stdout` to buffer
+        anything, which is what makes `select` on this fd authoritative BY
+        CONSTRUCTION rather than by inference from read sizes. (An earlier
+        version of this method tried the latter — skip `select` after a
+        full-size `read1` — but a full-size read does not prove the buffer
+        still holds more; it can just as well mean the buffer held exactly
+        that many bytes and is now empty, which brings back the exact
+        unbounded wait this exists to remove.)
 
         POSIX only: `select.select` is the portable way to put a timeout on a
         blocking pipe read, but it does not work on pipes on Windows at all
         (only sockets). This repo ships on Windows (`_spawn_kwargs`'s
         `CREATE_NO_WINDOW`), so on that platform this falls back to the old,
-        unbounded `read1` — a stalled git still hangs the request thread there,
-        same as before this existed. Fixing that would need a reader thread or
-        overlapped I/O, which is a bigger change than this bug fix; POSIX is
-        where the reported hang actually happened.
+        unbounded `read1` (`os.read` on the fd would work there too, but
+        without `select` there is nothing to bound it with) — a stalled git
+        still hangs the request thread there, same as before this existed.
+        Fixing that would need a reader thread or overlapped I/O, which is a
+        bigger change than this bug fix; POSIX is where the reported hang
+        actually happened.
         """
         if sys.platform == "win32":
-            return self.proc.stdout.read1(self._READ1_SIZE)
-        if not self._may_have_buffered:
-            remaining = self._deadline - time.monotonic()
-            if remaining <= 0 or not select.select(
-                    [self.proc.stdout], [], [], remaining)[0]:
-                raise TimeoutError(
-                    f"check-ignore made no progress for {self.DEADLINE_S}s")
-        chunk = self.proc.stdout.read1(self._READ1_SIZE)
-        self._may_have_buffered = len(chunk) == self._READ1_SIZE
+            return self.proc.stdout.read1(self._READ_SIZE)
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0 or not select.select(
+                [self.proc.stdout], [], [], remaining)[0]:
+            raise TimeoutError(
+                f"check-ignore made no progress for {self.DEADLINE_S}s")
+        chunk = os.read(self.proc.stdout.fileno(), self._READ_SIZE)
         if chunk:
             self._deadline = time.monotonic() + self.DEADLINE_S
         return chunk
