@@ -211,6 +211,20 @@ export function TextStage({
     }
   };
 
+  // Back to the empty state: the run is done, the reply is read (or copied),
+  // and the next prompt starts from a blank surface.
+  const clear = () => {
+    setPrompt("");
+    setReply(null);
+    setError(null);
+    setCopied(false);
+    const box = boxRef.current;
+    if (box) {
+      box.style.height = "auto";
+      box.focus();
+    }
+  };
+
   const stop = () => {
     // The worker owns the generation; the abort only closes the relay. Cancel
     // reaches the model, and false from it (nothing to stop) is not an error.
@@ -254,6 +268,16 @@ export function TextStage({
             }
           }}
         />
+        {!streaming && reply && (
+          <button
+            type="button"
+            className="pg-ghost-btn pg-clear"
+            title="Clear the prompt and reply"
+            onClick={clear}
+          >
+            Clear
+          </button>
+        )}
         {streaming ? (
           <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
             Stop

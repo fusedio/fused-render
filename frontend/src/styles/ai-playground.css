@@ -404,22 +404,14 @@ a.pg-hero-repo:hover {
 }
 
 /* The Config fold: closed by default so the surface above it reads as one
-   simple call. Drawn as a card whose summary is the header row — same caret
-   idiom as the sidebar's capability groups (.pg-group-head). */
-.pg-config {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-alt);
-}
-
+   simple call. Deliberately quiet — no card, no background; it should not
+   compete with the composer for attention. */
 .pg-config > summary {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
+  gap: 7px;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.02em;
   color: var(--fg-muted);
   cursor: pointer;
   user-select: none;
@@ -432,9 +424,8 @@ a.pg-hero-repo:hover {
 
 .pg-config > summary::after {
   content: "";
-  margin-left: auto;
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-right: 1.5px solid var(--fg-muted);
   border-bottom: 1.5px solid var(--fg-muted);
   transform: rotate(-45deg);
@@ -450,11 +441,10 @@ a.pg-hero-repo:hover {
 }
 
 .pg-config-body {
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 12px 14px 14px;
-  border-top: 1px solid var(--border);
 }
 
 .pg-ctl {
@@ -603,17 +593,14 @@ a.pg-hero-repo:hover {
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
 }
 
-/* The Enter hint riding inside the Run button — the shortcut IS the label's
-   second half, not a tooltip secret. */
+/* The Enter hint riding inside the Run button — a quiet glyph, not a boxed
+   chip; the box read as a second button inside the button. */
 .pg-kbd {
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
-  padding: 2px 5px;
   margin-left: 6px;
-  border-radius: 4px;
-  border: 1px solid rgba(0, 0, 0, 0.25);
-  background: rgba(255, 255, 255, 0.18);
+  opacity: 0.55;
 }
 
 .pg-composer textarea {
@@ -632,6 +619,13 @@ a.pg-hero-repo:hover {
 
 .pg-send {
   flex: none;
+}
+
+/* Clear, beside Run once a reply exists — quiet on purpose, aligned with the
+   button row's baseline. */
+.pg-clear {
+  flex: none;
+  padding: 8px 4px;
 }
 
 .pg-under {
@@ -685,13 +679,12 @@ a.pg-hero-repo:hover {
 /* Empty states: a real invitation, not a blank box. */
 
 .pg-empty-stage {
-  margin: auto 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   gap: 6px;
-  padding: 32px 16px;
+  padding: 4px 16px 24px;
 }
 
 .pg-empty-title {
