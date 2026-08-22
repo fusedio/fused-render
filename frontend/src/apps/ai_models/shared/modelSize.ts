@@ -4,19 +4,38 @@
 // at once:
 //
 //   * ADVERTISED — `size_gb` from `fused_render/ai/catalog.py`, a hand-written
-//     approximate constant, documented as approximate, thirty-odd of them;
+//     approximate constant, documented as approximate, thirty-odd of them, in
+//     DECIMAL GB and covering every byte the download fetches across every repo
+//     it touches;
 //   * ACTUAL — the job row's `total`, summed by the worker from the live listing
-//     for exactly the files it is fetching (`_repo_files` → `_total_bytes`),
-//     with `done` clamped to it.
+//     for exactly the files the CURRENT fetch is pulling.
 //
 // So a card could read `~64 GB` beside `68 GB / 68 GB` and be describing one
 // download: the row right, the constant stale. Read as a download overrunning
 // its own size, which is the one thing it cannot do.
 //
-// The rule, in one place rather than at each of the seven call sites: **once a
-// running job for this model reports a real total, that total IS the size.**
-// The catalog figure is a pre-download budget hint and nothing more — worth
-// showing before the pull starts, never worth contradicting the fetcher with.
+// Two things make that comparison harder than it looks, and both are handled
+// here rather than at the seven call sites:
+//
+// **The units differ.** `size_gb` is decimal (4.62e9 bytes → 4.6); `formatSize`
+// is base-1024 with a "GB" label, which is what every other size on this page
+// uses — the progress row's own `68 GB / 68 GB` included, and `hubSizeLabel`
+// converts the Hub's decimal bytes the same way. So the catalog figure is
+// converted to BYTES and formatted like everything else. The visible cost is
+// that a card reads 4.3 GB where `catalog.py` writes 4.6: the alternative was a
+// cell in decimal GB beside a progress row in binary GB, which is the same
+// "two numbers, one download" defect this module exists to remove.
+//
+// **A row's total is one PHASE, not the whole download.** A single download can
+// be several sequential fetches with a scoped total each — `torch_image.py`'s
+// GGUF recipe pulls an allow-listed snapshot and then a quantized transformer
+// out of a second repo — so the row's total can be a fraction of what the
+// download will really cost, twice over. Hence the rule below is not "the live
+// total wins": it is that **the number shown never understates**. A live total
+// LARGER than the advertised figure is a stale constant and the row is right; a
+// live total SMALLER is either a phase of a multi-part download or a
+// conservative constant, and in both cases quoting it would promise a download
+// cheaper than it is.
 //
 // Here rather than in a component for the reason `hubSize.ts` gives: there is
 // no DOM harness in this repo by design, so the part with a rule in it lives in
@@ -24,8 +43,16 @@
 import { formatSize } from "@platform/lib/format";
 import { isRunning, type Job } from "@platform/lib/jobs";
 
-/** The live total for this model, or null when there is nothing better than the
- *  catalog's figure to show.
+/** `catalog.py`'s unit, named rather than inlined: `size_gb` is decimal GB, and
+ *  a 1024-based reading of it is a figure ~7% out. */
+const CATALOG_GB_BYTES = 1e9;
+
+/** The advertised download in bytes, or null when nobody recorded one. */
+export function catalogSizeBytes(sizeGb: number | null | undefined): number | null {
+  return typeof sizeGb === "number" ? sizeGb * CATALOG_GB_BYTES : null;
+}
+
+/** The live total for this model's current fetch, or null when there is none.
  *
  *  Three conditions, and each one is a case that really happens. RUNNING,
  *  because a finished row keeps its total and a card would then quote a size
@@ -42,32 +69,27 @@ export function liveModelTotal(job: Job | undefined): number | null {
   return typeof job.total === "number" && job.total > 0 ? job.total : null;
 }
 
-/** What the size cell reads: the live total, else the catalog's figure, else the
- *  em-dash this page has always shown for an unmeasured model — an unknown size
- *  is a dash and never a guess. */
-export function modelSizeLabel(sizeGb: number | null | undefined, job?: Job): string {
+/** The bytes to show for this model and whether they came from the live row.
+ *  The one place the rule lives; see the header for why it is "never
+ *  understate" rather than "live wins". */
+function shown(
+  sizeGb: number | null | undefined,
+  job?: Job,
+): { bytes: number; live: boolean } | null {
+  const advertised = catalogSizeBytes(sizeGb);
   const live = liveModelTotal(job);
-  if (live !== null) return formatSize(live);
-  return sizeGb === null || sizeGb === undefined ? "—" : `${sizeGb} GB`;
+  if (live !== null && (advertised === null || live > advertised)) {
+    return { bytes: live, live: true };
+  }
+  return advertised === null ? null : { bytes: advertised, live: false };
 }
 
-/** The size cell for a card whose FALLBACK figure is not the catalog's — the
- *  Hub search results, which measure a repo from the Hub's own metadata
- *  (`hubSize.ts`) and are a third number again. Null means "nothing to
- *  override", so the caller keeps whatever it worked out.
- *
- *  Same rule, one implementation: a card drawing `ModelProgress` beside a size
- *  must not name a size the progress row disagrees with, whichever table the
- *  other number came from. The title is spelled out here rather than at the call
- *  site because it is the answer to "why did this number just change" — the
- *  estimate was replaced by what the fetcher is actually pulling. */
-export function liveSizeOverride(job?: Job): { text: string; title: string } | null {
-  const live = liveModelTotal(job);
-  if (live === null) return null;
-  return {
-    text: formatSize(live),
-    title: `${formatSize(live)} — the size this download is actually fetching, from the job itself.`,
-  };
+/** What the size cell reads: the figure from `shown`, else the em-dash this page
+ *  has always shown for an unmeasured model — an unknown size is a dash and
+ *  never a guess. */
+export function modelSizeLabel(sizeGb: number | null | undefined, job?: Job): string {
+  const figure = shown(sizeGb, job);
+  return figure === null ? "—" : formatSize(figure.bytes);
 }
 
 /** The same figure for the places that write it into a sentence — a tooltip, a
@@ -75,15 +97,13 @@ export function liveSizeOverride(job?: Job): { text: string; title: string } | n
  *  rather than a dash, so the caller can leave the phrase out entirely.
  *
  *  `approx` is what the caller should print before the number: the catalog's
- *  constant is approximate and says so ("~"), and the fetcher's own total is
- *  not. A measured 68 GB dressed as "~68 GB" would keep the hedge the live
- *  number exists to remove. */
+ *  constant is approximate and says so ("~"), and a figure the download itself
+ *  reported is not. A measured total dressed as "~68 GB" would keep the hedge
+ *  the live number exists to remove. */
 export function modelSizeHint(
   sizeGb: number | null | undefined,
   job?: Job,
 ): { text: string; approx: boolean } | null {
-  const live = liveModelTotal(job);
-  if (live !== null) return { text: formatSize(live), approx: false };
-  if (sizeGb === null || sizeGb === undefined) return null;
-  return { text: `${sizeGb} GB`, approx: true };
+  const figure = shown(sizeGb, job);
+  return figure === null ? null : { text: formatSize(figure.bytes), approx: !figure.live };
 }

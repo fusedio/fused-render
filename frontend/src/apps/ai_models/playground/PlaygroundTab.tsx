@@ -188,8 +188,8 @@ export default function PlaygroundTab() {
   // Rows by MODEL, for the sidebar's own size cells — the same title match
   // `jobForSelected` uses one line up, and for the same reason: the job id
   // derivation sanitises characters and a second copy of that rule in
-  // TypeScript would drift from the Python one. A live pull's own total is the
-  // size that card shows (see `shared/modelSize`).
+  // TypeScript would drift from the Python one. What a running pull's total does
+  // to the size shown is `shared/modelSize`'s rule, not this file's.
   const jobByModel = useMemo(
     () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
     [jobs],
@@ -233,9 +233,9 @@ export default function PlaygroundTab() {
     return <ErrorBanner>{catalog.message}</ErrorBanner>;
   }
 
-  // The size to name for the selected model, wherever this page names one: the
-  // live pull's own total once the job reports one, else the catalog's
-  // approximate constant, else nothing to say at all (see `shared/modelSize`).
+  // The size to name for the selected model, wherever this page names one —
+  // never understating it, and null when there is nothing to say at all (see
+  // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
 
   // The state line under the model name: what is TRUE right now, in words. The
@@ -292,8 +292,8 @@ export default function PlaygroundTab() {
             const resident = runtime.loaded.some(
               (m) => m.model === model.id && m.state === "ready",
             );
-            // A live pull's own total, else the catalog's approximate constant
-            // (see `shared/modelSize`).
+            // The advertised figure, or a running pull's own total when that
+            // is larger (see `shared/modelSize`).
             const job = jobByModel.get(model.id);
             const size = modelSizeHint(model.size_gb, job);
             return (
