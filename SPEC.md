@@ -7799,8 +7799,12 @@ an AI Models page that could say what was on disk but not what was *running*.
     Reporting it as an `ok:false` record instead put a phantom
     "Failed — cancelled" row in the page's history that became the model's latest
     (so the delta and the summary compared against it) until a reload; and a 4xx
-    would have been wrong in the other direction, since the request was fine and
-    the user did this deliberately. An interpreter-level exit
+    would have been wrong in the other direction, since the request was well
+    formed and reached a model. **Nobody pressed a ✕** — a benchmark has no cancel
+    control (AI-14j) — so the tab TELLS the user, in a muted note naming the
+    likely cause and saying nothing was recorded: several minutes of waiting
+    ending in silence is worse than either a result or an error.
+    An interpreter-level exit
     (`KeyboardInterrupt`/`SystemExit` arriving on the threadpool thread) is
     likewise not recorded, and is additionally re-raised rather than swallowed so
     a Ctrl-C still stops the process. A generation the WORKER reports as cancelled
@@ -7818,42 +7822,47 @@ an AI Models page that could say what was on disk but not what was *running*.
     AI Models page down, and a per-reader guard is a rule the next reader has to
     be told about. It is deliberately NOT a schema check — a metric added
     server-side must never start deleting the runs recorded before it.
-  - **AI-14j** **Every run OPENS a download-manager job row before it starts
-    anything, titles it with the BARE MODEL ID, and closes it.** `jobs.upsert`
-    refuses a first report that carries no `title` and `supervisor._report`
-    swallows that refusal, so a reporter that only ever ticks `detail=` reports
-    nothing at all, silently. The row is therefore opened first with a title,
-    exactly as `supervisor.start_image`/`start_transcribe` do; its IDENTITY is
-    restated on every report, because `jobs._sweep` can evict it at any tick and
-    any report may therefore be a first one; the transcription request carries
-    that identity as `row` so the worker's own out-of-process ticks are not
-    refused; and the run always ends by reporting `done`, `error` or `cancelled`,
-    so no benchmark can leave a row running forever.
-  - **AI-14k** **The row's title IS the lookup key, so it is the bare model id
-    and nothing else.** A page's only route to a server-owned job row is
-    `useCacheScan.ts`'s map of `job.title → job` — keyed by title deliberately,
-    because re-deriving the sanitised job id in TypeScript would be a second copy
-    of a Python rule — and the tab then asks for it by model id. A decorated
-    title ("Benchmark: <model>", which this shipped as) produces a row that
-    exists, reports correctly, and can never be found: `ModelProgress` renders
-    with no job for the whole multi-minute run, with no error anywhere and no
-    fallback, since the endpoint returns the `jobId` only once the run has
-    finished. Both sides are pinned against each other by a test that reads the
-    TypeScript sources, in the same posture `test_shell_routes.py` takes for
-    client-side routes — a guarantee spanning two languages needs a test that
-    spans them, not one on each side.
-  - **AI-14l** **The row advertises `cancellable` exactly while the ✕ is
-    honoured, which is not the whole run for every capability.** The load phase is
-    cancellable for all four (`_load_to_ready` polls the flag, and the load is the
-    phase that can last an hour). Through the MEASUREMENT it depends on the
-    runner: `generate_image` and `generate_transcript` are handed the job id and
-    their workers abort themselves, so those rows stay cancellable; but
-    `generate_text` and `generate_embed` take no job and poll nothing, so the row
-    DROPS `cancellable` when their measurement starts rather than drawing an
-    operable ✕ over a run that would finish and be recorded anyway. Advertising a
-    cancel that does nothing is the failure `transcribe_row_fields` documents in
-    reverse — an inert control is worse than an absent one, because a user who
-    presses it believes the work stopped.
+  - **AI-14j** **A benchmark deliberately creates NO download-manager job row,
+    returns no job id, and offers no ✕.** The tab shows its own in-tab spinner
+    for the duration, and that is the whole progress story.
+
+    The reason is a namespace conflict, and it is worth stating in full because
+    it took three attempts to see: **server job rows are keyed by TITLE.** A
+    page's only route to one is `useCacheScan.ts`'s map of `job.title -> job`,
+    keyed that way deliberately — re-deriving the sanitised job id in TypeScript
+    would be a second copy of a Python rule — and `supervisor.load` already owns
+    the row titled exactly `model`. So both spellings of a benchmark row are
+    broken, in opposite directions:
+
+    * a DECORATED title ("Benchmark: <model>") is a row that exists, reports
+      correctly, and can be found by nobody — the tab's progress component
+      renders with no job for the whole multi-minute run, with no error anywhere;
+    * the BARE model id SHADOWS the load row (duplicate titles are
+      last-write-wins over an oldest-first list), which is strictly worse: the
+      download manager's ✕ then targets the LOAD, so the only cancel a user can
+      see stops the wrong thing, and the benchmark's own wait — which polls
+      nothing — runs to `_LOAD_TIMEOUT_S` (an hour) and records a phantom
+      `ok:false, "did not finish loading in time"`. The Playground, which takes
+      the first title match, also starts showing the benchmark's detail instead
+      of the load's byte counts.
+
+    A benchmark cannot own a row for a model that already has one, and this is a
+    design conflict rather than a bug to patch — three rounds of patching it
+    produced three new defects. **Nothing is lost by having none:** through the
+    expensive phase of a COLD run the load's own row is in the manager with real
+    byte counts, reported by the supervisor, and its ✕ cancels the load, which is
+    the honest thing for it to do. Do not re-add a benchmark row without first
+    changing how job rows are addressed.
+
+    Two consequences follow and are deliberate. The supervisor calls that require
+    a job id positionally are given a private one that names no row — non-empty,
+    because `worker_base.report`'s `job or JOB_ID` fallback would otherwise paint
+    benchmark ticks onto the model's load row. And a benchmark has no cancel
+    control at all, so a run reported as cancelled was stopped from OUTSIDE
+    (`fused.ai.cancel()` from any page reaches the same resident worker, since one
+    model per capability is shared): the tab says so in a muted note that names
+    the likely cause and states that nothing was recorded, rather than leaving
+    several minutes of waiting to end in silence.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
