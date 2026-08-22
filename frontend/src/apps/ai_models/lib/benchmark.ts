@@ -306,3 +306,60 @@ export function orderCapabilities(capabilities: string[]): string[] {
     .sort((a, b) => rank(a.capability) - rank(b.capability) || a.arrived - b.arrived)
     .map((entry) => entry.capability);
 }
+
+/** Which capability currently has a benchmark in flight, and on which model.
+ *
+ *  Keyed by CAPABILITY because that is the unit the server serialises on: it
+ *  holds one resident model per capability, so a second run on the same
+ *  capability would evict the first's model mid-measurement (a 409), while a run
+ *  on a different capability is explicitly permitted.
+ */
+export type RunsInFlight = Record<string, string>;
+
+export interface RunButtonState {
+  /** THIS model's run is the one in flight. */
+  busy: boolean;
+  /** The button cannot be pressed — because this model is running, or because
+   *  another model of the SAME capability is. */
+  blocked: boolean;
+  label: string;
+  title: string;
+}
+
+/** What one model's Run button says and whether it can be pressed.
+ *
+ *  **Scoped to the capability, and that is the whole point of the function.**
+ *  The first cut held a single page-level "a benchmark is running" flag and
+ *  passed it to every section, so starting a text benchmark greyed out image,
+ *  speech and embeddings under the tooltip "Another benchmark is running for
+ *  this capability" — a sentence that was false, over an action the server
+ *  permits (`routers/ai_benchmark._claim` is per capability, pinned by
+ *  `test_a_different_capability_may_run_alongside`). The UI was strictly more
+ *  restrictive than the rule it was supposedly reflecting, which is the worst
+ *  kind of guess: indistinguishable from a real constraint.
+ *
+ *  A pure function here rather than a ternary in the JSX for this file's
+ *  standing reason — the sentence is where this can be wrong, and a screenshot
+ *  of a greyed-out button does not reveal which rule greyed it.
+ */
+export function runButtonState(
+  capability: string,
+  model: string,
+  inFlight: RunsInFlight,
+  hasHistory: boolean = false,
+): RunButtonState {
+  const holder = inFlight[capability];
+  const busy = holder === model;
+  return {
+    busy,
+    blocked: holder !== undefined,
+    label: busy ? "Running…" : hasHistory ? "Run again" : "Run benchmark",
+    title: busy
+      ? "This benchmark is running — it takes minutes"
+      : holder !== undefined
+        // Names the run that is blocking: the reader's next question is "by
+        // what", and a button that cannot answer it reads as broken.
+        ? `Waiting for the ${holder} benchmark to finish`
+        : "Run the fixed workload for this capability",
+  };
+}

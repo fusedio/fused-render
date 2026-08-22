@@ -42,9 +42,12 @@ import {
   orderCapabilities,
   primaryMetric,
   primaryValue,
+  runButtonState,
   runsFor,
   summaryLine,
   type ModelLatest,
+  type RunButtonState,
+  type RunsInFlight,
 } from "@apps/ai_models/lib/benchmark";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -63,10 +66,13 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // Every run ever recorded, oldest first. `null` until the store has answered.
   const [runs, setRuns] = useState<AiBenchmarkRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // The model with a run in flight, and the job row carrying its progress. One
-  // at a time per capability is a SERVER rule (a second load would evict the
-  // first model mid-measurement), and the button disables on this.
-  const [running, setRunning] = useState<{ model: string; jobId: string } | null>(null);
+  // Which capability has a run in flight, and on which model. **Keyed by
+  // capability, not a single slot**, because that is the unit the server
+  // serialises on: one resident model per capability, so a second text run
+  // would evict the first's model (a 409) while an image run alongside it is
+  // explicitly permitted. A single slot greyed out every other section under a
+  // tooltip claiming a per-capability rule, making a legal action unreachable.
+  const [inFlight, setInFlight] = useState<RunsInFlight>({});
   // The optional focus filter, SEEDED from `?cap=` once and held in state
   // thereafter. State rather than reading the URL every render because
   // `writeParams` uses `history.replaceState`, which deliberately fires no
@@ -108,7 +114,11 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     // Optimistic only about the BUTTON, never about a result: the jobId comes
     // back with the finished run, so until then the progress row has no id to
     // watch and says "Preparing…" from ModelProgress's own default.
-    setRunning({ model, jobId: "" });
+    //
+    // Functional updates on both halves, because two capabilities can now be
+    // running at once and a `{...inFlight}` closed over at click time would
+    // drop whichever one started in between.
+    setInFlight((prev) => ({ ...prev, [capability]: model }));
     try {
       const { run } = await runAiBenchmark(model, capability);
       // Append rather than re-fetch: the server just handed back the very
@@ -121,7 +131,11 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setRunning(null);
+      setInFlight((prev) => {
+        const next = { ...prev };
+        delete next[capability];
+        return next;
+      });
     }
   };
 
@@ -189,8 +203,8 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           capability={capability}
           repos={repos.filter((r) => r.capability === capability)}
           runs={runs === null ? null : runsFor(runs, capability)}
-          running={running}
-          job={running ? jobByModel.get(running.model) : undefined}
+          inFlight={inFlight}
+          jobByModel={jobByModel}
           onRun={start}
           onForget={forget}
         />
@@ -203,8 +217,8 @@ function CapabilitySection({
   capability,
   repos,
   runs,
-  running,
-  job,
+  inFlight,
+  jobByModel,
   onRun,
   onForget,
 }: {
@@ -212,8 +226,11 @@ function CapabilitySection({
   repos: AiModelRepo[];
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
-  running: { model: string; jobId: string } | null;
-  job?: ReturnType<CacheScan["jobByModel"]["get"]>;
+  /** Every capability's in-flight run, not just this one's — `runButtonState`
+   *  reads its own key out, which keeps the "which capability blocks which"
+   *  rule in one tested place rather than in each section's props. */
+  inFlight: RunsInFlight;
+  jobByModel: CacheScan["jobByModel"];
   onRun: (model: string, capability: string) => void;
   onForget: (id: string) => void;
 }) {
@@ -245,20 +262,20 @@ function CapabilitySection({
         <p className="am-group-note">No {capabilityLabel(capability).toLowerCase()} model is downloaded yet.</p>
       ) : (
         <div className="am-bench-rows">
-          {repos.map((repo) => (
-            <BenchmarkRow
-              key={repo.id}
-              model={repo.id}
-              row={latest.get(repo.id) ?? null}
-              busy={running?.model === repo.id}
-              job={running?.model === repo.id ? job : undefined}
-              // Any run at all blocks every button in the section: the server
-              // refuses a second run on the same capability, so an enabled
-              // button here would be a click that 409s.
-              blocked={!!running}
-              onRun={() => onRun(repo.id, capability)}
-            />
-          ))}
+          {repos.map((repo) => {
+            const button = runButtonState(capability, repo.id, inFlight,
+                                          latest.has(repo.id));
+            return (
+              <BenchmarkRow
+                key={repo.id}
+                model={repo.id}
+                row={latest.get(repo.id) ?? null}
+                button={button}
+                job={button.busy ? jobByModel.get(repo.id) : undefined}
+                onRun={() => onRun(repo.id, capability)}
+              />
+            );
+          })}
           {orphans.map((model) => (
             <BenchmarkRow key={model} model={model} row={latest.get(model)!} gone />
           ))}
@@ -282,17 +299,19 @@ function CapabilitySection({
 function BenchmarkRow({
   model,
   row,
-  busy,
+  button,
   job,
-  blocked,
   gone,
   onRun,
 }: {
   model: string;
   row: ModelLatest | null;
-  busy?: boolean;
+  /** What the Run button says and whether it can be pressed — decided by
+   *  `runButtonState`, never here: the rule about which run blocks which button
+   *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
+   *  which has no button at all. */
+  button?: RunButtonState;
   job?: ReturnType<CacheScan["jobByModel"]["get"]>;
-  blocked?: boolean;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
   onRun?: () => void;
@@ -304,7 +323,7 @@ function BenchmarkRow({
         {gone && <span className="am-bench-gone">not on this machine any more</span>}
       </div>
       <div className="am-bench-latest">
-        {busy ? (
+        {button?.busy ? (
           <ModelProgress detail="Benchmarking…" job={job} />
         ) : row ? (
           <>
@@ -323,21 +342,15 @@ function BenchmarkRow({
           <span className="am-bench-never">Never benchmarked</span>
         )}
       </div>
-      {!gone && (
+      {!gone && button && (
         <button
           type="button"
           className="cc-btn"
-          disabled={blocked}
+          disabled={button.blocked}
           onClick={onRun}
-          title={
-            busy
-              ? "This benchmark is running — it takes minutes"
-              : blocked
-                ? "Another benchmark is running for this capability"
-                : "Run the fixed workload for this capability"
-          }
+          title={button.title}
         >
-          {busy ? "Running…" : row ? "Run again" : "Run benchmark"}
+          {button.label}
         </button>
       )}
     </div>

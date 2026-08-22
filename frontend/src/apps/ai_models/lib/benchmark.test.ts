@@ -10,6 +10,7 @@ import {
   orderCapabilities,
   primaryMetric,
   primaryValue,
+  runButtonState,
   runsFor,
   summaryLine,
 } from "@apps/ai_models/lib/benchmark";
@@ -258,5 +259,60 @@ describe("runsFor", () => {
       run({ capability: "text-generation", startedAt: 1 }),
     ];
     expect(runsFor(runs, "text-generation").map((r) => r.startedAt)).toEqual([1, 2]);
+  });
+});
+
+// -- the Run button's state ---------------------------------------------------
+
+describe("runButtonState", () => {
+  it("blocks only the capability that has a run in flight", () => {
+    // The server permits one run PER CAPABILITY concurrently (it holds one
+    // resident model per capability, so an embedding benchmark cannot evict a
+    // text one), and `test_a_different_capability_may_run_alongside` pins that.
+    // A single page-level "something is running" flag greys out every other
+    // section with a tooltip that says "for this capability", which is both a
+    // false sentence and a permitted action made unreachable.
+    const inFlight = { "text-generation": "org/text" };
+    expect(runButtonState("text-generation", "org/other", inFlight).blocked).toBe(true);
+    expect(runButtonState("text-to-image", "org/img", inFlight).blocked).toBe(false);
+    expect(runButtonState("embeddings", "org/emb", inFlight).blocked).toBe(false);
+  });
+
+  it("marks the running model itself busy, not merely blocked", () => {
+    const inFlight = { "text-generation": "org/text" };
+    const mine = runButtonState("text-generation", "org/text", inFlight);
+    expect(mine.busy).toBe(true);
+    expect(mine.blocked).toBe(true);
+    const sibling = runButtonState("text-generation", "org/other", inFlight);
+    expect(sibling.busy).toBe(false);
+    expect(sibling.blocked).toBe(true);
+  });
+
+  it("is free when nothing is running", () => {
+    const free = runButtonState("text-generation", "org/text", {});
+    expect(free.busy).toBe(false);
+    expect(free.blocked).toBe(false);
+  });
+
+  it("says which model is holding the capability, never a bare claim", () => {
+    // The tooltip has to name the run that is blocking, because the reader's
+    // next question is "blocked by what" and the button cannot answer it.
+    const sibling = runButtonState("text-generation", "org/other", {
+      "text-generation": "org/text",
+    });
+    expect(sibling.title).toContain("org/text");
+    expect(runButtonState("text-generation", "org/text", {
+      "text-generation": "org/text",
+    }).title).toContain("minutes");
+  });
+
+  it("labels a model with history 'Run again'", () => {
+    expect(runButtonState("text-generation", "org/text", {}, false).label).toBe(
+      "Run benchmark",
+    );
+    expect(runButtonState("text-generation", "org/text", {}, true).label).toBe("Run again");
+    expect(runButtonState("text-generation", "org/text", {
+      "text-generation": "org/text",
+    }, true).label).toBe("Running…");
   });
 });
