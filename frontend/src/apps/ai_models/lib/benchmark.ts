@@ -117,15 +117,20 @@ export function primaryValue(run: AiBenchmarkRun): number | null {
  *
  *  Trimmed because the alternative reads as false precision: "42.0 tok/s"
  *  claims a tenth the second run will not reproduce.
+ *
+ *  Exported (not just an internal helper) because the chart's end-labels and
+ *  y-axis ticks need the SAME trimming rule the table and the row use — a
+ *  second copy is how an axis comes to show "42.0" beside a row that shows
+ *  "42.1 tok/s · loaded in 42".
  */
-function num(value: number, digits: number): string {
+export function formatNumber(value: number, digits: number): string {
   return String(Number(value.toFixed(digits)));
 }
 
 /** `value` with its unit, or a dash. Explicit `null` check, NEVER a falsy one:
  *  a measured 0 is a real (and interesting) result. */
 function withUnit(value: number | null, unit: string, digits: number): string {
-  return value === null ? DASH : `${num(value, digits)} ${unit}`;
+  return value === null ? DASH : `${formatNumber(value, digits)} ${unit}`;
 }
 
 /** The primary metric as the page shows it — "42.1 tok/s", or a dash. */
@@ -155,16 +160,72 @@ export function formatMemory(run: AiBenchmarkRun): string {
  *  rather than as an out-of-memory.
  */
 export function summaryLine(run: AiBenchmarkRun): string {
-  if (!run.ok) return `Failed — ${run.error ?? "no reason given"}`;
+  if (!run.ok) return `Failed — ${failureReason(run)}`;
   const parts: string[] = [formatPrimary(run)];
   const ttft = metricValue(run, "ttftMs");
-  if (ttft !== null) parts.push(`TTFT ${num(ttft, 0)} ms`);
+  if (ttft !== null) parts.push(`TTFT ${formatNumber(ttft, 0)} ms`);
   const steps = metricValue(run, "steps");
-  if (steps !== null) parts.push(`${num(steps, 0)} steps`);
+  if (steps !== null) parts.push(`${formatNumber(steps, 0)} steps`);
   if (run.peakResidentBytes !== null) parts.push(formatMemory(run));
   if (run.loadSeconds !== null) parts.push(`loaded in ${formatLoad(run)}`);
   if (run.device) parts.push(run.device);
   return parts.join(" · ");
+}
+
+/** The org half of a model id, dropped — "whisper-large-v3-mlx" rather than
+ *  "mlx-community/whisper-large-v3-mlx". The compact row scans down a column
+ *  of these, and the org prefix is what makes every row in one section start
+ *  with the same six characters; the full id still lives in the row's title
+ *  attribute for the reader who needs to tell two orgs' same-named repo apart. */
+export function shortModelName(model: string): string {
+  const slash = model.lastIndexOf("/");
+  return slash === -1 ? model : model.slice(slash + 1);
+}
+
+/** Why a failed run failed, or a fallback when the server did not say. Its own
+ *  function (not inlined at each call site) because `summaryLine` and the
+ *  row's details expander both need the identical fallback wording — a second
+ *  copy is how one comes to say "unknown error" while the other says nothing
+ *  at all. */
+export function failureReason(run: AiBenchmarkRun): string {
+  return run.error ?? "no reason given";
+}
+
+/** The compact row's ONE line: the primary metric and memory, nothing else.
+ *
+ *  Load time, device and TTFT used to be crammed into this same line — see
+ *  `summaryLine`, which still carries them for the details expander and the
+ *  archive table — and a failed run's full `RuntimeError` paragraph used to go
+ *  here too, dominating the section. Both were the verbosity this function
+ *  exists to cut: a failed run says just "Failed", with the reason a click
+ *  away in `rowDetail`/`failureReason` rather than the row's headline.
+ */
+export function rowHeadline(run: AiBenchmarkRun): string {
+  if (!run.ok) return "Failed";
+  const parts: string[] = [formatPrimary(run)];
+  if (run.peakResidentBytes !== null) parts.push(formatMemory(run));
+  return parts.join(" · ");
+}
+
+/** What `rowHeadline` left out of a SUCCESSFUL run — TTFT, step count, load
+ *  time, device — or null when there is nothing left over, which tells the
+ *  row not to draw an expander for a run whose whole story is one number.
+ *
+ *  A failed run's detail is its error text, read through `failureReason`
+ *  instead: that is a different KIND of fact (why it broke, not what else it
+ *  measured), so this function returns null for one rather than folding both
+ *  into one string a caller would have to re-parse to tell apart.
+ */
+export function rowDetail(run: AiBenchmarkRun): string | null {
+  if (!run.ok) return null;
+  const parts: string[] = [];
+  const ttft = metricValue(run, "ttftMs");
+  if (ttft !== null) parts.push(`TTFT ${formatNumber(ttft, 0)} ms`);
+  const steps = metricValue(run, "steps");
+  if (steps !== null) parts.push(`${formatNumber(steps, 0)} steps`);
+  if (run.loadSeconds !== null) parts.push(`loaded in ${formatLoad(run)}`);
+  if (run.device) parts.push(run.device);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export interface BenchmarkDelta {
@@ -288,6 +349,45 @@ export function chartSeries(runs: AiBenchmarkRun[]): {
   return { series, yMin: 0, yMax };
 }
 
+export interface AxisTick {
+  value: number;
+  /** Through `formatNumber`, so a gridline reads "25" beside a row that reads
+   *  "25 tok/s" — never "25.0" beside it. */
+  label: string;
+}
+
+/** `count + 1` evenly spaced gridlines from 0 to `yMax`, the chart's own
+ *  domain — not a "nice round number" scale that would need to EXTEND the
+ *  domain past the tallest point to land on one. Equal division always ends
+ *  exactly on `yMax`, so the top gridline IS the peak, and the chart does not
+ *  need a separate "peak N unit" caption to say so.
+ *
+ *  Empty over an empty domain: a scale with a top of zero is not a scale for
+ *  anything, and the chart already draws nothing in that case (see
+ *  `BenchmarkChart`).
+ */
+export function yAxisTicks(yMax: number, digits: number, count = 4): AxisTick[] {
+  if (yMax <= 0) return [];
+  const ticks: AxisTick[] = [];
+  for (let i = 0; i <= count; i++) {
+    const value = (yMax * i) / count;
+    ticks.push({ value, label: formatNumber(value, digits) });
+  }
+  return ticks;
+}
+
+/** A run's date as a short, LOCALE label — "Aug 12", never a full timestamp.
+ *  The chart's x axis used to say only "oldest"/"newest" because the runs are
+ *  not evenly spaced in time (see `BenchmarkChart`'s own comment on this); a
+ *  couple of these at the ends and the middle name WHEN without claiming an
+ *  even spacing the axis does not have. */
+export function formatRunDate(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 /** The page's reading order for a set of capabilities.
  *
  *  `CAPABILITY_ORDER` is imported from the Local tab's grouping rather than
@@ -395,4 +495,83 @@ export function stoppedNote(model: string): string {
     `fused.ai.cancel() on another page, or a ✕ on its row in the download ` +
     `manager). Nothing was recorded; press Run again to retry.`
   );
+}
+
+/** How far a bar reaches, 0..1, where 1 is the SECTION'S best model — never an
+ *  absolute fraction of the raw number. `higherIsBetter` decides which
+ *  direction "best" points: on a higher-is-better metric the winner has the
+ *  biggest number, so `value / best` already lands the winner at 1; on
+ *  seconds-per-step the winner has the SMALLEST number, so the ratio is
+ *  inverted (`best / value`) — otherwise the fastest model in the section
+ *  would draw the shortest bar, which is backwards for a leaderboard whose
+ *  whole point is "longer bar, better model" on every section alike.
+ *
+ *  Guards a degenerate all-zero section (every model measured literally
+ *  nothing) rather than dividing zero by zero into `NaN`, which SVG/CSS widths
+ *  render as nothing sized rather than as an error. */
+function barFraction(value: number, best: number, higherIsBetter: boolean): number {
+  if (value <= 0 && best <= 0) return higherIsBetter ? 0 : 1;
+  if (higherIsBetter) return best <= 0 ? 0 : Math.min(1, value / best);
+  return value <= 0 ? 1 : Math.min(1, best / value);
+}
+
+export interface LeaderboardRow {
+  model: string;
+  /** The same `ModelLatest` the caller passed in — untouched, just reordered
+   *  and given a bar. */
+  row: ModelLatest | null;
+  /** 0..1 against the section's best measured model, or null when there is
+   *  nothing to bar: no run yet, or the latest run failed or measured
+   *  nothing. A bar of length 0 would read as "measured, and terrible" —
+   *  which is a different fact from "never run" or "broke". */
+  barFraction: number | null;
+}
+
+/** One capability's models, ranked best-first for the leaderboard.
+ *
+ *  Three groups, in this fixed order — measured, then failed, then never
+ *  benchmarked — because they are different KINDS of "nothing to compare",
+ *  and a plain sort by value would either crash on the ones with no number or
+ *  silently treat "no run yet" as tied with "measured zero". Within the
+ *  measured group, order is by the primary metric in whichever direction is
+ *  actually better (see `barFraction`); the other two groups keep the input
+ *  order, because there is no value to rank them by.
+ *
+ *  An unknown capability (`primaryMetric` returns null) draws no bars and
+ *  ranks nothing — the same "no guessed number" posture `primaryMetric` and
+ *  `chartSeries` already take.
+ */
+export function leaderboard(
+  capability: string,
+  entries: { model: string; row: ModelLatest | null }[],
+): LeaderboardRow[] {
+  const metric = primaryMetric(capability);
+  if (!metric) return entries.map((e) => ({ ...e, barFraction: null }));
+
+  const measured: { entry: (typeof entries)[number]; value: number }[] = [];
+  const failed: (typeof entries)[number][] = [];
+  const never: (typeof entries)[number][] = [];
+  for (const entry of entries) {
+    if (!entry.row) {
+      never.push(entry);
+      continue;
+    }
+    const value = primaryValue(entry.row.latest);
+    if (value === null) failed.push(entry);
+    else measured.push({ entry, value });
+  }
+
+  measured.sort((a, b) =>
+    metric.higherIsBetter ? b.value - a.value : a.value - b.value,
+  );
+  const best = measured.length > 0 ? measured[0]!.value : 0;
+
+  return [
+    ...measured.map(({ entry, value }) => ({
+      ...entry,
+      barFraction: barFraction(value, best, metric.higherIsBetter),
+    })),
+    ...failed.map((entry) => ({ ...entry, barFraction: null })),
+    ...never.map((entry) => ({ ...entry, barFraction: null })),
+  ];
 }
