@@ -1,4 +1,4 @@
-"""Benchmark runs, kept forever at ~/.fused-render/ai_benchmarks.json (SPEC AI-16).
+"""Benchmark runs, kept forever at ~/.fused-render/ai_benchmarks.json (SPEC AI-14).
 
 One more shell-state resource in the shape `shell/prefs.py` established: a
 private `_path()` over `storage.home_dir()`, then `storage.read_json` /

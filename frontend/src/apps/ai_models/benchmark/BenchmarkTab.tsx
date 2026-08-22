@@ -1,6 +1,6 @@
 // The Benchmark tab: one section per AI capability, each listing the models this
 // machine has downloaded for it with what they measured last time and a button
-// to measure again (SPEC AI-16).
+// to measure again (SPEC AI-14).
 //
 // **The question this tab exists to answer is "how fast is THIS model on THIS
 // laptop", and the only way to answer it comparably is to fix the work.** So a

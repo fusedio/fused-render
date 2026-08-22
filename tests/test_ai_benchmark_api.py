@@ -1,4 +1,4 @@
-"""The three benchmark endpoints (server/routers/ai_benchmark.py, SPEC AI-16).
+"""The three benchmark endpoints (server/routers/ai_benchmark.py, SPEC AI-14).
 
 `POST /api/ai/benchmark` holds the request open for the whole run, which is what
 makes the rejections here worth pinning individually: by the time a bad request

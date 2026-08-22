@@ -7712,6 +7712,85 @@ an AI Models page that could say what was on disk but not what was *running*.
   correctness**, since an auto-unloaded model's next call raises
   `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
   existing `model_loading` handling already covers it.
+- **AI-14** **A local model can be BENCHMARKED on demand: a fixed workload per
+  capability, run against one model, recorded forever with its throughput, its
+  memory, its load time and the machine it ran on** (D425, D426, D427). The AI
+  Models page's Benchmark tab (`/ai-models/benchmark`) draws one section per
+  capability listing that capability's downloaded models with a Run button;
+  `fused_render/ai/benchmark.py` performs the run and
+  `fused_render/ai/bench_store.py` keeps it at
+  `<home>/ai_benchmarks.json`. Three routes: `GET /api/ai/benchmark` (the
+  history plus this machine, unguarded like every read), `POST /api/ai/benchmark`
+  and `POST /api/ai/benchmark/delete` (both behind the D3 X-Fused guard — one
+  spends minutes of GPU time, the other destroys measurements that cannot be
+  recomputed for an app version that has moved on).
+  - **AI-14a** **The workload is FIXED per capability and is not a parameter.**
+    One frozen entry per capability constant in `WORKLOADS` — a 128-token decode
+    of one prompt, a 512² image, a 30-second decode, a batch of eight texts —
+    because the only thing that makes two numbers comparable is that the work was
+    identical. This is the deliberate opposite of AI-12's passive counters, which
+    summarise whatever real calls happened to pass through and therefore cannot
+    compare two models at all. The cost is equally deliberate: **a number exists
+    only where somebody pressed the button.**
+  - **AI-14b** **Every workload carries an integer `revision`, and bumping it
+    breaks comparability ON PURPOSE.** The revision is stored on every run, and
+    the page refuses to draw a delta across two different revisions rather than
+    quietly reporting a change that is the workload's and not the model's.
+    Changing any `params` value REQUIRES bumping the revision beside it.
+  - **AI-14c** **A metric that was not measured is `null`, never zero and never
+    derived.** Token counts are the worker's own (AI-3), so a runner that does not
+    report them leaves `tokensPerSecond` null rather than a rate computed from the
+    returned text — that would be a different tokenizer's answer wearing this
+    model's label. `loadSeconds` is null for an already-resident model, because
+    nothing was loaded and a zero would read as an impossibly fast load. The same
+    rule governs the machine block: `totalMemoryBytes` is null on Windows, where
+    the stdlib will not say. A consumer must render null as "—" and must never
+    treat a real `0` as an absence.
+  - **AI-14d** **The primary metric is per capability, and one of the four runs
+    the other way.** Text generation reports `tokensPerSecond` (with `ttftMs`
+    beside it, because a slow prefill and a slow decode feel completely different
+    and one figure hides the other); speech to text reports `realtimeFactor`;
+    embeddings report `textsPerSecond`; image generation reports
+    **`secondsPerStep`, where SMALLER is faster** — the step count is per-model by
+    design (`catalog.py`'s `defaults: {"steps": 4}` exists because a distilled
+    model runs at 4 where another needs 28), so a shared step count would be
+    either unfair or an out-of-memory, and the per-step figure is the only
+    comparable one. The step count is recorded on the run so the wall clock can be
+    reconstructed.
+  - **AI-14e** **Memory is `resident_bytes()` sampled from the worker after the
+    run, not a peak this app computes.** That figure already reconciles RSS
+    against a runner's own allocator and is GPU-pool aware on Apple Silicon.
+    Stated cost: a transient spike mid-generation is missed, because continuous
+    sampling would be new cross-platform machinery — and a polling thread reaching
+    into a worker mid-generation is a request waiting on a GPU call — for a
+    second-order number.
+  - **AI-14f** **Speech to text benchmarks a synthesized tone, generated per run
+    with the stdlib `wave` module.** Realtime factor is a decode-throughput
+    measure and does not need intelligible speech, and this commits no binary
+    asset to the repo. Stated risk: a model with speech-dependent early-exit
+    behaviour could look faster on a tone than on real audio.
+  - **AI-14g** **One benchmark at a time per capability, enforced server-side,
+    and the request is held open for the whole run.** The supervisor holds one
+    resident model per capability, so a second concurrent run's load would evict
+    the first's model mid-measurement — the hazard `generate_transcript`'s
+    ordering comment already documents — and it is refused with a readable 409
+    rather than allowed to corrupt a figure somebody waited minutes for. Holding
+    the request open matches `POST /api/ai/image` and `POST /api/ai/transcribe`
+    rather than inventing a poll-a-benchmark-job protocol for a third long call;
+    progress still flows to a job row, so the page is not blind. A run also
+    refuses a capability with no workload (400) and a model this machine does not
+    hold (404): a button press must not become a silent multi-GB download.
+  - **AI-14h** **A run that FAILED is a result, and it is stored.** "This model
+    OOMs on this laptop" is exactly what somebody benchmarks to find out, so a
+    raising runner is recorded as `ok: false` with the message and appears in the
+    history beside the successful runs; its `metrics` is empty rather than a dict
+    of nulls. The HTTP status describes the request, `ok` describes the model — a
+    failed run is a 200.
+  - **AI-14i** **Bounded by a hard run cap, not by a ring.** Unlike AI-12c's
+    fixed bucket ring, runs are individually meaningful and cannot be merged, so
+    the store keeps the newest `MAX_RUNS` (500) and drops the OLDEST on append —
+    never the run whose button was just pressed. A corrupt or absent file reads as
+    no runs, never a raise.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

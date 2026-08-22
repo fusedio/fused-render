@@ -1,6 +1,6 @@
 // What the Benchmark tab SAYS about a run, separated from what draws it — the
 // same split, and for the same reason, as `engines.ts` and `aiModelGroups.ts`
-// beside it (SPEC AI-16).
+// beside it (SPEC AI-14).
 //
 // The rendering is a table, a row of numbers and a polyline. The places this
 // feature can actually be WRONG are all in here, and none of them is visible in

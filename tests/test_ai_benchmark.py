@@ -1,4 +1,4 @@
-"""Tests for `benchmark.run()` — the measurement itself (SPEC AI-16).
+"""Tests for `benchmark.run()` — the measurement itself (SPEC AI-14).
 
 **No model is loaded and no worker is spawned.** Every supervisor entry point
 this module drives is monkeypatched, in the style tests/test_ai_runtime.py
@@ -64,17 +64,6 @@ def bench(tmp_path, monkeypatch):
     # a real `jobs.upsert` would leave rows behind for the next test to find.
     monkeypatch.setattr(benchmark.supervisor, "_report", lambda job, **f: None)
     return clock
-
-
-def _text_events(clock, script):
-    """A `generate_text` stand-in following `script`: a list of
-    `(delay_seconds, event)` pairs, with the clock advanced BEFORE each event —
-    which is what makes the first chunk's delay the time to first token."""
-    def generate_text(model, body):
-        for delay, event in script:
-            clock.advance(delay)
-            yield event
-    return generate_text
 
 
 # -- text generation ------------------------------------------------------------

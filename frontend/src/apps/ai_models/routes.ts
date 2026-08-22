@@ -60,7 +60,7 @@ export type AiModelsTab = "playground" | "local" | "benchmark" | "engines" | "us
  *  the same things: Local says what is on the disk, Benchmark says how fast
  *  those are here. Beside Engines it would read as being about backends, and
  *  beside Usage as being about what this process happened to do — which is the
- *  passive counterpart it deliberately is not (SPEC AI-16). */
+ *  passive counterpart it deliberately is not (SPEC AI-14). */
 export const AI_MODELS_TABS: readonly AiModelsTab[] = [
   "playground",
   "local",

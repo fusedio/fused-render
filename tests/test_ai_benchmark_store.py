@@ -1,4 +1,4 @@
-"""Tests for the benchmark run store and the fixed workload table (SPEC AI-16).
+"""Tests for the benchmark run store and the fixed workload table (SPEC AI-14).
 
 Two halves of Task 1: `ai/bench_store.py` (the persisted, capped, append-only
 run list at ~/.fused-render/ai_benchmarks.json) and the `WORKLOADS` /

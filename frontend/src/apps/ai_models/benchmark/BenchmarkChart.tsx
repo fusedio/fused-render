@@ -1,5 +1,5 @@
 // One capability's history as a line per model — inline SVG, no charting
-// dependency (SPEC AI-16).
+// dependency (SPEC AI-14).
 //
 // Self-contained sizing, like UsageTab's own chart: the SVG carries a
 // `viewBox` and scales to whatever box CSS gives it, so nothing here measures

@@ -1,4 +1,4 @@
-"""The AI Models page's Benchmark tab, server side (SPEC AI-16).
+"""The AI Models page's Benchmark tab, server side (SPEC AI-14).
 
 Three routes and nothing else:
 

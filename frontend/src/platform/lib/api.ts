@@ -2674,7 +2674,7 @@ export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boo
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
 }
 
-// -- AI benchmarks (/api/ai/benchmark, SPEC AI-16) ----------------------------
+// -- AI benchmarks (/api/ai/benchmark, SPEC AI-14) ----------------------------
 // One recorded benchmark run per entry, kept forever on disk — the deliberate
 // opposite of the in-memory usage counters below. Where those summarise the real
 // calls that happened to pass through, these are a FIXED workload somebody ran

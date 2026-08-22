@@ -462,7 +462,7 @@ def create_app(start_dir: str) -> FastAPI:
     # that change that. Reads unguarded; the three POSTs start processes and
     # write gigabytes, so they carry the D3 X-Fused guard.
     app.include_router(ai_runtime_router)
-    # The AI Models page's Benchmark tab (routers/ai_benchmark.py, SPEC AI-16):
+    # The AI Models page's Benchmark tab (routers/ai_benchmark.py, SPEC AI-14):
     # run a fixed per-capability workload against a local model and keep the
     # throughput/memory/load figures forever. The read is unguarded; the run and
     # the delete carry the D3 X-Fused guard — the first spends minutes of GPU

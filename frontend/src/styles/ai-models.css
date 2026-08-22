@@ -1508,7 +1508,7 @@
   vertical-align: 1px;
 }
 
-/* -- Benchmark (the Benchmark tab, SPEC AI-16) --------------------------------
+/* -- Benchmark (the Benchmark tab, SPEC AI-14) --------------------------------
    Laid out in the Local tab's vocabulary — .am-section per capability, the
    .am-section-head / .am-section-title pair for the heading — so a capability
    means the same thing on either tab. What is here is only what those classes
@@ -1516,10 +1516,9 @@
    the run archive under it.
 
    Every colour is a global token (tokens.css), so both themes come for free the
-   way the rest of this file gets them. The ONE exception is the six series
-   colours below, because there is no categorical palette in tokens.css to
-   borrow — those are declared as local custom properties with a light-theme
-   override, on the same `:root[data-theme="light"]` seam tokens.css uses. */
+   way the rest of this file gets them — including the chart's lines, which is
+   what `--series-1..6` was added to that palette for: a categorical scale is
+   the one thing the status tokens could not stand in for. */
 
 .am-bench {
   /* One capability's numbers are read against another's; a wide measure would
@@ -1662,65 +1661,34 @@
   vector-effect: non-scaling-stroke;
 }
 
-/* The six series colours. `color` rather than `stroke`/`fill` directly, so the
-   line, the dots and the legend swatch all inherit one declaration — a legend
-   whose colours are declared separately from its lines is a legend that can
-   disagree with the chart.
-
-   Chosen for hue separation at small size rather than for brand: these are
-   categorical, so what matters is that two adjacent lines are distinguishable,
-   including for the commonest colour-vision deficiencies (hence blue/orange
-   before red/green). */
+/* The six series colours, from the shared categorical palette (tokens.css
+   --series-1..6, which carries both themes). `color` rather than `stroke`/`fill`
+   directly, so the line, the dots and the legend swatch all inherit ONE
+   declaration — a legend whose colours are declared separately from its lines is
+   a legend that can disagree with the chart. */
 .am-bench-series.c0,
 .am-bench-key.c0 {
-  color: #6aa8ff;
+  color: var(--series-1);
 }
 .am-bench-series.c1,
 .am-bench-key.c1 {
-  color: #e0a33e;
+  color: var(--series-2);
 }
 .am-bench-series.c2,
 .am-bench-key.c2 {
-  color: #3fca6b;
+  color: var(--series-3);
 }
 .am-bench-series.c3,
 .am-bench-key.c3 {
-  color: #cf8bf3;
+  color: var(--series-4);
 }
 .am-bench-series.c4,
 .am-bench-key.c4 {
-  color: #4fd1c5;
+  color: var(--series-5);
 }
 .am-bench-series.c5,
 .am-bench-key.c5 {
-  color: #ff8f8f;
-}
-
-/* Light mode: the same six hues, darkened enough to clear the contrast a
-   hairline and a 10px legend label need against white. */
-:root[data-theme="light"] .am-bench-series.c0,
-:root[data-theme="light"] .am-bench-key.c0 {
-  color: #1f5fbf;
-}
-:root[data-theme="light"] .am-bench-series.c1,
-:root[data-theme="light"] .am-bench-key.c1 {
-  color: #8a5a00;
-}
-:root[data-theme="light"] .am-bench-series.c2,
-:root[data-theme="light"] .am-bench-key.c2 {
-  color: #1a7f37;
-}
-:root[data-theme="light"] .am-bench-series.c3,
-:root[data-theme="light"] .am-bench-key.c3 {
-  color: #7a3fa8;
-}
-:root[data-theme="light"] .am-bench-series.c4,
-:root[data-theme="light"] .am-bench-key.c4 {
-  color: #0f7c74;
-}
-:root[data-theme="light"] .am-bench-series.c5,
-:root[data-theme="light"] .am-bench-key.c5 {
-  color: #b03030;
+  color: var(--series-6);
 }
 
 /* The scale and the direction, in a row UNDER the plot rather than as <text>
