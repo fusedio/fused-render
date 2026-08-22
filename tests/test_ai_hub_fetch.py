@@ -29,6 +29,7 @@ module-scope import of it would pass unnoticed here.
 `test_ai_worker_base.py::test_worker_base_imports_nothing_but_the_stdlib` is what
 enforces the rule, by reading the module's own imports out of its source.
 """
+import email.utils
 import hashlib
 import http.server
 import importlib.util
@@ -211,7 +212,16 @@ def _start_server(payload, **flags):
              # that needs to observe OTHER chunks being asked for while one is
              # still open, not merely infer it from timing.
              "hold_first_real": False, "release": threading.Event(),
-             "_held": False}
+             "_held": False,
+             # `throttle_first`: the first N real requests answer 429 (or
+             # `throttle_status`, for the 503-with-a-Retry-After shape), each
+             # carrying `retry_after` as the header verbatim when it is not
+             # None. A rate limit is the one CDN misbehaviour that is not a
+             # fault — the server is asking us to wait — so it needs its own
+             # flag rather than riding on `unauthorized`, whose whole answer is
+             # to re-resolve.
+             "throttle_first": 0, "throttled": 0, "retry_after": None,
+             "throttle_status": 429}
     state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -224,6 +234,7 @@ def _start_server(payload, **flags):
             header = self.headers.get("Range")
             probe = header == "bytes=0-0"
             failed_probe = expired = hold = False  # bound on every branch
+            throttled = False
             # `whole` is what THIS path serves, and `status` a status to answer
             # with instead of a body. Without `routes` every path serves the one
             # `payload`, exactly as before.
@@ -252,6 +263,9 @@ def _start_server(payload, **flags):
                                              or state["real"] in state["unauthorized_on"])
                     if state["unauthorized"] > 0 and not plain:
                         state["unauthorized"] -= 1
+                    if not plain and state["throttled"] < state["throttle_first"]:
+                        state["throttled"] += 1
+                        throttled = True
                     if state["hold_first_real"] and not state["_held"] and not plain:
                         state["_held"] = True
                         hold = True
@@ -268,6 +282,13 @@ def _start_server(payload, **flags):
                 return
             if failed_probe:
                 self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not probe and throttled:
+                self.send_response(state["throttle_status"])
+                if state["retry_after"] is not None:
+                    self.send_header("Retry-After", str(state["retry_after"]))
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -2575,6 +2596,264 @@ def test_a_zero_byte_file_in_a_manifest_is_fetched_and_filed(base, monkeypatch,
 
     assert open(os.path.join(snapshot, "empty.txt"), "rb").read() == b""
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+# -- a rate limit is a WAIT, not a failure ---------------------------------------
+#
+# A 429 from the Hub used to be indistinguishable from a broken link: it landed
+# in the generic `HTTP <code>` branch, burned the segment's whole retry budget
+# in about seven seconds of backoff, and handed the repo to hf's own
+# `snapshot_download` — a slower download, and one nothing explained. These
+# tests pin the three halves of the fix: the wait is honoured, the budget is not
+# spent, and the row says what is happening (including the sign-in that raises
+# the limit, and only when there is no token).
+
+
+def _no_waiting(base, monkeypatch):
+    """Record every throttle wait instead of serving it.
+
+    The notice is captured WITH each wait, which is the only moment it is
+    guaranteed to be readable: it is cleared the instant a segment makes
+    progress, so a fetch that succeeded has (correctly) left nothing behind.
+    """
+    waits = []
+
+    def recorded(stop, seconds):
+        waits.append((seconds, base._throttle_detail()))
+
+    monkeypatch.setattr(base, "_throttle_sleep", recorded)
+    return waits
+
+
+def _one_segment(base, monkeypatch, tmp_path, url, payload, **flags):
+    """Wire a fetch that is exactly ONE segment, so the retry arithmetic is
+    deterministic — with four chunks in flight, two throttles can land on two
+    different segments and neither counter reaches two."""
+    return _wire(base, monkeypatch, tmp_path, url, len(payload),
+                 segment_min=len(payload) + 1, **flags)
+
+
+def test_a_throttled_segment_waits_the_time_the_server_asked_for(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """`Retry-After: 2` is a two-second wait, then the download carries on."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [2.0]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_retry_after_that_is_a_date_is_parsed_as_one(base, monkeypatch, tmp_path,
+                                                       payload):
+    """The other form the RFC permits, and one the Hub really serves."""
+    url, _state = _start_server(
+        payload, throttle_first=1,
+        retry_after=email.utils.formatdate(time.time() + 5, usegmt=True))
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    # Roughly, not exactly: the header carries whole seconds and the clock moves
+    # between formatting it and reading it back.
+    assert len(waits) == 1 and 3.0 <= waits[0][0] <= 6.0, waits
+
+
+def test_a_throttle_with_no_retry_after_still_waits_and_retries(base, monkeypatch,
+                                                                tmp_path, payload):
+    """Nothing to honour is not nothing to do: it backs off on its own, doubling,
+    rather than hammering a host that has just said it is over its limit."""
+    url, _state = _start_server(payload, throttle_first=2, retry_after=None)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [base.RETRY_BACKOFF_S,
+                                                       base.RETRY_BACKOFF_S * 2]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_server_named_wait_far_above_the_ceiling_is_clamped(base, monkeypatch,
+                                                              tmp_path, payload):
+    """An hour is a legal `Retry-After` and must not become an hour of silence —
+    nor a `time.sleep` the ✕ cannot get through (`THROTTLE_WAIT_MAX_S`)."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=3600)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [base.THROTTLE_WAIT_MAX_S]
+
+
+def test_a_long_run_of_throttles_does_not_fall_back(base, monkeypatch, tmp_path,
+                                                    payload):
+    """THE regression this change exists to prevent.
+
+    `SEGMENT_ATTEMPTS` is a claim about a file being unreachable, and a 429 is
+    not that claim. Sharing the budget with it meant a throttled download gave
+    up after five attempts and fell into `snapshot_download` — slower, and with
+    the resumable state deleted on the way.
+    """
+    throttles = base.SEGMENT_ATTEMPTS * 4
+    url, _state = _start_server(payload, throttle_first=throttles, retry_after=0)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_host_that_throttles_forever_still_gives_up_eventually(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """The allowance is generous, not infinite: a segment parked on a 429 for the
+    life of the process holds a pool slot no other chunk can use."""
+    url, _state = _start_server(payload, throttle_first=999, retry_after=0)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "THROTTLE_ATTEMPTS", 3)
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+
+def test_a_503_is_only_a_throttle_when_it_carries_a_retry_after(base, monkeypatch,
+                                                                tmp_path, payload):
+    """A bare 503 is an overloaded or broken host, which is what the ordinary
+    budget is for; one that names a wait is the server asking for it."""
+    url, _state = _start_server(payload, throttle_first=1, throttle_status=503,
+                                retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [2.0]
+
+    bare = _fresh_base()
+    url, _state = _start_server(payload, throttle_first=999, throttle_status=503)
+    _one_segment(bare, monkeypatch, tmp_path / "bare", url, payload)
+    monkeypatch.setattr(bare, "RETRY_BACKOFF_S", 0)
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        bare._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+
+def test_the_row_says_the_hub_is_limiting_the_download(base, monkeypatch, tmp_path,
+                                                       payload):
+    """Signed in, so there is no login to suggest: the row states the fact and
+    the wait, and nothing else."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret_token")
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [detail for _seconds, detail in waits] == [
+        "Hugging Face is limiting this download — waiting 2s"]
+
+
+def test_the_row_offers_the_sign_in_only_when_there_is_no_token(base, monkeypatch,
+                                                                tmp_path, payload):
+    """The one action that raises the limit, said where the limit is felt — and
+    with no part of any token in it."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "_hf_token", lambda: None)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    detail = waits[0][1]
+    # "Preferences → AI" verbatim, the same place `hub_models.py` and
+    # `discoverView.ts` send a rate-limited or refused reader: a message naming a
+    # screen that does not hold the setting is a message that wastes a click.
+    assert detail == ("Hugging Face is limiting this download — sign in to "
+                      "Hugging Face in Preferences → AI for a higher limit")
+
+
+def test_an_off_hub_throttle_names_neither_the_hub_nor_a_sign_in(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """A 429 from whatever `FUSED_MODEL_MIRROR` names is not the Hub throttling
+    the user, and "sign in to Hugging Face" would be advice about a host that is
+    not involved. It is still a rate limit and still worth saying."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "_hf_token", lambda: None)
+    monkeypatch.setattr(base, "_hub_file_meta", lambda *a: (_ for _ in ()).throw(
+        AssertionError("the Hub was consulted for a mirrored file")))
+    meta, _calls = _provider(url, len(payload))
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m", meta=meta)
+
+    detail = waits[0][1]
+    assert "Hugging Face" not in detail and "sign in" not in detail
+    assert "rate-limited" in detail and "waiting 2s" in detail
+
+
+def test_the_notice_is_retired_once_bytes_move_again(base, monkeypatch, tmp_path,
+                                                     payload):
+    """A row that goes on saying "waiting" over a download that is running is the
+    same defect as one that never said it, wearing the other sign."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=0)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert base._throttle_detail() is None
+
+
+def test_the_job_row_prefers_the_throttle_notice_over_the_plain_detail(base,
+                                                                      monkeypatch):
+    """`fetch_with_progress`'s tick is the only channel to the row, and the
+    segment threads cannot reach it. Without this the row said "Fetching
+    weights…" through a wait it was never told about."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: ticks.append(fields))
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret_token")
+
+    def call():
+        base._note_throttle(4.0, hub=True)
+        time.sleep(1.2)  # past the one-second tick, so a poll sees the notice
+        return "/snap"
+
+    base.fetch_with_progress("org/m", call, total=1024, detail="Fetching weights…")
+
+    assert any(tick.get("detail") == "Hugging Face is limiting this download — waiting 4s"
+               for tick in ticks), ticks
+    base._clear_throttle()
+
+
+def test_a_fetch_does_not_inherit_the_previous_fetch_s_notice(base, monkeypatch):
+    """A resident worker fetches component models during requests, so the
+    process global really can outlive the download that set it."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret_token")
+    base._note_throttle(4.0, hub=True)
+
+    base.fetch_with_progress("org/m", lambda: "/snap", total=1024)
+
+    assert base._throttle_detail() is None
+
+
+def test_a_stop_during_a_throttle_wait_aborts_promptly(base):
+    """The ✕ reaches a parked segment only through `stop`, and a single
+    `time.sleep` of a minute would blunt it into a minute of "cancelling…"."""
+    stop = threading.Event()
+    threading.Timer(0.1, stop.set).start()
+
+    started = time.monotonic()
+    base._throttle_sleep(stop, 30.0)
+
+    assert time.monotonic() - started < 5.0
 
 
 # -- the guard above, asserted rather than assumed -------------------------------

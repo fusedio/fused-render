@@ -37,6 +37,8 @@ stub callables standing in for the model.
 import argparse
 import concurrent.futures
 import contextlib
+import datetime
+import email.utils
 import fnmatch
 import hashlib
 import http.client
@@ -499,6 +501,24 @@ HASH_BLOCK_BYTES = 1024 * 1024
 HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
+#: A rate limit is not a fault, and `SEGMENT_ATTEMPTS` is a claim about faults:
+#: it exists to decide "this file is unreachable, hand the repo to hf". A 429
+#: says the opposite — the server is reachable and is asking us to wait — so it
+#: gets an allowance of its own, counted separately. With the shared budget, a
+#: throttled download gave up after five attempts and about seven seconds of
+#: backoff and fell into `snapshot_download`, which is SLOWER: the user saw a
+#: download crawl for no stated reason, having been throttled and never told.
+THROTTLE_ATTEMPTS = 60
+#: The longest single wait a throttle may impose, however long the server asked
+#: for. Two reasons for a ceiling. A `Retry-After` of an hour (a legal answer,
+#: and one the Hub does give) would otherwise become an hour of a download
+#: sitting still; and the retry loop's `self.stop` check is what a ✕ arrives
+#: through, so a wait must always end soon enough to reach it. The second is
+#: also why the wait is slept in `THROTTLE_SLICE_S` pieces rather than in one
+#: call: `time.sleep(60)` cannot be interrupted, and a cancel that lands a
+#: second in would have taken a minute to be honoured.
+THROTTLE_WAIT_MAX_S = 60.0
+THROTTLE_SLICE_S = 0.5
 FLUSH_EVERY_S = 1.0
 #: The revision both paths use, named rather than implied. It is hf's own
 #: `snapshot_download` default, which is what keeps the fast path and the
@@ -937,6 +957,139 @@ def _blob_sha256(path):
     return digest.hexdigest()
 
 
+# -------------------------------------------------------------- being throttled
+#
+# A 429 used to be indistinguishable from a broken link: it landed in the
+# generic `HTTP <code>` branch of the retry loop, spent the segment's whole
+# budget on backoff in about seven seconds, and took the repo into hf's own
+# `snapshot_download` — a slower download, with nothing anywhere saying why it
+# had become slow. Two things are wrong with that and both are fixed here: a
+# throttle is WAITED OUT rather than counted as a fault (see
+# `THROTTLE_ATTEMPTS`), and it is SAID on the job row.
+#
+# The notice is a process global, which is right rather than merely convenient:
+# a download-only worker process serves exactly one download, so there is no
+# second job the notice could be attributed to, and the segment threads have no
+# other way to reach the row. `fetch_with_progress`'s tick is the only channel
+# to it, it runs on a different thread from every segment, and several segments
+# can be throttled at once — hence the lock rather than a bare assignment.
+
+_THROTTLE_LOCK = threading.Lock()
+_THROTTLE_DETAIL = None
+
+
+def _note_throttle(seconds, hub):
+    """Publish "we are being rate-limited" for the next tick to say.
+
+    `hub` is whether the throttling host is Hugging Face — `_FileFetch`'s
+    `re_resolvable`, which is True on the Hub path only. A 429 from whatever
+    `FUSED_MODEL_MIRROR` names is a real throttle and worth saying, but naming
+    the Hub for it, or offering a Hub sign-in as the cure, would be advice about
+    a host that is not involved.
+
+    The sign-in half is added only when there is no token: it is the one action
+    that raises the limit, and telling a signed-in user to sign in reads as the
+    app not knowing what it is doing. `_hf_token()` answers that question for
+    the whole file — nothing here reads the environment itself, and no part of
+    the token goes anywhere near the message.
+    """
+    global _THROTTLE_DETAIL
+    waiting = f"waiting {max(1, int(round(seconds)))}s"
+    if not hub:
+        detail = f"This download is being rate-limited — {waiting}"
+    elif _hf_token():
+        detail = f"Hugging Face is limiting this download — {waiting}"
+    else:
+        detail = ("Hugging Face is limiting this download — sign in to Hugging "
+                  "Face in Preferences → AI for a higher limit")
+    with _THROTTLE_LOCK:
+        _THROTTLE_DETAIL = detail
+
+
+def _clear_throttle():
+    """Retire the notice, because bytes are moving again."""
+    global _THROTTLE_DETAIL
+    with _THROTTLE_LOCK:
+        _THROTTLE_DETAIL = None
+
+
+def _throttle_detail():
+    """The throttle notice a tick should show instead of its own detail, or None."""
+    with _THROTTLE_LOCK:
+        return _THROTTLE_DETAIL
+
+
+def _retry_after_s(error):
+    """`Retry-After` off a response, in seconds, or None if there is none to read.
+
+    Both forms the RFC permits, because both are served in the wild: delta
+    seconds, and an HTTP-date. A date in the past (a clock skewed either way, a
+    response that sat in a queue) is a wait of zero rather than a negative one.
+    """
+    headers = getattr(error, "headers", None)
+    header = (headers.get("Retry-After") if headers else None) or ""
+    header = header.strip()
+    if not header:
+        return None
+    try:
+        return max(0.0, float(int(header)))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        # A `Retry-After` date is GMT by definition; a naive one is that,
+        # not local time.
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (when - now).total_seconds())
+
+
+def _is_throttled(error):
+    """Is this `HTTPError` the server asking us to wait?
+
+    429 always. 503 only WITH a `Retry-After`: a bare 503 is an overloaded or
+    broken host, which is exactly what the ordinary retry budget is for, and
+    treating every one of them as a throttle would turn a genuinely dead
+    endpoint into a download that waited an hour before falling back.
+    """
+    if error.code == 429:
+        return True
+    return error.code == 503 and _retry_after_s(error) is not None
+
+
+def _throttle_wait_s(error, attempt):
+    """How long to wait for this throttle: what the server asked, or a backoff.
+
+    Capped either way (`THROTTLE_WAIT_MAX_S`). With no usable header there is
+    nothing to honour, so this doubles its own wait per attempt rather than
+    hammering a host that has just said it is over its limit.
+    """
+    named = _retry_after_s(error)
+    if named is not None:
+        return min(named, THROTTLE_WAIT_MAX_S)
+    return min(THROTTLE_WAIT_MAX_S, RETRY_BACKOFF_S * 2 ** (attempt - 1))
+
+
+def _throttle_sleep(stop, seconds):
+    """Wait `seconds`, in slices, giving up early once `stop` is set.
+
+    In slices because a single `time.sleep` of a minute cannot be interrupted,
+    and the ✕ a user presses reaches a segment only through `stop` (see
+    `THROTTLE_WAIT_MAX_S`). Counted DOWN rather than measured against a
+    deadline, so the loop terminates on the number of naps taken: a test that
+    replaces the clock does not turn this into a spin.
+    """
+    while seconds > 0 and not stop.is_set():
+        nap = min(THROTTLE_SLICE_S, seconds)
+        time.sleep(nap)
+        seconds -= nap
+
+
 class _FileFetch:
     """One file's download: its part file, its segments, its sidecar.
 
@@ -1269,6 +1422,11 @@ class _FileFetch:
         ranged = len(self.segments) > 1
         refreshed = False
         tries = 0
+        # Throttles are counted apart from `tries`, and generously — see
+        # `THROTTLE_ATTEMPTS`. Still counted at all, because an allowance is
+        # what keeps a host that answers 429 forever from parking this segment
+        # (and the pool slot it holds) for the life of the process.
+        throttles = 0
         reason = "nothing was attempted"
         while tries < SEGMENT_ATTEMPTS and not self.stop.is_set():
             if _seg_complete(seg):
@@ -1286,10 +1444,28 @@ class _FileFetch:
                         else:
                             self._check_range(response, start)
                     self._drain(response, seg, start)
+                if seg["done"] > before:
+                    # Bytes are moving, so whatever throttle notice a thread put
+                    # on the row is over: the row must stop saying "waiting" the
+                    # moment it stops being true. Here rather than in the
+                    # cursor-moved branch below, which a completed segment
+                    # returns past.
+                    _clear_throttle()
                 if _seg_complete(seg):
                     return
                 reason = f"the stream ended at byte {seg['start'] + seg['done']}"
             except urllib.error.HTTPError as error:
+                if _is_throttled(error) and throttles < THROTTLE_ATTEMPTS:
+                    # A wait the server ASKED for, so it costs no attempt: the
+                    # `continue` skips the budget below entirely. Announced
+                    # before the sleep, because the announcement is the whole
+                    # point — a download that has gone quiet for a minute must
+                    # say why, and only the thread being throttled knows.
+                    throttles += 1
+                    wait = _throttle_wait_s(error, throttles)
+                    _note_throttle(wait, hub=self.re_resolvable)
+                    _throttle_sleep(self.stop, wait)
+                    continue
                 if error.code in (401, 403) and not refreshed and self.re_resolvable:
                     # `location` is a presigned CDN URL and a multi-hour
                     # download outlives it. Re-resolving does NOT count against
@@ -2202,6 +2378,12 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     if total is None:
         total = repo_total_bytes(model_id)
     identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+    # A notice left over from a PREVIOUS fetch is not about this one. It cannot
+    # happen in a download-only worker (one process, one download), but a
+    # resident worker fetches component models during requests, and a fetch that
+    # ended while a segment was still parked on a 429 would otherwise open the
+    # next row already claiming to be rate-limited.
+    _clear_throttle()
 
     def measured():
         """Bytes done right now, from whichever source is actually moving.
@@ -2219,7 +2401,16 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
         return disk
 
     def tick(**fields):
-        """One progress report that can carry a ✕ back. See the docstring."""
+        """One progress report that can carry a ✕ back. See the docstring.
+
+        A throttle notice WINS over the caller's `detail`. It is the one thing
+        the row can say that the caller does not know: "Fetching weights…" over
+        a download the Hub has parked is a true sentence that reads as a lie,
+        and the segment threads have no other way to reach this row.
+        """
+        notice = _throttle_detail()
+        if notice:
+            fields["detail"] = notice
         report_or_cancel(job=job, **identity, state="running", **fields)
         if job is not None and CANCEL.is_set():
             raise Cancelled()
