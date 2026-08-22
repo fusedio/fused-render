@@ -82,9 +82,12 @@ TRANSCRIBE = "transcribe"
 #: overall**: the mflux-only base-image edit option (`fused.ai.image({image})`,
 #: SPEC AI-9f) gave this table its first real rows since. The three diffusers
 #: image codes each refuse `image` for the identical reason: the diffusers
-#: pipeline's own image/edit signature is unverified on any machine this app
-#: has run on (D428's "out of scope" note), and a
-#: wrong guess there would be a broken engine that passes every test. All
+#: pipeline's own image/edit SIGNATURE is known (`Flux2KleinPipeline.
+#: __call__` takes `image` first, `list[PIL.Image.Image] | PIL.Image.Image |
+#: None = None`, with `image is None` the plain text-to-image path — read
+#: off the installed 0.39.0 source) but whether it RENDERS a correct edit is
+#: not, on any machine this app has run on (D428's "out of scope" note), and
+#: a wrong guess there would be a broken engine that passes every test. All
 #: three carry the SAME sentence because the fact is about the LIBRARY, not
 #: about the wheel — `diffusers-image-cuda` and `diffusers-image-rocm` read
 #: the identical pipeline class as the CPU row and would answer `image`

@@ -11,8 +11,10 @@ one engine, `parakeet-mlx`, that ever populated it for that call — both
 remaining speech-to-text runners, `mlx-whisper` and `faster-whisper`, answer
 every option `fused.ai.transcribe` takes) until the mflux-only base-image edit
 option gave it its first real rows: the three diffusers image codes each
-refuse `image`, because the diffusers pipeline's own editing signature is
-unverified on any machine this app has run on. What is pinned here now is
+refuse `image`, because whether the diffusers pipeline RENDERS a correct
+edit is unverified on any machine this app has run on — its call SIGNATURE
+is known (`Flux2KleinPipeline.__call__` takes `image` first, defaulting to
+None for a plain render). What is pinned here now is
 that the table stays VALID and the mechanism stays LIVE — for a table with
 real rows in it, not an empty one kept warm for a hypothetical.
 

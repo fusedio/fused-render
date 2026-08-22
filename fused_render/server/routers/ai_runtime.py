@@ -830,9 +830,11 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     # `image` (SPEC AI-9f): edit a base image instead of rendering from the
     # prompt alone. mflux-only — every diffusers image code refuses it, since
-    # that pipeline's own editing signature is unverified on any machine this
-    # app has run on (D413's own failure mode, reproduced inside mflux itself
-    # during the gate run: an image argument accepted and silently ignored).
+    # that pipeline's SIGNATURE is known (`Flux2KleinPipeline.__call__` takes
+    # `image` first, defaulting to None for a plain render) but whether it
+    # RENDERS a correct edit is not, on any machine this app has run on
+    # (D413's own failure mode, reproduced inside mflux itself during the
+    # gate run: an image argument accepted and silently ignored).
     image = body.get("image")
     image_path = None
     if image is not None:
