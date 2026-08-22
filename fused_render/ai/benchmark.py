@@ -423,6 +423,16 @@ def _measure_transcript(model: str, workload: Workload, job: str, *,
             "words": False,
             "out": os.path.join(tmp, "benchmark.json"),
             "outText": os.path.join(tmp, "benchmark.txt"),
+            # The row's identity, travelling into the worker exactly as
+            # `supervisor.start_transcribe` sends it — and for the identical
+            # reason, which is the one thing this path cannot do without.
+            # `generate_transcript` passes it to `_wait_ready(row=...)` and the
+            # worker restates it on every tick of a decode that runs in a
+            # DIFFERENT PROCESS; with it absent both are `None`, `upsert`
+            # refuses a first report with no title, and the row goes silent
+            # mid-decode. Sent rather than re-spelled there so the two cannot
+            # disagree about what this row is.
+            "row": row_fields(model),
         }
         start = _now()
         supervisor.generate_transcript(model, request, job)
@@ -448,14 +458,54 @@ _MEASURE = {
 }
 
 
-def _report(job: str, **fields) -> None:
-    """One progress tick on the benchmark's row, best-effort.
+def row_fields(model: str) -> dict:
+    """The benchmark row's IDENTITY, as opposed to its progress — restated on
+    every single report.
+
+    The same payload, and the same reason, as `supervisor.transcribe_row_fields`:
+    **any report may turn out to be a FIRST report.** `jobs._sweep` drops the
+    least recently updated running row once `MAX_JOBS` (64) bites, so a tick that
+    omits `title` does not update a row that is missing — `upsert` RAISES, and
+    `_report` swallows the raise, so the row simply never comes back. The rest of
+    the payload matters for the same reason one step down: `kind` defaults to
+    "task" but `cancellable` defaults to False, which would draw the manager's
+    DISMISS cross over a run whose ✕ actually works.
+
+    `state` is deliberately NOT here — the terminal report needs `done`/`error`/
+    `cancelled` and would have to override it, so every caller says its own.
+
+    `cancellable` is True because the ✕ is REAL on every phase of a benchmark:
+    `_load_to_ready` polls for it, and the image and transcription workers read
+    the same row themselves. It is the one field here that would be a lie if the
+    cancel were not honoured, which is why the poll and this flag landed together.
+    """
+    # `Benchmark: ` rather than the bare model id: the manager shows this row
+    # beside a DOWNLOAD of the same model and an UNLOAD of the same model, and
+    # three rows titled `mlx-community/Qwen3-8B-4bit` are one row as far as a
+    # reader is concerned.
+    return {"title": f"Benchmark: {model}"[:80], "kind": "task",
+            "cancellable": True, "unit": ""}
+
+
+def _report(job: str, model: str, **fields) -> None:
+    """One tick on the benchmark's row, carrying the row's identity, best-effort.
 
     Delegated to `supervisor._report` rather than reimplemented so a benchmark's
     ticks pass through the same swallow-everything guard every other AI progress
     report already does — reporting must never be the thing that breaks a run.
+
+    **`model` is not optional, and that is the whole point of this wrapper.** The
+    first cut reported `detail=` alone: `jobs.upsert` raises
+    `JobError("the first report for a job must include a 'title'")` for an id it
+    has never seen, `supervisor._report` swallows exactly that, and so every tick
+    of every benchmark went on the floor — including the image worker's own
+    per-step ticks, which are titleless too and were relying on this row already
+    existing. The `jobId` the endpoint returned named nothing, which defeated
+    `ModelProgress` and the documented `fused.watchJob(jobId)` contract at the
+    same time. Nothing about that failure was visible: no exception, no log line,
+    and a test double for `_report` cannot see it either.
     """
-    supervisor._report(job, **fields)
+    supervisor._report(job, **row_fields(model), **fields)
 
 
 def _load_to_ready(model: str, capability: str, job: str) -> float | None:
@@ -484,7 +534,19 @@ def _load_to_ready(model: str, capability: str, job: str) -> float | None:
         if _now() >= deadline:
             raise supervisor.SupervisorError(
                 f"{model} did not finish loading in time")
-        _report(job, detail=f"Loading {model}…")
+        # The ✕, read the same way `_wait_ready` reads it — and read HERE
+        # because this is the phase that can last an hour, so a cancel nobody
+        # polls for is an operable-looking button that does nothing for the
+        # whole download. The literal "cancelled" is the codebase's own signal
+        # (see `supervisor._failure_text`), which `run` switches on.
+        #
+        # A tri-state `None` — no row to ask — is deliberately NOT treated as a
+        # cancel: an evicted row is not a user pressing anything, and aborting a
+        # legitimate multi-GB pull on capacity pressure would be a worse failure
+        # than the one this guards. The tick below rebuilds the row.
+        if supervisor._cancel_state(job) is True:
+            raise supervisor.SupervisorError("cancelled")
+        _report(job, model, state="running", detail=f"Loading {model}…")
         time.sleep(_LOAD_POLL_S)
 
 
@@ -571,6 +633,15 @@ def run(model: str, capability: str, job: str) -> dict:
         "metrics": {},
     }
 
+    # The row is OPENED before anything else happens, with a title, because
+    # `jobs.upsert` refuses a first report that has none and `_report` swallows
+    # the refusal — so a benchmark that only ever ticked `detail=` reported
+    # nothing at all, and the `jobId` the endpoint handed back named a row that
+    # did not exist. Same ordering, and the same reason, as
+    # `supervisor.start_image` / `start_transcribe`.
+    _report(job, model, state="running", detail=f"Preparing {workload.name}…",
+            done=None, total=None)
+
     try:
         runner = registry.for_capability(capability)
         if runner is None:
@@ -579,25 +650,48 @@ def run(model: str, capability: str, job: str) -> dict:
                 or f"nothing here can run {capability}")
         record["runner"] = runner.code
 
-        _report(job, detail=f"Preparing {workload.name}…")
         record["loadSeconds"] = _load_to_ready(model, capability, job)
 
-        _report(job, detail="Warming up…")
+        _report(job, model, state="running", detail="Warming up…")
         measure(model, workload, job, timed=False)
 
-        _report(job, detail=f"Running {workload.name}…")
+        _report(job, model, state="running", detail=f"Running {workload.name}…")
         record["metrics"] = measure(model, workload, job, timed=True)
 
         record["peakResidentBytes"], record["device"] = _memory_and_device(
             model, capability)
         record["ok"] = True
+    except (KeyboardInterrupt, SystemExit):
+        # NOT a result, and not ours to swallow. A Ctrl-C on the dev server or
+        # an interpreter shutdown arriving on this threadpool thread is not a
+        # fact about the model, and recording it as `ok:false` would write a
+        # fake "this model failed on this laptop" row into the one history this
+        # feature exists to keep trustworthy. Re-raised because a
+        # `BaseException` handler that eats these is a process that will not go
+        # down when asked.
+        _report(job, model, state="cancelled")
+        raise
     except BaseException as e:  # noqa: BLE001 - every failure is a stored result
         # A `SupervisorError`, a dead worker, a `MemoryError` out of a runner:
         # all of them are the same kind of fact about this model on this
         # machine, and all of them belong in the history rather than only in the
         # log.
         record["ok"] = False
-        record["error"] = str(e) or e.__class__.__name__
+        record["error"] = supervisor._failure_text(e)
 
+    # **A cancelled run is not history.** The ✕ means the user stopped it, so
+    # nothing was measured — and `SupervisorError("cancelled")` is how the load
+    # wait, the image worker and the transcription worker all say so (the same
+    # literal `start_image`/`start_transcribe` switch on). Appending it would
+    # put a run reading "Failed — cancelled" on the chart, which is the fake
+    # datum problem again wearing a different word.
+    if record["error"] == "cancelled":
+        _report(job, model, state="cancelled")
+        return record
+
+    if record["ok"]:
+        _report(job, model, state="done", detail=f"{workload.name} finished")
+    else:
+        _report(job, model, state="error", message=record["error"] or "failed")
     bench_store.append(record)
     return record
