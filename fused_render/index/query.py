@@ -16,6 +16,7 @@ See specs/query.md.
 import logging
 import os
 import re
+import time
 
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
@@ -649,13 +650,21 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
              f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
              + " UNION ALL ".join(branches) + ")")
 
-    def pass_over(predicate: str):
+    def pass_over(predicate: str, name: str):
         """One candidate pass: `predicate` over every row under the root, coarse
         tier order, one row past the cap so "the cap bit" needs no count."""
+        t0 = time.monotonic()
         rows = con.execute(
             f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
             f"WHERE {predicate}{hidden} "
             f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
+        # DEBUG: stage A's own cost, per pass, separate from stage B's ranking
+        # and the gitignore filter below — this fires on every keystroke, so
+        # it stays DEBUG rather than something louder (same reasoning as the
+        # cap-bit line right after it).
+        logger.debug("index rank: stage A (%s) for %r under %s: %d row(s) "
+                    "in %.1fms", name, qs, root,
+                    len(rows), (time.monotonic() - t0) * 1000)
         if len(rows) > cap:
             # DEBUG, not WARNING: this fires on every keystroke of any broad
             # query — "a" and "e" alone exceed the cap on the substring pass —
@@ -683,12 +692,12 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     # escalation — a pass that filled the candidate cap already handed stage B
     # more coarsely-better rows than it can return, so widening the filter can
     # only push MORE of them out of the cap.
-    ranked, capped = pass_over(f"lrel LIKE '%{ql}%' ESCAPE '\\'")
+    ranked, capped = pass_over(f"lrel LIKE '%{ql}%' ESCAPE '\\'", "substring")
     escalated = False
     if not capped and len(ranked) < limit:
         escalated = True
         ranked, capped = pass_over(
-            f"regexp_matches(lrel, '{_subseq_regex(qs.lower())}')")
+            f"regexp_matches(lrel, '{_subseq_regex(qs.lower())}')", "subsequence")
     return {**base, "hits": ranked[:limit],
             "truncated": capped or len(ranked) > limit,
             "total": len(ranked[:limit]), "escalated": escalated}
