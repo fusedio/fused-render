@@ -293,14 +293,22 @@ def test_an_already_resident_model_records_a_null_load(bench, monkeypatch):
 def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: None)
+    pending = FakePending()
     monkeypatch.setattr(benchmark.supervisor, "_start_resident",
-                        lambda model, capability: ({"jobId": "j"}, FakePending()))
-    monkeypatch.setattr(benchmark.supervisor, "_workers", {})
+                        lambda model, capability: ({"jobId": "j"}, pending))
+    # The record still OWNS the capability, or the eviction branch answers first
+    # and this stops being a test about the timeout at all — which is exactly
+    # what had quietly happened.
+    monkeypatch.setattr(benchmark.supervisor, "_workers",
+                        {ai_registry.TEXT_GENERATION: pending})
     monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
     monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 0.0)
     record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert record["ok"] is False
-    assert "load" in record["error"].lower()
+    # The SENTENCE, not `"load" in ...` — which was also satisfied by
+    # "was unloaded before it could be used" and is what made the drift
+    # invisible when the eviction branch took this test over.
+    assert record["error"] == "some/text-model did not finish loading in time"
 
 
 # -- memory, device and the record itself ---------------------------------------
@@ -387,14 +395,35 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
     monkeypatch.setattr(
         benchmark.registry, "unavailable_reason",
         lambda cap: "needs Apple Silicon (this is linux/x86_64)")
-    loads = []
-    monkeypatch.setattr(benchmark.supervisor, "load",
-                        lambda *a, **k: loads.append(a))
+    # Two changes from the version that guarded nothing. It stubbed
+    # `supervisor.load`, which `_load_to_ready` no longer calls, so the list it
+    # asserted empty could never have been appended to. And the model was WARM,
+    # so no bring-up would have been attempted whatever the ordering — which
+    # makes the assertion vacuous a second way. `_start_resident` is the real
+    # seam, and the model is cold, so this now fails if the runner check ever
+    # moves below the load.
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker",
+                        lambda cap, model=None: None)
+    brought_up = []
+
+    def start_resident(model, capability):
+        # Records AND returns the real shape, so a regression fails on the
+        # assertion below rather than on a TypeError from the double — a stub
+        # that cannot survive being called tests the stub, not the code.
+        brought_up.append(model)
+        return {"jobId": "j"}, FakePending()
+
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident", start_resident)
+    monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 0.0)
     record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    # This one FIRST, so a regression reports the real problem rather than the
+    # downstream error message it produces.
+    assert brought_up == [], (
+        "a capability with no runner started a multi-GB bring-up before failing"
+    )
     assert record["ok"] is False
     assert "Apple Silicon" in record["error"]
     assert record["runner"] is None
-    assert loads == []
 
 
 # -- no job row of our own -----------------------------------------------------
@@ -765,11 +794,12 @@ def test_the_temp_audio_is_named_so_an_inherited_row_reads_as_a_benchmark(
     assert seen[-1].endswith(".wav")
 
 
-def test_closing_a_row_that_does_not_exist_creates_nothing(norows, monkeypatch):
-    """The terminal report is titleless ON PURPOSE: `jobs.upsert` refuses a first
-    report with no title and `supervisor._report` swallows the refusal, so it
-    closes a row that exists and cannot bring one into being. That is what keeps
-    the ordinary path row-free while the queued path gets tidied."""
+def test_a_text_run_creates_no_row_and_reaches_no_closer(norows, monkeypatch):
+    """The ordinary path stays row-free. It does not reach `_close_any_row` at
+    all — only the image and transcript paths do — which is why the property that
+    the terminal report cannot CREATE a row is pinned on a transcript run
+    instead, further down. This test used to claim that property and never call
+    the function."""
     record, _ = _text_run(norows, monkeypatch)
     assert record["ok"] is True
     assert jobs.list_jobs() == []
