@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
@@ -359,10 +360,95 @@ class _IgnoreOracle:
             self.proc = None
 
 
+# Memoizes `_repo_toplevel`'s answer, keyed on the exact path a caller passed
+# (the same convention `index_gitignore._cache` uses — callers already hand in
+# a canonical form, so a second canonicalization pass here would just be
+# redundant `os.path` work on every call). Every rank request calls
+# `_repo_toplevel` at least once, and TWICE when a query escalates to the
+# subsequence pass (`index/query.py`'s `pass_over` re-runs the whole gitignore
+# filter per pass) — and unmemoized, each of those is an uncached
+# `git rev-parse` spawn, the one unamortized subprocess cost left on the
+# keystroke path.
+#
+# Bounded like `index_gitignore._cache`, but larger: that cache is keyed on a
+# handful of configured INDEX roots, while this one is keyed on whatever path
+# a caller happens to ask about (a right-click target, a walk's start
+# directory) — plausibly every folder a user opens in one session. 256 keeps
+# that bounded without evicting the roots actually in active use; an eviction
+# only costs one repeated `rev-parse`, never a wrong answer.
+_TOPLEVEL_CACHE_SIZE = 256
+_toplevel_cache: "OrderedDict[str, tuple[float, str | None]]" = OrderedDict()
+_toplevel_lock = threading.Lock()
+
+# How long a `_repo_toplevel` answer may be trusted before git is asked again.
+#
+# Both shapes of cached answer can go stale in a way nothing here observes: a
+# `None` ("not a repo") goes stale the instant someone runs `git init`; a real
+# toplevel goes stale if the repository is moved or removed out from under it.
+# Time is the only thing that can bound either, which is the same posture
+# `index_gitignore.VERDICT_MAX_AGE_S` takes for an identical shape of problem
+# (an edited `.gitignore` no verdict pool can observe) — and the same value:
+# a few minutes of a stale answer costs far less than paying for a `rev-parse`
+# on every keystroke, and it is bounded rather than cached forever.
+_TOPLEVEL_MAX_AGE_S = 300.0
+
+
+def _reset_toplevel_cache() -> None:
+    """Drop every memoized `_repo_toplevel` answer. For tests."""
+    with _toplevel_lock:
+        _toplevel_cache.clear()
+
+
 def _repo_toplevel(path):
-    """The git work-tree root containing `path`, or None. One call per walk —
-    covers walking a SUBDIRECTORY of a repo, where no `.git` marker is ever
-    seen during the walk itself."""
+    """The git work-tree root containing `path`, or None. Memoized — see
+    `_TOPLEVEL_CACHE_SIZE` / `_TOPLEVEL_MAX_AGE_S` above — because callers
+    (the walk, `_is_repo_root`, the index's gitignore filter) ask about the
+    same handful of paths over and over on a single browsing session or a
+    single rank request escalated across both search passes."""
+    now = time.monotonic()
+    with _toplevel_lock:
+        cached = _toplevel_cache.get(path)
+        if cached is not None and (now - cached[0]) < _TOPLEVEL_MAX_AGE_S:
+            _toplevel_cache.move_to_end(path)
+            return cached[1]
+
+    # The actual spawn happens OUTSIDE the lock — it can take up to the 5s
+    # timeout under contention, and holding a module-global lock across that
+    # would serialize every caller in the app behind whichever one is
+    # currently blocked on git (the same reason `index_gitignore._pooled_verdicts`
+    # never holds its lock across a git call).
+    cacheable, top = _repo_toplevel_uncached(path)
+
+    if cacheable:
+        with _toplevel_lock:
+            _toplevel_cache[path] = (now, top)
+            _toplevel_cache.move_to_end(path)
+            while len(_toplevel_cache) > _TOPLEVEL_CACHE_SIZE:
+                _toplevel_cache.popitem(last=False)
+    return top
+
+
+def _repo_toplevel_uncached(path) -> "tuple[bool, str | None]":
+    """The uncached `rev-parse --show-toplevel`, one call per walk — covers
+    walking a SUBDIRECTORY of a repo, where no `.git` marker is ever seen
+    during the walk itself.
+
+    Returns `(cacheable, answer)`. Only two shapes are durable facts about
+    `path` and therefore safe to memoize: a successful toplevel, and the
+    ORDINARY negative (exit 128, "not a git repository"). Everything else is a
+    fact about git's current ability to answer, not about `path`, so it must
+    never be cached:
+
+    * `OSError` / `TimeoutExpired` — git could not be run RIGHT NOW (no
+      binary, an fd/process shortage, a slow disk tripping the timeout).
+      Caching that would let one blip freeze a wrong answer for the whole TTL.
+    * an ABNORMAL refusal (dubious ownership, a bad config, a deleted cwd) —
+      also transient in the sense that matters here: the environment can be
+      fixed (a `safe.directory` entry added, the config repaired) without
+      `path` itself changing at all, and a cached refusal would hide that fix
+      until the TTL expired. So this branch is treated the same as a spawn
+      failure, not as an answer about the path.
+    """
     try:
         proc = subprocess.run(
             [git_bin(), "-C", path, "rev-parse", "--show-toplevel"],
@@ -378,7 +464,7 @@ def _repo_toplevel(path):
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         _warn_git_unusable("rev-parse --show-toplevel", e)
-        return None
+        return False, None
     if proc.returncode != 0:
         # Exit 128 is BOTH "not a git repository" (ordinary, silent, and the
         # answer for most folders) and "detected dubious ownership" / "bad
@@ -388,9 +474,10 @@ def _repo_toplevel(path):
         if not _is_ordinary_negative(proc.stderr):
             _warn_git_refused("rev-parse --show-toplevel", path,
                               proc.returncode, proc.stderr)
-        return None
+            return False, None
+        return True, None
     top = os.fsdecode(proc.stdout.strip())
-    return top or None
+    return True, (top or None)
 
 
 def _canonical(path: str) -> str:
