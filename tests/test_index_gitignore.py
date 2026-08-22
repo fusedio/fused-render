@@ -78,9 +78,9 @@ def _counting_queries(monkeypatch):
     asked = []
     real = index_gitignore._ignored
 
-    def counting(root, entries, top, deciders, want):
+    def counting(root, entries, top, deciders, want, **kwargs):
         asked.append(sorted(entries[i]["rel"] for i in want))
-        return real(root, entries, top, deciders, want)
+        return real(root, entries, top, deciders, want, **kwargs)
 
     monkeypatch.setattr(index_gitignore, "_ignored", counting)
     return asked
@@ -678,3 +678,131 @@ def test_debug_logs_a_wait_on_someone_elses_inflight_sweep(tmp_path,
         filter_corpus(_out(root, rels), index_root=root)
     first.join(timeout=30)
     assert any("in-flight sweep" in r.message for r in caplog.records)
+
+
+# -- consolidation: one oracle instead of one per marker, ONLY when the -------
+# -- caller proved its marker discovery complete (`oracle_rels`) -------------
+
+def _counting_oracles(monkeypatch):
+    """Every root `_IgnoreOracle` was actually constructed with, one entry per
+    check-ignore co-process spawned — real oracles underneath, just counted."""
+    real = index_gitignore._IgnoreOracle
+    roots = []
+
+    class Counting(real):
+        def __init__(self, repo_root):
+            roots.append(repo_root)
+            super().__init__(repo_root)
+
+    monkeypatch.setattr(index_gitignore, "_IgnoreOracle", Counting)
+    return roots
+
+
+def test_supplied_oracle_rels_consolidate_to_one_oracle_at_root(
+        tmp_path, monkeypatch):
+    """The whole point of the fix: a caller that proved its marker discovery
+    complete (`oracle_rels`, e.g. the ranked search reading them out of the
+    whole index) gets ONE check-ignore co-process for the request, not one
+    per outermost marker."""
+    _fresh_cache(monkeypatch)
+    root = str(tmp_path)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    spawned = _counting_oracles(monkeypatch)
+    out = filter_corpus(_out(root, [
+        "a/.gitignore", "a/keep.py", "a/drop.log",
+        "b/.gitignore", "b/keep.py", "b/drop.tmp"]),
+        index_root=root, oracle_rels=["a", "b"])
+    assert spawned == [root]
+    rels = [e["rel"] for e in out["entries"]]
+    assert "a/drop.log" not in rels and "b/drop.tmp" not in rels
+    assert "a/keep.py" in rels and "b/keep.py" in rels
+
+
+def test_no_oracle_rels_still_spawns_one_oracle_per_marker(tmp_path, monkeypatch):
+    """The gate itself, pinned: WITHOUT a caller-supplied `oracle_rels`,
+    discovery keeps the ORIGINAL per-marker behaviour — one co-process per
+    outermost marker — even for a corpus shaped exactly like the one above
+    that consolidation collapses to one."""
+    _fresh_cache(monkeypatch)
+    root = str(tmp_path)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    spawned = _counting_oracles(monkeypatch)
+    filter_corpus(_out(root, [
+        "a/.gitignore", "a/keep.py", "a/drop.log",
+        "b/.gitignore", "b/keep.py", "b/drop.tmp"]))  # oracle_rels omitted
+    assert sorted(spawned) == sorted(
+        [str(tmp_path / "a"), str(tmp_path / "b")])
+
+
+def test_supplied_and_discovered_oracle_rels_agree_on_a_nested_corpus(
+        tmp_path, monkeypatch):
+    """Differential: the consolidated (`oracle_rels`-supplied) path and the
+    per-marker (discovery) path must call the exact same entries ignored for
+    a corpus with several nested and independent markers — a handful of
+    repos' worth of shape, not 300."""
+    root = str(tmp_path)
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / ".gitignore").write_text("*.outer\n", encoding="utf-8")
+    (tmp_path / "proj" / "sub").mkdir()
+    (tmp_path / "proj" / "sub" / ".gitignore").write_text(
+        "*.inner\n", encoding="utf-8")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / ".gitignore").write_text("*.oth\n", encoding="utf-8")
+    (tmp_path / "clean").mkdir()  # no .gitignore anywhere near it
+    rels = [
+        "proj/.gitignore", "proj/a.outer", "proj/keep.py",
+        "proj/sub/.gitignore", "proj/sub/a.inner", "proj/sub/a.outer",
+        "proj/sub/keep.py",
+        "other/.gitignore", "other/a.oth", "other/keep.py",
+        "clean/keep.py",
+    ]
+    _fresh_cache(monkeypatch)
+    discovered = filter_corpus(_out(root, rels))
+    _fresh_cache(monkeypatch)
+    consolidated = filter_corpus(
+        _out(root, rels), index_root=root,
+        oracle_rels=["proj", "proj/sub", "other"])
+    assert ([e["rel"] for e in discovered["entries"]]
+           == [e["rel"] for e in consolidated["entries"]])
+
+
+def test_consolidation_does_not_reach_above_a_narrower_search_root(
+        tmp_path, monkeypatch):
+    """A caller may rank-search a SUBFOLDER of the configured index root (the
+    ranked endpoint answers in-folder queries too, not only the home root).
+    `oracle_rels` is only ever complete for what lies UNDER that subfolder —
+    an ancestor `.gitignore` between the subfolder and the wider index root
+    is invisible to it, exactly as it is invisible to the per-marker path and
+    to the live walk (which derives its own repo boundary from the browsed
+    folder, never from a wider ancestor). Consolidating must graft at the
+    REQUEST's OWN root, not at the wider index root — grafting any higher
+    would cascade that ancestor rule in, which is over-filtering: hiding a
+    file the per-marker path (and the live walk) would have shown.
+    """
+    _fresh_cache(monkeypatch)
+    base = str(tmp_path)
+    (tmp_path / "proj").mkdir()
+    # The ANCESTOR marker: sits ABOVE the subfolder actually being searched.
+    (tmp_path / "proj" / ".gitignore").write_text(
+        "*.secret\n", encoding="utf-8")
+    (tmp_path / "proj" / "sub").mkdir()
+    # The subfolder's OWN marker: the only one `oracle_rels` can ever see.
+    (tmp_path / "proj" / "sub" / ".gitignore").write_text(
+        "*.log\n", encoding="utf-8")
+    sub_root = str(tmp_path / "proj" / "sub")
+    # oracle_rels exactly as `index/query.py:_ignore_roots` computes them:
+    # scoped to `.gitignore` files UNDER the searched subfolder only, so the
+    # ancestor's marker never appears in this list.
+    out = filter_corpus(_out(sub_root, [
+        ".gitignore", "a.log", "a.secret", "keep.py"]),
+        index_root=base, oracle_rels=[""])
+    rels = [e["rel"] for e in out["entries"]]
+    assert "a.log" not in rels     # the subfolder's own rule still applies
+    assert "a.secret" in rels      # the ancestor's rule must NOT leak in
+    assert "keep.py" in rels
