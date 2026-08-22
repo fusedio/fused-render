@@ -29,6 +29,7 @@ module-scope import of it would pass unnoticed here.
 `test_ai_worker_base.py::test_worker_base_imports_nothing_but_the_stdlib` is what
 enforces the rule, by reading the module's own imports out of its source.
 """
+import email.message
 import email.utils
 import hashlib
 import http.server
@@ -40,6 +41,7 @@ import socketserver
 import threading
 import time
 import types
+import urllib.error
 
 import pytest
 
@@ -220,8 +222,12 @@ def _start_server(payload, **flags):
              # fault — the server is asking us to wait — so it needs its own
              # flag rather than riding on `unauthorized`, whose whole answer is
              # to re-resolve.
+             # `ratelimit`: the IETF `RateLimit` header verbatim, which is what
+             # the Hub actually answers a 429 with — `Retry-After` is the shape
+             # other hosts use, so both are here and a test can send either,
+             # both, or neither.
              "throttle_first": 0, "throttled": 0, "retry_after": None,
-             "throttle_status": 429}
+             "ratelimit": None, "throttle_status": 429}
     state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -289,6 +295,8 @@ def _start_server(payload, **flags):
                 self.send_response(state["throttle_status"])
                 if state["retry_after"] is not None:
                     self.send_header("Retry-After", str(state["retry_after"]))
+                if state["ratelimit"] is not None:
+                    self.send_header("RateLimit", state["ratelimit"])
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -2698,13 +2706,20 @@ def test_a_long_run_of_throttles_does_not_fall_back(base, monkeypatch, tmp_path,
     not that claim. Sharing the budget with it meant a throttled download gave
     up after five attempts and fell into `snapshot_download` — slower, and with
     the resumable state deleted on the way.
+
+    A one-second reset each time, which is what the Hub names at the end of a
+    window, so twenty of them is twenty seconds of intended wait — well inside
+    `THROTTLE_TOTAL_MAX_S`, which is the bound that actually governs.
     """
     throttles = base.SEGMENT_ATTEMPTS * 4
-    url, _state = _start_server(payload, throttle_first=throttles, retry_after=0)
+    url, _state = _start_server(payload, throttle_first=throttles,
+                               ratelimit='"resolvers";r=0;t=1')
     _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
+    assert len(waits) == throttles and set(w for w, _ in waits) == {1.0}
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
 
 
@@ -2712,12 +2727,195 @@ def test_a_host_that_throttles_forever_still_gives_up_eventually(base, monkeypat
                                                                  tmp_path, payload):
     """The allowance is generous, not infinite: a segment parked on a 429 for the
     life of the process holds a pool slot no other chunk can use."""
-    url, _state = _start_server(payload, throttle_first=999, retry_after=0)
+    url, _state = _start_server(payload, throttle_first=999, retry_after=1)
     _one_segment(base, monkeypatch, tmp_path, url, payload)
     monkeypatch.setattr(base, "THROTTLE_ATTEMPTS", 3)
+    waits = _no_waiting(base, monkeypatch)
 
     with pytest.raises(RuntimeError, match="HTTP 429"):
         base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert len(waits) == 3, "the attempt bound stopped bounding the requests"
+
+
+def test_the_TOTAL_time_spent_throttled_is_what_is_bounded(base, monkeypatch,
+                                                           tmp_path, payload):
+    """The real guarantee, and the review finding that produced it: 60 attempts
+    at a 60-second ceiling is an hour of one segment sitting still, which is
+    precisely what the ceiling exists to prevent. The clock bounds it, and the
+    last wait is trimmed to what is left of the budget rather than overshooting
+    it."""
+    url, _state = _start_server(payload, throttle_first=999,
+                               ratelimit='"resolvers";r=0;t=60')
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "THROTTLE_TOTAL_MAX_S", 200.0)
+    waits = _no_waiting(base, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    spent = sum(seconds for seconds, _detail in waits)
+    assert spent == 200.0, waits
+    assert len(waits) == 4  # 60 + 60 + 60 + the 20 that was left
+
+
+def _headers(**fields):
+    """Response headers shaped like a real one — `email.message.Message`, which
+    is what `urllib` hands back and which looks up case-insensitively."""
+    message = email.message.Message()
+    for name, value in fields.items():
+        message[name.replace("_", "-")] = str(value)
+    return message
+
+
+def _throttle_error(status=429, **fields):
+    """The exception a throttled `urllib` request raises."""
+    return urllib.error.HTTPError("https://huggingface.co/org/m/resolve/main/f",
+                                  status, "Too Many Requests", _headers(**fields), None)
+
+
+class _RequestsShapedError(Exception):
+    """What `huggingface_hub` raises: the response beside the error, not in it.
+
+    Not a `urllib.error.HTTPError`, and that is the point — the throttle logic
+    has to read a status and headers off both shapes, and this file cannot import
+    `requests` to build the real thing (nor should `worker_base` be able to).
+    """
+
+    def __init__(self, status, **fields):
+        super().__init__(f"HTTP {status}")
+        self.response = types.SimpleNamespace(status_code=status,
+                                             headers=_headers(**fields))
+
+
+def test_the_hubs_own_RateLimit_header_is_what_is_honoured(base):
+    """The Hub does not send `Retry-After` at all. It rate-limits by request
+    count over five-minute fixed windows and answers a 429 with
+    `RateLimit: "resolvers";r=0;t=N` — `t` being the exact seconds left. Reading
+    only `Retry-After` meant guessing a backoff while the real answer sat unread
+    in the response, worse informed than hf's own fallback client."""
+    assert base._throttle_wait_s(
+        _throttle_error(RateLimit='"resolvers";r=0;t=42'), 1) == 42.0
+
+
+def test_the_RateLimit_reset_wins_over_a_Retry_After(base):
+    """Both present is not a conflict to split — the Hub's own header is the
+    precise one, and `Retry-After` is the shape other hosts use."""
+    assert base._throttle_wait_s(
+        _throttle_error(RateLimit='"resolvers";r=0;t=30', Retry_After=5), 1) == 30.0
+
+
+def test_the_bucket_that_is_actually_EXHAUSTED_names_the_wait(base):
+    """Several buckets arrive in one header and only one of them is why we are
+    being refused: `r=0`. Taking the wrong entry's `t` is a wait that has nothing
+    to do with the limit that was hit."""
+    header = '"api";r=100;t=280, "resolvers";r=0;t=17'
+    assert base._throttle_wait_s(_throttle_error(RateLimit=header), 1) == 17.0
+
+
+def test_a_RateLimit_header_it_cannot_read_falls_through(base):
+    """Tolerant, not clever: a structured field whose parameters this does not
+    understand must fall through to the next source rather than raise or invent a
+    zero. Each of these has a `Retry-After` behind it, and each must reach it."""
+    for header in ('"resolvers";r=0;t=abc', '"resolvers";r=0', '', 'nonsense',
+                   '"resolvers";r=0;t=-5'):
+        assert base._throttle_wait_s(
+            _throttle_error(RateLimit=header, Retry_After=7), 1) == 7.0, header
+
+
+def test_a_stated_wait_of_zero_still_waits(base):
+    """`t=0` means "the window resets about now", and taken literally it turned
+    the allowance into an immediate re-request loop against a host that had just
+    said it was over its limit. Both spellings of zero fall through to the
+    backoff, which is the floor."""
+    assert base._throttle_wait_s(_throttle_error(RateLimit='"resolvers";r=0;t=0'),
+                                 1) == base.RETRY_BACKOFF_S
+    assert base._throttle_wait_s(_throttle_error(Retry_After=0), 3) == \
+        base.RETRY_BACKOFF_S * 4
+
+
+def test_a_throttle_is_recognised_however_the_client_raised_it(base):
+    """The Hub calls go through `huggingface_hub`, which raises `requests`-shaped
+    errors; our own requests go through `urllib`. One server, one 429, and the
+    throttle logic reads both rather than existing twice."""
+    assert base._is_throttled(_RequestsShapedError(429)) is True
+    assert base._throttle_wait_s(
+        _RequestsShapedError(429, RateLimit='"resolvers";r=0;t=12'), 1) == 12.0
+    assert base._is_throttled(_RequestsShapedError(404)) is False
+    # And anything carrying no status at all is not a throttle, which is what
+    # lets `_throttled_retry` ask this of an arbitrary exception.
+    assert base._is_throttled(OSError("connection reset")) is False
+
+
+def test_progress_gives_the_throttle_allowance_back(base, monkeypatch):
+    """A long download over a busy link is throttled in BURSTS, and the allowance
+    is a claim about one burst.
+
+    Without the reset, the 61st 429 of a healthy multi-hour download — an hour
+    and several gigabytes after the 60th — became an ordinary fault and spent the
+    segment's retry budget falling into the fallback. `tries` has always reset on
+    the cursor moving; this is that rule one level up, and `_Throttle` is where
+    both halves of it live.
+    """
+    monkeypatch.setattr(base, "THROTTLE_ATTEMPTS", 2)
+    monkeypatch.setattr(base, "_throttle_sleep", lambda stop, seconds: None)
+    error = _throttle_error(Retry_After=1)
+    throttle = base._Throttle(hub=True)
+
+    assert throttle.wait(error) and throttle.wait(error)
+    assert throttle.wait(error) is False, "the burst allowance is not bounded"
+
+    throttle.progressed()
+
+    assert throttle.wait(error) is True, "bytes moved and the allowance stayed spent"
+
+
+def test_a_rate_limited_METADATA_call_is_waited_out_too(base, monkeypatch,
+                                                        tmp_path, payload):
+    """Where a Hub 429 realistically lands.
+
+    The Hub meters URLs containing a `/resolve/` segment; the ranged GETs go to
+    the presigned CDN location, which has none. So the metadata call is the
+    throttled one — and a 429 there raised straight out of `_segmented_fetch`,
+    taking the whole repo into the fallback with none of this waiting or any of
+    the disclosure, however patient the chunk loop was.
+    """
+    url, _state = _start_server(payload)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+    real = base._hub_file_meta
+    calls = []
+
+    def limited(repo_id, filename, revision):
+        calls.append(filename)
+        if len(calls) < 3:
+            raise _RequestsShapedError(429, RateLimit='"resolvers";r=0;t=9')
+        return real(repo_id, filename, revision)
+
+    monkeypatch.setattr(base, "_hub_file_meta", limited)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [9.0, 9.0]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_metadata_failure_that_is_NOT_a_throttle_is_not_retried(base, monkeypatch,
+                                                                  tmp_path, payload):
+    """The wrapper waits out rate limits and nothing else: a repo that is gone, a
+    socket that broke, a manifest that will not parse all have their own
+    handlers, and swallowing them into a retry loop would hide a real failure
+    behind a minute of "waiting"."""
+    url, _state = _start_server(payload)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+    monkeypatch.setattr(base, "_hub_file_meta", lambda *a: (_ for _ in ()).throw(
+        _RequestsShapedError(404)))
+
+    with pytest.raises(Exception, match="HTTP 404"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert waits == []
 
 
 def test_a_503_is_only_a_throttle_when_it_carries_a_retry_after(base, monkeypatch,
