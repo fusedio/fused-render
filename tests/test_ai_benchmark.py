@@ -16,6 +16,7 @@ on this laptop and on nothing in CI, so a test that let the registry answer
 would assert one thing here and another there.
 """
 import json
+import os
 import wave
 
 import pytest
@@ -270,13 +271,13 @@ def test_a_cold_model_records_the_seconds_it_took_to_load(bench, monkeypatch):
     def ready_worker(capability, model=None):
         return object() if states["ready"] else None
 
-    def load(model, capability, *, weights_only=False):
+    def start_resident(model, capability):
         bench.advance(8.5)
         states["ready"] = True
-        return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}
+        return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}, FakePending()
 
     monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
-    monkeypatch.setattr(benchmark.supervisor, "load", load)
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident", start_resident)
     monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
     record, _ = _text_run(bench, monkeypatch)
     assert record["loadSeconds"] == pytest.approx(8.5)
@@ -292,8 +293,9 @@ def test_an_already_resident_model_records_a_null_load(bench, monkeypatch):
 def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: None)
-    monkeypatch.setattr(benchmark.supervisor, "load",
-                        lambda model, capability, **kw: {"jobId": "j"})
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident",
+                        lambda model, capability: ({"jobId": "j"}, FakePending()))
+    monkeypatch.setattr(benchmark.supervisor, "_workers", {})
     monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
     monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 0.0)
     record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
@@ -395,9 +397,9 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
     assert loads == []
 
 
-# -- no job row at all ---------------------------------------------------------
+# -- no job row of our own -----------------------------------------------------
 #
-# **A benchmark deliberately creates no download-manager row.** Three rounds of
+# **A benchmark deliberately OPENS no download-manager row.** Three rounds of
 # trying produced three new defects, all of them the same root cause: server job
 # rows are a TITLE-KEYED global namespace (`useCacheScan.ts` maps
 # `job.title -> job`) with several consumers, and `supervisor.load` already owns
@@ -406,8 +408,9 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
 # the load instead of the benchmark and left a cold run spinning to its hour-long
 # timeout to record a phantom "did not finish loading in time".
 #
-# So the tab shows a plain in-tab spinner and the feature touches `jobs` nowhere.
-# This test is the guard on that, and it is why it asserts an ABSENCE.
+# So the tab shows a plain in-tab spinner. These tests are the guard on that, and
+# it is why they assert an ABSENCE. The one row a benchmark can INHERIT rather
+# than open — the transcribe queue's — has its own section further down.
 
 
 @pytest.fixture
@@ -442,12 +445,12 @@ def test_a_cold_run_creates_no_job_row_either(norows, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: object() if states["ready"] else None)
 
-    def load(model, capability, *, weights_only=False):
+    def start_resident(model, capability):
         norows.advance(8.5)
         states["ready"] = True
-        return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}
+        return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}, FakePending()
 
-    monkeypatch.setattr(benchmark.supervisor, "load", load)
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident", start_resident)
     monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
     record, _ = _text_run(norows, monkeypatch)
     assert record["loadSeconds"] == pytest.approx(8.5)
@@ -566,3 +569,207 @@ def test_a_system_exit_propagates_too(bench, monkeypatch):
     with pytest.raises(SystemExit):
         benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert bench_store.read() == []
+
+
+# -- the load wait watches the LOAD, not just the clock -------------------------
+#
+# Removing the job row removed the cancel poll with it, and left `_load_to_ready`
+# polling `ready_worker` alone. That is not enough, and the gap is not only about
+# a ✕: when `_bring_up` fails OR is cancelled it sets `state="error"` on the
+# pending record and DELETES it from `_workers`, so `ready_worker` returns None
+# forever. The wait then ran to `_LOAD_TIMEOUT_S` — an hour — holding the HTTP
+# request open, holding `_claim(capability)` so every other benchmark of that
+# capability 409'd for the hour, and finally recording
+# `ok:false, "<model> did not finish loading in time"`: a phantom "this model
+# failed here" in permanent history, which is exactly what this design exists to
+# prevent. So the wait polls the pending record the way `supervisor._wait_ready`
+# does.
+
+
+class FakePending:
+    """The two fields `_load_to_ready` reads off a pending `Worker`, plus the
+    identity `_workers` is checked against."""
+
+    def __init__(self):
+        self.state = "loading"
+        self.error = ""
+        self.detail = ""
+
+
+@pytest.fixture
+def loading(bench, monkeypatch):
+    """A cold model whose bring-up never becomes ready, with a pending record the
+    test can fail, cancel or evict. Returns `(clock, pending)`."""
+    pending = FakePending()
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker",
+                        lambda cap, model=None: None)
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident",
+                        lambda model, capability: ({"jobId": "j"}, pending))
+    # The table says this record still owns the capability unless a test says
+    # otherwise — the eviction check reads it.
+    monkeypatch.setattr(benchmark.supervisor, "_workers",
+                        {ai_registry.TEXT_GENERATION: pending})
+    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
+    # Generous, so a test that reaches the timeout has genuinely failed to notice
+    # the state change rather than merely raced it.
+    monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 600.0)
+    return bench, pending
+
+
+def test_a_load_that_fails_is_recorded_as_the_real_failure(loading, monkeypatch):
+    """Not "did not finish loading in time" an hour later — the loader's own
+    sentence, immediately. This half was masked before the row's removal and is
+    the more important one: a load fails far more often than it is cancelled."""
+    clock, pending = loading
+
+    def ready_worker(capability, model=None):
+        clock.advance(1.0)
+        # What `_bring_up`'s failure path leaves behind: state and error set, the
+        # record dropped from the table.
+        pending.state = "error"
+        pending.error = "the model process is gone"
+        benchmark.supervisor._workers.clear()
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert record["error"] == "the model process is gone"
+    assert "did not finish loading in time" not in (record["error"] or "")
+    # Recorded, because a load that genuinely fails IS a fact about this model on
+    # this machine — unlike a cancel.
+    assert [r["id"] for r in bench_store.read()] == [record["id"]]
+
+
+def test_a_cancelled_load_records_nothing(loading, monkeypatch):
+    """`_bring_up` reports a cancel as `state="error"` with the literal
+    "cancelled" (`_failure_text`), so it arrives down the same channel as a real
+    failure and has to be told apart from one — otherwise pressing the ✕ on the
+    load row writes "this model failed on this laptop"."""
+    clock, pending = loading
+
+    def ready_worker(capability, model=None):
+        clock.advance(1.0)
+        pending.state = "error"
+        pending.error = "cancelled"
+        benchmark.supervisor._workers.clear()
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert bench_store.read() == []
+
+
+def test_a_model_evicted_mid_load_says_so_rather_than_timing_out(loading,
+                                                                monkeypatch):
+    """Another model claimed the capability, or an unload landed. The record never
+    errored, so there is no better answer than what happened to it — and it must
+    not be an hour of silence either."""
+    clock, pending = loading
+
+    def ready_worker(capability, model=None):
+        clock.advance(1.0)
+        benchmark.supervisor._workers[ai_registry.TEXT_GENERATION] = FakePending()
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert "unloaded" in record["error"]
+
+
+def test_the_timeout_still_ends_a_wait_that_reports_nothing(loading, monkeypatch):
+    """The backstop survives: a bring-up that neither succeeds nor says it failed
+    is still bounded."""
+    clock, _pending = loading
+
+    def ready_worker(capability, model=None):
+        clock.advance(100.0)
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert "did not finish loading in time" in record["error"]
+
+
+def test_a_warm_model_never_asks_the_supervisor_to_load(bench, monkeypatch):
+    """The warm path must not have grown a bring-up: `_start_resident` EVICTS
+    whatever holds the capability, so calling it for a model already resident
+    would tear down the very worker about to be measured."""
+    starts = []
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident",
+                        lambda model, capability: starts.append(model))
+    record, _ = _text_run(bench, monkeypatch)
+    assert record["loadSeconds"] is None
+    assert starts == []
+
+
+# -- a row this benchmark did not open, and did not leave open ------------------
+#
+# The one place the "no job row" invariant is not ours to keep: a speech
+# benchmark queued behind a real transcription goes through
+# `supervisor._await_turn`, which reports `_transcribe_row(...)` — and that
+# payload CARRIES A TITLE, so `jobs.upsert` accepts it and a row really is
+# created under the private job id. Once it exists the worker's otherwise-refused
+# titleless ticks start landing on it, and with every terminal report removed
+# nothing ever closed it.
+#
+# These tests stand in for that path rather than driving the real transcribe lock
+# (which needs a worker): the fake creates the row exactly as `_await_turn`
+# would. The previous round's no-row tests all stubbed `generate_transcript`, so
+# none of them could see any of this.
+
+
+def test_a_row_inherited_from_the_transcribe_queue_is_closed(norows, monkeypatch):
+    seen = {}
+
+    def generate_transcript(model, request, job):
+        # Exactly what `_await_turn` does when the transcribe lock is held.
+        jobs.upsert({"id": job, "title": os.path.basename(request["path"]),
+                     "state": "running", "kind": "task", "cancellable": True,
+                     "unit": "s", "detail": "Queued behind another transcription…"},
+                    server=True)
+        seen["job"] = job
+        seen["title"] = os.path.basename(request["path"])
+        norows.advance(3.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    row = next((r for r in jobs.list_jobs() if r["id"] == seen["job"]), None)
+    assert row is not None, "the simulated queue row vanished; test is not testing"
+    assert row["state"] in ("done", "error", "cancelled"), (
+        "a row inherited from the transcribe queue was left running forever"
+    )
+
+
+def test_the_temp_audio_is_named_so_an_inherited_row_reads_as_a_benchmark(
+        bench, monkeypatch):
+    """The title that row gets is the AUDIO FILE's basename, which is the only
+    part of it this module controls. "benchmark.wav" could be a file the user
+    dropped in; this cannot."""
+    seen = []
+
+    def generate_transcript(model, request, job):
+        seen.append(os.path.basename(request["path"]))
+        bench.advance(3.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    assert seen[-1].startswith("fused-benchmark-")
+    assert seen[-1].endswith(".wav")
+
+
+def test_closing_a_row_that_does_not_exist_creates_nothing(norows, monkeypatch):
+    """The terminal report is titleless ON PURPOSE: `jobs.upsert` refuses a first
+    report with no title and `supervisor._report` swallows the refusal, so it
+    closes a row that exists and cannot bring one into being. That is what keeps
+    the ordinary path row-free while the queued path gets tidied."""
+    record, _ = _text_run(norows, monkeypatch)
+    assert record["ok"] is True
+    assert jobs.list_jobs() == []

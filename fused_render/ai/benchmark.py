@@ -58,6 +58,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 import fused_render
+from fused_render import jobs
 from fused_render.ai import bench_store, catalog, registry, supervisor
 
 
@@ -373,8 +374,15 @@ def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
             "seed": params["seed"],
             "out": os.path.join(tmp, "benchmark.png"),
         }
+        job = _unwatched_job()
         start = _now()
-        supervisor.generate_image(model, request, _unwatched_job())
+        try:
+            supervisor.generate_image(model, request, job)
+        finally:
+            # The image path has no queue and so inherits no row today; closing
+            # anyway costs one swallowed `JobError` and means the two long calls
+            # do not differ in a way somebody has to remember.
+            _close_any_row(job)
         total = _now() - start
     if not timed:
         return {}
@@ -405,7 +413,11 @@ def _measure_transcript(model: str, workload: Workload, *,
     params = workload.params
     seconds = float(params["audioSeconds"])
     with tempfile.TemporaryDirectory(prefix="fused-bench-") as tmp:
-        audio = os.path.join(tmp, "benchmark.wav")
+        # Named so that a row INHERITED from the transcribe queue reads as ours:
+        # `supervisor._transcribe_title` titles that row with this basename, and
+        # "benchmark.wav" is a name a user could plausibly have dropped in.
+        # `_close_any_row` closes it; this makes it legible while it is open.
+        audio = os.path.join(tmp, "fused-benchmark-tone.wav")
         _write_tone_wav(audio, seconds, int(params["sampleRate"]),
                         float(params["toneHz"]))
         request = {
@@ -416,8 +428,8 @@ def _measure_transcript(model: str, workload: Workload, *,
             "vad": False,
             "diarize": False,
             "words": False,
-            "out": os.path.join(tmp, "benchmark.json"),
-            "outText": os.path.join(tmp, "benchmark.txt"),
+            "out": os.path.join(tmp, "fused-benchmark-tone.json"),
+            "outText": os.path.join(tmp, "fused-benchmark-tone.txt"),
             # No `row`: that key is how a caller gives the worker a progress row
             # to restate its identity onto, and a benchmark has none by design
             # (see `run`). Without it the worker's ticks carry no title,
@@ -425,8 +437,15 @@ def _measure_transcript(model: str, workload: Workload, *,
             # refusal — so the decode runs and no row is created, which is
             # exactly what is wanted here.
         }
+        job = _unwatched_job()
         start = _now()
-        supervisor.generate_transcript(model, request, _unwatched_job())
+        try:
+            supervisor.generate_transcript(model, request, job)
+        finally:
+            # In a `finally`, because the row this closes is inherited on the
+            # QUEUED path — and a run that raises out of the queue (a cancel, a
+            # dead worker) is exactly when a row left running is most misleading.
+            _close_any_row(job)
         total = _now() - start
     if not timed:
         return {}
@@ -492,7 +511,32 @@ def _unwatched_job() -> str:
 
     Fresh per call, so two concurrent benchmarks cannot alias.
     """
-    return "sys:ai-benchmark-unwatched-" + secrets.token_hex(6)
+    # `jobs.SERVER_ID_PREFIX`, never the literal: the reserved prefix is what
+    # makes a row unwritable by a page, and it is minted in one place for the
+    # same reason every other `sys:` id in the app is.
+    return jobs.SERVER_ID_PREFIX + "ai-benchmark-unwatched-" + secrets.token_hex(6)
+
+
+def _close_any_row(job: str) -> None:
+    """Put a TERMINAL state on `job` if a row for it exists — and create nothing.
+
+    **Titleless on purpose, and that is the whole mechanism.** `jobs.upsert`
+    refuses a first report that carries no `title` and `supervisor._report`
+    swallows the refusal, so this closes a row that is already there and cannot
+    bring one into being. The ordinary path therefore stays row-free while the one
+    path that can INHERIT a row gets it tidied.
+
+    That path is a speech benchmark queued behind a real transcription:
+    `supervisor._await_turn` reports `_transcribe_row(...)`, which carries a
+    title, so a row really is created under the private job id — and once it
+    exists the worker's otherwise-refused titleless ticks start landing on it.
+    With no terminal report it then sat `running` until `jobs._sweep` evicted it.
+    Fixed here rather than in `supervisor.py`, which is byte-identical to main and
+    worth keeping that way.
+    """
+    supervisor._report(job, state="done")
+
+
 def _load_to_ready(model: str, capability: str) -> float | None:
     """Make `model` resident, returning the seconds it took — or `None` when it
     already was.
@@ -505,28 +549,71 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     function reports the wait onto a progress row this feature deliberately does
     not have, and it treats an eviction as a hard error, where here the wait is a
     phase of a benchmark that has to end up as an `ok:false` RECORD rather than
-    an exception on somebody else's bar. The load itself is still
-    `supervisor.load()`, so there is exactly one thing that brings a model up —
-    and `load` opens its OWN row, titled with the model id, which is the row a
-    user watches through a cold benchmark's download. That row is the reason a
-    benchmark must not open one of its own; see `run`.
+    an exception on somebody else's bar.
+
+    **It watches the pending RECORD, not only `ready_worker`, and that is not an
+    optimisation.** When `_bring_up` fails — or is cancelled through the ✕ on the
+    load's own row — it sets `state="error"` and an `error` message on the pending
+    worker and DELETES it from the table, so `ready_worker` answers None forever
+    and nothing else ever says why. Polling readiness alone therefore ran the
+    whole `_LOAD_TIMEOUT_S` (an hour), holding the HTTP request open, holding the
+    router's per-capability claim so every other benchmark of that capability was
+    refused for the hour, and finally recording
+    `ok:false, "did not finish loading in time"` — a phantom "this model failed
+    here", which is the single thing this feature's history must never contain.
+    A failed load is now the loader's OWN sentence, immediately, and a cancelled
+    one is not recorded at all.
+
+    `_start_resident` rather than `load()`: it is what `load()` calls for a
+    non-`weights_only` request and it hands back the pending record this loop
+    needs. So there is still exactly one thing that brings a model up — and it
+    opens its own row, titled with the model id, which is the row a user watches
+    through a cold benchmark's download, and the reason a benchmark must not open
+    one of its own (see `run`).
     """
     if supervisor.ready_worker(capability, model) is not None:
         return None
     start = _now()
-    supervisor.load(model, capability)
+    _started, pending = supervisor._start_resident(model, capability)
     deadline = start + _LOAD_TIMEOUT_S
     while True:
         if supervisor.ready_worker(capability, model) is not None:
             return _now() - start
+        # Both reads in ONE critical section, because `_bring_up`'s failure path
+        # WRITES them in one: it stamps the error on the record and drops the
+        # record from the table without releasing the lock between. Read apart, a
+        # waiter could catch the table already emptied and the error not yet
+        # written and report a phantom eviction for a load that failed with a real
+        # message. Same ordering, and the same reason, as `supervisor._wait_ready`.
+        with supervisor._lock:
+            state, error = pending.state, pending.error
+            evicted = supervisor._workers.get(capability) is not pending
+        if state == "error":
+            # `"cancelled"` is `supervisor._failure_text`'s literal for a ✕, so a
+            # cancel arrives down the same channel as a genuine failure and has to
+            # be told apart from one: a real failure is a fact about this model on
+            # this machine and belongs in the history, a cancel is not and does
+            # not.
+            if error == "cancelled":
+                raise Cancelled()
+            raise supervisor.SupervisorError(error or "the model failed to load")
+        if evicted:
+            # Genuinely taken away rather than broken: another model claimed the
+            # capability, or an unload landed. The record we hold never errored,
+            # so there is no better answer than what happened to it — and an hour
+            # of silence is a much worse one.
+            raise supervisor.SupervisorError(
+                f"{model} was unloaded before it could be used")
         if _now() >= deadline:
+            # The backstop, for a bring-up that neither succeeds nor says it
+            # failed. Reached now only by a genuinely stuck load rather than by
+            # every failed one.
             raise supervisor.SupervisorError(
                 f"{model} did not finish loading in time")
-        # No cancel poll and no progress tick: there is no row of ours to read a
-        # ✕ off or to report onto. The user is not blind through this phase —
-        # `supervisor.load` opened the model's own download row and the worker
-        # reports its bytes there — and that row's ✕ cancels the LOAD, which is
-        # the honest thing for it to do.
+        # No progress tick: there is no row of ours to report onto. The user is
+        # not blind through this phase — `_start_resident` opened the model's own
+        # download row and the worker reports its bytes there — and that row's ✕
+        # reaches this loop through `pending.state` above.
         time.sleep(_LOAD_POLL_S)
 
 
