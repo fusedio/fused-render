@@ -7569,6 +7569,43 @@ an AI Models page that could say what was on disk but not what was *running*.
   `test_every_shipped_platform_keeps_a_local_text_engine` over an enumerated
   platform table rather than left to be inferred — the coverage on Windows and
   Linux is now one runner deep, so a future removal has to argue with a test.
+- **AI-11i** **`recommended` is a SECOND curation axis on a catalog entry, and
+  the Playground is the only surface that filters on it: it draws the models
+  marked `recommended` plus the models this machine already has, and nothing
+  else** (D425). One curation, two surfaces that want different lengths of it.
+  The AI Models page is where someone SHOPS — its Local and Discover tabs answer
+  "what could I have on this disk", for which the whole shortlist's range (eight
+  text entries from 0.7GB to 20GB) is the point. The Playground is where someone
+  TRIES: they came to type a sentence, and five of those eight rows are a
+  multi-gigabyte download away from answering, which makes a sidebar of them a
+  procurement decision where a text box was wanted. So `catalog.py` marks a
+  handful per runner list — the quick one that answers on any machine, the one
+  worth real work, a second family to try a bad answer against — and
+  `/api/ai/catalog` carries the flag beside AI-11e's `source`/`downloaded`/
+  `loaded`, normalised to a bool on both halves so a consumer never has to read
+  absence as an answer. **False on every cached entry**, always: a
+  recommendation is a person's mark and nobody made one about a repo the user
+  found themselves — and it costs that repo nothing, since it is on the disk by
+  definition and the disk is the filter's other half.
+  **The disk half is what makes the filter safe rather than merely shorter**:
+  anything downloaded stays playable whether or not a curator ever marked it, and
+  `loaded` is in the predicate beside `downloaded` because the two are read from
+  different places (a live supervisor, a memoised scan) and a model answering
+  questions right now must not vanish from the sidebar during the window where
+  they disagree.
+  **It is NOT the default and does not touch the ordering.** `default` is still
+  position 0 and position 0 is still the smallest entry (AI-11a) — the flag is
+  deliberately not the `default: True` field that rule rejected, wearing a new
+  name. The two genuinely diverge in shipping curation: speech to text
+  recommends `small` and `turbo` while its default is the unrecommended
+  `tiny.en` above them, so the Playground's fallback is "the catalog default if
+  it is drawn, else the first row that is" — never a reordering of the curation
+  and never a curated model selected invisibly. A `?model=` link naming an
+  unoffered model falls back the same silent way (PT-9), rather than smuggling a
+  one-off row into a sidebar that would then differ per visitor. Each list must
+  mark at least one entry, pinned by a test: an unmarked list is an empty
+  Playground group on a fresh machine, which is the one state this filter must
+  not be able to produce.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every

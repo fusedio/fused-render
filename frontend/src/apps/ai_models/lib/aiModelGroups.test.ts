@@ -222,6 +222,11 @@ function curated(id: string, over: Partial<AiCatalogModel> = {}): AiCatalogModel
     // that started trusting them would fail here rather than in a release.
     downloaded: false,
     loaded: false,
+    // Ditto: `recommended` is the PLAYGROUND's filter (D425) and this page
+    // recommends the whole curated shortlist, so a seed of false here is the
+    // right kind of wrong — a reader that started filtering the Local tab on it
+    // would find these rows missing.
+    recommended: false,
     ...over,
   };
 }

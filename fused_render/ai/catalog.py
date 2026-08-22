@@ -98,6 +98,31 @@ from fused_render.ai import registry
 #: `short_label` and `family_label` are fields too (AI-2c): a stripped name
 #: is a value nobody owns and no test can see.
 #:
+#: **`recommended` IS A SECOND AXIS, AND IT IS THE ONLY ONE THE PLAYGROUND
+#: READS.** Absent on most entries and `True` on a few, opt-in: every entry here
+#: is a model this app stands behind on the AI Models page, and the marked subset
+#: is the shorter list the Playground offers — recommended-or-downloaded is what
+#: its sidebar draws (D425). The two surfaces want different lengths for the same
+#: curation. The AI Models page is a place to SHOP: eight text entries from 0.7GB
+#: to 20GB is the range someone comparing downloads needs, and its Local tab
+#: exists to say what a disk already holds. The Playground is a place to TRY,
+#: reached by someone who wants to type a sentence and see what comes back — and
+#: a sidebar of eight rows, five of which are a multi-gigabyte download away
+#: from answering, is a decision where a text box was wanted.
+#:
+#: **It is NOT "the best ones", and it is NOT the default.** `default_for()` is
+#: still position 0, still the smallest, and a recommended entry has no bearing
+#: on it — see the module docstring on why there is no `default: True` field and
+#: why reintroducing one under this name would be the same mistake wearing a new
+#: word. What the flag means is "a first thing to try": the quick one that
+#: answers on any machine, the one worth real work, and a second family to try a
+#: bad answer against. A 20GB model can be the best row in its list and still be
+#: a poor first click.
+#:
+#: **Each list needs at least one, and a test pins that** — an unmarked list
+#: leaves the Playground's group empty on a machine with nothing downloaded,
+#: which is the one state this filter must not produce.
+#:
 #: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
 #: sentences is a wall nobody reaches the end of — so each note carries the
 #: single thing that would change the choice and stops, with the rest left to
@@ -204,6 +229,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # still load it once.
         {
             "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+            "recommended": True,
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
             "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
@@ -212,6 +238,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
             "nickname": "Qwen3.5 4B",
             "size_gb": 4.0,
@@ -249,6 +276,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
+            "recommended": True,
             "label": "Gemma 4 E4B (4-bit)",
             "nickname": "Gemma 4 E4B",
             "size_gb": 5.2,
@@ -425,6 +453,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # this file's own "every line is somebody's answer" test.
         {
             "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+            "recommended": True,
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
             "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
@@ -434,6 +463,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.5-4B-Q4_K_M.gguf",
+            "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
             "nickname": "Qwen3.5 4B",
             "size_gb": 2.7,
@@ -442,6 +472,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "gemma-4-E4B-it-Q4_K_M.gguf",
+            "recommended": True,
             "label": "Gemma 4 E4B (Q4_K_M)",
             "nickname": "Gemma 4 E4B",
             "size_gb": 5.0,
@@ -489,6 +520,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "diffusers-image": [
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
+            "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
             "nickname": "FLUX.2 klein 4B",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
@@ -540,6 +572,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "mflux-image": [
         {
             "id": "mlx-community/FLUX.2-Klein-4B-4bit",
+            "recommended": True,
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
             "nickname": "FLUX.2 klein 4B",
             "size_gb": 4.6,
@@ -583,6 +616,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-small-mlx",
+            "recommended": True,
             "label": "Whisper small (MLX)",
             "nickname": "Whisper small",
             "size_gb": 0.5,
@@ -592,6 +626,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-large-v3-turbo",
+            "recommended": True,
             "label": "Whisper large-v3 turbo (MLX)",
             "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
@@ -640,6 +675,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Systran/faster-whisper-small",
+            "recommended": True,
             "label": "Whisper small (CT2)",
             "nickname": "Whisper small",
             "size_gb": 0.5,
@@ -648,6 +684,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
+            "recommended": True,
             "label": "Whisper large-v3 turbo (CT2)",
             "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
@@ -696,6 +733,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "transformers-embed": [
         {
             "id": "google/siglip2-base-patch16-384",
+            "recommended": True,
             "label": "SigLIP2 base (384px)",
             "size_gb": 1.5,
             "note": "The smallest here and what a bare embed call loads — "
@@ -704,6 +742,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "google/siglip2-so400m-patch14-384",
+            "recommended": True,
             "label": "SigLIP2 so400m (384px)",
             "size_gb": 4.6,
             "note": "Noticeably better matches than the base model, for three "
