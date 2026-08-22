@@ -712,6 +712,29 @@ def test_a_chat_turn_mid_tool_call_is_running(client, projects_dir, target):
     assert row["status"] == "in_progress"
 
 
+def test_a_chat_turn_pausing_for_thought_is_still_running(client,
+                                                          projects_dir,
+                                                          target):
+    """D420's same-day report: the board wore Done over a chat visibly
+    running tools. Mid-turn, the newest row is a thinking-only (or text-only)
+    block row for the whole length of the tool call it precedes; its
+    `stop_reason: tool_use` is what keeps the board honest."""
+    now = _now()
+    thinking = {"type": "assistant", "timestamp": _iso(now),
+                "cwd": str(target), "sessionId": "sess-chat",
+                "message": {"role": "assistant", "stop_reason": "tool_use",
+                            "content": [{"type": "thinking",
+                                         "thinking": "hmm"}]}}
+    _write_transcript(projects_dir, "sess-chat", str(target),
+                      [_user_rec("do the thing",
+                                 _iso(now - timedelta(seconds=6)),
+                                 "sess-chat", str(target)),
+                       thinking],
+                      mtime=time.time())
+    row = {t["key"]: t for t in _board(client)}["sess-chat"]
+    assert row["status"] == "in_progress"
+
+
 def test_a_scheduled_run_that_is_over_still_speaks(client, target, spawned,
                                                    projects_dir):
     """The verdict-None rule is for an OPEN turn only. A finished one still

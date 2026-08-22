@@ -317,10 +317,12 @@ def _now_ts():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _assistant(*blocks, ts=None):
+def _assistant(*blocks, ts=None, stop=None):
+    message = {"role": "assistant", "content": [{"type": b} for b in blocks]}
+    if stop is not None:
+        message["stop_reason"] = stop
     return {"type": "assistant", "timestamp": ts or _now_ts(),
-            "message": {"role": "assistant",
-                        "content": [{"type": b} for b in blocks]}}
+            "message": message}
 
 
 def test_a_reply_that_landed_ends_the_turn_the_moment_it_lands(client,
@@ -366,6 +368,31 @@ def test_an_assistant_still_calling_tools_is_a_turn_in_flight(client,
     _rows(path, {"type": "user", "timestamp": _now_ts()},
           _assistant("text", "tool_use"))
     assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_pause_for_thought_is_not_the_end_of_the_turn(client, projects_dir,
+                                                        tmp_path):
+    """THE ROW IS A BLOCK, NOT A REPLY (D420, from the board wearing Done over
+    a chat visibly running tools): the CLI writes each content block as its
+    own assistant row, so mid-turn the newest message is a thinking-only or
+    text-only row for the whole length of the tool call it precedes. Its
+    `stop_reason: tool_use` is what says the turn goes on."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, {"type": "user", "timestamp": _now_ts()},
+          _assistant("thinking", stop="tool_use"))
+    assert _liveness(client, path).json()["running"] is True
+    _rows(path, {"type": "user", "timestamp": _now_ts()},
+          _assistant("text", stop="tool_use"))
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_reply_stamped_end_turn_is_over_whatever_its_blocks(client,
+                                                              projects_dir,
+                                                              tmp_path):
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, {"type": "user", "timestamp": _now_ts()},
+          _assistant("text", stop="end_turn"))
+    assert _liveness(client, path).json()["running"] is False
 
 
 def test_a_turn_left_open_by_a_dead_process_does_not_shimmer_forever(

@@ -162,12 +162,24 @@ def transcript_turn_open(path: str, now: float) -> bool:
     So this reads the last MESSAGE instead of the clock. Walking the tail back
     to the newest `user`/`assistant` row:
 
-    * an **assistant** row with no `tool_use` block is a reply that finished —
-      the transcript's version of `_poll`'s `result`, and the same test that
-      makes `done` per-turn there,
-    * an **assistant** row carrying `tool_use`, or a **user** row (a prompt, or
-      a `tool_result` being fed back), is a turn still in flight,
+    * an **assistant** row whose `stop_reason` is `tool_use`, or a **user**
+      row (a prompt, or a `tool_result` being fed back), is a turn still in
+      flight,
+    * an **assistant** row with any other `stop_reason` (`end_turn`,
+      `stop_sequence`) is a reply that finished — the transcript's version of
+      `_poll`'s `result`, and the same test that makes `done` per-turn there,
     * no message at all in the tail is not evidence of one running.
+
+    `stop_reason`, NOT the row's content blocks, and the measurement is the
+    argument (D420, reported same-day from the board wearing Done over a
+    visibly working chat): the CLI writes each content block of a response as
+    its own `assistant` row, so mid-turn a thinking-only or text-only row is
+    the file's newest message for the whole length of the tool call it
+    precedes — thousands of such rows in this machine's transcripts, every
+    one stamped `stop_reason: tool_use`. Reading "no tool_use block" as "the
+    reply finished" declared the turn over at every pause for thought. The
+    block scan survives only as the fallback for a row with no `stop_reason`
+    at all.
 
     `now` still matters for exactly one thing: a turn that was OPEN when its
     process died stays open in the file forever — a terminal closed mid-reply
@@ -217,8 +229,14 @@ def transcript_turn_open(path: str, now: float) -> bool:
             return _row_fresh(obj)
         if kind != "assistant":
             continue   # attachments, mode records, housekeeping: not the reply
-        message = obj.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
+        message = obj.get("message") if isinstance(obj.get("message"), dict) \
+            else {}
+        stop = message.get("stop_reason")
+        if stop == "tool_use":
+            return _row_fresh(obj)   # tools coming: mid-turn, whatever block
+        if stop:
+            return False   # end_turn / stop_sequence: a reply that finished
+        content = message.get("content")
         if isinstance(content, list):
             return _row_fresh(obj) and any(
                 isinstance(b, dict) and b.get("type") == "tool_use"
