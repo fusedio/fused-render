@@ -199,6 +199,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // app with this AI" hands its model + tuned settings through here. Consumed
   // once and removed (replaceSearch, no history entry): a seed that survived
   // in the URL would re-stomp whatever the user typed on the next mount.
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const seed = params.get("seed");
@@ -207,6 +208,16 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     params.delete("seed");
     const search = params.toString();
     replaceSearch(location.pathname + (search ? "?" + search : ""));
+    // The seed ends mid-sentence ("The app I want: ") — put the person at the
+    // end of it, ready to finish it. After the render that paints the value:
+    // focusing first and selecting in the same tick reads a still-empty box.
+    requestAnimationFrame(() => {
+      const box = inputRef.current;
+      if (!box) return;
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+      box.scrollTop = box.scrollHeight;
+    });
   }, []);
 
   const busy = phase !== "idle";
@@ -253,6 +264,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     <div className="home-composer-wrap">
       <div className={"home-composer" + (busy ? " is-busy" : "")}>
         <TextArea
+          ref={inputRef}
           className="home-composer-input"
           placeholder="What do you want to build?"
           aria-label="What do you want to build?"
