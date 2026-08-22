@@ -725,6 +725,148 @@ def test_a_wire_name_is_left_alone_when_it_is_already_one(script):
     assert script.wire_name(os.path.join(root, "t", "v.json"), root) == "t/v.json"
 
 
+# -- --check: a read-only release gate against a live mirror ---------------------
+#
+# Reuses `mirror.py`'s own URL builders and validators rather than re-deriving
+# the URL shape or a second schema check — a drift check that accepted a
+# manifest the CLIENT would refuse would report a target PUBLISHED when
+# nothing that ever runs this code could read it, which is the exact
+# "reports green on an object nothing can read" failure this script exists to
+# rule out elsewhere.
+
+
+def _check_manifest(repo="org/m", commit=COMMIT, name="model.bin", size=100):
+    etag = hashlib.sha256(name.encode()).hexdigest()
+    return {"schema": 1, "repo": repo, "commit": commit, "complete": True,
+            "files": [{"name": name, "etag": etag, "size": size,
+                       "sha256": etag}]}
+
+
+def _check_file_manifest(repo="org/m", commit=COMMIT, filename="q.gguf",
+                         size=100):
+    etag = hashlib.sha256(filename.encode()).hexdigest()
+    return {"schema": 1, "repo": repo, "commit": commit,
+            "files": [{"name": filename, "etag": etag, "size": size,
+                       "sha256": etag}]}
+
+
+def test_check_reports_every_published_target_and_exits_zero(script, mirror_and_base,
+                                                              capsys):
+    mirror, _base = mirror_and_base
+    repo_manifest = _check_manifest(repo="org/m")
+    file_manifest = _check_file_manifest(repo="org/gguf", filename="q.gguf")
+    routes = {
+        "/models/org/m/manifest.json": json.dumps(repo_manifest).encode(),
+        "/models/org/gguf/files/q.gguf/manifest.json":
+            json.dumps(file_manifest).encode(),
+    }
+    _url, state = _start_server(b"", routes=routes)
+
+    code = script.check(state["origin"],
+                        [("org/m", None), ("org/gguf", "q.gguf")], mirror=mirror)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "org/m: published" in out
+    assert "org/gguf q.gguf: published" in out
+    assert "2/2 published" in out
+
+
+def test_check_names_the_missing_target_and_exits_nonzero(script, mirror_and_base,
+                                                           capsys):
+    """A target with no route at all is the mirror's ordinary 404 — the same
+    thing a suggested model that was never published looks like."""
+    mirror, _base = mirror_and_base
+    routes = {"/models/org/here/manifest.json":
+              json.dumps(_check_manifest(repo="org/here")).encode()}
+    _url, state = _start_server(b"", routes=routes)
+
+    code = script.check(state["origin"],
+                        [("org/here", None), ("org/gone", None)], mirror=mirror)
+
+    out = capsys.readouterr().out
+    assert code == 1, "a missing suggested target exited green"
+    assert "org/here: published" in out
+    assert "org/gone: MISSING" in out
+    assert "1/2 published" in out
+    assert "MISSING: org/gone" in out
+
+
+@pytest.mark.parametrize("broken, why", [
+    ({"complete": False}, "complete is false rather than absent"),
+    ({"complete": None}, "complete is missing entirely"),
+    ({"schema": 2}, "a schema version this build does not understand"),
+])
+def test_check_counts_a_manifest_the_client_would_reject_as_missing(
+        script, mirror_and_base, capsys, broken, why):
+    """Published bytes the client refuses to read are not "published" for any
+    purpose this gate serves — the whole reason it calls the client's OWN
+    validator instead of checking `schema`/`complete` itself."""
+    mirror, _base = mirror_and_base
+    payload = _check_manifest(repo="org/m")
+    payload.update({k: v for k, v in broken.items() if v is not None})
+    if broken.get("complete") is None and "complete" in broken:
+        del payload["complete"]
+    routes = {"/models/org/m/manifest.json": json.dumps(payload).encode()}
+    _url, state = _start_server(b"", routes=routes)
+
+    code = script.check(state["origin"], [("org/m", None)], mirror=mirror)
+
+    out = capsys.readouterr().out
+    assert code == 1, why
+    assert "org/m: MISSING" in out, why
+
+
+def test_check_never_touches_aws_or_huggingface_hub(script, mirror_and_base,
+                                                     monkeypatch, capsys):
+    """Read-only, by construction: no `aws` CLI, no `huggingface_hub`, no
+    write of any kind — the property that lets this run as a CI gate."""
+    mirror, _base = mirror_and_base
+
+    def no(*args, **kwargs):
+        raise AssertionError("--check shelled out or imported huggingface_hub")
+
+    monkeypatch.setattr(script.subprocess, "run", no)
+    monkeypatch.setattr(script.shutil, "which", no)
+    routes = {"/models/org/m/manifest.json":
+              json.dumps(_check_manifest(repo="org/m")).encode()}
+    _url, state = _start_server(b"", routes=routes)
+
+    assert script.check(state["origin"], [("org/m", None)], mirror=mirror) == 0
+
+
+def test_the_cli_check_flag_runs_the_gate(script, monkeypatch, capsys):
+    """`--check BASE_URL` end to end through `main`, with an explicit target
+    list so nothing here needs `catalog`."""
+    routes = {"/models/org/m/manifest.json":
+              json.dumps(_check_manifest(repo="org/m")).encode()}
+    _url, state = _start_server(b"", routes=routes)
+
+    def no(*args, **kwargs):
+        raise AssertionError("--check touched the cache or shelled out")
+
+    monkeypatch.setattr(script, "default_cache", no)
+    monkeypatch.setattr(script.subprocess, "run", no)
+
+    code = script.main(["--check", state["origin"], "--model", "org/m"])
+
+    assert code == 0
+    assert "org/m: published" in capsys.readouterr().out
+
+
+def test_the_check_flag_needs_no_model_argument_and_uses_the_suggested_list(
+        script, monkeypatch, capsys):
+    """No `--model` at all still resolves to `suggested_targets()`, exactly
+    like the publish path — `--check` with nothing else is the release-gate
+    invocation from the brief."""
+    monkeypatch.setattr(script, "suggested_targets",
+                        lambda: [("org/never-published", None)])
+
+    code = script.main(["--check", "http://127.0.0.1:1"])
+
+    assert code == 1
+
+
 def test_these_tests_cannot_reach_the_network():
     """The imported guard, asserted here too — see the import comment.
 

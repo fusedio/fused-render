@@ -359,6 +359,54 @@ def _exists(target: str, run) -> bool:
     return done.returncode == 0 and bool((done.stdout or b"").strip())
 
 
+def check(base: str, targets: list[tuple], mirror=None) -> int:
+    """A read-only drift check: does `base` actually hold every target?
+
+    For each `(repo_id, filename)` target, fetches its manifest over plain
+    HTTP and hands it to `mirror.py`'s OWN validator — not a re-derivation of
+    the URL shape or a second schema check. Those two things are kept in one
+    place on purpose: a drift check that accepted a manifest the CLIENT would
+    refuse is worse than no check at all, because it reports a target
+    PUBLISHED when nothing that ever runs this code could read it — the same
+    silent-and-permanent failure class the rest of this script exists to rule
+    out (see `_FILENAME` above and `mirror.validate_manifest`'s own docstring).
+
+    `mirror` is injectable so a test can hand in a fresh module import rather
+    than the real one this loads lazily — the same reason `suggested_targets`
+    imports `catalog` lazily rather than at module scope, so that reading a
+    cache still needs nothing but the stdlib when this mode is not used.
+
+    Read-only by construction: it calls nothing but `mirror.fetch_json`,
+    `mirror.manifest_url`/`file_manifest_url` and the two validators — no
+    `aws` CLI, no `huggingface_hub`, no write of any kind.
+    """
+    if mirror is None:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from fused_render.ai.runners import mirror  # noqa: F811 (deliberate shadow)
+    missing = []
+    for repo_id, filename in targets:
+        label = repo_id if filename is None else f"{repo_id} {filename}"
+        if filename is None:
+            payload = mirror.fetch_json(mirror.manifest_url(repo_id, base=base))
+            valid = mirror.validate_manifest(payload, repo_id)
+        else:
+            payload = mirror.fetch_json(
+                mirror.file_manifest_url(repo_id, filename, base=base))
+            valid = mirror.validate_file_manifest(payload, repo_id, filename)
+        if valid is None:
+            print(f"{label}: MISSING")
+            missing.append(label)
+            continue
+        total = sum(entry["size"] for entry in valid["files"])
+        print(f"{label}: published @ {valid['commit'][:12]} — "
+              f"{len(valid['files'])} files, {total / 1e9:.2f} GB")
+    published = len(targets) - len(missing)
+    print(f"{published}/{len(targets)} published")
+    if missing:
+        print(f"MISSING: {', '.join(missing)}")
+    return 1 if missing else 0
+
+
 def suggested_ids() -> list[str]:
     """The curated list, from the app rather than from a copy of it."""
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -392,6 +440,25 @@ def suggested_targets() -> list[tuple]:
     return targets
 
 
+def _resolve_targets(args, parser) -> list[tuple]:
+    """The `(repo_id, filename)` targets `args` names — shared by every mode.
+
+    `--check` needs exactly the same targets the publish loop does (every
+    suggested model by default, or an explicit `--model`/`--file`), so this is
+    pulled out rather than duplicated — two copies of "what does `--file`
+    without `--model` mean" is how they come to disagree.
+    """
+    if args.files:
+        # `--file` names a file OF a repo, and of ONE repo: spread over the
+        # suggested list it would ask every model for somebody else's GGUF.
+        if not args.models or len(args.models) != 1:
+            parser.error("--file needs exactly one --model")
+        return [(args.models[0], filename) for filename in args.files]
+    if args.models:
+        return [(repo_id, None) for repo_id in args.models]
+    return suggested_targets()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cache", default=None,
@@ -408,19 +475,20 @@ def main(argv=None) -> int:
                         help="write each manifest into this directory as well")
     parser.add_argument("--upload", default=None, metavar="S3URI",
                         help="upload instead of only printing the plan")
+    parser.add_argument("--check", default=None, metavar="BASE_URL",
+                        help="read-only: fetch each target's manifest from "
+                             "BASE_URL over HTTP through the client's own "
+                             "reader, report published/missing, and exit "
+                             "non-zero if anything suggested is missing. "
+                             "Never uploads; needs neither aws nor "
+                             "huggingface_hub")
     args = parser.parse_args(argv)
 
+    targets = _resolve_targets(args, parser)
+    if args.check is not None:
+        return check(args.check, targets)
+
     cache = args.cache or default_cache()
-    if args.files:
-        # `--file` names a file OF a repo, and of ONE repo: spread over the
-        # suggested list it would ask every model for somebody else's GGUF.
-        if not args.models or len(args.models) != 1:
-            parser.error("--file needs exactly one --model")
-        targets = [(args.models[0], filename) for filename in args.files]
-    elif args.models:
-        targets = [(repo_id, None) for repo_id in args.models]
-    else:
-        targets = suggested_targets()
     failed = []
     for repo_id, filename in targets:
         label = repo_id if filename is None else f"{repo_id} {filename}"

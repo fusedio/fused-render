@@ -6225,7 +6225,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   skipped is a non-zero exit** — the loop stays tolerant so one absent model does
   not stop the other nineteen, but publishing 19 of 20 green is how a suggested
   model goes missing from the mirror unnoticed, since its download quietly staying
-  on the Hub is invisible by design. **Windows fetches from the mirror like every other platform**, and that is a
+  on the Hub is invisible by design. The generator's companion, `--check
+  BASE_URL`, is the read-only half of that same guarantee applied to a LIVE
+  mirror rather than a local cache: it fetches every suggested target's
+  manifest over plain HTTP and hands it to the client's own
+  `mirror.validate_manifest`/`validate_file_manifest` rather than re-checking
+  `schema`/`complete` itself, on the same reasoning as the round-trip test
+  above — a drift check that accepted a manifest the runtime client would
+  refuse would report a target published when nothing that ever runs that
+  code could read it. It needs neither `aws` nor `huggingface_hub` and writes
+  nothing, so it is meant to gate a release the way the version bump in
+  `making-a-release` does. **Windows fetches from the mirror like every other platform**, and that is a
   change from how this shipped. The mirror's only transport is
   `_segmented_fetch`, which used to refuse outright without `os.pwrite`, so a
   win32 client made the one manifest request, declined, and took the Hub path
