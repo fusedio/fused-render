@@ -48,7 +48,8 @@ import threading
 from fastapi import APIRouter, Body, Header
 
 from fused_render.ai import bench_store, benchmark, catalog
-from fused_render.ai.hub_cache import cached_models
+from fused_render.ai.hub_cache import cached_models, is_downloaded
+from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -85,19 +86,39 @@ def _claim(capability: str):
 def _benchmarkable_models(capability: str) -> set[str]:
     """Every model id this machine may benchmark for `capability`.
 
-    The union of what is ON DISK and what this app CURATES for the capability,
-    which is the same union the Local tab's rows are built from — a benchmark
-    must be offerable for exactly the things the page lists and nothing else.
+    **Every id here is one whose bytes are actually on this disk.** The first cut
+    unioned the disk with `catalog.for_capability(capability)` and stopped there,
+    which defeated the guard entirely: that function is the CURATION (see
+    `catalog.py` — "Curated, not fetched"), it has no filesystem awareness at
+    all, so every recommended repo id passed and a Run press became a silent
+    multi-GB `supervisor.load()` inside a request held open for up to
+    `_LOAD_TIMEOUT_S`. The 404 this module's docstring promises never fired for
+    exactly the ids most likely to be pressed.
 
-    Both halves are needed, and neither alone would do. The disk answers for a
-    repo somebody fetched from the Discover tab, which no curation can know
-    about. The catalog answers for the llamacpp rows, whose ids are bare `.gguf`
-    FILENAMES rather than repo ids (AI-5m) and so never appear as a cached
-    `repo_id` at all — checking only the disk would refuse every curated GGUF.
+    So the catalog is consulted for the SHAPE of an id, never as evidence that it
+    is here. It is needed for one reason only: `llamacpp-text`'s curated ids are
+    bare `.gguf` FILENAMES rather than repo ids (AI-5m), so they can never appear
+    as a cached `repo_id` and a disk-only check would refuse every curated GGUF.
+    `hub_cache.is_downloaded` is what resolves those through the recipe's
+    `(repo, file)` pair — asked rather than re-derived, because a third copy of
+    that rule is how this bug happened in the first place.
+
+    A capability's curated list is still the filter on WHICH ids the catalog half
+    may contribute, so a curated speech model cannot be benchmarked as a text
+    one. And a partly downloaded repo is absent from `cached_models()` already
+    (D424), so nothing here can resume a stopped fetch.
     """
-    on_disk = {model.repo_id for model in cached_models()}
-    catalogued = {entry["id"] for entry in catalog.for_capability(capability)}
-    return on_disk | catalogued
+    cached = cached_models()
+    admitted = {model.repo_id for model in cached}
+    for entry in catalog.for_capability(capability):
+        entry_id = entry.get("id")
+        # Only the filename-shaped ids have anything to add: a curated REPO id is
+        # already in `admitted` if it is here, and if it is not, it is not
+        # benchmarkable. Guarding on the recipe keeps that explicit rather than
+        # resting on `is_downloaded` happening to agree.
+        if entry_id in formats.GGUF_RECIPES and is_downloaded(entry_id, cached):
+            admitted.add(entry_id)
+    return admitted
 
 
 def _history() -> dict:
