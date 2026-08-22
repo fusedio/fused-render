@@ -23,7 +23,7 @@ different claim** (AI-5m):
 `llama_text.download` fetches a single GGUF out of a repo that publishes dozens
 of quantizations — `unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB
 file — and the manifest above cannot serve that, because it has to ASSERT it
-lists the whole repo at the commit (`complete: true`, see `_validated`) and
+lists the whole repo at the commit (`complete: true`, see `validate_manifest`) and
 earning that assertion would mean mirroring all of it. So there is a second
 reader, `file_manifest`, with its own document and its own claim: exactly one
 named file, and no completeness claim at all. What makes dropping the claim safe
@@ -118,20 +118,28 @@ _FILENAME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 MAX_FILENAME_CHARS = 256
 
 
-def base_url():
-    """The mirror's base URL, or `""` for "there is no mirror".
+def _valid_base(raw):
+    """`raw`, normalised and scheme-checked, or `""` if it cannot be a mirror.
 
     The scheme is checked HERE rather than left to `urlopen`, which happily
     opens `file://` and would then read a local path in answer to what looks
-    like a network request.
+    like a network request. Pulled out of `base_url` so a caller that already
+    HAS a base URL — `scripts/build_model_mirror.py --check` is given one on
+    the command line, not through `FUSED_MODEL_MIRROR` — gets the identical
+    check rather than a second copy of it.
     """
-    base = (_env(BASE_ENV) or "").strip().rstrip("/")
+    base = (raw or "").strip().rstrip("/")
     if not base:
         return ""
     parts = urllib.parse.urlsplit(base)
     if parts.scheme not in _ALLOWED_SCHEMES or not parts.netloc:
         return ""
     return base
+
+
+def base_url():
+    """The mirror's base URL, or `""` for "there is no mirror"."""
+    return _valid_base(_env(BASE_ENV))
 
 
 def allowed(model_id):
@@ -146,15 +154,21 @@ def allowed(model_id):
     return bool(base_url()) and _env(OK_ENV) == model_id
 
 
-def manifest_url(model_id):
-    """Where this repo's manifest lives, or `""` if there is no mirror."""
-    base = base_url()
+def manifest_url(model_id, base=None):
+    """Where this repo's manifest lives, or `""` if there is no mirror.
+
+    `base`, when given, is used INSTEAD of `FUSED_MODEL_MIRROR` — for a caller
+    that is not a runner and has its own base URL to check against (a release
+    gate given one on the command line), rather than the env-gated default
+    every in-app caller uses.
+    """
+    base = base_url() if base is None else _valid_base(base)
     if not base or not _REPO_ID.match(model_id or ""):
         return ""
     return f"{base}/models/{model_id}/manifest.json"
 
 
-def file_manifest_url(model_id, filename):
+def file_manifest_url(model_id, filename, base=None):
     """Where ONE file's manifest lives, or `""` if it cannot be addressed.
 
     `filename` becomes a URL path SEGMENT here and a filesystem name later, so
@@ -162,8 +176,10 @@ def file_manifest_url(model_id, filename):
     climbs the key space, and `?` or `#` truncate the rest of the path so that
     some other object answers for this one. `""` rather than an exception,
     because every way of not having a mirror reads the same to the caller.
+
+    `base` overrides `FUSED_MODEL_MIRROR`, as in `manifest_url` above.
     """
-    base = base_url()
+    base = base_url() if base is None else _valid_base(base)
     if not base or not _REPO_ID.match(model_id or ""):
         return ""
     if not _safe_filename(filename):
@@ -171,14 +187,16 @@ def file_manifest_url(model_id, filename):
     return f"{base}/models/{model_id}/files/{filename}/manifest.json"
 
 
-def blob_url(model_id, commit, etag):
+def blob_url(model_id, commit, etag, base=None):
     """Where one blob lives. Commit-pinned, and therefore immutable.
 
     That is what lets a blob be cached forever while the manifest above stays
     short-TTL: a re-upload lands under a new commit, so no old URL can ever be
     made to serve different bytes than it served before.
+
+    `base` overrides `FUSED_MODEL_MIRROR`, as in `manifest_url` above.
     """
-    base = base_url()
+    base = base_url() if base is None else _valid_base(base)
     if not base:
         return ""
     return f"{base}/models/{model_id}/{commit}/{etag}"
@@ -195,10 +213,10 @@ def manifest(model_id):
     """
     if not allowed(model_id):
         return None
-    payload = _fetch_json(manifest_url(model_id))
+    payload = fetch_json(manifest_url(model_id))
     if payload is None:
         return None
-    return _validated(payload, model_id)
+    return validate_manifest(payload, model_id)
 
 
 def file_manifest(model_id, filename):
@@ -210,7 +228,7 @@ def file_manifest(model_id, filename):
     lists the repo whole. Two claims, two readers, so relaxing this one cannot
     relax that one.
 
-    **And this one has no completeness assertion to make.** `_validated`
+    **And this one has no completeness assertion to make.** `validate_manifest`
     requires `complete: true` not for tidiness but because of what its caller
     does next: `_mirror_snapshot` writes an AI-5k fetch record from the
     manifest's own file list, so an incomplete manifest would record a subset as
@@ -226,10 +244,10 @@ def file_manifest(model_id, filename):
     """
     if not allowed(model_id) or not _safe_filename(filename):
         return None
-    payload = _fetch_json(file_manifest_url(model_id, filename))
+    payload = fetch_json(file_manifest_url(model_id, filename))
     if payload is None:
         return None
-    return _validated_file(payload, model_id, filename)
+    return validate_file_manifest(payload, model_id, filename)
 
 
 def file_meta(model_id, man):
@@ -262,12 +280,16 @@ def file_meta(model_id, man):
 # ------------------------------------------------------------------ validation
 
 
-def _fetch_json(url):
+def fetch_json(url):
     """One manifest request, or None. The whole network half of this module.
 
     Shared by both readers so that the cap, the timeout, the identity encoding
     and the "every failure is None" rule are stated once — a second copy is how
-    one reader comes to be missing a guard the other has.
+    one reader comes to be missing a guard the other has. Public (no leading
+    underscore) because it consults no env var and gates on nothing — a caller
+    that already has a URL of its own (`scripts/build_model_mirror.py --check`)
+    can drive the exact same request the client makes, rather than a copy of
+    this function that could drift from it.
     """
     if not url:
         return None
@@ -335,8 +357,17 @@ def _safe_etag(etag):
             and bool(_HEX.match(etag)))
 
 
-def _validated(payload, model_id):
+def validate_manifest(payload, model_id):
     """The manifest as this build uses it, or None.
+
+    Public alias for what `manifest()` above calls internally, so a caller that
+    already has a payload of its own — fetched with its own base URL rather
+    than through `FUSED_MODEL_MIRROR` — gets the SAME schema check the runtime
+    client applies, not a second implementation of it. That matters more than
+    convenience: a drift check
+    (`scripts/build_model_mirror.py --check`) that accepted a manifest this
+    validator refuses would report a target published when nothing that ever
+    runs this code can actually read it.
 
     Normalised on the way through — the caller gets `{"commit", "files"}` with
     every entry already checked — so no reader downstream has to ask whether a
@@ -390,10 +421,14 @@ def _validated(payload, model_id):
     return {"commit": commit, "files": validated}
 
 
-def _validated_file(payload, model_id, filename):
+def validate_file_manifest(payload, model_id, filename):
     """The per-file manifest as this build uses it, or None (AI-5m).
 
-    Same shape out as `_validated` — `{"commit", "files"}` — so `file_meta` and
+    Public alias for what `file_manifest()` above calls internally — see
+    `validate_manifest`'s docstring for why a caller with its own payload gets
+    this function rather than a copy of it.
+
+    Same shape out as `validate_manifest` — `{"commit", "files"}` — so `file_meta` and
     `_segmented_fetch` cannot tell the two documents apart, and the same field
     vocabulary going in. Two differences, both deliberate:
 
