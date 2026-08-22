@@ -485,6 +485,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             icon={AI_MODELS_ICON}
             active={aiModelsActive}
             extra={residentDot}
+            trailing={
+              // Beta while the surface (playground foremost) is still settling —
+              // the chip skin is the shared one, the modifier only recolours it.
+              <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+            }
           />
         </div>
         <BookmarksSection />
