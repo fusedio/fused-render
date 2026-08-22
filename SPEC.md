@@ -7780,17 +7780,52 @@ an AI Models page that could say what was on disk but not what was *running*.
     progress still flows to a job row, so the page is not blind. A run also
     refuses a capability with no workload (400) and a model this machine does not
     hold (404): a button press must not become a silent multi-GB download.
-  - **AI-14h** **A run that FAILED is a result, and it is stored.** "This model
-    OOMs on this laptop" is exactly what somebody benchmarks to find out, so a
-    raising runner is recorded as `ok: false` with the message and appears in the
-    history beside the successful runs; its `metrics` is empty rather than a dict
-    of nulls. The HTTP status describes the request, `ok` describes the model — a
-    failed run is a 200.
-  - **AI-14i** **Bounded by a hard run cap, not by a ring.** Unlike AI-12c's
-    fixed bucket ring, runs are individually meaningful and cannot be merged, so
-    the store keeps the newest `MAX_RUNS` (500) and drops the OLDEST on append —
-    never the run whose button was just pressed. A corrupt or absent file reads as
-    no runs, never a raise.
+    **"Hold" is verified against the DISK, not against the curation** — the
+    catalog is consulted only to recognise `llamacpp-text`'s filename-shaped ids
+    (AI-5m), which resolve through `hub_cache.is_downloaded`, and a partly
+    downloaded repo is already absent from `cached_models()` (D424), so nothing
+    here can resume a stopped fetch inside a held-open request. The concurrency
+    guard is per capability and the UI reflects exactly that: a run on one
+    capability leaves the other three pressable.
+  - **AI-14h** **A run that FAILED is a result, and it is stored — a run that was
+    CANCELLED is neither.** "This model OOMs on this laptop" is exactly what
+    somebody benchmarks to find out, so a raising runner is recorded as
+    `ok: false` with the message and appears in the history beside the successful
+    runs; its `metrics` is empty rather than a dict of nulls, and the HTTP status
+    describes the request while `ok` describes the model (a failed run is a 200).
+    But the ✕, and an interpreter-level exit (`KeyboardInterrupt`/`SystemExit`
+    arriving on the threadpool thread), measured nothing and are NOT appended:
+    recording either would write a fake "this model failed here" row into the one
+    history this feature exists to keep trustworthy. An interpreter-level exit is
+    additionally re-raised rather than swallowed, so a Ctrl-C still stops the
+    process.
+  - **AI-14i** **Bounded by a hard run cap, not by a ring, and the store hands
+    the page nothing it cannot render.** Unlike AI-12c's fixed bucket ring, runs
+    are individually meaningful and cannot be merged, so the store keeps the
+    newest `MAX_RUNS` (500) and drops the OLDEST on append — never the run whose
+    button was just pressed. A corrupt or absent file reads as no runs, never a
+    raise; so does an individual record lacking `id`, `metrics` or `workload`,
+    the three keys every reader dereferences. That check lives in `read()` rather
+    than in each consumer because a hand-edited file must not be able to take the
+    AI Models page down, and a per-reader guard is a rule the next reader has to
+    be told about. It is deliberately NOT a schema check — a metric added
+    server-side must never start deleting the runs recorded before it.
+  - **AI-14j** **Every run OPENS a download-manager job row before it starts
+    anything, and closes it.** `jobs.upsert` refuses a first report that carries
+    no `title` and `supervisor._report` swallows that refusal, so a reporter that
+    only ever ticks `detail=` reports nothing at all, silently — which is what
+    made the `jobId` returned by `POST /api/ai/benchmark` name a row that did not
+    exist, defeating both `ModelProgress` and the `fused.watchJob(jobId)`
+    contract, and dropping the image worker's own (titleless) per-step ticks with
+    it. So the row is opened first with a title, exactly as
+    `supervisor.start_image`/`start_transcribe` do; the row's IDENTITY is
+    restated on every report, because `jobs._sweep` can evict it at any tick and
+    any report may therefore be a first one; the transcription request carries
+    that identity as `row` so the worker's own out-of-process ticks are not
+    refused; and the run always ends by reporting `done`, `error` or `cancelled`,
+    so no benchmark can leave a row running forever. The row is `cancellable`
+    because the ✕ is genuinely honoured on every phase — `_load_to_ready` polls
+    for it, and the image and transcription workers read the same row themselves.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
