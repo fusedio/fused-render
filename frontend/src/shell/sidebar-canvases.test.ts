@@ -1,6 +1,7 @@
 // The sidebar's Canvases entry: one destination, named the same in every place
-// it appears, shown as primary nav only once this machine is signed in, and
-// never lit twice at once (D358, renamed in D372).
+// it appears, offered at all only once the feature is turned on (D427), shown
+// as primary nav only once this machine is ALSO signed in, and never lit twice
+// at once (D358, renamed in D372).
 //
 // Read out of the source, the way sidebar-tasks.test.ts reads its own wiring
 // claims: the parts that matter here are WHICH gate each site is behind and
@@ -15,6 +16,9 @@ const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "../apps/canvases/logged-in.ts"), "utf8");
 const PAGE = readFileSync(join(SHELL, "../apps/canvases/Canvases.tsx"), "utf8");
+const FLAG = readFileSync(join(SHELL, "../apps/canvases/feature-flag.ts"), "utf8");
+const PREFS_PAGE = readFileSync(join(SHELL, "Preferences.tsx"), "utf8");
+const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
 
 describe("the sidebar's Canvases entry", () => {
   it("is 'Canvases' in the sidebar and 'Workbench Canvases' on the page", () => {
@@ -32,14 +36,47 @@ describe("the sidebar's Canvases entry", () => {
     expect(PAGE).toMatch(/<h1 className="canvases-title">Workbench Canvases<\/h1>/);
   });
 
-  it("shows the row and the rail icon behind the SAME sign-in gate", () => {
+  it("shows the row and the rail icon behind the SAME gate", () => {
     // A row that exists until you collapse the sidebar is a destination people
-    // lose — both halves are gated, or neither should be.
+    // lose — both halves are gated, or neither should be. The gate is the
+    // conjunction (D427): the feature is offered AND there is an account.
     expect(SIDEBAR).toMatch(/const canvasesLoggedIn = useCanvasesLoggedIn\(\)/);
+    expect(SIDEBAR).toMatch(/const canvasesEnabled = useCanvasesFeature\(\)/);
+    expect(SIDEBAR).toMatch(
+      /const canvasesInNav = canvasesEnabled && canvasesLoggedIn/
+    );
     // The rail entry, spread in conditionally.
-    expect(SIDEBAR).toMatch(/\.\.\.\(canvasesLoggedIn\s*\n?\s*\?/);
+    expect(SIDEBAR).toMatch(/\.\.\.\(canvasesInNav\s*\n?\s*\?/);
     // The expanded row.
-    expect(SIDEBAR).toMatch(/\{canvasesLoggedIn && \(\s*\n\s*<NavItem/);
+    expect(SIDEBAR).toMatch(/\{canvasesInNav && \(\s*\n\s*<NavItem/);
+  });
+
+  it("hides BOTH entry points when the feature is off, without touching the routes", () => {
+    // The preference is over the entry points, not the pages: /canvases and
+    // /canvases/<name> keep answering a deep link or a bookmark exactly as they
+    // do signed out, so the flag never strands an open workspace. Nothing in
+    // App.tsx's routing consults it.
+    expect(APP).not.toMatch(/canvasesEnabled|useCanvasesFeature/);
+    expect(APP).toMatch(/const isCanvases = pathname === "\/canvases"/);
+    // The menu entry is gated on the FEATURE ALONE — it has always been ungated
+    // on sign-in (the page explains a signed-out state itself), and gating it on
+    // the account would delete the only affordance for setting Canvases up.
+    expect(SIDEBAR).toMatch(
+      /\.\.\.\(canvasesEnabled\s*\n?\s*\?\s*\n?\s*\[\{ href: "\/canvases", label: "Canvases"/
+    );
+  });
+
+  it("reads the feature flag from prefs, one fetch plus a publish", () => {
+    // No poll, unlike sign-in: this pref can only change on the Preferences
+    // page of this app, and that page hands the new value over so the row
+    // appears with the checkbox instead of on the next navigation.
+    expect(FLAG).toMatch(/export function publishCanvasesEnabled/);
+    expect(FLAG).toMatch(/getPrefs\(\)/);
+    expect(FLAG).not.toMatch(/setTimeout|setInterval/);
+    expect(PREFS_PAGE).toMatch(/publishCanvasesEnabled\(next\.canvases\.enabled\)/);
+    // Default off means an unanswered read renders as hidden — assuming ON
+    // would flash an entry the reader turned off on every load.
+    expect(FLAG).toMatch(/useState\(enabled === true\)/);
   });
 
   it("lights on the list page only, not inside a canvas", () => {
@@ -53,7 +90,7 @@ describe("the sidebar's Canvases entry", () => {
     // Both asks stay true: the menu still lists the destination by name, and
     // the trigger does not light beside an already-lit primary row.
     expect(SIDEBAR).toMatch(/\{ href: "\/canvases", label: "Canvases"/);
-    expect(SIDEBAR).toMatch(/!\(canvasesLoggedIn && e\.href === "\/canvases"\)/);
+    expect(SIDEBAR).toMatch(/!\(canvasesInNav && e\.href === "\/canvases"\)/);
   });
 
   it("probes sign-in through the standalone module, not the app barrel", () => {

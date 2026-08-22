@@ -746,6 +746,10 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
+  // the shell's entry points to it (the sidebar row and the Settings menu
+  // entry), not the /canvases routes, which keep answering a deep link.
+  canvases: { enabled: boolean };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -920,6 +924,10 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
