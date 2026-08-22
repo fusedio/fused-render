@@ -30,7 +30,6 @@ import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
-import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
@@ -38,7 +37,7 @@ import { capabilityIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -47,7 +46,6 @@ import {
   type AiCatalogCapability,
   type AiCatalogModel,
 } from "@platform/lib/api";
-import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -105,27 +103,6 @@ export default function PlaygroundTab() {
     };
   }, [catalogEpoch]);
 
-  // Job rows while anything is live, so the header can draw the same progress
-  // the Local tab draws — matched by TITLE (the supervisor sets it to the
-  // model id), the same join AiModels.tsx uses and for the same reason: the id
-  // derivation sanitises characters and must not be copied here.
-  const anyBusy = isBusy(runtime);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  useEffect(() => {
-    if (!anyBusy) {
-      setJobs([]);
-      return;
-    }
-    let alive = true;
-    const tick = () => fetchJobs().then((s) => alive && setJobs(s.jobs), () => {});
-    void tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [anyBusy]);
-
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];
 
   // The selection lives in the URL. An unknown or absent id falls back to the
@@ -181,9 +158,6 @@ export default function PlaygroundTab() {
   const selectedResident = residentRow?.model === selected?.model.id ? residentRow : undefined;
   const selectedDownloading =
     !!selected && runtime.downloading.some((d) => d.model === selected.model.id);
-  const jobForSelected = selected
-    ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
-    : undefined;
 
   // The sidebar cards and the stage header share this: same call, same error
   // surface (the stage's banner — the card has no room for a sentence).
@@ -495,9 +469,6 @@ export default function PlaygroundTab() {
                 {evicts ? ` ${evicts}` : ""}
               </p>
             </section>
-            {(selectedDownloading || (selectedResident && selectedResident.state !== "ready")) && (
-              <ModelProgress detail={selectedResident?.detail} job={jobForSelected} />
-            )}
             {selected.row.capability === "text-generation" ? (
               <TextStage
                 key={selected.model.id}
