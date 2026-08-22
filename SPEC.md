@@ -1141,13 +1141,14 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, reader: {enabled}, model: {default,
+  fused_available}, reader: {enabled}, canvases: {enabled}, model: {default,
   choices}, calls: {…}}` — and no
   `log` block (PF-5), and no `deploy` block. *(A `deploy: {enabled}` block —
   the `deploy_enabled` pref, formerly §20.4/PF-8 — was removed along with §19;
   see that section's tombstone.)* `PUT /api/prefs`
   (X-Fused) applies a **partial** update — any of `engine`,
-  `reader_enabled`, `default_model`, `calls_enabled`, `calls_params` or
+  `reader_enabled`, `canvases_enabled`, `default_model`, `calls_enabled`,
+  `calls_params` or
   `calls_retention_days` present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value,
   or a body naming no known preference → 400; the file merges
@@ -1216,9 +1217,23 @@ never imports server).
   incidental guarantee that `worker_base` was stdlib-only *because hf was absent
   from CI*, so that rule is now enforced by reading the module's own imports
   (`test_ai_worker_base.py`).
+- **PF-1g** **`canvases_enabled` is a feature switch over the shell's ENTRY
+  POINTS to Canvases, not over its routes** (D427). Default **off**, boolean,
+  any non-`true` stored value reading as off, so an existing install — signed in
+  to Fused or not — has to opt in. On, the shell offers Canvases in the two
+  places it ever did: the sidebar's primary row and rail icon (which keep their
+  own additional sign-in gate — the row is `enabled && logged_in`) and the
+  Settings menu entry (gated on this pref **alone**, since that entry has always
+  been the affordance for a feature you have not set up yet). `/canvases` and
+  `/canvases/<name>` answer regardless, exactly as they do signed out: a
+  bookmark, a deep link and an open workspace survive the switch, and the page
+  explains its own state. The shell reads the flag through a standalone module
+  (`@apps/canvases/feature-flag`, not the app barrel — the same main-bundle
+  reason as the sign-in probe) with **one fetch and a publish** rather than a
+  poll, since the only writer is the Preferences page in the same window.
 - **PF-1a** The **Render preferences** tab renders its sections in this order:
   **Appearance**, **Call log**,
-  **Accessibility**, and last
+  **Accessibility**, **Canvases** (PF-1g), and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). **Default model** and **Hugging Face** are NOT here:

@@ -18,9 +18,11 @@ the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
 ``ai/registry.py``.
 
-Four more preferences are persisted: **reader_enabled** (whether the Reader
+Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
-``reader_enabled``), **default_model** (the preferred Claude model as a short
+``reader_enabled``), **canvases_enabled** (whether the Canvases feature is
+offered at all — opt-in, default off; see ``canvases_enabled``),
+**default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 and the **execution engine** for /api/run:
@@ -139,6 +141,27 @@ def reader_enabled() -> bool:
     reads as off.
     """
     return read_prefs().get("reader_enabled") is True
+
+
+def canvases_enabled() -> bool:
+    """Whether the Canvases feature is offered at all (default off — opt-in, D427).
+
+    Canvases is the legacy-workbench bridge: a Fused account, a listing of
+    remote canvases, and a per-canvas workspace with an embedded live workbench.
+    Most machines never open one, so it is off until the user turns it on from
+    the Preferences page, at which point the shell starts OFFERING it — the
+    sidebar row (once there is also an account behind it) and the Settings menu
+    entry.
+
+    A SWITCH OVER THE ENTRY POINTS, NOT A ROUTE GUARD: `/canvases` and
+    `/canvases/<name>` keep answering while this is off, the same way the
+    signed-out state has always left them reachable and let the page explain
+    itself. A deep link, a bookmark, or a workspace someone still has open is
+    not what a reader turning this off asked to lose; the nav entries for a
+    feature they do not use is. Any non-`true` stored value (missing/legacy)
+    reads as off, so an existing install — signed in or not — has to opt in.
+    """
+    return read_prefs().get("canvases_enabled") is True
 
 
 def default_model() -> str:
@@ -377,6 +400,10 @@ def _prefs_response() -> dict:
         "engine": engine_state(),
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},
+        # Whether the Canvases feature is offered at all — its sidebar row and
+        # its Settings menu entry (opt-in, D427). Not a route guard; see
+        # `canvases_enabled`.
+        "canvases": {"enabled": canvases_enabled()},
         # The default Claude model, as a short name; "" = unset (each consumer
         # keeps its own default). `choices` ships the value set with the value
         # so the Preferences page renders the options the server will accept
@@ -524,6 +551,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'reader_enabled' must be a boolean"}, status_code=400)
         prefs["reader_enabled"] = value
         changed = True
+    if "canvases_enabled" in body:
+        value = body.get("canvases_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'canvases_enabled' must be a boolean"}, status_code=400)
+        prefs["canvases_enabled"] = value
+        changed = True
     if "default_model" in body:
         value = body.get("default_model")
         if value not in VALID_DEFAULT_MODELS:
@@ -612,7 +645,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'engines', 'reader_enabled', "
+                      "'engines', 'reader_enabled', 'canvases_enabled', "
                       "'default_model', 'indexing_enabled', 'calls_enabled', "
                       "'calls_params', 'calls_retention_days' and/or "
                       "'ai_idle_unload_minutes')"},

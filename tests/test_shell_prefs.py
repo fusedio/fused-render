@@ -135,6 +135,51 @@ def test_put_rejects_bad_reader_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def test_canvases_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off (D427): an existing install — signed in or not — has to opt in
+    # before the shell offers Canvases anywhere.
+    assert client.get("/api/prefs").json()["canvases"]["enabled"] is False
+    body = client.put("/api/prefs", json={"canvases_enabled": True}, headers=FUSED).json()
+    assert body["canvases"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["canvases_enabled"] is True
+    assert client.get("/api/prefs").json()["canvases"]["enabled"] is True
+    # And back off.
+    assert client.put("/api/prefs", json={"canvases_enabled": False}, headers=FUSED).json()[
+        "canvases"
+    ]["enabled"] is False
+
+
+def test_canvases_enabled_reads_a_hand_edited_junk_value_as_off(tmp_path, monkeypatch):
+    # prefs.json is a plain file someone may edit; only `true` is on, same as
+    # reader_enabled. A truthy string must not turn a feature on.
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"canvases_enabled": "yes"}), encoding="utf-8")
+    assert client.get("/api/prefs").json()["canvases"]["enabled"] is False
+    assert prefs_mod.canvases_enabled() is False
+
+
+def test_canvases_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
+    # A partial PUT touching only canvases_enabled must not disturb the others.
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"canvases_enabled": True}, headers=FUSED).json()
+    assert body["reader"]["enabled"] is True
+    assert body["canvases"]["enabled"] is True
+
+
+def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Non-boolean canvases_enabled is rejected without a write.
+    assert (
+        client.put("/api/prefs", json={"canvases_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.

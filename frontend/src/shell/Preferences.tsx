@@ -2,7 +2,8 @@
 // from the sidebar's bottom-left gear. Its tabs (D125), the count deliberately
 // not stated here since it has been wrong three times:
 //   Render preferences — Appearance, Call log (capture/redaction/retention for
-//     fused_render/calls.py), and Accessibility. Always present; the
+//     fused_render/calls.py), Accessibility, and Canvases (the feature switch
+//     the shell's Canvases entry points read — D427). Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
 //     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
 //     preference. The app's OWN log is not here either: it is disposable
@@ -43,10 +44,12 @@ import {
   cancelHfLogin,
   getHfAuth,
   hfLogout,
+  putCanvasesEnabled,
   putDefaultModel,
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
+import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import type { CallsParamsMode, HfAuth, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -152,6 +155,56 @@ function AccessibilitySection({
     <section className="prefs-section">
       <h2>Accessibility</h2>
       <ReaderToggle prefs={prefs} onChange={onChange} />
+    </section>
+  );
+}
+
+// Canvases: off by default, and this is the only place it can be turned on
+// (D427). One section rather than a tab — a tab for one checkbox is a tab a
+// reader opens once — and it sits on this tab because "which of this app's
+// features do I want" is the question this tab already answers twice
+// (Reader above, call recording below).
+function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.canvases.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putCanvasesEnabled(!enabled);
+      onChange(next);
+      // The sidebar is mounted beside this page and reads the same flag from
+      // its own store; hand it the fresh answer so the row and the Settings
+      // entry appear (or go) with the checkbox rather than on the next
+      // navigation. See @apps/canvases/feature-flag for why it is a publish and
+      // not a poll.
+      publishCanvasesEnabled(next.canvases.enabled);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Canvases</h2>
+      <p className="deploy-muted">
+        Canvases are Fused Workbench canvases opened locally: a listing of the canvases on your
+        account and a per-canvas workspace with the live workbench embedded, editing the same
+        UDFs. Off by default — turn it on and it appears in the sidebar (once you are signed in to
+        Fused) and in this Settings menu.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Show Canvases</b> in the sidebar and the Settings menu.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
 }
@@ -583,6 +636,7 @@ export default function Preferences() {
                 <AppearanceSection />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
+                <CanvasesSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "ai" && (

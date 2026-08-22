@@ -1,7 +1,8 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks / AI Models, plus Canvases once this
-// machine is signed in to Fused), the explorer's Bookmarks below it, and a
+// primary nav on top (Home / Tasks / AI Models, plus Canvases once the feature
+// is turned on in Preferences AND this machine is signed in to Fused), the
+// explorer's Bookmarks below it, and a
 // single Settings trigger pinned to the bottom that opens a menu holding
 // everything else (Config for now, plus Templates / Mounts /
 // Preferences).
@@ -18,6 +19,7 @@ import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
+import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
@@ -282,6 +284,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // machine is FOR, so it sits with Home and Tasks (see @apps/canvases/logged-in
   // for why this is a shared store and not a one-shot probe).
   const canvasesLoggedIn = useCanvasesLoggedIn();
+  // AND THE FEATURE HAS TO BE ON AT ALL (D427, default off). Two conditions,
+  // deliberately not one store: this one is "does this machine offer Canvases",
+  // the one above is "is there an account behind it". The MENU entry needs only
+  // this — it has always been ungated on login, since the page explains a
+  // signed-out state itself, and gating it on the account would delete the only
+  // affordance for reaching a feature you have not set up yet. The primary row
+  // needs both.
+  const canvasesEnabled = useCanvasesFeature();
+  const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
   // something unread (shell/tasksPulse — one poll shared with the page, which
@@ -379,12 +390,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // row and the Preferences trigger at once, since `prefsActive` treats every
     // menu href as "you are on one of my pages" — the same double-selection the
     // Home comment above rejects.
-    // Ungated like Tasks: the page explains CLI-missing / signed-out states
-    // itself, and there is no machine state that hides the concept. It stays
-    // here even while the primary row above is showing — the menu is where
-    // someone looks for a named destination — and `prefsActive` below drops it
-    // instead, so the two never light at once.
-    { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
+    // Gated on the FEATURE only (D427), not on the account: the page explains a
+    // CLI-missing / signed-out state itself, so the entry is what "there is a
+    // thing here you could set up" looks like — and the whole point of the
+    // preference is that a machine which has not turned Canvases on is not
+    // shown it anywhere. It stays here even while the primary row above is
+    // showing — the menu is where someone looks for a named destination — and
+    // `prefsActive` below drops it instead, so the two never light at once.
+    ...(canvasesEnabled
+      ? [{ href: "/canvases", label: "Canvases", icon: CANVASES_ICON }]
+      : []),
     // No /ai-models entry either, and unlike Canvases it is dropped outright:
     // its primary row is ungated, so a menu copy would only ever be the
     // double-selection the Tasks note rejects.
@@ -395,9 +410,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // "you are on one of the menu's pages" — highlight it on any of them.
   // ...except a page primary nav is ALSO showing: the Tasks note above rejects
   // lighting a row and the Preferences trigger over one destination, and
-  // Canvases is listed in both places whenever the reader is signed in.
+  // Canvases is listed in both places whenever it is in the primary nav. With
+  // the feature off it is in NEITHER, so a deep link to /canvases lights
+  // nothing here — the entry is not in the list to be matched.
   const prefsActive = menuEntries.some(
-    (e) => e !== "separator" && e.href === pathname && !(canvasesLoggedIn && e.href === "/canvases")
+    (e) => e !== "separator" && e.href === pathname && !(canvasesInNav && e.href === "/canvases")
   );
 
   // Owned here, not inside either trigger, because the popover must stay
@@ -430,7 +447,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     },
     // Same gate and same order as the expanded row below — a row that exists
     // only until you collapse the sidebar is a destination people lose.
-    ...(canvasesLoggedIn
+    ...(canvasesInNav
       ? [
           {
             key: "canvases",
@@ -485,7 +502,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
-          {canvasesLoggedIn && (
+          {canvasesInNav && (
             <NavItem
               href="/canvases"
               id="canvases-link"
