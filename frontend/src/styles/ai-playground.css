@@ -156,6 +156,17 @@
   white-space: nowrap;
 }
 
+/* Loaded right now: a green dot ahead of the name. */
+.pg-model-live {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success-bright);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
 /* The full name, quiet under the nickname; a cached row shows its repo id
  * here instead so the two lines never repeat each other. */
 .pg-model-full {

@@ -302,7 +302,14 @@ export default function PlaygroundTab() {
                 }}
                 title={model.label}
               >
-                <span className="pg-model-name">{name}</span>
+                <span className="pg-model-name">
+                  {/* Live from the supervisor, not the catalog's `loaded`
+                      snapshot — a dot that outlives an unload is a lie. */}
+                  {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
+                    <span className="pg-model-live" title="Loaded — answering from memory" />
+                  )}
+                  {name}
+                </span>
                 {fullName && <span className="pg-model-full">{fullName}</span>}
                 <span className="pg-model-foot">
                   <span className="pg-model-size">
