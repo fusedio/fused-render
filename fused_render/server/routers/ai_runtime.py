@@ -654,7 +654,10 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
     try:
-        guidance = max(0.0, min(20.0, float(body.get("guidance") or 4.0)))
+        # `is None`, not `or`: guidance 0 (uncond sampling) is a value a caller
+        # can legitimately ask for, and `or` would silently promote it to 4.
+        asked_guidance = body.get("guidance")
+        guidance = max(0.0, min(20.0, 4.0 if asked_guidance is None else float(asked_guidance)))
     except (TypeError, ValueError):
         return _error("'guidance' must be a number", status=400)
     # A seed the caller did not choose is chosen HERE and reported back, so

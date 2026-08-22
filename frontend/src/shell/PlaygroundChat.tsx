@@ -31,6 +31,16 @@ import { numParam, readParam, writeParams } from "./AiModelsPlayground";
 // also the WORKER's own default — the slider states the truth of a bare call.
 const DEFAULTS = { temperature: 0.7, top_p: 0.95, max_tokens: 1024 };
 
+// A standing system prompt by default, not a blank: small local models drift
+// into rambling or page-long <think> blocks without one, and the person this
+// tab exists for should meet the model at its best. Kept short and generic —
+// it steers verbosity and reasoning length, never persona — and fully
+// editable/clearable in the rail (a cleared prompt round-trips as `system=`).
+const DEFAULT_SYSTEM =
+  "You are a helpful general-purpose assistant. Answer directly and keep replies " +
+  "short — expand only when asked for detail. If you reason before answering, " +
+  "keep the reasoning brief.";
+
 const STARTERS = [
   "Explain how a language model predicts the next word, simply",
   "Write a haiku about running AI on a laptop",
@@ -88,14 +98,16 @@ export function PlaygroundChat({
   const [temperature, setTemperature] = useState(() => numParam("temp", DEFAULTS.temperature));
   const [topP, setTopP] = useState(() => numParam("topp", DEFAULTS.top_p));
   const [maxTokens, setMaxTokens] = useState(() => numParam("maxtok", DEFAULTS.max_tokens));
-  const [system, setSystem] = useState(() => readParam("system") ?? "");
+  // `??`, not `||`: an EMPTY `system=` param is the user having cleared the
+  // default on purpose, and must stay cleared on reload.
+  const [system, setSystem] = useState(() => readParam("system") ?? DEFAULT_SYSTEM);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       writeParams({
         temp: temperature !== DEFAULTS.temperature ? String(temperature) : null,
         topp: topP !== DEFAULTS.top_p ? String(topP) : null,
         maxtok: maxTokens !== DEFAULTS.max_tokens ? String(maxTokens) : null,
-        system: system ? system : null,
+        system: system !== DEFAULT_SYSTEM ? system : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
@@ -342,12 +354,17 @@ export function PlaygroundChat({
           <label className="pg-ctl">
             <span className="pg-ctl-head">
               <span className="pg-ctl-label">System prompt</span>
+              {system !== DEFAULT_SYSTEM && (
+                <button type="button" className="pg-ctl-reset" onClick={() => setSystem(DEFAULT_SYSTEM)}>
+                  reset
+                </button>
+              )}
             </span>
             <textarea
               className="pg-rail-textarea"
-              rows={3}
+              rows={4}
               value={system}
-              placeholder="Optional — who the model should be"
+              placeholder="Who the model should be"
               onChange={(e) => setSystem(e.target.value)}
             />
             <span className="pg-ctl-hint">Standing instructions, applied to every reply.</span>

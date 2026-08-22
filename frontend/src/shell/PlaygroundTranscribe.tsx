@@ -41,6 +41,15 @@ function clock(seconds: number | undefined): string {
 
 export function PlaygroundTranscribe({ model }: { model: string }) {
   const [phase, setPhase] = useState<Phase>({ step: "idle" });
+  // The audio the run heard, as its server path. In the URL (`src`) on
+  // purpose: this stage is keyed by model id (AiModelsPlayground), so picking
+  // another model REMOUNTS it — and "same recording, different model" is
+  // exactly the comparison a playground should make effortless. The param
+  // survives the remount; the player and the Transcribe button come back.
+  const [source, setSource] = useState<{ path: string; name: string } | null>(() => {
+    const path = readParam("src");
+    return path ? { path, name: path.split("/").pop() ?? path } : null;
+  });
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [railOpen, setRailOpen] = useState(false);
@@ -62,10 +71,11 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
         lang: language ? language : null,
         vad: vad ? null : "0",
         words: words ? "1" : null,
+        src: source ? source.path : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [task, language, vad, words]);
+  }, [task, language, vad, words, source]);
 
   const abortRef = useRef<AbortController | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -189,6 +199,7 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
       const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 60) || "recording";
       const path = `${dir}/playground-${stamp}-${safe}`;
       await uploadFile(path, data, safe);
+      setSource({ path, name: safe });
       await transcribePath(path);
     } catch (e) {
       setError((e as Error).message);
@@ -340,6 +351,41 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
           </div>
         )}
         {error && <p className="pg-error">{error}</p>}
+
+        {source && phase.step !== "recording" && (
+          // The recording itself, playable — hearing what the model heard is
+          // how a surprising transcript stops being a mystery. And because the
+          // path rides the URL, this row is also the compare loop: pick
+          // another model in the sidebar and the same recording is one click
+          // from a fresh run.
+          <div className="pg-audio-row">
+            <div className="pg-audio-meta">
+              <span className="pg-audio-label">What the model hears</span>
+              <span className="pg-audio-name">{source.name}</span>
+            </div>
+            <audio className="pg-audio" controls preload="metadata" src={rawUrl(source.path)} />
+            {!busy && (
+              <div className="pg-audio-actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setError(null);
+                    void transcribePath(source.path).catch((e: Error) => {
+                      setError(e.message);
+                      setPhase({ step: "idle" });
+                    });
+                  }}
+                >
+                  {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
+                </button>
+                <span className="pg-audio-hint">
+                  Pick another model on the left to compare — the recording stays.
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {segments.length > 0 ? (
           <div className="pg-segments">

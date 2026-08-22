@@ -25,17 +25,23 @@ import { RailChips, RailSection, RailSlider, StarterPrompts } from "./Playground
 import { numParam, readParam, writeParams } from "./AiModelsPlayground";
 
 const SERVER_STEPS = 28;
-const DEFAULTS = { width: 1024, height: 1024, guidance: 4.0 };
+// Small and fast on purpose: 512² renders in a quarter of 1024²'s time and is
+// plenty to judge a prompt by — the first picture arriving quickly IS the
+// playground's pitch, and the Custom sliders still go to 2048 for anyone who
+// wants a big one. Guidance 1 because the shortlist's defaults are
+// guidance-distilled (FLUX.2 klein bakes the prompt-following in — CFG on top
+// only slows it down and overcooks the colours).
+const DEFAULTS = { width: 512, height: 512, guidance: 1.0 };
 
-// Multiple-of-16 sizes near one megapixel — the grid FLUX-class models are
-// happiest on. The chip writes this pair into the same `w`/`h` params the
-// custom sliders edit; a pair matching no chip lights none of them.
+// Multiple-of-16 pairs on the same small-by-default footing as DEFAULTS.
+// The chip writes this pair into the same `w`/`h` params the custom sliders
+// edit; a pair matching no chip lights none of them.
 const ASPECTS = [
-  { value: "1:1", label: "1:1", title: "Square — 1024×1024", width: 1024, height: 1024 },
-  { value: "3:4", label: "3:4", title: "Portrait — 864×1152", width: 864, height: 1152 },
-  { value: "4:3", label: "4:3", title: "Landscape — 1152×864", width: 1152, height: 864 },
-  { value: "16:9", label: "16:9", title: "Wide — 1280×720", width: 1280, height: 720 },
-  { value: "9:16", label: "9:16", title: "Tall — 720×1280", width: 720, height: 1280 },
+  { value: "1:1", label: "1:1", title: "Square — 512×512", width: 512, height: 512 },
+  { value: "3:4", label: "3:4", title: "Portrait — 480×640", width: 480, height: 640 },
+  { value: "4:3", label: "4:3", title: "Landscape — 640×480", width: 640, height: 480 },
+  { value: "16:9", label: "16:9", title: "Wide — 768×432", width: 768, height: 432 },
+  { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768 },
 ] as const;
 
 const STARTERS = [
@@ -111,12 +117,13 @@ export function PlaygroundImage({ model, entry }: { model: string; entry: AiCata
       const started = await startImage({
         prompt: wanted,
         model,
-        ...(width !== DEFAULTS.width ? { width } : {}),
-        ...(height !== DEFAULTS.height ? { height } : {}),
-        // Always sent: the stage's default is the MODEL's (4 for klein), and
-        // leaving it off would hand the server its generic 28.
+        // Always sent, all four: the stage's defaults are its own (512², the
+        // model's steps, guidance 1), and leaving any off would hand the
+        // server its generic 1024² / 28 / 4.0.
+        width,
+        height,
         steps,
-        ...(guidance !== DEFAULTS.guidance ? { guidance } : {}),
+        guidance,
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
       });
       setRun({ started, job: null, done: false });
@@ -338,7 +345,7 @@ export function PlaygroundImage({ model, entry }: { model: string; entry: AiCata
           />
           <RailSlider
             label="Guidance"
-            hint="How literally the prompt is followed. Very high looks overcooked."
+            hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
             min={0}
             max={20}
             step={0.5}

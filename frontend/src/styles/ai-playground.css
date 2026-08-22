@@ -1043,6 +1043,63 @@
   min-height: 0;
 }
 
+/* The recording itself, playable, with the re-run action beside it — the
+   compare loop's home (PlaygroundTranscribe). One bordered row so it reads as
+   a fact about the run, not another dropzone. */
+.pg-audio-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--bg-alt);
+}
+
+.pg-audio-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pg-audio-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+
+.pg-audio-name {
+  font-size: 12px;
+  color: var(--fg-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-audio {
+  flex: 1 1 240px;
+  min-width: 200px;
+  height: 36px;
+}
+
+.pg-audio-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pg-audio-hint {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  max-width: 240px;
+}
+
 .pg-segments {
   display: flex;
   flex-direction: column;
