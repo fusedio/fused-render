@@ -151,3 +151,11 @@ def test_the_ping_liveness_path_is_not_proxied(client, stub_python, stub_daemon,
     # the proxy (it would leak the daemon's version and pid unauthenticated).
     _ensure(client, stub_python, stub_daemon, tmp_path)
     assert client.get(f"{PROXY}/ping").status_code == 404
+
+
+def test_a_traversal_path_is_rejected(client, stub_python, stub_daemon, tmp_path):
+    # The proxied path is opaque and forwarded verbatim; a backslash (a Windows
+    # separator) must not reach the child. %5C survives URL normalization to hit
+    # the guard, unlike ".." which the client collapses before the request.
+    _ensure(client, stub_python, stub_daemon, tmp_path)
+    assert client.get(f"{PROXY}/tiles/a%5Cb/0/0/0.png").status_code == 404

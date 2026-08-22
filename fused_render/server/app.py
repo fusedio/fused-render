@@ -56,7 +56,6 @@ from fused_render.server.routers.git_show import router as git_show_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
-from fused_render.server.routers.tiles import router as tiles_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
@@ -420,11 +419,6 @@ def create_app(start_dir: str) -> FastAPI:
     # dead child under the URLs the page holds (engine_host.py). The map
     # template's tile daemon is the first user.
     app.include_router(engines_router)
-    # The public tile surface (routers/tiles.py): `fused.tiles` / /api/tiles/*.
-    # A bounded allowlist over the map engine above, so a custom tile viewer
-    # uses the shared server instead of its own daemon — without ever seeing an
-    # engine id, a daemon path, the reinit replay or the proxy.
-    app.include_router(tiles_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)

@@ -191,6 +191,10 @@ async def api_engine_proxy(engine_id: str, path: str, request: Request,
     # with the token); it is never a page resource, so it is not proxied.
     if path == "ping":
         return _error("not found", status=404)
+    # The path is opaque and forwarded verbatim, but no segment may climb out of
+    # the namespace the child serves — a correctness guard for every engine.
+    if ".." in path.split("/") or "\\" in path:
+        return _error("not found", status=404)
     if request.method == "POST" and (error := _require_fused(x_fused)) is not None:
         return error
     body = await request.body() if request.method == "POST" else b""

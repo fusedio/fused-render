@@ -197,21 +197,6 @@
  *     "outdated", "not-covered" or null. Unlike runPython there is no supersede
  *     channel: a per-keystroke caller must guard its own renders against an
  *     earlier reply landing last. LOCAL ONLY — a hosted page has no index.
- *   fused.tiles.* -> open a dataset as map layers on this shared server
- *     open(target, opts?) -> Promise<layer>. `target` is a path or URL; the
- *     server runs the built-in map engine and hands back a PUBLIC layer:
- *     {id, kind ("raster"|"vector"|"geojson"|"image"), bounds, minzoom,
- *     maxzoom, tileUrl, vectorTileUrl, dataUrl, warnings, closeToken}. Point a
- *     maplibre source straight at `tileUrl` ("/api/tiles/{id}/{z}/{x}/{y}.png")
- *     or `vectorTileUrl` (".../{z}/{x}/{y}.pbf") — same-origin URLs on THIS
- *     server, so a daemon death or restart never invalidates one a page holds.
- *     opts (raster styling, all optional): colormap, rescale ("lo,hi"),
- *     stretch, renderMode. An unknown option is refused (like fused.ai), and a
- *     target that cannot be opened rejects with Error{message, traceback?}.
- *     status(layer) -> Promise<{...}> polls a still-preparing layer's job.
- *     close(layer) -> Promise<void> releases it (pass the layer object open
- *     returned, so its closeToken is sent). A page never sees an engine id, a
- *     daemon port, or the /api/engines proxy behind this. LOCAL ONLY.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *                                         value === null REMOVES the key
@@ -3988,87 +3973,6 @@
     attach: captureAttach,
   };
 
-  // -------------------------------------------------------------- fused.tiles
-  //
-  // The public face of the server's managed tile engine (docs/ENGINE_HOST_
-  // DESIGN.md). A page opens a dataset as map layers on this shared origin
-  // instead of standing up its own tile daemon, and never sees the engine id,
-  // the daemon port or the /api/engines proxy underneath — every URL it gets
-  // back is a same-origin /api/tiles/... path that heals across daemon restarts.
-  //
-  // opts are the raster styling knobs the map engine understands; camelCase in,
-  // snake_case on the wire (renderMode -> render_mode), like fused.ai. An
-  // unknown one is refused rather than dropped, so a typo is a message, not a
-  // silently ignored style.
-  const TILE_OPT_KEYS = {
-    colormap: "colormap",
-    rescale: "rescale",
-    stretch: "stretch",
-    renderMode: "render_mode",
-  };
-
-  function tileLayerId(layer) {
-    return layer && typeof layer === "object" ? layer.id : layer;
-  }
-
-  function tilesOpen(target, opts) {
-    opts = opts || {};
-    if (typeof target !== "string" || !target.trim()) {
-      const err = new Error("fused.tiles.open(target): target must be a non-empty string");
-      err.type = "bad_request";
-      return Promise.reject(err);
-    }
-    const unknownErr = rejectUnknownOptions(
-      opts, Object.keys(TILE_OPT_KEYS), [], "fused.tiles.open");
-    if (unknownErr) return Promise.reject(unknownErr);
-    const options = {};
-    for (const key of Object.keys(TILE_OPT_KEYS)) {
-      if (opts[key] !== undefined) options[TILE_OPT_KEYS[key]] = opts[key];
-    }
-    return fetch("/api/tiles/open", {
-      method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-      body: JSON.stringify({ target: target, options: options }),
-    })
-      .then((res) => res.json().then((data) => ({ res, data }), () => ({ res, data: {} })))
-      .then(({ res, data }) => {
-        if (!res.ok) {
-          const err = new Error((data && data.error) || "HTTP " + res.status);
-          err.type = "bad_request";
-          throw err;
-        }
-        // A map descriptor that could not open the target rides back as
-        // {status:"error"} rather than an HTTP error (the shape map_render
-        // already produces), so reject on it the way runPython does.
-        if (data && data.status === "error") {
-          const err = new Error(data.message || "could not open the target");
-          err.type = "tiles_error";
-          if (data.traceback) err.traceback = data.traceback;
-          throw err;
-        }
-        return data;
-      });
-  }
-
-  function tilesStatus(layer) {
-    const id = tileLayerId(layer);
-    return fetch("/api/tiles/" + encodeURIComponent(id) + "/status", {
-      headers: callHeaders({}),
-    }).then((r) => r.json());
-  }
-
-  function tilesClose(layer) {
-    const id = tileLayerId(layer);
-    const closeToken = layer && typeof layer === "object" ? layer.closeToken : null;
-    return fetch("/api/tiles/" + encodeURIComponent(id) + "/close", {
-      method: "POST",
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
-      body: JSON.stringify({ closeToken: closeToken || null }),
-    }).then(() => undefined);
-  }
-
-  const tiles = { open: tilesOpen, status: tilesStatus, close: tilesClose };
-
   window.fused = {
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
@@ -4082,7 +3986,6 @@
     mkdir,
     ai,
     capture,
-    tiles,
     fileIndex,
     trackJob,
     watchJob,
