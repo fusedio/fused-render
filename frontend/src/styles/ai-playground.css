@@ -46,11 +46,12 @@
 
 /* A capability section: a <details>, open by default, its summary the
  * icon + task-word header. The default disclosure triangle is replaced by a
- * caret on the right so the icon owns the left edge. */
-.pg-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+ * caret on the right so the icon owns the left edge.
+ *
+ * Spacing is MARGINS, not flex gap: Chrome keeps <details> block-level
+ * whatever display it is handed, so a gap here silently does nothing. */
+.pg-group > :not(summary) {
+  margin: 8px 0 0;
 }
 
 .pg-group-head {
@@ -102,15 +103,6 @@
   margin: 0;
   font-size: 12px;
   line-height: 1.45;
-  color: var(--fg-muted);
-}
-
-/* What this group of models DOES, in task words — the zero-jargon reader's
- * anchor before any model name means anything. */
-.pg-group-blurb {
-  margin: -4px 0 0;
-  font-size: 11.5px;
-  line-height: 1.4;
   color: var(--fg-muted);
 }
 

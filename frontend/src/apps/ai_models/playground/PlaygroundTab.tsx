@@ -58,10 +58,6 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 const GROUP_LABELS: Record<string, string> = Object.fromEntries(
   PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
 );
-const GROUP_BLURBS: Record<string, string> = Object.fromEntries(
-  PLAYGROUND_GROUPS.map((g) => [g.capability, g.blurb]),
-);
-
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
 }
@@ -338,9 +334,6 @@ export default function PlaygroundTab() {
                 <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
                 <span className="pg-group-title">{groupLabel(row.capability)}</span>
               </summary>
-              {GROUP_BLURBS[row.capability] && (
-                <p className="pg-group-blurb">{GROUP_BLURBS[row.capability]}</p>
-              )}
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
                 // ruled-out group look identical, and HF-8 already paid for
