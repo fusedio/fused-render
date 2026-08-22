@@ -18,7 +18,8 @@ import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
-import { useAiRuntime } from "@shell/aiRuntime";
+import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
@@ -227,6 +228,14 @@ function PreferencesPopover({
   );
 }
 
+// Where the sidebar row points: the page's DEFAULT tab by name, not the bare
+// prefix. Both work — App.tsx redirects the bare one — but a nav link that is
+// rewritten the moment it lands puts a URL in the address bar that the user
+// never clicked, and leaves the row's href disagreeing with where it went. An
+// empty search, deliberately: this is an entry point, not a tab switch, so
+// there is nothing to carry (see `tabHref`).
+const AI_MODELS_HOME = tabHref("playground", "");
+
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
@@ -261,7 +270,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
   const canvasesActive = pathname === "/canvases";
-  const aiModelsActive = pathname === "/ai-models";
+  // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
+  // through a different tab, not a second destination, so every one of the five
+  // lights the row. (The bare prefix is redirected to the default tab before
+  // this runs, so it is matched for completeness rather than in practice.)
+  const aiModelsActive = isAiModelsPath(pathname);
   // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
   // would lead to a sign-in wall — the menu entry is the right weight for
   // "there is a thing here you could set up"; a top-of-sidebar row is for a
@@ -432,7 +445,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       key: "ai-models",
       label: "AI Models",
       icon: AI_MODELS_ICON,
-      href: "/ai-models",
+      href: AI_MODELS_HOME,
       active: aiModelsActive,
       badge: residentDot,
     },
@@ -482,7 +495,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             />
           )}
           <NavItem
-            href="/ai-models"
+            href={AI_MODELS_HOME}
             id="ai-models-link"
             label="AI Models"
             icon={AI_MODELS_ICON}

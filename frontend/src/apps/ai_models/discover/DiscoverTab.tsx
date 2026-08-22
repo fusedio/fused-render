@@ -52,8 +52,8 @@ import {
   type HubSort,
   type HubTask,
 } from "@platform/lib/api";
-import { refreshAiRuntime } from "./aiRuntime";
-import { ModelProgress } from "./AiProgress";
+import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import type { Job } from "@platform/lib/jobs";
 import { formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
@@ -63,7 +63,7 @@ import {
   hubSizeTitle,
   knownTotalSize,
   lookupTotalSize,
-} from "@shell/hubSize";
+} from "@apps/ai_models/lib/hubSize";
 import {
   discoverChrome,
   gateChrome,
@@ -71,7 +71,7 @@ import {
   resultsSummary,
   suggestedSummary,
   type OnDisk,
-} from "@shell/discoverView";
+} from "@apps/ai_models/lib/discoverView";
 
 // Long enough that a typed word is one request rather than five, short enough
 // that the results feel like they are following the query.
@@ -526,7 +526,7 @@ function Suggested({
   );
 }
 
-export default function AiModelsDiscover({
+export default function DiscoverTab({
   onDisk,
   downloading,
   settling,

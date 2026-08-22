@@ -11,7 +11,7 @@ import {
   switchOutcome,
   unloadCountdown,
   wouldChangeEngine,
-} from "@shell/engines";
+} from "@apps/ai_models/lib/engines";
 
 const AUTO = "auto";
 

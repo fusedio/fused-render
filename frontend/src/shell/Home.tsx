@@ -23,7 +23,8 @@ import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
-import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@shell/playgroundGroups";
+import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
+import { tabHref } from "@apps/ai_models/routes";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -171,7 +172,7 @@ const PLAYGROUND_GLYPHS: Record<string, ReactNode> = {
 // only the capability (`?cap=`); the playground itself resolves that to its
 // vetted default model, so the choice lives in one place.
 function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
-  const href = `/ai-models?cap=${encodeURIComponent(group.capability)}`;
+  const href = tabHref("playground", `?cap=${encodeURIComponent(group.capability)}`);
   return (
     <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
       <span className="fhb-card-head">
@@ -331,7 +332,7 @@ export default function Home({ config }: { config: Config }) {
               )}
             </Section>
 
-            <Section title="AI Playground" seeAllHref="/ai-models">
+            <Section title="AI Playground" seeAllHref={tabHref("playground", "")}>
               <div className="home-row">
                 {PLAYGROUND_GROUPS.slice(0, shown).map((group) => (
                   <PlaygroundPreviewCard key={group.capability} group={group} />

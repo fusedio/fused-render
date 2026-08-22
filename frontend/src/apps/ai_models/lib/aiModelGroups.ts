@@ -14,7 +14,7 @@
 // and a `group` field on the response would be the server deciding a layout
 // question for one page.
 import type { AiModelRepo } from "@platform/lib/api";
-import { capabilityLabel } from "@shell/engines";
+import { capabilityLabel } from "@apps/ai_models/lib/engines";
 
 /** The bucket for a repo with no capability AND no component.
  *

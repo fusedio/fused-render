@@ -22,9 +22,9 @@ import {
   watchJob,
   type TranscriptSegment,
   type TranscribeStarted,
-} from "./playgroundClient";
-import { RailSection } from "./PlaygroundControls";
-import { readParam, writeParams } from "./AiModelsPlayground";
+} from "./client";
+import { RailSection } from "./controls";
+import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
   | { step: "idle" }
@@ -39,7 +39,7 @@ function clock(seconds: number | undefined): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function PlaygroundTranscribe({ model }: { model: string }) {
+export function TranscribeStage({ model }: { model: string }) {
   const [phase, setPhase] = useState<Phase>({ step: "idle" });
   // The audio the run heard, as its server path. In the URL (`src`) on
   // purpose: this stage is keyed by model id (AiModelsPlayground), so picking

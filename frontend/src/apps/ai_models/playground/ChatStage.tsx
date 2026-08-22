@@ -21,10 +21,10 @@ import {
   watchJob,
   type ChatSettings,
   type ChatUsage,
-} from "./playgroundClient";
-import { renderMarkdown } from "./playgroundMarkdown";
-import { RailSection, RailSlider, StarterPrompts } from "./PlaygroundControls";
-import { numParam, readParam, writeParams } from "./AiModelsPlayground";
+} from "./client";
+import { renderMarkdown } from "./markdown";
+import { RailSection, RailSlider, StarterPrompts } from "./controls";
+import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
 // a slider cannot ask for a value the request would 400 on. 1024 max tokens is
@@ -77,7 +77,7 @@ function replyStats(usage: ChatUsage | null | undefined): string | null {
   return `${usage.output_tokens} tokens${rate}`;
 }
 
-export function PlaygroundChat({
+export function ChatStage({
   model,
   modelLabel,
   ready,

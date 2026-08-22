@@ -20,9 +20,9 @@
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
-import { startImage, watchJob, type ImageStarted } from "./playgroundClient";
-import { RailChips, RailSection, RailSlider, StarterPrompts } from "./PlaygroundControls";
-import { numParam, readParam, writeParams } from "./AiModelsPlayground";
+import { startImage, watchJob, type ImageStarted } from "./client";
+import { RailChips, RailSection, RailSlider, StarterPrompts } from "./controls";
+import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
 // Small and fast on purpose: 512² renders in a quarter of 1024²'s time and is
@@ -56,7 +56,7 @@ interface Run {
   done: boolean;
 }
 
-export function PlaygroundImage({ model, entry }: { model: string; entry: AiCatalogModel }) {
+export function ImageStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
   // The model's own benchmarked step count, when the curation measured one.
   const modelSteps = entry.defaults?.steps ?? SERVER_STEPS;
   const speedChips =

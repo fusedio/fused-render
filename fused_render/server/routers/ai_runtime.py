@@ -49,7 +49,7 @@ from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
-from fused_render.server.routers.ai_models import (
+from fused_render.ai.hub_cache import (
     CachedModel, cached_capability, cached_models,
 )
 
