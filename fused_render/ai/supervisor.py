@@ -1082,17 +1082,24 @@ def image_job_id(uid: str) -> str:
     return IMAGE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_image(model: str, request: dict, job: str) -> None:
-    """Open `job` and render on a thread. Raises before starting if it cannot.
+def _start_render(capability: str, model: str, request: dict, job: str,
+                   generate, *, noun: str, thread_name: str) -> None:
+    """Open `job` and render `generate(model, request, job)` on a thread.
+    Raises before starting if it cannot.
 
-    The runner check happens HERE, synchronously, so an image asked of a machine
-    with no image runner answers the request with the reason instead of opening
-    a job row that immediately fails — the caller gets an error it can show,
-    rather than a progress bar it has to watch die.
+    Shared by `start_image` and `start_video`, which were near-byte-copies
+    of this body differing only in the capability, which `generate` to call,
+    and the noun in the terminal "Saved …" detail and the thread's name — a
+    genuine format, not two things that happened to look alike once.
+
+    The runner check happens HERE, synchronously, so a request asked of a
+    machine with no runner for `capability` answers with the reason instead
+    of opening a job row that immediately fails — the caller gets an error
+    it can show, rather than a progress bar it has to watch die.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
-    _runner_or_raise(registry.IMAGE_GENERATION)
+    _runner_or_raise(capability)
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
@@ -1101,7 +1108,7 @@ def start_image(model: str, request: dict, job: str) -> None:
 
     def run() -> None:
         try:
-            result = generate_image(model, request, job)
+            result = generate(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -1110,9 +1117,15 @@ def start_image(model: str, request: dict, job: str) -> None:
                 _report(job, state="error", message=message)
             return
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
-                detail=f"Saved {os.path.basename(result.get('path') or 'image')}")
+                detail=f"Saved {os.path.basename(result.get('path') or noun)}")
 
-    threading.Thread(target=run, name="ai-image", daemon=True).start()
+    threading.Thread(target=run, name=thread_name, daemon=True).start()
+
+
+def start_image(model: str, request: dict, job: str) -> None:
+    """Open `job` and render an image on a thread. See `_start_render`."""
+    _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
+                  noun="image", thread_name="ai-image")
 
 
 #: What a queued transcription's row says while it waits.
@@ -1737,96 +1750,67 @@ def video_job_id(uid: str) -> str:
 
 
 def start_video(model: str, request: dict, job: str) -> None:
-    """Open `job` and render on a thread. Raises before starting if it cannot.
+    """Open `job` and render a video on a thread. See `_start_render`.
 
-    `start_image`'s twin, byte for byte except for the capability and the
-    result's step count field — the runner check happens here, synchronously,
-    for the same reason: a request this machine cannot serve (no Apple
-    Silicon, or no h3 binary staged) answers with the reason instead of
-    opening a row that immediately dies.
+    Raises before starting if it cannot — a request this machine cannot
+    serve (no Apple Silicon, or no h3 binary staged) answers with the
+    reason instead of opening a row that immediately dies.
     """
-    _runner_or_raise(registry.VIDEO_GENERATION)
-    _require_build_tools()
+    _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
+                  noun="video", thread_name="ai-video")
 
-    title = str(request.get("prompt") or model).strip() or model
-    _report(job, title=title[:80], state="running", kind="task", cancellable=True,
-            unit="", detail="Preparing…", done=None, total=None)
 
-    def run() -> None:
+def _generate_via_worker(capability: str, model: str, request: dict, job: str,
+                          *, timeout: float, noun: str) -> dict:
+    """Render one item through the resident `capability` worker. Blocking —
+    call it on a thread, never on the loop.
+
+    Shared by `generate_image` and `generate_video`, which were near-byte-
+    copies of this body differing only in the capability, the request
+    timeout, and the noun in each error sentence.
+
+    Loads the model first if it is not resident, which is the difference from
+    the text path (see `_wait_ready`). The worker writes the file itself and
+    reports its own progress straight to `job`, so nothing here polls: this
+    function's whole job is to hold the request open and turn a dead worker
+    into an error somebody can read.
+    """
+    worker = ready_worker(capability, model)
+    if worker is None:
+        worker = _wait_ready(model, capability, job)
+
+    with _in_use(worker):
         try:
-            result = generate_video(model, request, job)
-        except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
-            message = _failure_text(e)
-            if message == "cancelled":
-                _report(job, state="cancelled")
-            else:
-                _report(job, state="error", message=message)
-            return
-        _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
-                detail=f"Saved {os.path.basename(result.get('path') or 'video')}")
-
-    threading.Thread(target=run, name="ai-video", daemon=True).start()
+            response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                       timeout=timeout)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the {noun} process did not answer: {e}") from e
+        with response:
+            try:
+                payload = json.loads(response.read().decode() or "{}")
+            except ValueError as e:
+                raise SupervisorError(f"the {noun} process sent a malformed reply") from e
+    if payload.get("cancelled"):
+        raise SupervisorError("cancelled")
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or f"the {noun} failed to render"))
+    return payload.get("result") or {}
 
 
 def generate_image(model: str, request: dict, job: str) -> dict:
-    """Render one image. Blocking — call it on a thread, never on the loop.
-
-    Loads the model first if it is not resident, which is the difference from
-    the text path (see `_wait_ready`). The worker writes the PNG itself and
-    reports its denoising steps straight to `job`, so nothing here polls: this
-    function's whole job is to hold the request open and turn a dead worker into
-    an error somebody can read.
-    """
-    worker = ready_worker(registry.IMAGE_GENERATION, model)
-    if worker is None:
-        worker = _wait_ready(model, registry.IMAGE_GENERATION, job)
-
-    with _in_use(worker):
-        try:
-            response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                       timeout=GENERATE_TIMEOUT_S)
-        except (OSError, ValueError) as e:
-            raise SupervisorError(f"the image process did not answer: {e}") from e
-        with response:
-            try:
-                payload = json.loads(response.read().decode() or "{}")
-            except ValueError as e:
-                raise SupervisorError("the image process sent a malformed reply") from e
-    if payload.get("cancelled"):
-        raise SupervisorError("cancelled")
-    if not payload.get("ok"):
-        raise SupervisorError(str(payload.get("error") or "the image failed to render"))
-    return payload.get("result") or {}
+    """Render one image. See `_generate_via_worker`."""
+    return _generate_via_worker(registry.IMAGE_GENERATION, model, request, job,
+                                timeout=GENERATE_TIMEOUT_S, noun="image")
 
 
 def generate_video(model: str, request: dict, job: str) -> dict:
-    """Render one video. Blocking — call it on a thread, never on the loop.
+    """Render one video. See `_generate_via_worker`.
 
-    `generate_image`'s twin: same load-then-request shape, same worker error
-    handling — the only difference is the timeout. `VIDEO_TIMEOUT_S` rather
-    than `GENERATE_TIMEOUT_S`, because a 768-class H3 render can run for far
-    longer than any image request.
+    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a 768-class
+    H3 render can run for far longer than any image request.
     """
-    worker = ready_worker(registry.VIDEO_GENERATION, model)
-    if worker is None:
-        worker = _wait_ready(model, registry.VIDEO_GENERATION, job)
-
-    with _in_use(worker):
-        try:
-            response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                       timeout=VIDEO_TIMEOUT_S)
-        except (OSError, ValueError) as e:
-            raise SupervisorError(f"the video process did not answer: {e}") from e
-        with response:
-            try:
-                payload = json.loads(response.read().decode() or "{}")
-            except ValueError as e:
-                raise SupervisorError("the video process sent a malformed reply") from e
-    if payload.get("cancelled"):
-        raise SupervisorError("cancelled")
-    if not payload.get("ok"):
-        raise SupervisorError(str(payload.get("error") or "the video failed to render"))
-    return payload.get("result") or {}
+    return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
+                                timeout=VIDEO_TIMEOUT_S, noun="video")
 
 
 def _await_turn(job: str, title: str) -> None:

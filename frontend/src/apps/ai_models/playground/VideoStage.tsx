@@ -19,10 +19,18 @@ import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 // canvas ceiling is `width * height <= 768 * 1344`, enforced server-side.
 const DEFAULTS = { width: 512, height: 512, frames: 90, steps: 20 };
 const SIZE_RANGE = [256, 1344] as const;
-// h3's own frame grid is `5 + 17n`; the slider steps by 17 so every value it
-// can land on is one the server will not have to move.
-const FRAMES_RANGE = [5, 345] as const;
-const STEPS_RANGE = [1, 50] as const;
+// h3's own frame grid is `5 + 17n`, n in [1, 21] -- VERIFIED against the
+// built h3 binary's own h3_align_frame_count/h3_valid_params (the server
+// route's own D429 comment carries the same citation): n=0 (5 frames) is
+// refused at generation time ("requires at least one trained 22-frame
+// decoder chunk"), so the grid this slider offers starts at 22, not 5. The
+// slider steps by 17 so every value it can land on is one the server will
+// not have to move.
+const FRAMES_RANGE = [22, 362] as const;
+// [2, 50]: h3's own hard floor is 2 -- 1 step is refused outright
+// ("denoising steps must be in [2, 1000]") -- the ceiling (50) is this
+// app's own choice, far inside h3's actual [2, 1000].
+const STEPS_RANGE = [2, 50] as const;
 
 const STARTERS = [
   "A paper boat drifting down a rain-soaked street, cinematic",
@@ -208,10 +216,23 @@ export function VideoStage({ model, entry }: { model: string; entry: AiCatalogMo
               <video
                 key={item.jobId}
                 src={rawUrl(item.path) + "&t=" + item.jobId}
-                className={run?.started.jobId === item.jobId ? "active" : undefined}
-                title={`${item.prompt} — seed ${item.seed}`}
+                className={
+                  (run?.started.jobId === item.jobId ? "active" : "") +
+                  (busy ? " disabled" : "")
+                }
+                // Disabled, not wired to a no-op click: a render here can run
+                // for HOURS (unlike the image stage's seconds), so swapping
+                // `run` mid-render would silently drop the in-flight Stop
+                // button and its progress -- Generate would even re-enable
+                // while the render kept going underneath. Picking a past
+                // clip is safe once there is nothing left to lose.
+                title={
+                  busy
+                    ? "Finish or stop the current render to view another clip"
+                    : `${item.prompt} — seed ${item.seed}`
+                }
                 muted
-                onClick={() => setRun({ started: item, job: null, done: true })}
+                onClick={busy ? undefined : () => setRun({ started: item, job: null, done: true })}
               />
             ))}
           </div>

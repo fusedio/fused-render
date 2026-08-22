@@ -874,6 +874,31 @@
   border-color: var(--accent);
 }
 
+.pg-image-strip video {
+  height: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pg-image-strip video:hover {
+  opacity: 1;
+}
+
+.pg-image-strip video.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+/* A render in flight: picking a past clip would silently drop the
+   in-flight Stop button and its progress (VideoStage.tsx). */
+.pg-image-strip video.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 /* -- transcription ------------------------------------------------------------------ */
 
 .pg-dropzone {

@@ -886,10 +886,19 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     model = _model_of(body) or catalog.default_for(registry.VIDEO_GENERATION)
     if not model:
-        # No Apple Silicon, or no h3 binary staged — `catalog.default_for`
-        # answers None either way (`catalog.describe`'s `default` is gated on
-        # availability), and the runner's own reason is the actionable one:
-        # "needs Apple Silicon" or "the h3 binary is not available".
+        # CORRECTED: this branch is dead in practice, exactly like the same
+        # branch in `api_ai_image` above (`catalog.default_for` never gates
+        # on availability -- only `catalog.describe`'s own `default` field
+        # does that, a different function entirely -- and `SUGGESTIONS
+        # ["h3-video"]` is a hardcoded non-empty list, so `default_for`
+        # always returns that one id here whether or not this machine can
+        # run it). Kept anyway, matching `api_ai_image`'s own choice: cheap
+        # defensive code against a catalog that someday ships an empty
+        # shortlist, not the mechanism this route actually relies on for
+        # the 409. The REAL "needs Apple Silicon"/"the h3 binary is not
+        # available" answer, on a machine that cannot serve this
+        # capability, comes from `start_video`'s own `_runner_or_raise`
+        # below -- caught and turned into the same 409 a few lines down.
         return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
                       or "no video model is configured", status=409)
 

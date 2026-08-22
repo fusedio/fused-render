@@ -135,6 +135,39 @@ def test_load_accepts_a_plain_snapshot_and_sets_device(monkeypatch, base, tmp_pa
     assert base.state.get("device") == "mps"
 
 
+def _fake_huggingface_hub(monkeypatch, *, files=None, error=None):
+    """A fake `huggingface_hub` good enough for `download`'s listing check —
+    `list_repo_files` either returns `files` or raises `error`, the same
+    shape `test_ai_llamacpp_worker.py`'s own fake uses for the one function
+    its runner calls."""
+    fake = types.ModuleType("huggingface_hub")
+    calls = []
+
+    def list_repo_files(model_id, **kwargs):
+        calls.append(model_id)
+        if error is not None:
+            raise error
+        return list(files or [])
+
+    fake.list_repo_files = list_repo_files
+    fake.calls = calls
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    return fake
+
+
+#: A minimal H3-shaped listing: enough filenames under `FL2VA/` to satisfy
+#: the tree check without needing the repo's real 81-file shape.
+_FL2VA_LISTING = ["model_index.json", "FL2VA/model_index.json",
+                  "FL2VA/transformer/config.json", "FL2VA/tokenizer/tokenizer.json",
+                  "Ref2VA/transformer/config.json"]
+
+#: What a diffusers text-to-video repo (LTX, Wan, …) reachable through the
+#: same Hub task looks like: a `model_index.json` at the root and ordinary
+#: pipeline component folders — no `FL2VA/` anywhere.
+_DIFFUSERS_VIDEO_LISTING = ["model_index.json", "transformer/config.json",
+                            "vae/config.json", "text_encoder/config.json"]
+
+
 def test_download_fetches_only_the_fl2va_tree(monkeypatch, base, h3_env):
     """MiniMaxAI/MiniMax-H3 is a 498.5GB whole repo carrying BOTH the FL2VA
     and Ref2VA checkpoints, plus a second unused copy of their shared
@@ -144,9 +177,43 @@ def test_download_fetches_only_the_fl2va_tree(monkeypatch, base, h3_env):
     FL2VA rendering, so a download must fetch the FL2VA/ tree ONLY —
     fetching the other ~354GB (Ref2VA plus the duplicate root components)
     would be silent waste, not merely a slower correct download."""
+    _fake_huggingface_hub(monkeypatch, files=_FL2VA_LISTING)
     worker = load_worker(monkeypatch, base)
     worker.download(MODEL)
     assert base.download_kwargs == {"allow_patterns": ["FL2VA/*"]}
+
+
+def test_download_refuses_a_repo_with_no_fl2va_tree(monkeypatch, base, h3_env):
+    """The bug `['FL2VA/*']` alone would cause: a non-H3 repo (a diffusers
+    text-to-video pipeline reachable through the same Hub task, say) matches
+    NOTHING under that pattern, so `download_snapshot` would "succeed" with
+    an EMPTY snapshot — no files, including no `model_index.json`, since
+    that is excluded by the same pattern — and `load()`'s own Diffusers-
+    marker guard would then pass VACUOUSLY on a directory with nothing in
+    it. The user's only signal would be an opaque `h3 exited with code N`
+    minutes later. Checking the repo's own Hub LISTING before fetching
+    anything catches this up front, with the same clear sentence `load()`
+    already gives an on-disk snapshot in the wrong shape."""
+    hub = _fake_huggingface_hub(monkeypatch, files=_DIFFUSERS_VIDEO_LISTING)
+    worker = load_worker(monkeypatch, base)
+    with pytest.raises(RuntimeError) as caught:
+        worker.download("org/some-diffusers-video-repo")
+    message = str(caught.value)
+    assert "org/some-diffusers-video-repo" in message
+    assert "FL2VA" in message
+    # Refused BEFORE any bytes moved — no download attempted.
+    assert not hasattr(base, "download_kwargs")
+    assert hub.calls == ["org/some-diffusers-video-repo"]
+
+
+def test_download_surfaces_a_listing_failure(monkeypatch, base, h3_env):
+    _fake_huggingface_hub(monkeypatch, error=RuntimeError("offline"))
+    worker = load_worker(monkeypatch, base)
+    with pytest.raises(RuntimeError) as caught:
+        worker.download(MODEL)
+    assert MODEL in str(caught.value)
+    assert "offline" in str(caught.value)
+    assert not hasattr(base, "download_kwargs")
 
 
 # ---------------------------------------------------------------- happy path
@@ -201,6 +268,27 @@ def test_an_unparseable_line_reports_an_indeterminate_tick(
     assert worker._parse_progress("loading weights...") == (None, None)
     assert worker._parse_progress("step 4/20") == (4, 20)
     assert worker._parse_progress("sampling 4 / 20 done") == (4, 20)
+
+
+def test_many_noise_lines_do_not_produce_a_post_per_line(monkeypatch, base, tmp_path, h3_env):
+    """The real regression: `report_or_cancel` is a blocking HTTP round trip,
+    and a chatty h3 build can print far more lines than there are steps
+    (per-layer diagnostics, timing dumps). Unthrottled, hundreds of such
+    lines serialize behind hundreds of POSTs and stall the very drain that
+    is supposed to keep the pipe from filling. The fake prints 300 identical
+    non-step lines as fast as it can — nothing in real time separates them —
+    so a correctly throttled worker reports the first one and then, within
+    its own throttle window, none of the rest."""
+    monkeypatch.setenv("H3_FAKE_NOISE_LINES", "300")
+    worker = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path, steps=1))
+
+    task_ticks = [t for t in base.ticks if t.get("kind") == "task"]
+    # 0/1 pre-spawn report, plus at most a handful from the noise burst and
+    # the one real "step 1/1" line — nowhere near 300+1.
+    assert len(task_ticks) < 10, len(task_ticks)
 
 
 # --------------------------------------------------------------- error paths

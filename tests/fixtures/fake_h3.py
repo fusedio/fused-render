@@ -18,6 +18,10 @@ Env knobs:
                           this path before exiting, so a test can confirm the
                           child actually received the signal rather than
                           merely inferring it from timing
+  H3_FAKE_NOISE_LINES     how many non-step diagnostic lines to print, as
+                          fast as possible, before the step loop — for
+                          proving the worker throttles its progress POSTs
+                          instead of sending one per line
 """
 import argparse
 import os
@@ -60,6 +64,10 @@ def main():
             sys.stderr.write(chunk)
             sys.stderr.flush()
             written += len(chunk)
+
+    noise_lines = int(os.environ.get("H3_FAKE_NOISE_LINES", "0"))
+    for _ in range(noise_lines):
+        print("loading weights...", flush=True)
 
     sleep_s = float(os.environ.get("H3_FAKE_STEP_SLEEP", "0"))
     steps = args.steps or 1

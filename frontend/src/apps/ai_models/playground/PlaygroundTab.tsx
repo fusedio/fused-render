@@ -347,7 +347,7 @@ export default function PlaygroundTab() {
                 // one recommended entry per list, and a test pins that) — this
                 // line is what the failure looks like if it ever slips.
                 <p className="pg-group-off">
-                  Nothing to try here yet — the Discover tab is where a first model comes from.
+                  Nothing to try here yet — the Local tab is where a first model comes from.
                 </p>
               )}
               {row.available && curated.map(draw)}

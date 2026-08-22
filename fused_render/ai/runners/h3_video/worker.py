@@ -75,7 +75,35 @@ def download(model_id):
     """Only the `FL2VA/` tree — see `_ALLOW_PATTERNS`. `allow_patterns`
     reaches both the segmented fetch and the huggingface_hub fallback
     (`worker_base.download_snapshot`'s own contract), so a resumed or
-    fallback download never reaches for the ref2va tree either."""
+    fallback download never reaches for the ref2va tree either.
+
+    **Checked against the repo's own Hub LISTING first, before a single
+    byte moves.** `allow_patterns=["FL2VA/*"]` alone is not enough: video
+    generation resolves through the same Hub task as ordinary diffusers
+    video pipelines (LTX, Wan, …), and any repo of THAT shape has no
+    `FL2VA/` anything — the pattern would match ZERO files, `download_
+    snapshot` would "succeed" with an EMPTY snapshot, and `load()`'s own
+    Diffusers-marker check (`model_index.json`, itself excluded by the same
+    pattern) would then pass VACUOUSLY on a directory holding nothing at
+    all. The user's only signal would be an opaque `h3 exited with code N`
+    minutes into a render that was never going to work. Refusing here, by
+    name, is the same trade `load()` already makes for a snapshot already
+    on disk in the wrong shape — this is that same check run one step
+    earlier, before the download it would otherwise waste.
+    """
+    import huggingface_hub
+
+    try:
+        names = huggingface_hub.list_repo_files(model_id)
+    except Exception as error:  # noqa: BLE001 - a Hub lookup failure is a fact
+                                 # about the id/network, not a bug in this runner
+        raise RuntimeError(
+            f"could not read {model_id}'s file listing: {error}") from error
+    if not any(name.startswith("FL2VA/") for name in names):
+        raise RuntimeError(
+            f"{model_id} has no FL2VA/ tree — h3.c reads its own checkpoint "
+            "layout directly and cannot open one of these. There is no "
+            "other local engine for video generation in this build.")
     return worker_base.download_snapshot(model_id, allow_patterns=_ALLOW_PATTERNS)
 
 
@@ -230,10 +258,28 @@ def generate(body):
         target=_drain_stderr, args=(proc, stderr_lines), daemon=True)
     stderr_thread.start()
 
+    # Throttled: a chatty h3 build can print far more lines than there are
+    # steps (per-layer diagnostics, timing dumps, …), and `report_or_cancel`
+    # is a BLOCKING HTTP round trip — one per line, unthrottled, serializes
+    # this loop behind hundreds of POSTs on a build like that and stalls the
+    # very drain that is supposed to keep the pipe from filling. A tick is
+    # sent when the progress actually MOVED (never silently drop a real step
+    # change) or when `_REPORT_INTERVAL_S` has elapsed since the last one —
+    # which is also what bounds how long a ✕ can take to be noticed on a
+    # quiet-content stream: `report_or_cancel` is this loop's only
+    # cancellation check, so throttling it throttles cancel latency too, and
+    # 200ms is short enough that a user pressing ✕ does not feel it.
+    _REPORT_INTERVAL_S = 0.2
+    last_reported_at = 0.0
+    last_progress = (None, None)
     try:
         for line in proc.stdout:
             done, total = _parse_progress(line)
             detail = line.strip() or "Rendering…"
+            now = time.time()
+            progress = (done, total)
+            if progress == last_progress and now - last_reported_at < _REPORT_INTERVAL_S:
+                continue
             try:
                 worker_base.report_or_cancel(
                     job=job, kind="task", unit="", done=done, total=total,
@@ -246,6 +292,8 @@ def generate(body):
                     proc.kill()
                     proc.wait()
                 raise
+            last_reported_at = now
+            last_progress = progress
     finally:
         proc.stdout.close()
         returncode = proc.wait()
