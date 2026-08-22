@@ -205,7 +205,22 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const busy = !!run && !run.done;
   const job = busy ? run.job : null;
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
-  const settled = run?.started;
+  // ONE box for all three states — the shimmer, the live preview, the finished
+  // picture — so the column cannot resize mid-render. The width is DEFINITE
+  // rather than the image's own: the worker's preview is a small thumbnail, and
+  // letting it size itself is exactly what made the layout jump when the first
+  // preview landed. 80% of the column (and of the render's own width) keeps the
+  // result a fifth smaller than the surface it sits on; the vh term is the same
+  // cap the old `max-height` was, expressed as a width so the ratio holds
+  // instead of letterboxing.
+  const shot = run
+    ? {
+        aspectRatio: `${run.started.width} / ${run.started.height}`,
+        width: `min(80%, ${Math.round(run.started.width * 0.8)}px, calc(50vh * ${(
+          run.started.width / run.started.height
+        ).toFixed(3)}))`,
+      }
+    : undefined;
 
   return (
     <div className="pg-work">
@@ -367,12 +382,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           <p className="pg-answer-label">Result</p>
           <figure className="pg-image-result">
             {run.done ? (
-              <div className="pg-image-frame">
-                <img
-                  src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
-                  alt={run.started.prompt}
-                  style={{ aspectRatio: `${run.started.width} / ${run.started.height}` }}
-                />
+              <div className="pg-image-frame" style={shot}>
+                <img src={rawUrl(run.started.path) + "&t=" + run.started.jobId} alt={run.started.prompt} />
                 {/* Save, where the text stage puts Copy: the picture's own
                     top-right corner. A plain download link — the file is
                     already on disk and the server serves it. */}
@@ -387,54 +398,37 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 </a>
               </div>
             ) : (
-              <>
+              // Same frame, same `shot` box: the shimmer, the first preview and
+              // the final picture all occupy the identical rectangle, so nothing
+              // below the image moves while the render walks its steps.
+              <div className="pg-image-frame" style={shot}>
                 <img
                   src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
                   alt="Render in progress"
-                  style={
-                    previewLive
-                      ? { aspectRatio: `${run.started.width} / ${run.started.height}` }
-                      : { display: "none" }
-                  }
+                  style={previewLive ? undefined : { display: "none" }}
                   onLoad={() => setPreviewLive(true)}
                   onError={() => setPreviewLive(false)}
                 />
-                {!previewLive && (
-                  <div
-                    className="pg-image-wait"
-                    style={{ aspectRatio: `${run.started.width} / ${run.started.height}` }}
-                    aria-hidden="true"
-                  />
-                )}
-              </>
+                {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
+              </div>
             )}
-            <figcaption className="pg-image-caption">
-              {busy ? (
-                <>
-                  <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                  {pct !== null && (
-                    <span className="pg-bar">
-                      <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                    </span>
-                  )}
-                </>
-              ) : settled ? (
-                // The SETTLED parameters — what actually ran (the server
-                // snaps and clamps silently), with the seed one click away.
-                <>
-                  {settled.width}×{settled.height} · {settled.steps} steps · guidance{" "}
-                  {settled.guidance} ·{" "}
-                  <button
-                    type="button"
-                    className="pg-seed"
-                    title="Reuse this seed — the same prompt and settings render the same picture"
-                    onClick={() => setSeed(String(settled.seed))}
-                  >
-                    seed {settled.seed}
-                  </button>
-                </>
-              ) : null}
-            </figcaption>
+            {/* Only while it renders. A FINISHED picture says nothing under
+                itself: the settled parameters (size, steps, guidance, the
+                invented seed) were removed by request — the picture is the
+                result, and a row of numbers under it read as machine exhaust.
+                That drops D429's seed-reuse button with them, so a random
+                render can no longer be reproduced after the fact; pinning a
+                seed up front in Config still works. */}
+            {busy && (
+              <figcaption className="pg-image-caption">
+                <span>{job?.detail || "Starting — a cold model loads first…"}</span>
+                {pct !== null && (
+                  <span className="pg-bar">
+                    <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
+                  </span>
+                )}
+              </figcaption>
+            )}
           </figure>
           </div>
         )}

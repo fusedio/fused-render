@@ -940,24 +940,27 @@ a.pg-hero-repo:hover {
   gap: 8px;
 }
 
-.pg-image-result img {
-  max-width: 100%;
-  max-height: 62vh;
-  width: auto;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  align-self: flex-start;
-  background: var(--bg-alt);
-}
-
-/* The finished picture wears its Save affordance the way the text stage's card
-   wears Copy — top-right, inside the frame. The frame exists only to give that
-   button something to be absolute against, so it hugs the image. */
+/* The frame OWNS the rectangle — its width and aspect ratio come from the run
+   (ImageStage's `shot`), and every state inside it fills that box. That is what
+   keeps the column still: a worker preview is a small thumbnail, and an image
+   sized by its own pixels resized the page the moment it arrived. It also gives
+   the Save button something to be absolute against, top-right, the way the text
+   stage's card wears Copy. */
 .pg-image-frame {
   position: relative;
   align-self: flex-start;
   max-width: 100%;
   line-height: 0;
+}
+
+.pg-image-result img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
 }
 
 /* Sitting on arbitrary photo pixels, not on a themed background: a fixed dark
@@ -978,8 +981,11 @@ a.pg-hero-repo:hover {
   background: rgba(0, 0, 0, 0.75);
 }
 
+/* The pre-preview shimmer: the frame's whole box, so the picture that replaces
+   it lands in exactly the same rectangle. */
 .pg-image-wait {
-  width: min(420px, 100%);
+  width: 100%;
+  height: 100%;
   border-radius: 12px;
   border: 1px solid var(--border);
   background: linear-gradient(100deg, var(--bg-alt) 40%, var(--bg) 50%, var(--bg-alt) 60%);
@@ -999,6 +1005,8 @@ a.pg-hero-repo:hover {
   }
 }
 
+/* The caption is progress only — it lives while the render runs and goes away
+   with it. */
 .pg-image-caption {
   display: flex;
   flex-direction: column;
@@ -1006,20 +1014,6 @@ a.pg-hero-repo:hover {
   font-size: 12px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
-}
-
-.pg-seed {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  color: var(--fg-muted);
-  text-decoration: underline dotted;
-  cursor: pointer;
-}
-
-.pg-seed:hover {
-  color: var(--fg);
 }
 
 /* -- transcription ------------------------------------------------------------------ */
