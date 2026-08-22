@@ -656,6 +656,60 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "transcribes faster than real time.",
         },
     ],
+    # Embeddings, and the ONE capability here whose two backends read the same
+    # bytes — which is why `mlx-embed` has no list of its own and is aliased onto
+    # this one (`_SHARED_SUGGESTIONS`). `google/siglip2-*` publishes a single
+    # format: a `model.safetensors` beside a `"model_type": "siglip"` config.
+    # Transformers reads it, and mlx-embeddings' own SigLIP port reads the same
+    # file — there is no `mlx-community` re-upload to prefer and nothing to
+    # convert, so pointing both engines at the same repos is not a coincidence to
+    # be maintained by hand, it is the format rule this file is keyed on.
+    #
+    # Keyed under the TORCH row rather than the MLX one because this is the
+    # platform-agnostic backend: every machine can resolve here, and only Apple
+    # Silicon can resolve to the other.
+    #
+    # **Why these two and nothing else.** Smallest first, per the module rule,
+    # so the base model is what a bare `fused.ai.embed()` loads: 768 dimensions
+    # is a comfortable vector to keep a few thousand of in a page, and 1.5GB is
+    # the smallest download that gets a genuinely good multilingual encoder.
+    # The so400m is the accuracy option at three times the disk and three times
+    # the compute per item, and its 1152-dim vectors are a third more storage
+    # for whoever is keeping them.
+    #
+    # **`openai/clip-vit-base-patch32` is deliberately absent**, and it is the
+    # entry a future reader is most likely to try to add — it is the famous one,
+    # it is 512-dim, and the model itself is about 600MB. The repo is not:
+    # it ships TensorFlow, Flax and PyTorch-pickle copies of the same weights
+    # beside the safetensors, so the whole-repo download this app's
+    # `size_gb` rule measures (and `download_snapshot` actually performs) is
+    # 3.6GB — more than twice the SigLIP2 base for a weaker, English-only
+    # encoder. mlx-embeddings has no CLIP module either, so it would also be an
+    # entry that vanishes when a Mac switches engines. The torch runner still
+    # LOADS a CLIP repo a user fetches themselves (`formats.EMBED_MODEL_TYPES`);
+    # this file is curation, and curating that download is a different question.
+    #
+    # Sizes are the Hub's per-file byte sums for the whole snapshot (2026-08-21),
+    # rounded to one decimal like every other list here. Both repos are ungated
+    # and Apache-2.0. **One line each**, per the rule the transformers text list
+    # states.
+    "transformers-embed": [
+        {
+            "id": "google/siglip2-base-patch16-384",
+            "label": "SigLIP2 base (384px)",
+            "size_gb": 1.5,
+            "note": "The smallest here and what a bare embed call loads — "
+                    "768-dim vectors, multilingual, and quick enough to index a "
+                    "folder of photos.",
+        },
+        {
+            "id": "google/siglip2-so400m-patch14-384",
+            "label": "SigLIP2 so400m (384px)",
+            "size_gb": 4.6,
+            "note": "Noticeably better matches than the base model, for three "
+                    "times the download and 1152-dim vectors to store.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`
@@ -688,6 +742,11 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
+    # Not a hardware variant of the same runner — a DIFFERENT runner that reads
+    # the same repos (see the comment on the embeddings block above). Aliased
+    # for the same reason as the pairs above: one list to keep in step rather
+    # than two copies drifting apart.
+    "mlx-embed": "transformers-embed",
 }
 
 

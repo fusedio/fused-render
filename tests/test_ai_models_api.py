@@ -1394,10 +1394,24 @@ def test_a_repo_reports_the_capability_that_could_load_it(client, hub):
 @requires_symlinks
 def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     """None is the honest answer, and the page turns it into "no Load button" —
-    rather than a button that is offered and always fails."""
+    rather than a button that is offered and always fails.
+
+    `sentence-similarity` (task label "sentence embeddings"), NOT the module's
+    own `modules.json` detection this test used before the embedding runners
+    shipped: that path sets `meta.task` to the bare string "embeddings", which
+    is now the label the embedding runners serve (`registry.EMBEDDINGS`) — a
+    sentence-transformers pooling checkpoint genuinely IS an embedding model by
+    that name, so it now reports `capability: "embeddings", engine: None`, the
+    same honest trap `openai/whisper-large-v3` reports (a real task, a format
+    nothing here reads) rather than "not classified at all". `NO_RUNNER_YET`
+    keeps "sentence embeddings" itself unclassified (see `registry.py`'s own
+    comment on the embeddings block: a sentence-transformers checkpoint has no
+    `get_text_features`/`get_image_features` for these runners to call), so
+    that label is what still answers `None` here.
+    """
     embed = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(embed, "c1", "modules.json", "[]")
-    assert _repo_row(client, "org/st")["task"] == "embeddings"
+    _snapshot_file(embed, "c1", "README.md", "---\npipeline_tag: sentence-similarity\n---\n")
+    assert _repo_row(client, "org/st")["task"] == "sentence embeddings"
     assert _repo_row(client, "org/st")["capability"] is None
 
 

@@ -575,9 +575,15 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
                    "text-classification", "summarization", "image-classification"):
         assert absent not in offered
-    # …while the three the Engines tab is about are all reachable.
+    # …while the four the Engines tab is about are all reachable. EMBEDDINGS
+    # arrives through `zero-shot-image-classification` and deliberately NOT
+    # through `feature-extraction`: the dual encoders the embedding runners load
+    # carry the former, and the sentence-transformers checkpoints that carry the
+    # latter are exactly what the `absent` list above keeps out (see
+    # `registry.NO_RUNNER_YET`'s note on those two labels).
     assert {registry.capability_for_task(hub._friendly_task(t)) for t in offered} == {
-        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT}
+        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
+        registry.EMBEDDINGS}
 
 
 def test_the_menu_follows_the_registry_rather_than_a_second_list(client, monkeypatch):

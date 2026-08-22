@@ -37,14 +37,18 @@ import secrets
 import time
 
 from fastapi import APIRouter, Body, Header
+from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, registry, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
-# rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, formats, partial, preview
+# rule here costs nothing. `embed_common` joins them for the same reason: its
+# request-shape check is what BOTH embedding runners' own `generate()` calls,
+# and a body this route refuses must be refused for the identical reason a
+# worker asked directly would give.
+from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
@@ -945,4 +949,106 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "task": task,
+    }
+
+
+def _embed_error(type_: str, message: str, status: int,
+                 job_id: str | None = None) -> JSONResponse:
+    """The `/api/ai/embed` wire shape: `{ok:false, error:{type, message}}`.
+
+    **Not `_error`'s plain `{error: message}`** — the shape `/api/ai/image` and
+    `/api/ai/transcribe` use, and reasonably so: their 409 is always
+    "unavailable", nothing more to say. This route's 409 can instead mean the
+    model is loading NOW, exactly like `/api/ai`'s own local-model path (see
+    `_ai_error`/`ModelNotReady` there), and that means a job id the page should
+    watch — a field `_error`'s shape has nowhere to carry. Matching `/api/ai`'s
+    contract rather than inventing a third one is what lets `fused.ai.embed`
+    read errors the same way `fused.ai` already does.
+    """
+    payload = {"ok": False, "error": {"type": type_, "message": message}}
+    if job_id is not None:
+        payload["error"]["jobId"] = job_id
+    return JSONResponse(payload, status_code=status)
+
+
+@router.post("/api/ai/embed")
+def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Embed text or an image into the resident dual encoder's vector space.
+
+    **Not job-backed, unlike `/api/ai/image` and `/api/ai/transcribe`.** Both
+    of those run for minutes and produce a file; this is one forward pass over
+    a batch of at most `embed_common.MAX_ITEMS` short items, over before a
+    progress row would ever have drawn — so the reply IS the result, the way
+    `/api/ai`'s non-streaming reply is.
+
+    **A cold model is `model_loading`, not `unavailable`** — the same fork
+    `/api/ai`'s local-model path takes (`supervisor.generate_text` /
+    `ModelNotReady`) rather than the one `/api/ai/image` takes (load inside the
+    render's own job): an embed call has no job of its own for a multi-GB
+    fetch to hide inside, so the load starts and its id comes back on a 409 for
+    the caller to watch, exactly as the first `fused.ai(...)` on a cold local
+    model already does.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Same rule `generate()` enforces inside each worker's own venv
+    # (`embed_common.request_kind`) — refused HERE too, before a model is even
+    # resolved, so a malformed request costs nothing rather than a 409 that
+    # implies the fix is to wait.
+    try:
+        kind, items = embed_common.request_kind(body)
+    except ValueError as e:
+        return _embed_error("bad_request", str(e), status=400)
+
+    if kind == "paths":
+        # Page-relative, exactly the rule `/api/ai/transcribe`'s `path` follows
+        # (RH-1): the worker is a separate process with its own cwd, so an
+        # unresolved relative path would mean "beside wherever the server was
+        # launched from" rather than "beside this page" — a trap whatever the
+        # error message says. An absolute path passes through untouched, as it
+        # does there.
+        base = body.get("base")
+        resolved = []
+        for path in items:
+            path = os.path.expanduser(path)
+            if not os.path.isabs(path):
+                if not isinstance(base, str) or not os.path.isabs(base):
+                    return _embed_error(
+                        "bad_request",
+                        "'paths' must be absolute, or relative to a page "
+                        "named by 'base'", status=400)
+                path = os.path.join(os.path.dirname(base), path)
+            resolved.append(os.path.abspath(path))
+        items = resolved
+
+    model = _model_of(body) or catalog.default_for(registry.EMBEDDINGS)
+    if not model:
+        # See `api_ai_image`'s identical comment: no runner and no curated
+        # default are different facts, and only the runner's own reason tells
+        # the user what to do about it.
+        return _embed_error(
+            "unavailable",
+            registry.unavailable_reason(registry.EMBEDDINGS)
+            or "no embedding model is configured",
+            status=409)
+
+    try:
+        result = supervisor.generate_embed(model, {kind: items})
+    except supervisor.ModelNotReady as e:
+        # NOT a failure (see `_ai_failed`'s own comment on the same fork in
+        # `server/ai.py`): the load already started, and its job id is what
+        # lets the caller show that download rather than just a rejection.
+        return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.SupervisorError as e:
+        return _embed_error("ai_error", str(e), status=502)
+
+    return {
+        "ok": True,
+        "result": {
+            "vectors": result.get("vectors") or [],
+            "dim": result.get("dim") or 0,
+            "model": model,
+        },
     }

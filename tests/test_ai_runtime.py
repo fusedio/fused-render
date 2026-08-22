@@ -3225,7 +3225,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "mlx-text", "llamacpp-text", "llamacpp-text-vulkan",
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
-        "faster-whisper", "mlx-whisper"}
+        "faster-whisper", "mlx-whisper",
+        "mlx-embed", "transformers-embed"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
