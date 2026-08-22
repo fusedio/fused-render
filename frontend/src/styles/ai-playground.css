@@ -621,11 +621,14 @@ a.pg-hero-repo:hover {
   flex: none;
 }
 
-/* Clear, beside Run once a reply exists — quiet on purpose, aligned with the
-   button row's baseline. */
+/* Clear, beside Run once a reply exists — quiet on purpose. Same 32px height
+   as .btn (buttons-modal.css) so the two labels sit on one line. */
 .pg-clear {
   flex: none;
-  padding: 8px 4px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
 }
 
 .pg-under {
