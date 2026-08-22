@@ -157,7 +157,19 @@ export function buildAppSeed(model: AiCatalogModel, capability: string): string 
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
   }
-  lines.push("", "The app I want: ");
+  // Addressed to the CLAUDE SESSION the composer spawns, not to the user: the
+  // `fused-render-ai` skill is the authoritative contract for these calls
+  // (streaming shapes, the model_loading retry dance, error types, export
+  // rules), and a seed that names the API without pointing at the contract
+  // invites the session to improvise it.
+  lines.push(
+    "",
+    "Before writing any AI code, load the `fused-render-ai` skill — it documents the " +
+      "fused.ai contract: streaming, model loading and download progress, every error " +
+      "type and how a page should respond, and what an exported app may call.",
+    "",
+    "The app I want: ",
+  );
   return lines.join("\n");
 }
 
