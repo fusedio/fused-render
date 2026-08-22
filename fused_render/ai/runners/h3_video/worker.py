@@ -190,14 +190,29 @@ def generate(body):
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=steps, detail="Rendering — step 0/%d" % steps)
 
-    args = [
+    # `[h3_bin]` in production — h3_bin is always a compiled Mach-O binary
+    # there, resolved by `registry.h3_bin()`, and this prefix never fires.
+    # `[sys.executable, h3_bin]` fires ONLY in tests: the fake standing in
+    # for h3.c is a `.py` script, and a script has no way to be exec'd
+    # directly on Windows (no shebang support — `CreateProcess` needs a PE
+    # image, exactly the "%1 is not a valid Win32 application" this avoids)
+    # even though it runs fine as-is on POSIX via its shebang + execute bit.
+    # Routing it through THIS interpreter keeps the test a real subprocess
+    # with real pipes on every platform, with no shell and no `.cmd`/`.bat`
+    # indirection — this repo's own `_popen_cmd` (server/ai.py) already
+    # documents why a shim needs `cmd.exe /c` to run at all on Windows,
+    # which a bare argv-list Popen (this worker's whole discipline) cannot
+    # give it.
+    launcher = [sys.executable] if h3_bin.lower().endswith(".py") else []
+    args = launcher + [
         h3_bin, "-d", snapshot, "-p", prompt,
         "--width", str(width), "--height", str(height),
         "--frames", str(frames), "--steps", str(steps),
         "--seed", str(seed), "-o", out,
     ]
     # Repo subprocess convention (PROJ atfork history): an ABSOLUTE executable
-    # path (h3_bin is one — see `registry.h3_bin`'s resolution ladder),
+    # path (h3_bin is one — see `registry.h3_bin`'s resolution ladder — and so
+    # is `sys.executable` on the rare test-only launcher path above),
     # `close_fds=False` (posix_spawn instead of fork()+exec), and no `cwd=`.
     proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

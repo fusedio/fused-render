@@ -267,14 +267,22 @@ fi
 #     keyed by the pinned sha, exactly like rclone is keyed by its version, so
 #     re-running the script doesn't rebuild unless the pin changes.
 #
-#     No Xcode Metal toolchain is needed: h3.c's Metal shaders
+#     No OFFLINE Metal shader toolchain is needed: h3.c's Metal shaders
 #     (h3_shaders.metal) compile at RUNTIME through the Metal framework's own
 #     shading-language compiler (MTLLibrary newLibraryWithSource:), not ahead
-#     of time — the Makefile below links only the frameworks macOS ships
-#     (Foundation, Metal, MetalPerformanceShaders(Graph), Accelerate), so a
-#     plain `xcode-select --install` command-line-tools clang is sufficient,
-#     the same assumption the rest of this script already makes about the
-#     build host.
+#     of time. **But the SDK still has to be a recent one** — CORRECTED after
+#     hitting it in CI: the Objective-C source (h3_metal.m, h3_gpu.m) at the
+#     pinned commit references Metal 4 / MPSGraph declarations
+#     (`MTLGPUFamilyMetal4`, `MTLMathModeSafe`,
+#     `scaledDotProductAttentionWithQueryTensor:...`) that exist only in the
+#     macOS 26 SDK — a plain `xcode-select --install` command-line-tools
+#     clang is NOT sufficient unless that install happens to be for Xcode 26+;
+#     the CI workflow selects an Xcode with that SDK explicitly before this
+#     step runs (see the `macos-desktop`/`build-sign-notarize-release` jobs'
+#     own comments). This is a compile-SDK requirement, not a deployment-
+#     target one — the Makefile below still links only the frameworks macOS
+#     ships (Foundation, Metal, MetalPerformanceShaders(Graph), Accelerate),
+#     and the app's own `MACOSX_DEPLOYMENT_TARGET` is untouched.
 #
 #     Apple-Silicon-only, like the rclone build above and for the same
 #     packaging reason: this script's py2app target is arm64-only (see the

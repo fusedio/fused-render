@@ -199,7 +199,7 @@ FAKE_VIDEO_WORKER = textwrap.dedent('''
     TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
     STATE = {"state": "loading", "model": "", "detail": "", "error": "",
              "resident_bytes": None, "loaded_at": None}
-    # A tiny placeholder mp4 — not a real container, just enough bytes for the
+    # A tiny placeholder mp4 -- not a real container, just enough bytes for the
     # test to assert the server hands back a path that actually resolves.
     MP4 = b"\\x00\\x00\\x00\\x18ftypmp42fake video bytes"
 
@@ -345,7 +345,7 @@ def fake_runner(tmp_path, monkeypatch):
     this interpreter — so nothing is downloaded and nothing is built."""
     folder = tmp_path / "fake_runner"
     folder.mkdir()
-    (folder / "worker.py").write_text(FAKE_WORKER)
+    (folder / "worker.py").write_text(FAKE_WORKER, encoding="utf-8")
     runner = registry.Runner(
         code="fake-text", capability=registry.TEXT_GENERATION,
         folder=str(folder), label="Fake",
@@ -368,7 +368,7 @@ def fake_image_runner(tmp_path, monkeypatch):
     worker and this interpreter — so no torch, no weights, no network."""
     folder = tmp_path / "fake_image_runner"
     folder.mkdir()
-    (folder / "worker.py").write_text(FAKE_IMAGE_WORKER)
+    (folder / "worker.py").write_text(FAKE_IMAGE_WORKER, encoding="utf-8")
     runner = registry.Runner(
         code="fake-image", capability=registry.IMAGE_GENERATION,
         folder=str(folder), label="Fake image",
@@ -408,7 +408,7 @@ def fake_video_runner(tmp_path, monkeypatch):
     """
     folder = tmp_path / "fake_video_runner"
     folder.mkdir()
-    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER)
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
     runner = registry.Runner(
         code="fake-video", capability=registry.VIDEO_GENERATION,
         folder=str(folder), label="Fake video",
@@ -436,7 +436,7 @@ def _only_transcribe_runner(tmp_path, monkeypatch, code):
     """
     folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
     folder.mkdir()
-    (folder / "worker.py").write_text(FAKE_TRANSCRIBE_WORKER)
+    (folder / "worker.py").write_text(FAKE_TRANSCRIBE_WORKER, encoding="utf-8")
     runner = registry.Runner(
         code=code, capability=registry.SPEECH_TO_TEXT,
         folder=str(folder), label="Fake whisper",
