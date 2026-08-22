@@ -313,9 +313,17 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
         # the pool we just read, so wait and read it again. The timeout is the
         # floor under a sweeper that somehow never finishes: worst case we do
         # what the old code always did and sweep concurrently.
+        _wait_t0 = time.monotonic()
         waiter.wait(timeout=SWEEP_WAIT_MAX_S)
+        # DEBUG: this is dead time on the request thread spent waiting for
+        # SOMEONE ELSE'S sweep rather than doing any of its own work — worth
+        # separating from the sweep's own timing below when a rank request
+        # is slow and the sweep it ran looks fast in isolation.
+        logger.debug("index rank: waited %.1fms for %s's in-flight sweep",
+                    (time.monotonic() - _wait_t0) * 1000, base)
         waited = True
 
+    _sweep_t0 = time.monotonic()
     try:
         fresh = _ignored(root, entries, top, deciders, want)
     finally:
@@ -323,6 +331,11 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
             if _inflight.get(base) is mine:
                 del _inflight[base]
         mine.set()
+        # DEBUG: `len(want)` is the number of paths actually queried against
+        # git — the pool hit count (len(deciders) - len(want)) is what made it
+        # small, and this is the line that shows whether it did.
+        logger.debug("index rank: git sweep of %s queried %d path(s) in %.1fms",
+                    base, len(want), (time.monotonic() - _sweep_t0) * 1000)
 
     # The pool's parts to write back, or None for "nothing to write". One
     # value, not three: they are only ever meaningful together, and three
@@ -526,7 +539,15 @@ def _deciders(root: str, entries: list, prefix: str,
     payload cannot contain its own markers (the ranked search) passes
     `oracle_rels` instead, and then the payload is not consulted at all.
     """
+    t0 = time.monotonic()
     top = _repo_toplevel(root)
+    # DEBUG, not WARNING: this runs on every rank request (twice if the query
+    # escalates to the subsequence pass) and is normally near-instant once
+    # `_repo_toplevel`'s own cache is warm — logging it is what makes a COLD
+    # cache (or a git that is slow to answer) visible after the fact instead
+    # of only inferred from a slow request report.
+    logger.debug("index rank: _repo_toplevel(%s) -> %s in %.1fms",
+                root, top, (time.monotonic() - t0) * 1000)
     if top is not None:
         # Inside a repo the oracle sits at the TOPLEVEL — an oracle at the
         # searched subfolder would take the no-repo graft path (no .git there)

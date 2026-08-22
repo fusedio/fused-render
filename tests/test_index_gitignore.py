@@ -4,6 +4,7 @@ and the index-first swap must not change what search shows.
 See fused_render/server/index_gitignore.py.
 """
 import json
+import logging
 import os
 import subprocess
 import time
@@ -618,3 +619,62 @@ def test_an_orphaned_temp_file_is_swept_on_the_next_save(tmp_path, monkeypatch):
     os.utime(orphan, (0, 0))  # from a long-dead process
     filter_corpus(_out(root, rels), index_root=root)
     assert not os.path.exists(orphan)
+
+
+# -- DEBUG timing --------------------------------------------------------------
+#
+# The rank path had no server-side timing at all, so a slow report could only
+# be diagnosed by inference. These assert the log lines exist and are at
+# DEBUG (never louder — this fires on every keystroke, see query.py's
+# pass_over docstring for the reasoning), not their exact wording.
+
+def test_debug_logs_the_repo_toplevel_lookup(tmp_path, monkeypatch, caplog):
+    _fresh_cache(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("*.gen\n", encoding="utf-8")
+    with caplog.at_level(logging.DEBUG,
+                        logger="fused_render.server.index_gitignore"):
+        filter_corpus(_out(str(repo), ["keep.py", "junk.gen"]))
+    assert any("_repo_toplevel" in r.message and r.levelno == logging.DEBUG
+              for r in caplog.records)
+
+
+def test_debug_logs_the_git_sweep_with_the_path_count(tmp_path, monkeypatch,
+                                                       caplog):
+    _fresh_cache(monkeypatch)
+    root, rels = _proj_with_a_log(tmp_path)
+    with caplog.at_level(logging.DEBUG,
+                        logger="fused_render.server.index_gitignore"):
+        filter_corpus(_out(root, rels))
+    sweep_lines = [r.message for r in caplog.records if "git sweep" in r.message]
+    assert sweep_lines
+    assert "queried" in sweep_lines[0]
+
+
+def test_debug_logs_a_wait_on_someone_elses_inflight_sweep(tmp_path,
+                                                           monkeypatch, caplog):
+    """The dead-time-vs-sweep-time distinction: a second caller of the same
+    base waits on the sweep already running rather than starting its own, and
+    that wait gets its own log line so it isn't mistaken for sweep cost."""
+    _fresh_cache(monkeypatch)
+    root, rels = _proj_with_a_log(tmp_path)
+    real = index_gitignore._ignored
+    started = Event()
+
+    def slow(*a, **k):
+        started.set()
+        time.sleep(0.3)
+        return real(*a, **k)
+
+    monkeypatch.setattr(index_gitignore, "_ignored", slow)
+    first = Thread(target=lambda: filter_corpus(_out(root, rels),
+                                                index_root=root))
+    first.start()
+    started.wait(timeout=10)
+    with caplog.at_level(logging.DEBUG,
+                        logger="fused_render.server.index_gitignore"):
+        filter_corpus(_out(root, rels), index_root=root)
+    first.join(timeout=30)
+    assert any("in-flight sweep" in r.message for r in caplog.records)

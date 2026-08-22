@@ -92,6 +92,55 @@ from fused_render.ai import registry
 #: which the card shows as "—" rather than inventing a figure from parameter
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
+#: `nickname` is the short human name the Playground sidebar shows — the
+#: model without its quantization/engine qualifier. A curated FIELD, never
+#: derived by stripping the label's parenthetical at runtime, for the reason
+#: `short_label` and `family_label` are fields too (AI-2c): a stripped name
+#: is a value nobody owns and no test can see.
+#:
+#: **`recommended` IS A SECOND AXIS, AND IT IS THE ONLY ONE THE PLAYGROUND
+#: READS.** Opt-in, absent almost everywhere: every entry here is a model this
+#: app stands behind on the AI Models page, and the marked one is what the
+#: Playground offers — recommended-or-downloaded is what its sidebar draws
+#: (D425). The two surfaces want different lengths for the same curation. The AI
+#: Models page is a place to SHOP: eight text entries from 0.7GB to 20GB is the
+#: range someone comparing downloads needs, and its Local tab exists to say what
+#: a disk already holds. The Playground is a place to TRY, reached by someone who
+#: wants to type a sentence and see what comes back — and a sidebar of eight
+#: rows, most of them a multi-gigabyte download away from answering, is a
+#: decision where a text box was wanted.
+#:
+#: **EXACTLY ONE PER LIST — one per capability AND engine, since that is what a
+#: list IS — and a test pins the count both ways.** Not "a handful", which is
+#: what this started as (three of the eight text entries, two of the four MLX
+#: whispers) and which was the owner's call to cut: a shortlist of three is still
+#: a comparison, and the reader who came to type a sentence has no way to make
+#: it. One row is an ANSWER. It also makes the flag's meaning checkable by eye —
+#: "the model to try on this engine" has one correct value per list, where "a
+#: good first click" had as many as somebody felt like marking. The floor and the
+#: ceiling matter for different reasons: no marked entry leaves the Playground's
+#: group empty on a machine with nothing downloaded, and two puts the choice back.
+#:
+#: **It is NOT "the best one", and it is NOT the default.** `default_for()` is
+#: still position 0, still the smallest, and a recommended entry has no bearing
+#: on it — see the module docstring on why there is no `default: True` field and
+#: why reintroducing one under this name would be the same mistake wearing a new
+#: word. What the flag means is "the one to TRY on this engine": strong enough
+#: that a first answer is a fair picture of what local inference does here, small
+#: enough that the download is not the experience.
+#:
+#: **Where that lands is per LIST and is nobody's formula.** On the text lists it
+#: is neither end — the smallest entry is quick and weaker than every row above
+#: it, and a 20GB model can be the best row in its list and still be a poor first
+#: click. On `mlx-whisper` it IS the head: a 0.05GB tiny.en downloads in seconds
+#: and transcribes clear speech well enough to show what the feature does, which
+#: is exactly the "the download is not the experience" half of the rule winning
+#: outright. So the marked entry sometimes coincides with `default_for()` and
+#: sometimes does not, and that is not a bug either way — the two axes are
+#: independent, not opposed, and nothing may derive one from the other. Note that
+#: the two whisper lists disagree today (MLX marks tiny.en, CTranslate2 marks
+#: turbo); an engine's list is its own editorial judgement, so that is allowed
+#: rather than a drift to reconcile.
 #:
 #: **ONE LINE EACH.** A shortlist is read by SWEEPING it, and four cards of three
 #: sentences is a wall nobody reaches the end of — so each note carries the
@@ -200,13 +249,16 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
+            "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — quick "
                     "to fetch and to answer, and weaker than every other row.",
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
+            "nickname": "Qwen3.5 4B",
             "size_gb": 4.0,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
@@ -234,6 +286,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
             "label": "LFM2.5 8B-A1B (MLX 4-bit)",
+            "nickname": "LFM2.5 8B-A1B",
             "size_gb": 4.9,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -242,6 +295,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
             "label": "Gemma 4 E4B (4-bit)",
+            "nickname": "Gemma 4 E4B",
             "size_gb": 5.2,
             "note": "A second family at much the same size as the Qwen 4B, "
                     "worth trying on a prompt Qwen handles badly.",
@@ -261,6 +315,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
+            "nickname": "Ternary Bonsai 27B",
             # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
             # the completed download MEASURES on disk, reported by the AI Models
             # page's own scan. Where the two disagree the measurement wins —
@@ -275,6 +330,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
+            "nickname": "Qwen3.5 9B",
             "size_gb": 8.2,
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
@@ -286,6 +342,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.8-27B-4bit",
             "label": "Qwen3.8 27B (MLX 4-bit)",
+            "nickname": "Qwen3.8 27B",
             # Measured from the repo's blob sizes, not estimated.
             "size_gb": 16.1,
             "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
@@ -304,6 +361,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
+            "nickname": "Qwen3.6 27B",
             "size_gb": 20.0,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
@@ -413,6 +471,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
+            "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — a "
                     "hybrid architecture built for CPU decode, so it answers "
@@ -420,7 +479,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.5-4B-Q4_K_M.gguf",
+            "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
+            "nickname": "Qwen3.5 4B",
             "size_gb": 2.7,
             "note": "The first row here strong enough for real work: current-"
                     "gen Qwen, and a fifth of the unquantized 4B's download.",
@@ -428,6 +489,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "gemma-4-E4B-it-Q4_K_M.gguf",
             "label": "Gemma 4 E4B (Q4_K_M)",
+            "nickname": "Gemma 4 E4B",
             "size_gb": 5.0,
             "note": "A second family, worth trying on a prompt the Qwen 4B "
                     "above handles badly — it answers above its size class "
@@ -453,6 +515,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
             "label": "LFM2.5 8B-A1B (Q4_K_M)",
+            "nickname": "LFM2.5 8B-A1B",
             "size_gb": 5.2,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -461,6 +524,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
+            "nickname": "Qwen3.8 27B",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
@@ -471,7 +535,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "diffusers-image": [
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
+            "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
+            "nickname": "FLUX.2 klein 4B",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
             # `usedStorage` (2026-08-20 Hub metadata), and here that number IS
             # the download — one repo, no component repo, and no skipped
@@ -503,6 +569,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "One self-contained repo with an int8-quantized "
                     "transformer: several GB less to fetch and to hold than the "
                     "bf16 FLUX.2 pipeline it is built from.",
+            # klein is a step-distilled model: D310's benchmark ran it at 4
+            # steps (~34s an image on the reference Mac), and the server's
+            # generic 28-step default turns a first image into minutes for no
+            # quality a distilled model can spend. The Playground reads this
+            # hint; a model without one keeps the server's default.
+            "defaults": {"steps": 4},
         },
     ],
     # The same model, converted for MLX — and unloadable by the runner above,
@@ -515,10 +587,14 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "mflux-image": [
         {
             "id": "mlx-community/FLUX.2-Klein-4B-4bit",
+            "recommended": True,
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
+            "nickname": "FLUX.2 klein 4B",
             "size_gb": 4.6,
             "note": "One repo instead of the Diffusers split, and quicker per "
                     "image — but it reserves far more memory while running.",
+            # The same distilled model; the same D310 4-step benchmark.
+            "defaults": {"steps": 4},
         },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
@@ -547,6 +623,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
             "label": "Whisper tiny English (MLX 8-bit)",
+            "nickname": "Whisper tiny English",
+            "recommended": True,
             "size_gb": 0.05,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -555,6 +633,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-small-mlx",
             "label": "Whisper small (MLX)",
+            "nickname": "Whisper small",
             "size_gb": 0.5,
             "note": "The smallest here, and what a bare transcribe call loads — "
                     "quick, but it drops names and punctuation turbo gets "
@@ -563,6 +642,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-large-v3-turbo",
             "label": "Whisper large-v3 turbo (MLX)",
+            "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
             "note": "The best value here: large-v3 accuracy at a fraction of "
                     "its decoding cost, and faster than real time by a wide "
@@ -571,6 +651,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-large-v3-mlx",
             "label": "Whisper large-v3 (MLX)",
+            "nickname": "Whisper large-v3",
             "size_gb": 3.1,
             "note": "The full model, for a recording turbo handles badly — "
                     "twice turbo's disk and several times its decoding.",
@@ -600,6 +681,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Systran/faster-whisper-tiny.en",
             "label": "Whisper tiny English (CT2)",
+            "nickname": "Whisper tiny English",
             "size_gb": 0.08,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -608,17 +690,75 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Systran/faster-whisper-small",
             "label": "Whisper small (CT2)",
+            "nickname": "Whisper small",
             "size_gb": 0.5,
             "note": "Light enough for an old machine, but it drops names and "
                     "punctuation turbo gets right.",
         },
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
+            "recommended": True,
             "label": "Whisper large-v3 turbo (CT2)",
+            "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
             "note": "The best value here: large-v3 accuracy at roughly a "
                     "quarter of its decoding cost. Usable on CPU — a laptop "
                     "transcribes faster than real time.",
+        },
+    ],
+    # Embeddings, and the ONE capability here whose two backends read the same
+    # bytes — which is why `mlx-embed` has no list of its own and is aliased onto
+    # this one (`_SHARED_SUGGESTIONS`). `google/siglip2-*` publishes a single
+    # format: a `model.safetensors` beside a `"model_type": "siglip"` config.
+    # Transformers reads it, and mlx-embeddings' own SigLIP port reads the same
+    # file — there is no `mlx-community` re-upload to prefer and nothing to
+    # convert, so pointing both engines at the same repos is not a coincidence to
+    # be maintained by hand, it is the format rule this file is keyed on.
+    #
+    # Keyed under the TORCH row rather than the MLX one because this is the
+    # platform-agnostic backend: every machine can resolve here, and only Apple
+    # Silicon can resolve to the other.
+    #
+    # **Why these two and nothing else.** Smallest first, per the module rule,
+    # so the base model is what a bare `fused.ai.embed()` loads: 768 dimensions
+    # is a comfortable vector to keep a few thousand of in a page, and 1.5GB is
+    # the smallest download that gets a genuinely good multilingual encoder.
+    # The so400m is the accuracy option at three times the disk and three times
+    # the compute per item, and its 1152-dim vectors are a third more storage
+    # for whoever is keeping them.
+    #
+    # **`openai/clip-vit-base-patch32` is deliberately absent**, and it is the
+    # entry a future reader is most likely to try to add — it is the famous one,
+    # it is 512-dim, and the model itself is about 600MB. The repo is not:
+    # it ships TensorFlow, Flax and PyTorch-pickle copies of the same weights
+    # beside the safetensors, so the whole-repo download this app's
+    # `size_gb` rule measures (and `download_snapshot` actually performs) is
+    # 3.6GB — more than twice the SigLIP2 base for a weaker, English-only
+    # encoder. mlx-embeddings has no CLIP module either, so it would also be an
+    # entry that vanishes when a Mac switches engines. The torch runner still
+    # LOADS a CLIP repo a user fetches themselves (`formats.EMBED_MODEL_TYPES`);
+    # this file is curation, and curating that download is a different question.
+    #
+    # Sizes are the Hub's per-file byte sums for the whole snapshot (2026-08-21),
+    # rounded to one decimal like every other list here. Both repos are ungated
+    # and Apache-2.0. **One line each**, per the rule the transformers text list
+    # states.
+    "transformers-embed": [
+        {
+            "id": "google/siglip2-base-patch16-384",
+            "recommended": True,
+            "label": "SigLIP2 base (384px)",
+            "size_gb": 1.5,
+            "note": "The smallest here and what a bare embed call loads — "
+                    "768-dim vectors, multilingual, and quick enough to index a "
+                    "folder of photos.",
+        },
+        {
+            "id": "google/siglip2-so400m-patch14-384",
+            "label": "SigLIP2 so400m (384px)",
+            "size_gb": 4.6,
+            "note": "Noticeably better matches than the base model, for three "
+                    "times the download and 1152-dim vectors to store.",
         },
     ],
 }
@@ -653,6 +793,11 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
+    # Not a hardware variant of the same runner — a DIFFERENT runner that reads
+    # the same repos (see the comment on the embeddings block above). Aliased
+    # for the same reason as the pairs above: one list to keep in step rather
+    # than two copies drifting apart.
+    "mlx-embed": "transformers-embed",
 }
 
 
@@ -712,6 +857,42 @@ def all_suggested_ids() -> set[str]:
     from a previous life should be told so rather than have the row go quiet.
     """
     return {entry["id"] for entries in SUGGESTIONS.values() for entry in entries}
+
+
+def mirror_id(model_id: str) -> str:
+    """The repo id to name to the model mirror for `model_id`, or `""` (AI-5m).
+
+    A translation, and it is what keeps the mirror reachable for llama.cpp at
+    all. Every other runner's suggested ids ARE repo ids and come back
+    unchanged, but `llamacpp-text`'s are bare `.gguf` FILENAMES — one repo
+    publishes many quantizations, so the page keys the curation by file — while
+    the worker names the recipe's REPO to the mirror
+    (`llama_text.download` -> `worker_base.download_file(recipe["repo"], …)`).
+    Handed the filename, `mirror.allowed` refuses it against `_REPO_ID`
+    (`org/name`) and the whole feature is off for every model in that list,
+    silently: no manifest request is a download that looks perfectly normal.
+
+    **The privacy rule is unchanged and this cannot widen it.** `""` for
+    anything not in `all_suggested_ids()`, so a model the user found in Discover
+    is never named to our distribution, and the lookup is in the CURATED recipe
+    table — an uncurated GGUF filename has no row and gets nothing. What the
+    worker learns is still the answer for ONE model.
+
+    It lives here rather than in `mirror.py` because that file is imported by a
+    runner's interpreter as a bare module with no `fused_render` package on
+    `sys.path`: neither this file nor `formats` is reachable from there, and the
+    decision has to be made in the server process anyway (see
+    `supervisor._mirror_ok`).
+    """
+    if not model_id or model_id not in all_suggested_ids():
+        return ""
+    from fused_render.ai.runners import formats
+
+    recipe = formats.GGUF_RECIPES.get(model_id)
+    # A suggested id with no recipe row is already a repo id (every other
+    # runner's list), so it is handed down as it is. Imported lazily to keep this
+    # module free of a runner import at load time.
+    return recipe["repo"] if recipe else model_id
 
 
 def capability_of(repo_id: str) -> str | None:

@@ -490,7 +490,38 @@ def _terminate(worker: Worker) -> None:
     _cleanup_files(worker)
 
 
-def _child_env(token: str) -> dict:
+def _mirror_ok(model: str) -> str:
+    """The repo id `model` may name to the mirror, or `""` (SPEC AI-5l, AI-5m).
+
+    A repo id rather than a yes/no, because the two are not the same answer for
+    every runner: `llamacpp-text`'s catalog ids are bare `.gguf` filenames and
+    the worker names the recipe's REPO, which is what `mirror.allowed` compares
+    against. `catalog.mirror_id` does that translation; a permission carrying the
+    filename would be refused by the client and the mirror would be off for every
+    llama.cpp model without a single symptom.
+
+    The decision has to happen HERE, in the server process, because `catalog` is
+    unreachable from a runner's interpreter — a worker imports `worker_base` and
+    `mirror` as bare modules with no `fused_render` package on `sys.path`. But
+    the reason it must happen here is a privacy one rather than a mechanical
+    one: the worker is told the answer for the ONE model it was sent to fetch
+    and for nothing else, so our distribution is never asked about a model the
+    user picked from Discover, and we cannot learn that they downloaded it.
+
+    Best-effort: a catalog that cannot be read is "not suggested", which leaves
+    the download on the Hub path exactly as it is today.
+    """
+    if not model:
+        return ""
+    try:
+        from fused_render.ai import catalog
+
+        return catalog.mirror_id(model)
+    except Exception:  # noqa: BLE001 - no answer means the Hub, which always works
+        return ""
+
+
+def _child_env(token: str, model: str = "") -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -506,11 +537,33 @@ def _child_env(token: str) -> dict:
     and passes on in the copy below. Nothing in this app holds a credential to
     inject, and manufacturing one here would assert something about an
     environment the caller was asked nothing about.
+
+    **`FUSED_MODEL_MIRROR_OK` is the model mirror's permission** and carries the
+    repo id the worker will NAME to the mirror rather than a bare flag, so a
+    value that arrived some other way cannot licence a probe for whatever the
+    next download happens to be. That id is not always what this app calls the
+    model — a curated GGUF is a filename here and a repo id there (AI-5m) — and
+    `_mirror_ok` is what translates it. It is
+    also POPPED when the answer is no, because this environment is a copy of the
+    server's: an operator (or a parent process) exporting it would otherwise hand
+    every worker permission for every model. `FUSED_MODEL_MIRROR` itself is left
+    alone — an operator pointing it at staging is the supported way to use this,
+    and unset now means the shipped default (`mirror.DEFAULT_BASE`), not "no
+    mirror" — this permission is what still keeps that default from widening
+    anything: a base URL alone names no repo, and only a suggested model's id
+    ever reaches `FUSED_MODEL_MIRROR_OK`.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
         env.pop(name, None)
     env["FUSED_AI_WORKER_TOKEN"] = token
+    permitted = _mirror_ok(model)
+    if permitted:
+        # The id the WORKER will name to the mirror, which is not always the id
+        # this app calls the model — see `_mirror_ok` and `catalog.mirror_id`.
+        env["FUSED_MODEL_MIRROR_OK"] = permitted
+    else:
+        env.pop("FUSED_MODEL_MIRROR_OK", None)
     return env
 
 
@@ -573,7 +626,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
         stdout=subprocess.DEVNULL,
         stderr=open(log, "w"),
         cwd=runner.folder,
-        env=_child_env(worker.token),
+        env=_child_env(worker.token, worker.model),
         close_fds=True,
         **SPAWN_KWARGS,
     )
@@ -853,7 +906,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
-            cwd=runner.folder, env=_child_env(stub.token), close_fds=True,
+            cwd=runner.folder, env=_child_env(stub.token, model), close_fds=True,
             **SPAWN_KWARGS,
         )
         stub.pid = proc.pid
@@ -1537,6 +1590,46 @@ def generate_text(model: str, body: dict):
                     continue
                 _touch(worker)
                 yield event
+
+
+def generate_embed(model: str, body: dict) -> dict:
+    """One `{vectors, dim, model}` reply from the resident embedding model.
+
+    The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
+    `generate_image` and `_wait_ready` use: an embed call answers in
+    milliseconds once the model is resident, so there is no job for a cold load
+    to hide inside the way a multi-minute render has one already. A cold model
+    therefore raises `ModelNotReady` — the load STARTS, its job id comes back on
+    the exception, and the caller is meant to watch it and ask again, exactly as
+    `/api/ai` already does for text.
+
+    Blocking, and cheap to block on: unlike an image or a transcription this is
+    one forward pass through a small tower, so holding the request open for it
+    costs nothing the caller was not already waiting on.
+    """
+    worker = ready_worker(registry.EMBEDDINGS, model)
+    if worker is None:
+        with _lock:
+            current = _workers.get(registry.EMBEDDINGS)
+        if current is not None and current.model == model:
+            raise ModelNotReady(
+                f"{model} is still loading ({current.state})", job_id_for(model))
+        started = load(model, registry.EMBEDDINGS)
+        raise ModelNotReady(f"{model} is loading now", started["jobId"])
+
+    try:
+        response = _worker_request(worker, "/generate", body=body,
+                                   timeout=GENERATE_TIMEOUT_S)
+    except (OSError, ValueError) as e:
+        raise SupervisorError(f"the model process did not answer: {e}") from e
+    with response:
+        try:
+            payload = json.loads(response.read().decode() or "{}")
+        except ValueError as e:
+            raise SupervisorError("the model process sent a malformed reply") from e
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or "the embedding failed"))
+    return payload.get("result") or {}
 
 
 def _wait_ready(model: str, capability: str, job: str,

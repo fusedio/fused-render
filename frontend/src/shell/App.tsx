@@ -4,10 +4,10 @@
 //   "/explorer"              -> file-explorer homepage (FilesHome)
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
-//   "/learn"                 -> learn content, chrome-free (variant "learn")
 //   "/claude-config"         -> Claude config panel (native, no mount)
 //   "/claude-md"             -> legacy; redirects into the panel's MD Files tab
-//   "/ai-models"             -> Hugging Face cache inventory
+//   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
+//                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
@@ -18,7 +18,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { IS_EMBED, IS_PREVIEW, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady } from "@platform/lib/hooks";
+import { useNavEpoch, useDocumentTitle, useRefreshOnReturn } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
@@ -41,8 +41,8 @@ import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
-import { learnEntryPath } from "@apps/learn";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
+import { AI_MODELS_PREFIX, DEFAULT_TAB, isAiModelsPath } from "@apps/ai_models/routes";
 
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
@@ -53,7 +53,7 @@ import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 const Preferences = lazy(() => import("@shell/Preferences"));
 const Templates = lazy(() => import("@shell/templates/Templates"));
 const Mounts = lazy(() => import("@shell/Mounts"));
-const AiModels = lazy(() => import("@shell/AiModels"));
+const AiModels = lazy(() => import("@apps/ai_models").then((m) => ({ default: m.AiModels })));
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
@@ -248,28 +248,25 @@ function RouteFallback() {
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
 //
-// `variant` selects the sub-app chrome:
-//   "explorer" (default) — breadcrumb, full preview header, file recents.
-//   "learn"              — no breadcrumb, no preview header, no recents.
-//
-// There was a third, "app", for the /apps/<tag>/<name> route: no breadcrumb, the
-// builder's sidebar, and the mode switcher pinned to an APP_MODES allowlist
-// (`app`, `claude`, and a per-path timeline mode). Route and variant are both
-// gone — an app folder
-// is browsed on the explorer route now, where it gets the breadcrumb it always
-// had a path for and the switcher's full list, whose extra directory entries
-// (`git`, `graph`, `zarr_aoi`) the pin existed to hide and which are perfectly
-// sensible over an app.
+// This carried a `variant` for the sub-app chrome, with two survivors by the
+// end: "explorer" (breadcrumb, full preview header, file recents) and "learn"
+// (none of them), for the /learn route that rendered the bundled learn content
+// chrome-free. An earlier third, "app", served the /apps/<tag>/<name> route:
+// no breadcrumb, the builder's sidebar, and the mode switcher pinned to an
+// APP_MODES allowlist (`app`, `claude`, and a per-path timeline mode). Route
+// and variant went together each time — an app folder is browsed on the
+// explorer route now, where it gets the breadcrumb it always had a path for
+// and the switcher's full list; the learn content moved out of the app to the
+// community catalog. Every caller is the explorer, so the chrome is
+// unconditional again.
 function StatView({
   fsPath,
   epoch,
   home,
-  variant = "explorer",
 }: {
   fsPath: string;
   epoch: number;
   home: string;
-  variant?: "explorer" | "learn";
 }) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
@@ -293,16 +290,16 @@ function StatView({
   // not on a `_mode` switch within the same file — TemplatePreview owns that.
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
-  // Recents: the explorer's own store, gated on a confirmed FILE, so learn and
-  // embed panes never write there. The app
+  // Recents: the explorer's own store, gated on a confirmed FILE, so a
+  // directory never lands there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays
   // it now that the builder sidebar is gone.
-  useRecentsTracking(fsPath, variant === "explorer" ? isDir : null, renderedTitle);
+  useRecentsTracking(fsPath, isDir, renderedTitle);
   let content = null;
   if (stat.status === "loading") {
     // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
     // nav also starts its listing fetch now, parallel with stat (Fix #2).
-    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} headerless={variant === "explorer"} />;
+    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} headerless />;
   } else if (stat.status === "error") {
     content = (
       <StatErrorView
@@ -321,15 +318,14 @@ function StatView({
     // it then — a folder must always render something.
     const s = stat.stat;
     if (s.is_dir && s.templates.length === 0) {
-      content = <Listing fsPath={fsPath} barChrome={variant === "explorer"} />;
+      content = <Listing fsPath={fsPath} barChrome />;
     } else {
       content = (
         <Preview
           fsPath={fsPath}
           stat={s}
           onRenderedTitle={setRenderedTitle}
-          hideHeader={variant === "learn"}
-          actionsInTopbar={variant === "explorer"}
+          actionsInTopbar
           onReload={() => setReloadKey((k) => k + 1)}
         />
       );
@@ -347,20 +343,16 @@ function StatView({
   // below the left one. Same shape as the listing and its preview pane over a
   // folder (.listing-split / .listing-main), for the same reason.
   //
-  // The slot stands empty on every route that has no sidebar — every folder, the
-  // learn, embed panes — and `display: contents` on an empty
+  // The slot stands empty on every route that has no sidebar — every folder,
+  // every embed pane — and `display: contents` on an empty
   // element costs the layout nothing (explorer.css).
   return (
     <div className="stat-split">
       <div className="stat-main">
-        {/* Only the explorer carries a breadcrumb bar — learn renders its
-            content directly (no path chrome). BreadcrumbBar
-            owns the `#breadcrumb` box itself: over a folder it portals the whole
-            bar down into the listing's left column, so it can't be a wrapper
-            rendered here (Breadcrumb.tsx). */}
-        {variant === "explorer" && (
-          <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
-        )}
+        {/* BreadcrumbBar owns the `#breadcrumb` box itself: over a folder it
+            portals the whole bar down into the listing's left column, so it
+            can't be a wrapper rendered here (Breadcrumb.tsx). */}
+        <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
         <div id="content">{content}</div>
       </div>
       <PreviewSideSlot />
@@ -368,30 +360,9 @@ function StatView({
   );
 }
 
-// /learn: the bundled learn content rendered chrome-free (no breadcrumb, no
-// preview header) inside the shell frame. Waits on the learn mount record
-// (useLearnMountReady) before statting the entry, so a boot-race never shows
-// a dead 404.
-function LearnView({ config, epoch }: { config: Config; epoch: number }) {
-  const ready = useLearnMountReady(config.learn_mount_ready);
-  const entry = learnEntryPath(config);
-  if (!ready || !entry) {
-    return (
-      <div id="content">
-        <div className="preview-resolving">
-          <span className="mode-icon-spinner" />
-          Preparing learn content…
-        </div>
-      </div>
-    );
-  }
-  return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
-}
-
-// /claude-config: the native Claude Config panel. Chrome-free like
-// learn, but native React — no mount, no StatView; the availability
-// gate mirrors the sidebar entry's, so a direct URL hit while ~/.claude is
-// absent shows an honest empty state instead of a dead panel.
+// /claude-config: the native Claude Config panel — no mount, no StatView; the
+// availability gate mirrors the sidebar entry's, so a direct URL hit while
+// ~/.claude is absent shows an honest empty state instead of a dead panel.
 function ClaudeConfigView() {
   const available = useClaudeConfigAvailable();
   return (
@@ -532,6 +503,14 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/claude-md") {
     history.replaceState(null, "", "/claude-config?cctab=claudemd");
   }
+  // The AI Models page names each of its five tabs in the path now, and the
+  // default is a name like the rest rather than the absence of one — so the
+  // bare prefix redirects to it (same render-time rewrite as "/" above). The
+  // QUERY is carried: `/ai-models?model=…` is how a link selects a model, and
+  // dropping it here would land the playground on its fallback pick.
+  if (location.pathname === AI_MODELS_PREFIX) {
+    history.replaceState(null, "", AI_MODELS_PREFIX + "/" + DEFAULT_TAB + location.search);
+  }
 
   const pathname = location.pathname;
   // Via the router's predicate, not a second copy of the two spellings: a pane's
@@ -546,15 +525,18 @@ export default function App({ config }: { config: Config }) {
   // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
   // pattern as Mounts.
   const isTasks = pathname === "/tasks";
-  // What the Hugging Face cache holds on this machine (shell/AiModels.tsx).
-  const isAiModels = pathname === "/ai-models";
+  // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
+  // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
+  // has already been rewritten to the default tab above. Asked through the
+  // app's own predicate so the route is not spelled twice — the same reason
+  // `isPanelPath` lives in the platform router.
+  const isAiModels = isAiModelsPath(pathname);
   // Apps hub = the app home: all detected apps with search + tag filters.
   const isApps = pathname === "/apps";
   // File-explorer homepage: the recents/sessions/repos launcher.
   const isExplorerHome = pathname === "/explorer";
   // The app's front door: search hero + the three recency strips.
   const isHome = pathname === "/home";
-  const isLearn = pathname === "/learn";
   const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
@@ -570,7 +552,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || isExplorerHome || isHome || isLearn || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || isExplorerHome || isHome || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -598,10 +580,8 @@ export default function App({ config }: { config: Config }) {
                   ? "Home"
                 : isExplorerHome
                   ? "File Explorer"
-                  : isLearn
-                    ? "Learn"
-                    : isClaudeConfig
-                      ? "Claude Config"
+                  : isClaudeConfig
+                    ? "Claude Config"
                       : isCanvases
                       ? "Workbench Canvases"
                       : canvasWorkspaceName
@@ -724,18 +704,20 @@ export default function App({ config }: { config: Config }) {
       </div>
     );
   } else if (isAiModels) {
-    // AI Models — the Hugging Face cache inventory, in the cc-* page
-    // chrome. Reachable by URL even where the sidebar hides its
-    // entry (no cache dir yet); the page states that case itself.
+    // AI Models (apps/ai_models/) — five tabs in the cc-* page chrome, one
+    // sub-path each. Reachable by URL even where the sidebar hides its entry
+    // (no cache dir yet); the page states that case itself.
     //
-    // **Not keyed on `epoch`, unlike every branch around it.** The only
-    // same-route navigation this page has is its own Local/Discover toggle,
-    // which lives in the URL (`?tab=`) so the back button can undo it — and
-    // remounting a page to change its own view state would re-walk every blob
-    // in the Hugging Face cache and throw away whatever was typed into
-    // Discover's search. The page subscribes to the URL itself instead.
-    // Arriving from any other route still mounts it fresh: the branches differ
-    // in their children, so React replaces the subtree regardless.
+    // **Not keyed on `epoch`, unlike every branch around it — and the tab being
+    // a PATH now is exactly why that has to be said out loud.** Every other
+    // path change in this dispatcher remounts; a hop between two of this page's
+    // tabs must not. The walk they share is a filesystem crawl over every blob
+    // in the Hugging Face cache (lib/useCacheScan.ts), and a remount would
+    // re-run it and throw away whatever was typed into the Local tab's Hub
+    // search (D426). One
+    // branch, one mount, the page reading the path itself. Arriving from any
+    // OTHER route still mounts it fresh: the branches differ in their children,
+    // so React replaces the subtree regardless.
     main = (
       <div id="content">
         <div className="cc-page">
@@ -776,10 +758,6 @@ export default function App({ config }: { config: Config }) {
         <FilesHome key={epoch} config={config} />
       </div>
     );
-  } else if (isLearn) {
-    // Learn content, chrome-free (LearnView renders a StatView that carries
-    // its own #content).
-    main = <LearnView key={epoch} config={config} epoch={epoch} />;
   } else if (isClaudeConfig) {
     // Claude Config panel — native, no mount (see ClaudeConfigView).
     main = <ClaudeConfigView key={epoch} />;

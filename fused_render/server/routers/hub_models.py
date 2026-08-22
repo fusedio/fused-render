@@ -123,12 +123,12 @@ from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai.registry import capability_for_task, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
-from fused_render.server.routers.ai_models import (
+from fused_render.ai.hub_cache import (
     _FRIENDLIER_TAGS,
     _TASK_HELP,
     _entry_is_dir,
-    _revisions,
     _scan_repo,
+    _unfinished_fetch,
     hub_cache_dir,
 )
 
@@ -411,17 +411,23 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
     across an entire cache.
 
     `partial` is a real state, not a rounding of `downloaded`: an interrupted
-    pull leaves a repo folder holding blobs and no materialised snapshot, and
-    calling that "downloaded" would send someone to a model that cannot load.
-    A repo with at least one snapshot has a revision something can open, which
-    is the line this draws.
+    pull leaves bytes behind, and calling those "downloaded" would send someone
+    to a model that cannot load.
+
+    **The line is `_unfinished_fetch`, not "has at least one snapshot" (D424).**
+    A snapshot directory is materialised FILE BY FILE — our own fetcher links
+    each blob as it lands — so a repo whose first small file arrived before the
+    user pressed ✕ had a revision, had no weights, and read as "downloaded"
+    here. What answers honestly is the residue of the stopped fetch itself, and
+    that reading lives in `ai_models` beside the listing's own, so this tab and
+    that page cannot disagree about one folder.
     """
     if dirname is None:
         return {"state": "none"}
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
     return {
-        "state": "downloaded" if _revisions(repo_dir) else "partial",
+        "state": "partial" if _unfinished_fetch(repo_dir) else "downloaded",
         "size": scan.size,
         "files": scan.files,
         # Newest atime — "last read", the same measure the cached tab shows.

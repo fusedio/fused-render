@@ -13,16 +13,14 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts). The sidebar's "Learn"
-  // entry navigates to `${mounts_root}/learn`, the builtin read-only mount
-  // of the bundled learn.zip (D123) — same dir every mount lives under.
+  // Root of the mounts dir (~/.fused-render/mounts). A builtin read-only
+  // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
+  // every mount lives under.
   mounts_root: string;
-  // Whether the builtin learn mount record exists yet — the sidebar only
-  // renders the Learn entry when this is true, so it's never a dead link
+  // Whether the builtin sessions mount record exists yet — a surface linking
+  // into it renders only when this is true, so it's never a dead link
   // (unpackaged dev run with no zip, or the brief window before startup's
   // background automount thread has upserted the record).
-  learn_mount_ready: boolean;
-  // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
@@ -748,6 +746,10 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
+  // the shell's entry points to it (the sidebar row and the Settings menu
+  // entry), not the /canvases routes, which keep answering a deep link.
+  canvases: { enabled: boolean };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -922,6 +924,10 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
@@ -1143,7 +1149,7 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
-  // True for a bundled default mount (currently only Learn, D123) that the
+  // True for a bundled default mount (currently only Sessions, D123/D227) that the
   // server re-creates on every startup — the API rejects deleting it, so the
   // Mounts view hides Delete for it too (unmount still works).
   builtin: boolean;
@@ -2322,6 +2328,20 @@ export interface AiModelRepo {
   } | null;
   revisions: number;
   refs: string[];
+  /**
+   * A download that never finished — cancelled, crashed, or still in flight
+   * (D424). Read from the residue of the stopped fetch (a part file in
+   * `blobs/`, or no snapshot at all), never from the format: a repo nothing
+   * here can load is a different fact, and a fully downloaded SigLIP tower
+   * must not offer to resume anything.
+   *
+   * It outranks every other state on the card. `engine` is null and
+   * `capability` a guess read off half a snapshot, so the card drops both and
+   * offers the two things that are true: Download, which RESUMES from the bytes
+   * already on disk, and the trash, which discards them and puts the model back
+   * among the recommendations.
+   */
+  partial: boolean;
 }
 
 export interface AiModelsResult {
@@ -2443,6 +2463,14 @@ export interface HubSearchResult {
   authenticated?: boolean;
 }
 
+/** The orderings the Hub's LIST endpoint can perform — the server's own
+ *  allowlist, mirrored (`_SORTS` in routers/hub_models.py), so a value it would
+ *  reject cannot be typed at a call site.
+ *
+ *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
+ *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
+ *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
+ *  it reaches this function only through `wireSort`. */
 export type HubSort = "downloads" | "likes" | "updated" | "created";
 
 export function searchHubModels(opts: {
@@ -2579,6 +2607,21 @@ export function getAiRuntime(): Promise<AiRuntime> {
 export interface AiCatalogModel {
   id: string;
   label: string;
+  /** The short human name the Playground sidebar shows — the model without its
+   *  quantization/engine qualifier. A curated field beside `label`, never a
+   *  stripped copy of it (catalog.py states why); absent on a cached entry,
+   *  where the fallback is `label`. */
+  nickname?: string | null;
+  /** Curated per-model generation hints (catalog.py) — today only `steps`, the
+   *  denoise count a distilled image model was benchmarked at. Absent on
+   *  cached entries and on models nobody has measured; the consumer keeps the
+   *  server's default then. */
+  defaults?: { steps?: number } | null;
+  /** Will this model sit comfortably on THIS machine — the server's judgement
+   *  over the size and the machine's RAM ("easy" | "tight" | "no"), or null
+   *  when either half is unknown. A judgement, not a measurement; the page
+   *  words it as one. */
+  fit?: "easy" | "tight" | "no" | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
@@ -2601,6 +2644,19 @@ export interface AiCatalogModel {
   /** Whether a worker is holding it RIGHT NOW — read live from the supervisor,
    *  unlike `downloaded`, which comes from a memoised disk scan. */
   loaded: boolean;
+  /** Whether the curation marks this as a first thing to TRY (D425) — a
+   *  per-model flag on the wire, unrelated to the Local tab's
+   *  `MergedSection.recommended`, which is that page's own name for "curated
+   *  and not on this disk".
+   *
+   *  The Playground sidebar is the only surface that filters on it (models
+   *  recommended OR already on the disk); every other picker reads the whole
+   *  list, because "what could I have" and "what should I try first" are
+   *  different questions asked by different people. Always false on a cached
+   *  entry — a recommendation is a person's mark, and nobody made one about a
+   *  repo the user found themselves. NOT the default: `default` is still the
+   *  smallest entry and owes nothing to this flag. */
+  recommended: boolean;
 }
 
 export interface AiCatalogCapability {

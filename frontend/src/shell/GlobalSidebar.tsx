@@ -1,9 +1,10 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks, plus Canvases once this machine is signed
-// in to Fused), the explorer's Bookmarks below it, and a single Settings
-// trigger pinned to the bottom that opens a menu holding everything else
-// (Config / App Basics for now, plus Templates / Mounts / AI Models /
+// primary nav on top (Home / Tasks / AI Models, plus Canvases once the feature
+// is turned on in Preferences AND this machine is signed in to Fused), the
+// explorer's Bookmarks below it, and a
+// single Settings trigger pinned to the bottom that opens a menu holding
+// everything else (Config for now, plus Templates / Mounts /
 // Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
@@ -13,13 +14,14 @@ import { useEffect, useRef, useState } from "react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
+import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
-import { useAiRuntime } from "@shell/aiRuntime";
+import { useCanvasesFeature } from "@apps/canvases/feature-flag";
+import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
@@ -124,6 +126,7 @@ function PreferencesTrigger({
   open,
   dot,
   active,
+  trailing,
   onToggle,
 }: {
   open: boolean;
@@ -131,6 +134,9 @@ function PreferencesTrigger({
   /** The current route is one of the menu's destinations — the trigger is
       the only sidebar chrome that can show it. */
   active: boolean;
+  /** Trailing-edge content, same slot NavItem gives Tasks its count — this
+      row's is the version chip. */
+  trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
   return (
@@ -146,6 +152,7 @@ function PreferencesTrigger({
         {dot}
       </span>{" "}
       Settings
+      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
     </button>
   );
 }
@@ -223,18 +230,26 @@ function PreferencesPopover({
   );
 }
 
+// Where the sidebar row points: the page's DEFAULT tab by name, not the bare
+// prefix. Both work — App.tsx redirects the bare one — but a nav link that is
+// rewritten the moment it lands puts a URL in the address bar that the user
+// never clicked, and leaves the row's href disagreeing with where it went. An
+// empty search, deliberately: this is an entry point, not a tab switch, so
+// there is nothing to carry (see `tabHref`).
+const AI_MODELS_HOME = tabHref("playground", "");
+
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
 
-  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
-  // No sessions-mount gate any more: the one entry it guarded (Inbox) is gone
-  // from the sidebar. The route and its mount are untouched.
+  // No builtin-mount gate any more: the entries they guarded (Inbox, App
+  // Basics) are gone from the sidebar — the learn content ships as a community
+  // app now. The sessions route and its mount are untouched.
   const claudeConfigAvailable = useClaudeConfigAvailable();
 
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — surfaced as a dot on the
-  // bottom trigger now that AI Models lives inside the menu.
+  // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
   const residentDot = residentModels.length ? (
@@ -257,6 +272,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
   const canvasesActive = pathname === "/canvases";
+  // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
+  // through a different tab, not a second destination, so every one of the five
+  // lights the row. (The bare prefix is redirected to the default tab before
+  // this runs, so it is matched for completeness rather than in practice.)
+  const aiModelsActive = isAiModelsPath(pathname);
   // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
   // would lead to a sign-in wall — the menu entry is the right weight for
   // "there is a thing here you could set up"; a top-of-sidebar row is for a
@@ -264,6 +284,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // machine is FOR, so it sits with Home and Tasks (see @apps/canvases/logged-in
   // for why this is a shared store and not a one-shot probe).
   const canvasesLoggedIn = useCanvasesLoggedIn();
+  // AND THE FEATURE HAS TO BE ON AT ALL (D427, default off). Two conditions,
+  // deliberately not one store: this one is "does this machine offer Canvases",
+  // the one above is "is there an account behind it". The MENU entry needs only
+  // this — it has always been ungated on login, since the page explains a
+  // signed-out state itself, and gating it on the account would delete the only
+  // affordance for reaching a feature you have not set up yet. The primary row
+  // needs both.
+  const canvasesEnabled = useCanvasesFeature();
+  const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
   // something unread (shell/tasksPulse — one poll shared with the page, which
@@ -345,13 +374,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ) : undefined;
 
   // Everything that is not primary nav lives in the bottom menu for now:
-  // the former sidebar entries (Config / App Basics), then the settings
+  // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
-    ...(learnMountReady ? [{ href: "/learn", label: "App Basics", icon: <LearnIcon /> }] : []),
   ];
   if (menuEntries.length > 0) menuEntries.push("separator");
   menuEntries.push(
@@ -362,13 +390,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // row and the Preferences trigger at once, since `prefsActive` treats every
     // menu href as "you are on one of my pages" — the same double-selection the
     // Home comment above rejects.
-    // Ungated like Tasks: the page explains CLI-missing / signed-out states
-    // itself, and there is no machine state that hides the concept. It stays
-    // here even while the primary row above is showing — the menu is where
-    // someone looks for a named destination — and `prefsActive` below drops it
-    // instead, so the two never light at once.
-    { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
-    { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
+    // Gated on the FEATURE only (D427), not on the account: the page explains a
+    // CLI-missing / signed-out state itself, so the entry is what "there is a
+    // thing here you could set up" looks like — and the whole point of the
+    // preference is that a machine which has not turned Canvases on is not
+    // shown it anywhere. It stays here even while the primary row above is
+    // showing — the menu is where someone looks for a named destination — and
+    // `prefsActive` below drops it instead, so the two never light at once.
+    ...(canvasesEnabled
+      ? [{ href: "/canvases", label: "Canvases", icon: CANVASES_ICON }]
+      : []),
+    // No /ai-models entry either, and unlike Canvases it is dropped outright:
+    // its primary row is ungated, so a menu copy would only ever be the
+    // double-selection the Tasks note rejects.
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
 
@@ -376,9 +410,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // "you are on one of the menu's pages" — highlight it on any of them.
   // ...except a page primary nav is ALSO showing: the Tasks note above rejects
   // lighting a row and the Preferences trigger over one destination, and
-  // Canvases is listed in both places whenever the reader is signed in.
+  // Canvases is listed in both places whenever it is in the primary nav. With
+  // the feature off it is in NEITHER, so a deep link to /canvases lights
+  // nothing here — the entry is not in the list to be matched.
   const prefsActive = menuEntries.some(
-    (e) => e !== "separator" && e.href === pathname && !(canvasesLoggedIn && e.href === "/canvases")
+    (e) => e !== "separator" && e.href === pathname && !(canvasesInNav && e.href === "/canvases")
   );
 
   // Owned here, not inside either trigger, because the popover must stay
@@ -411,7 +447,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     },
     // Same gate and same order as the expanded row below — a row that exists
     // only until you collapse the sidebar is a destination people lose.
-    ...(canvasesLoggedIn
+    ...(canvasesInNav
       ? [
           {
             key: "canvases",
@@ -422,6 +458,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           },
         ]
       : []),
+    {
+      key: "ai-models",
+      label: "AI Models",
+      icon: AI_MODELS_ICON,
+      href: AI_MODELS_HOME,
+      active: aiModelsActive,
+      badge: residentDot,
+    },
     {
       key: "preferences",
       label: "Preferences",
@@ -435,13 +479,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     },
   ];
 
-  // The trigger's own dot mirrors the strongest signal inside the menu, so
-  // it is not silently hidden while the menu is closed.
-  const triggerDot = residentDot;
-
   return (
     <>
-      <SidebarFrame title="Render" version={config.version} homeHref="/home" rail={rail}>
+      <SidebarFrame title="Render" homeHref="/home" rail={rail}>
         <div className="sidebar-section sidebar-group">
           <NavItem
             href="/home"
@@ -462,7 +502,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
-          {canvasesLoggedIn && (
+          {canvasesInNav && (
             <NavItem
               href="/canvases"
               id="canvases-link"
@@ -471,14 +511,40 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={canvasesActive}
             />
           )}
+          <NavItem
+            href={AI_MODELS_HOME}
+            id="ai-models-link"
+            label="AI Models"
+            icon={AI_MODELS_ICON}
+            active={aiModelsActive}
+            extra={residentDot}
+            trailing={
+              // Beta while the surface (playground foremost) is still settling —
+              // the chip skin is the shared one, the modifier only recolours it.
+              <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+            }
+          />
         </div>
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* The version rides the Settings row's trailing edge rather than the
+              brand row it used to sit in. Two reasons it moved: the brand row is
+              one click target for Home, so a version glued to the title read as
+              part of the app's NAME; and it competed for the line the title
+              ellipsises on when the sidebar is dragged narrow. Down here it is
+              what it is — a footnote about this install, in the same trailing
+              slot the Tasks row states its count in. */}
           <PreferencesTrigger
             open={prefsPos !== null}
-            dot={triggerDot}
             active={prefsActive}
+            trailing={
+              config.version ? (
+                <span className="version-chip" title={`Fused Render v${config.version}`}>
+                  v{config.version}
+                </span>
+              ) : undefined
+            }
             onToggle={togglePrefsMenu}
           />
         </div>

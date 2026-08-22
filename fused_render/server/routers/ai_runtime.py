@@ -31,25 +31,30 @@ the app.
 
 from __future__ import annotations
 
+import functools
 import os
 import secrets
 import struct
 import time
 
 from fastapi import APIRouter, Body, Header
+from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, registry, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
-# rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, formats, partial, preview
+# rule here costs nothing. `embed_common` joins them for the same reason: its
+# request-shape check is what BOTH embedding runners' own `generate()` calls,
+# and a body this route refuses must be refused for the identical reason a
+# worker asked directly would give.
+from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
-from fused_render.server.routers.ai_models import (
+from fused_render.ai.hub_cache import (
     CachedModel, cached_capability, cached_models,
 )
 
@@ -524,6 +529,15 @@ def _catalog_with_downloads() -> list[dict]:
     supervisor rather than from the memoised scan, because residency changes on a
     second's notice and the disk inventory does not.
 
+    `recommended` is a THIRD, and it is the curation's own second axis rather than
+    anything this join computes: True on the subset of curated entries a person
+    marked as a first thing to try, always False on a cached one — nobody wrote a
+    recommendation for a repo the user found themselves, the same reason `note` is
+    null there. Normalised to a bool on both halves so a consumer can filter on it
+    without reading absence as an answer; the Playground draws
+    recommended-or-on-disk and every other picker keeps reading the whole list
+    (D425).
+
     **One runner's curated ids are FILENAMES, not repo ids, and this function is
     where that stops being invisible.** `formats.GGUF_RECIPES` keys
     `llamacpp-text`'s catalog entries by the GGUF's own filename — the module
@@ -564,7 +578,12 @@ def _catalog_with_downloads() -> list[dict]:
     for row in rows:
         curated = [
             dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
-                 loaded=entry["id"] in resident)
+                 loaded=entry["id"] in resident,
+                 # Normalised to a bool HERE rather than left absent, because
+                 # the curation writes it opt-in (`catalog.py`) and a consumer
+                 # that filters on it must not have to tell "not recommended"
+                 # from "an older server that had never heard of the field".
+                 recommended=bool(entry.get("recommended")))
             for entry in row["models"]
         ]
         curated_ids = {entry["id"] for entry in curated}
@@ -590,6 +609,12 @@ def _catalog_with_downloads() -> list[dict]:
                 "note": None,
                 "source": "cached",
                 "downloaded": True,
+                # Never recommended: `recommended` is a curator's mark and
+                # nobody has made one about a repo the user found themselves.
+                # It costs the Playground nothing — a cached entry is on the
+                # disk by definition, and downloaded is the other half of what
+                # that sidebar draws.
+                "recommended": False,
                 "loaded": model.repo_id in resident,
             }
             for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)
@@ -602,7 +627,67 @@ def _catalog_with_downloads() -> list[dict]:
             and row["runner"] in model.loaders
         ]
         row["models"] = curated + extra
+        for entry in row["models"]:
+            entry["fit"] = _fit_verdict(entry.get("size_gb"))
     return rows
+
+
+@functools.lru_cache(maxsize=1)
+def _machine_ram_gb() -> float | None:
+    """Total physical memory in decimal GB, or None where it cannot be read.
+
+    Stdlib only — psutil lives in the runner venvs, not this one (AI-2's rule:
+    the server's environment stays a file explorer's). `sysconf` covers macOS
+    and Linux; Windows answers through GlobalMemoryStatusEx. Cached forever:
+    the machine's RAM does not change under a running server, and this is read
+    per catalog request.
+    """
+    try:
+        if hasattr(os, "sysconf") and os.sysconf_names.get("SC_PHYS_PAGES"):
+            return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1e9
+    except (ValueError, OSError):
+        pass
+    try:  # pragma: no cover - the Windows branch
+        import ctypes
+
+        class _MemoryStatus(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+        status = _MemoryStatus()
+        status.dwLength = ctypes.sizeof(status)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.ullTotalPhys / 1e9
+    except Exception:  # noqa: BLE001 - absent windll off Windows, and none of it is fatal
+        pass
+    return None
+
+
+def _fit_verdict(size_gb: float | None) -> str | None:
+    """Will this model sit comfortably on THIS machine — "easy", "tight" or "no".
+
+    The question a newcomer is actually asking of the size figure, answered
+    with the size figure's own crude honesty: the download is roughly what the
+    weights occupy resident (every curated entry is quantized), and a model
+    whose weights take over half the machine's memory shares the rest with the
+    OS, the browser and this server — a swap storm read as "the app hung"
+    (AI-4's arithmetic). Under a quarter is comfortable; between the two is
+    real but tight. A judgement, not a measurement — the page words it as one.
+
+    None when either half is unknown: a verdict invented over a missing size
+    is the same lie the "—" size cell exists to avoid.
+    """
+    ram = _machine_ram_gb()
+    if size_gb is None or ram is None or ram <= 0:
+        return None
+    if size_gb <= ram * 0.25:
+        return "easy"
+    if size_gb <= ram * 0.5:
+        return "tight"
+    return "no"
 
 
 @router.get("/api/ai/catalog")
@@ -612,7 +697,7 @@ def api_ai_catalog():
     Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
     belongs in the threadpool rather than on the event loop.
     """
-    return {"capabilities": _catalog_with_downloads()}
+    return {"capabilities": _catalog_with_downloads(), "ramGb": _machine_ram_gb()}
 
 
 @router.post("/api/ai/runtime/load")
@@ -849,6 +934,10 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         steps = max(1, min(_MAX_STEPS, int(steps_in)))
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
+    # (#732's own independent fix for this exact `guidance` case merged
+    # while this branch was in flight — `is None` only, no `""` and no
+    # per-mode default; superseded here by the fuller fix above, which
+    # both bugs needed anyway.)
     guidance_in = body.get("guidance")
     if guidance_in is None or guidance_in == "":
         guidance_in = default_guidance
@@ -1158,4 +1247,106 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "task": task,
+    }
+
+
+def _embed_error(type_: str, message: str, status: int,
+                 job_id: str | None = None) -> JSONResponse:
+    """The `/api/ai/embed` wire shape: `{ok:false, error:{type, message}}`.
+
+    **Not `_error`'s plain `{error: message}`** — the shape `/api/ai/image` and
+    `/api/ai/transcribe` use, and reasonably so: their 409 is always
+    "unavailable", nothing more to say. This route's 409 can instead mean the
+    model is loading NOW, exactly like `/api/ai`'s own local-model path (see
+    `_ai_error`/`ModelNotReady` there), and that means a job id the page should
+    watch — a field `_error`'s shape has nowhere to carry. Matching `/api/ai`'s
+    contract rather than inventing a third one is what lets `fused.ai.embed`
+    read errors the same way `fused.ai` already does.
+    """
+    payload = {"ok": False, "error": {"type": type_, "message": message}}
+    if job_id is not None:
+        payload["error"]["jobId"] = job_id
+    return JSONResponse(payload, status_code=status)
+
+
+@router.post("/api/ai/embed")
+def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Embed text or an image into the resident dual encoder's vector space.
+
+    **Not job-backed, unlike `/api/ai/image` and `/api/ai/transcribe`.** Both
+    of those run for minutes and produce a file; this is one forward pass over
+    a batch of at most `embed_common.MAX_ITEMS` short items, over before a
+    progress row would ever have drawn — so the reply IS the result, the way
+    `/api/ai`'s non-streaming reply is.
+
+    **A cold model is `model_loading`, not `unavailable`** — the same fork
+    `/api/ai`'s local-model path takes (`supervisor.generate_text` /
+    `ModelNotReady`) rather than the one `/api/ai/image` takes (load inside the
+    render's own job): an embed call has no job of its own for a multi-GB
+    fetch to hide inside, so the load starts and its id comes back on a 409 for
+    the caller to watch, exactly as the first `fused.ai(...)` on a cold local
+    model already does.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Same rule `generate()` enforces inside each worker's own venv
+    # (`embed_common.request_kind`) — refused HERE too, before a model is even
+    # resolved, so a malformed request costs nothing rather than a 409 that
+    # implies the fix is to wait.
+    try:
+        kind, items = embed_common.request_kind(body)
+    except ValueError as e:
+        return _embed_error("bad_request", str(e), status=400)
+
+    if kind == "paths":
+        # Page-relative, exactly the rule `/api/ai/transcribe`'s `path` follows
+        # (RH-1): the worker is a separate process with its own cwd, so an
+        # unresolved relative path would mean "beside wherever the server was
+        # launched from" rather than "beside this page" — a trap whatever the
+        # error message says. An absolute path passes through untouched, as it
+        # does there.
+        base = body.get("base")
+        resolved = []
+        for path in items:
+            path = os.path.expanduser(path)
+            if not os.path.isabs(path):
+                if not isinstance(base, str) or not os.path.isabs(base):
+                    return _embed_error(
+                        "bad_request",
+                        "'paths' must be absolute, or relative to a page "
+                        "named by 'base'", status=400)
+                path = os.path.join(os.path.dirname(base), path)
+            resolved.append(os.path.abspath(path))
+        items = resolved
+
+    model = _model_of(body) or catalog.default_for(registry.EMBEDDINGS)
+    if not model:
+        # See `api_ai_image`'s identical comment: no runner and no curated
+        # default are different facts, and only the runner's own reason tells
+        # the user what to do about it.
+        return _embed_error(
+            "unavailable",
+            registry.unavailable_reason(registry.EMBEDDINGS)
+            or "no embedding model is configured",
+            status=409)
+
+    try:
+        result = supervisor.generate_embed(model, {kind: items})
+    except supervisor.ModelNotReady as e:
+        # NOT a failure (see `_ai_failed`'s own comment on the same fork in
+        # `server/ai.py`): the load already started, and its job id is what
+        # lets the caller show that download rather than just a rejection.
+        return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.SupervisorError as e:
+        return _embed_error("ai_error", str(e), status=502)
+
+    return {
+        "ok": True,
+        "result": {
+            "vectors": result.get("vectors") or [],
+            "dim": result.get("dim") or 0,
+            "model": model,
+        },
     }

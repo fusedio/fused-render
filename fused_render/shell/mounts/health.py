@@ -210,7 +210,7 @@ def run_automount() -> None:
     mount/listmounts is the status source of truth, so mounts that survived a
     server restart just show up. Best-effort — a failure logs and moves on,
     never blocks startup."""
-    # Upsert the builtin mounts (learn, sessions) BEFORE the snapshot below: a
+    # Upsert the builtin mounts (sessions) BEFORE the snapshot below: a
     # fresh install has zero user mounts, and skipping the attach loop below
     # would otherwise skip the builtins' very first mount too.
     from fused_render.shell.mounts import list_mounts, mounted_paths
@@ -248,7 +248,7 @@ def run_automount() -> None:
         # home_dir()/serves.json write it never needed). But it can ALSO
         # mean ensure_builtin_mounts above just removed a builtin record
         # (zip gone) and stopped its rc serve directly via
-        # _force_detach_learn_mount — and serves.json on disk is ONLY ever
+        # _force_detach_builtin_mount — and serves.json on disk is ONLY ever
         # rewritten by sync_serves, so skipping unconditionally (the old
         # behavior) would leave a stale {mountpoint: dead_url} entry that
         # serve_url_for keeps resolving forever. The existence check tells

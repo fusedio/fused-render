@@ -1,0 +1,1269 @@
+/* The Playground tab of /ai-models (AiModelsPlayground.tsx + the three stage
+ * components + PlaygroundControls.tsx). Page chrome and buttons come from the
+ * cc- and btn families like the rest of the page; everything here is the tab's
+ * own three-zone layout — model sidebar, work area, settings rail — and the
+ * stage furniture. Prefixed pg-.
+ *
+ * The zones follow the playground convention the research settled on: the
+ * OUTPUT gets the most real estate, one primary action (accent), parameters
+ * subordinate in a right rail as slider+number pairs with a one-line hint.
+ * The rail is persistent on wide windows and collapses behind a "Controls"
+ * toggle below ~1100px; the model sidebar stacks below ~760px. */
+
+/* On the playground the page's own <main> stops scrolling and becomes a flex
+ * column (.pg-fill), so this tab OWNS the viewport height — the sidebar and
+ * each stage's log scroll inside it, and the composer sits at the bottom of
+ * the window instead of wherever the content ran out. */
+.pg-fill {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+  /* cc-main's 40px bottom padding is a scroll runway for pages that end in
+     content; on a viewport-filling tab it is a dead band under the composer. */
+  padding-bottom: 16px;
+}
+
+.pg-body {
+  display: flex;
+  gap: 22px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
+
+/* -- the model sidebar ------------------------------------------------------ */
+
+.pg-side {
+  flex: 0 0 264px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  border-right: 1px solid var(--border);
+  padding-right: 18px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pg-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pg-group-title {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.pg-group-off {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+/* What this group of models DOES, in task words — the zero-jargon reader's
+ * anchor before any model name means anything. */
+.pg-group-blurb {
+  margin: -2px 0 4px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+/* The quiet divider over the uncurated tail: models this disk holds that the
+ * curation never heard of — playable, but not recommendations. */
+.pg-side-cap {
+  margin: 8px 0 2px;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* The curator's one-liner on a sidebar row — clamped to two lines; the stage
+ * header carries it in full. */
+.pg-model-note {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* A row, not a card: LM Studio / Jan style — quiet until hovered, the active
+ * one carried by an accent edge and a wash rather than a boxed border. */
+.pg-model {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 9px 6px 11px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 7px 7px 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pg-model:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.pg-model.active {
+  border-left-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.07);
+}
+
+.pg-model:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.pg-model-name {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pg-model-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The fit verdict rides the size figure: quiet colour, no chip chrome — it is
+ * metadata that answers "will this melt my laptop", not a state light. */
+.pg-fit.easy {
+  color: var(--success-soft);
+}
+
+.pg-fit.tight {
+  color: var(--warning-soft);
+}
+
+.pg-fit.no {
+  color: var(--error);
+}
+
+.pg-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.pg-dot.loaded {
+  background: var(--success-bright);
+}
+
+.pg-dot.disk {
+  border: 1.5px solid var(--fg-muted);
+}
+
+/* -- the stage shell --------------------------------------------------------- */
+
+.pg-stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pg-stage-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pg-stage-title {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.pg-stage-kind {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+/* The model introducing itself — the catalog note, unclamped. */
+.pg-stage-note {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  max-width: 64ch;
+}
+
+.pg-stage-state {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.pg-stage-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.pg-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--error);
+}
+
+.pg-status {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+/* Work area = main column + settings rail. */
+
+.pg-work {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 20px;
+  align-items: stretch;
+}
+
+.pg-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pg-rail {
+  flex: 0 0 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.02);
+  align-self: flex-start;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.pg-rail-toggle {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .pg-work {
+    flex-direction: column;
+  }
+
+  .pg-rail {
+    display: none;
+    flex: none;
+    width: 100%;
+    max-height: none;
+  }
+
+  .pg-work.rail-open .pg-rail {
+    display: flex;
+  }
+
+  .pg-rail-toggle {
+    display: inline-block;
+  }
+}
+
+/* -- rail controls ------------------------------------------------------------ */
+
+.pg-rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pg-rail-section + .pg-rail-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.pg-rail-title {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.pg-ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+}
+
+.pg-ctl-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pg-ctl-label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.pg-ctl-reset {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.pg-ctl-reset:hover {
+  color: var(--fg);
+}
+
+.pg-ctl-num {
+  margin-left: auto;
+  width: 64px;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+/* Spinners off — the slider is the coarse control, the field is for typing. */
+.pg-ctl-num::-webkit-outer-spin-button,
+.pg-ctl-num::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.pg-ctl-num {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.pg-ctl input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.pg-ctl-hint {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.pg-ctl-row {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.pg-ctl-row input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.pg-ctl-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-rail-textarea,
+.pg-rail-input {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.pg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pg-chip {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-chip:hover {
+  color: var(--fg);
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+.pg-chip.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.pg-custom summary {
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pg-custom[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* -- shared stage furniture ---------------------------------------------------- */
+
+.pg-composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-alt);
+}
+
+.pg-composer:focus-within {
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+.pg-composer textarea {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  resize: none;
+  padding: 6px 4px;
+  max-height: 180px;
+  outline: none;
+}
+
+.pg-send {
+  flex: none;
+}
+
+.pg-under {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 20px;
+}
+
+.pg-ghost-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pg-ghost-btn:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.pg-ghost-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pg-bar {
+  display: block;
+  width: min(320px, 100%);
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.1);
+  overflow: hidden;
+}
+
+.pg-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-bar-fill {
+    transition: none;
+  }
+}
+
+/* Empty states: a real invitation, not a blank box. */
+
+.pg-empty-stage {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 32px 16px;
+}
+
+.pg-empty-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pg-empty-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  max-width: 46ch;
+}
+
+.pg-starter {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-starter-title {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.pg-starter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.pg-starter-chip {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.pg-starter-chip:hover {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+/* -- chat ---------------------------------------------------------------------- */
+
+.pg-chat {
+  flex: 1;
+  min-height: 0;
+}
+
+.pg-chat .pg-chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+
+.pg-turn-user {
+  align-self: flex-end;
+  max-width: 72%;
+  padding: 8px 13px;
+  border-radius: 14px 14px 4px 14px;
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.18);
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pg-turn-model {
+  align-self: stretch;
+  max-width: 100%;
+  font-size: 13.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.pg-turn-foot {
+  margin-top: 6px;
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-cursor::after {
+  content: "▍";
+  color: var(--accent);
+  animation: pg-blink 1s steps(2) infinite;
+}
+
+@keyframes pg-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-cursor::after {
+    animation: none;
+  }
+}
+
+.pg-think {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.pg-think summary {
+  cursor: pointer;
+}
+
+.pg-think-body {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+/* Rendered model markdown. */
+
+.pg-md > :first-child {
+  margin-top: 0;
+}
+
+.pg-md > :last-child {
+  margin-bottom: 0;
+}
+
+.pg-md p {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+}
+
+.pg-md h3,
+.pg-md h4,
+.pg-md h5 {
+  margin: 14px 0 6px;
+  line-height: 1.3;
+}
+
+.pg-md h3 {
+  font-size: 15px;
+}
+
+.pg-md h4 {
+  font-size: 14px;
+}
+
+.pg-md h5 {
+  font-size: 13px;
+}
+
+.pg-md ul,
+.pg-md ol {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+
+.pg-md li {
+  margin: 2px 0;
+}
+
+.pg-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: rgba(var(--tint), 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.pg-md a {
+  color: var(--accent-soft);
+}
+
+.pg-md-code {
+  margin: 0 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.pg-md-code-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+  background: rgba(var(--tint), 0.03);
+}
+
+.pg-md-code-head button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pg-md-code-head button:hover {
+  color: var(--fg);
+}
+
+.pg-md-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* -- images ---------------------------------------------------------------------- */
+
+.pg-image-result {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pg-image-result img {
+  max-width: 100%;
+  max-height: 62vh;
+  width: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  align-self: flex-start;
+  background: var(--bg-alt);
+}
+
+.pg-image-wait {
+  width: min(420px, 100%);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: linear-gradient(100deg, var(--bg-alt) 40%, var(--bg) 50%, var(--bg-alt) 60%);
+  background-size: 200% 100%;
+  animation: pg-shimmer 1.4s linear infinite;
+}
+
+@keyframes pg-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-image-wait {
+    animation: none;
+  }
+}
+
+.pg-image-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-seed {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.pg-seed:hover {
+  color: var(--fg);
+}
+
+.pg-image-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.pg-image-strip img {
+  height: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pg-image-strip img:hover {
+  opacity: 1;
+}
+
+.pg-image-strip img.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+/* -- transcription ------------------------------------------------------------------ */
+
+.pg-dropzone {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  border: 1.5px dashed var(--border);
+  border-radius: 12px;
+  background: rgba(var(--tint), 0.02);
+}
+
+.pg-dropzone.dragging {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.pg-dropzone.busy {
+  border-style: solid;
+}
+
+.pg-drop-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pg-drop-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.pg-drop-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.pg-browse {
+  color: var(--accent-soft);
+  text-decoration: underline dotted;
+  cursor: pointer;
+  position: relative;
+}
+
+.pg-browse input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+}
+
+/* The record button: idle = accent ring + dot; live = red square + pulse.
+ * The state IS the treatment — research's "three explicit states" rule. */
+
+.pg-rec-btn {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--bg-alt);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.pg-rec-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.pg-rec-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pg-rec-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--error);
+}
+
+.pg-rec-btn.live {
+  border-color: var(--error);
+  animation: pg-pulse 1.6s ease-out infinite;
+}
+
+@keyframes pg-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(var(--error-rgb), 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(var(--error-rgb), 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-rec-btn.live {
+    animation: none;
+  }
+}
+
+.pg-rec-square {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--error);
+}
+
+.pg-recording {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  border: 1.5px solid var(--error);
+  border-radius: 12px;
+  background: rgba(var(--error-rgb), 0.05);
+}
+
+.pg-rec-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pg-rec-time {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-rec-hint {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+/* The level meter: 12 bars, lit from the left by the live RMS. */
+
+.pg-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+}
+
+.pg-meter-bar {
+  width: 4px;
+  height: 8px;
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.15);
+}
+
+.pg-meter-bar.lit {
+  background: var(--success-bright);
+  height: 16px;
+}
+
+.pg-transcribe {
+  flex: 1;
+  min-height: 0;
+}
+
+/* The recording itself, playable, with the re-run action beside it — the
+   compare loop's home (PlaygroundTranscribe). One bordered row so it reads as
+   a fact about the run, not another dropzone. */
+.pg-audio-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--bg-alt);
+}
+
+.pg-audio-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pg-audio-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+
+.pg-audio-name {
+  font-size: 12px;
+  color: var(--fg-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-audio {
+  flex: 1 1 240px;
+  min-width: 200px;
+  height: 36px;
+}
+
+.pg-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-height: 140px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg-alt);
+}
+
+.pg-segment {
+  display: flex;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pg-segment-time {
+  flex: none;
+  width: 42px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  padding-top: 2px;
+}
+
+.pg-segment-text {
+  min-width: 0;
+}
+
+/* The joined transcript, when a finished run has no segment view to draw. */
+.pg-transcript-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.pg-transcript-empty {
+  color: var(--fg-muted);
+}
+
+/* -- the embeddings stage ---------------------------------------------------------- */
+
+.pg-embed {
+  gap: 14px;
+}
+
+.pg-embed-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+  max-width: 60ch;
+}
+
+.pg-embed-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-embed-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+
+.pg-embed-lines {
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.pg-embed-ask {
+  display: flex;
+  gap: 8px;
+}
+
+.pg-embed-ask input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 12px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font-size: 13.5px;
+}
+
+.pg-embed-ask .btn {
+  flex: none;
+}
+
+.pg-embed-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pg-embed-row {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+/* The match strength, drawn as a wash behind the line — scaled to the best
+   match (see EmbedStage), so the top row is always full and the rest read
+   relative to it. */
+.pg-embed-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(var(--accent-rgb), 0.1);
+  pointer-events: none;
+}
+
+.pg-embed-text {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.pg-embed-score {
+  position: relative;
+  flex: none;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+}
+
+/* -- narrow windows -------------------------------------------------------------- */
+
+@media (max-width: 760px) {
+  .pg-body {
+    flex-direction: column;
+  }
+
+  .pg-side {
+    flex: none;
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 12px;
+    max-height: 38vh;
+  }
+
+  .pg-turn-user {
+    max-width: 88%;
+  }
+}
+
+/* The URL asked for a capability this machine cannot run, and the stage below
+ * is the substitute. Quiet, not alarming: nothing failed, and the sidebar is
+ * already showing the same reason against the group that is out. */
+.pg-blocked-ask {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}

@@ -38,8 +38,10 @@ import argparse
 import concurrent.futures
 import contextlib
 import fnmatch
+import hashlib
 import http.client
 import http.server
+import importlib.util
 import json
 import os
 import re
@@ -462,12 +464,38 @@ _RETIRED_MAX_SEGMENTS_PER_FILE = 4
 #: its current length; our segments write out of order, so a partial file of
 #: length N does not mean the first N bytes are there, and handing hf one of
 #: ours would produce a silently corrupt blob. A suffix of our own also keeps
-#: the fallback clean — hf never sees our state at all.
+#: the fallback clean — hf never sees our state at all. On the append-only path
+#: (`_appends_only`) length N *does* mean the first N bytes, but the suffix
+#: stays ours on both: which of the two wrote a given part file is not something
+#: hf could tell, and `_clear_parts` deletes them before the fallback runs
+#: rather than offering hf a file whose meaning depends on the platform.
 PART_SUFFIX = ".fusedpart"
+#: `os.O_BINARY` where the platform has one, and 0 where the question does not
+#: arise. **Windows only, and load-bearing exactly there.** A bare `os.open`
+#: there gets the CRT's default translation mode, which is TEXT, so every `\n`
+#: in a write becomes `\r\n` on the way to the disk. A weights blob is not text
+#: — 0x0a is about one byte in 256 of one — so a part file written without this
+#: flag is both LONGER than the file it describes and wrong in content, while
+#: the cursors go on saying the download is complete: they count what was handed
+#: to `os.write`, and the translation happens below that. The mirror path's
+#: sha256 then declines a repo the Hub could serve, and the Hub path, which has
+#: no digest, would publish a corrupt blob under a real etag — permanent, since
+#: hf serves it from cache forever (`finish`). The stdlib does exactly this for
+#: exactly this reason: `tempfile` ORs it into every one of its own flag sets.
+#:
+#: **Latent until the append-only route existed, and exposed rather than
+#: introduced by it.** `os.pwrite` does not exist on the one platform where the
+#: flag matters, so before `_appends_only` no `os.open` in this file had ever
+#: written a byte there. Windows CI found it the first time one did.
+_BINARY = getattr(os, "O_BINARY", 0)
 READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
 #: block, small enough that paying for it on one is nothing.
 SPARSE_PROBE_BYTES = 4 * 1024 * 1024
+#: How much of a blob is hashed at a time on the MIRROR path (see
+#: `_FileFetch.finish`). The same size as `READ_BYTES`, and for the same reason:
+#: nothing in this file may hold a multi-gigabyte shard in memory.
+HASH_BLOCK_BYTES = 1024 * 1024
 HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
@@ -506,9 +534,13 @@ _TRANSIENT = (OSError, urllib.error.URLError, http.client.HTTPException, ValueEr
 class _Unsegmentable(Exception):
     """This repo cannot be fetched our way, so hf's downloader gets it back.
 
-    Not an error in itself — no range support, a platform without `os.pwrite`,
-    a Hub that reported no size — which is why it reads as a fallback rather
-    than as a failed download.
+    Not an error in itself — no range support, a Hub that reported no size, a
+    cache filesystem that cannot hold a sparse file — which is why it reads as a
+    fallback rather than as a failed download.
+
+    A platform without `os.pwrite` was one of these and is NOT one any more: it
+    fetches on a single append-only stream instead (`_appends_only`), which is
+    the same guarantee by a different route rather than a weakened one.
     """
 
 
@@ -544,7 +576,12 @@ def bytes_on_disk(folder):
     the first second, and reporting that would put the bar at 100% before a
     byte had arrived. `st_blocks` is what the download has actually put on the
     disk. Where the platform has no such notion (Windows), `st_blocks` is
-    absent and the length is the honest answer anyway — nothing is sparse there.
+    absent and the length is the honest answer anyway — nothing is sparse
+    there, and doubly so since `_appends_only`: a part file written by a single
+    append-only stream is never pre-sized, so its length is exactly what has
+    landed. That is also why the POSIX branch takes the MIN of the two rather
+    than the blocks alone — an appended part file on a platform that HAS
+    `st_blocks` can report more allocated blocks than it holds bytes.
     """
     if not folder:
         return None
@@ -789,7 +826,8 @@ def _sparse_ok(folder):
     blocks = None
     try:
         os.makedirs(folder, exist_ok=True)
-        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC | _BINARY,
+                     0o644)
         try:
             os.ftruncate(fd, SPARSE_PROBE_BYTES)
             blocks = getattr(os.fstat(fd), "st_blocks", None)
@@ -800,6 +838,54 @@ def _sparse_ok(folder):
     finally:
         _remove(probe)
     return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
+
+
+def _appends_only():
+    """Whether this platform must fetch each file on ONE sequential stream.
+
+    True where there is no `os.pwrite`, which means Windows and nothing else.
+
+    Segments write OUT OF ORDER into a file that was pre-sized before a byte
+    arrived, and only an unbuffered positional write makes AI-5i's guarantee
+    hold there — that a counted byte is a written byte. `seek` + `write` on a
+    buffered handle does not: the count runs ahead of the disk, and a resume
+    then skips bytes that were never durable.
+
+    So this used to be a flat refusal, and the refusal cost the model mirror its
+    entire purpose on that platform: the mirror's only transport is
+    `_segmented_fetch`, so a Windows client declined every time, every
+    acquisition went to the Hub, and none of them appeared in the access logs
+    the feature exists to produce (AI-5l).
+
+    **A single append-only stream keeps the same guarantee by a different route
+    rather than giving it up.** With one segment and an `O_APPEND` fd there is
+    no out-of-order write left to make: every `os.write` is a syscall landing at
+    the END of the file, so the file's LENGTH is the progress and a resume is a
+    `Range` from that length. Nothing is buffered and nothing is seeked — the
+    two things the pre-sized layout needed `pwrite` to avoid. What that also
+    removes is the pre-sized file itself, and with it the sparse-filesystem
+    requirement (`_segmented_fetch`) and the reason the bar counts blocks rather
+    than length (`bytes_on_disk`).
+
+    What is given up is parallelism WITHIN one file, and only that: chunks of
+    DIFFERENT files still run on `MAX_CONNECTIONS` streams, because two files
+    are two fds and nothing between them is out of order. A repo of thirty
+    shards is as parallel here as anywhere; a single 4.6GB shard is not.
+
+    Asked at call time rather than cached at import: it is one `hasattr`, and
+    the tests answer it by taking the attribute away from a module they have
+    already imported (`test_ai_hub_fetch_no_pwrite.py`), which is what lets the
+    win32 path be exercised on POSIX at all.
+    """
+    return not hasattr(os, "pwrite")
+
+
+def _file_size(path):
+    """The file's length, or 0 where there is no file. Never raises."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
 
 
 def _chunks(size):
@@ -837,6 +923,20 @@ def _seg_complete(seg):
     return seg["start"] + seg["done"] > seg["end"]
 
 
+def _blob_sha256(path):
+    """The file's sha256, read in fixed blocks.
+
+    In BLOCKS rather than `read()`: this runs on multi-gigabyte shards, and the
+    whole reason a part file is pre-sized and written through `pwrite` is that
+    nothing here holds a file in memory.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(HASH_BLOCK_BYTES), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 class _FileFetch:
     """One file's download: its part file, its segments, its sidecar.
 
@@ -846,7 +946,7 @@ class _FileFetch:
     """
 
     def __init__(self, folder, repo_id, filename, revision, meta, token, stop,
-                 probes=None):
+                 probes=None, re_resolvable=True):
         self.folder = folder
         self.repo_id = repo_id
         self.filename = filename
@@ -859,11 +959,28 @@ class _FileFetch:
         self.token = token
         self.stop = stop
         self.probes = {} if probes is None else probes
+        #: Whether a fresh `location` can be obtained for this file at all. True
+        #: on the Hub path, where `location` is a presigned CDN URL that expires;
+        #: False for caller-supplied metadata, where there is nothing to refresh
+        #: — see `_re_resolve`.
+        self.re_resolvable = re_resolvable
+        #: The digest to verify the finished blob against, or None. **Captured
+        #: here, from the metadata this fetch was PLANNED with, and never re-read
+        #: out of `self.meta` at publish time.** `self.meta` is reassignable
+        #: (`_re_resolve` replaces it wholesale), and reading the digest late is
+        #: exactly how the mirror path's hash check came to switch itself off
+        #: silently in the one situation it exists for.
+        self.verify = meta.get("sha256")
         self.size = meta["size"]
         self.blob = os.path.join(folder, "blobs", meta["etag"])
         self.part = self.blob + PART_SUFFIX
         self.sidecar = self.part + ".json"
         self.snapshot = os.path.join(folder, "snapshots", meta["commit"])
+        #: One append-only stream instead of segments — see `_appends_only`.
+        #: Snapshotted per fetch rather than asked again at every write: the
+        #: answer cannot change under a running download, and a plan made one
+        #: way must not be written the other.
+        self.append = _appends_only()
         self.lock = threading.Lock()      # guards the segment cursors
         self.flush_lock = threading.Lock()  # one writer of the sidecar at a time
         self.fd = None
@@ -890,6 +1007,8 @@ class _FileFetch:
             _remove(self.sidecar)
             return []
         os.makedirs(os.path.dirname(self.blob), exist_ok=True)
+        if self.append:
+            return self._plan_append()
         saved = self._saved()
         if saved is not None:
             # The layout to resume with is the layout the bytes were fetched
@@ -934,8 +1053,62 @@ class _FileFetch:
                 self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
-        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
+        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT | _BINARY, 0o644)
         os.ftruncate(self.fd, self.size)
+        self.flush(force=True)
+        pending = [seg for seg in self.segments if not _seg_complete(seg)]
+        self.pending = len(pending)
+        return pending
+
+    def _plan_append(self):
+        """The same plan on a platform with no `os.pwrite`: one stream, appended.
+
+        ONE segment covering the whole file, an fd opened `O_APPEND`, and no
+        `ftruncate` to the final size. Those are the only three differences from
+        `plan()` above and they are all one difference: **here the part file's
+        LENGTH is the progress**, where on the segmented path the length is
+        final from the first second and the cursors are the progress.
+
+        That is how AI-5i's invariant is kept rather than traded away. A counted
+        byte must be a byte the kernel already has, which is why out-of-order
+        segments need an unbuffered positional write; a single sequential stream
+        gets the same promise from `O_APPEND` itself, since every `os.write`
+        lands at the end of the file and the end of the file is the only cursor
+        there is. A `SIGKILL` therefore leaves a PREFIX — never a file with a
+        hole in the middle that a length would misdescribe.
+
+        The sidecar still licenses the resume, exactly as above: without one this
+        part file is bytes of unknown provenance. And the one segment derived
+        here is also what refuses a sidecar the SEGMENTED path wrote — four
+        recorded segments against one derived, so `_restore` says no and the file
+        restarts whole. It has to: that part file is pre-sized and full of holes,
+        and appending onto it would publish a blob of exactly the right length
+        and partly wrong content. The refusal holds in the other direction too,
+        in `_saved`.
+
+        Then the recorded cursor and the file are made to AGREE before a byte
+        moves, by truncating the file back to the cursor. `flush` fsyncs the data
+        before it writes the sidecar, so a recorded offset is always durable
+        while the last second of writes may not be — a distinction the segmented
+        path keeps by resuming from the recorded offset and overwriting anything
+        past it positionally. Appending cannot overwrite, so the un-vouched-for
+        tail goes instead: at most one flush interval of bytes re-fetched,
+        against a resume that would otherwise append at a length no sidecar ever
+        recorded.
+        """
+        self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
+        saved = self._saved()
+        if saved is not None and self._restore(saved):
+            self.segments[0]["done"] = min(self.segments[0]["done"],
+                                           _file_size(self.part))
+        else:
+            self.segments[0]["done"] = 0
+            _remove(self.part)
+            _remove(self.sidecar)
+        self.fd = os.open(self.part,
+                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | _BINARY,
+                          0o644)
+        os.ftruncate(self.fd, self.segments[0]["done"])
         self.flush(force=True)
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
         self.pending = len(pending)
@@ -978,6 +1151,17 @@ class _FileFetch:
         exactly the right length that is silently wrong. The layout itself is
         checked in `_restore`, against the segments derived from this answer.
 
+        **The part-file LENGTH check belongs to the pre-sized layout, so it is
+        skipped on the append-only path** (`_appends_only`), where a part file
+        shorter than the file it describes is the ordinary case — its length is
+        the progress. Skipping it is not a hole: the two layouts still refuse to
+        resume each other's part files, in both directions. A segmented run
+        handed an APPENDED part file sees a short file where a pre-sized one is
+        required and starts clean; an appending run handed a SEGMENTED one gets
+        past this check and is refused by `_restore`, which derives one segment
+        against the sidecar's many. Either way the answer is "no sidecar", which
+        is only ever slower.
+
         **`isinstance(state, dict)` is checked explicitly, not left to fall out
         of a `KeyError`.** A sidecar whose JSON parses but is not an object — a
         truncated write that still happens to be valid JSON on its own, like a
@@ -1002,7 +1186,10 @@ class _FileFetch:
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:
                 return None
             saved = state["segments"]
-            if not saved or os.path.getsize(self.part) < self.size:
+            if not saved:
+                return None
+            landed = os.path.getsize(self.part)  # raises: no part file, no resume
+            if not self.append and landed < self.size:
                 return None
             return saved
         except (OSError, ValueError, KeyError, TypeError):
@@ -1103,13 +1290,21 @@ class _FileFetch:
                     return
                 reason = f"the stream ended at byte {seg['start'] + seg['done']}"
             except urllib.error.HTTPError as error:
-                if error.code in (401, 403) and not refreshed:
+                if error.code in (401, 403) and not refreshed and self.re_resolvable:
                     # `location` is a presigned CDN URL and a multi-hour
                     # download outlives it. Re-resolving does NOT count against
                     # the budget: an expired signature is not evidence that the
                     # file is unreachable. Its own failure is an ordinary
                     # network fault and must be COUNTED rather than escape —
                     # otherwise one unlucky moment aborts the whole download.
+                    #
+                    # **`self.re_resolvable` is what keeps this off the mirror
+                    # path**, where the URL is commit-pinned and immutable: there
+                    # is no signature to refresh, so a 401 or 403 there means the
+                    # object is missing or misconfigured, and the ORDINARY retry
+                    # below is the whole answer. Asking anyway made a request to
+                    # huggingface.co in the middle of a download whose entire
+                    # point is that huggingface.co is never contacted.
                     refreshed = True
                     try:
                         self._re_resolve()
@@ -1141,6 +1336,13 @@ class _FileFetch:
     def _re_resolve(self):
         """A fresh presigned URL for this file. Only the LOCATION may change.
 
+        Refuses outright when this fetch's metadata did not come from the Hub.
+        The caller above already checks that, so this is the invariant stated
+        where it is enforced rather than a second condition to keep in step: the
+        one thing that must never happen is a Hub call, or a `self.meta`
+        replacement, on a path that has neither a URL to refresh nor a Hub to
+        ask.
+
         `etag`, `size` and `commit` are what the blob path, every segment offset
         and the snapshot folder were derived from before any thread started. A
         repo updated mid-download therefore has to abort, never continue: the
@@ -1148,6 +1350,9 @@ class _FileFetch:
         as `blobs/<old-etag>` are a mix of two revisions at exactly the right
         length, under a name hf will then serve from cache forever.
         """
+        if not self.re_resolvable:
+            raise _Unsegmentable(
+                f"{self.filename}: this download has no re-resolvable location")
         fresh = _hub_file_meta(self.repo_id, self.filename, self.revision)
         for field in ("etag", "size", "commit"):
             if fresh.get(field) != self.meta[field]:
@@ -1188,6 +1393,17 @@ class _FileFetch:
                 f"starting at byte {seg['start']}")
         with self.lock:
             seg["done"] = 0
+            if self.append and self.fd is not None:
+                # Rewinding the CURSOR is not enough where the cursor is the
+                # file's length. An `O_APPEND` fd would write this body after
+                # the bytes already there; the cursor would then reach `size`
+                # over a file half again too long, `finish` would believe it,
+                # and the blob published under a real etag would be exactly the
+                # permanent failure this function exists to prevent. The
+                # segmented path needs nothing here — its writes are
+                # positional, so byte 0 of this body goes to offset 0 whatever
+                # the part file already holds.
+                os.ftruncate(self.fd, 0)
         return 0
 
     def _drain(self, response, seg, start):
@@ -1220,7 +1436,27 @@ class _FileFetch:
             chunk = chunk[:room]
             written = 0
             while written < len(chunk):
-                written += os.pwrite(self.fd, chunk[written:], offset + written)
+                if self.append:
+                    # `O_APPEND`, so the write lands at the end of the file —
+                    # which is this segment's cursor by construction, there
+                    # being exactly one segment and nothing that seeks.
+                    # `offset` is deliberately not consulted: see
+                    # `_plan_append`. Still one syscall per write and no
+                    # userspace buffer, which is the property that matters.
+                    moved = os.write(self.fd, chunk[written:])
+                    if not moved:
+                        # A loop that trusts a syscall to make progress is a
+                        # HANG rather than an error, and this one would spin on
+                        # a non-empty buffer forever, burning a core with the
+                        # download frozen and nothing in any log. Raising hands
+                        # it to `_TRANSIENT` like any other write failure, which
+                        # retries and then falls back.
+                        raise OSError(f"{self.filename}: a write of "
+                                      f"{len(chunk) - written} bytes moved none")
+                    written += moved
+                else:
+                    written += os.pwrite(self.fd, chunk[written:],
+                                         offset + written)
             offset += len(chunk)
             with self.lock:
                 seg["done"] += len(chunk)
@@ -1239,9 +1475,31 @@ class _FileFetch:
         cursors are the same durable-byte accounting the sidecar records, and
         they are the only evidence there is that the file is whole.
 
-        No hash, like huggingface_hub itself, which relies on TLS and
-        `Content-Length`: re-reading every gigabyte off the disk would give back
-        a good part of what this feature is for.
+        On the append-only path (`_appends_only`) the length happens to agree
+        with the cursors, and the gate is still the cursors: ONE rule rather
+        than a per-platform one, and the cursors are the stricter of the two
+        anyway — `_whole_body` can rewind them, and a length that had not been
+        rewound with them is exactly the state this must not publish.
+
+        No hash on the HUB path, like huggingface_hub itself, which relies on TLS
+        and `Content-Length`: re-reading every gigabyte off the disk would give
+        back a good part of what this feature is for.
+
+        **The MIRROR path is hashed, and the trade is genuinely different there.**
+        A `sha256` in the metadata is what marks it (the Hub cannot give us one;
+        see `mirror.file_meta`). On that path we are the origin, so nobody else
+        would ever notice a bad byte we shipped — a corrupt upload, a truncated
+        object, a cache poisoned somewhere between us and the user — and a wrong
+        blob filed under a real etag is not a failed download but a PERMANENT
+        one: hf's own loaders then serve those bytes out of the cache forever,
+        and no later download would refetch them. One re-read of the file we just
+        wrote, once, against a digest we generated from the same blob hf produced,
+        is what makes that impossible.
+
+        Verified BEFORE `os.replace`, not after. A blob is published the instant
+        it is renamed, and a concurrent load can pick it up between the rename
+        and any check that follows — so the check that has to hold is the one on
+        the part file, where a failure leaves nothing in the cache to clean up.
         """
         if self.fd is not None:
             os.fsync(self.fd)
@@ -1251,8 +1509,45 @@ class _FileFetch:
                 raise RuntimeError(
                     f"{self.filename}: {landed} of {self.size} bytes landed, "
                     f"{len(missing)} segment(s) short")
+            if self.append and _file_size(self.part) != self.size:
+                # **On this route the length is an INDEPENDENT witness, so it is
+                # worth one syscall.** The cursors count what was handed to
+                # `os.write`; the length is what the kernel actually kept, and
+                # the two can only disagree if something between them rewrote
+                # the bytes — which is precisely what a text-mode fd does
+                # (`_BINARY`), and what no cursor and no `Content-Length` can
+                # notice. It is not a duplicate of the check above: there the
+                # question is whether every segment finished, here whether the
+                # file those segments claim to have written is the size they
+                # claim. On the SEGMENTED route the same check would be
+                # theatre, since the file is `ftruncate`d to its final size
+                # before a byte arrives — which is exactly why AI-5i gates
+                # publishing on the cursors and says a length proves nothing
+                # there. The Hub path carries no digest, so without this a
+                # translated blob would be published under a real etag and hf
+                # would serve it forever; with it, that download falls back.
+                raise RuntimeError(
+                    f"{self.filename}: {self.size} bytes were counted into a "
+                    f"part file of {_file_size(self.part)} — something between "
+                    f"this process and the disk rewrote them")
             os.close(self.fd)
             self.fd = None
+            digest = self.verify
+            if digest:
+                # ONE read of the whole file, here — not per segment and not per
+                # chunk. The segments write out of order, so there is no
+                # streaming hash to keep: `_drain` sees the file's bytes in
+                # whatever order the connections deliver them.
+                actual = _blob_sha256(self.part)
+                if actual != digest:
+                    # The part file and its sidecar go with it. Kept, the next
+                    # run would resume INTO bytes already known to be wrong and
+                    # arrive at the same mismatch, forever.
+                    _remove(self.part)
+                    _remove(self.sidecar)
+                    raise RuntimeError(
+                        f"{self.filename}: the mirror served {actual[:12]} where "
+                        f"the manifest says {digest[:12]}")
             os.replace(self.part, self.blob)
             _remove(self.sidecar)
         return self.link()
@@ -1283,18 +1578,25 @@ class _FileFetch:
             self.fd = None
 
 
-def _resolve(repo_id, filenames, revision):
+def _resolve(repo_id, filenames, revision, meta=None):
     """One metadata call per file, concurrently.
 
     Serially this is a round trip per file before a single byte moves, which on
     a repo of thirty shards is several seconds of nothing happening — the exact
     thing this feature exists to remove.
+
+    `meta` is where that metadata comes FROM, defaulting to the Hub. A caller
+    that already knows every file's url, etag, commit and size — the model
+    mirror reads them out of one manifest — supplies its own and the Hub is not
+    consulted at all. Same signature either way, so the pool below cannot tell
+    the difference and neither can anything downstream of it.
     """
+    provider = meta or _hub_file_meta
     with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(MAX_CONNECTIONS, len(filenames)),
             thread_name_prefix="meta") as pool:
         return list(pool.map(
-            lambda name: _hub_file_meta(repo_id, name, revision), filenames))
+            lambda name: provider(repo_id, name, revision), filenames))
 
 
 def _run_segment(fetch, seg):
@@ -1348,8 +1650,28 @@ def _run_segment(fetch, seg):
         raise
 
 
-def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
+#: "no `token` argument was passed", as distinct from "the token is None".
+#: `None` is a real and meaningful value here — it is what the mirror path
+#: passes to mean ANONYMOUS — so it cannot also stand for "ask hf's own store".
+_ASK_HF = object()
+
+
+def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
+                     meta=None, token=_ASK_HF):
     """Fetch `filenames` into the hub cache ourselves. Returns the snapshot dir.
+
+    `meta` and `token` are the two seams a non-Hub source needs, and both
+    default to today's behaviour exactly. `meta` supplies the per-file metadata
+    (see `_resolve`); `token` is the credential the requests carry, and the
+    mirror path passes `None` for it — `_cdn_token` sends the Hub token whenever
+    the blob URL IS the metadata URL, which is true of our own mirror by
+    construction, and a user's Hub token has no business being offered to
+    whatever host `FUSED_MODEL_MIRROR` names.
+
+    Everything else is deliberately NOT a seam. The one-commit check, the
+    asked-for-commit pin, the sparse-file requirement and the ref write are what
+    make a fetch a SNAPSHOT rather than a pile of files, and they hold whoever
+    supplied the metadata — all the more so for a manifest we read off a CDN.
 
     `revision` is REQUIRED and has no default on purpose: it must be the commit
     the caller's file list resolved to, and a default here is exactly how a list
@@ -1363,6 +1685,14 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
     would multiply the two caps together and open thirty sockets on a repo of
     thirty shards.
 
+    **A platform with no `os.pwrite` fetches each file on one append-only
+    stream instead of splitting it** (`_appends_only`), and that is the only
+    thing it changes: the queue, the cap and this pool are untouched, so the
+    serialization is per FILE and a repo of shards still moves on
+    `MAX_CONNECTIONS` connections. It used to be an `_Unsegmentable` refusal
+    here, which quietly meant the model mirror never fetched on Windows and no
+    Windows acquisition ever reached our access logs (AI-5l).
+
     **No cache lock, unlike `snapshot_download`, and deliberately.** Two app
     instances fetching one repo would write the SAME bytes at the SAME offsets:
     the etag names the content, so there is no version of this race that puts
@@ -1373,27 +1703,33 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
     the supervisor's deterministic job id joins a second Download of a model
     onto the first (AI-5a).
     """
-    if not hasattr(os, "pwrite"):
-        # Windows. Buffered seek-and-write would break the guarantee the whole
-        # design rests on — that a counted byte is a written byte.
-        raise _Unsegmentable("os.pwrite is unavailable on this platform")
     folder = repo_folder(model_id)
     if not folder:
         raise _Unsegmentable("the hub cache layout is unavailable")
     if not filenames:
         raise _Unsegmentable("the Hub listed no files for this repo")
-    if not _sparse_ok(folder):
+    if not _appends_only() and not _sparse_ok(folder):
+        # The sparse requirement belongs to the PRE-SIZED part file, which the
+        # append-only path never creates. Refusing here anyway would take this
+        # whole fetch — and with it the model mirror — off the one platform
+        # `_appends_only` exists to keep it on.
         raise _Unsegmentable(f"{folder} cannot hold a sparse file")
 
-    token = _hf_token()
+    if token is _ASK_HF:
+        token = _hf_token()
     stop = threading.Event()
     probes = {}  # host -> range support, so a repo of shards probes once
     fetches, by_etag = [], {}
-    for name, meta in zip(filenames, _resolve(model_id, filenames, revision)):
-        if not (isinstance(meta.get("size"), int) and meta.get("etag")
-                and meta.get("commit")):
-            raise _Unsegmentable(f"{name}: the Hub reported no size, etag or commit")
-        already = by_etag.get(meta["etag"])
+    resolved = _resolve(model_id, filenames, revision, meta)
+    for name, info in zip(filenames, resolved):
+        if not (isinstance(info.get("size"), int) and info.get("etag")
+                and info.get("commit")):
+            # "reported", not "the Hub reported": the metadata may have come
+            # from a caller's own manifest (see `meta` above), and a message
+            # naming the Hub for a mirror manifest sends a reader to the wrong
+            # place.
+            raise _Unsegmentable(f"{name}: no size, etag or commit was reported")
+        already = by_etag.get(info["etag"])
         if already is not None:
             # One etag is one blob, and a repo really does publish the same
             # bytes under two names. A second fetch of it would share the part
@@ -1402,9 +1738,9 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
             # nothing there and taking the whole download into the fallback.
             already.filenames.append(name)
             continue
-        fetch = _FileFetch(folder, model_id, name, revision, meta, token, stop,
-                           probes)
-        by_etag[meta["etag"]] = fetch
+        fetch = _FileFetch(folder, model_id, name, revision, info, token, stop,
+                           probes, re_resolvable=meta is None)
+        by_etag[info["etag"]] = fetch
         fetches.append(fetch)
 
     commits = {fetch.meta["commit"] for fetch in fetches}
@@ -1474,14 +1810,199 @@ def _clear_parts(folder):
                 _remove(os.path.join(dirpath, name))
 
 
-def _fallback(model_id, error):
+def _fallback(model_id, error, source="segmented fetch"):
     """Say why we are back on hf's downloader. The supervisor captures stderr,
     so a fallback that happens in the field is diagnosable rather than merely
-    slow."""
+    slow.
+
+    `source` names WHICH path gave up — the segmented Hub fetch or the model
+    mirror. One line saying "segmented fetch" for a mirror that 404s sends a
+    reader to the wrong half of the feature, and the two fail for entirely
+    different reasons.
+    """
     sys.stderr.write(
-        f"[fused] segmented fetch of {model_id} unavailable, falling back to "
+        f"[fused] {source} of {model_id} unavailable, falling back to "
         f"huggingface_hub: {error.__class__.__name__}: {error}\n")
     _clear_parts(repo_folder(model_id))
+
+
+# --------------------------------------------------------------- the mirror path
+#
+# A suggested model can come off a distribution WE run instead of off
+# huggingface.co — see `mirror.py` for the protocol, the two environment
+# variables and why the permission is per-model. Everything below is the hook:
+# one branch inside `download_snapshot` for a repo and one inside `download_file`
+# for a single file (AI-5m — a different object with a weaker claim, not the same
+# manifest read loosely), so every runner call site is untouched and any failure
+# lands on the Hub path unchanged.
+
+#: The loaded `mirror` module, or False for "there is no usable one here".
+#: Cached because the answer cannot change within a process, and False rather
+#: than None so a failed load is not retried on every call.
+_MIRROR = None
+
+
+def _mirror_module():
+    """`mirror.py` from beside this file, or None.
+
+    Loaded LAZILY and BY PATH, both deliberately. `worker_base` is imported two
+    ways — as a bare module by a worker, which puts `runners/` on `sys.path`, and
+    by absolute path from the tests, which does not — so a plain `import mirror`
+    resolves in one and not the other. And loading it here rather than at module
+    scope keeps this file's module-scope imports stdlib-only, the rule
+    `test_ai_worker_base` enforces by reading this source.
+
+    None for a missing or broken file, because a runner venv that somehow lacks
+    it should download from the Hub, not fail.
+    """
+    global _MIRROR
+    if _MIRROR is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mirror.py")
+        try:
+            spec = importlib.util.spec_from_file_location("fused_model_mirror", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _MIRROR = module
+        except Exception as error:  # noqa: BLE001 - no mirror is a slower download
+            sys.stderr.write(f"[fused] the model mirror client is unavailable: "
+                             f"{error.__class__.__name__}: {error}\n")
+            _MIRROR = False
+    return _MIRROR or None
+
+
+def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+    """The repo off our own mirror, or None to say "take the Hub path".
+
+    None for every way of not having a mirror — not configured, not permitted
+    for this model, no manifest, a manifest that does not hold up, a 404, a 5xx,
+    a mid-download drop, a hash that does not match. A mirror that is down must
+    cost a slower download and never a failed one, so the ONLY thing that
+    escapes here is `Cancelled`: a ✕ must not be answered by starting the
+    download again somewhere else.
+
+    **The whole branch is inside one guard, the manifest call included.** It was
+    outside it, on the reasoning that `mirror.manifest` returns None rather than
+    raising — which is what that function intends and not what it guaranteed: a
+    truncated chunked body raises `http.client.IncompleteRead`, which is neither
+    an `OSError` nor a `ValueError`, so it escaped the client AND this function
+    and FAILED a download the Hub could have served. Both halves are fixed, and
+    the promise this feature is allowed to exist on should not rest on having
+    enumerated every exception a URL library can raise.
+
+    The manifest is filtered by the SAME `selects` the Hub listing goes through,
+    so a scoped download (`torch_image` passes an allow-list) measures and
+    fetches the same subset on both paths — and the fetch record is written with
+    that scope, which is what makes the second download of a mirrored model come
+    back off the fast path.
+    """
+    mirror = _mirror_module()
+    if mirror is None:
+        return None
+    try:
+        if not mirror.allowed(model_id):
+            return None
+        manifest = mirror.manifest(model_id)
+        if manifest is None:
+            return None
+        files = [(entry["name"], entry["size"]) for entry in manifest["files"]
+                 if selects(entry["name"], allow=allow_patterns,
+                            ignore=ignore_patterns)]
+        if not files:
+            # A manifest that selects nothing at this scope is not a mirror hit;
+            # the Hub listing is the authority on what the scope was supposed to
+            # match.
+            return None
+        names = [name for name, _size in files]
+        fetched = fetch_with_progress(
+            model_id,
+            lambda: _segmented_fetch(
+                model_id, names, manifest["commit"],
+                meta=mirror.file_meta(model_id, manifest),
+                # Anonymous, always. The blob URL is the metadata URL here, so
+                # `_cdn_token` would otherwise hand a user's Hub token to
+                # whatever host `FUSED_MODEL_MIRROR` names.
+                token=None),
+            total=_total_bytes(files))
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to the Hub
+        _fallback(model_id, error, source="the model mirror")
+        return None
+    # Recorded exactly as the Hub path records it, and for the same reason: what
+    # landed is a normal hf cache entry, so the cached-model fast path, the Local
+    # tab's inventory and deletion all read it without knowing where it came
+    # from. `_record_fetch` verifies the names are really there and writes
+    # nothing if they are not.
+    #
+    # **`names` comes from the manifest here, where the Hub path takes it from
+    # the Hub listing — and `_record_fetch`'s shortfall check is only as good as
+    # that list's independence.** Against the manifest alone the check would be
+    # self-certifying: a manifest missing `config.json` would download a subset,
+    # record the subset as complete at this scope, and every later bring-up would
+    # then be served a snapshot that cannot load, with nothing left to refetch
+    # it. What makes the list trustworthy is that `mirror.manifest` refuses any
+    # manifest that does not ASSERT it lists the whole repo at this commit, and
+    # `scripts/build_model_mirror.py` sets that assertion only after checking the
+    # snapshot against the Hub's own listing — on a build machine, where asking
+    # the Hub costs nothing. The independence is real; it just lives at build
+    # time, because asking the Hub here is the one thing this feature exists to
+    # avoid.
+    _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
+                  allow=allow_patterns, ignore=ignore_patterns)
+    return fetched
+
+
+def _mirror_file(repo_id, filename, detail=None, job=None, row=None):
+    """ONE file off our own mirror, or None to say "take the Hub path" (AI-5m).
+
+    The `_mirror_snapshot` above cannot serve this. A GGUF repo publishes dozens
+    of quantizations of the same model — `unsloth/Qwen3.5-9B-GGUF` is 147.81GB
+    whole — and `llama_text.download` wants one 2.6GB file out of it, while a
+    per-repo manifest is only accepted when it ASSERTS it lists the whole repo at
+    that commit. Earning that assertion would mean mirroring all 147.81GB to
+    serve the one file, and weakening it would break AI-5k. So this reads a
+    different object: `mirror.file_manifest`, one named file, no completeness
+    claim (see that function for why the claim is unnecessary here rather than
+    merely inconvenient).
+
+    **No `_record_fetch`, and that is load-bearing rather than an omission.**
+    `download_file` has never written one — one file is not a scope a later
+    bring-up can be told is complete — so there is no record for a wrong manifest
+    to make self-certifying, which is precisely what lets the manifest be
+    claim-free. Adding a record here would take that argument away.
+
+    Same degradation rules as the snapshot branch, for the same reason: the whole
+    body including the manifest call sits inside one guard, every failure returns
+    None after saying which path gave up, and only `Cancelled` escapes (AI-5e).
+    """
+    mirror = _mirror_module()
+    if mirror is None:
+        return None
+    try:
+        if not mirror.allowed(repo_id):
+            return None
+        manifest = mirror.file_manifest(repo_id, filename)
+        if manifest is None:
+            return None
+        entry = manifest["files"][0]
+        return fetch_with_progress(
+            repo_id,
+            lambda: os.path.join(
+                _segmented_fetch(repo_id, [filename], manifest["commit"],
+                                 meta=mirror.file_meta(repo_id, manifest),
+                                 # Anonymous, always, for `_mirror_snapshot`'s
+                                 # reason: the blob URL is the metadata URL
+                                 # here, so `_cdn_token` would otherwise hand a
+                                 # user's Hub token to whatever host
+                                 # `FUSED_MODEL_MIRROR` names.
+                                 token=None),
+                filename),
+            total=entry["size"], detail=detail, job=job, row=row)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to the Hub
+        _fallback(repo_id, error, source="the model mirror")
+        return None
 
 
 class _HubByteTicker:
@@ -2233,6 +2754,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         if cached:
             return cached
 
+        # Our own mirror, for a suggested model, BEFORE the Hub is consulted at
+        # all — the point of the feature is a download that involves
+        # huggingface.co nowhere, so a listing call here would defeat it. Excluded
+        # under `kwargs` for the same reason the fast path above is: an argument
+        # this function does not know about changes what a download IS, and a
+        # manifest describes the whole repo at one commit and nothing else.
+        mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns)
+        if mirrored:
+            return mirrored
+
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;
     # deciding the revision separately is how a list from one revision comes to
@@ -2338,6 +2869,18 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     if cached:
         return cached
 
+    detail = detail or f"Fetching {filename}…"
+
+    # Our own mirror, for a suggested model, BEFORE the Hub is consulted at all —
+    # the point of the feature is a download that involves huggingface.co
+    # nowhere, so the listing below would defeat it. This is the branch that
+    # keeps llama.cpp's GGUFs on the mirror: since D416 it is the only local text
+    # engine on Windows and Linux, and it fetches one file rather than a snapshot,
+    # so `_mirror_snapshot` never sees a suggested text model on those platforms.
+    mirrored = _mirror_file(repo_id, filename, detail=detail, job=job, row=row)
+    if mirrored:
+        return mirrored
+
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
     # whole snapshot fetched that way, one file wide.
@@ -2347,7 +2890,6 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(repo_id, error)
-    detail = detail or f"Fetching {filename}…"
 
     def hub():
         from huggingface_hub import hf_hub_download

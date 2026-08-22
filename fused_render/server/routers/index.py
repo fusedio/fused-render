@@ -967,11 +967,21 @@ def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
     """
     if not root.strip():
         return _error("'root' is required")
+    import time
+    t0 = time.monotonic()
     cfg = load_config()
     out = _ranked(cfg, root, q, limit)
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
+    # DEBUG: the request total, to set against the per-phase DEBUG lines
+    # logged underneath (stage A per pass, _repo_toplevel, the _inflight wait,
+    # the git sweep) — this fires on every keystroke of the home search, so it
+    # stays DEBUG (see query.py's pass_over for the same reasoning at length).
+    # Without this, a slow report has nothing server-side to diagnose it with
+    # beyond guessing which phase was the ~4s.
+    logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
+                q, root, (time.monotonic() - t0) * 1000, out["reason"])
     return {"ok": True, **out}
 
 

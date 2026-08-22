@@ -76,6 +76,27 @@
   opacity: 0.5;
 }
 
+/* The row that is the choice currently in force (`active`, radio semantics) —
+   semibold, brighter glyph, and an accent wash over the whole row. The SAME
+   treatment as the explorer's mode dropdown (.bar-menu-item.active), because it
+   is the same statement: a menu of alternatives has to say which one you are
+   looking at, and two dialects for one meaning is what the shared component
+   exists to prevent. Kept stronger than the 8% hover tint so the two never
+   blur, and the row keeps its own icon — the wash replaced a trailing checkmark
+   there, and on these menus the icons ARE the vocabulary. */
+.context-menu-item.active {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.context-menu-item.active:hover:not(.disabled) {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.context-menu-item.active .context-menu-icon {
+  color: var(--fg);
+}
+
 /* Fixed-width icon column so labels align even for iconless rows (e.g. a
    submenu's mode entries). The glyph inherits the row's colour. */
 .context-menu-icon {

@@ -528,7 +528,7 @@ const page = await fused.runPython("./reader.py",
 Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 - **DM-1** **DECIDED (v2, D33):** the `.app` is built by **py2app** from a framework-build python (Homebrew `python@3.12`, bootstrapped by the build script). py2app ships a real re-invokable interpreter in-bundle (`Contents/MacOS/python`) — `sys.executable` subprocess executor works unchanged — and its compiled stub gives proper LaunchServices/AppKit process identity (the earlier hand-rolled bash-shim caused flaky NSStatusItem behavior under Finder launches).
-- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and the Learn page may not promise a library the app lacks (`test_the_learn_page_only_promises_what_the_app_ships`). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
+- **DM-2** **DECIDED:** user `runPython` code executes on the **bundled interpreter only**. `[bundled]` is the dev-install list and the Linux/Windows shipping list; on macOS py2app **copies** only what `scripts/setup_py2app.py` names — which now DERIVES that list from the installed distributions and excludes nothing, so all three platforms ship the whole extra (D176). `BUNDLED_EXCLUDED` is empty but stays as the mechanism: a `[bundled]` distribution the bundle does not carry must be named there with its measured cost, never merely absent. "Is this dependency available?" therefore has one answer today, and `tests/test_bundle_contents.py` is what keeps it that way — the templates that genuinely need an install declare dependencies **outside** `[bundled]` (`pyproj`, `imagecodecs`, `py360convert`, `pypandoc-binary`, and since D276 the geo/PDF stacks named below), which is what exercises the install loader on a shipped build. **The extra is a size budget, not a wish list (D276).** It ships preinstalled: numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests, httpx, msgpack, python-pptx, drain3, botocore, google-auth, the `fused` engine + the core `dependencies`. It deliberately does NOT ship polars (197.0 MB, imported by nothing in the product), scipy (70.3 MB), matplotlib (25.0 MB), pymupdf + pikepdf (68.9 MB) or the geo stack geopandas/rasterio/rio-tiler/shapely/zarr and their exclusive transitives (180.1 MB) — 541.9 MB removed, taking the installed set from 954.3 MB to 412.4 MB (D276 states the measurement method; absolutes are only comparable against it, deltas against anything). Those live in the `pyproject.toml` of each template that imports them (`map`, `vector`, `geometry_editor`, `pdf_studio`) or in the venv a daemon manages itself (`geotiff`, `netcdf`, `zarr_aoi`, `pyramid`, D174), and are installed on first render through PY-18 — `map`'s environment resolves to 472.8 MB on that same measure, since a declaration is the complete list (D172) and it additionally carries duckdb + requests for the user-supplied Python targets `worker.py` executes in-process. **The unit of that decision is the FOLDER, not the wheel** (PY-16): `fpdf2` stays in the extra at a measured 14.1 MB precisely because moving it would have put all of `excel` and `slides` behind a project venv, gating every `.xlsx`/`.csv`/`.pptx` on a first-render install of packages the app already ships. **The built-in executor cannot honour any of this** — it owns no venv machinery (D174) — so `executor.explain_missing_module` replaces a bare `ModuleNotFoundError` with one naming the folder, its manifest, the missing distributions and both fixes, whenever the failed import resolves to something that folder declares. At FAILURE time, never before the run: a pre-flight refusal keyed on the folder's state breaks every stdlib-only entry point in a folder that declares one heavy optional dependency (`geotiff`'s `ensure()`, `model_card`'s `inspect_model.py`, `pano`, `docs`, `latex`), and an AST pre-scan would refuse the lazy imports that make `pdf_studio`'s `health` action answerable while its venv builds. That obligation is enforced in both directions: a template may not declare what the bundle already ships (`test_a_declaration_is_needed_for_what_the_MACOS_BUNDLE_lacks`) and MUST declare what it does not (`test_a_template_declares_whatever_the_app_does_not_ship`), and a documented library list may not promise a library the app lacks (`test_the_documented_library_list_only_promises_what_ships`, over `skills/fused-render-authoring/SKILL.md` — the Learn page's own table was the second copy that test pinned until the learn content left the app, D419). Removing from the extra rather than excluding from the bundle is the deliberate choice: `BUNDLED_EXCLUDED` would have shrunk macOS alone and left Linux and Windows carrying what the extra still promised — D176's defect in the other direction. py2app note: these are force-copied via `packages` — the executor imports them only in child processes, so import tracing can't see them. **The standard library ships WHOLE** (D305): py2app freezes only the stdlib its modulegraph reaches from `app_entry.py`, and that subset is inherited by every environment built on the bundled interpreter (PY-18) — a DMG shipped without `filecmp`, and an MLX load died inside transformers with a message about the model. `setup_py2app.STDLIB_EXCLUDED` names the few omissions with reasons (tkinter and turtle, idlelib, turtledemo, ensurepip, lib2to3, antigravity, this), and `build_dmg.sh` §4b-ter fails the build when either the bundled interpreter OR a venv built on it cannot import what that list says ships. This holds under the fused engine too: a script whose folder declares no `pyproject.toml` runs on that same interpreter (PY-17), and only a folder that declares one gets an environment of its own (PY-16/PY-18).
 - **DM-3** **DECIDED (v2, D34):** regular app — **Dock icon AND menu bar ✦** (Open in browser / Copy URL / Quit). No LSUIElement. Dock right-click → Quit is the discoverable lifecycle path.
 - **DM-4** **DECIDED (v2, D73):** signing is credential-driven in `scripts/build_dmg.sh` — a **Developer ID** identity in the keychain (auto-detected or via `FUSED_RENDER_CODESIGN_IDENTITY`) triggers hardened-runtime, inside-out signing + optional notarization (`FUSED_RENDER_NOTARY_PROFILE`); with no identity it **ad-hoc signs** (local testing, unchanged). Developer-ID signing is also the general fix for the repeated Downloads/Desktop/Documents prompt (one Team ID unifies the app + its executor subprocess, complementing the D72 in-process reader split). Details: `docs/signing.md`. Supersedes the earlier "Briefcase external-app" plan (D35 — Briefcase's template breaks `sys.executable`).
 - **DM-5** Launch flow: pidfile+portfile in `~/Library/Application Support/fused-render/`; liveness probe = GET `/` (file-backed, catches zombies); already running ⇒ open browser only; else start (1777, fall forward to 1787), write pidfile, open browser.
@@ -1141,13 +1141,14 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, reader: {enabled}, model: {default,
+  fused_available}, reader: {enabled}, canvases: {enabled}, model: {default,
   choices}, calls: {…}}` — and no
   `log` block (PF-5), and no `deploy` block. *(A `deploy: {enabled}` block —
   the `deploy_enabled` pref, formerly §20.4/PF-8 — was removed along with §19;
   see that section's tombstone.)* `PUT /api/prefs`
   (X-Fused) applies a **partial** update — any of `engine`,
-  `reader_enabled`, `default_model`, `calls_enabled`, `calls_params` or
+  `reader_enabled`, `canvases_enabled`, `default_model`, `calls_enabled`,
+  `calls_params` or
   `calls_retention_days` present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value,
   or a body naming no known preference → 400; the file merges
@@ -1216,9 +1217,23 @@ never imports server).
   incidental guarantee that `worker_base` was stdlib-only *because hf was absent
   from CI*, so that rule is now enforced by reading the module's own imports
   (`test_ai_worker_base.py`).
+- **PF-1g** **`canvases_enabled` is a feature switch over the shell's ENTRY
+  POINTS to Canvases, not over its routes** (D427). Default **off**, boolean,
+  any non-`true` stored value reading as off, so an existing install — signed in
+  to Fused or not — has to opt in. On, the shell offers Canvases in the two
+  places it ever did: the sidebar's primary row and rail icon (which keep their
+  own additional sign-in gate — the row is `enabled && logged_in`) and the
+  Settings menu entry (gated on this pref **alone**, since that entry has always
+  been the affordance for a feature you have not set up yet). `/canvases` and
+  `/canvases/<name>` answer regardless, exactly as they do signed out: a
+  bookmark, a deep link and an open workspace survive the switch, and the page
+  explains its own state. The shell reads the flag through a standalone module
+  (`@apps/canvases/feature-flag`, not the app barrel — the same main-bundle
+  reason as the sign-in probe) with **one fetch and a publish** rather than a
+  poll, since the only writer is the Preferences page in the same window.
 - **PF-1a** The **Render preferences** tab renders its sections in this order:
   **Appearance**, **Call log**,
-  **Accessibility**, and last
+  **Accessibility**, **Canvases** (PF-1g), and last
   **Execution engine** — last because it is the setting a user is least likely
   to have come here to change (builtin suits almost everyone, and an env var
   pins it where it matters). **Default model** and **Hugging Face** are NOT here:
@@ -5019,6 +5034,30 @@ Goal: the models, datasets and Spaces this machine has downloaded from the
 Hugging Face Hub are visible and accounted for, from a sidebar entry, without
 anyone having to remember where the cache lives or run `du` on it.
 
+**Where it lives (D420).** The page is a sub-app, `frontend/src/apps/ai_models/`
+— `AiModelsPage.tsx` (chrome, tab strip, dispatch), `routes.ts` (the path
+codec), `lib/` (the runtime poll, the engine registry reader, the grouping, the
+shared cache walk in `useCacheScan.ts`, URL params), and one directory per tab:
+`local/`, `discover/`, `engines/`, `usage/`, `playground/`. Server-side the cache
+walk is `fused_render/ai/hub_cache.py`, beside `catalog.py`/`registry.py`/
+`supervisor.py`; `server/routers/ai_models.py` is the three route decorators
+over it. Every `/api/*` URL is unchanged.
+
+**Four tabs, four paths**: `/ai-models/playground` (the default — bare
+`/ai-models` redirects to it), `/ai-models/local`, `/engines`, `/usage`.
+`?model=` and `?cap=` still seed the playground's picker and are carried across a
+tab switch; only the tab itself left the query string. An unrecognised sub-path
+falls back to the default tab silently, and there is no alias for the old `?tab=`
+shape (D420). The four tabs share ONE mounted component and one cache walk — see
+D420 for why they are not four routes.
+
+**`discover/` is still here and is not routed (D423).** The Local tab answers its
+question now — see HF-20 — so a fifth strip entry whose whole content is a second,
+emptier version of that answer costs a reader a click to learn nothing.
+`/ai-models/discover` is therefore an unknown sub-path and lands on the default
+like any other stale link. The Hub-search code, its view logic and its tests stay
+in the tree: the judgement is about the STRIP, not about the code.
+
 The cache is shared and invisible: a `transformers` import in a page's Python,
 a `diffusers` pipeline, a template someone pasted in, or an `hf download` in a
 terminal all write into the same tree, and nothing in the app has ever named
@@ -5213,6 +5252,46 @@ is for, and the cache states it nowhere:
   refs** (HF-15) and cached per snapshot directory, keyed by its mtime — a
   snapshot's contents are immutable once written, so a Refresh over forty repos
   re-reads nothing.
+- **HF-20** **One row per capability, holding what this machine has AND what to
+  get next (D423).** A capability's row reads: the loaded model, then what has
+  been downloaded for it most recently (`lastUsed` descending, nulls last, ties
+  keeping the listing's order — so a `noatime` volume degrades to the old sort
+  rather than to a shuffle), then the curation's recommendations for the same
+  capability, each with a Download button. A capability with NOTHING on disk but
+  something recommended still gets a row, which is the whole point: a fresh
+  machine's answer to "what should I get" is drawn where the answer to "what do I
+  have" will appear, so the page fills up in place instead of sending anybody to
+  a second grid on another tab. That is why the Discover tab left the strip — and
+  why, at D426, its search moved to the top of THIS tab and its directory left the
+  tree (§39): a query replaces every row described here with one grid of Hub
+  results, and clearing the box brings them back.
+  A recommendation is suppressed by **"this model already has a card here"**, not
+  by "this disk has the model" — the two stopped being one question at AI-7f: a
+  partly downloaded repo is not a model anybody can load, but its card is on
+  screen carrying its own Download, and recommending the same model beside it
+  would draw one model twice. Deleting that repo is what brings the
+  recommendation back.
+  The byte figure beside a heading is **disk bytes only**, and omitted at zero: it
+  is a claim about this machine (D249/D251), and counting models nobody has
+  downloaded would make it the one number on the page that cannot be checked
+  against the cache. "Fetched by engines" (AI-7e) is its own row below with no
+  recommendations, because nobody chooses a component.
+- **HF-21** **The row is a CAROUSEL, and its arrows are measured, never assumed.**
+  Cards are exact thirds, so the old "there is more" signal — a card half in view
+  — is gone and the row has to say it scrolls. Each edge-fade arrow exists only
+  while there is content on its side, decided by comparing `scrollWidth` against
+  `clientWidth` on scroll, on resize (`ResizeObserver`) and on every render — a
+  finished download replaces a card and changes `scrollWidth` with no resize
+  firing. **Never a width breakpoint**: the row's width and its overflow are
+  different facts, and a threshold gets both wrong at once on a narrow window with
+  two cards and on a wide one with twelve. The arrows float over the row's edge so
+  appearing and disappearing move no layout, and a click scrolls by exactly one
+  card so the reader keeps their place.
+  A wrapping grid was what this replaced. It turned each capability into a block
+  of unknown height, so on a page whose whole job is to be swept the THIRD heading
+  was reliably below the fold. One row per capability keeps every heading on
+  screen at once and puts the length inside the row, where a horizontal scroll is
+  the reader's own business.
 
 ---
 
@@ -5315,13 +5394,28 @@ loads weights, imports a framework, or touches the network.
 
 ---
 
-## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313, D314)
+## 39. Hub Search — The Hub, Narrowed to What This App Can Run (D255, D313, D314, D426)
 
 Goal: §37 answers "what did I already download". This answers the other half —
 "what is out there" — and the two are only worth anything **together**, because
 the Hub does not know your disk and a browser tab open on huggingface.co cannot
 tell you that the model you are reading about is already cached, was last read
 three weeks ago, and would cost nothing to open.
+
+**AMENDED (D426): this is a FACE of the Local page, not a tab of its own.** Every
+rule below was written for a Discover tab and every one of them survives the
+move; what changed is which surface they are rules about. The controls sit at the
+top of the Local tab (§37/HF-20), an empty settled query renders that tab exactly
+as it was, and an active one replaces its sections with the ONE results grid this
+section describes — same either/or (HS-0b), same self-naming heading (HS-0c),
+same debounce and clearing rule (HS-0b/D317). Read "the tab" below as "the search
+face", and "the curated shortlist" as the Local tab's own capability rows, which
+is where the curation is drawn now (D423). The **together** the goal asks for is
+no longer two tabs of one page: it is one page with two faces and ONE listing
+behind both, which is what lets a result report ✓ downloaded, partly downloaded or
+absent from the same walk that drew the carousels (`lib/aiModelGroups`'
+`diskCards` and `resultDisk`). Endpoints, payloads and the server's whole half are
+untouched.
 
 - **HS-0** **Everything on this tab is RUNNABLE HERE, and the constraint is the
   feature** (D313, narrowed by D316). A repo runs here only if a registered
@@ -5378,29 +5472,38 @@ three weeks ago, and would cost nothing to open.
   **over-fetches (4x, capped) and truncates AFTER filtering**, so `limit` means
   "rows you will be shown"; with a task filter the Hub has already constrained
   and the request asks for exactly what it shows.
-- **HS-0b** **One grid at a time, and the search box is at the top** (D313). A
-  curated shortlist answers "what should I even get" — the question somebody
-  has BEFORE they know what to type — so results REPLACE the suggestions rather
-  than stacking under them, and clearing the box brings them back. The box sits
-  above the sections because it is what the tab is for; underneath them, the
-  only way to reach it was to scroll past the thing it is an alternative to.
+- **HS-0b** **One grid at a time, and the search box is at the top** (D313,
+  *retargeted by D426*). The curation answers "what should I even get" — the
+  question somebody has BEFORE they know what to type — so results REPLACE it
+  rather than stacking under it, and clearing the box brings it back. Since D426
+  what they replace is the whole of the Local page's own content, every capability
+  row and "Fetched by engines" with them, rather than a shortlist on a tab of its
+  own: the rule and its reason are unchanged, the scope is bigger, and the way
+  back is louder for it. The box sits above that content because it is the one
+  control that changes what the page IS; underneath it, the only way to reach the
+  search was to scroll past the thing it is an alternative to.
   **The way back is a CONTROL, not a thing to work out** (D317): "clearing the
   box" is only obvious for a query somebody typed, and the state that stranded
   people was a task picked from the select with an empty box — nothing to
   clear, no suggestions, and the route back is guessing that the menu's first
   option restores them. Two affordances, both resetting **query and task
-  together in one act** (`showsReset`, and `clearSearch` in the component): an
-  ✕ inside the search field, and "← Back to suggested models" in the results
+  together in one act** (`showsReset`, and `clearSearch` in `LocalTab`): an
+  ✕ inside the search field, and "← Back to models" in the results
   heading row. Escape in the box does the same. A control that emptied only the
   text would be the worst of the three outcomes — the reader does the obvious
   thing, the box goes empty, and the suggestions still do not come back — which
   is why the platform's own `type="search"` ✕ is hidden rather than relied on.
 - **HS-0c** **Each face names itself, in the same slot, in the same words'
-  worth of chrome** (D314). One grid replacing another is only legible if the
-  new one says what it is: "Suggested models" and "Search results", each with
-  one muted right-hand fact — `11 picked for this machine` against
-  `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
-  one line. **The count states what came back, never what did not**: it is
+  worth of chrome** (D314, *retargeted by D426*). One grid replacing another is
+  only legible if the new one says what it is: "Search results", in the slot and
+  the treatment of the sections it displaced ("User downloaded models", "Fetched
+  by engines"), carrying one muted right-hand fact — `"whisper" · 24 on
+  huggingface.co`, the count and the PROVENANCE in one line, where those rows put
+  a byte subtotal. Before D426 the pair was "Suggested models" against "Search
+  results" on one tab and `11 picked for this machine` was the shortlist's half of
+  it; the shortlist is the Local page's own rows now, each naming its capability,
+  so the results heading is the only one this module decides — one string, and
+  null in the idle face, which is what keeps the page from claiming to be both. **The count states what came back, never what did not**: it is
   absent while a request is in flight, and absent again when the search FAILED.
   A soft failure answers 200 with an `error` and `models: []`, and a count taken
   from that array's length reads `0 on huggingface.co` — the heading reporting
@@ -5416,23 +5519,32 @@ three weeks ago, and would cost nothing to open.
   happen, so a reader who searched, scrolled and looked back up had nothing on
   screen telling them which grid they were in. The heading is one string, not
   two conditions (`chrome.heading`), so the page cannot claim to be both. **It
-  is the SECTION tier, and the capabilities under it are subgroups** — the
-  Local tab's exact shape, where "User downloaded models" sits over a rule and
-  its capability rows are quieter ALL-CAPS titles with no rule of their own.
+  is the SECTION tier** — the Local tab's exact shape, where "User downloaded
+  models" sits over a rule and its capability rows are quieter ALL-CAPS titles
+  with no rule of their own. (Its own capability SUBGROUPS went with the
+  shortlist at D426: a result set is one flat answer to one question, so it is one
+  **wrapping grid** rather than a carousel per capability — a carousel reads a few
+  cards deep and puts the rest behind a horizontal scroll, which is the page
+  withholding what it was just asked for.)
   Drawn as a second `.am-section-head` the view's name and `TEXT GENERATION`
   were twins (same caps, same weight, same muted suffix, same full-width line),
   and two levels rendered identically are no levels at all. The heading, that
   line, the grid and the host disclosure are one decision in one place
-  (`shell/discoverView.ts`), since every way they can disagree is the page
-  making a false claim about itself.
+  (`apps/ai_models/lib/hubSearchView.ts` — `discoverView.ts` retargeted and
+  renamed at D426), since every way they can disagree is the page making a false
+  claim about itself.
 - **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
   unchanged.** The original rule was that a download needs a progress surface, a
   cancel and an answer for a half-finished pull — none of which existed, so the
-  button did not either. Local inference (§40) built exactly that, so Discover
-  now downloads through it — from the search results as well as the shortlist
-  since D313. This module still never writes to the cache itself: it asks the
+  button did not either. Local inference (§40) built exactly that, so the search
+  downloads through it — from the results as well as the curated cards since
+  D313, and since D426 through the Local tab's OWN plumbing prop for prop
+  (`runDownload`, one `jobByModel`, one three-way `downloading ∪ starting ∪
+  settling` guard), because a pull started from the results is the same pull as
+  one started from a carousel and two spellings of "busy" would be two answers
+  about it. This module still never writes to the cache itself: it asks the
   runner's worker to, and the job registry shows it.
-- **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
+- **HS-1a** **Search is a guarded POST; the rest of this surface is an ordinary
   read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
   is D36's: a foreign page can fire a request but the browser will not let it
   read the reply. That protects the RESPONSE and says nothing about the REQUEST
@@ -5449,11 +5561,22 @@ three weeks ago, and would cost nothing to open.
 - **HS-2** **The join is the feature.** Every result is cross-referenced against
   the local scan before it is returned, so a card says **downloaded** (with what
   it costs on disk and when it was last read), **partly downloaded**, or
-  **not downloaded**. `partial` is a real state and not a rounding of the other
-  two: an interrupted pull leaves a repo folder holding blobs and no
-  materialised snapshot, and calling that "downloaded" sends someone to a model
-  that cannot load. The line is "has at least one snapshot" — and the page holds
-  the same line, so only a **downloaded** result opens its model card. A partial
+  **not downloaded**. *One definition of on-disk per page, and since D426 it is
+  the PAGE'S* — D255's own lesson, one step further: the reply's `local` field is
+  frozen at the moment of the search, so a model downloaded from these very
+  results went on offering a Download button until somebody typed again. The card
+  reads the same live listing the carousels beside it are drawn from (`diskCards`
+  → `resultDisk`), which also notices a delete. The server half stays exactly as
+  described below, and stays the answer for any consumer with no listing of its
+  own. `partial` is a real state and not a rounding of the other
+  two: an interrupted pull leaves bytes behind, and calling those "downloaded"
+  sends someone to a model that cannot load. The line was "has at least one
+  snapshot" and **is now "no residue of a stopped fetch" (D424)**: a snapshot
+  directory is materialised FILE BY FILE, so the first small file to land handed
+  a cancelled pull a revision and with it the very verdict this state exists to
+  withhold. What answers instead is the part file an interrupted fetch
+  deliberately keeps (AI-5i) — and the page holds the same line, so only a
+  **downloaded** result opens its model card. A partial
   one links to the Hub like an absent one does, because there is no revision for
   the card to describe and linking there would hand someone the very failure the
   distinction exists to prevent.
@@ -5464,12 +5587,36 @@ three weeks ago, and would cost nothing to open.
   mirror override `huggingface_hub` honours) the one exception, and it is still
   checked to be an http(s) URL before it is used. The query is **encoded**, never
   concatenated: a search for `a&b=c` is a search, not a second parameter. The
-  sort is a **fixed set** of names, so a client can never pass a raw field
-  through to the Hub.
-- **HS-4** **Nothing reaches the network until Discover is opened, and nothing
-  at all until something is typed.** The app is a local file explorer; a page
-  that quietly queried a third party on mount would be a surprise. Selecting the
-  tab is the consent, the caption names the host being asked, and the query is
+  sort is a **fixed set** of names — downloads, likes, updated, created — so a
+  client can never pass a raw field through to the Hub. *The page offers a fifth,
+  **Size**, and it never appears here (D426).* The Hub cannot rank a list by size
+  and will not even report one on a list: it refuses `expand[]=usedStorage` with a
+  400, so a size is one request per repo (HS-6's second measurement). So Size is
+  ranked on the PAGE — the request goes out as `downloads`, which is the candidate
+  set anybody would have got by default, and the results are reordered once by the
+  figure each card is SHOWING: the weights estimate that rode in on this reply
+  where there is one, the Hub's repo total where there is not (the same precedence
+  the cell itself uses). That number is the only evidence a reader has that the
+  sort worked, so ranking by anything else leaves a column of sizes that does not
+  ascend; and it means only the repos with no estimate are asked about, which is
+  exactly the set a card would have asked about on its own. The fixed set is what
+  makes that safe to state rather than hope for: the page's sort union is a
+  superset of this one and reaches the wire only through a mapper, so the value
+  the server would reject cannot be typed at a call site. **Ascending**, because
+  every card here carries a Download button and the question behind a size sort is
+  "what fits", with the unmeasured repos last; and reordered **once**, not as each
+  measurement lands — cards shuffling under the reader two dozen times is worse
+  than a moment of waiting, so the grid holds the server's order, dimmed the way a
+  refetch dims it, and the heading says what it is waiting for.
+- **HS-4** **Nothing reaches the network until the Local tab is open, and
+  nothing at all until something is typed** (*tightened by D426*). The app is a
+  local file explorer; a page that quietly queried a third party on mount would be
+  a surprise. TYPING is the consent now, which is a stricter line than the one
+  this inherited and had to be: selecting a tab was itself an act, and the Local
+  tab is opened by people who came to look at their own disk. The only thing the
+  surface asks for unprompted is `hub/tasks`, a static glossary served off a table
+  that touches no network at all (HS-7). The results note names the host being
+  asked, and the query is
   debounced — a burst of typing is one request — with identical queries inside a
   short TTL answered from memory, because search-as-you-type would otherwise put
   one request per keystroke on a public API. An EMPTY box makes no request at
@@ -5494,7 +5641,7 @@ three weeks ago, and would cost nothing to open.
   model cannot be 16GB on one tab and 8GB on the other. A repo with no
   safetensors metadata reports **no size** rather than a guessed one: a number
   someone plans a 16GB download around must not be invented.
-- **HS-7** **One vocabulary across both tabs.** A result's task label and its
+- **HS-7** **One vocabulary across both faces.** A result's task label and its
   hover sentence come from the same glossary the cached cards use (HF-18), so
   "image + text to text" means the same thing wherever it appears. The task
   FILTERS, though, are the Hub's own `pipeline_tag` values, listed explicitly in
@@ -5900,7 +6047,55 @@ an AI Models page that could say what was on disk but not what was *running*.
   write with `os.pwrite`, and per-segment offsets go to a sidecar in the order
   that makes them true: snapshot the cursors, **fsync the data, then write the
   sidecar** — a recorded byte is always a durable byte, so a resume never
-  skips one that was still in flight. **The sidecar carries its own version
+  skips one that was still in flight. **A platform with no `os.pwrite` —
+  Windows, and nothing else — fetches each file on ONE append-only stream
+  instead, which is the same guarantee by another route rather than a weaker
+  one.** `pwrite` is required because segments write OUT OF ORDER into a
+  pre-sized file, where a buffered seek-and-write would let the count run ahead
+  of the disk; with a single `O_APPEND` stream there is no out-of-order write
+  left to make, so the file's LENGTH is the progress and a resume is a `Range`
+  from that length. The pre-sized file goes with it, and so do the two things
+  that existed for it: no sparse-filesystem requirement on this route, and a bar
+  that can read the length rather than the allocated blocks (AI-5b). The sidecar
+  still LICENSES the resume, and the one segment this plan derives is also what
+  refuses to append into a part file the segmented path left — many recorded
+  segments against one derived, so the layout check discards it exactly like no
+  sidecar at all — with the refusal holding in the other direction too, since a
+  segmented run finds an appended part file shorter than the pre-sized one it
+  requires. The recorded cursor and the file are then made to AGREE before a
+  byte moves, by truncating the file back to the cursor: appending cannot
+  overwrite an un-fsynced tail the way a positional write does, so that tail
+  goes rather than being counted, which costs at most one flush interval of
+  re-fetched bytes. The serialization is per FILE and not repo-wide — two files
+  are two fds and nothing between them is out of order — so a repo of shards
+  still moves on `MAX_CONNECTIONS` connections and only a single huge shard
+  loses its parallelism. It was a flat refusal until this, and the refusal was
+  invisible exactly where it mattered: the model mirror's only transport is this
+  fetch, so a win32 client declined every time and no Windows acquisition ever
+  reached the access logs the mirror exists to produce (AI-5l). **That route is
+  also the first code here to need `O_BINARY` and a LENGTH check, and it needed
+  both for the same reason.** Windows opens an `os.open` fd in the CRT's default
+  TEXT mode, so every `0x0a` written becomes `0x0d 0x0a`: a part file longer than
+  the file it describes and wrong in content, while the cursors — which count
+  what was handed to `os.write` — go on saying the download is complete. The flag
+  was missing from the segmented call site too and always had been, harmlessly,
+  because `os.pwrite` does not exist on the one platform that translates, so no
+  `os.open` here had ever written a byte there; the first route that did was
+  green on POSIX and corrupted every blob it fetched on win32. Since `_BINARY` is
+  0 on POSIX, a correct call is indistinguishable from one missing the flag by
+  any means a run on this platform has, so the rule is enforced by reading the
+  module's own AST — the same mechanism as the stdlib-only rule, and for the same
+  reason. **The length check is the other half**: on the append-only route the
+  part file's length is an INDEPENDENT witness, because the cursors count what
+  was handed to the kernel and the length is what the kernel kept, so the two
+  disagreeing is exactly the class of corruption neither a cursor nor a
+  `Content-Length` can notice. It is worth a syscall because the HUB path
+  carries no digest — the mirror's sha256 did catch the translated blob, but on
+  the Hub path the same bytes would have been published under a real etag and
+  served out of the cache forever. On the segmented route that check would be
+  theatre, the file being pre-sized before a byte arrives, which is why
+  publishing there is gated on the cursors alone. **The sidecar
+  carries its own version
   number** (`SIDECAR_VERSION`), because the chunk queue changed what a segment
   list MEANS — fixed pieces rather than equal shares — so a sidecar written
   before this existed can have the right etag and size and a self-consistent
@@ -5911,7 +6106,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   sidecar at all. The partial file is `<blob>.fusedpart`, deliberately **not**
   hf's `.incomplete`: hf resumes one of those by seeking to its length, ours
   are written out of order,
-  and handing it one would produce a silently corrupt blob. Resume demands that
+  and handing it one would produce a silently corrupt blob. (A prefix, on the
+  append-only route — but which of the two wrote a given part file is not
+  something hf could tell, so the suffix stays ours on both and the fallback
+  deletes them rather than offering hf a file whose meaning depends on the
+  platform.) Resume demands that
   etag and size still agree and that the recorded LAYOUT is the one resumed with;
   anything that does not agree starts clean, never a guess. **The range probe is
   therefore three-valued**, because two rules turn on the difference between a
@@ -5944,9 +6143,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   before a byte arrives, so a sparse file of pure holes measures exactly right.
   No hash, like huggingface_hub itself, which relies on TLS and `Content-Length`.
   **Every failure and every incapability falls back to `snapshot_download` /
-  `hf_hub_download`** — no range support, a Hub API that moved, a platform with
-  no `os.pwrite`, a cache filesystem that allocates rather than holding a sparse
-  file, an argument ours does not understand — logging the reason to stderr and
+  `hf_hub_download`** — no range support, a Hub API that moved, a cache
+  filesystem that allocates rather than holding a sparse file (asked only where
+  a file is pre-sized, so not on the append-only route), an argument ours does
+  not understand; a platform with no `os.pwrite` was on this list and is not any
+  more — logging the reason to stderr and
   clearing our part files first, because a download that got faster and sometimes
   broken would be a bad trade. Resume therefore covers the app being killed, quit
   or crashed — the case that motivated it — and not a fetch that fell back, which
@@ -6071,6 +6272,210 @@ an AI Models page that could say what was on disk but not what was *running*.
   step reads the local cache or a module constant. An explicitly passed
   capability is validated and used unchanged, so this governs only the omitted
   case.
+- **AI-5l** **A SUGGESTED model may be fetched from OUR OWN distribution, and any
+  doubt goes to the Hub** (D421). CloudFront's access logs are then the answer to
+  "did this user download a model", with no telemetry in the app at all — one
+  `manifest.json` request per download attempt, made before a single byte moves,
+  and logged even on a cache hit. Two objects, not a protocol:
+  `/models/<org>/<name>/manifest.json` (mutable, short TTL — the commit, every
+  file's name, size, etag and sha256, and a `complete` flag) and
+  `/models/<org>/<name>/<commit>/<etag>` (immutable, one per distinct etag,
+  range-fetched by the existing chunk queue).
+  Deliberately NOT `HF_ENDPOINT`, which is a protocol switch: the mirror would owe
+  `/api/models/…`, the `x-linked-etag`/`x-linked-size`/`x-repo-commit` resolve
+  headers and Xet's `xet-read-token`, none of which our two shapes have. **What
+  lands on disk is hf's cache layout, byte for byte** — blob under its etag, a
+  relative symlink from `snapshots/<commit>/`, `refs/main`, and this app's own
+  `.fused-fetch-<commit>.json` record — which is the whole design: the loaders,
+  the Local tab's inventory, disk usage, deletion and the AI-5k fast path all keep
+  working untouched, because what they read is a normal hf cache entry.
+  **The branch lives in `download_snapshot` alone**, below every runner call
+  site, so no runner changed and none can forget it; it is skipped under
+  `**kwargs` for AI-5k's reason, that an argument the function does not know about
+  changes what a download IS. A one-FILE download (`download_file`, which is how
+  llama.cpp fetches a GGUF) does not pass through here at all and has its own
+  object, its own reader and its own weaker claim — see **AI-5m**, which is where
+  everything below about `complete` stops applying. **Every failure degrades to today's Hub path** — a
+  404, a 5xx, a host that does not answer, a body that is not JSON, an unknown
+  schema version, a manifest whose fields do not hold up, a mid-download drop, a
+  hash mismatch — and says which path gave up on stderr. A mirror that is down
+  costs a slower download, never a failed one, and only `Cancelled` escapes (AI-5e:
+  a ✕ must never be answered by starting a download somewhere else). **That
+  promise does not rest on having enumerated the exceptions a URL library
+  raises**: `http.client.HTTPException` is neither an `OSError` nor a
+  `ValueError`, so `IncompleteRead` off a truncated chunked body escaped the
+  client's own guard AND the branch's, and a misbehaving mirror host FAILED a
+  download the Hub could have served — so the client names that family (as
+  `_TRANSIENT` always did) and the whole branch, manifest call included, sits
+  inside one guard. **A 401 or 403 on a mirror blob is never re-resolved against
+  the Hub.** On the Hub path a 401 means an expired presigned URL and re-resolving
+  is right; here the blob URL is commit-pinned and immutable, so there is nothing
+  to refresh and the ordinary retry budget is the whole answer. Re-resolving
+  anyway did two silent harms: a request to huggingface.co in the middle of the
+  one download that must not make one, and — because Hub metadata carries no
+  `sha256` and the replacement was wholesale — the disappearance of the hash
+  check below, with the etag/size/commit guard still passing because a mirror
+  etag IS an hf blob name. The digest is therefore fixed at plan time rather than
+  read from the live metadata at publish time, so no later reassignment can turn
+  it off again. **The
+  manifest is a trust boundary and is validated field by field**, because the
+  failure that matters is not a 500 but a manifest that is plausible and wrong: a
+  commit that is not 40 lower-case hex names no snapshot directory, an etag that
+  is not hex can name a path inside `blobs/`, a file name containing `..` writes
+  outside the snapshot, and a size or digest that lies puts bad bytes under a real
+  etag. Rejection reads as NO MIRROR rather than as an error. A size of ZERO is
+  accepted, though: an empty file is legal on the Hub, hf caches it like any
+  other, and the fetcher already handles a zero-length segment — refusing the
+  manifest over one would take a whole model off the mirror because of a file
+  with nothing in it. **A manifest must also assert `complete: true`**, meaning
+  it lists every file in the repo at that commit, and the client refuses one that
+  does not. This is not ceremony: the client writes an AI-5k fetch record from
+  that file list, and a list taken from the same document being trusted would
+  make the record self-certifying — a manifest missing `config.json` downloads a
+  subset, records the subset as complete at that scope, and every later bring-up
+  is served a snapshot that cannot load, with nothing left that would refetch it.
+  The client cannot settle completeness itself (the only independent authority is
+  the Hub, and asking it defeats the feature), so the proof lives at BUILD time
+  and this flag is where it is recorded. **Blobs are hashed
+  on the mirror path and not on the Hub path**, and the asymmetry is the point:
+  here we are the origin, so nobody else would notice a bad byte we shipped, and a
+  wrong blob under a real etag is permanent — hf's own loaders serve it out of the
+  cache forever and no later download refetches it. One read of the finished part
+  file, before `os.replace` publishes anything, so a mismatch leaves nothing in
+  the cache and takes the repo to the Hub; the part file and sidecar go too, or the
+  next run resumes into bytes already known to be wrong. **The permission is
+  PER-MODEL and arrives from the supervisor**, which sets `FUSED_MODEL_MIRROR_OK`
+  to the repo id only when `catalog.all_suggested_ids()` contains it, at BOTH spawn
+  sites (a serving worker and a download-only worker), and strips an inherited one
+  rather than passing it on. That is a privacy choice rather than an optimisation:
+  probing for an arbitrary id would tell us which models a user downloads, and
+  gating it to the curated list is what means we never learn that. `catalog` is
+  also unreachable from a runner's interpreter, which imports `worker_base` and
+  `mirror` as bare modules with no `fused_render` package on `sys.path` — so both
+  are **stdlib-only**, enforced by reading their own source. **The manifest is
+  GENERATED from a real hf cache directory** (`scripts/build_model_mirror.py`:
+  commit from `refs/main`, etags from the blob filenames, sizes and sha256 from the
+  blobs, names through the single `wire_name` boundary that makes a manifest name
+  `/`-separated on every platform), never transcribed — that is the one part of
+  this that would otherwise fail silently and permanently — and `tests/test_build_model_mirror.py` round-trips
+  the generated manifest through the client, which is what keeps the two halves
+  honest. **The generator proves completeness against the Hub's own listing at
+  that commit and refuses to publish a partial snapshot**, which is what earns the
+  `complete` flag; on a build machine a Hub round trip tells huggingface.co
+  nothing about any user, so the check costs only the thing it is worth. "The
+  folder exists" is explicitly NOT that proof and was the original bug:
+  `torch_image` fetches its image models with `allow_patterns=recipe["keep"]`, so
+  any build machine that ever LOADED one holds a deliberately partial cache for
+  it, and `--fetch-missing` therefore completes every model unconditionally rather
+  than only when the folder is absent. hf's own `.cache/` bookkeeping inside a
+  snapshot is skipped rather than published as repo content, and **any model
+  skipped is a non-zero exit** — the loop stays tolerant so one absent model does
+  not stop the other nineteen, but publishing 19 of 20 green is how a suggested
+  model goes missing from the mirror unnoticed, since its download quietly staying
+  on the Hub is invisible by design. The generator's companion, `--check
+  BASE_URL`, is the read-only half of that same guarantee applied to a LIVE
+  mirror rather than a local cache: it fetches every suggested target's
+  manifest over plain HTTP and hands it to the client's own
+  `mirror.validate_manifest`/`validate_file_manifest` rather than re-checking
+  `schema`/`complete` itself, on the same reasoning as the round-trip test
+  above — a drift check that accepted a manifest the runtime client would
+  refuse would report a target published when nothing that ever runs that
+  code could read it. It needs neither `aws` nor `huggingface_hub` and writes
+  nothing, so it is meant to gate a release the way the version bump in
+  `making-a-release` does. **Windows fetches from the mirror like every other platform**, and that is a
+  change from how this shipped. The mirror's only transport is
+  `_segmented_fetch`, which used to refuse outright without `os.pwrite`, so a
+  win32 client made the one manifest request, declined, and took the Hub path
+  like any other download — which decided what the access logs MEANT, since
+  Windows acquisitions were invisible to them and the count is the entire point
+  of the feature. That transport now degrades to a single append-only stream
+  rather than refusing (AI-5i), so the count is complete across platforms and
+  what Windows gives up is parallelism within one file, not the mirror. The
+  generator/client round-trip test is still split in two, an agreement half and
+  a fetch half, but no longer BY PLATFORM: both halves run everywhere, and the
+  fetch half is what exercises a real Windows download end to end. **What
+  Windows found the first time it ran one is worth recording, because it is not
+  the failure this rule used to describe**: the route ran, fetched the whole
+  repo, and was refused by its own sha256 — the part file had been opened in the
+  CRT's default TEXT mode, so every `0x0a` in the weights arrived as `0x0d 0x0a`
+  (AI-5i, `_BINARY`). A mirror declining is the degradation working exactly as
+  specified; a mirror declining *for that reason* is a bug, and the distance
+  between those two readings of one stderr line is most of what hashing on this
+  path is for. The cost of learning the old behaviour the hard way was a
+  Windows CI failure reporting a 401
+  from huggingface.co: the mirror declined, the download fell through to a REAL
+  Hub listing, and the test had no business being able to leave the machine at
+  all. Every test in this feature now runs under a fixture that refuses a
+  non-loopback `connect` or `getaddrinfo`, so a broken mirror path fails saying
+  so instead of reporting somebody else's status code — and on a machine with a
+  valid `HF_TOKEN` that same test would have PASSED by downloading a real repo.
+  **`FUSED_MODEL_MIRROR` ships ON**, defaulting to `https://render.fused.io/mirror`
+  (`mirror.DEFAULT_BASE`) when unset; the documented opt-out is setting it to
+  `""` (D421 amendment). The per-model permission above is unchanged by that —
+  a default base names no repo by itself — and every failure mode still falls
+  back to the Hub, which is what makes shipping this default safe before every
+  suggested model has a mirror object (see D421). Explicitly out of scope:
+  component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
+  tens of megabytes and not the "downloaded a model" signal; and the mirror pins a
+  commit, so a suggested model updated upstream keeps installing the pinned one
+  until the build script reruns — reproducibility, at the cost of lagging a
+  fix.
+- **AI-5m** **ONE FILE off the mirror is a SECOND object with a WEAKER claim, not
+  a relaxed manifest** (D422). AI-5l's branch lives in `download_snapshot` alone,
+  and `llama_text.download` does not go through it: it fetches one GGUF with
+  `download_file`, because a GGUF repo publishes dozens of quantizations of the
+  same model (`unsloth/Qwen3.5-9B-GGUF` is 147.81GB whole for a 2.6GB file).
+  Since D416 made llama.cpp the only local text engine on Windows and Linux, that
+  left every suggested TEXT model on those platforms off the mirror entirely —
+  invisibly, since a download that never asks is a perfectly normal download.
+  Routing it through `download_snapshot(allow_patterns=[file])` is NOT the fix:
+  the per-repo manifest is accepted only when it asserts `complete: true` for the
+  whole repo, so serving one file that way would mean mirroring 147.81GB, and
+  weakening the assertion would break AI-5k. So there is a third object,
+  `/models/<org>/<name>/files/<filename>/manifest.json` — mutable and short-TTL
+  like the repo manifest, listing EXACTLY ONE named file, whose **blob stays at
+  the existing `/models/<org>/<name>/<commit>/<etag>`**, so a repo published both
+  ways stores one copy of each blob and either manifest's URL is the other's.
+  **Its reader is separate rather than relaxed** (`mirror.file_manifest` beside
+  `mirror.manifest`): same validation vocabulary, same "every rejection reads as
+  NO MIRROR", same per-model permission and the same one-guard/`Cancelled`-only
+  degradation, but it requires exactly one entry whose `name` IS the file that was
+  asked for, and it neither requires nor reads `complete`. Two claims, two
+  readers, so relaxing one cannot relax the other. **The absent completeness
+  assertion is safe because of what the CALLER does next, not because one file is
+  small**: `download_file` writes NO AI-5k fetch record and never has — one file
+  is not a scope a later bring-up can be told is complete — so there is no record
+  for a partial answer to self-certify, which is the entire harm that assertion
+  prevents. The worst a wrong per-file manifest can do is serve the wrong bytes,
+  and the sha256 check keeps those out of the cache. Adding a fetch record to this
+  path would take that argument away and put the assertion back in scope.
+  **The permission has to be TRANSLATED, or the hook is dead code for every real
+  model**: `llamacpp-text`'s catalog ids are bare `.gguf` FILENAMES (that is how
+  the AI Models page keys a repo publishing many quantizations) while the worker
+  names the recipe's REPO to the mirror, and `mirror.allowed` compares against
+  `_REPO_ID` (`org/name`) — so a permission carrying the filename is refused by
+  the client forever. `catalog.mirror_id` maps a suggested id to the repo the
+  worker will name and `supervisor._mirror_ok` returns that id rather than a
+  boolean. The privacy rule is untouched: nothing outside
+  `catalog.all_suggested_ids()` is ever granted, the lookup is in the CURATED
+  recipe table so an uncurated GGUF gets nothing, and the worker still learns the
+  answer for one model. This lives in the server process because `catalog` and
+  `formats` are unreachable from a runner's interpreter, and because the whole
+  point of AI-5l's permission is that the worker cannot decide it. The test that
+  matters is parametrized over the REAL curated rows: the pre-existing
+  `test_a_suggested_model_may_use_the_mirror` asserted equality with the catalog
+  id and passed while describing a value the client refuses. The generator gains
+  the matching mode (`--model org/name --file NAME`), which reads one file out of
+  a cache holding only that file, asks the Hub nothing (there is no completeness
+  to prove) and validates the name as the single URL path segment it becomes;
+  `--fetch-missing` fetches the one file. A default run now expands each curated
+  GGUF id into a `(repo, file)` target, which also fixes a run that could not
+  succeed: those ids were looked up as `models--<filename>` cache folders, printed
+  SKIPPED and made every default invocation exit 1. Still out of scope, and
+  unchanged by this: **component repos stay on the Hub** — the FLUX GGUF
+  transformer comes out of `unsloth/FLUX.2-klein-4B-GGUF` while the permitted id
+  is the base repo, so the component's `download_file` finds no permission by
+  construction rather than by a rule anyone has to remember.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
@@ -6197,26 +6602,36 @@ an AI Models page that could say what was on disk but not what was *running*.
   file explorer — leaving the path as text asks the user to copy it into the
   very thing they are looking at — and the host is the one place the app
   discloses who it queries, which is worth being able to go and check.
-- **AI-7b** **Discover suggests, and the suggestions know what you have.** A
+- **AI-7b** **The page suggests, and the suggestions know what you have.** A
   short curated list per capability — moved out of the apps that used to carry
   it privately — with size, the reason you would pick each one, and a **✓** on
   the ones already downloaded. It shows only when the search box is empty,
   because it answers "what should I even get", which is the question you have
-  *before* you know what to type. A capability this machine cannot serve is
+  *before* you know what to type. *It was the Discover tab's own grid; since D423
+  it is the tail of each capability row on the Local tab, and since D426 the
+  search box whose emptiness it depends on is at the top of THAT tab (§39). The
+  rule is the same rule.* A capability this machine cannot serve is
   still listed, with its reason. **Downloading is offered here** (D258,
   superseding HS-1's read-only posture): the job-backed machinery HS-1 named as
   the prerequisite now exists, so the ✕ in the manager really stops a pull.
-  The ✓ means a **materialised snapshot**, never merely a repo folder:
+  The ✓ means a **materialised snapshot AND a fetch that finished**, never merely
+  a repo folder and — since D424 — never a revision alone:
   `huggingface_hub` creates `models--org--name/` on the first byte, so a set
   built from folder names flipped a suggestion to "✓ downloaded" seconds
-  after Download was pressed, over a 4.6GB pull that had barely started. While
+  after Download was pressed, over a 4.6GB pull that had barely started; and the
+  snapshot those files link into is built one file at a time, so the revision
+  count said the same thing one small file later. A repo carrying the residue of
+  a stopped fetch is **partly downloaded**, which is a state with its own card
+  (AI-7f) rather than a ✓ or an absence. While
   the pull runs the card shows that pull's progress instead — the same three
   states the Hub result cards already draw. And the cache answer is the PAGE's
-  one walk, handed down, not a second walk Discover runs for itself: two walks
-  meant two definitions of "on this machine" and a window where the tabs
-  disagreed about the same repo. That handed-down answer is a **map of id →
-  path, and it answers the whole of what a card says about the local copy** —
-  the ✓, the absent Download button, *and* Explore's destination (`localCopy`).
+  one walk, handed down, not a second walk the search runs for itself: two walks
+  meant two definitions of "on this machine" and a window where two surfaces
+  disagreed about the same repo. That handed-down answer is a **map of id → what
+  this disk holds, and it answers the whole of what a card says about the local
+  copy** — the ✓, the absent Download button, *and* Explore's destination
+  (`diskCards` → `resultDisk`; `localCopy` before D426 renamed it and gave it
+  D424's third verdict to report).
   Explore used to read `local.path` from the **search reply** instead, which is
   frozen at the moment of the search: download a model from the results and the
   re-walk turned the ✓ on while Explore stayed hidden, so the one card most
@@ -6252,6 +6667,31 @@ an AI Models page that could say what was on disk but not what was *running*.
   FILENAME back out of it rather than keeping a second copy, and a test asserts
   every recipe's component repo appears there, so a new recipe cannot
   reintroduce an unexplained row.
+- **AI-7f** **A download that never finished is its own card state, with two ways
+  out and no Load** (D424). Cancelling a first download — or quitting, or losing
+  the network — leaves a repo folder holding part of a snapshot, and the page used
+  to read it as a model this machine HAS: the recommendation with its Download
+  button disappeared, and what stood in its place wore the quiet "no engine" tag
+  over a disabled Load, because no runner reads a snapshot whose weights have not
+  arrived. Both statements were true of the format and false about the download,
+  and the only escape was deleting the repo by hand.
+  So the listing carries **`partial`**, read from the residue of the stopped fetch
+  — a part file in `blobs/` (ours or `huggingface_hub`'s), or no snapshot at all
+  — and **never from the format**: "nothing here reads this" is AI-7e's answer for
+  a repo that downloaded perfectly, and offering to resume THAT would be the same
+  lie in the other direction. The card drops the engine tag and the Load for a
+  **partly downloaded** tag and a **Download that RESUMES** (AI-5i's part file is
+  what makes that cheap), with the trash beside it as the second way out: discard
+  the bytes and the model goes back to being a recommendation. The repo stays
+  visible while it is in that state, for AI-7e's reason — the page's job includes
+  showing what is eating the disk. `partial` also removes the repo from
+  `cached_models()`, so no page's picker and no `/api/ai/catalog` row offers to
+  load half a snapshot.
+  **Cleaning the cache up on cancel was rejected**, and it was the first thing
+  tried: it contradicts D275/AI-5i, whose part files exist precisely so that a
+  cancel, a crash or a quit RESUMES instead of restarting, and it could not have
+  fixed the state anyway — a quit mid-download produces the identical card with no
+  cancel anywhere in it.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second
@@ -7254,13 +7694,53 @@ an AI Models page that could say what was on disk but not what was *running*.
   `test_every_shipped_platform_keeps_a_local_text_engine` over an enumerated
   platform table rather than left to be inferred — the coverage on Windows and
   Linux is now one runner deep, so a future removal has to argue with a test.
+- **AI-11i** **`recommended` is a SECOND curation axis on a catalog entry —
+  EXACTLY ONE per runner list, which is one per capability and engine — and the
+  Playground is the only surface that filters on it: it draws that model plus the
+  models this machine already has, and nothing else** (D425). One curation, two surfaces that want different lengths of it.
+  The AI Models page is where someone SHOPS — its Local and Discover tabs answer
+  "what could I have on this disk", for which the whole shortlist's range (eight
+  text entries from 0.7GB to 20GB) is the point. The Playground is where someone
+  TRIES: they came to type a sentence, and five of those eight rows are a
+  multi-gigabyte download away from answering, which makes a sidebar of them a
+  procurement decision where a text box was wanted. So `catalog.py` marks ONE
+  entry per runner list — the one to try on that engine: strong enough that a
+  first answer is a fair picture of what local inference does here, small enough
+  that the download is not the experience — and
+  `/api/ai/catalog` carries the flag beside AI-11e's `source`/`downloaded`/
+  `loaded`, normalised to a bool on both halves so a consumer never has to read
+  absence as an answer. **False on every cached entry**, always: a
+  recommendation is a person's mark and nobody made one about a repo the user
+  found themselves — and it costs that repo nothing, since it is on the disk by
+  definition and the disk is the filter's other half.
+  **The disk half is what makes the filter safe rather than merely shorter**:
+  anything downloaded stays playable whether or not a curator ever marked it, and
+  `loaded` is in the predicate beside `downloaded` because the two are read from
+  different places (a live supervisor, a memoised scan) and a model answering
+  questions right now must not vanish from the sidebar during the window where
+  they disagree.
+  **It is NOT the default and does not touch the ordering.** `default` is still
+  position 0 and position 0 is still the smallest entry (AI-11a) — the flag is
+  deliberately not the `default: True` field that rule rejected, wearing a new
+  name. The two are INDEPENDENT rather than opposed, and shipping curation has it
+  both ways: the text lists mark a middle row while their default is the smallest,
+  and `mlx-whisper` marks its head, where the smallest entry genuinely is the one
+  to try. So the Playground's fallback is "the catalog default if it is drawn,
+  else the first row that is" — which covers both without either axis deriving
+  from the other, and is never a reordering of the curation or a curated model
+  selected invisibly. A `?model=` link naming an
+  unoffered model falls back the same silent way (PT-9), rather than smuggling a
+  one-off row into a sidebar that would then differ per visitor. **The count is
+  pinned by a test and the choice deliberately is not**: which model is marked is
+  DATA a curator edits, so no test names one — none is an empty Playground group
+  on a fresh machine, and two is the comparison this was cut down to remove.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every
   keystroke, a render loop calling `fused.ai()` per frame, and an idle machine
   were the same picture — as were a working chat box and one whose every call
   timed out. `server/ai_metrics.py` keeps a fixed ring of 10-second buckets
-  covering one hour, plus since-start totals, and `/ai-models?tab=usage` draws
+  covering one hour, plus since-start totals, and `/ai-models/usage` draws
   it. FOUR counters, because volume answers only the first question anybody
   has: **tokens and completions** (the graph), **failures by kind** (a page
   whose calls all fail has generated zero tokens, which is the same empty graph

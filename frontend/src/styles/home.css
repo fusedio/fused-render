@@ -237,6 +237,97 @@
   margin-top: 36px;
 }
 
+/* ---- AI Playground strip cards ------------------------------------------- */
+/* One card per playground task (Home.tsx PlaygroundPreviewCard). Reuses the
+   .fhb-card shell so the row sits level with the app/session cards; what's
+   specific here is the body — no live preview to embed, so it's a quiet
+   token-only vignette: an accent wash, the capability glyph, and the task
+   blurb. Same 16/10 well as .fhb-thumb so all card bodies line up. */
+.home-pg-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.home-pg-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.home-pg-body::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    110% 120% at 50% 115%,
+    color-mix(in srgb, var(--accent) 14%, transparent),
+    transparent 60%
+  );
+}
+
+/* in-glyph → out-glyph: the card draws the task as the mapping it performs
+   (speech becomes text, a description becomes a picture) rather than as one
+   decorative icon. Same tile twice is intended for chat → chat — the pair is
+   what reads as "text in, text out". */
+.home-pg-flow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.home-pg-glyph {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-alt));
+  color: var(--accent);
+}
+
+.home-pg-glyph svg {
+  width: 32px;
+  height: 32px;
+}
+
+/* Muted, and untiled: the arrow is the join between the two tiles, not a
+   third thing of equal weight. */
+.home-pg-arrow {
+  display: flex;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+
+.home-pg-arrow svg {
+  width: 18px;
+  height: 18px;
+}
+
+.home-pg-blurb {
+  position: relative;
+  max-width: 85%;
+  font-size: 12.5px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+.home-pg-card:hover .home-pg-blurb {
+  color: var(--fg);
+}
+
 /* Empty voice. */
 .home-empty {
   color: var(--fg-muted);

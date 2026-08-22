@@ -15,7 +15,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { NAV_EVENT } from "@platform/lib/router";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
-import { getConfig } from "@platform/lib/api";
 import { navReach, subscribeNavReach, type NavReach } from "@platform/lib/nav-history";
 import {
   getSidebarState,
@@ -140,94 +139,18 @@ export function useDocumentTitle(label: string | null | undefined): void {
   }, [label]);
 }
 
-// Whether the builtin learn mount is attached and browsable. Seeded from the
-// boot-time config snapshot, then re-verified by a bounded /api/config poll —
-// the one-shot fetch (main.tsx) lands well before the server's background
-// automount thread finishes attaching the mount, so the snapshot essentially
-// always says false; and the inverse race exists too (rcd survives server
-// restarts, so boot can catch the PRIOR run's still-live mount reporting true
-// moments before ensure_learn_mount's forced detach rips it out), so the poll
-// always runs and follows whatever the fresh answer says. The bound (2s x 60
-// = 120s) comfortably exceeds attach_mount's ~70s worst case (ensure_rcd
-// spawn + full 60s mount rc timeout, shell/mounts.py) so a slow-but-
-// successful mount isn't missed; the cap keeps a dev checkout with no
-// bundled learn.zip (never becomes ready) from polling forever. Once any
-// mount confirms true, that result is cached at module scope (below) so a
-// later remount of the hook doesn't re-litigate it against a stale seed.
-// Module-level cache of the last CONFIRMED-true readiness, shared by every
-// mount of the hook. Home unmounts/remounts on every visit to "/" (it's a
-// route, not persistent chrome like Sidebar), so without this a return visit
-// re-seeds from the stale boot `initial` (still false) and restarts the
-// bounded poll from scratch — the Learn card would vanish for up to 2s and
-// reflow the grid on every trip back to Home, even though readiness was
-// already confirmed earlier in the session.
-// Per-builtin, and keyed rather than a single flag: a mount confirms only
-// itself, and one flag shared between two would mark the other ready the
-// moment either attached.
-const cachedReady: Record<BuiltinMountKey, boolean> = {
-  learn_mount_ready: false,
-};
+// The builtin-mount readiness hook lived here: a bounded /api/config poll that
+// answered "is the bundled zip mount attached and browsable yet", seeded from
+// the boot-time config snapshot because the one-shot fetch (main.tsx) lands
+// well before the server's background automount thread finishes attaching. It
+// gated the sidebar's App Basics entry so it was never a dead link. Both
+// consumers are gone — the Claude Config app stopped being a mount when it
+// became native React over its own server bridge, the Sessions inbox page was
+// deleted on 2026-08-18 (Tasks supersedes it), and the learn content left the
+// app for the community catalog. `sessions_mount_ready` still ships on
+// /api/config for the next surface that links into a bundled mount; git
+// history has the poll if one needs it back.
 
-// ONE key now. The Claude Config app stopped being a mount when it became
-// native React over its own server bridge (a one-shot
-// GET /api/claude-config/status — availability is a property of the
-// installation and cannot flip mid-session, which is the only thing the poll
-// below exists for), and the Sessions inbox page was deleted outright on
-// 2026-08-18 (Tasks supersedes it). The generic is kept rather than inlined:
-// the next bundled mount is a key, not a rewrite.
-type BuiltinMountKey = "learn_mount_ready";
-
-export function useLearnMountReady(initial: boolean): boolean {
-  return useBuiltinMountReady(initial, "learn_mount_ready");
-}
-
-function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
-  const [ready, setReady] = useState(cachedReady[key] || initial);
-  useEffect(() => {
-    if (cachedReady[key]) return; // already confirmed — nothing left to poll for
-    let cancelled = false;
-    let attempts = 0;
-    // setInterval fires a new getConfig() every tick without waiting for the
-    // previous one to settle, so responses can arrive out of order. Only the
-    // newest ISSUED request's response is applied — a straggler from an
-    // earlier tick is discarded as stale rather than overwriting a `true` a
-    // later request already reported (which would stick permanently, since
-    // that `true` had already cleared the interval).
-    let latestRequestId = 0;
-    const MAX_ATTEMPTS = 60;
-    const POLL_MS = 2000;
-    const timer = window.setInterval(() => {
-      attempts += 1;
-      const requestId = ++latestRequestId;
-      getConfig().then(
-        (fresh) => {
-          if (cancelled || requestId !== latestRequestId) return;
-          setReady(fresh[key]);
-          if (fresh[key]) {
-            cachedReady[key] = true;
-            window.clearInterval(timer);
-          } else if (attempts >= MAX_ATTEMPTS) {
-            window.clearInterval(timer);
-          }
-        },
-        () => {
-          if (cancelled || requestId !== latestRequestId) return;
-          // Transient fetch failure — just try again next tick.
-          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
-        }
-      );
-    }, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-    // Deliberately empty deps: run once on mount only. Depending on `ready`
-    // here would restart the whole bounded poll window from zero every time
-    // it changes, and `initial` is only a seed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return ready;
-}
 
 // Live sidebar chrome state (platform/lib/sidebarstate) — collapsed flag and
 // dragged width, shared so every owner of the frame agrees on the layout.

@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from fused_render.ai import registry
 from fused_render.server import create_app
-from fused_render.server.routers import ai_models as ai_models_mod
+from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.server.routers import hub_models as hub
 
 
@@ -169,6 +169,24 @@ def test_a_half_pulled_repo_is_partial_not_downloaded(client, hub_cache, monkeyp
     monkeypatch.setattr(httpx, "get", _reply([_hit("org/partial")]))
     models = _search(client).json()["models"]
     assert models[0]["local"]["state"] == "partial"
+
+
+def test_a_repo_with_a_revision_and_an_unfinished_fetch_is_partial_too(
+    client, hub_cache, monkeypatch
+):
+    """"Has at least one snapshot" was the wrong line (D424).
+
+    Our own fetcher links each file into `snapshots/<commit>/` as it lands, so a
+    cancelled pull has a revision — and this tab said "downloaded" over a repo
+    holding a part file and no weights. The residue of the stopped fetch is what
+    answers now, and it is the AI Models listing's own reading, so the two tabs
+    cannot disagree about one folder.
+    """
+    repo = _cached_repo(hub_cache, "models--org--partial")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 32)
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/partial")]))
+
+    assert _search(client).json()["models"][0]["local"]["state"] == "partial"
 
 
 def test_the_join_costs_what_the_results_cost_not_what_the_cache_costs(
@@ -575,9 +593,15 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
                    "text-classification", "summarization", "image-classification"):
         assert absent not in offered
-    # …while the three the Engines tab is about are all reachable.
+    # …while the four the Engines tab is about are all reachable. EMBEDDINGS
+    # arrives through `zero-shot-image-classification` and deliberately NOT
+    # through `feature-extraction`: the dual encoders the embedding runners load
+    # carry the former, and the sentence-transformers checkpoints that carry the
+    # latter are exactly what the `absent` list above keeps out (see
+    # `registry.NO_RUNNER_YET`'s note on those two labels).
     assert {registry.capability_for_task(hub._friendly_task(t)) for t in offered} == {
-        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT}
+        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
+        registry.EMBEDDINGS}
 
 
 def test_the_menu_follows_the_registry_rather_than_a_second_list(client, monkeypatch):

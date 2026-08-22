@@ -1,0 +1,66 @@
+# The transformers embedding runner's environment (SPEC §40, PY-16).
+#
+# The cross-platform, and only, backend for embeddings off Apple Silicon — and
+# the Apple Silicon FALLBACK behind `mlx_embed` when that folder is not built
+# or its package cannot run. Same `whl/cpu` torch the withdrawn text family used (D416), and the same
+# reason: PyPI's default wheel is a CUDA build with several GB of `nvidia-*`
+# requirements a machine with no card never asked for, so this pins the CPU
+# index exactly as that folder's own manifest explains at length. `torch`,
+# `transformers` and the CPU index below are copied from that file rather than
+# reworded, because they answer the same question for the same reason and two
+# answers drifting apart is the thing `_SHARED_SUGGESTIONS`-style duplication
+# always risks.
+#
+# **No CUDA or ROCm sibling, unlike text and image generation.** A dual
+# encoder is a single forward pass over a short sequence or one image —
+# milliseconds already on a CPU — so there is no accelerated wheel that would
+# meaningfully speed this runner up, and therefore no second or third folder to
+# install it from. See `registry.py`'s `transformers-embed` row and this
+# folder's `worker.py` module docstring for the same argument stated where the
+# absence is decided.
+#
+# Four dependencies beyond torch, and each earns its place:
+#   transformers    AutoModel/AutoProcessor, and `get_text_features` /
+#                   `get_image_features` on the SigLIP and CLIP checkpoints
+#                   this runner loads (`formats.EMBED_MODEL_TYPES`).
+#   pillow          opens the image half of a request
+#                   (`embed_common.open_image`) — texts need no such thing,
+#                   but a shared `generate()` contract with `mlx_embed` means
+#                   both folders declare it.
+#   huggingface_hub downloads
+#   psutil          answers "how much memory is this costing"
+#
+# `>=5.15,<6` on transformers for the withdrawn text manifest's own
+# reason: this is the release verified end to end here, not merely the
+# earliest one with the classes this runner calls.
+[project]
+name = "fused-render-runner-transformers-embed"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "transformers>=5.15,<6",
+    "pillow",
+    # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
+    # HEIC by default since iOS 11, so without this the `paths` half of an
+    # embed request works on screenshots and fails on the photographs.
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# The CPU wheels. `explicit` keeps this index out of every other requirement's
+# candidate list — without it the CPU index becomes a candidate for EVERY
+# requirement and resolves them from a mirror that only mirrors what PyTorch
+# builds.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

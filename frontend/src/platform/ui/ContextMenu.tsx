@@ -5,9 +5,14 @@
 // point after the page moves under it is a bug, so it just closes.
 //
 // Items are a flat list; a bare "separator" string draws a divider. An item can
-// be disabled, `dimmed` (a cut entry, still actionable but visually faded), or
+// be disabled, `dimmed` (a cut entry, still actionable but visually faded),
+// `active` (radio semantics, for a menu of alternatives rather than actions), or
 // carry a `submenu` — a lazy loader called when the row is hovered (Open With
 // fetches the entry's template modes only on open). One level of submenu only.
+//
+// It is also the app's ONE dropdown for a button-triggered menu of choices: open
+// it at the trigger's rect (`{x: r.left, y: r.bottom + 4}`) and the clamp below
+// keeps it on screen. The AI models page's task/sort menus are that (D426).
 //
 // Styling lives in shell.css (.context-menu*), matching the pane-mode-dropdown.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
@@ -24,6 +29,14 @@ export interface MenuItem {
   dimmed?: boolean;
   // Destructive action (Delete): tinted with --error.
   danger?: boolean;
+  // RADIO semantics: this row is the choice currently in force. For a menu that
+  // is a set of alternatives rather than a list of actions — a sort, a filter —
+  // where "which one am I looking at" is the first thing the reader asks of it.
+  // The row keeps its own icon and gains an accent wash (.context-menu-item.
+  // active), the same treatment and for the same reason as the explorer's mode
+  // dropdown: a trailing checkmark said it in a second dialect, and it took the
+  // icon column hostage on a menu whose icons ARE the vocabulary.
+  active?: boolean;
   // Lazy submenu: invoked when the row is hovered. While the promise is
   // pending the submenu shows a "Loading…" placeholder; the resolved entries
   // are one level deep (no nested submenus) but may include separators —
@@ -66,9 +79,15 @@ function Row({
         (item.disabled ? " disabled" : "") +
         (item.dimmed ? " dimmed" : "") +
         (item.danger ? " danger" : "") +
+        (item.active ? " active" : "") +
         (item.submenu ? " has-submenu" : "") +
         (open ? " open" : "")
       }
+      /* Radio semantics are announced as well as drawn, and only where the
+         caller asked for them — an ordinary action row is not an unchecked
+         anything, so a role it never opted into would mis-describe it. */
+      role={item.active === undefined ? undefined : "menuitemradio"}
+      aria-checked={item.active === undefined ? undefined : item.active}
       onMouseEnter={onEnter}
       onClick={(e) => {
         e.stopPropagation();
