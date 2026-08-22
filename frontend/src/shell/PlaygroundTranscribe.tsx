@@ -365,24 +365,19 @@ export function PlaygroundTranscribe({ model }: { model: string }) {
             </div>
             <audio className="pg-audio" controls preload="metadata" src={rawUrl(source.path)} />
             {!busy && (
-              <div className="pg-audio-actions">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => {
-                    setError(null);
-                    void transcribePath(source.path).catch((e: Error) => {
-                      setError(e.message);
-                      setPhase({ step: "idle" });
-                    });
-                  }}
-                >
-                  {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
-                </button>
-                <span className="pg-audio-hint">
-                  Pick another model on the left to compare — the recording stays.
-                </span>
-              </div>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setError(null);
+                  void transcribePath(source.path).catch((e: Error) => {
+                    setError(e.message);
+                    setPhase({ step: "idle" });
+                  });
+                }}
+              >
+                {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
+              </button>
             )}
           </div>
         )}

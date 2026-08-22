@@ -1087,19 +1087,6 @@
   height: 36px;
 }
 
-.pg-audio-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.pg-audio-hint {
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  max-width: 240px;
-}
-
 .pg-segments {
   display: flex;
   flex-direction: column;
