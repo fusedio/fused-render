@@ -2783,22 +2783,26 @@ export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenc
 }
 
 /** Run one benchmark. **Resolves in MINUTES** — the request is held open for
- *  the whole run, exactly as `/api/ai/image` is, and progress meanwhile arrives
- *  on `jobId` through the ordinary job rows, where the row's TITLE is the bare
- *  model id (that is how `useCacheScan` finds it).
+ *  the whole run, exactly as `/api/ai/image` is.
+ *
+ *  **There is no job id and no download-manager row**, deliberately: a
+ *  benchmark's row would share the title-keyed job namespace with the load row
+ *  `supervisor.load` already opens for the same model and shadow it. Show your
+ *  own in-progress state for the duration; through a COLD run the load's own row
+ *  appears in the manager with real byte counts, which is the progress that was
+ *  always worth watching.
  *
  *  A run that failed still resolves, with `run.ok === false` — that is a result
- *  and belongs in the history. A run the user CANCELLED resolves with **no
+ *  and belongs in the history. A run STOPPED from outside resolves with **no
  *  `run`** and `cancelled: true`: nothing was measured, so there is nothing to
- *  add and nothing to show as an error. Read `run` for presence; never
- *  pattern-match on `run.error === "cancelled"`, which is what drew a phantom
- *  "Failed — cancelled" row that outlived the click. Only a rejected REQUEST
- *  rejects. */
+ *  add. Read `run` for presence; never pattern-match on
+ *  `run.error === "cancelled"`, which is what drew a phantom "Failed — cancelled"
+ *  entry that outlived the click. Only a rejected REQUEST rejects. */
 export function runAiBenchmark(
   model: string,
   capability: string,
-): Promise<{ run?: AiBenchmarkRun; cancelled?: boolean; jobId: string }> {
-  return postJson<{ run?: AiBenchmarkRun; cancelled?: boolean; jobId: string }>(
+): Promise<{ run?: AiBenchmarkRun; cancelled?: boolean }> {
+  return postJson<{ run?: AiBenchmarkRun; cancelled?: boolean }>(
     "/api/ai/benchmark",
     { model, capability },
   );

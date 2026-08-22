@@ -6,8 +6,10 @@ Three routes and nothing else:
   request is **held open for the whole run**, which is minutes, exactly as
   `POST /api/ai/image` and `POST /api/ai/transcribe` already are for work of the
   same length. Inventing a poll-a-benchmark-job protocol for a third long call
-  would be new machinery with no new capability; progress still flows to the
-  job row (`benchmark.job_id`), so the page is not blind while it waits.
+  would be new machinery with no new capability. **No job id comes back and no
+  download-manager row is created** — see `benchmark.run` for why a benchmark
+  cannot own a row for a model that already has a load row; the tab shows its own
+  spinner for the duration.
 * `GET /api/ai/benchmark` — every stored run, plus THIS machine. The machine
   block travels with the history rather than only on each run because the page
   has to caption a comparison ("these numbers are from this laptop") before it
@@ -42,7 +44,6 @@ back-to-back pair for no reason.
 from __future__ import annotations
 
 import contextlib
-import secrets
 import threading
 
 from fastapi import APIRouter, Body, Header
@@ -160,15 +161,18 @@ def api_ai_benchmark_run(body: dict = Body(...),
     benchmarks to find out. The status code describes the request; `ok`
     describes the model.
 
-    A run that was CANCELLED is a 200 with **no `run` at all** and
+    A run STOPPED from outside is a 200 with **no `run` at all** and
     `cancelled: true`. Distinct on the wire rather than reported as a failed run,
     because nothing was measured: the first cut answered with the `ok:false,
     error:"cancelled"` record and the page appended it, drawing a phantom
     "Failed — cancelled" row that became the model's latest until a reload. Also
-    not a 4xx — the request was fine and the user did this on purpose, so a
-    status the client's `catch` would turn into an error banner would be wrong
-    too. The client reads the ABSENCE of `run`; it never pattern-matches on an
-    error string.
+    not a 4xx — the request was well formed and reached a model, so a status the
+    client's `catch` would turn into a request error would be wrong too. The
+    client reads the ABSENCE of `run`; it never pattern-matches on an error
+    string. It does tell the user, because nobody pressed a ✕ here (there is no
+    row to press one on): the likely cause is `fused.ai.cancel()` from another
+    page reaching the same shared worker, and a run that just vanished with no
+    explanation is worse than one that failed.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -196,20 +200,19 @@ def api_ai_benchmark_run(body: dict = Body(...),
             f"{model} is not on this machine — download it before benchmarking it",
             status=404)
 
-    job = benchmark.job_id(secrets.token_hex(6))
     try:
         with _claim(capability):
-            record = benchmark.run(model, capability, job)
+            record = benchmark.run(model, capability)
     except _Busy:
         return _error(
             f"a {capability} benchmark is already running — one at a time, or the "
             f"second load would evict the first model mid-measurement",
             status=409)
     except benchmark.Cancelled:
-        # The ✕. Nothing was measured, nothing was stored, and nothing comes
-        # back for the page to draw — see `benchmark.Cancelled`.
-        return {"cancelled": True, "jobId": job}
-    return {"run": record, "jobId": job}
+        # Stopped from outside. Nothing was measured, nothing was stored, and
+        # nothing comes back for the page to draw — see `benchmark.Cancelled`.
+        return {"cancelled": True}
+    return {"run": record}
 
 
 @router.post("/api/ai/benchmark/delete")

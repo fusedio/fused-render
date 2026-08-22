@@ -47,6 +47,7 @@ from __future__ import annotations
 import math
 import os
 import platform
+import secrets
 import struct
 import tempfile
 import time
@@ -57,7 +58,6 @@ from types import MappingProxyType
 from typing import Mapping
 
 import fused_render
-from fused_render import jobs
 from fused_render.ai import bench_store, catalog, registry, supervisor
 
 
@@ -200,12 +200,6 @@ def machine() -> dict:
 
 # -- the run ---------------------------------------------------------------------
 
-#: The download-manager row a benchmark reports to. Minted through
-#: `jobs.SERVER_ID_PREFIX` like the supervisor's three prefixes are: the `sys:`
-#: prefix is what makes a row unwritable by a page (BG-4a), so an id carrying it
-#: is never assembled by hand.
-BENCH_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-benchmark:"
-
 #: Steps for an image model the catalog has no per-model hint for — the same 28
 #: `POST /api/ai/image` defaults to, so a benchmark measures the pipeline a page
 #: actually gets rather than a number invented here.
@@ -224,12 +218,6 @@ _LOAD_POLL_S = 0.5
 #: report a negative throughput. `startedAt` on the record is wall clock, which
 #: is a different question (when was this taken) with a different right answer.
 _now = time.monotonic
-
-
-def job_id(uid: str) -> str:
-    """The download-manager row id for one benchmark run. See
-    `supervisor.image_job_id` — same sanitisation, same reason."""
-    return BENCH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
 def _image_steps(model: str) -> int:
@@ -275,7 +263,7 @@ def _write_tone_wav(path: str, seconds: float, sample_rate: int, hz: float) -> N
         out.writeframes(samples)
 
 
-def _measure_text(model: str, workload: Workload, job: str, *, timed: bool) -> dict:
+def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
     """Decode the fixed prompt, splitting prefill from decode.
 
     Two numbers, because one would hide the other: `ttftMs` is everything up to
@@ -345,7 +333,7 @@ def _measure_text(model: str, workload: Workload, job: str, *, timed: bool) -> d
     }
 
 
-def _measure_embed(model: str, workload: Workload, job: str, *, timed: bool) -> dict:
+def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
     """Encode the fixed batch of texts in one call.
 
     The whole batch in one request rather than eight requests, because batching
@@ -366,7 +354,7 @@ def _measure_embed(model: str, workload: Workload, job: str, *, timed: bool) -> 
     }
 
 
-def _measure_image(model: str, workload: Workload, job: str, *, timed: bool) -> dict:
+def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
     """Render one image at the fixed canvas and this model's own step count.
 
     The PNG goes to a temp file that is deleted on the way out: a benchmark is a
@@ -386,7 +374,7 @@ def _measure_image(model: str, workload: Workload, job: str, *, timed: bool) -> 
             "out": os.path.join(tmp, "benchmark.png"),
         }
         start = _now()
-        supervisor.generate_image(model, request, job)
+        supervisor.generate_image(model, request, _unwatched_job())
         total = _now() - start
     if not timed:
         return {}
@@ -399,7 +387,7 @@ def _measure_image(model: str, workload: Workload, job: str, *, timed: bool) -> 
     }
 
 
-def _measure_transcript(model: str, workload: Workload, job: str, *,
+def _measure_transcript(model: str, workload: Workload, *,
                         timed: bool) -> dict:
     """Decode the synthesized tone and report how many times faster than
     realtime it was.
@@ -430,19 +418,15 @@ def _measure_transcript(model: str, workload: Workload, job: str, *,
             "words": False,
             "out": os.path.join(tmp, "benchmark.json"),
             "outText": os.path.join(tmp, "benchmark.txt"),
-            # The row's identity, travelling into the worker exactly as
-            # `supervisor.start_transcribe` sends it — and for the identical
-            # reason, which is the one thing this path cannot do without.
-            # `generate_transcript` passes it to `_wait_ready(row=...)` and the
-            # worker restates it on every tick of a decode that runs in a
-            # DIFFERENT PROCESS; with it absent both are `None`, `upsert`
-            # refuses a first report with no title, and the row goes silent
-            # mid-decode. Sent rather than re-spelled there so the two cannot
-            # disagree about what this row is.
-            "row": row_fields(model, registry.SPEECH_TO_TEXT),
+            # No `row`: that key is how a caller gives the worker a progress row
+            # to restate its identity onto, and a benchmark has none by design
+            # (see `run`). Without it the worker's ticks carry no title,
+            # `jobs.upsert` refuses them and `worker_base.report` swallows the
+            # refusal — so the decode runs and no row is created, which is
+            # exactly what is wanted here.
         }
         start = _now()
-        supervisor.generate_transcript(model, request, job)
+        supervisor.generate_transcript(model, request, _unwatched_job())
         total = _now() - start
     if not timed:
         return {}
@@ -466,101 +450,50 @@ _MEASURE = {
 
 
 class Cancelled(Exception):
-    """The ✕ was pressed (or something else stopped the generation).
+    """This generation was stopped from outside, so there is nothing to record.
+
+    Not a ✕ on a progress row — a benchmark has none (see `run`). It is
+    `fused.ai.cancel()`, or any other caller of
+    `supervisor.cancel_generation`, reaching the SAME resident worker: one
+    model per capability is shared by the whole app, so a page cancelling its
+    own generation stops a benchmark that happens to be running on it.
 
     A distinct exception rather than an `ok:false` record, because a cancelled
-    run **measured nothing and is therefore not history**. The first cut returned
-    `{"ok": false, "error": "cancelled"}`; the endpoint answered 200 with it and
-    the page appended it, so pressing ✕ drew a phantom "Failed — cancelled" row
-    that became the model's LATEST — the delta and the summary then compared
-    against it — until a reload made it vanish. The storage side already refused
-    to keep such a record; this is the same rule made impossible to break on the
-    way out, since a caller cannot accidentally return an exception.
+    run **measured nothing and is therefore not history**. It was returned as
+    `{"ok": false, "error": "cancelled"}` once; the endpoint answered 200 with
+    it and the page appended it, so a stopped run drew a phantom
+    "Failed — cancelled" entry that became the model's LATEST — the delta and
+    the summary then compared against it — until a reload made it vanish. The
+    storage side already refused to keep such a record; raising is the same rule
+    made impossible to break on the way out, since a caller cannot accidentally
+    return an exception.
     """
 
 
-#: Capabilities whose WORKER is handed the job id and aborts a generation
-#: itself. For these the ✕ is live for the whole run.
-#:
-#: The other two are not an oversight in this module: `supervisor.generate_text`
-#: and `generate_embed` take no `job` at all, so there is nothing in the
-#: measurement that could read the flag — and an embedding is one forward pass
-#: through a small tower, which is over before a cancel could mean anything.
-#: Rather than advertise a ✕ that does nothing (the exact failure
-#: `transcribe_row_fields` documents for a row that loses `cancellable`, in
-#: reverse), the row DROPS `cancellable` when the measurement starts for those
-#: two — see `run`. The load phase stays cancellable for every capability,
-#: because `_load_to_ready`'s poll is real and the load is the phase that can
-#: last an hour.
-_WORKER_HONOURS_CANCEL = (registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT)
+def _unwatched_job() -> str:
+    """A job id for a supervisor call that structurally requires one, naming NO
+    download-manager row.
 
+    `generate_image` and `generate_transcript` take a job id positionally and
+    pass it to their worker; a benchmark has no row for them to report to, and
+    that is deliberate (see `run`). So this is a placeholder, and it has exactly
+    two requirements:
 
-def row_fields(model: str, capability: str, *,
-               cancellable: bool = True) -> dict:
-    """The benchmark row's IDENTITY, as opposed to its progress — restated on
-    every single report.
+    * **Non-empty.** `worker_base.report` does `job = job or JOB_ID`, and
+      `JOB_ID` is the worker's own process-level id — the row `supervisor.load`
+      opened for this MODEL. Handing the call a falsy job would therefore paint
+      benchmark ticks onto the load's byte progress bar, which is the collision
+      this whole removal exists to end, arrived at from the other direction.
+    * **`sys:`-prefixed.** Nothing creates a row under it — the workers' ticks
+      carry no `title`, so `jobs.upsert` refuses them and `report` swallows the
+      refusal — but if anything ever did, the row would be server-owned and
+      unwritable by a page (BG-4a) rather than a page-owned row nobody can
+      account for.
 
-    The same payload, and the same reason, as `supervisor.transcribe_row_fields`:
-    **any report may turn out to be a FIRST report.** `jobs._sweep` drops the
-    least recently updated running row once `MAX_JOBS` (64) bites, so a tick that
-    omits `title` does not update a row that is missing — `upsert` RAISES, and
-    `_report` swallows the raise, so the row simply never comes back. The rest of
-    the payload matters for the same reason one step down: `kind` defaults to
-    "task" and `cancellable`/`unit` default to False and "", so an omission
-    silently changes what the manager draws.
-
-    **The title is the BARE MODEL ID, and that is a cross-language contract
-    rather than a style choice.** The page's only route to a server-owned job row
-    is `useCacheScan.ts`'s `new Map(jobs.filter(server).map(j => [j.title, j]))`
-    — keyed by TITLE, deliberately, because re-deriving the sanitised job id in
-    TypeScript would be a second copy of a Python rule. So a decorated title
-    (`"Benchmark: <model>"`, which this shipped as) produces a row that EXISTS,
-    reports correctly, and can never be found: `ModelProgress` renders with
-    `job=undefined` for the whole multi-minute run, with no error anywhere. There
-    is no fallback path either — the endpoint returns the `jobId` only once the
-    run has finished. `test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by`
-    pins all three halves of that against the TypeScript sources.
-
-    Speech to text returns `supervisor.transcribe_row_fields` VERBATIM rather
-    than a lookalike: those workers report `done`/`total` in seconds, so the
-    payload carries `unit="s"`, and a hand-written `unit=""` beside it drew a
-    bare `12/30`. That payload exists to be the single spelling of a
-    transcription row — using it is the point.
-
-    `state` is deliberately NOT here — the terminal report needs `done`/`error`/
-    `cancelled` and would have to override it, so every caller says its own.
+    Fresh per call, so two concurrent benchmarks cannot alias.
     """
-    if capability == registry.SPEECH_TO_TEXT:
-        return {**supervisor.transcribe_row_fields(model),
-                "cancellable": cancellable}
-    return {"title": model[:80], "kind": "task",
-            "cancellable": cancellable, "unit": ""}
-
-
-def _report(job: str, model: str, capability: str, **fields) -> None:
-    """One tick on the benchmark's row, carrying the row's identity, best-effort.
-
-    Delegated to `supervisor._report` rather than reimplemented so a benchmark's
-    ticks pass through the same swallow-everything guard every other AI progress
-    report already does — reporting must never be the thing that breaks a run.
-
-    **`model` is not optional, and that is the whole point of this wrapper.** The
-    first cut reported `detail=` alone: `jobs.upsert` raises
-    `JobError("the first report for a job must include a 'title'")` for an id it
-    has never seen, `supervisor._report` swallows exactly that, and so every tick
-    of every benchmark went on the floor — including the image worker's own
-    per-step ticks, which are titleless too and were relying on this row already
-    existing. The `jobId` the endpoint returned named nothing, which defeated
-    `ModelProgress` and the documented `fused.watchJob(jobId)` contract at the
-    same time. Nothing about that failure was visible: no exception, no log line,
-    and a test double for `_report` cannot see it either.
-    """
-    cancellable = fields.pop("cancellable", True)
-    supervisor._report(job, **row_fields(model, capability,
-                                         cancellable=cancellable), **fields)
-
-
-def _load_to_ready(model: str, capability: str, job: str) -> float | None:
+    return "sys:ai-benchmark-unwatched-" + secrets.token_hex(6)
+def _load_to_ready(model: str, capability: str) -> float | None:
     """Make `model` resident, returning the seconds it took — or `None` when it
     already was.
 
@@ -568,12 +501,15 @@ def _load_to_ready(model: str, capability: str, job: str) -> float | None:
     its most tempting case: a warm run genuinely did not load anything, and a
     zero would sit on the chart as an impossibly fast load.
 
-    Its own poll loop rather than `supervisor._wait_ready`, for one reason: that
-    function reports the wait onto the CALLER's row in a transcription's
-    vocabulary and treats an eviction as a hard error. Here the wait is a phase
-    of a benchmark that has to end up as an `ok:false` RECORD, not an exception
-    on somebody else's progress bar. The load itself is still
-    `supervisor.load()`, so there is exactly one thing that brings a model up.
+    Its own poll loop rather than `supervisor._wait_ready`, for two reasons: that
+    function reports the wait onto a progress row this feature deliberately does
+    not have, and it treats an eviction as a hard error, where here the wait is a
+    phase of a benchmark that has to end up as an `ok:false` RECORD rather than
+    an exception on somebody else's bar. The load itself is still
+    `supervisor.load()`, so there is exactly one thing that brings a model up —
+    and `load` opens its OWN row, titled with the model id, which is the row a
+    user watches through a cold benchmark's download. That row is the reason a
+    benchmark must not open one of its own; see `run`.
     """
     if supervisor.ready_worker(capability, model) is not None:
         return None
@@ -586,20 +522,11 @@ def _load_to_ready(model: str, capability: str, job: str) -> float | None:
         if _now() >= deadline:
             raise supervisor.SupervisorError(
                 f"{model} did not finish loading in time")
-        # The ✕, read the same way `_wait_ready` reads it — and read HERE
-        # because this is the phase that can last an hour, so a cancel nobody
-        # polls for is an operable-looking button that does nothing for the
-        # whole download. The literal "cancelled" is the codebase's own signal
-        # (see `supervisor._failure_text`), which `run` switches on.
-        #
-        # A tri-state `None` — no row to ask — is deliberately NOT treated as a
-        # cancel: an evicted row is not a user pressing anything, and aborting a
-        # legitimate multi-GB pull on capacity pressure would be a worse failure
-        # than the one this guards. The tick below rebuilds the row.
-        if supervisor._cancel_state(job) is True:
-            raise Cancelled()
-        _report(job, model, capability, state="running",
-                detail=f"Loading {model}…")
+        # No cancel poll and no progress tick: there is no row of ours to read a
+        # ✕ off or to report onto. The user is not blind through this phase —
+        # `supervisor.load` opened the model's own download row and the worker
+        # reports its bytes there — and that row's ✕ cancels the LOAD, which is
+        # the honest thing for it to do.
         time.sleep(_LOAD_POLL_S)
 
 
@@ -623,7 +550,7 @@ def _memory_and_device(model: str, capability: str) -> tuple[int | None, str | N
     return None, None
 
 
-def run(model: str, capability: str, job: str) -> dict:
+def run(model: str, capability: str) -> dict:
     """Benchmark `model` at `capability` and record the result. Blocking.
 
     Minutes of work — call it on a thread, never on the loop, exactly as
@@ -631,8 +558,22 @@ def run(model: str, capability: str, job: str) -> dict:
     open for the whole thing rather than turned into a poll-a-benchmark-job
     protocol: that is what those two already do for work of the same length, and
     inventing a second protocol for a third long call would be new machinery
-    with no new capability. Progress still flows to `job`, so a page is not
-    blind while it waits.
+    with no new capability.
+
+    **No download-manager row is created, deliberately, and this is the third
+    design after two failures.** Server job rows are a TITLE-KEYED global
+    namespace — a page's only route to one is `useCacheScan.ts`'s map of
+    `job.title -> job` — and `supervisor.load` already owns the row titled
+    exactly `model`. Both spellings of a benchmark row are therefore broken: a
+    decorated title ("Benchmark: <model>") is a row no consumer can find, and the
+    bare model id SHADOWS the load row, which put the download manager's only
+    visible ✕ on the load rather than on the benchmark and let a cold run spin to
+    its hour-long timeout and record a phantom "did not finish loading in time".
+    A benchmark cannot own a row for a model that already has one, so it owns
+    none: the tab shows its own in-tab spinner for the duration. What the user
+    still sees through the expensive phase is the LOAD's own row, reported by the
+    supervisor with real byte counts, which is the row that was always right for
+    that wait.
 
     **A failure is a RESULT, and it is stored.** "This model OOMs on this
     laptop" is precisely the sort of thing somebody benchmarks to find out, so a
@@ -641,9 +582,9 @@ def run(model: str, capability: str, job: str) -> dict:
 
     Three things RAISE instead of returning a record, because in none of them was
     anything measured: an unknown capability (`ValueError` — there is no
-    workload, and the router turns it into a 4xx), a cancel (`Cancelled` — see
-    that class for the phantom history row this prevents), and an
-    interpreter-level exit, which is re-raised untouched.
+    workload, and the router turns it into a 4xx), a generation stopped from
+    outside (`Cancelled` — see that class), and an interpreter-level exit, which
+    is re-raised untouched.
 
     Order of operations, and every step of it is load-bearing:
 
@@ -690,19 +631,6 @@ def run(model: str, capability: str, job: str) -> dict:
         "metrics": {},
     }
 
-    # The row is OPENED before anything else happens, with a title, because
-    # `jobs.upsert` refuses a first report that has none and `_report` swallows
-    # the refusal — so a benchmark that only ever ticked `detail=` reported
-    # nothing at all, and the `jobId` the endpoint handed back named a row that
-    # did not exist. Same ordering, and the same reason, as
-    # `supervisor.start_image` / `start_transcribe`.
-    _report(job, model, capability, state="running",
-            detail=f"Preparing {workload.name}…", done=None, total=None)
-    # Whether the ✕ survives into the MEASUREMENT phase — see
-    # `_WORKER_HONOURS_CANCEL`. Computed once so the phase reports and the
-    # terminal report cannot disagree about what this row offers.
-    measuring_cancellable = capability in _WORKER_HONOURS_CANCEL
-
     try:
         runner = registry.for_capability(capability)
         if runner is None:
@@ -711,16 +639,13 @@ def run(model: str, capability: str, job: str) -> dict:
                 or f"nothing here can run {capability}")
         record["runner"] = runner.code
 
-        record["loadSeconds"] = _load_to_ready(model, capability, job)
+        record["loadSeconds"] = _load_to_ready(model, capability)
 
-        _report(job, model, capability, state="running", detail="Warming up…",
-                cancellable=measuring_cancellable)
-        measure(model, workload, job, timed=False)
-
-        _report(job, model, capability, state="running",
-                detail=f"Running {workload.name}…",
-                cancellable=measuring_cancellable)
-        record["metrics"] = measure(model, workload, job, timed=True)
+        # The discarded warm-up, then the timed pass. Same function twice — see
+        # step 3 of the docstring for why the first one's timings are thrown away
+        # and why the rule is uniform across capabilities.
+        measure(model, workload, timed=False)
+        record["metrics"] = measure(model, workload, timed=True)
 
         record["peakResidentBytes"], record["device"] = _memory_and_device(
             model, capability)
@@ -733,13 +658,11 @@ def run(model: str, capability: str, job: str) -> dict:
         # feature exists to keep trustworthy. Re-raised because a
         # `BaseException` handler that eats these is a process that will not go
         # down when asked.
-        _report(job, model, capability, state="cancelled")
         raise
     except Cancelled:
         # Nothing was measured, so there is nothing to record and nothing to
         # return. See `Cancelled` — the caller gets an exception precisely so a
-        # cancelled run cannot reach the page as a failed one.
-        _report(job, model, capability, state="cancelled")
+        # stopped run cannot reach the page as a failed one.
         raise
     except supervisor.SupervisorError as e:
         # `"cancelled"` is the literal the load wait, the image worker and the
@@ -748,7 +671,6 @@ def run(model: str, capability: str, job: str) -> dict:
         # to `Cancelled` HERE, in one place, so the rest of this module and the
         # router never pattern-match on an error message.
         if str(e) == "cancelled":
-            _report(job, model, capability, state="cancelled")
             raise Cancelled() from e
         record["ok"] = False
         record["error"] = str(e)
@@ -761,13 +683,5 @@ def run(model: str, capability: str, job: str) -> dict:
         record["ok"] = False
         record["error"] = supervisor._failure_text(e)
 
-    if record["ok"]:
-        _report(job, model, capability, state="done",
-                detail=f"{workload.name} finished",
-                cancellable=measuring_cancellable)
-    else:
-        _report(job, model, capability, state="error",
-                message=record["error"] or "failed",
-                cancellable=measuring_cancellable)
     bench_store.append(record)
     return record

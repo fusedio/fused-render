@@ -24,12 +24,20 @@
 //
 // **A run holds its HTTP request open for minutes** (the server does this
 // deliberately — see routers/ai_benchmark.py), so the click cannot be awaited
-// as if it were a save. Only the pressed model's button goes dead; the rest of
-// the page stays live, and the job row carries the progress through the shared
-// ModelProgress the other tabs use.
+// as if it were a save. Only the pressed capability's buttons go dead; the rest
+// of the page stays live.
+//
+// **There is no download-manager row for a benchmark, and this tab must not
+// reach for one.** Server job rows are keyed by TITLE (`useCacheScan` maps
+// `job.title -> job`) and `supervisor.load` already owns the row titled with the
+// model id, so a benchmark row either cannot be found or shadows the load's —
+// which put the manager's only ✕ on the load and let a cold run spin to its
+// hour-long timeout. So the in-progress state is a plain spinner in the row, and
+// through a COLD run the load's own row shows up in the manager with real byte
+// counts, which is the progress that was always worth watching. See
+// `ai/benchmark.py`.
 import { useEffect, useState } from "react";
 import { BenchmarkChart } from "./BenchmarkChart";
-import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
@@ -44,6 +52,7 @@ import {
   primaryValue,
   runButtonState,
   runsFor,
+  stoppedNote,
   summaryLine,
   type ModelLatest,
   type RunButtonState,
@@ -62,7 +71,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
 export function BenchmarkTab({ scan }: { scan: CacheScan }) {
-  const { data, repos, jobByModel, scanEpoch } = scan;
+  const { data, repos, scanEpoch } = scan;
   // Every run ever recorded, oldest first. `null` until the store has answered.
   const [runs, setRuns] = useState<AiBenchmarkRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +82,12 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // explicitly permitted. A single slot greyed out every other section under a
   // tooltip claiming a per-capability rule, making a legal action unreachable.
   const [inFlight, setInFlight] = useState<RunsInFlight>({});
+  // A run that came back STOPPED rather than measured. Its own state, not
+  // `error`: this is not a request failure and must not draw the ErrorBanner —
+  // see `stoppedNote`. Cleared when the next run starts, rather than on a timer:
+  // a timer that hides an explanation before it has been read is worse than a
+  // line that waits to be replaced.
+  const [stopped, setStopped] = useState<string | null>(null);
   // The optional focus filter, SEEDED from `?cap=` once and held in state
   // thereafter. State rather than reading the URL every render because
   // `writeParams` uses `history.replaceState`, which deliberately fires no
@@ -111,16 +126,18 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
 
   const start = async (model: string, capability: string) => {
     setError(null);
-    // Optimistic only about the BUTTON, never about a result: the jobId comes
-    // back with the finished run, so until then the progress row has no id to
-    // watch and says "Preparing…" from ModelProgress's own default.
-    //
-    // Functional updates on both halves, because two capabilities can now be
-    // running at once and a `{...inFlight}` closed over at click time would
-    // drop whichever one started in between.
+    setStopped(null);
+    // Optimistic only about the BUTTON, never about a result. Functional
+    // updates on both halves, because two capabilities can be running at once
+    // and a `{...inFlight}` closed over at click time would drop whichever one
+    // started in between.
     setInFlight((prev) => ({ ...prev, [capability]: model }));
     try {
-      const { run } = await runAiBenchmark(model, capability);
+      const { run, cancelled } = await runAiBenchmark(model, capability);
+      // Stopped from outside — say so. Silence here was finding 6: nothing
+      // appended, no error, the button quietly re-enabled, so several minutes of
+      // waiting ended with no signal at all.
+      if (cancelled) setStopped(stoppedNote(model));
       // **Presence of `run`, not `run.ok`.** A cancelled run answers with no
       // `run` at all, because nothing was measured; appending it would draw a
       // phantom "Failed — cancelled" row that becomes this model's LATEST — so
@@ -185,6 +202,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   return (
     <div className="am-bench">
       <ErrorBanner>{error}</ErrorBanner>
+      {stopped && <p className="am-bench-stopped">{stopped}</p>}
       {focused && (
         <p className="am-group-note">
           Showing {capabilityLabel(focused)} only.{" "}
@@ -211,7 +229,6 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           repos={repos.filter((r) => r.capability === capability)}
           runs={runs === null ? null : runsFor(runs, capability)}
           inFlight={inFlight}
-          jobByModel={jobByModel}
           onRun={start}
           onForget={forget}
         />
@@ -225,7 +242,6 @@ function CapabilitySection({
   repos,
   runs,
   inFlight,
-  jobByModel,
   onRun,
   onForget,
 }: {
@@ -237,7 +253,6 @@ function CapabilitySection({
    *  reads its own key out, which keeps the "which capability blocks which"
    *  rule in one tested place rather than in each section's props. */
   inFlight: RunsInFlight;
-  jobByModel: CacheScan["jobByModel"];
   onRun: (model: string, capability: string) => void;
   onForget: (id: string) => void;
 }) {
@@ -278,7 +293,6 @@ function CapabilitySection({
                 model={repo.id}
                 row={latest.get(repo.id) ?? null}
                 button={button}
-                job={button.busy ? jobByModel.get(repo.id) : undefined}
                 onRun={() => onRun(repo.id, capability)}
               />
             );
@@ -307,7 +321,6 @@ function BenchmarkRow({
   model,
   row,
   button,
-  job,
   gone,
   onRun,
 }: {
@@ -318,7 +331,6 @@ function BenchmarkRow({
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
    *  which has no button at all. */
   button?: RunButtonState;
-  job?: ReturnType<CacheScan["jobByModel"]["get"]>;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
   onRun?: () => void;
@@ -331,7 +343,15 @@ function BenchmarkRow({
       </div>
       <div className="am-bench-latest">
         {button?.busy ? (
-          <ModelProgress detail="Benchmarking…" job={job} />
+          // A plain spinner, not `ModelProgress`: that component draws a JOB
+          // row's detail and byte counts, and a benchmark has no row. There is
+          // genuinely nothing to report until the request returns — the server
+          // is holding it open — so pretending otherwise with an invented
+          // percentage is what makes live work read as frozen.
+          <span className="am-bench-busy" role="status">
+            <span className="am-runtime-dot" />
+            Benchmarking… this takes minutes
+          </span>
         ) : row ? (
           <>
             <span className="am-bench-summary">{summaryLine(row.latest)}</span>

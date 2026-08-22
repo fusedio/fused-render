@@ -16,12 +16,10 @@ on this laptop and on nothing in CI, so a test that let the registry answer
 would assert one thing here and another there.
 """
 import json
-import re
 import wave
 
 import pytest
 
-from _theme_sources import read_repo_file
 from fused_render import jobs
 from fused_render.ai import bench_store, benchmark
 from fused_render.ai import registry as ai_registry
@@ -63,17 +61,13 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: object())
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
-    # Progress reporting is best-effort plumbing, not this module's subject, and
-    # a real `jobs.upsert` would leave rows behind for the next test to find.
-    monkeypatch.setattr(benchmark.supervisor, "_report", lambda job, **f: None)
     return clock
 
 
 # -- text generation ------------------------------------------------------------
 
 
-def _text_run(clock, monkeypatch, *, warmup_seconds=100.0, done=None,
-              job="sys:ai-benchmark:t"):
+def _text_run(clock, monkeypatch, *, warmup_seconds=100.0, done=None):
     """One text benchmark whose warm-up burns `warmup_seconds` and whose timed
     pass follows a fixed timeline: first token at +0.5s, done at +4.0s."""
     calls = {"n": 0}
@@ -98,7 +92,7 @@ def _text_run(clock, monkeypatch, *, warmup_seconds=100.0, done=None,
         yield done
 
     monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     return record, calls
 
 
@@ -166,7 +160,7 @@ def test_embeddings_report_texts_per_second_and_dim(bench, monkeypatch):
                 "model": model}
 
     monkeypatch.setattr(benchmark.supervisor, "generate_embed", generate_embed)
-    record = benchmark.run("some/embed-model", ai_registry.EMBEDDINGS, "sys:job")
+    record = benchmark.run("some/embed-model", ai_registry.EMBEDDINGS)
     metrics = record["metrics"]
     assert calls["n"] == 2
     assert metrics["batch"] == 8
@@ -177,7 +171,7 @@ def test_embeddings_report_texts_per_second_and_dim(bench, monkeypatch):
 def test_an_embedding_reply_with_no_dim_leaves_dim_null(bench, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "generate_embed",
                         lambda model, body: (bench.advance(1.0), {"vectors": []})[1])
-    record = benchmark.run("some/embed-model", ai_registry.EMBEDDINGS, "sys:job")
+    record = benchmark.run("some/embed-model", ai_registry.EMBEDDINGS)
     assert record["metrics"]["dim"] is None
 
 
@@ -199,7 +193,7 @@ def test_image_reports_seconds_per_step_at_the_catalog_default_steps(bench,
 
     monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
     monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
-    record = benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION, "sys:job")
+    record = benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
     metrics = record["metrics"]
     assert len(seen) == 2  # warm-up, then timed
     assert metrics["steps"] == 4
@@ -254,7 +248,7 @@ def test_speech_reports_a_realtime_factor_over_a_synthesized_tone(bench,
 
     monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
                         generate_transcript)
-    record = benchmark.run("some/whisper", ai_registry.SPEECH_TO_TEXT, "sys:job")
+    record = benchmark.run("some/whisper", ai_registry.SPEECH_TO_TEXT)
     metrics = record["metrics"]
     assert metrics["audioSeconds"] == pytest.approx(30.0)
     assert metrics["totalSeconds"] == pytest.approx(3.0)
@@ -302,7 +296,7 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
                         lambda model, capability, **kw: {"jobId": "j"})
     monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
     monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 0.0)
-    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, "sys:job")
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert record["ok"] is False
     assert "load" in record["error"].lower()
 
@@ -369,7 +363,7 @@ def test_a_raising_runner_yields_not_ok_and_is_still_appended(bench, monkeypatch
         yield  # pragma: no cover - makes this a generator, as the real one is
 
     monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, "sys:job")
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert record["ok"] is False
     assert record["error"] == "the model process is gone"
     assert record["metrics"] == {}
@@ -380,7 +374,7 @@ def test_an_unknown_capability_raises_rather_than_recording_nothing(bench):
     """The router turns this into a 4xx. It is not an `ok:false` run: there is
     no workload, so nothing was measured and there is nothing to record."""
     with pytest.raises(ValueError):
-        benchmark.run("some/model", "telepathy", "sys:job")
+        benchmark.run("some/model", "telepathy")
 
 
 def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypatch):
@@ -394,26 +388,32 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
     loads = []
     monkeypatch.setattr(benchmark.supervisor, "load",
                         lambda *a, **k: loads.append(a))
-    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, "sys:job")
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert record["ok"] is False
     assert "Apple Silicon" in record["error"]
     assert record["runner"] is None
     assert loads == []
 
 
-# -- the job row ----------------------------------------------------------------
+# -- no job row at all ---------------------------------------------------------
 #
-# These tests deliberately DO NOT stub `supervisor._report`, unlike the fixture
-# above. That stub is why the missing job row shipped: `jobs.upsert` raises
-# `JobError("the first report for a job must include a 'title'")` for an id it
-# has never seen and `supervisor._report` swallows it, so a run that only ever
-# reported `detail=` dropped every tick on the floor and still looked perfect
-# against a no-op double. The assertions below are against the REAL `jobs` store.
+# **A benchmark deliberately creates no download-manager row.** Three rounds of
+# trying produced three new defects, all of them the same root cause: server job
+# rows are a TITLE-KEYED global namespace (`useCacheScan.ts` maps
+# `job.title -> job`) with several consumers, and `supervisor.load` already owns
+# the row titled exactly `model`. A prefixed title cannot be found by any
+# consumer; the bare title SHADOWS the load row, which put the only visible ✕ on
+# the load instead of the benchmark and left a cold run spinning to its hour-long
+# timeout to record a phantom "did not finish loading in time".
+#
+# So the tab shows a plain in-tab spinner and the feature touches `jobs` nowhere.
+# This test is the guard on that, and it is why it asserts an ABSENCE.
 
 
 @pytest.fixture
-def rows(tmp_path, monkeypatch):
-    """`bench`, but with progress reporting left REAL and the job store empty."""
+def norows(tmp_path, monkeypatch):
+    """`bench`, but with progress reporting left REAL and the job store empty, so
+    a row created anywhere on the path is visible to the assertion."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     clock = Clock()
     monkeypatch.setattr(benchmark, "_now", clock)
@@ -426,348 +426,143 @@ def rows(tmp_path, monkeypatch):
     jobs.reset()
 
 
-def _row(job: str) -> dict | None:
-    return next((r for r in jobs.list_jobs() if r["id"] == job), None)
+def test_a_run_creates_no_job_row(norows, monkeypatch):
+    record, _ = _text_run(norows, monkeypatch)
+    assert record["ok"] is True
+    assert jobs.list_jobs() == [], (
+        "a benchmark opened a download-manager row; it must not — the title "
+        "namespace is shared with supervisor.load and collides on the model id"
+    )
 
 
-def test_the_run_opens_a_real_job_row_and_closes_it(rows, monkeypatch):
-    """The row has to EXIST before the first tick, or every tick is discarded and
-    the `jobId` the endpoint hands back names nothing — which defeats both
-    `ModelProgress` and the documented `fused.watchJob(jobId)` contract."""
-    job = benchmark.job_id("abc123")
-    _text_run(rows, monkeypatch, job=job)
-    row = _row(job)
-    assert row is not None, "no job row was ever created"
-    # The BARE model id, which is what the page looks a row up by — see
-    # `test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by`.
-    assert row["title"] == "some/text-model"
-    assert row["state"] == "done"
-    assert row["owner"] == jobs.OWNER_SERVER  # a `sys:` id, unwritable by a page
+def test_a_cold_run_creates_no_job_row_either(norows, monkeypatch):
+    """The cold path is where the collision bit: `supervisor.load` opens the row
+    titled `model`, and anything of ours sharing that namespace shadowed it."""
+    states = {"ready": False}
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker",
+                        lambda cap, model=None: object() if states["ready"] else None)
+
+    def load(model, capability, *, weights_only=False):
+        norows.advance(8.5)
+        states["ready"] = True
+        return {"jobId": "sys:ai-model:x", "model": model, "state": "loading"}
+
+    monkeypatch.setattr(benchmark.supervisor, "load", load)
+    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
+    record, _ = _text_run(norows, monkeypatch)
+    assert record["loadSeconds"] == pytest.approx(8.5)
+    assert jobs.list_jobs() == []
 
 
-def test_a_progress_tick_lands_on_the_row_rather_than_being_swallowed(rows,
-                                                                     monkeypatch):
-    """The tick the image worker's own per-step reports rely on: they are
-    titleless too, so they only survive if this row already exists."""
-    job = benchmark.job_id("abc123")
-    seen = []
-
-    def generate_text(model, body):
-        # Mid-run, so the row is open and the phase detail is on it.
-        seen.append(_row(job)["detail"])
-        rows.advance(1.0)
-        yield {"type": "chunk", "text": "x"}
-        yield {"type": "done", "ok": True, "tokens": 4}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
-    assert seen and all(seen), f"phase details never reached the row: {seen}"
-    assert "Warming up" in seen[0]
-
-
-def test_a_failed_run_leaves_the_row_in_error_with_the_reason(rows, monkeypatch):
-    job = benchmark.job_id("abc123")
-
+def test_a_failed_run_creates_no_job_row(norows, monkeypatch):
     def generate_text(model, body):
         raise benchmark.supervisor.SupervisorError("out of memory")
         yield  # pragma: no cover
 
     monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
-    row = _row(job)
-    assert row["state"] == "error"
-    assert "out of memory" in row["message"]
-    # The identity is restated on the terminal report, so a row EVICTED
-    # mid-benchmark is rebuilt rather than refused (`upsert` rejects a first
-    # report with no title, and `_report` would swallow that too).
-    # The BARE model id, which is what the page looks a row up by — see
-    # `test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by`.
-    assert row["title"] == "some/text-model"
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert jobs.list_jobs() == []
 
 
-def test_a_row_evicted_mid_run_is_rebuilt_by_the_terminal_report(rows, monkeypatch):
-    """`jobs._sweep` drops the least recently updated running row once MAX_JOBS
-    bites, so any report may be a FIRST report."""
-    job = benchmark.job_id("abc123")
+def test_the_module_offers_no_job_row_machinery():
+    """Named absences, so re-adding any of them is a deliberate act with a test
+    to argue with rather than an innocent-looking convenience."""
+    for gone in ("row_fields", "job_id", "BENCH_JOB_PREFIX", "_report",
+                 "_WORKER_HONOURS_CANCEL"):
+        assert not hasattr(benchmark, gone), gone
 
+
+def test_run_takes_no_job_argument():
+    """The signature is the enforcement: a caller cannot hand this a row to
+    report on, so no caller can quietly reintroduce one."""
+    import inspect
+    assert list(inspect.signature(benchmark.run).parameters) == ["model", "capability"]
+
+
+def test_a_generation_the_worker_needs_a_job_id_for_gets_a_private_one(norows,
+                                                                      monkeypatch):
+    """`generate_image`/`generate_transcript` take a job id structurally, and
+    `worker_base.report`'s `job or JOB_ID` falls back to the model's own LOAD row
+    when handed a falsy one — which would paint benchmark progress onto the
+    load's bar. So the id is real, private, and names no row."""
+    seen = []
+
+    def generate_image(model, request, job):
+        seen.append(job)
+        norows.advance(1.0)
+        return {"path": request["out"], "steps": request["steps"]}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
+    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
+    benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
+    assert all(job for job in seen), "a falsy job id reaches the model's load row"
+    # Never the model id, and never anything a page could write.
+    assert all(job != "some/image-model" for job in seen)
+    assert all(job.startswith("sys:") for job in seen)
+    assert jobs.list_jobs() == []
+
+
+# -- cancellation is not a measurement ------------------------------------------
+#
+# Kept after the row's removal, because it never depended on the row:
+# `fused.ai.cancel()` from ANY page reaches the same worker through
+# `supervisor.cancel_generation`, so a benchmark can be cut short by something
+# that has nothing to do with this feature. What must not happen is recording the
+# truncated work as a result.
+
+
+def test_a_worker_that_reports_a_cancelled_generation_is_not_a_measurement(
+        bench, monkeypatch):
+    """The done frame carries `cancelled: true` with `ok: true` BESIDE it — the
+    worker did what it was told — so reading only `ok` recorded a truncated token
+    count as a measurement."""
     def generate_text(model, body):
-        jobs.reset()  # the row is gone, exactly as an eviction leaves it
-        rows.advance(1.0)
+        bench.advance(1.0)
         yield {"type": "chunk", "text": "x"}
-        yield {"type": "done", "ok": True, "tokens": 4}
+        yield {"type": "done", "ok": True, "cancelled": True, "tokens": 3}
 
     monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
-    row = _row(job)
-    assert row is not None and row["state"] == "done"
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert bench_store.read() == []
 
 
-def test_an_interpreter_level_exit_propagates_and_is_not_recorded(rows,
+def test_a_cancelled_image_render_is_a_cancel_not_a_failed_model(bench, monkeypatch):
+    """`generate_image`/`generate_transcript` say it with
+    `SupervisorError("cancelled")` — the literal `start_image` switches on — so it
+    has to arrive here as a cancel rather than as `ok:false`, which would record
+    "this model failed on this laptop" for a run somebody else stopped."""
+    def generate_image(model, request, job):
+        raise benchmark.supervisor.SupervisorError("cancelled")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
+    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
+    assert bench_store.read() == []
+
+
+def test_an_interpreter_level_exit_propagates_and_is_not_recorded(bench,
                                                                  monkeypatch):
-    """Ctrl-C on the dev server mid-benchmark must not write "this model failed
-    on this laptop" — and must not be swallowed either: a `BaseException`
-    handler that eats `KeyboardInterrupt` stops the interpreter going down."""
+    """Ctrl-C on the dev server mid-benchmark must not write "this model failed on
+    this laptop" — and must not be swallowed either."""
     def generate_text(model, body):
         raise KeyboardInterrupt
         yield  # pragma: no cover
 
     monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
     with pytest.raises(KeyboardInterrupt):
-        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION,
-                      benchmark.job_id("abc123"))
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert bench_store.read() == []
 
 
-def test_a_system_exit_propagates_too(rows, monkeypatch):
+def test_a_system_exit_propagates_too(bench, monkeypatch):
     def generate_text(model, body):
         raise SystemExit(1)
         yield  # pragma: no cover
 
     monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
     with pytest.raises(SystemExit):
-        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION,
-                      benchmark.job_id("abc123"))
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
     assert bench_store.read() == []
-
-
-# -- the transcription row ------------------------------------------------------
-
-
-def test_a_transcript_request_carries_the_row_identity(bench, monkeypatch):
-    """Without it, `generate_transcript`'s `_wait_ready(row=...)` and the
-    worker's own restated identity are both None, so every tick from a different
-    PROCESS is refused by `upsert` and the row stops reporting mid-decode —
-    which is what `start_transcribe` sends `transcribe_row_fields` to prevent."""
-    seen = []
-
-    def generate_transcript(model, request, job):
-        seen.append(request)
-        bench.advance(3.0)
-        return {"text": "beep"}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
-                        generate_transcript)
-    benchmark.run("some/whisper", ai_registry.SPEECH_TO_TEXT, "sys:ai-benchmark:x")
-    row = seen[-1].get("row")
-    assert isinstance(row, dict), "no row identity was sent to the worker"
-    assert row.get("title")
-    # Every field `upsert` would otherwise default, per transcribe_row_fields.
-    assert set(row) >= {"title", "kind", "cancellable", "unit"}
-
-
-# -- the row title, across the Python/TypeScript seam ---------------------------
-#
-# The last round made the row EXIST and asserted that against the real `jobs`
-# store, which was necessary and not sufficient: nothing checked that the title
-# the server writes is the title the client looks a row up BY. It was not, so the
-# row existed and stayed invisible — `ModelProgress` rendered with `job=undefined`
-# for the whole multi-minute run. There is no second path to the row either,
-# because the endpoint returns the `jobId` only once the run has finished.
-#
-# So this test spans the seam, in the idiom `test_shell_routes.py` uses for the
-# same class of bug: derive the client's half from the client's own source rather
-# than restating it here, and fail when the two sides stop agreeing.
-
-_SCAN_TS = "frontend/src/apps/ai_models/lib/useCacheScan.ts"
-_TAB_TSX = "frontend/src/apps/ai_models/benchmark/BenchmarkTab.tsx"
-
-
-def test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by():
-    """Three facts that only mean something together.
-
-    1. the server titles a benchmark row with the BARE model id;
-    2. the client keys its job map on `job.title`;
-    3. the Benchmark tab looks up by the bare model id and nothing else.
-
-    Break any one and the progress row goes invisible with no error anywhere,
-    which is exactly how this shipped.
-    """
-    for capability in ai_registry.capabilities():
-        fields = benchmark.row_fields("org/model-x", capability)
-        assert fields["title"] == "org/model-x", capability
-
-    scan = read_repo_file(_SCAN_TS)
-    # The map the tab reads. Keyed by title — asserted against the source so a
-    # change to `[j.id, j]` fails HERE rather than in a silent no-progress row.
-    assert "jobs.filter((j) => j.owner === \"server\").map((j) => [j.title, j])" in scan
-
-    tab = read_repo_file(_TAB_TSX)
-    lookups = re.findall(r"jobByModel\.get\(([^)]*)\)", tab)
-    assert lookups, "the tab no longer looks up a job row at all"
-    # Every lookup passes the bare model id. A template literal or a prefixed
-    # string here is the bug: it cannot match a title the server wrote.
-    assert set(lookups) == {"repo.id"}, lookups
-
-
-def test_no_decorated_title_creeps_back_in():
-    """The prefix that caused this. Named explicitly because it is a perfectly
-    reasonable-looking thing to add for the download manager's benefit, and the
-    cost — a lookup that can never match — is invisible from the row itself."""
-    for capability in ai_registry.capabilities():
-        title = benchmark.row_fields("org/model-x", capability)["title"]
-        assert ":" not in title.replace("org/model-x", "")
-        assert not title.lower().startswith("benchmark")
-
-
-def test_the_tab_only_adopts_a_run_the_server_actually_returned():
-    """The client half of "a cancelled run is not history": the response may
-    carry no `run` at all, and appending `undefined` would put a broken row in
-    the history for the rest of the session."""
-    tab = read_repo_file(_TAB_TSX)
-    assert "if (run)" in tab or "if (!run)" in tab, (
-        "BenchmarkTab appends the response unconditionally; a cancelled run "
-        "answers with no `run` and must not reach the history"
-    )
-
-
-# -- what the row advertises ----------------------------------------------------
-
-
-def test_speech_rows_carry_the_supervisors_own_shared_payload():
-    """`unit` drifted: the whisper workers report `done`/`total` in SECONDS and
-    `supervisor.transcribe_row_fields` says so, while a hand-written `unit: ""`
-    beside it drew a bare `12/30`. The payload exists to be shared, so it is
-    shared rather than re-spelled."""
-    mine = benchmark.row_fields("org/whisper", ai_registry.SPEECH_TO_TEXT)
-    theirs = benchmark.supervisor.transcribe_row_fields("org/whisper")
-    assert mine == theirs
-
-
-def test_the_cancel_is_advertised_only_where_it_is_honoured(rows, monkeypatch):
-    """`cancellable: True` for the whole run was a claim the code did not keep:
-    `generate_text`/`generate_embed` take no `job` and poll nothing, so on a warm
-    text model the ✕ set `cancel_requested` and the run finished anyway.
-
-    The row now says what is true AT EACH INSTANT — cancellable while a load is
-    possible (that poll is real), and, for the two capabilities whose worker does
-    not read the row, not cancellable once the measurement starts.
-    """
-    job = benchmark.job_id("abc123")
-    during = []
-
-    def generate_text(model, body):
-        during.append(_row(job)["cancellable"])
-        rows.advance(1.0)
-        yield {"type": "chunk", "text": "x"}
-        yield {"type": "done", "ok": True, "tokens": 4}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
-    assert during == [False, False], (
-        "a text benchmark advertised a cancel through the measurement, where "
-        f"nothing polls for it: {during}"
-    )
-
-
-def test_a_worker_that_does_read_the_row_keeps_its_cancel(rows, monkeypatch):
-    """The other side of the same rule: the image and transcription workers are
-    handed `job` and abort mid-generation themselves, so their ✕ stays live for
-    the whole run."""
-    job = benchmark.job_id("abc123")
-    during = []
-
-    def generate_image(model, request, job_id):
-        during.append(_row(job)["cancellable"])
-        rows.advance(1.0)
-        return {"path": request["out"], "steps": request["steps"]}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
-    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
-    benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION, job)
-    assert during == [True, True], during
-
-
-# -- cancellation is not a result -----------------------------------------------
-
-
-def test_a_cancelled_run_raises_rather_than_returning_a_record(rows, monkeypatch):
-    """It was returned as `ok:false, error:"cancelled"`, the endpoint answered
-    200 with it, and the tab appended it — so the ✕ drew a phantom
-    "Failed — cancelled" row that became the model's LATEST until a reload. The
-    same fake datum the storage side already refuses, still live on the wire.
-    A distinct exception makes it impossible to return one by accident."""
-    job = benchmark.job_id("abc123")
-
-    def never_ready(capability, model=None):
-        # The clock only moves when something spends time, so the wait's own
-        # deadline stays reachable: without that this test HANGS instead of
-        # failing while the cancel goes unread, and a hanging test says nothing.
-        rows.advance(1.0)
-        return None
-
-    monkeypatch.setattr(benchmark.supervisor, "ready_worker", never_ready)
-    monkeypatch.setattr(benchmark.supervisor, "load",
-                        lambda model, capability, **kw: {"jobId": "j"})
-    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
-    monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 5.0)
-    monkeypatch.setattr(benchmark.supervisor, "_cancel_state", lambda j: True)
-    with pytest.raises(benchmark.Cancelled):
-        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
-    assert bench_store.read() == []
-    assert _row(job)["state"] == "cancelled"
-
-
-def test_a_worker_that_reports_a_cancelled_generation_is_not_a_measurement(
-        rows, monkeypatch):
-    """`fused.ai.cancel()` from any page reaches the SAME text worker
-    (`supervisor.cancel_generation`), so a benchmark can be cut short by
-    something that is not this row's ✕ at all. The worker says so on its done
-    frame with `cancelled: true` and `ok: true` — which the first cut read as a
-    successful generation and recorded the truncated token count as a result."""
-    def generate_text(model, body):
-        rows.advance(1.0)
-        yield {"type": "chunk", "text": "x"}
-        yield {"type": "done", "ok": True, "cancelled": True, "tokens": 3}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
-    with pytest.raises(benchmark.Cancelled):
-        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION,
-                      benchmark.job_id("abc123"))
-    assert bench_store.read() == []
-
-
-def test_a_cancelled_image_render_is_a_cancel_not_a_failed_model(rows, monkeypatch):
-    """`generate_image`/`generate_transcript` say it with
-    `SupervisorError("cancelled")` — the literal `start_image` switches on — so
-    that has to arrive as a cancel here too rather than as `ok:false`."""
-    def generate_image(model, request, job_id):
-        raise benchmark.supervisor.SupervisorError("cancelled")
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
-    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
-    with pytest.raises(benchmark.Cancelled):
-        benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION,
-                      benchmark.job_id("abc123"))
-    assert bench_store.read() == []
-
-
-# -- the transcription row's identity is the caller's, not the file's ------------
-
-
-def test_the_supervisor_prefers_the_callers_row_title(bench):
-    """The half of the drift that lives in `supervisor`: `_await_turn` re-reported
-    a queued transcription's row as `_transcribe_title(request, model)` — the
-    AUDIO FILE's basename — renaming a benchmark row to "benchmark.wav" under the
-    user mid-run, which is exactly what sharing one payload was supposed to
-    prevent. A caller that supplied `row` has already said what the row is
-    called, so that wins."""
-    supervisor = benchmark.supervisor
-    request = {"path": "/tmp/x/benchmark.wav", "row": {"title": "org/whisper"}}
-    assert supervisor._transcribe_title(request, "m") == "org/whisper"
-    # A caller with no row identity is unchanged — this is what `start_transcribe`
-    # does, and its rows must keep reading as the recording they are about.
-    assert supervisor._transcribe_title({"path": "/tmp/x/meeting.m4a"}, "m") == "meeting.m4a"
-
-
-def test_a_transcript_request_sends_the_shared_payload(bench, monkeypatch):
-    seen = []
-
-    def generate_transcript(model, request, job):
-        seen.append(request)
-        bench.advance(3.0)
-        return {"text": "beep"}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
-                        generate_transcript)
-    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT, "sys:ai-benchmark:x")
-    assert seen[-1]["row"] == benchmark.supervisor.transcribe_row_fields("org/whisper")

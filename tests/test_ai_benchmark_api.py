@@ -58,7 +58,6 @@ def runnable(monkeypatch):
         {"model": "bench/model", "capability": ai_registry.TEXT_GENERATION,
          "residentBytes": 4_000_000_000, "device": "mps"},
     ]})
-    monkeypatch.setattr(benchmark.supervisor, "_report", lambda job, **f: None)
 
     def generate_text(model, body):
         yield {"type": "chunk", "text": "hi"}
@@ -351,11 +350,18 @@ def test_posting_a_curated_but_undownloaded_model_is_a_404_not_a_download(
     assert loads == []
 
 
-def test_the_returned_job_id_names_a_row_that_really_exists(client, on_disk,
-                                                            monkeypatch):
-    """`api.ts` documents that progress "arrives on `jobId` through the ordinary
-    job rows", so the id has to name something. Reporting is left REAL here —
-    the `runnable` fixture's no-op `_report` is what hid the missing row."""
+def test_the_response_carries_no_job_id_and_no_row_is_created(client, on_disk,
+                                                              monkeypatch):
+    """The removal, guarded end to end.
+
+    A benchmark used to hand back a `jobId`, and three attempts to make that row
+    work produced three defects: a decorated title no consumer could find, then a
+    bare title that SHADOWED the row `supervisor.load` opens for the same model —
+    putting the download manager's only ✕ on the load and letting a cold run spin
+    to its hour-long timeout. Server job rows are a title-keyed namespace shared
+    with the load path, so a benchmark cannot have one. Reporting is left REAL
+    here, so a row created anywhere on the path shows up in this assertion.
+    """
     monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: FakeRunner)
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: object())
@@ -370,13 +376,11 @@ def test_the_returned_job_id_names_a_row_that_really_exists(client, on_disk,
     try:
         body = _post(client, model="bench/model",
                      capability=ai_registry.TEXT_GENERATION).json()
-        row = next((r for r in jobs.list_jobs() if r["id"] == body["jobId"]), None)
-        assert row is not None, f"{body['jobId']} names no job row"
-        # The BARE model id — the key `useCacheScan` builds its job map on, so
-        # this is the assertion that makes the row FINDABLE rather than merely
-        # present. See test_ai_benchmark.py's cross-seam test.
-        assert row["title"] == "bench/model"
-        assert row["state"] == "done"
+        assert "jobId" not in body
+        assert body["run"]["ok"] is True
+        assert jobs.list_jobs() == [], (
+            "a benchmark request created a download-manager row"
+        )
     finally:
         jobs.reset()
 
@@ -402,6 +406,7 @@ def test_a_cancelled_run_answers_with_no_run_at_all(client, runnable, on_disk,
     body = response.json()
     assert body["cancelled"] is True
     assert "run" not in body
+    assert "jobId" not in body
     assert bench_store.read() == []
 
 
