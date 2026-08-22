@@ -360,7 +360,11 @@ export function TextStage({
       )}
 
       {reply && shown && (
-        <div className="pg-answer">
+        <div className="pg-answer-block">
+          {/* Same voice as the Config summary, so the two labels read as
+              siblings — one folds, this one just names the card below it. */}
+          <p className="pg-answer-label">Response</p>
+          <div className="pg-answer">
           {!reply.pending && reply.text && (
             <button
               type="button"
@@ -398,6 +402,7 @@ export function TextStage({
               <span>{stats}</span>
             </div>
           )}
+          </div>
         </div>
       )}
     </div>

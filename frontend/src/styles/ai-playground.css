@@ -747,6 +747,21 @@ a.pg-hero-repo:hover {
 /* -- text ---------------------------------------------------------------------- */
 
 /* The one reply, rendered — the text stage's output card. */
+/* Label + card, so "Response" can wear the Config summary's voice without
+   being mistaken for a fold. */
+.pg-answer-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pg-answer-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
 .pg-answer {
   position: relative;
   font-size: 13.5px;
