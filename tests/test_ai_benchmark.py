@@ -16,10 +16,12 @@ on this laptop and on nothing in CI, so a test that let the registry answer
 would assert one thing here and another there.
 """
 import json
+import re
 import wave
 
 import pytest
 
+from _theme_sources import read_repo_file
 from fused_render import jobs
 from fused_render.ai import bench_store, benchmark
 from fused_render.ai import registry as ai_registry
@@ -436,7 +438,9 @@ def test_the_run_opens_a_real_job_row_and_closes_it(rows, monkeypatch):
     _text_run(rows, monkeypatch, job=job)
     row = _row(job)
     assert row is not None, "no job row was ever created"
-    assert row["title"] == "Benchmark: some/text-model"
+    # The BARE model id, which is what the page looks a row up by — see
+    # `test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by`.
+    assert row["title"] == "some/text-model"
     assert row["state"] == "done"
     assert row["owner"] == jobs.OWNER_SERVER  # a `sys:` id, unwritable by a page
 
@@ -476,7 +480,9 @@ def test_a_failed_run_leaves_the_row_in_error_with_the_reason(rows, monkeypatch)
     # The identity is restated on the terminal report, so a row EVICTED
     # mid-benchmark is rebuilt rather than refused (`upsert` rejects a first
     # report with no title, and `_report` would swallow that too).
-    assert row["title"] == "Benchmark: some/text-model"
+    # The BARE model id, which is what the page looks a row up by — see
+    # `test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by`.
+    assert row["title"] == "some/text-model"
 
 
 def test_a_row_evicted_mid_run_is_rebuilt_by_the_terminal_report(rows, monkeypatch):
@@ -494,33 +500,6 @@ def test_a_row_evicted_mid_run_is_rebuilt_by_the_terminal_report(rows, monkeypat
     benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
     row = _row(job)
     assert row is not None and row["state"] == "done"
-
-
-def test_pressing_the_cancel_records_nothing_and_cancels_the_row(rows, monkeypatch):
-    """A cancelled benchmark measured nothing, so it is NOT history. Recording it
-    as `ok:false` would put a fake "this model failed here" row in the one place
-    this feature exists to keep trustworthy."""
-    job = benchmark.job_id("abc123")
-
-    def never_ready(capability, model=None):
-        # The clock only moves when something spends time, so the wait's own
-        # deadline stays reachable: without that this test HANGS instead of
-        # failing while the cancel goes unread, and a hanging test says nothing.
-        rows.advance(1.0)
-        return None
-
-    monkeypatch.setattr(benchmark.supervisor, "ready_worker", never_ready)
-    monkeypatch.setattr(benchmark.supervisor, "load",
-                        lambda model, capability, **kw: {"jobId": "j"})
-    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
-    monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 5.0)
-    # The ✕, pressed while the load is being waited on.
-    monkeypatch.setattr(benchmark.supervisor, "_cancel_state", lambda j: True)
-    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
-    assert record["ok"] is False
-    assert record["error"] == "cancelled"
-    assert bench_store.read() == []
-    assert _row(job)["state"] == "cancelled"
 
 
 def test_an_interpreter_level_exit_propagates_and_is_not_recorded(rows,
@@ -574,3 +553,221 @@ def test_a_transcript_request_carries_the_row_identity(bench, monkeypatch):
     assert row.get("title")
     # Every field `upsert` would otherwise default, per transcribe_row_fields.
     assert set(row) >= {"title", "kind", "cancellable", "unit"}
+
+
+# -- the row title, across the Python/TypeScript seam ---------------------------
+#
+# The last round made the row EXIST and asserted that against the real `jobs`
+# store, which was necessary and not sufficient: nothing checked that the title
+# the server writes is the title the client looks a row up BY. It was not, so the
+# row existed and stayed invisible — `ModelProgress` rendered with `job=undefined`
+# for the whole multi-minute run. There is no second path to the row either,
+# because the endpoint returns the `jobId` only once the run has finished.
+#
+# So this test spans the seam, in the idiom `test_shell_routes.py` uses for the
+# same class of bug: derive the client's half from the client's own source rather
+# than restating it here, and fail when the two sides stop agreeing.
+
+_SCAN_TS = "frontend/src/apps/ai_models/lib/useCacheScan.ts"
+_TAB_TSX = "frontend/src/apps/ai_models/benchmark/BenchmarkTab.tsx"
+
+
+def test_the_row_title_is_exactly_what_the_client_looks_a_row_up_by():
+    """Three facts that only mean something together.
+
+    1. the server titles a benchmark row with the BARE model id;
+    2. the client keys its job map on `job.title`;
+    3. the Benchmark tab looks up by the bare model id and nothing else.
+
+    Break any one and the progress row goes invisible with no error anywhere,
+    which is exactly how this shipped.
+    """
+    for capability in ai_registry.capabilities():
+        fields = benchmark.row_fields("org/model-x", capability)
+        assert fields["title"] == "org/model-x", capability
+
+    scan = read_repo_file(_SCAN_TS)
+    # The map the tab reads. Keyed by title — asserted against the source so a
+    # change to `[j.id, j]` fails HERE rather than in a silent no-progress row.
+    assert "jobs.filter((j) => j.owner === \"server\").map((j) => [j.title, j])" in scan
+
+    tab = read_repo_file(_TAB_TSX)
+    lookups = re.findall(r"jobByModel\.get\(([^)]*)\)", tab)
+    assert lookups, "the tab no longer looks up a job row at all"
+    # Every lookup passes the bare model id. A template literal or a prefixed
+    # string here is the bug: it cannot match a title the server wrote.
+    assert set(lookups) == {"repo.id"}, lookups
+
+
+def test_no_decorated_title_creeps_back_in():
+    """The prefix that caused this. Named explicitly because it is a perfectly
+    reasonable-looking thing to add for the download manager's benefit, and the
+    cost — a lookup that can never match — is invisible from the row itself."""
+    for capability in ai_registry.capabilities():
+        title = benchmark.row_fields("org/model-x", capability)["title"]
+        assert ":" not in title.replace("org/model-x", "")
+        assert not title.lower().startswith("benchmark")
+
+
+def test_the_tab_only_adopts_a_run_the_server_actually_returned():
+    """The client half of "a cancelled run is not history": the response may
+    carry no `run` at all, and appending `undefined` would put a broken row in
+    the history for the rest of the session."""
+    tab = read_repo_file(_TAB_TSX)
+    assert "if (run)" in tab or "if (!run)" in tab, (
+        "BenchmarkTab appends the response unconditionally; a cancelled run "
+        "answers with no `run` and must not reach the history"
+    )
+
+
+# -- what the row advertises ----------------------------------------------------
+
+
+def test_speech_rows_carry_the_supervisors_own_shared_payload():
+    """`unit` drifted: the whisper workers report `done`/`total` in SECONDS and
+    `supervisor.transcribe_row_fields` says so, while a hand-written `unit: ""`
+    beside it drew a bare `12/30`. The payload exists to be shared, so it is
+    shared rather than re-spelled."""
+    mine = benchmark.row_fields("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    theirs = benchmark.supervisor.transcribe_row_fields("org/whisper")
+    assert mine == theirs
+
+
+def test_the_cancel_is_advertised_only_where_it_is_honoured(rows, monkeypatch):
+    """`cancellable: True` for the whole run was a claim the code did not keep:
+    `generate_text`/`generate_embed` take no `job` and poll nothing, so on a warm
+    text model the ✕ set `cancel_requested` and the run finished anyway.
+
+    The row now says what is true AT EACH INSTANT — cancellable while a load is
+    possible (that poll is real), and, for the two capabilities whose worker does
+    not read the row, not cancellable once the measurement starts.
+    """
+    job = benchmark.job_id("abc123")
+    during = []
+
+    def generate_text(model, body):
+        during.append(_row(job)["cancellable"])
+        rows.advance(1.0)
+        yield {"type": "chunk", "text": "x"}
+        yield {"type": "done", "ok": True, "tokens": 4}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
+    benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
+    assert during == [False, False], (
+        "a text benchmark advertised a cancel through the measurement, where "
+        f"nothing polls for it: {during}"
+    )
+
+
+def test_a_worker_that_does_read_the_row_keeps_its_cancel(rows, monkeypatch):
+    """The other side of the same rule: the image and transcription workers are
+    handed `job` and abort mid-generation themselves, so their ✕ stays live for
+    the whole run."""
+    job = benchmark.job_id("abc123")
+    during = []
+
+    def generate_image(model, request, job_id):
+        during.append(_row(job)["cancellable"])
+        rows.advance(1.0)
+        return {"path": request["out"], "steps": request["steps"]}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
+    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
+    benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION, job)
+    assert during == [True, True], during
+
+
+# -- cancellation is not a result -----------------------------------------------
+
+
+def test_a_cancelled_run_raises_rather_than_returning_a_record(rows, monkeypatch):
+    """It was returned as `ok:false, error:"cancelled"`, the endpoint answered
+    200 with it, and the tab appended it — so the ✕ drew a phantom
+    "Failed — cancelled" row that became the model's LATEST until a reload. The
+    same fake datum the storage side already refuses, still live on the wire.
+    A distinct exception makes it impossible to return one by accident."""
+    job = benchmark.job_id("abc123")
+
+    def never_ready(capability, model=None):
+        # The clock only moves when something spends time, so the wait's own
+        # deadline stays reachable: without that this test HANGS instead of
+        # failing while the cancel goes unread, and a hanging test says nothing.
+        rows.advance(1.0)
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", never_ready)
+    monkeypatch.setattr(benchmark.supervisor, "load",
+                        lambda model, capability, **kw: {"jobId": "j"})
+    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
+    monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 5.0)
+    monkeypatch.setattr(benchmark.supervisor, "_cancel_state", lambda j: True)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION, job)
+    assert bench_store.read() == []
+    assert _row(job)["state"] == "cancelled"
+
+
+def test_a_worker_that_reports_a_cancelled_generation_is_not_a_measurement(
+        rows, monkeypatch):
+    """`fused.ai.cancel()` from any page reaches the SAME text worker
+    (`supervisor.cancel_generation`), so a benchmark can be cut short by
+    something that is not this row's ✕ at all. The worker says so on its done
+    frame with `cancelled: true` and `ok: true` — which the first cut read as a
+    successful generation and recorded the truncated token count as a result."""
+    def generate_text(model, body):
+        rows.advance(1.0)
+        yield {"type": "chunk", "text": "x"}
+        yield {"type": "done", "ok": True, "cancelled": True, "tokens": 3}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION,
+                      benchmark.job_id("abc123"))
+    assert bench_store.read() == []
+
+
+def test_a_cancelled_image_render_is_a_cancel_not_a_failed_model(rows, monkeypatch):
+    """`generate_image`/`generate_transcript` say it with
+    `SupervisorError("cancelled")` — the literal `start_image` switches on — so
+    that has to arrive as a cancel here too rather than as `ok:false`."""
+    def generate_image(model, request, job_id):
+        raise benchmark.supervisor.SupervisorError("cancelled")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
+    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION,
+                      benchmark.job_id("abc123"))
+    assert bench_store.read() == []
+
+
+# -- the transcription row's identity is the caller's, not the file's ------------
+
+
+def test_the_supervisor_prefers_the_callers_row_title(bench):
+    """The half of the drift that lives in `supervisor`: `_await_turn` re-reported
+    a queued transcription's row as `_transcribe_title(request, model)` — the
+    AUDIO FILE's basename — renaming a benchmark row to "benchmark.wav" under the
+    user mid-run, which is exactly what sharing one payload was supposed to
+    prevent. A caller that supplied `row` has already said what the row is
+    called, so that wins."""
+    supervisor = benchmark.supervisor
+    request = {"path": "/tmp/x/benchmark.wav", "row": {"title": "org/whisper"}}
+    assert supervisor._transcribe_title(request, "m") == "org/whisper"
+    # A caller with no row identity is unchanged — this is what `start_transcribe`
+    # does, and its rows must keep reading as the recording they are about.
+    assert supervisor._transcribe_title({"path": "/tmp/x/meeting.m4a"}, "m") == "meeting.m4a"
+
+
+def test_a_transcript_request_sends_the_shared_payload(bench, monkeypatch):
+    seen = []
+
+    def generate_transcript(model, request, job):
+        seen.append(request)
+        bench.advance(3.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT, "sys:ai-benchmark:x")
+    assert seen[-1]["row"] == benchmark.supervisor.transcribe_row_fields("org/whisper")

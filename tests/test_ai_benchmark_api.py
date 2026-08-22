@@ -372,7 +372,68 @@ def test_the_returned_job_id_names_a_row_that_really_exists(client, on_disk,
                      capability=ai_registry.TEXT_GENERATION).json()
         row = next((r for r in jobs.list_jobs() if r["id"] == body["jobId"]), None)
         assert row is not None, f"{body['jobId']} names no job row"
-        assert row["title"].startswith("Benchmark: ")
+        # The BARE model id — the key `useCacheScan` builds its job map on, so
+        # this is the assertion that makes the row FINDABLE rather than merely
+        # present. See test_ai_benchmark.py's cross-seam test.
+        assert row["title"] == "bench/model"
         assert row["state"] == "done"
     finally:
         jobs.reset()
+
+
+# -- a cancel on the wire -------------------------------------------------------
+
+
+def test_a_cancelled_run_answers_with_no_run_at_all(client, runnable, on_disk,
+                                                    monkeypatch):
+    """Distinct on the wire, not an `ok:false` record. The page reads the ABSENCE
+    of `run`; if the cancel came back as a failed run it would be appended and
+    draw a phantom "Failed — cancelled" row that became the model's latest."""
+    def generate_text(model, body):
+        raise benchmark.Cancelled()
+        yield  # pragma: no cover - the real one is a generator too
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
+    response = _post(client, model="bench/model",
+                     capability=ai_registry.TEXT_GENERATION)
+    # 200, not a 4xx: the request was fine and the user did this on purpose, so a
+    # status the client's `catch` turns into an error banner would be wrong.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is True
+    assert "run" not in body
+    assert bench_store.read() == []
+
+
+def test_a_cancel_releases_the_capability_for_the_next_press(client, runnable,
+                                                             on_disk,
+                                                             monkeypatch):
+    """The claim must not leak out through the new exception path — a leaked one
+    leaves that capability's Run button dead until a restart."""
+    from fused_render.server.routers import ai_benchmark as mod
+
+    def cancelling(model, body):
+        raise benchmark.Cancelled()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", cancelling)
+    _post(client, model="bench/model", capability=ai_registry.TEXT_GENERATION)
+    assert ai_registry.TEXT_GENERATION not in mod._running
+
+
+def test_a_runtime_error_from_a_measurement_is_not_reported_as_busy(
+        client, runnable, on_disk, monkeypatch):
+    """`_claim` used to raise a bare `RuntimeError` and the `except` around it now
+    also wraps `benchmark.run`, so a `RuntimeError` out of a measurement would
+    have been answered "a benchmark is already running" — a 409 blaming a
+    concurrent run that does not exist."""
+    def exploding(model, body):
+        raise RuntimeError("something inside the runner")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", exploding)
+    response = _post(client, model="bench/model",
+                     capability=ai_registry.TEXT_GENERATION)
+    assert response.status_code == 200
+    assert response.json()["run"]["ok"] is False
+    assert "something inside the runner" in response.json()["run"]["error"]

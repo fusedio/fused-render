@@ -2784,16 +2784,24 @@ export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenc
 
 /** Run one benchmark. **Resolves in MINUTES** — the request is held open for
  *  the whole run, exactly as `/api/ai/image` is, and progress meanwhile arrives
- *  on `jobId` through the ordinary job rows. A run that failed still resolves
- *  (with `run.ok === false`); only a rejected REQUEST rejects. */
+ *  on `jobId` through the ordinary job rows, where the row's TITLE is the bare
+ *  model id (that is how `useCacheScan` finds it).
+ *
+ *  A run that failed still resolves, with `run.ok === false` — that is a result
+ *  and belongs in the history. A run the user CANCELLED resolves with **no
+ *  `run`** and `cancelled: true`: nothing was measured, so there is nothing to
+ *  add and nothing to show as an error. Read `run` for presence; never
+ *  pattern-match on `run.error === "cancelled"`, which is what drew a phantom
+ *  "Failed — cancelled" row that outlived the click. Only a rejected REQUEST
+ *  rejects. */
 export function runAiBenchmark(
   model: string,
   capability: string,
-): Promise<{ run: AiBenchmarkRun; jobId: string }> {
-  return postJson<{ run: AiBenchmarkRun; jobId: string }>("/api/ai/benchmark", {
-    model,
-    capability,
-  });
+): Promise<{ run?: AiBenchmarkRun; cancelled?: boolean; jobId: string }> {
+  return postJson<{ run?: AiBenchmarkRun; cancelled?: boolean; jobId: string }>(
+    "/api/ai/benchmark",
+    { model, capability },
+  );
 }
 
 /** Forget runs by id, answering with the fresh history so the caller swaps in

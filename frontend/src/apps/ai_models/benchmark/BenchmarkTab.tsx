@@ -121,12 +121,19 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     setInFlight((prev) => ({ ...prev, [capability]: model }));
     try {
       const { run } = await runAiBenchmark(model, capability);
-      // Append rather than re-fetch: the server just handed back the very
-      // record it appended, so a second read of the same file would be a round
-      // trip to learn what we hold.
-      setRuns((prev) => [...(prev ?? []), run]);
-      // A benchmark loads a model, so the runtime's idea of what is resident
-      // has changed — the Local tab's Loaded badges are reading it.
+      // **Presence of `run`, not `run.ok`.** A cancelled run answers with no
+      // `run` at all, because nothing was measured; appending it would draw a
+      // phantom "Failed — cancelled" row that becomes this model's LATEST — so
+      // the delta and the summary compare against it — until a reload. A run
+      // that genuinely failed DOES come back and does belong in the history.
+      if (run) {
+        // Append rather than re-fetch: the server just handed back the very
+        // record it appended, so a second read of the same file would be a
+        // round trip to learn what we hold.
+        setRuns((prev) => [...(prev ?? []), run]);
+      }
+      // A benchmark loads a model either way, so the runtime's idea of what is
+      // resident has changed — the Local tab's Loaded badges are reading it.
       refreshAiRuntime();
     } catch (e) {
       setError((e as Error).message);

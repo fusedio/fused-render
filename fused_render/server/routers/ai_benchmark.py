@@ -63,9 +63,18 @@ _running: set[str] = set()
 _running_lock = threading.Lock()
 
 
+class _Busy(RuntimeError):
+    """`_claim` refusing: this capability already has a run in flight.
+
+    Its own class rather than a bare `RuntimeError`, because the `try` around
+    `_claim` now also wraps `benchmark.run`, and a `RuntimeError` from inside a
+    measurement must not be answered as "a benchmark is already running".
+    """
+
+
 @contextlib.contextmanager
 def _claim(capability: str):
-    """Hold `capability` for the duration, or raise `RuntimeError` if taken.
+    """Hold `capability` for the duration, or raise `_Busy` if taken.
 
     A context manager rather than a claim/release pair so the release cannot be
     skipped by an early return or a raising runner: a leaked claim would leave
@@ -74,7 +83,7 @@ def _claim(capability: str):
     """
     with _running_lock:
         if capability in _running:
-            raise RuntimeError(capability)
+            raise _Busy(capability)
         _running.add(capability)
     try:
         yield
@@ -150,6 +159,16 @@ def api_ai_benchmark_run(body: dict = Body(...),
     a result, and "this model OOMs on this laptop" is exactly what somebody
     benchmarks to find out. The status code describes the request; `ok`
     describes the model.
+
+    A run that was CANCELLED is a 200 with **no `run` at all** and
+    `cancelled: true`. Distinct on the wire rather than reported as a failed run,
+    because nothing was measured: the first cut answered with the `ok:false,
+    error:"cancelled"` record and the page appended it, drawing a phantom
+    "Failed — cancelled" row that became the model's latest until a reload. Also
+    not a 4xx — the request was fine and the user did this on purpose, so a
+    status the client's `catch` would turn into an error banner would be wrong
+    too. The client reads the ABSENCE of `run`; it never pattern-matches on an
+    error string.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -181,11 +200,15 @@ def api_ai_benchmark_run(body: dict = Body(...),
     try:
         with _claim(capability):
             record = benchmark.run(model, capability, job)
-    except RuntimeError:
+    except _Busy:
         return _error(
             f"a {capability} benchmark is already running — one at a time, or the "
             f"second load would evict the first model mid-measurement",
             status=409)
+    except benchmark.Cancelled:
+        # The ✕. Nothing was measured, nothing was stored, and nothing comes
+        # back for the page to draw — see `benchmark.Cancelled`.
+        return {"cancelled": True, "jobId": job}
     return {"run": record, "jobId": job}
 
 
