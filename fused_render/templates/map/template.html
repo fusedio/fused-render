@@ -935,6 +935,7 @@ async function loadTarget(target, name) {
       L.loading = false; L.visible = true;
       state.selected = target;
       persistOpen(); renderAll(); refreshCode();
+      fitTo(L.descriptor && L.descriptor.bounds);
       return;
     }
     const desc = await fused.runPython("./map_render.py", renderArgs(L));
@@ -1035,10 +1036,25 @@ function monitorOptimization(L) {
 
 function fitTo(bounds) {
   if (!bounds) return;
-  const [w, s, e, n] = bounds;
+  let [w, s, e, n] = bounds;
   if (![w, s, e, n].every(Number.isFinite)) return;
+  // A tile that straddles the antimeridian describes as west > east (e.g. a
+  // MODIS sinusoidal tile near 180°). Carry east past 180 so fitBounds spans
+  // the ~20° of real data rather than the whole world the other way round.
+  if (w > e) e += 360;
   if (w === e && s === n) { map.flyTo({ center: [w, s], zoom: Math.max(map.getZoom(), 13) }); return; }
   map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
+}
+
+// MapLibre clips every tile against a source `bounds` whose west > east (an
+// antimeridian-crossing extent), so a source with such bounds renders nothing.
+// Drop the bounds in that case — the daemon already returns transparent tiles
+// outside the true extent, so nothing over-renders. Returns a spec fragment to
+// spread: an explicit `bounds: undefined` key fails MapLibre's style
+// validation and the whole source is silently never added.
+function safeBounds(b) {
+  if (!Array.isArray(b) || b.length !== 4 || !b.every(Number.isFinite)) return {};
+  return b[0] <= b[2] ? { bounds: b } : {};
 }
 
 function computeColorByStats(L) {
@@ -1409,6 +1425,12 @@ function rasterIds(L) {
   return rasterIdsFromSafe(safe);
 }
 
+// Descriptor tile URLs are server-relative /api/map/... paths (stable across
+// tile-daemon restarts); MapLibre wants them absolute.
+function absTiles(url) {
+  return url.startsWith("/") ? location.origin + url : url;
+}
+
 function removeRasterSource(sourceId) {
   const safe = sourceId.slice("mv-r-src-".length);
   const ids = rasterIdsFromSafe(safe);
@@ -1419,7 +1441,10 @@ function removeRasterSource(sourceId) {
 }
 
 function boundsFeature(bounds) {
-  const [west, south, east, north] = bounds;
+  let [west, south, east, north] = bounds;
+  // An antimeridian-crossing extent (west > east) would otherwise outline the
+  // whole world the wrong way round; carrying east past 180 draws the real box.
+  if (west > east) east += 360;
   return {
     type: "Feature",
     properties: {},
@@ -1456,7 +1481,8 @@ function rebuildRasterTiles() {
   for (const [sourceId, { L, ids }] of wanted) {
     const d = L.descriptor;
     const revision = L.tileRevision || 0;
-    const tileUrl = d.data.tile_url + (d.data.tile_url.includes("?") ? "&" : "?") + "rev=" + revision;
+    const base = absTiles(d.data.tile_url);
+    const tileUrl = base + (base.includes("?") ? "&" : "?") + "rev=" + revision;
     const visibility = L.visible ? "visible" : "none";
     if (map.getSource(sourceId) && L._tileUrl !== tileUrl) {
       if (map.getLayer(ids.layer)) map.removeLayer(ids.layer);
@@ -1466,7 +1492,7 @@ function rebuildRasterTiles() {
       map.addSource(sourceId, {
         type: "raster", tiles: [tileUrl], tileSize: 256,
         minzoom: 0, maxzoom: d.maxzoom ?? 22,
-        bounds: d.bounds,
+        ...safeBounds(d.bounds),
       });
       L._tileUrl = tileUrl;
     }
@@ -1568,10 +1594,10 @@ function rebuildVectorTiles() {
     if (!map.getSource(sourceId)) {
       map.addSource(sourceId, {
         type: "vector",
-        tiles: [d.data.tile_url],
+        tiles: [absTiles(d.data.tile_url)],
         minzoom: d.minzoom ?? 0,
         maxzoom: d.maxzoom ?? 18,
-        bounds: d.bounds,
+        ...safeBounds(d.bounds),
       });
     }
     const fillColor = cssColor(s.fill_color, [56, 135, 255, 90]);
@@ -1684,12 +1710,12 @@ map.on("idle", () => {
   }
   if (changed) renderLayerCards();
 });
-// A tile URL carries the tile service's port and token, so it stops resolving
-// the moment that service is replaced — it exits when idle, and respawns on any
-// backend change. Nothing about the layer is actually wrong, so re-describe once
-// to pick up the new address and rebind the source; only a failure that survives
-// that is worth showing. Guarded by a flag so one broken viewport (every visible
-// tile errors at once) triggers a single recovery, not one per tile.
+// Tile URLs are stable /api/map/... paths, and the server restarts a dead or
+// wedged tile daemon underneath them — replaying the sources it knew. The one
+// gap is a source whose replay could not re-register it (a transient open
+// failure): its tiles 404 here. Re-describe once to register it again and
+// rebind, latched so one broken viewport recovers a single time; `_recovered`
+// clears on the next successful sourcedata, so a later failure recovers again.
 async function recoverTiles(L) {
   if (L._recovering) return;
   L._recovering = true;
@@ -1706,9 +1732,6 @@ map.on("error", event => {
   L.tileLoading = false;
   const message = (event.error && event.error.message) || "unknown tile error";
   const unreachable = event.error && (event.error.status === 0 || event.error.status === 404);
-  // `_recovered` latches so a dead service is re-described once, not once per
-  // failing tile; a tile that then loads clears it, so a service replaced again
-  // later is recovered again rather than being permanently given up on.
   if (unreachable && L.descriptor && L.descriptor.kind === "raster_tiles" && !L._recovered) {
     L._recovered = true;
     recoverTiles(L);
@@ -1994,6 +2017,15 @@ function moveLayer(key, dir) {
 }
 
 function removeLayer(key) {
+  // Tell the server it can stop replaying this source on a restart. Only the
+  // daemon-backed kinds have a server source; a client-side COG has none.
+  const d = (state.layers.get(key) || {}).descriptor;
+  const sourceId = d && d.data && d.data.source_id;
+  if (sourceId && (d.kind === "raster_tiles" || d.kind === "vector_tiles_mvt")) {
+    fetch("/api/map/forget", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ source: sourceId }) }).catch(() => {});
+  }
   state.layers.delete(key);
   if (state.selected === key) state.selected = null;
   persistOpen();
@@ -2126,7 +2158,7 @@ function rasterControls(body, L) {
       button.onclick = async () => {
         button.disabled = true; button.textContent = "Starting…";
         try {
-          const response = await fetch(d.data.optimize_url, { method: "POST" });
+          const response = await fetch(d.data.optimize_url, { method: "POST", headers: { "X-Fused": "1" } });
           if (!response.ok) throw new Error("HTTP " + response.status);
           d.optimization = await response.json();
           monitorOptimization(L);

@@ -1,8 +1,8 @@
-"""Tests for the map template's daemon lifecycle in map_render.py.
+"""Tests for map_render.py's contract with the server-owned tile engine.
 
-Hermetic: no fused-render server and no real daemon are spawned — the spawn is
-monkeypatched. Loaded via importlib with templates/shared on sys.path, like the
-latex daemon tests.
+Hermetic: no fused-render server and no real daemon are spawned — the server
+POSTs are monkeypatched. Loaded via importlib with templates/shared on
+sys.path, like the latex daemon tests.
 
 Run explicitly:
   PYTHONPATH=<checkout> python -m pytest \
@@ -12,10 +12,7 @@ import ast
 import importlib.util
 import os
 import pathlib
-import subprocess
 import sys
-import threading
-import time
 
 import pytest
 
@@ -38,9 +35,7 @@ def _load(name, filename):
 def mr(tmp_path, monkeypatch):
     m = _load("map_render", "map_render.py")
     monkeypatch.setattr(m, "CACHE_DIR", tmp_path)
-    monkeypatch.setattr(m, "STATE", tmp_path / "daemon.json")
-    monkeypatch.setattr(m, "START_LOCK", tmp_path / "daemon.spawn.lock")
-    monkeypatch.setattr(m, "LOG", tmp_path / "daemon.log")
+    monkeypatch.setattr(m, "ARTIFACT_DIR", tmp_path / "artifacts")
     return m
 
 
@@ -77,67 +72,41 @@ def test_the_version_hash_covers_every_module_the_daemon_imports(mr):
     )
 
 
-def test_ensure_service_reuses_a_live_daemon_without_spawning(mr, monkeypatch):
-    state = {"port": 7, "token": "t", "version": mr.VERSION}
-    monkeypatch.setattr(mr, "_read_state", lambda: state)
-    monkeypatch.setattr(mr, "_ping", lambda st, timeout=2.0: True)
-    spawns = []
-    monkeypatch.setattr(mr, "_spawn_daemon", lambda: spawns.append(1))
-    assert mr._ensure_service() == state
-    assert spawns == []  # a healthy daemon is never re-spawned
+def test_ensure_hands_the_server_this_interpreter_and_daemon(mr, monkeypatch):
+    # The server's own python has no geo stack (D276); the project venv running
+    # this module is the one interpreter that does, so ensure must hand it over.
+    posts = []
+    monkeypatch.setattr(
+        mr, "_server_post",
+        lambda path, payload, timeout: posts.append((path, payload)) or {"ok": True},
+    )
+    mr._ensure_service()
+    path, payload = posts[0]
+    assert path == "/api/map/ensure"
+    assert payload["python"] == sys.executable
+    assert payload["daemon"] == str(mr.DAEMON)
+    assert payload["version"] == mr.VERSION
 
 
-def test_ensure_service_serializes_the_spawn(mr, monkeypatch):
-    # Two concurrent ensures: exactly one daemon is spawned; the waiter blocks on
-    # the kernel file_lock, then reuses what the winner started — the storm fix.
-    box = {"state": None}
-    monkeypatch.setattr(mr, "_read_state", lambda: box["state"])
-    monkeypatch.setattr(mr, "_ping", lambda st, timeout=2.0: bool(st))
-    spawns = []
+def test_describe_goes_through_the_server_origin(mr, monkeypatch, tmp_path):
+    target = tmp_path / "features.geojson"
+    target.write_text('{"type":"FeatureCollection","features":[]}', encoding="utf-8")
+    posts = []
 
-    def slow_spawn():
-        spawns.append(1)
-        time.sleep(0.3)
-        box["state"] = {"port": 5, "token": "t", "version": mr.VERSION}
+    def server_post(path, payload, timeout):
+        posts.append(path)
+        if path == "/api/map/ensure":
+            return {"ok": True}
+        return {"status": "ok", "kind": "vector_tiles_mvt",
+                "bounds": [0, 0, 1, 1], "data": {}, "warnings": []}
 
-    monkeypatch.setattr(mr, "_spawn_daemon", slow_spawn)
-    monkeypatch.setattr(mr, "_wait_for_service", lambda timeout: box["state"])
-
-    results = []
-    threads = [
-        threading.Thread(target=lambda: results.append(mr._ensure_service()))
-        for _ in range(2)
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(10)
-    assert len(spawns) == 1  # only one server ever spawned
-    assert all(r == box["state"] for r in results)  # both callers got that server
+    monkeypatch.setattr(mr, "_server_post", server_post)
+    descriptor = mr.main(target=str(target))
+    assert descriptor["status"] == "ok"
+    assert posts == ["/api/map/ensure", "/api/map/describe"]
 
 
-def test_spawn_daemon_detaches_and_never_flashes_a_window(mr, monkeypatch):
-    captured = {}
-
-    class FakePopen:
-        def __init__(self, cmd, **kwargs):
-            captured["cmd"] = cmd
-            captured["kwargs"] = kwargs
-
-    monkeypatch.setattr(mr.subprocess, "Popen", FakePopen)
-    mr._spawn_daemon()
-
-    # Detached children launch via the shared spawn_python (pythonw on Windows),
-    # not raw sys.executable, so a fallback python.exe never flashes a console.
-    assert captured["cmd"][0] == mr.spawn_python()
-    assert str(mr.DAEMON) in captured["cmd"]
-    kwargs = captured["kwargs"]
-    assert kwargs["close_fds"] is True
-    if sys.platform == "win32":
-        flags = kwargs["creationflags"]
-        assert flags & subprocess.DETACHED_PROCESS
-        assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
-        # CREATE_NO_WINDOW + DETACHED_PROCESS fail to launch together on Windows.
-        assert not (flags & subprocess.CREATE_NO_WINDOW)
-    else:
-        assert kwargs["start_new_session"] is True
+def test_without_a_server_origin_the_ensure_fails_loudly(mr, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    with pytest.raises(RuntimeError, match="FUSED_RENDER_ORIGIN"):
+        mr._ensure_service()

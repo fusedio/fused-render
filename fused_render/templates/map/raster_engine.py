@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import warnings
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -442,6 +443,12 @@ class RasterEngine:
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
         self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
+        # Preparations run on one PERSISTENT thread, never an ephemeral one: a
+        # thread that has done /vsicurl work deadlocks the whole process at its
+        # exit on Windows (loader lock against the GIL — see daemon.RENDER_POOL).
+        self.prepare_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="prepare"
+        )
 
     @staticmethod
     def _needs_relay(url: str) -> bool:
@@ -999,10 +1006,7 @@ class RasterEngine:
                 "full_requested": full_optimize,
                 "started_at": time.time(),
             }
-        thread = threading.Thread(
-            target=self._prepare, args=(source_id,), daemon=True
-        )
-        thread.start()
+        self.prepare_pool.submit(self._prepare, source_id)
         return self.job(source_id)
 
     def _prepare(self, source_id: str) -> None:
