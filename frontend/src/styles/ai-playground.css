@@ -252,6 +252,7 @@
 }
 
 .pg-hero-names {
+  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -318,11 +319,15 @@ a.pg-hero-repo:hover {
   color: var(--fg-muted);
 }
 
+/* Top-right of the hero card, beside the names — vertical space is the
+   stage's, not the header's. */
 .pg-stage-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 2px;
+  justify-content: flex-end;
+  align-self: flex-start;
+  flex: none;
 }
 
 .pg-error {

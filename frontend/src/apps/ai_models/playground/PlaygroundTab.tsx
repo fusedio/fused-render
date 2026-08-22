@@ -386,12 +386,13 @@ export default function PlaygroundTab() {
           <>
             <section className="pg-hero">
               <div className="pg-hero-head">
-                <span className="pg-hero-icon">{capabilityIcon(selected.row.capability)}</span>
+                <span className="pg-hero-icon" title={groupLabel(selected.row.capability)}>
+                  {capabilityIcon(selected.row.capability)}
+                </span>
                 <div className="pg-hero-names">
-                  <h3 className="pg-stage-title">
-                    {modelName(selected.model)}
-                    <span className="pg-stage-kind"> · {groupLabel(selected.row.capability)}</span>
-                  </h3>
+                  {/* No capability word beside the name — the icon says it,
+                      with the label as its tooltip for whoever hovers. */}
+                  <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
                   {/* The full repo id — author/name as Hugging Face knows it.
                       A link only when it IS a repo id: llama.cpp entries are
                       keyed by bare .gguf filename (formats.GGUF_RECIPES), and
@@ -407,6 +408,47 @@ export default function PlaygroundTab() {
                     </a>
                   ) : (
                     <span className="pg-hero-repo">{selected.model.id}</span>
+                  )}
+                </div>
+                <div className="pg-stage-actions">
+                  {/* The playground's exit ramp: everything tried here is one
+                      `fused.ai` call in a page, and this hands the /apps
+                      composer a seed naming the model, the tuned settings and
+                      the call — the user finishes the sentence with the app
+                      they want. */}
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    title="Open the app builder with this model and your settings pre-filled"
+                    onClick={() =>
+                      navigateUrl(
+                        "/apps?seed=" +
+                          encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
+                      )
+                    }
+                  >
+                    Build an app with this AI
+                  </button>
+                  {!selected.model.downloaded && !selectedDownloading && (
+                    <button type="button" className="btn btn-secondary" onClick={runDownload}>
+                      Download
+                      {selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
+                    </button>
+                  )}
+                  {selected.model.downloaded && !selectedResident && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={runLoad}
+                      title="Optional — the first generation loads it too"
+                    >
+                      Load
+                    </button>
+                  )}
+                  {selectedResident && selectedResident.state === "ready" && (
+                    <button type="button" className="btn btn-secondary" onClick={runUnload}>
+                      Unload
+                    </button>
                   )}
                 </div>
               </div>
@@ -443,46 +485,6 @@ export default function PlaygroundTab() {
                 {stateLine}
                 {evicts ? ` ${evicts}` : ""}
               </p>
-              <div className="pg-stage-actions">
-                {/* The playground's exit ramp: everything tried here is one
-                    `fused.ai` call in a page, and this hands the /apps
-                    composer a seed naming the model, the tuned settings and
-                    the call — the user finishes the sentence with the app
-                    they want. */}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  title="Open the app builder with this model and your settings pre-filled"
-                  onClick={() =>
-                    navigateUrl(
-                      "/apps?seed=" +
-                        encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
-                    )
-                  }
-                >
-                  Build an app with this AI
-                </button>
-                {!selected.model.downloaded && !selectedDownloading && (
-                  <button type="button" className="btn btn-secondary" onClick={runDownload}>
-                    Download{selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
-                  </button>
-                )}
-                {selected.model.downloaded && !selectedResident && (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={runLoad}
-                    title="Optional — the first generation loads it too"
-                  >
-                    Load
-                  </button>
-                )}
-                {selectedResident && selectedResident.state === "ready" && (
-                  <button type="button" className="btn btn-secondary" onClick={runUnload}>
-                    Unload
-                  </button>
-                )}
-              </div>
             </section>
             {(selectedDownloading || (selectedResident && selectedResident.state !== "ready")) && (
               <ModelProgress detail={selectedResident?.detail} job={jobForSelected} />
