@@ -369,9 +369,7 @@ a.pg-hero-repo:hover {
   gap: 12px;
 }
 
-/* The invitation over the composer: ONE line naming the action. The hero card
-   above it already carries the model's name and load state, so this says
-   neither. */
+/* One line naming the action — the hero card above carries the model. */
 .pg-work-title {
   margin: 0;
   font-size: 15px;
@@ -379,10 +377,8 @@ a.pg-hero-repo:hover {
   letter-spacing: -0.01em;
 }
 
-/* Common parameters, inline under the composer. The text and image stages put
-   every knob behind the fold instead (D430, D431); transcription keeps its one
-   Task choice out here, because recording and translating are two different
-   errands rather than one tuned run. */
+/* Inline params under the composer. Text and image put every knob behind the
+   fold (D430, D431); only TranscribeStage's Task select still uses this. */
 .pg-params {
   display: flex;
   flex-direction: column;
@@ -393,9 +389,7 @@ a.pg-hero-repo:hover {
   max-width: 420px;
 }
 
-/* The Config fold: closed by default so the surface above it reads as one
-   simple call. Deliberately quiet — no card, no background; it should not
-   compete with the composer for attention. */
+/* Closed by default, and deliberately flat — no card, no background. */
 .pg-config > summary {
   display: inline-flex;
   align-items: center;
@@ -437,8 +431,7 @@ a.pg-hero-repo:hover {
   gap: 14px;
 }
 
-/* Chip rows leading the fold — tighter than the slider stack around them,
-   because the two rows are one decision about the shape of the picture. */
+/* Chip rows lead the fold, tighter than the slider stack below them. */
 .pg-config-chips {
   display: flex;
   flex-direction: column;
@@ -591,8 +584,7 @@ a.pg-hero-repo:hover {
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
 }
 
-/* The Enter hint riding inside the Run button — a quiet glyph, not a boxed
-   chip; the box read as a second button inside the button. */
+/* Enter hint inside the Run button: a faded glyph, not a boxed chip. */
 .pg-kbd {
   font: inherit;
   font-size: 12px;
@@ -619,8 +611,7 @@ a.pg-hero-repo:hover {
   flex: none;
 }
 
-/* Clear, beside Run once a reply exists — quiet on purpose. Same 32px height
-   as .btn (buttons-modal.css) so the two labels sit on one line. */
+/* 32px matches .btn (buttons-modal.css) so Clear and Run share a line. */
 .pg-clear {
   flex: none;
   height: 32px;
@@ -729,9 +720,7 @@ a.pg-hero-repo:hover {
   background: rgba(var(--accent-rgb), 0.08);
 }
 
-/* A result: label above, card below — so "Response" / "Result" can wear the
-   Config summary's voice without being mistaken for a fold. Both the text and
-   the image stage wrap their output in this. */
+/* Label above, card below. Text and image stages both use it. */
 .pg-answer-block {
   display: flex;
   flex-direction: column;
@@ -760,7 +749,7 @@ a.pg-hero-repo:hover {
   background: var(--bg-alt);
 }
 
-/* Copy, as an icon pinned to the card's top-right corner. */
+/* Icon pinned to the card's top-right corner. */
 .pg-copy-btn {
   position: absolute;
   top: 10px;
@@ -940,12 +929,8 @@ a.pg-hero-repo:hover {
   gap: 8px;
 }
 
-/* The frame OWNS the rectangle — its width and aspect ratio come from the run
-   (ImageStage's `shot`), and every state inside it fills that box. That is what
-   keeps the column still: a worker preview is a small thumbnail, and an image
-   sized by its own pixels resized the page the moment it arrived. It also gives
-   the Save button something to be absolute against, top-right, the way the text
-   stage's card wears Copy. */
+/* Width and aspect ratio come from the run (ImageStage's `shot`); everything
+   inside fills the box, so no state resizes the column. */
 .pg-image-frame {
   position: relative;
   align-self: flex-start;
@@ -963,9 +948,7 @@ a.pg-hero-repo:hover {
   background: var(--bg-alt);
 }
 
-/* Sitting on arbitrary photo pixels, not on a themed background: a fixed dark
-   scrim and white glyph is the only pair that survives both a snow scene and a
-   night scene, in either theme. */
+/* Fixed scrim, not theme colours: this sits on arbitrary photo pixels. */
 .pg-image-save {
   top: 10px;
   right: 10px;
@@ -981,8 +964,6 @@ a.pg-hero-repo:hover {
   background: rgba(0, 0, 0, 0.75);
 }
 
-/* The pre-preview shimmer: the frame's whole box, so the picture that replaces
-   it lands in exactly the same rectangle. */
 .pg-image-wait {
   width: 100%;
   height: 100%;
@@ -1005,8 +986,7 @@ a.pg-hero-repo:hover {
   }
 }
 
-/* The caption is progress only — it lives while the render runs and goes away
-   with it. */
+/* Progress only: rendered while the job runs, gone when it lands. */
 .pg-image-caption {
   display: flex;
   flex-direction: column;

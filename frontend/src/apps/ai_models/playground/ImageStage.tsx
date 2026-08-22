@@ -1,9 +1,7 @@
 // The image stage: prompt in, picture out (SPEC AI-9).
 //
-// Shaped like the text stage (D431): the surface is a heading, a prompt and
-// Generate — nothing else. EVERY parameter, the aspect and speed chips
-// included, lives behind the Config fold, because a first render only needs
-// the prompt and the chips were reading as required setup.
+// Shaped like the text stage (D431): heading, prompt, Generate. Every
+// parameter — chips included — lives behind the Config fold.
 //
 // The controls follow what the image playgrounds converged on (fal, Midjourney
 // web, Ideogram, Leonardo): ASPECT RATIO chips, not raw width×height sliders —
@@ -17,11 +15,10 @@
 // with no hint keeps the server's 28.
 //
 // A render is job-shaped — the reply carries the job to watch and the SETTLED
-// parameters (width snapped, steps clamped, seed invented), and the caption
-// echoes that reply, never the request. While it denoises the worker drops a
-// preview beside the output path and this stage polls it; the job survives a
-// tab switch on purpose (it shows in Activity), so only the WATCH stops on
-// unmount.
+// parameters (width snapped, steps clamped, seed invented). While it denoises
+// the worker drops a preview beside the output path and this stage polls it;
+// the job survives a tab switch on purpose (it shows in Activity), so only the
+// WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
@@ -114,8 +111,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const boxRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  // The box grows with the prompt up to a ceiling — Shift+Enter is a newline,
-  // and a newline you cannot see is half a feature. Same as the text stage.
+  // Grows with the prompt so a Shift+Enter newline is visible.
   const grow = () => {
     const box = boxRef.current;
     if (!box) return;
@@ -187,9 +183,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     }
   };
 
-  // Back to the empty state once the picture has been looked at. The render's
-  // own settings (size, steps, seed) stay put — clearing is about the prompt
-  // and its result, not about undoing the setup.
+  // Back to empty. Settings stay put — this clears the prompt and its result,
+  // not the setup.
   const clear = () => {
     setPrompt("");
     setRun(null);
@@ -205,14 +200,10 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const busy = !!run && !run.done;
   const job = busy ? run.job : null;
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
-  // ONE box for all three states — the shimmer, the live preview, the finished
-  // picture — so the column cannot resize mid-render. The width is DEFINITE
-  // rather than the image's own: the worker's preview is a small thumbnail, and
-  // letting it size itself is exactly what made the layout jump when the first
-  // preview landed. 80% of the column (and of the render's own width) keeps the
-  // result a fifth smaller than the surface it sits on; the vh term is the same
-  // cap the old `max-height` was, expressed as a width so the ratio holds
-  // instead of letterboxing.
+  // One box for shimmer, preview and final picture, so the column cannot
+  // resize mid-render — the worker's preview is a thumbnail, and sizing by its
+  // own pixels is what made the layout jump. 80% shrinks the result; the vh
+  // term is the old max-height cap as a width, so the ratio holds.
   const shot = run
     ? {
         aspectRatio: `${run.started.width} / ${run.started.height}`,
@@ -224,8 +215,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   return (
     <div className="pg-work">
-      {/* One line, naming the ACTION — the hero card above already says which
-          model this is and whether it is loaded. */}
+      {/* The action only: the hero card above names the model and its state. */}
       <h2 className="pg-work-title">Describe a picture</h2>
 
       <div className="pg-composer">
@@ -276,9 +266,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           )}
       </div>
 
-      {/* EVERY knob is behind the fold, chips included: shape and speed are
-          choices worth making, but not choices worth making FIRST. The chip
-          rows lead because they are the ones with a picture in mind. */}
+      {/* Chips lead the fold; sliders and the seed follow. */}
       <AdvancedPanel>
         <div className="pg-config-chips">
           <RailChips
@@ -367,8 +355,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {error && <p className="pg-error">{error}</p>}
 
-      {/* The invitation is the heading above; empty means only the starters
-          have anything left to say. */}
       {!run && (
           <div className="pg-empty-stage">
             <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void generate(p)} />
@@ -377,16 +363,13 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
         {run && (
           <div className="pg-answer-block">
-          {/* Same voice as the Config summary, so the two labels read as
-              siblings — one folds, this one just names the card below it. */}
           <p className="pg-answer-label">Result</p>
           <figure className="pg-image-result">
             {run.done ? (
               <div className="pg-image-frame" style={shot}>
                 <img src={rawUrl(run.started.path) + "&t=" + run.started.jobId} alt={run.started.prompt} />
-                {/* Save, where the text stage puts Copy: the picture's own
-                    top-right corner. A plain download link — the file is
-                    already on disk and the server serves it. */}
+                {/* A download link, not a clipboard write: ClipboardItem takes
+                    image/png only and the render's format is unknown here. */}
                 <a
                   className="pg-copy-btn pg-image-save"
                   href={rawUrl(run.started.path)}
@@ -398,9 +381,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 </a>
               </div>
             ) : (
-              // Same frame, same `shot` box: the shimmer, the first preview and
-              // the final picture all occupy the identical rectangle, so nothing
-              // below the image moves while the render walks its steps.
               <div className="pg-image-frame" style={shot}>
                 <img
                   src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
@@ -412,13 +392,9 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
               </div>
             )}
-            {/* Only while it renders. A FINISHED picture says nothing under
-                itself: the settled parameters (size, steps, guidance, the
-                invented seed) were removed by request — the picture is the
-                result, and a row of numbers under it read as machine exhaust.
-                That drops D429's seed-reuse button with them, so a random
-                render can no longer be reproduced after the fact; pinning a
-                seed up front in Config still works. */}
+            {/* Progress only. The settled parameters were dropped by request,
+                and D429's seed-reuse button with them: an invented seed is now
+                surfaced nowhere, so a random render cannot be reproduced. */}
             {busy && (
               <figcaption className="pg-image-caption">
                 <span>{job?.detail || "Starting — a cold model loads first…"}</span>

@@ -45,10 +45,7 @@ const LIMITS = {
 // tab exists for should meet the model at its best. Kept short and generic —
 // it steers verbosity and reasoning length, never persona — and fully
 // editable/clearable in the advanced panel (a cleared prompt round-trips as
-// `system=`).
-// It also names the surface's contract: one prompt, one answer, Markdown out,
-// and any deliberation inside a <thinking> tag — which splitThink below lifts
-// into the collapsible fold instead of leaving it in the reply.
+// `system=`). It also asks for <thinking>, which splitThink lifts into the fold.
 const DEFAULT_SYSTEM =
   "You are a helpful assistant answering a single one-off prompt. Answer directly " +
   "in Markdown and keep it short — expand only when asked for detail. If you need " +
@@ -63,10 +60,9 @@ const STARTERS = [
 ];
 
 /** Split one reply into the deliberation and the answer. A block still open
- *  (mid-stream) is all deliberation — the answer has not started. Two spellings:
- *  <think> is what reasoning-tuned models emit on their own, <thinking> is what
- *  the default system prompt asks plain models for. Longer tag checked first so
- *  "<thinking>" is never misread as "<think>" plus stray text. */
+ *  (mid-stream) is all deliberation. Both spellings: <think> from
+ *  reasoning-tuned models, <thinking> from the default system prompt — longer
+ *  tag first, or "<thinking>" parses as "<think>" plus stray text. */
 function splitThink(text: string): { think: string | null; answer: string; thinking: boolean } {
   for (const tag of ["thinking", "think"]) {
     const open = text.indexOf(`<${tag}>`);
@@ -219,8 +215,7 @@ export function TextStage({
     }
   };
 
-  // Back to the empty state: the run is done, the reply is read (or copied),
-  // and the next prompt starts from a blank surface.
+  // Back to empty. Settings stay put — this clears the prompt and its reply.
   const clear = () => {
     setPrompt("");
     setReply(null);
@@ -245,9 +240,7 @@ export function TextStage({
 
   return (
     <div className="pg-work">
-      {/* One line, naming the ACTION — the hero card directly above already
-          names the model and its load state, so repeating either here was the
-          same fact three times down one column. */}
+      {/* The action only: the hero card above names the model and its state. */}
       <h2 className="pg-work-title">Try a prompt</h2>
 
       <div className="pg-composer">
@@ -294,8 +287,7 @@ export function TextStage({
         )}
       </div>
 
-      {/* EVERY knob is behind the Config fold — the surface above it is
-          prompt and Run, nothing else. */}
+      {/* Every knob is behind the fold; the surface above is prompt and Run. */}
       <AdvancedPanel>
         <RailSlider
           label="Temperature"
@@ -350,8 +342,6 @@ export function TextStage({
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
 
-      {/* The invitation itself lives in the head above; empty means only the
-          starters have anything left to say. */}
       {!reply && !status && (
         <div className="pg-empty-stage">
           <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void send(p)} />
@@ -360,8 +350,6 @@ export function TextStage({
 
       {reply && shown && (
         <div className="pg-answer-block">
-          {/* Same voice as the Config summary, so the two labels read as
-              siblings — one folds, this one just names the card below it. */}
           <p className="pg-answer-label">Response</p>
           <div className="pg-answer">
           {!reply.pending && reply.text && (

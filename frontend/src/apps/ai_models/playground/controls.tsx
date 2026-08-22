@@ -1,12 +1,10 @@
 // The Playground's parameter vocabulary, shared by the stages.
 //
 // The unified stage shape (all four capabilities) is one centered column that
-// reads as an API surface: prompt, Run, result. The text and image stages put
-// EVERY parameter behind the Config fold (D430, D431) so the surface above it
-// is prompt and Run alone; transcription keeps its Task select inline
-// (`.pg-params`). Each control is a slider+number pair with a one-line
-// plain-language hint, defaults baked in and a quiet per-control reset when a
-// value has moved.
+// reads as an API surface: prompt, Run, result. Text and image put every
+// parameter behind the Config fold (D430, D431); transcription keeps its Task
+// select inline (`.pg-params`). Each control is a slider+number pair with a
+// one-line hint, defaults baked in and a per-control reset once a value moves.
 import type { ReactNode } from "react";
 
 /** The fold everything uncommon goes behind. Closed by default on purpose:
