@@ -274,22 +274,46 @@
   );
 }
 
+/* in-glyph → out-glyph: the card draws the task as the mapping it performs
+   (speech becomes text, a description becomes a picture) rather than as one
+   decorative icon. Same tile twice is intended for chat → chat — the pair is
+   what reads as "text in, text out". */
+.home-pg-flow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .home-pg-glyph {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 14px;
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-alt));
   color: var(--accent);
 }
 
 .home-pg-glyph svg {
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
+}
+
+/* Muted, and untiled: the arrow is the join between the two tiles, not a
+   third thing of equal weight. */
+.home-pg-arrow {
+  display: flex;
+  color: var(--fg-muted);
+  opacity: 0.75;
+}
+
+.home-pg-arrow svg {
+  width: 18px;
+  height: 18px;
 }
 
 .home-pg-blurb {
