@@ -2674,6 +2674,136 @@ export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boo
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
 }
 
+// -- AI benchmarks (/api/ai/benchmark, SPEC AI-16) ----------------------------
+// One recorded benchmark run per entry, kept forever on disk — the deliberate
+// opposite of the in-memory usage counters below. Where those summarise the real
+// calls that happened to pass through, these are a FIXED workload somebody ran
+// on purpose so that two models, or one model across two app versions, are
+// legitimately comparable.
+//
+// **Every metric here can be null, and null means NOT MEASURED.** A runner that
+// does not count its own tokens leaves `tokensPerSecond` null rather than a
+// number derived from the text; a platform whose RAM the stdlib will not report
+// leaves `totalMemoryBytes` null. Nothing in this payload is ever a zero
+// standing in for an absence, so nothing that renders it may treat one as such.
+
+/** The machine a run was taken on — why a number is not portable. */
+export interface AiBenchmarkMachine {
+  platform: string;
+  arch: string;
+  cpuCount: number | null;
+  totalMemoryBytes: number | null;
+}
+
+/** Which fixed workload produced a run, and which VERSION of it.
+ *
+ *  `revision` is a comparability seam: if the prompt, token budget or canvas
+ *  ever changes the server bumps it, and runs either side of the bump are not
+ *  comparable. A consumer must not draw a delta across two different revisions
+ *  — see `latestWithDelta` in apps/ai_models/lib/benchmark.ts.
+ */
+export interface AiBenchmarkWorkload {
+  name: string;
+  revision: number;
+  /** The frozen parameters, verbatim from the server. Shape varies by
+   *  capability, so it is opaque here — the run's `metrics` is what a page
+   *  renders, and this is provenance to show on demand. */
+  params: Record<string, unknown>;
+}
+
+/** The measured numbers. Which keys are present depends on the capability, and
+ *  a present key can still be null (not measured). The PRIMARY metric per
+ *  capability is decided in one place — `primaryMetric` in
+ *  apps/ai_models/lib/benchmark.ts — never inferred from which keys exist. */
+export interface AiBenchmarkMetrics {
+  // text-generation
+  tokensPerSecond?: number | null;
+  ttftMs?: number | null;
+  promptTokensPerSecond?: number | null;
+  outputTokens?: number | null;
+  // text-to-image
+  secondsPerStep?: number | null;
+  totalSeconds?: number | null;
+  steps?: number | null;
+  width?: number | null;
+  height?: number | null;
+  // automatic-speech-recognition
+  realtimeFactor?: number | null;
+  audioSeconds?: number | null;
+  // embeddings
+  textsPerSecond?: number | null;
+  dim?: number | null;
+  batch?: number | null;
+}
+
+export interface AiBenchmarkRun {
+  /** uuid4 hex — what `deleteAiBenchmarks` names. */
+  id: string;
+  /** Epoch SECONDS (the server's clock), not ms. */
+  startedAt: number;
+  capability: string;
+  model: string;
+  /** Which backend measured it, e.g. "mlx-text" — null when resolution failed,
+   *  which is one of the ways a run can be `ok: false`. */
+  runner: string | null;
+  /** What the weights landed on ("mps" | "cuda" | "cpu" | …), or null from a
+   *  runner that does not report one. Never guessed from the platform. */
+  device: string | null;
+  /** The app version this was measured under. The app is part of what is being
+   *  measured, so a runner upgrade that halves throughput is visible here. */
+  appVersion: string;
+  /** False for a run that FAILED — an OOM, a dead worker, a machine with no
+   *  runner. Those are kept and shown: "this model OOMs on this laptop" is a
+   *  result. `metrics` is then empty rather than a dict of nulls. */
+  ok: boolean;
+  error: string | null;
+  /** Seconds to make the model resident, or null when it already was. Null is
+   *  not zero: a warm run did not load anything. */
+  loadSeconds: number | null;
+  /** Resident bytes sampled from the worker AFTER the run — a resident figure,
+   *  not a continuously-sampled peak (see ai/benchmark.py). Null from a runner
+   *  that does not report memory. */
+  peakResidentBytes: number | null;
+  machine: AiBenchmarkMachine;
+  workload: AiBenchmarkWorkload;
+  metrics: AiBenchmarkMetrics;
+}
+
+export interface AiBenchmarkHistory {
+  /** Oldest first — append order IS the chart's x axis. */
+  runs: AiBenchmarkRun[];
+  /** THIS machine, as it is now. Travels with the history rather than only on
+   *  each run, because the page has to caption the comparison before it has
+   *  drawn a single run. */
+  machine: AiBenchmarkMachine;
+}
+
+export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {
+  return getJson<AiBenchmarkHistory>("/api/ai/benchmark", opts);
+}
+
+/** Run one benchmark. **Resolves in MINUTES** — the request is held open for
+ *  the whole run, exactly as `/api/ai/image` is, and progress meanwhile arrives
+ *  on `jobId` through the ordinary job rows. A run that failed still resolves
+ *  (with `run.ok === false`); only a rejected REQUEST rejects. */
+export function runAiBenchmark(
+  model: string,
+  capability: string,
+): Promise<{ run: AiBenchmarkRun; jobId: string }> {
+  return postJson<{ run: AiBenchmarkRun; jobId: string }>("/api/ai/benchmark", {
+    model,
+    capability,
+  });
+}
+
+/** Forget runs by id, answering with the fresh history so the caller swaps in
+ *  state it just re-read rather than patching rows it hopes are still true. */
+export function deleteAiBenchmarks(
+  ids: string[],
+): Promise<AiBenchmarkHistory & { removed: number }> {
+  return postJson<AiBenchmarkHistory & { removed: number }>("/api/ai/benchmark/delete", { ids });
+}
+
 // -- AI usage (GET /api/ai/metrics, SPEC AI-12) -------------------------------
 // What `/api/ai` has generated in THIS server process: both tiers, in memory,
 // gone on restart. `since` is what keeps that honest — every number here is
