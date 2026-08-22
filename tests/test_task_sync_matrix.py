@@ -173,6 +173,15 @@ def _assistant_tool_rec(ts, session_id, cwd):
                                      "name": "Bash", "input": {}}]}}
 
 
+def _assistant_end_rec(text, ts, session_id, cwd):
+    """A reply that finished, said the way real transcripts say it: the row's
+    own `stop_reason`."""
+    return {"type": "assistant", "timestamp": ts, "cwd": cwd,
+            "sessionId": session_id,
+            "message": {"role": "assistant", "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": text}]}}
+
+
 def _write_transcript(projects_dir, session_id, cwd, records, mtime=None):
     d = projects_dir / ("-enc-" + session_id)
     d.mkdir(parents=True, exist_ok=True)
@@ -671,6 +680,61 @@ def test_a_live_chat_task_is_running(client, projects_dir, target):
     row = {t["key"]: t for t in _board(client)}["sess-chat"]
     assert row["status"] == "in_progress"
     assert row["messages"][0]["turn"] == ""
+
+
+def test_a_closed_turn_with_a_live_process_is_still_running(client,
+                                                            projects_dir,
+                                                            target,
+                                                            monkeypatch):
+    """The background-command gap (Akshil, 2026-08-22: tasks "directly go
+    into the done column, whether they are finished or not"). A turn that
+    started a background command closes honestly in the transcript while the
+    detached claude process waits to be woken — the transcript ends the TURN,
+    the run dir ends the TASK. With a run alive for this conversation the
+    board stays on In Progress."""
+    now = _now()
+    _write_transcript(projects_dir, "sess-chat", str(target),
+                      [_user_rec("run the long thing",
+                                 _iso(now - timedelta(seconds=20)),
+                                 "sess-chat", str(target)),
+                       _assistant_end_rec("will confirm when done",
+                                          _iso(now - timedelta(seconds=10)),
+                                          "sess-chat", str(target))],
+                      mtime=time.time())
+    monkeypatch.setattr(
+        tasks_mod, "_alive_conversations",
+        lambda: [(os.path.abspath(str(target)), {"sess-chat"})])
+    row = {t["key"]: t for t in _board(client)}["sess-chat"]
+    assert row["status"] == "in_progress"
+    assert row["live"] is True
+
+    # ...and the process ending is what lets the task settle into Done.
+    monkeypatch.setattr(tasks_mod, "_alive_conversations", lambda: [])
+    tasks_mod.reset_cache()
+    row = {t["key"]: t for t in _board(client)}["sess-chat"]
+    assert row["status"] == "done"
+
+
+def test_an_alive_run_for_another_conversation_is_not_this_tasks(
+        client, projects_dir, target, monkeypatch):
+    """The match is project AND session — a neighbour's live run (same folder,
+    different session; or same session id under another folder) must not hold
+    an unrelated finished task in In Progress."""
+    now = _now()
+    _write_transcript(projects_dir, "sess-chat", str(target),
+                      [_user_rec("quick one",
+                                 _iso(now - timedelta(seconds=20)),
+                                 "sess-chat", str(target)),
+                       _assistant_end_rec("done", _iso(now -
+                                                       timedelta(seconds=10)),
+                                          "sess-chat", str(target))],
+                      mtime=time.time())
+    monkeypatch.setattr(
+        tasks_mod, "_alive_conversations",
+        lambda: [(os.path.abspath(str(target)), {"sess-other"}),
+                 ("/somewhere/else", {"sess-chat"})])
+    row = {t["key"]: t for t in _board(client)}["sess-chat"]
+    assert row["status"] == "done"
 
 
 def test_a_finished_chat_reply_is_done_the_moment_it_lands(client,

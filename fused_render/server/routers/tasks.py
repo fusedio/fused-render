@@ -90,7 +90,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import schedule, session_liveness, tasks_store
+from fused_render import claude_spawn, schedule, session_liveness, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import claude_sessions as sessions
 
@@ -1258,6 +1258,99 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
     return running, (last.timestamp() if last is not None else mtime)
 
 
+_AGENT_MOD = None
+
+
+def _agent_mod():
+    """The claude template's agent module, loaded once for READ paths — the
+    same in-process seam `claude_spawn.load_agent` gives the scheduler's
+    watcher. Cached because exec'ing the module per listing would be a parse
+    of a 15k-line file on every poll."""
+    global _AGENT_MOD
+    if _AGENT_MOD is None:
+        _AGENT_MOD = claude_spawn.load_agent()
+    return _AGENT_MOD
+
+
+def _alive_conversations() -> list[tuple[str, set[str]]]:
+    """Every conversation with a claude PROCESS still alive: `(target folder,
+    session ids that name it)`, newest runs first.
+
+    THE TRANSCRIPT ENDS THE TURN; THE RUN DIR ENDS THE TASK. A turn that
+    started a background command closes honestly in the transcript ("will
+    confirm when done", `stop_reason: end_turn`) while the detached claude
+    process sits waiting to be woken — for as long as the command runs. Read
+    off the transcript alone the board filed that task under Done with work
+    visibly pending (Akshil, 2026-08-22: tasks "directly go into the done
+    column, whether they are finished or not"). The chat page already answers
+    this with the run dirs (`_live_run`); this is the same fact, gathered ONCE
+    per listing rather than once per task, because the run-dir scan is a
+    listdir plus a meta read per run and the listing holds hundreds of tasks.
+
+    A run's conversation is named by up to three ids (the session it resumed,
+    the id the CLI minted, the id in out.jsonl's head) — any of them matching
+    a task's session is a match, the same rule as `_live_run`. Best-effort
+    all the way down: an unreadable run dir is skipped, a failure to load the
+    agent module answers "nothing alive", and neither ever costs the listing.
+    """
+    try:
+        agent = _agent_mod()
+        names = sorted(os.listdir(agent.RUNS), reverse=True)
+    except Exception:  # noqa: BLE001 — no run dirs is the normal cold state
+        return []
+    alive: list[tuple[str, set[str]]] = []
+    for name in names[:_ALIVE_SCAN_LIMIT]:
+        run_dir = os.path.join(agent.RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"),
+                      encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = os.path.abspath(str(meta.get("file") or ""))
+        if not target:
+            continue
+        try:
+            if not agent._alive(run_dir):
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        ids = {str(meta.get("resumed_from") or "")}
+        try:
+            with open(os.path.join(run_dir, "session"),
+                      encoding="utf-8") as fh:
+                ids.add(fh.read().strip())
+        except OSError:
+            pass
+        try:
+            ids.add(agent._session_from_out(run_dir))
+        except Exception:  # noqa: BLE001
+            pass
+        ids.discard("")
+        if ids:
+            alive.append((target, ids))
+    return alive
+
+
+# How many run dirs (newest first) the alive scan reads — the same window as
+# the agent's own `_LIVE_SCAN_LIMIT`, and for the same reason: a run buried
+# under 60 newer ones belongs to a conversation long gone quiet, and nothing
+# prunes RUNS.
+_ALIVE_SCAN_LIMIT = 64
+
+
+def _run_alive_for(task: dict, alive: list[tuple[str, set[str]]]) -> bool:
+    """Does one of the alive runs belong to THIS task's conversation?"""
+    session_id = str(task.get("session_id") or "")
+    if not session_id:
+        return False
+    project = os.path.abspath(str(task.get("project") or ""))
+    for target, ids in alive:
+        if target == project and session_id in ids:
+            return True
+    return False
+
+
 # --------------------------------------------------------------- the endpoints
 
 
@@ -1315,7 +1408,8 @@ def _next_run(entries: list[dict]) -> tuple[float, str]:
 
 
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
-         busy: set[str], revived: list[str]) -> dict:
+         busy: set[str], revived: list[str],
+         alive: list[tuple[str, set[str]]]) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
@@ -1360,6 +1454,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # session that kept working, and only the verdict's own echo is set aside.
     if live and _verdict_outvotes_live(merged, active):
         live = False
+    # The transcript ends the TURN; the run dir ends the TASK. A closed turn
+    # with the conversation's claude process still alive is a background
+    # command being waited out (or a wake about to land) — work pending, not a
+    # task finished. OR'd in after the echo rule on purpose: a pid is a fact
+    # about NOW and no verdict outvotes it. See `_alive_conversations`.
+    if not live and _run_alive_for(task, alive):
+        live = True
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
     next_run, next_run_entry = _next_run(task["entries"])
@@ -1515,6 +1616,9 @@ def _task_rows() -> list[dict]:
     # One pass over the store for every row: which conversations the scheduler
     # is still waiting on. See `_status`.
     busy = schedule.busy_sessions(schedule.list_entries())
+    # One run-dir scan for every row — the per-task version is a listdir per
+    # task per poll. See `_alive_conversations`.
+    alive = _alive_conversations()
     for task in tasks.values():
         _place(task)
     numbers = _numbers(tasks)
@@ -1526,7 +1630,7 @@ def _task_rows() -> list[dict]:
     for task in tasks.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
-                       busy, revived)
+                       busy, revived, alive)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -1580,6 +1684,10 @@ def api_tasks_pulse():
 def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
     live, _active = _live(task["path"], now)
+    # Same fact as the listing (`_row`): a closed turn with the conversation's
+    # process still alive is work pending, not a thread that finished.
+    if not live and _run_alive_for(task, _alive_conversations()):
+        live = True
     prompts = _full_prompts(task["path"]) if task["path"] else []
     messages = _merge(prompts, task["entries"])
     _turn_of_newest_chat(messages, live)
@@ -1921,7 +2029,8 @@ def api_task_unarchive(patch: UnarchivePatch):
     _place(task)
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
+               schedule.busy_sessions(schedule.list_entries()), [],
+               _alive_conversations())
     return {"ok": True, "key": key, "unfiled": unfiled,
             "status": row["status"]}
 
@@ -1981,7 +2090,8 @@ def api_task_delete(patch: DeletePatch):
     _place(task)
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
+               schedule.busy_sessions(schedule.list_entries()), [],
+               _alive_conversations())
     if row["status"] == "in_progress":
         raise HTTPException(
             status_code=409,
