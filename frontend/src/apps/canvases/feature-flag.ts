@@ -32,6 +32,13 @@ let enabled: boolean | null = null;
  *  keys it on the nav epoch), and a fresh GET per trip is waste when the value
  *  cannot change without this module being told. */
 let reading: Promise<void> | null = null;
+/** Which answer is newest, exactly as logged-in.ts counts it: a publish bumps
+ *  it, and a read that DEPARTED earlier drops its result rather than
+ *  overwriting the fresher one. Nothing else can cancel an in-flight GET — a
+ *  reader who lands on /preferences and flips the checkbox before that GET
+ *  resolves would otherwise watch the row they just enabled vanish when the
+ *  pre-toggle payload arrives. */
+let generation = 0;
 const listeners = new Set<(v: boolean) => void>();
 
 function set(next: boolean) {
@@ -42,8 +49,11 @@ function set(next: boolean) {
 
 function read(): Promise<void> {
   if (reading) return reading;
+  const departed = generation;
   reading = getPrefs()
-    .then((p) => set(p.canvases.enabled))
+    .then((p) => {
+      if (generation === departed) set(p.canvases.enabled);
+    })
     .catch(() => {
       // A failed read is not an answer: leave `enabled` as it was (off, the
       // default, on a first load) and let the next mount try again rather than
@@ -64,8 +74,12 @@ function read(): Promise<void> {
  * navigate.
  */
 export function publishCanvasesEnabled(next: boolean) {
-  // The cached read is now the stale one — mark it done so a later mount does
-  // not overwrite a published value with an older GET's.
+  // Bump FIRST: a read already in flight departed on the old generation and
+  // will now drop its answer instead of writing the pre-toggle value over this
+  // one. Reassigning `reading` alone would not have done it — that only stops a
+  // later mount from starting another GET, and the chain already running keeps
+  // its `.then`.
+  generation += 1;
   reading = Promise.resolve();
   set(next);
 }

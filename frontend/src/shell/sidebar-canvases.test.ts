@@ -74,6 +74,14 @@ describe("the sidebar's Canvases entry", () => {
     expect(FLAG).toMatch(/getPrefs\(\)/);
     expect(FLAG).not.toMatch(/setTimeout|setInterval/);
     expect(PREFS_PAGE).toMatch(/publishCanvasesEnabled\(next\.canvases\.enabled\)/);
+    // And a publish OUTRANKS a read already in flight — the same generation
+    // counter logged-in.ts keeps, for the same reason: a reader who lands on
+    // /preferences and flips the checkbox before that first GET resolves would
+    // otherwise watch the row they just enabled vanish when the pre-toggle
+    // payload arrives.
+    expect(FLAG).toMatch(/const departed = generation/);
+    expect(FLAG).toMatch(/if \(generation === departed\) set\(p\.canvases\.enabled\)/);
+    expect(FLAG).toMatch(/generation \+= 1;\n\s*reading = Promise\.resolve\(\);\n\s*set\(next\)/);
     // Default off means an unanswered read renders as hidden — assuming ON
     // would flash an entry the reader turned off on every load.
     expect(FLAG).toMatch(/useState\(enabled === true\)/);
