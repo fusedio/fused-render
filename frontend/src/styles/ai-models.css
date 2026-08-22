@@ -336,6 +336,15 @@
   text-decoration: none;
 }
 
+/* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
+ * chrome beside Explore, widened for a word instead of a glyph. */
+.am-card-try {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  text-decoration: none;
+}
+
 /* A card's controls are ALWAYS visible — the delete ✕ and the revisions
    chevron included, which were hidden at `opacity: 0` until the card was
    hovered or focused.

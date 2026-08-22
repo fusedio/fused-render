@@ -647,6 +647,34 @@ function RepoCard({
               {job ? "Loading…" : "Load"}
             </button>
           )}
+          {/* Into the Playground, pre-selected — the tab whose whole job is
+              "use it now". Only where the playground could actually serve it:
+              the same loadability verdict the Load button rests on, since a
+              model the resolved engine refuses would land on a sidebar that
+              silently falls back to a different model. A real <a href>, like
+              Explore beside it. */}
+          {repo.capability && !refusal && (
+            <a
+              className="cc-iconbtn am-card-try"
+              href={`/ai-models?model=${encodeURIComponent(repo.id)}`}
+              title={`Try ${repo.id} in the Playground`}
+              onClick={(e) => {
+                if (
+                  e.defaultPrevented ||
+                  e.button !== 0 ||
+                  e.metaKey ||
+                  e.ctrlKey ||
+                  e.shiftKey ||
+                  e.altKey
+                )
+                  return;
+                e.preventDefault();
+                navigateUrl(`/ai-models?model=${encodeURIComponent(repo.id)}`);
+              }}
+            >
+              Try
+            </a>
+          )}
           {/* The local door: the model card view (SPEC §38), read from this
               folder's own files. A real <a href> so middle-click and copy-link
               work, with left-click intercepted for client-side navigation like

@@ -40,7 +40,7 @@ import {
 } from "@platform/lib/api";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { replaceSearch } from "@platform/lib/router";
+import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 // What the groups are called HERE: the capability vocabulary is exact
@@ -97,6 +97,68 @@ export function writeParams(updates: Record<string, string | null>): void {
   }
   const search = params.toString();
   replaceSearch(location.pathname + (search ? "?" + search : ""));
+}
+
+/** The seed for the /apps composer: everything the Playground knows about the
+ *  moment — which model, what it is good for, the settings the user dialled in
+ *  (read off the URL, where every non-default already lives), and the page API
+ *  that reaches it (`runtime.js`'s names — the seed is read by an app AUTHOR's
+ *  session, and camelCase is that API's vocabulary). Ends mid-sentence on
+ *  purpose: the user finishes it with what they actually want built. */
+export function buildAppSeed(model: AiCatalogModel, capability: string): string {
+  const name = model.nickname || model.label;
+  const lines: string[] = [
+    `Build a fused app around the local AI model "${name}" (${model.id}) — it runs fully offline on this machine.`,
+  ];
+  if (model.note) lines.push(`About this model: ${model.note}`);
+  const opts = (pairs: [string, string | null][]) =>
+    pairs
+      .filter((p): p is [string, string] => p[1] !== null && p[1] !== "")
+      .map(([k, v]) => `, ${k}: ${v}`)
+      .join("");
+  if (capability === "text-generation") {
+    const extra = opts([
+      ["temperature", readParam("temp")],
+      ["topP", readParam("topp")],
+      ["maxTokens", readParam("maxtok")],
+      ["systemPrompt", readParam("system") ? JSON.stringify(readParam("system")) : null],
+    ]);
+    lines.push(
+      "It generates text. Call it from the page with " +
+        `fused.ai(prompt, { model: ${JSON.stringify(model.id)}${extra}, history, onChunk }) — ` +
+        "it streams tokens through onChunk and resolves with { text, usage }. " +
+        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+    );
+  } else if (capability === "text-to-image") {
+    const extra = opts([
+      ["width", readParam("w")],
+      ["height", readParam("h")],
+      ["steps", readParam("steps") ?? (model.defaults?.steps != null ? String(model.defaults.steps) : null)],
+      ["guidance", readParam("guidance")],
+      ["seed", readParam("seed")],
+    ]);
+    lines.push(
+      "It turns a text prompt into a picture. Call it from the page with " +
+        `await fused.ai.image({ prompt, model: ${JSON.stringify(model.id)}${extra}, onProgress }) — ` +
+        "it resolves with { url, seed, ... } and url renders straight into an <img>. " +
+        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+    );
+  } else if (capability === "automatic-speech-recognition") {
+    const extra = opts([
+      ["task", readParam("task") ? JSON.stringify(readParam("task")) : null],
+      ["language", readParam("lang") ? JSON.stringify(readParam("lang")) : null],
+      ["vad", readParam("vad") === "0" ? "false" : null],
+      ["words", readParam("words") === "1" ? "true" : null],
+    ]);
+    lines.push(
+      "It turns speech into text. Call it from the page with " +
+        `await fused.ai.transcribe({ path, model: ${JSON.stringify(model.id)}${extra}, onSegment }) — ` +
+        "path is an audio/video file on disk, segments stream through onSegment. " +
+        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+    );
+  }
+  lines.push("", "The app I want: ");
+  return lines.join("\n");
 }
 
 type CatalogLoad =
@@ -380,6 +442,24 @@ export default function AiModelsPlayground() {
                 </p>
               </div>
               <div className="pg-stage-actions">
+                {/* The playground's exit ramp: everything tried here is one
+                    `fused.ai` call in a page, and this hands the /apps
+                    composer a seed naming the model, the tuned settings and
+                    the call — the user finishes the sentence with the app
+                    they want. */}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  title="Open the app builder with this model and your settings pre-filled"
+                  onClick={() =>
+                    navigateUrl(
+                      "/apps?seed=" +
+                        encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
+                    )
+                  }
+                >
+                  Build an app with this AI
+                </button>
                 {!selected.model.downloaded && !selectedDownloading && (
                   <button type="button" className="btn btn-secondary" onClick={runDownload}>
                     Download{selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}

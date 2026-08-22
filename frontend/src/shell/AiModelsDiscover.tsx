@@ -56,7 +56,7 @@ import { refreshAiRuntime } from "./aiRuntime";
 import { ModelProgress } from "./AiProgress";
 import type { Job } from "@platform/lib/jobs";
 import { formatParams, timeAgo } from "@platform/lib/format";
-import { navigate, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   hubSizeLabel,
@@ -310,6 +310,25 @@ function HubCard({
           {updated ? `updated ${updated}` : null}
         </span>
         <span className="cc-mdcard-actions">
+          {/* Into the Playground, pre-selected. Only for a DOWNLOADED result:
+              an absent one is not in the playground's sidebar (its curated
+              half plus this disk, D323), and a link that lands on a silent
+              fallback to some other model is worse than no link. */}
+          {have && model.capability && (
+            <a
+              className="am-card-explore-link"
+              href={`/ai-models?model=${encodeURIComponent(model.id)}`}
+              title={`Try ${model.id} in the Playground`}
+              onClick={(e) => {
+                if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+                  return;
+                e.preventDefault();
+                navigateUrl(`/ai-models?model=${encodeURIComponent(model.id)}`);
+              }}
+            >
+              Try
+            </a>
+          )}
           {here && (
             <a
               className="am-card-explore-link"
@@ -470,6 +489,24 @@ function Suggested({
                   {busy && <ModelProgress job={downloads.jobByModel.get(m.id)} />}
                   <div className="cc-mdcard-foot">
                     <span className="cc-mdcard-meta cc-mono">{m.id}</span>
+                    {/* A curated suggestion is in the Playground's sidebar by
+                        construction (same catalog), downloaded or not — the
+                        playground fronts the download itself. */}
+                    {group.available && (
+                      <a
+                        className="am-card-explore-link"
+                        href={`/ai-models?model=${encodeURIComponent(m.id)}`}
+                        title={`Try ${m.label} in the Playground`}
+                        onClick={(e) => {
+                          if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+                            return;
+                          e.preventDefault();
+                          navigateUrl(`/ai-models?model=${encodeURIComponent(m.id)}`);
+                        }}
+                      >
+                        Try
+                      </a>
+                    )}
                     {group.available && (
                       <DownloadButton
                         id={m.id}

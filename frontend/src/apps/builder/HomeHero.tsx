@@ -4,7 +4,7 @@
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { aiComplete, createApp } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
@@ -194,6 +194,20 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     },
     [],
   );
+
+  // A `?seed=` in the URL pre-fills the composer — the Playground's "Build an
+  // app with this AI" hands its model + tuned settings through here. Consumed
+  // once and removed (replaceSearch, no history entry): a seed that survived
+  // in the URL would re-stomp whatever the user typed on the next mount.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const seed = params.get("seed");
+    if (!seed) return;
+    setPrompt(seed);
+    params.delete("seed");
+    const search = params.toString();
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
+  }, []);
 
   const busy = phase !== "idle";
   const canSubmit = prompt.trim().length > 0 && !busy;
