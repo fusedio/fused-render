@@ -384,11 +384,11 @@ def _server_pid(server: str) -> int | None:
                   "-ErrorAction SilentlyContinue | Select-Object -First 1)"
                   ".OwningProcess")
         out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, encoding="utf-8")
         pid = out.stdout.strip()
         return int(pid) if pid.isdigit() else None
     out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-s", "TCP:LISTEN"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8")
     pids = out.stdout.split()
     return int(pids[0]) if pids else None
 

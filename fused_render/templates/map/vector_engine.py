@@ -329,47 +329,40 @@ def _coverage_grid(minx, maxx, miny, maxy, weight: float, bbox, size: int):
     return diff.cumsum(axis=0).cumsum(axis=1)[:size, :size]
 
 
-_shx_restore_enabled = False
-_shx_restore_lock = threading.Lock()
-
-
-def _ensure_shx_restore(locator: str) -> None:
-    """A .shp dragged in without its .shx sidecar (browsers only upload the file
-    the user dropped) is recoverable: the .shx is a redundant index GDAL can
-    rebuild. But SHAPE_RESTORE_SHX makes GDAL rebuild it on every open even when
-    it already exists — a full sequential scan that turns a .qix-indexed bbox
-    read from ~20ms into ~11s. So enable it only, and only once, for a shapefile
-    whose .shx is genuinely missing."""
-    global _shx_restore_enabled
-    if _shx_restore_enabled or _suffix(locator) != ".shp":
-        return
-    if not os.path.isfile(locator):
-        return
+def _needs_shx_restore(locator: str) -> bool:
+    """True for a local .shp whose .shx sidecar is missing. Browsers upload only
+    the file the user dropped, so a lone .shp is recoverable — the .shx is a
+    redundant index GDAL can rebuild. SHAPE_RESTORE_SHX forces that rebuild on
+    every open even when the .shx already exists (a full scan that turns a
+    .qix-indexed bbox read from ~20ms into ~11s), so it is scoped to exactly the
+    reads that need it rather than left on globally."""
+    if _suffix(locator) != ".shp" or not os.path.isfile(locator):
+        return False
     stem = Path(locator)
-    if any(stem.with_suffix(suffix).is_file() for suffix in (".shx", ".SHX")):
-        return
-    with _shx_restore_lock:
-        if not _shx_restore_enabled:
-            import pyogrio
-
-            pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": True})
-            _shx_restore_enabled = True
+    return not any(stem.with_suffix(suffix).is_file() for suffix in (".shx", ".SHX"))
 
 
 @contextlib.contextmanager
-def _gdal_env():
+def _gdal_env(restore_shx: bool = False):
+    import pyogrio
     import rasterio
 
-    with rasterio.Env(
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        CPL_VSIL_CURL_USE_HEAD="YES",
-        GDAL_HTTP_MULTIRANGE="YES",
-        GDAL_HTTP_MAX_RETRY="2",
-        GDAL_HTTP_RETRY_DELAY="0.2",
-        CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
-        CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
-    ):
-        yield
+    if restore_shx:
+        pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": True})
+    try:
+        with rasterio.Env(
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            CPL_VSIL_CURL_USE_HEAD="YES",
+            GDAL_HTTP_MULTIRANGE="YES",
+            GDAL_HTTP_MAX_RETRY="2",
+            GDAL_HTTP_RETRY_DELAY="0.2",
+            CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
+            CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
+        ):
+            yield
+    finally:
+        if restore_shx:
+            pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": None})
 
 
 @dataclass
@@ -480,8 +473,7 @@ class VectorEngine:
         import pyogrio
         from pyproj import CRS, Transformer
 
-        _ensure_shx_restore(locator)
-        with _gdal_env():
+        with _gdal_env(restore_shx=_needs_shx_restore(locator)):
             layers = pyogrio.list_layers(locator)
             if layers is None or not len(layers):
                 raise ValueError("the dataset has no vector layers")
@@ -878,7 +870,7 @@ class VectorEngine:
         with self.lock:
             self._summary_jobs[sid] = {"status": "running"}
         try:
-            with _gdal_env():
+            with _gdal_env(restore_shx=_needs_shx_restore(source.locator)):
                 metadata, table = pyogrio.read_arrow(
                     source.locator,
                     layer=source.layer,
@@ -909,9 +901,19 @@ class VectorEngine:
 
     def job(self, source_id: str) -> dict[str, Any] | None:
         with self.lock:
-            if source_id not in self.sources:
+            source = self.sources.get(source_id)
+            if source is None:
                 return None
-            job = dict(self._summary_jobs.get(source_id) or {"status": "ready"})
+            recorded = self._summary_jobs.get(source_id)
+            if recorded is not None:
+                job = dict(recorded)
+            elif source.rtree_table or source_id in self._summaries:
+                # GeoPackage needs no build, and a loaded summary is complete.
+                job = {"status": "ready"}
+            else:
+                # No overview will ever exist (e.g. above SUMMARY_MAX_FEATURES);
+                # the source only ever serves biased samples.
+                job = {"status": "sample"}
         job["source_id"] = source_id
         return job
 
@@ -1018,15 +1020,17 @@ class VectorEngine:
         z: int,
         x: int,
         y: int,
+        inside=None,
     ) -> bytes:
         size = max(8, min(256, OVERVIEW_GRID_SIZE))
         if bbox[2] - bbox[0] <= 0 or bbox[3] - bbox[1] <= 0:
             return b""
         minx, maxx, miny, maxy, per_node = summary
-        inside = (
-            (maxx >= bbox[0]) & (minx <= bbox[2])
-            & (maxy >= bbox[1]) & (miny <= bbox[3])
-        )
+        if inside is None:
+            inside = (
+                (maxx >= bbox[0]) & (minx <= bbox[2])
+                & (maxy >= bbox[1]) & (miny <= bbox[3])
+            )
         if not inside.any():
             return b""
         grid = _coverage_grid(
@@ -1094,7 +1098,7 @@ class VectorEngine:
         else:
             kwargs["bbox"] = bbox
             kwargs["max_features"] = MAX_TILE_FEATURES + 1
-        with _gdal_env():
+        with _gdal_env(restore_shx=_needs_shx_restore(source.locator)):
             metadata, table = pyogrio.read_arrow(
                 source.locator,
                 layer=source.layer,
@@ -1174,25 +1178,29 @@ class VectorEngine:
         y: int,
     ) -> TileResult:
         """Draw a non-GeoPackage source's dense tiles while its overview builds.
-        The bbox read caps at the detail limit: at or under it the tile is the
-        exact, final geometry and is cacheable; over it the capped features are a
-        biased spatial sample, drawn so the map is not blank but never cached —
-        the exact overview replaces it once the summary lands."""
+        A geometry-only bbox read decides the tile: at or under the detail limit
+        it is sparse, so a second read fetches attributes for the exact, cacheable
+        detail tile; over it the capped geometries are a biased spatial sample,
+        drawn so the map is not blank but never cached — the exact overview
+        replaces it once the summary lands."""
         import pyogrio
         import shapely
 
-        with _gdal_env():
+        with _gdal_env(restore_shx=_needs_shx_restore(source.locator)):
             metadata, table = pyogrio.read_arrow(
                 source.locator,
                 layer=source.layer,
-                columns=source.attributes,
+                columns=[],
                 bbox=tuple(bbox),
                 max_features=MAX_TILE_FEATURES + 1,
             )
         if table.num_rows == 0:
             return TileResult(b"")
         if table.num_rows <= MAX_TILE_FEATURES:
-            return TileResult(self._detail_tile(source, metadata, table, z, x, y))
+            detail = self._read_detail(source, bbox, None)
+            if detail is None:
+                return TileResult(b"")
+            return TileResult(self._detail_tile(source, *detail, z, x, y))
         name = self._geometry_column(metadata, table)
         geometries = shapely.from_wkb(
             table.column(name).to_numpy(zero_copy_only=False)
@@ -1223,33 +1231,57 @@ class VectorEngine:
             source,
             _buffered_bounds(bounds_4326),
         )
-        if source.rtree_table:
-            dense, fids = self._indexed_feature_ids(source, source_bbox, cancel)
-            if dense:
-                return TileResult(
-                    self._overview_tile(source, source_bbox, z, x, y, cancel)
-                )
-        else:
-            summary = self._nongpkg_summary(source)
-            if summary is None:
-                return self._provisional_tile(source, source_bbox, z, x, y)
-            minx, maxx, miny, maxy, per_node = summary
-            inside = (
-                (maxx >= source_bbox[0]) & (minx <= source_bbox[2])
-                & (maxy >= source_bbox[1]) & (miny <= source_bbox[3])
+        if not source.rtree_table:
+            return self._nongpkg_tile(source, source_bbox, z, x, y, cancel)
+        dense, fids = self._indexed_feature_ids(source, source_bbox, cancel)
+        if dense:
+            return TileResult(
+                self._overview_tile(source, source_bbox, z, x, y, cancel)
             )
-            if inside.sum() * per_node > MAX_TILE_FEATURES:
-                return TileResult(
-                    self._overview_from_summary(
-                        source, summary, source_bbox, z, x, y
-                    )
-                )
-            fids = None
         if cancel is not None and cancel.is_set():
             raise TileCancelled(f"vector tile {z}/{x}/{y}")
         detail = self._read_detail(source, source_bbox, fids)
         if detail is None:
             return TileResult(b"")
+        metadata, table = detail
+        return TileResult(self._detail_tile(source, metadata, table, z, x, y))
+
+    def _nongpkg_tile(
+        self,
+        source: VectorSource,
+        source_bbox: tuple[float, float, float, float],
+        z: int,
+        x: int,
+        y: int,
+        cancel: threading.Event | None,
+    ) -> TileResult:
+        summary = self._nongpkg_summary(source)
+        if summary is None:
+            if cancel is not None and cancel.is_set():
+                raise TileCancelled(f"vector tile {z}/{x}/{y}")
+            return self._provisional_tile(source, source_bbox, z, x, y)
+        minx, maxx, miny, maxy, per_node = summary
+        inside = (
+            (maxx >= source_bbox[0]) & (minx <= source_bbox[2])
+            & (maxy >= source_bbox[1]) & (miny <= source_bbox[3])
+        )
+        if inside.sum() * per_node > MAX_TILE_FEATURES:
+            return TileResult(
+                self._overview_from_summary(
+                    source, summary, source_bbox, z, x, y, inside
+                )
+            )
+        if cancel is not None and cancel.is_set():
+            raise TileCancelled(f"vector tile {z}/{x}/{y}")
+        detail = self._read_detail(source, source_bbox, None)
+        if detail is None:
+            # The float32 summary undercounted this tile against GDAL's exact
+            # bbox filter; draw the overview from the summary rather than blank.
+            return TileResult(
+                self._overview_from_summary(
+                    source, summary, source_bbox, z, x, y, inside
+                )
+            )
         metadata, table = detail
         return TileResult(self._detail_tile(source, metadata, table, z, x, y))
 
