@@ -1138,6 +1138,147 @@ def test_a_large_file_splits_into_many_fixed_size_chunks_not_four(
         "a big file was still capped at a handful of segments")
 
 
+# -- the chunk PLAN, at sizes no test can afford to allocate ---------------------
+#
+# `_chunks` is arithmetic over one integer, so these drive it directly at real
+# repo sizes — `Comfy-Org/MiniMax-H3` is 30 files and 471GB with single files up
+# to 66.3GB, which is where an uncapped plan put nearly two thousand cursors in
+# one sidecar and rewrote all of them every second for hours.
+
+
+def _plan(base, size):
+    """The plan for `size`, with nothing allocated: no server, no file, no bytes."""
+    return base._chunks(size)
+
+
+def _tiles(pieces, size):
+    """Do these pieces cover [0, size) exactly once — no gap, no overlap?"""
+    if pieces[0]["start"] != 0 or pieces[-1]["end"] != size - 1:
+        return False
+    return all(later["start"] == earlier["end"] + 1
+               for earlier, later in zip(pieces, pieces[1:]))
+
+
+#: The point where the floor and the ceiling meet: `MAX_CHUNKS_PER_FILE` pieces
+#: of exactly `CHUNK_BYTES`. Derived, never written out — a literal here would
+#: pass while disagreeing with the constants it is supposed to be about.
+def _meeting_point(base):
+    return base.MAX_CHUNKS_PER_FILE * base.CHUNK_BYTES
+
+
+@pytest.mark.parametrize("size", [
+    32 * 1024 * 1024,          # exactly SEGMENT_MIN_BYTES: the first split file
+    int(4.6e9),                # a shard from today's catalog
+    int(10.4e9),               # the largest file in MiniMaxAI/MiniMax-H3
+    int(66.3e9),               # the largest file in Comfy-Org/MiniMax-H3
+    471 * 10 ** 9,             # that whole repo as one hypothetical file
+])
+def test_no_file_is_ever_split_into_more_than_the_cap(base, size):
+    """The bound, at every size worth naming. Uncapped, the 66.3GB file planned
+    1,976 pieces — and every one of them is a dict in a sidecar rewritten whole
+    on a one-second timer for the length of a multi-hour download."""
+    pieces = _plan(base, size)
+    assert len(pieces) <= base.MAX_CHUNKS_PER_FILE, size
+    assert _tiles(pieces, size), "the plan stopped covering the file"
+
+
+def test_below_the_meeting_point_the_FLOOR_still_decides(base):
+    """The cap must be invisible to every file smaller than it, which is every
+    model in today's catalog and every file of the 280-file MiniMax repo. A
+    10.4GB file is still exactly 32MB pieces — 311 of them, well under the
+    ceiling, so nothing about it changes."""
+    size = int(10.4e9)
+    pieces = _plan(base, size)
+    assert {piece["end"] - piece["start"] + 1 for piece in pieces[:-1]} == \
+        {base.CHUNK_BYTES}
+    # Derived, not a literal: what matters is that it is the count the floor
+    # alone produces, and that it is comfortably under the ceiling.
+    uncapped = -(-size // base.CHUNK_BYTES)
+    assert len(pieces) == uncapped < base.MAX_CHUNKS_PER_FILE
+
+
+def test_at_the_meeting_point_both_bounds_agree(base):
+    """`MAX_CHUNKS_PER_FILE` pieces of exactly `CHUNK_BYTES`, from either
+    direction — and one chunk either side of it still tiles the file, which is
+    the arithmetic most likely to be off by a byte."""
+    meeting = _meeting_point(base)
+    exact = _plan(base, meeting)
+    assert len(exact) == base.MAX_CHUNKS_PER_FILE
+    assert {piece["end"] - piece["start"] + 1 for piece in exact} == {base.CHUNK_BYTES}
+
+    for size in (meeting - base.CHUNK_BYTES, meeting - 1, meeting + 1,
+                 meeting + base.CHUNK_BYTES):
+        pieces = _plan(base, size)
+        assert len(pieces) <= base.MAX_CHUNKS_PER_FILE, size
+        assert _tiles(pieces, size), size
+
+
+def test_a_capped_file_is_exactly_the_cap_with_a_short_last_piece(base):
+    """The 66.3GB shape, spelled out: 500 pieces of ~133MB, the last one shorter
+    than the rest, nothing missing and nothing counted twice."""
+    size = int(66.3e9)
+    pieces = _plan(base, size)
+
+    assert len(pieces) == base.MAX_CHUNKS_PER_FILE
+    spans = [piece["end"] - piece["start"] + 1 for piece in pieces]
+    assert len(set(spans[:-1])) == 1, "the pieces before the last are not uniform"
+    assert spans[-1] <= spans[0]
+    assert spans[0] > base.CHUNK_BYTES, "the ceiling did not engage"
+    assert sum(spans) == size
+    assert _tiles(pieces, size)
+
+
+@pytest.mark.parametrize("size", [int(4.6e9), int(66.3e9), 471 * 10 ** 9])
+def test_the_plan_for_one_size_is_always_the_same_plan(base, size):
+    """THE resume property, and the reason the cap is per FILE rather than per
+    repo. `_chunks` is deterministic in `size` alone, so a resume re-derives the
+    boundaries the bytes were fetched into without persisting the piece count
+    anywhere (`plan`, `_restore`). A repo-wide budget would make this depend on
+    the file SET, and a resume after any change to it — a scoped download, an
+    `allow_patterns` fetch, a repo that gained a file — would re-plan a file
+    whose own bytes never moved and discard recorded progress to do it."""
+    assert _plan(base, size) == _plan(base, size)
+    assert _plan(base, size) == _fresh_base()._chunks(size)
+
+
+def test_a_sidecar_from_before_the_chunk_CAP_is_rejected_like_a_missing_one(
+        base, tmp_path):
+    """`SIDECAR_VERSION` had to move for this change, and this is why.
+
+    A version-2 sidecar for a 66.3GB file describes 1,976 pieces at every 32MB;
+    this build derives 500 at every ~133MB for the same file. Etag and size still
+    match, and each layout is internally consistent on its own terms — the exact
+    input that turns a resume into a silently wrong blob rather than an obviously
+    failed one. So the VERSION is what rejects it, before any of the geometry is
+    looked at (`_saved`).
+
+    Driven through `_saved` at the real size with nothing allocated: the version
+    check returns before the part file is ever consulted, which is precisely the
+    property being asserted. That today's number is ACCEPTED is covered
+    end-to-end by the resume tests above.
+    """
+    assert base.SIDECAR_VERSION >= 3, "the cap changed the layout without a bump"
+    size = int(66.3e9)
+    folder = str(tmp_path / "models--org--m")
+    os.makedirs(os.path.join(folder, "blobs"))
+    fetch = base._FileFetch(
+        folder, "org/m", "model.safetensors", "main",
+        {"url": "http://127.0.0.1/x", "location": "http://127.0.0.1/x",
+         "etag": "e7ag", "commit": "c0m", "size": size},
+        None, threading.Event())
+    # The layout an older build really would have left: `CHUNK_BYTES` pieces all
+    # the way up, all of them complete, and a first stretch of the file this
+    # build would consider one third of a single chunk.
+    with open(fetch.sidecar, "w") as handle:
+        json.dump({"version": 2, "etag": "e7ag", "size": size, "segments": [
+            {"start": at, "end": min(at + base.CHUNK_BYTES, size) - 1,
+             "done": min(base.CHUNK_BYTES, size - at)}
+            for at in range(0, 3 * base.CHUNK_BYTES, base.CHUNK_BYTES)]}, handle)
+
+    assert fetch._saved() is None, \
+        "a pre-cap sidecar was read as a layout to resume into"
+
+
 def test_a_slow_chunk_does_not_block_other_chunks_from_starting(base, monkeypatch,
                                                                 tmp_path):
     """The mechanism behind the tail fix: workers pull the NEXT chunk off a

@@ -415,6 +415,12 @@ SEGMENT_MIN_BYTES = 32 * 1024 * 1024
 #: big each piece is once splitting happens, and nothing says a future tuning
 #: pass changes them together.
 #:
+#: **A FLOOR, not the size — see `MAX_CHUNKS_PER_FILE`.** Every piece is exactly
+#: this big up to a file of `500 × CHUNK_BYTES` (16,777,216,000 bytes, ~16.8GB);
+#: above that the piece grows so that the COUNT stops. Everything below is about
+#: why a fixed size rather than `size / N`, and it holds unchanged: the point was
+#: never 32MB specifically, it was many more units of work than connections.
+#:
 #: **Fixed size, not `size / N` — this is the fix for the download's tail.**
 #: A big shard used to become a handful of EQUAL shares (see the retired
 #: `MAX_SEGMENTS_PER_FILE` below): four connections at four different real
@@ -450,6 +456,47 @@ SEGMENT_MIN_BYTES = 32 * 1024 * 1024
 #: left as a real option for whoever next has a reason to prefer it, not
 #: implemented speculatively here.
 CHUNK_BYTES = 32 * 1024 * 1024
+#: The most pieces ONE file may be split into, whatever its size. Together with
+#: the floor above:
+#:
+#:     chunk = max(CHUNK_BYTES, ceil(size / MAX_CHUNKS_PER_FILE))
+#:
+#: so a file grows its piece SIZE once it would otherwise grow its piece COUNT
+#: past this. The floor and the ceiling meet at exactly `500 × CHUNK_BYTES` —
+#: 16,777,216,000 bytes, ~16.8GB — and every file below that is chunked exactly
+#: as it was before this cap existed, which is every model in today's catalog
+#: and every file of the 280-file `MiniMaxAI/MiniMax-H3` (its largest plans 311
+#: pieces, so the cap never engages there at all).
+#:
+#: **The cost this removes is SIDECAR BOOKKEEPING, and nothing else.** Every
+#: segment's cursor lives in the sidecar, which is rewritten whole every
+#: `FLUSH_EVERY_S` (one second) for the life of the download. `Comfy-Org/MiniMax-H3`
+#: — 30 files, 471GB, with single files up to 66.3GB — planned 1,976 segments in
+#: one file and 14,057 across the repo: serialising ~2,000 dicts on a 1Hz timer
+#: for the several hours such a download runs, per file in flight. Capped, that
+#: same 66.3GB file is 500 × 133MB.
+#:
+#: **It is NOT a rate-limit measure and must not be read as one.** The Hub meters
+#: URLs carrying a `/resolve/` segment; our ranged GETs go to the presigned CDN
+#: location, which carries none, so chunk count consumes no quota at all. The
+#: metered cost of a download is about one metadata resolve per FILE (280 for the
+#: largest MiniMax repo, against 3,000 per five minutes anonymously), which no
+#: chunking decision changes. What protects against rate limits is the Hub token,
+#: the `RateLimit` parse in `_throttle_wait_s`, and `_resolved_meta`.
+#:
+#: **Why this does not reintroduce `_RETIRED_MAX_SEGMENTS_PER_FILE`'s tail
+#: problem.** That cap was 4 — at or below `MAX_CONNECTIONS = 8`, so a big file
+#: became a handful of static shares and a worker that finished early had nothing
+#: to steal. 500 units against 8 connections is still sixty times more work than
+#: workers, which is the property the tail fix actually needed; a queue that deep
+#: hands off exactly as well as an uncapped one.
+#:
+#: **The accepted cost:** a failed chunk re-fetches a whole chunk, so at the
+#: 66.3GB extreme that is up to 133MB rather than 32MB. It only applies above
+#: ~16.8GB, where 133MB is two tenths of a percent of the file, and the retry
+#: loop's own budget (`SEGMENT_ATTEMPTS`) already makes exactly this trade one
+#: size down.
+MAX_CHUNKS_PER_FILE = 500
 #: Across everything — the ONE number that bounds how many sockets a download
 #: opens. A pool per file would multiply the caps together.
 MAX_CONNECTIONS = 8
@@ -540,10 +587,20 @@ FLUSH_EVERY_S = 1.0
 DEFAULT_REVISION = "main"
 
 #: The sidecar's own format number. Bumped whenever what a sidecar MEANS
-#: changes shape — the chunk queue is exactly such a change: a segment used to
-#: be one of `size / N` equal shares, and is now one of many fixed-size
-#: `CHUNK_BYTES` pieces, so a sidecar an older build left behind describes
-#: boundaries this build would derive differently for the same file. Identity
+#: changes shape — twice so far, and both times for the same reason.
+#:
+#: **3: `MAX_CHUNKS_PER_FILE`.** A file above `500 × CHUNK_BYTES` (~16.8GB) is
+#: now split into 500 larger pieces rather than into `CHUNK_BYTES` ones, so a
+#: version-2 sidecar for such a file lists boundaries this build would never
+#: derive — and lists MORE of them, at every 32MB rather than every
+#: `ceil(size/500)`. Every SMALLER file is planned identically, so nothing but
+#: the version number distinguishes a stale sidecar from a current one, which is
+#: exactly the dangerous shape described below.
+#:
+#: **2: the chunk queue.** A segment used to be one of `size / N` equal shares,
+#: and became one of many fixed-size `CHUNK_BYTES` pieces, so a sidecar an older
+#: build left behind describes boundaries this build would derive differently for
+#: the same file. Identity
 #: (etag, size) still matches such a sidecar, and the layout even often looks
 #: internally consistent — which is exactly the shape of input that turns a
 #: resume into a silently wrong blob rather than an obviously failed one, so
@@ -552,7 +609,7 @@ DEFAULT_REVISION = "main"
 #: field existed reads as missing — is treated exactly like no sidecar at all:
 #: the safe reading, since a fresh download from a clean chunk plan is always
 #: correct, merely slower than a resume would have been.
-SIDECAR_VERSION = 2
+SIDECAR_VERSION = 3
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
 _RANGE_START = re.compile(r"^bytes\s+(\d+)-")
@@ -923,13 +980,13 @@ def _file_size(path):
 
 
 def _chunks(size):
-    """Split [0, size) into fixed `CHUNK_BYTES` pieces. `done` is the cursor.
+    """Split [0, size) into `CHUNK_BYTES`-or-larger pieces. `done` is the cursor.
 
     Below `SEGMENT_MIN_BYTES` the file is one piece covering the whole thing —
     unchanged from before the chunk queue, and still the right answer: there
     is nothing to gain from splitting a file too small to matter.
 
-    At or above it, every piece but the last is exactly `CHUNK_BYTES` — fixed
+    At or above it, every piece but the last is exactly one chunk — fixed
     size, not `size / N`. A fixed size is what turns a big file into MANY
     units of work rather than a HANDFUL: the whole point, since a queue with
     only as many items as connections gives a slow one nothing to hand off
@@ -937,17 +994,30 @@ def _chunks(size):
     30-shard repo and a single 4.6GB shard both resolve to plans a worker can
     keep pulling from until the file is actually done.
 
-    Deterministic in `size` alone — no `count` argument, unlike the equal-share
-    split this replaced — which is what lets a resume regenerate the exact
-    same boundaries a previous run planned without having to persist the
-    piece count anywhere but the sidecar's own `segments` list.
+    The chunk is `CHUNK_BYTES` up to the point where that would mean more than
+    `MAX_CHUNKS_PER_FILE` pieces, and grows from there — a floor on the size and
+    a ceiling on the count, which is what keeps a 66GB file's sidecar from
+    carrying two thousand cursors rewritten every second.
+
+    **PER FILE, and not per repo, deliberately.** A repo-wide budget would make
+    one file's chunk size depend on the rest of the FILE SET, and this function
+    is deterministic in `size` alone — no `count` argument, unlike the
+    equal-share split it replaced. That is what lets a resume regenerate the
+    exact boundaries a previous run planned without persisting the piece count
+    anywhere but the sidecar's own `segments` list; under a per-repo cap, a
+    resume after any change to the file list (a scoped download, an
+    `allow_patterns` fetch, a repo that gained a file) would re-plan a file whose
+    own bytes never moved, and throw away recorded progress to do it. The tighter
+    bound is not worth that.
     """
     if size < SEGMENT_MIN_BYTES:
         return [{"start": 0, "end": size - 1, "done": 0}]
+    chunk = max(CHUNK_BYTES,
+                (size + MAX_CHUNKS_PER_FILE - 1) // MAX_CHUNKS_PER_FILE)
     pieces = []
     start = 0
     while start < size:
-        end = min(start + CHUNK_BYTES, size) - 1
+        end = min(start + chunk, size) - 1
         pieces.append({"start": start, "end": end, "done": 0})
         start = end + 1
     return pieces
