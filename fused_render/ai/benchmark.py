@@ -206,6 +206,17 @@ def machine() -> dict:
 #: actually gets rather than a number invented here.
 DEFAULT_IMAGE_STEPS = 28
 
+#: How many further polls to allow a pending record that says `error` with no
+#: `error` message yet. `_bring_up` writes `state` from its health poll OUTSIDE
+#: `supervisor._lock` and only then raises into the handler that writes the
+#: message, so there is a real window where a waiter can read the state and not
+#: the reason. Reporting the generic sentence there would throw away the runner's
+#: own — the very information loss polling the record was meant to recover — and
+#: waiting is enough, because the raise is the next thing that happens on that
+#: thread. Bounded, so a record genuinely stuck at `error` with nothing written is
+#: still answered in a few poll intervals rather than at the hour-long timeout.
+_ERROR_GRACE_POLLS = 4
+
 #: How long to wait for a cold model, and how often to ask. The wait matches the
 #: supervisor's own (`LOAD_WAIT_TIMEOUT_S`, an hour) because it is the same wait
 #: — a first-ever bring-up is a `uv sync` followed by a multi-GB pull — and a
@@ -378,10 +389,13 @@ def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
         start = _now()
         try:
             supervisor.generate_image(model, request, job)
-        finally:
+        except BaseException as e:
             # The image path has no queue and so inherits no row today; closing
             # anyway costs one swallowed `JobError` and means the two long calls
             # do not differ in a way somebody has to remember.
+            _close_any_row(job, e)
+            raise
+        else:
             _close_any_row(job)
         total = _now() - start
     if not timed:
@@ -441,10 +455,14 @@ def _measure_transcript(model: str, workload: Workload, *,
         start = _now()
         try:
             supervisor.generate_transcript(model, request, job)
-        finally:
-            # In a `finally`, because the row this closes is inherited on the
-            # QUEUED path — and a run that raises out of the queue (a cancel, a
-            # dead worker) is exactly when a row left running is most misleading.
+        except BaseException as e:
+            # Both arms close the row, because the row this closes is inherited on
+            # the QUEUED path and a run that raises out of the queue (a ✕, a dead
+            # worker) is exactly when a row left running is most misleading. What
+            # the arms do NOT share is the state — see `_close_any_row`.
+            _close_any_row(job, e)
+            raise
+        else:
             _close_any_row(job)
         total = _now() - start
     if not timed:
@@ -517,7 +535,7 @@ def _unwatched_job() -> str:
     return jobs.SERVER_ID_PREFIX + "ai-benchmark-unwatched-" + secrets.token_hex(6)
 
 
-def _close_any_row(job: str) -> None:
+def _close_any_row(job: str, failure: BaseException | None = None) -> None:
     """Put a TERMINAL state on `job` if a row for it exists — and create nothing.
 
     **Titleless on purpose, and that is the whole mechanism.** `jobs.upsert`
@@ -533,8 +551,29 @@ def _close_any_row(job: str) -> None:
     With no terminal report it then sat `running` until `jobs._sweep` evicted it.
     Fixed here rather than in `supervisor.py`, which is byte-identical to main and
     worth keeping that way.
+
+    **The state follows the OUTCOME, which is the half the first cut got wrong.**
+    It reported `done` from a bare `finally`, so on exactly the path this exists
+    for — that queued row, which is `cancellable` — pressing the ✕ raised
+    `SupervisorError("cancelled")` out of `_await_turn` and was answered with a
+    green "done" carrying the queued detail, `jobs.upsert` clearing
+    `cancel_requested` on the way because it treats `done` as terminal. A dead
+    worker did the same: a row claiming success for a run recorded `ok:false`.
+    So the shape here is `supervisor.start_transcribe`'s own `run()` — cancelled,
+    error with the reason, or done.
+
+    `str(e)` rather than `supervisor._failure_text(e)`: that helper LOGS a
+    traceback, `run()` already calls it for the record, and one failure should not
+    print two.
     """
-    supervisor._report(job, state="done")
+    if failure is None:
+        supervisor._report(job, state="done")
+        return
+    message = str(failure) or failure.__class__.__name__
+    if isinstance(failure, Cancelled) or message == "cancelled":
+        supervisor._report(job, state="cancelled")
+    else:
+        supervisor._report(job, state="error", message=message)
 
 
 def _load_to_ready(model: str, capability: str) -> float | None:
@@ -562,7 +601,10 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     `ok:false, "did not finish loading in time"` — a phantom "this model failed
     here", which is the single thing this feature's history must never contain.
     A failed load is now the loader's OWN sentence, immediately, and a cancelled
-    one is not recorded at all.
+    one is not recorded at all — with one honest caveat, `_ERROR_GRACE_POLLS`:
+    the state and the message are not written together, so a sample can land
+    between them, and the wait rides that out rather than reporting a generic
+    failure it would have had the real reason for one poll later.
 
     `_start_resident` rather than `load()`: it is what `load()` calls for a
     non-`weights_only` request and it hands back the pending record this loop
@@ -576,15 +618,24 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     start = _now()
     _started, pending = supervisor._start_resident(model, capability)
     deadline = start + _LOAD_TIMEOUT_S
+    error_polls = 0
     while True:
         if supervisor.ready_worker(capability, model) is not None:
             return _now() - start
-        # Both reads in ONE critical section, because `_bring_up`'s failure path
-        # WRITES them in one: it stamps the error on the record and drops the
-        # record from the table without releasing the lock between. Read apart, a
-        # waiter could catch the table already emptied and the error not yet
+        # One critical section for all three reads, which buys exactly one thing:
+        # `_bring_up`'s EXCEPTION path writes the error and drops the record from
+        # the table without releasing the lock between, so sampling those two
+        # apart could catch the table already emptied and the message not yet
         # written and report a phantom eviction for a load that failed with a real
-        # message. Same ordering, and the same reason, as `supervisor._wait_ready`.
+        # reason. Same ordering, and the same reason, as `supervisor._wait_ready`.
+        #
+        # It does NOT make `state` and `error` mutually consistent, and it is
+        # worth being precise about that rather than implying otherwise: the
+        # health-poll path assigns `worker.state` OUTSIDE the lock and only then
+        # raises, so `state == "error"` with an empty `error` is a reachable
+        # sample. `_ERROR_GRACE_POLLS` is what that costs us. The cancel
+        # discrimination below is unaffected — a cancel only ever arrives through
+        # the exception path, which does write both under the lock.
         with supervisor._lock:
             state, error = pending.state, pending.error
             evicted = supervisor._workers.get(capability) is not pending
@@ -596,7 +647,13 @@ def _load_to_ready(model: str, capability: str) -> float | None:
             # not.
             if error == "cancelled":
                 raise Cancelled()
-            raise supervisor.SupervisorError(error or "the model failed to load")
+            if error:
+                raise supervisor.SupervisorError(error)
+            # The window above. Give the raising thread a few polls to say WHY
+            # before falling back to a sentence that says nothing.
+            error_polls += 1
+            if error_polls > _ERROR_GRACE_POLLS:
+                raise supervisor.SupervisorError("the model failed to load")
         if evicted:
             # Genuinely taken away rather than broken: another model claimed the
             # capability, or an unload landed. The record we hold never errored,

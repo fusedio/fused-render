@@ -773,3 +773,176 @@ def test_closing_a_row_that_does_not_exist_creates_nothing(norows, monkeypatch):
     record, _ = _text_run(norows, monkeypatch)
     assert record["ok"] is True
     assert jobs.list_jobs() == []
+
+
+# -- the inherited row's terminal state tells the truth -------------------------
+#
+# `_close_any_row` sent `state="done"` unconditionally from a bare `finally`, so
+# on the exact path it exists for — a speech benchmark queued behind a real
+# transcription — pressing the ✕ flipped that row to a green "done" with the
+# queued detail still on it, and `jobs.upsert` cleared `cancel_requested` on the
+# way (it treats `done` as terminal). A dead worker did the same: a row reporting
+# success for a run recorded `ok:false`. Mirrors `supervisor.start_transcribe`'s
+# own `run()`, which reports `cancelled`/`error`/`done` by outcome.
+
+
+def _queue_row(job: str, path: str) -> None:
+    """What `supervisor._await_turn` writes when the transcribe lock is held."""
+    jobs.upsert({"id": job, "title": os.path.basename(path), "state": "running",
+                 "kind": "task", "cancellable": True, "unit": "s",
+                 "detail": "Queued behind another transcription…"}, server=True)
+
+
+def test_a_cancelled_queued_transcription_closes_its_row_as_cancelled(
+        norows, monkeypatch):
+    seen = {}
+
+    def generate_transcript(model, request, job):
+        _queue_row(job, request["path"])
+        seen["job"] = job
+        raise benchmark.supervisor.SupervisorError("cancelled")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    row = next(r for r in jobs.list_jobs() if r["id"] == seen["job"])
+    assert row["state"] == "cancelled", (
+        "the ✕ the user pressed was answered with a green 'done'"
+    )
+
+
+def test_a_failed_queued_transcription_closes_its_row_as_an_error(norows,
+                                                                 monkeypatch):
+    seen = {}
+
+    def generate_transcript(model, request, job):
+        _queue_row(job, request["path"])
+        seen["job"] = job
+        raise benchmark.supervisor.SupervisorError(
+            "the transcription process did not answer")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    record = benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    assert record["ok"] is False
+    row = next(r for r in jobs.list_jobs() if r["id"] == seen["job"])
+    assert row["state"] == "error"
+    # The reason travels onto the row, so the manager does not just show a colour.
+    assert "did not answer" in row["message"]
+
+
+def test_a_successful_queued_transcription_still_closes_its_row_as_done(
+        norows, monkeypatch):
+    seen = {}
+
+    def generate_transcript(model, request, job):
+        _queue_row(job, request["path"])
+        seen["job"] = job
+        norows.advance(3.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    row = next(r for r in jobs.list_jobs() if r["id"] == seen["job"])
+    assert row["state"] == "done"
+
+
+def test_a_cancelled_image_render_closes_its_row_as_cancelled(norows, monkeypatch):
+    """The image path inherits no row today, but it takes the same code — so the
+    two long calls must not differ in a way somebody has to remember."""
+    seen = {}
+
+    def generate_image(model, request, job):
+        _queue_row(job, request["out"])
+        seen["job"] = job
+        raise benchmark.supervisor.SupervisorError("cancelled")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_image", generate_image)
+    monkeypatch.setattr(benchmark, "_image_steps", lambda model: 4)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/image-model", ai_registry.IMAGE_GENERATION)
+    assert next(r for r in jobs.list_jobs()
+                if r["id"] == seen["job"])["state"] == "cancelled"
+
+
+def test_closing_a_row_that_does_not_exist_creates_nothing_on_the_real_path(
+        norows, monkeypatch):
+    """Drives a TRANSCRIPT run, which is the only path that calls
+    `_close_any_row` — the earlier version of this test drove a text run and so
+    asserted an absence on a path that never called the function it documents.
+    Titlelessness is the property: `jobs.upsert` refuses a first report with no
+    title, so the report closes a row that exists and cannot bring one about."""
+    def generate_transcript(model, request, job):
+        norows.advance(3.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    record = benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    assert record["ok"] is True
+    assert jobs.list_jobs() == []
+
+
+# -- an error state that has not been written yet -------------------------------
+
+
+def test_a_half_written_error_is_waited_out_rather_than_generalised(loading,
+                                                                   monkeypatch):
+    """`_bring_up` sets `state` from its health poll OUTSIDE `_lock` and only
+    then raises, so there is a window where a waiter sees `state == "error"` with
+    `error` still empty. Reporting the generic "the model failed to load" there
+    throws away the runner's own sentence — the exact information loss the
+    record-polling change was made to fix. So an empty error is treated as
+    not-yet-written and polled again."""
+    clock, pending = loading
+    # Read 1 is `_load_to_ready`'s own warm check, BEFORE the bring-up starts —
+    # counted explicitly, because an off-by-one here silently moves the window
+    # outside the poll loop and the test passes without ever entering it.
+    reads = {"n": 0}
+
+    def ready_worker(capability, model=None):
+        reads["n"] += 1
+        clock.advance(1.0)
+        if reads["n"] == 2:
+            # The window: `state` written by the health poll outside `_lock`,
+            # `error` not yet written by the except path.
+            pending.state = "error"
+            pending.error = ""
+        elif reads["n"] == 3:
+            # `_bring_up`'s except path lands, writing both under the lock.
+            pending.error = "mlx_lm could not read config.json"
+            benchmark.supervisor._workers.clear()
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert record["error"] == "mlx_lm could not read config.json"
+    # It really did pass through the half-written window rather than skipping it.
+    assert reads["n"] >= 3
+
+
+def test_an_error_that_is_never_written_still_ends_the_wait(loading, monkeypatch):
+    """The grace is BOUNDED. A record stuck at `error` with nothing written is
+    still answered — generically, which is all there is to say — rather than
+    polled until the hour-long timeout."""
+    clock, pending = loading
+    reads = {"n": 0}
+
+    def ready_worker(capability, model=None):
+        reads["n"] += 1
+        clock.advance(1.0)
+        pending.state = "error"
+        pending.error = ""
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert record["error"] == "the model failed to load"
+    # Ended on the GRACE, not on the 600s timeout the fixture sets: the poll
+    # interval is 0, so a wait that ran to the deadline would show hundreds of
+    # reads rather than a handful.
+    assert reads["n"] < 10

@@ -7964,8 +7964,13 @@ an AI Models page that could say what was on disk but not what was *running*.
     basename is what titles the row and "benchmark.wav" could be a file the user
     dropped in; and every long call ends with a TITLELESS terminal report, which
     closes a row that exists and — because `jobs.upsert` refuses a first report
-    with no title — cannot bring one into being. So no benchmark leaves a row
-    running, and the ordinary path still creates none.
+    with no title — cannot bring one into being. **That report says what actually
+    happened**: `cancelled`, or `error` with the reason, or `done`, the shape
+    `supervisor.start_transcribe` uses. Reporting `done` unconditionally answered
+    the ✕ the user had just pressed with a green success (clearing
+    `cancel_requested` on the way, since `upsert` treats `done` as terminal) and
+    marked a dead worker's run as finished. So no benchmark leaves a row running,
+    none leaves one lying, and the ordinary path still creates none.
 
     The reason is a namespace conflict, and it is worth stating in full because
     it took three attempts to see: **server job rows are keyed by TITLE.** A
