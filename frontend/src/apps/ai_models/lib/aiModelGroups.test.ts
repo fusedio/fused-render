@@ -3,8 +3,18 @@
 // answer is invisible on a screenshot — a mystery repo and a model this machine
 // cannot load look identical once they are both wearing a dead-end tag.
 import { describe, expect, it } from "bun:test";
-import type { AiModelRepo } from "@platform/lib/api";
-import { UNRECOGNISED, groupRepos, loadRefusal, noEngineReason } from "@apps/ai_models/lib/aiModelGroups";
+import type { AiCatalogCapability, AiCatalogModel, AiModelRepo } from "@platform/lib/api";
+import {
+  PARTIAL_TAG,
+  UNRECOGNISED,
+  cardedOnDisk,
+  groupRepos,
+  loadRefusal,
+  mergeSections,
+  noEngineReason,
+  partialNote,
+  resumable,
+} from "@apps/ai_models/lib/aiModelGroups";
 
 function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
   return {
@@ -28,6 +38,7 @@ function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
     component: null,
     revisions: 1,
     refs: [],
+    partial: false,
     ...over,
   };
 }
@@ -190,6 +201,333 @@ describe("the order inside a subgroup is the listing's own", () => {
   });
 });
 
+// -- the merged row: disk, then what to get -----------------------------------
+// The Local tab's capability rows are two payloads joined, and every way that
+// join can be wrong is invisible on a screenshot. A recommended card for a model
+// already on disk is ONE model drawn twice, and it looks exactly like two
+// models. A capability whose section vanished because nothing is downloaded for
+// it is the empty page this whole change exists to remove, and it looks exactly
+// like a capability the app does not serve.
+
+function curated(id: string, over: Partial<AiCatalogModel> = {}): AiCatalogModel {
+  return {
+    id,
+    label: id.split("/")[1] ?? id,
+    size_gb: 4,
+    note: `Why you would pick ${id}.`,
+    source: "curated",
+    // Both flags are on the payload and this module reads NEITHER — the page's
+    // own walk is the single source of truth for "downloaded" (see
+    // `mergeSections`). Seeded WRONG on purpose in the tests below, so a reader
+    // that started trusting them would fail here rather than in a release.
+    downloaded: false,
+    loaded: false,
+    ...over,
+  };
+}
+
+function capability(
+  cap: string,
+  models: AiCatalogModel[],
+  over: Partial<AiCatalogCapability> = {},
+): AiCatalogCapability {
+  return {
+    capability: cap,
+    runner: "mlx-lm",
+    runnerLabel: "MLX LM (Apple Silicon)",
+    runnerShortLabel: "MLX LM",
+    runnerNote: null,
+    available: true,
+    reason: null,
+    default: "mlx-lm",
+    models,
+    ...over,
+  };
+}
+
+/** What the page hands `mergeSections`: the map of models that already have a
+ *  disk card. The module's OWN function, not a re-implementation — the two
+ *  readings of "on disk" are the thing under test in the last describe below,
+ *  and a fixture with its own idea of them would hide exactly that. */
+function disked(repos: AiModelRepo[]): Map<string, string> {
+  return cardedOnDisk(repos);
+}
+
+/** The page's `loadedById`, membership only — a resident worker per id. */
+function resident(...ids: string[]): Map<string, unknown> {
+  return new Map(ids.map((id) => [id, { model: id, state: "ready" }]));
+}
+
+const CATALOG: AiCatalogCapability[] = [
+  capability("text-generation", [
+    curated("mlx-community/Qwen3.5-9B-OptiQ-4bit", { downloaded: false }),
+    curated("mlx-community/Llama-3.2-3B-Instruct-4bit"),
+    // Not curation's pick: a repo the catalog found on THIS disk (D323). The
+    // Local tab already draws every one of those as a disk card, so a
+    // recommended card for one would be the same model twice in one row.
+    curated("somebody/found-on-disk", { source: "cached" }),
+  ]),
+  capability("text-to-image", [curated("mlx-community/FLUX.2-Klein-4B-4bit")], {
+    runner: "mflux-image",
+    runnerShortLabel: "MLX FLUX",
+  }),
+  capability("automatic-speech-recognition", [curated("mlx-community/whisper-tiny")], {
+    runnerShortLabel: "MLX Whisper",
+  }),
+];
+
+const sectionsOf = (repos: AiModelRepo[], loaded = resident()) =>
+  mergeSections(groupRepos(repos).models.groups, CATALOG, loaded, disked(repos));
+
+describe("a capability's row is disk then recommended", () => {
+  // The one order the whole row rests on. Loaded is the only state that costs
+  // something continuously, so it leads; recommended is the only half that is
+  // not on this machine, so it trails; and the disk rows in between run most
+  // recently used first, falling back to the server's size sort when atime has
+  // nothing to say.
+  it("puts what is loaded first, then the rest of the disk, then recommendations", () => {
+    const sections = sectionsOf(ALL, resident("mlx-community/Qwen3-8B-4bit"));
+    const text = sections.find((s) => s.key === "text-generation");
+    // Qwen3-8B-4bit is the SMALLER of the two and the server sorted it second;
+    // being resident is what moves it.
+    expect(text?.disk.map((r) => r.id)).toEqual([
+      "mlx-community/Qwen3-8B-4bit",
+      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+    ]);
+    expect(text?.recommended.map((m) => m.id)).toEqual([
+      "mlx-community/Llama-3.2-3B-Instruct-4bit",
+    ]);
+  });
+
+  it("keeps the listing's order when nothing is resident and atime is silent", () => {
+    const text = sectionsOf(ALL).find((s) => s.key === "text-generation");
+    expect(text?.disk.map((r) => r.id)).toEqual([
+      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "mlx-community/Qwen3-8B-4bit",
+    ]);
+  });
+
+  // Behind the resident card the row is MRU: a horizontal row is read a few
+  // cards deep, so the front holds what the user actually reaches for.
+  it("orders the unloaded disk rows by last use, newest first", () => {
+    const stale = repo({
+      id: "a/stale",
+      capability: "text-generation",
+      size: 900,
+      lastUsed: 1_000,
+    });
+    const fresh = repo({
+      id: "z/fresh",
+      capability: "text-generation",
+      size: 100,
+      lastUsed: 2_000,
+    });
+    const text = sectionsOf([stale, fresh]).find((s) => s.key === "text-generation");
+    // The server sorted a/stale first (bigger); recency is what flips them.
+    expect(text?.disk.map((r) => r.id)).toEqual(["z/fresh", "a/stale"]);
+  });
+
+  it("sorts a null lastUsed after every dated row, in the listing's order", () => {
+    const dated = repo({
+      id: "a/dated",
+      capability: "text-generation",
+      size: 100,
+      lastUsed: 1_000,
+    });
+    const neverBig = repo({ id: "b/never-big", capability: "text-generation", size: 900 });
+    const neverSmall = repo({ id: "c/never-small", capability: "text-generation", size: 500 });
+    const text = sectionsOf([neverBig, neverSmall, dated]).find(
+      (s) => s.key === "text-generation",
+    );
+    expect(text?.disk.map((r) => r.id)).toEqual(["a/dated", "b/never-big", "c/never-small"]);
+  });
+
+  // Residency still beats recency: the model costing memory RIGHT NOW leads
+  // even when another card was touched more recently.
+  it("keeps the resident card ahead of a more recently used one", () => {
+    const recent = repo({
+      id: "a/recent",
+      capability: "text-generation",
+      size: 900,
+      lastUsed: 2_000,
+    });
+    const held = repo({
+      id: "z/held",
+      capability: "text-generation",
+      size: 100,
+      lastUsed: 1_000,
+    });
+    const text = sectionsOf([recent, held], resident("z/held")).find(
+      (s) => s.key === "text-generation",
+    );
+    expect(text?.disk.map((r) => r.id)).toEqual(["z/held", "a/recent"]);
+  });
+
+  // The dedupe, and it is the reason the recommended half is filtered against
+  // the page's walk rather than against the catalog's own `downloaded` flag.
+  it("does not recommend a model this disk already has", () => {
+    const text = sectionsOf(ALL).find((s) => s.key === "text-generation");
+    expect(text?.recommended.map((m) => m.id)).not.toContain(
+      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+    );
+    expect(text?.disk.map((r) => r.id)).toContain("mlx-community/Qwen3.5-9B-OptiQ-4bit");
+  });
+
+  // The catalog carries the repos it found on this disk as well as the curation
+  // (D323). Those are disk cards here by definition, so recommending one would
+  // be one model in a row twice.
+  it("recommends the curated half only", () => {
+    const ids = sectionsOf([]).flatMap((s) => s.recommended.map((m) => m.id));
+    expect(ids).not.toContain("somebody/found-on-disk");
+  });
+
+  // Nothing is claimed while the walk is still running: a recommendation IS the
+  // claim that this machine does not have the model.
+  it("recommends nothing until the disk walk has answered", () => {
+    const sections = mergeSections(groupRepos(ALL).models.groups, CATALOG, resident(), null);
+    expect(sections.flatMap((s) => s.recommended)).toEqual([]);
+    // …and the disk half is untouched by that: what is here is here.
+    expect(sections.map((s) => s.key)).toEqual([
+      "text-generation",
+      "text-to-image",
+      "automatic-speech-recognition",
+      UNRECOGNISED,
+    ]);
+  });
+});
+
+describe("which rows exist at all", () => {
+  // The whole point on a fresh machine, and the extension of D265's empty-state
+  // fix: a capability with nothing downloaded still gets a row, because the row
+  // is what says what to download.
+  it("renders a capability with no disk models but something to recommend", () => {
+    const sections = sectionsOf([]);
+    expect(sections.map((s) => s.key)).toEqual([
+      "text-generation",
+      "text-to-image",
+      "automatic-speech-recognition",
+    ]);
+    expect(sections.every((s) => s.disk.length === 0)).toBe(true);
+    expect(sections.every((s) => s.recommended.length > 0)).toBe(true);
+  });
+
+  it("renders nothing at all when the catalog recommends nothing and the disk is empty", () => {
+    expect(mergeSections([], [], resident(), new Map())).toEqual([]);
+    expect(mergeSections([], null, resident(), new Map())).toEqual([]);
+  });
+
+  // A capability the catalog knows about and has no shortlist for is not a
+  // heading: an empty row is worse than a missing one, and the Engines tab is
+  // where a capability with no models is explained.
+  it("drops a capability whose whole shortlist is already downloaded", () => {
+    const sections = mergeSections(
+      [],
+      [capability("text-generation", [curated("a/one")])],
+      resident(),
+      new Map([["a/one", "/cache/a/one"]]),
+    );
+    expect(sections).toEqual([]);
+  });
+
+  // A capability only the DISK knows about keeps its place — after the three the
+  // app serves, before Unrecognised — and gets no recommendations, because
+  // there is no catalog entry to take them from.
+  it("sorts a capability the catalog has never heard of before Unrecognised", () => {
+    const sections = sectionsOf([
+      WESPEAKER,
+      repo({ id: "acme/ranker", capability: "text-ranking" }),
+      WHISPER,
+    ]);
+    expect(sections.map((s) => s.key)).toEqual([
+      "text-generation",
+      "text-to-image",
+      "automatic-speech-recognition",
+      "text-ranking",
+      UNRECOGNISED,
+    ]);
+    const ranking = sections.find((s) => s.key === "text-ranking");
+    expect(ranking?.recommended).toEqual([]);
+    expect(ranking?.runner).toBeNull();
+    // Text generation and image generation are here on the strength of their
+    // recommendations alone — that is the row the fresh-machine case needs.
+    expect(sections[0].disk).toEqual([]);
+    expect(sections[0].recommended.length).toBeGreaterThan(0);
+  });
+
+  // Last, past every capability known and unknown, and never recommended into:
+  // "we do not know what this is" has no shortlist by definition.
+  it("keeps Unrecognised last and empty of recommendations", () => {
+    const sections = sectionsOf(ALL);
+    expect(sections[sections.length - 1].key).toBe(UNRECOGNISED);
+    expect(sections[sections.length - 1].recommended).toEqual([]);
+    expect(sections[sections.length - 1].note).toBe(noEngineReason(WESPEAKER));
+  });
+
+  // The engine-fetched cards are their own section below and have nothing to do
+  // with this join — nothing recommends a component, because nobody chooses one.
+  it("leaves the components section alone", () => {
+    const g = groupRepos(ALL);
+    const sections = mergeSections(g.models.groups, CATALOG, resident(), disked(ALL));
+    expect(g.components.repos.map((r) => r.id)).toEqual([
+      "unsloth/FLUX.2-klein-4B-GGUF",
+      "onnx-community/silero-vad",
+    ]);
+    const drawn = sections.flatMap((s) => s.disk.map((r) => r.id));
+    expect(drawn).not.toContain("unsloth/FLUX.2-klein-4B-GGUF");
+    expect(drawn).not.toContain("onnx-community/silero-vad");
+  });
+});
+
+describe("what a merged row says it costs, and which engine loads it", () => {
+  // D249/D251: the figure beside a heading is a claim about THIS DISK. A
+  // recommended model is not on it, so it cannot be in the number — otherwise
+  // the one arithmetic on the page that can be checked against the cache stops
+  // agreeing with it.
+  it("counts disk bytes only", () => {
+    const sections = sectionsOf(ALL);
+    const text = sections.find((s) => s.key === "text-generation");
+    expect(text?.size).toBe(QWEN_LOADABLE.size + QWEN_NO_ENGINE.size);
+    expect(sectionsOf([]).every((s) => s.size === 0)).toBe(true);
+  });
+
+  it("carries the catalog's runner so a recommended card can wear its engine tag", () => {
+    const sections = sectionsOf([]);
+    expect(sections.map((s) => s.runner?.shortLabel)).toEqual([
+      "MLX LM",
+      "MLX FLUX",
+      "MLX Whisper",
+    ]);
+    expect(sections.every((s) => s.runner?.available)).toBe(true);
+  });
+
+  // An unavailable capability is still a row with the reason on it: hiding one
+  // leaves somebody hunting for a feature that never was.
+  it("passes an unavailable capability's own reason through untouched", () => {
+    const sections = mergeSections(
+      [],
+      [
+        capability("text-to-image", [curated("a/flux")], {
+          available: false,
+          reason: "needs Apple Silicon — MLX runs on Metal only",
+        }),
+      ],
+      resident(),
+      new Map(),
+    );
+    expect(sections[0].recommended.map((m) => m.id)).toEqual(["a/flux"]);
+    expect(sections[0].runner?.available).toBe(false);
+    expect(sections[0].runner?.reason).toBe("needs Apple Silicon — MLX runs on Metal only");
+  });
+
+  it("labels a recommended-only capability the way every other heading is labelled", () => {
+    expect(sectionsOf([]).map((s) => s.label)).toEqual([
+      "Text generation",
+      "Image generation",
+      "Speech to text",
+    ]);
+  });
+});
+
 // Every card offers Load. What differs is whether it is live and, when it is
 // not, WHICH of the reasons applies — the three are different problems with
 // different fixes, and a single "cannot load" would send all three nowhere.
@@ -279,5 +617,91 @@ describe("the three surfaces on a no-engine card agree", () => {
   // Flattening both cards onto one sentence would lose it.
   it("does not tell a Qwen checkpoint that its model type is not supported", () => {
     expect(noEngineReason(QWEN_NO_ENGINE)).not.toContain("not supported");
+  });
+});
+
+// A download that stopped halfway (D424). The page reads "on disk" TWICE, and
+// the two readings are not the same question: "this machine HAS the model" is
+// what a ✓ and a settled Download click mean, while "this model already has a
+// card here" is what suppresses a recommendation. One map answering both is the
+// bug — a cancelled first download claimed the ✓, so the recommendation with its
+// working Download button vanished and what replaced it could not be loaded.
+describe("a download that never finished", () => {
+  // The reported case: a curated model whose first pull was cancelled.
+  const WHISPER_PARTIAL = repo({
+    id: "mlx-community/whisper-tiny",
+    size: 12_000_000,
+    capability: "automatic-speech-recognition",
+    // Half a snapshot: a revision exists, the weights do not, so no engine reads
+    // it — which is exactly what made the old card claim a format problem.
+    engine: null,
+    revisions: 1,
+    partial: true,
+  });
+
+  it("still counts as a card on the page, so nothing recommends it twice", () => {
+    // NOT because it is downloaded — the server drops it from `cached_models()`
+    // and hub search calls it `partial`. Because it is a CARD, and one model must
+    // not appear twice in one row.
+    expect(cardedOnDisk([WHISPER_PARTIAL]).get(WHISPER_PARTIAL.id)).toBe(WHISPER_PARTIAL.path);
+    // Neither materialised nor stalled — the shape the map still has to exclude,
+    // because counting a bare folder is what flipped a suggestion to
+    // "downloaded" seconds after Download was pressed.
+    const bare = repo({ id: "org/nothing-here", revisions: 0, partial: false });
+    expect([...cardedOnDisk([bare]).keys()]).toEqual([]);
+  });
+
+  it("keeps its disk card and drops the recommendation for the same model", () => {
+    const speech = sectionsOf([WHISPER_PARTIAL]).find(
+      (s) => s.key === "automatic-speech-recognition",
+    );
+    expect(speech?.disk.map((r) => r.id)).toEqual(["mlx-community/whisper-tiny"]);
+    // The curated row for the very same id — one model, one card, whatever
+    // stage of its life it is at.
+    expect(speech?.recommended.map((m) => m.id)).toEqual([]);
+  });
+
+  it("gives the recommendation back once the partial repo is deleted", () => {
+    // The second way out: the trash discards the bytes, and the model is a
+    // suggestion again — with a Download that starts clean.
+    const speech = sectionsOf([]).find((s) => s.key === "automatic-speech-recognition");
+    expect(speech?.disk).toEqual([]);
+    expect(speech?.recommended.map((m) => m.id)).toEqual(["mlx-community/whisper-tiny"]);
+  });
+
+  it("never explains itself as a format problem", () => {
+    // The old card's two true-about-the-format, false-about-the-download
+    // sentences. `partial` outranks both.
+    expect(loadRefusal(WHISPER_PARTIAL)).toBe(partialNote(WHISPER_PARTIAL));
+    expect(loadRefusal(WHISPER_PARTIAL)).not.toContain("weight format");
+    expect(loadRefusal(WHISPER_PARTIAL)).not.toContain("not supported");
+  });
+
+  it("says both ways out, because neither is obvious from the tag", () => {
+    const note = partialNote(WHISPER_PARTIAL);
+    expect(note).toContain("did not finish");
+    expect(note).toContain("bytes already here");
+    expect(note).toContain("trash");
+    expect(PARTIAL_TAG).toBe("partly downloaded");
+  });
+
+  it("is the card's state for a model, and never for a component", () => {
+    // The one card that keeps its own reading: an engine's half-fetched part is
+    // the engine's own problem to re-finish on its next bring-up (AI-7e), and
+    // "part of MLX Whisper" stays the more useful sentence in front of a delete
+    // than an offer to resume a download nobody started.
+    const halfComponent = repo({
+      id: "onnx-community/silero-vad",
+      component: component(),
+      partial: true,
+    });
+    expect(resumable(WHISPER_PARTIAL)).toBe(true);
+    expect(resumable(halfComponent)).toBe(false);
+    expect(loadRefusal(halfComponent)).toContain("not a model");
+    // A dataset in the cache with no snapshot is the same rule from the other
+    // side: it is a dataset first, and a stalled fetch second.
+    const halfDataset = repo({ id: "squad", kind: "dataset", partial: true });
+    expect(resumable(halfDataset)).toBe(false);
+    expect(loadRefusal(halfDataset)).toContain("dataset");
   });
 });

@@ -135,7 +135,7 @@ Each capability's `models[]` entry is `{id, label, size_gb, note}` plus three st
 | Field | Means |
 |---|---|
 | `source` | `"curated"` — the shortlist for the engine serving this capability. `"cached"` — a repo **found on this disk** that the shortlist has never heard of (the user downloaded it from the AI Models page's Hub search). |
-| `downloaded` | On this disk. Always `true` for `"cached"`. |
+| `downloaded` | On this disk, **completely**. A repo whose download was cancelled, crashed, or is still running does not count (D424) — half a snapshot has no loadable weights, and a picker offering one is a `load()` that fails. Always `true` for `"cached"`. |
 | `loaded` | A worker is holding the weights **right now**. |
 
 - **Render the whole of `models[]`.** Filtering to `source === "curated"` hides the model the user deliberately downloaded — the exact bug these flags exist to end. Mark states instead: `loaded` → ready now, `downloaded` → instant load, neither → a `size_gb` download first. (The app's own AI Models page filters, because its Local tab already lists the full cache; your page has no such tab.)

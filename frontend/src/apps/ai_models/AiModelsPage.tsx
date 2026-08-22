@@ -1,19 +1,21 @@
 // /ai-models — the page chrome, the tab strip, and the dispatch. Nothing else.
 //
-// Five surfaces share this heading, and only this heading: a playground (pick a
+// Four surfaces share this heading, and only this heading: a playground (pick a
 // local model and use it), the Local inventory (what the Hugging Face cache
-// holds and the deletions that free it), Discover (what the Hub has that this
-// machine could run), Engines (which backend serves each capability) and Usage
-// (what this process has generated). Each owns a directory beside this file;
-// this file owns the frame they hang in.
+// holds, what to download next, and the deletions that free it), Engines (which
+// backend serves each capability) and Usage (what this process has generated).
+// Each owns a directory beside this file; this file owns the frame they hang in.
+//
+// There was a fifth, Discover, and its directory is still here — unrouted, see
+// routes.ts. The Local tab answers its question now.
 //
 // **A tab is a PATH, not a query param** (`/ai-models/local`, routes.ts) — but
 // still one mounted component, unkeyed by the nav epoch. The reason is in
-// lib/useCacheScan.ts: the cache walk is a filesystem crawl that three of the
-// five tabs read, and a remount on every tab click would re-walk it and throw
-// away whatever was typed into Discover's search. The URL is where the CHOICE
-// lives (so the back button undoes it, and so every tab has an address); the
-// mount is where the SHARED WORK lives.
+// lib/useCacheScan.ts: the cache walk is a filesystem crawl that two of the four
+// tabs read, and a remount on every tab click would re-walk every blob in the
+// Hugging Face cache. The URL is where the CHOICE lives (so the back button
+// undoes it, and so every tab has an address); the mount is where the SHARED
+// WORK lives.
 //
 // Page chrome AND the cards are the cc-* family — cc-mdgrid/cc-mdcard, the same
 // card the Claude config panel's MD Files section uses — so the shell's
@@ -26,7 +28,6 @@
 // readers it always had: the caption, which only links a cache directory that
 // is really there, and the empty state, which says WHICH nothing it found.
 import { useMemo } from "react";
-import DiscoverTab from "./discover/DiscoverTab";
 import EnginesTab from "./engines/EnginesTab";
 import { LocalTab } from "./local/LocalTab";
 import PlaygroundTab from "./playground/PlaygroundTab";
@@ -39,19 +40,18 @@ import { formatSize } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 
 /** The strip's label and hover for each tab, in strip order (AI_MODELS_TABS).
- *  A table rather than five near-identical <button> blocks: the buttons
- *  differed only in these two strings and the tab they named, and five copies
- *  of the same markup is five places to forget an aria attribute. */
+ *  A table rather than four near-identical <a> blocks: the links differed only
+ *  in these two strings and the tab they named, and four copies of the same
+ *  markup is four places to forget an aria attribute. */
 const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
   playground: {
     label: "Playground",
     title: "Try a local model — chat, images, transcription",
   },
-  local: { label: "Local", title: "Models already on this machine" },
-  discover: {
-    label: "Discover",
-    title: "Search the Hugging Face Hub for models this app can run",
-  },
+  // "and what to get next" is the tab's whole change: the row per capability
+  // ends in the curation's recommendations, so this is no longer only an
+  // inventory of what is already here (D423).
+  local: { label: "Local", title: "Models on this machine, and what to get next" },
   engines: { label: "Engines", title: "Which backend runs each kind of local model" },
   usage: { label: "Usage", title: "Tokens this app has generated since the server started" },
 };
@@ -68,7 +68,9 @@ export default function AiModelsPage() {
   // The cache walk, held here and read by three tabs — see lib/useCacheScan.ts
   // for why it cannot live inside any one of them.
   const scan = useCacheScan();
-  const { data, repos, jobByModel, onDisk, downloading, settling } = scan;
+  // Only the caption's two facts are read HERE; everything else the walk
+  // produces is the Local tab's, and it takes the whole `scan`.
+  const { data, repos } = scan;
 
   // The Engines tab changed something this page is showing. Two refreshes, for
   // two reasons: the listing is re-read because `repo.engine` is the registry's
@@ -92,7 +94,7 @@ export default function AiModelsPage() {
         <div className="cc-page-head">
           <div>
             <h2 className="cc-heading">AI Models</h2>
-            {/* Monospace only for the cache PATH below — the Discover and
+            {/* Monospace only for the cache PATH below — the Playground and
                 Engines captions are plain sentences, and the Engines tab's own
                 note (`.am-engines-note`) sits right under this one in the same
                 proportional font. Applying `.cc-mono` to every branch made
@@ -101,15 +103,8 @@ export default function AiModelsPage() {
             <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
               {tab === "playground" ? (
                 // What the tab is FOR: trying a model, not managing one — the
-                // other four tabs are the managing.
+                // other three tabs are the managing.
                 "Pick a local model and try it — chat, images, transcription"
-              ) : tab === "discover" ? (
-                // What the tab is FOR, and the constraint in the same breath.
-                // It said "Models on the Hugging Face Hub", which was true of a
-                // search returning fill-mask models nothing here could load —
-                // and the whole point of D313 is that this tab now only shows
-                // what this machine could actually download and run.
-                "Models on the Hugging Face Hub this app can run"
               ) : tab === "usage" ? (
                 // The window, stated in the chrome, because every figure on the
                 // tab is bounded by it and none of them is a lifetime total.
@@ -207,23 +202,11 @@ export default function AiModelsPage() {
         {/* Mounted only while selected, every one of them. Each tab holds a
             subscription of its own that has no business running behind a tab
             nobody is looking at — the playground reads the catalog and the
-            runtime, Discover queries the Hub, Usage polls every five seconds.
-            The one thing that DOES run across all five is the cache walk, and
-            that is exactly why it lives above them (useCacheScan). */}
+            runtime, Local reads the catalog too, Usage polls every five
+            seconds. The one thing that DOES run across all four is the cache
+            walk, and that is exactly why it lives above them (useCacheScan). */}
         {tab === "playground" && <PlaygroundTab />}
         {tab === "local" && <LocalTab scan={scan} />}
-        {tab === "discover" && (
-          // The cache answer comes from the PAGE's walk, not from a second one
-          // Discover runs for itself: one listing, one definition of "on this
-          // machine", and no window where the two tabs disagree about the same
-          // repo.
-          <DiscoverTab
-            onDisk={onDisk}
-            downloading={downloading}
-            settling={settling}
-            jobByModel={jobByModel}
-          />
-        )}
         {tab === "engines" && <EnginesTab onSwitched={onEnginesSwitched} />}
         {tab === "usage" && <UsageTab />}
       </main>

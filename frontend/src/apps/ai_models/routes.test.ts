@@ -33,6 +33,21 @@ test("an unknown sub-path falls back instead of erroring", () => {
   expect(tabFromPath("/ai-models/local/deeper")).toBe(DEFAULT_TAB);
 });
 
+test("the strip is Playground / Local / Engines / Usage, and Discover is gone", () => {
+  // The order IS the strip's order and the first entry IS the default, so this
+  // pins the one list that decides both.
+  expect([...AI_MODELS_TABS]).toEqual(["playground", "local", "engines", "usage"]);
+});
+
+test("the unrouted discover path lands on the default like any stale link", () => {
+  // The Local tab answers Discover's question now (D423), so it left the strip.
+  // The code did not leave the tree, and the point of THIS test is that its old
+  // address behaves like any other unknown sub-path rather than erroring or
+  // reaching a tab nothing links to.
+  expect(tabFromPath("/ai-models/discover")).toBe(DEFAULT_TAB);
+  expect((AI_MODELS_TABS as readonly string[]).includes("discover")).toBe(false);
+});
+
 test("a path off the page is not claimed", () => {
   expect(isAiModelsPath("/ai-models")).toBe(true);
   expect(isAiModelsPath("/ai-models/local")).toBe(true);

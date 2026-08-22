@@ -997,6 +997,71 @@ def _refs_by_commit(repo_dir: str) -> dict[str, str]:
     return out
 
 
+#: The part-file suffixes a fetch leaves in `blobs/` while it is working — and
+#: KEEPS when it is interrupted, so the next attempt resumes instead of starting
+#: over (D275/AI-5i). Ours is `runners/worker_base.PART_SUFFIX`; `.incomplete` is
+#: `huggingface_hub`'s own.
+#:
+#: Named here rather than imported from the fetcher because this module reads a
+#: cache several writers share — `hf`, transformers, diffusers, a template a user
+#: pasted in — so the reading has to hold for repos this app never fetched.
+#: `test_ai_models_api.py` pins ours against the fetcher's own constant, so the
+#: two names cannot drift apart in silence.
+_PART_SUFFIXES = (".fusedpart", ".incomplete")
+
+
+def _unfinished_fetch(repo_dir: str) -> bool:
+    """Whether this repo folder is a download that never finished (D424).
+
+    **POSITIVE EVIDENCE ONLY, and that is the whole design of this predicate.**
+    A repo is called partial when something in it is the visible residue of a
+    fetch that stopped — never merely because a completion marker is missing.
+    The tempting readings all fail on repos that are perfectly complete:
+
+    * **"no `.fused-fetch-<commit>.json` record"** — that record is written only
+      by THIS app's fetcher, so every repo pulled by the `hf` CLI, by
+      transformers, or by a version of this app older than the record would read
+      as half-downloaded.
+    * **"no `refs/`"** — a repo pinned at a commit sha has no ref by design
+      (neither hf nor `_write_ref` writes one named after a sha), and would read
+      the same way.
+    * **"nothing here reads the format"** — that is `_engine`'s answer for a
+      fully downloaded repo nobody's backend opens (a SigLIP tower, ACE-Step),
+      and calling those partial would offer to resume a download that finished
+      months ago. The format never enters this question.
+
+    So two facts, both of which are something that IS there:
+
+    1. **A part file in `blobs/`.** Only an interrupted (or in-flight) fetch
+       leaves one: our own `finish()` renames the part over the blob and drops
+       its sidecar, hf does the same with `.incomplete`, and the one path that
+       abandons ours (`worker_base._clear_parts`, taken when a segmented fetch
+       falls back to hf) deletes them before handing the repo over. A cancel
+       does NOT go that way — `except Cancelled: raise` — which is exactly why
+       the bytes, and therefore this evidence, are still here.
+    2. **No snapshot directory at all.** A folder with blobs and nothing to open,
+       which is the state hub search has always called `partial` and the state a
+       cancel before the first file lands leaves behind.
+    """
+    try:
+        # `list()`, not a `with`, like every other scandir in this module: the
+        # walk in `_scan_repo` is the one every test stubs, and a reading that
+        # needed the context-manager protocol would be the only one here that
+        # could not be driven the same way.
+        entries = list(os.scandir(os.path.join(repo_dir, "blobs")))
+    except OSError:
+        # No blobs/ yet, or unreadable. Not evidence either way — the snapshot
+        # question below is what answers for a folder this bare.
+        entries = []
+    for entry in entries:
+        # The sidecar beside a part file ends `.json` and does not match, which
+        # is right: the part file IS the unfinished download, the sidecar is only
+        # its bookkeeping, and `finish()` removes the two together.
+        if entry.name.endswith(_PART_SUFFIXES):
+            return True
+    return not _snapshot_dirs(os.path.join(repo_dir, "snapshots"))
+
+
 def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str | None]:
     """Which backend would load this repo, and the capability it would load it
     AS — `(None, capability)` when nothing here reads the format.
@@ -1325,6 +1390,13 @@ def cached_models() -> list[CachedModel]:
         repo_id = _repo_id_of(name)
         if formats.component(repo_id) is not None:
             continue
+        # A fetch that never finished is not a model this disk HAS (D424). It is
+        # the same reading the AI Models card now draws its "partly downloaded"
+        # state from, asked here so a page's picker and `/api/ai/catalog` cannot
+        # offer to load half a snapshot — and so a curated model whose first
+        # download was cancelled goes back to being a recommendation.
+        if _unfinished_fetch(repo_dir):
+            continue
         # The load route's own inference, asked rather than re-derived: a picker
         # that offers a model and a `load()` that then refuses it must not be able
         # to disagree. `cached=False` is an interrupted download's leftover folder.
@@ -1421,6 +1493,13 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         "component": dict(component, id=repo_id) if component else None,
         "revisions": _revisions(repo_dir),
         "refs": _ref_names(repo_dir),
+        # A download that never finished (D424) — the fact none of the fields
+        # above could state, and the one that decides what the card OFFERS. A
+        # partial repo has no engine and no Load, because half a snapshot is not
+        # a loadable model; what it has is the rest of the download. Only asked
+        # of models: a dataset or a Space in this cache is not something this
+        # page can resume.
+        "partial": kind == "model" and _unfinished_fetch(repo_dir),
     }
 
 

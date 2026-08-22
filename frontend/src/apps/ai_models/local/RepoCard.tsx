@@ -19,7 +19,12 @@ import {
 import { type Job } from "@platform/lib/jobs";
 import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { noEngineReason } from "@apps/ai_models/lib/aiModelGroups";
+import {
+  PARTIAL_TAG,
+  noEngineReason,
+  partialNote,
+  resumable,
+} from "@apps/ai_models/lib/aiModelGroups";
 import { tabHref } from "@apps/ai_models/routes";
 
 /** Where the Try button goes: the playground, with this model selected and
@@ -141,9 +146,11 @@ export function RepoCard({
   busy,
   fetching,
   refusal,
+  resumeCapability,
   onToggle,
   onDeleteRepo,
   onDeleteRevision,
+  onDownload,
   onLoad,
   onUnload,
 }: {
@@ -161,9 +168,18 @@ export function RepoCard({
    *  title; it never removes it. A model that is already RESIDENT must still be
    *  releasable whatever this says — see the render below. */
   refusal: string | null;
+  /** For a `repo.partial` card: which capability a RESUME would be filed under,
+   *  or null when nothing on this page can say. A half-fetched snapshot's own
+   *  `capability` is read off the files that happened to land, so the curation
+   *  answers for every model this app recommends — and a repo neither can place
+   *  gets a disabled Download with that as its reason, never a missing one. */
+  resumeCapability: string | null;
   onToggle: () => void;
   onDeleteRepo: () => void;
   onDeleteRevision: (revision: AiModelRevision) => void;
+  /** Resume the unfinished download. The server picks up from the bytes on disk
+   *  (D275) — this is the same POST the recommended card's Download sends. */
+  onDownload: () => void;
   onLoad: () => void;
   onUnload: () => void;
 }) {
@@ -263,6 +279,24 @@ export function RepoCard({
             title={repo.component.what}
           >
             part of {repo.component.owner}
+          </span>
+        ) : resumable(repo) ? (
+          /* A download that never finished wears its own tag, and it OUTRANKS
+             the engine reading below (D424). Both were drawn from the same
+             half-fetched snapshot, and the engine's answer for one is a lie
+             about the other: a cancelled MLX Whisper pull has no weights yet,
+             so no runner reads it, so the card said `no engine` — a verdict on
+             a FORMAT, about a file set that is not all there. The tag has a tab
+             stop for the reason the other two do: what to do about it is
+             hover-only prose (`partialNote`) that nothing else on the card
+             repeats. */
+          <span
+            className="am-card-engine am-card-engine-partial"
+            tabIndex={0}
+            aria-label={`${PARTIAL_TAG} — ${partialNote(repo)}`}
+            title={partialNote(repo)}
+          >
+            {PARTIAL_TAG}
           </span>
         ) : (
           repo.kind === "model" &&
@@ -439,6 +473,34 @@ export function RepoCard({
               onClick={onUnload}
             >
               Unload
+            </button>
+          ) : resumable(repo) ? (
+            /* The one card state whose control is a DOWNLOAD rather than a Load
+               (D424). There is nothing to load — the snapshot is incomplete —
+               and the fetch is resumable, so the honest offer is the rest of it:
+               the server picks up from the part file on disk instead of starting
+               over. Same word and same class as the recommended card's button,
+               because it is the same act at a later stage; with the trash beside
+               it, those are the two ways out of this state.
+               Disabled while the pull is actually running, where "Downloading…"
+               is what the label says and the job row below carries the bytes. */
+            <button
+              type="button"
+              className="am-card-power"
+              disabled={busy || fetching || !!job || !resumeCapability}
+              title={
+                resumeCapability
+                  ? `Finish downloading ${repo.id} — it resumes from the ${formatSize(repo.size)} already here`
+                  : `Fused Render cannot tell what ${repo.id} is, so it cannot resume this download. Delete it and download the model again.`
+              }
+              aria-label={
+                resumeCapability
+                  ? `Download ${repo.id} — resume the unfinished download`
+                  : `Download ${repo.id} — unavailable: this download cannot be resumed, delete it and start again`
+              }
+              onClick={onDownload}
+            >
+              {fetching || job ? "Downloading…" : "Download"}
             </button>
           ) : (
             <button

@@ -5,7 +5,8 @@
    imported just above: .cc-mdgrid/.cc-mdcard (the MD Files card), .cc-iconbtn
    for the actions, .cc-pill, .cc-heading. What lives here is only what those
    have no answer for — the size figure that is the whole point of the page, the
-   "Explore" link, the revision drawer a card opens, and the Discover tab. */
+   "Explore" link, the revision drawer a card opens, the horizontal row a
+   capability's cards scroll in, and the (unrouted) Discover tab. */
 
 /* -- the Engines tab --------------------------------------------------------
    Capped at the same 760px the Preferences page caps its own content column
@@ -223,6 +224,118 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--fg-muted);
+}
+
+/* -- a capability's row ------------------------------------------------------
+   ONE horizontal row per capability, scrolled sideways, rather than a grid that
+   wraps.
+
+   The row became open-ended when the disk cards and the recommended ones joined
+   it: the left half grows with every download and the right half is as long as
+   the curation is. Wrapped, that made each capability a block of unknown height,
+   so the third heading on the page was reliably below the fold — on a page whose
+   whole job is to be swept for "what have I got, what should I get". A row per
+   capability keeps every heading on screen at once and puts the length INSIDE
+   the row, where a horizontal scroll is the reader's own business.
+
+   `proximity`, not `mandatory`: somebody who has dragged past two cards to read
+   a third should land where they stopped, and mandatory snapping fights a
+   trackpad flick by pulling the row to a card edge nobody aimed for.
+   `overscroll-behavior-x: contain` is the other half of behaving inside a page
+   — a flick that reaches the end of one capability's row must not turn into the
+   browser's back gesture. */
+.am-carousel {
+  display: flex;
+  gap: var(--am-gap-card);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  /* Room for the scrollbar under the cards rather than over them, so an
+     overlay scrollbar does not come to rest on a footer's Download button. */
+  padding-bottom: 6px;
+}
+
+/* The same bar the Kanban board's lanes wear (schedule.css, its "one decision
+   about one kind of furniture" block) — copied rather than joined to that
+   selector list only because this bar is HORIZONTAL: `height` here is `width`
+   there, and one axis-mixed rule would be wrong in both files. The recipe is
+   the point: transparent track, a padding-box thumb whose 3px transparent
+   border is the breathing room, quiet at rest and only firmer under the
+   pointer. */
+.am-carousel::-webkit-scrollbar {
+  height: 10px;
+}
+
+.am-carousel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.am-carousel::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.am-carousel::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
+  background-clip: padding-box;
+}
+
+/* THREE cards per view: the basis is a third of the row, so every card is the
+   same width whatever the window and the eye learns one rhythm — a card half in
+   view reads as "there is more" rather than as a narrower card. The 360px floor
+   is for narrow windows, where a true third would crush the footer's buttons
+   into each other; below it the row shows fewer than three and scrolls. */
+.am-carousel > .am-card {
+  flex: 0 0 max(360px, calc((100% - 2 * var(--am-gap-card)) / 3));
+  scroll-snap-align: start;
+}
+
+/* The arrows live OUTSIDE the flow — absolutely placed over the row's edges —
+   because their whole brief is "say the row scrolls without moving anything":
+   with exact thirds there is no half-visible card left to say it, and a control
+   that appears in the flow would shift the very cards it points at. Vertical
+   centring is against the wrapper, so a click scrolls sideways and nothing on
+   the page moves up or down. */
+.am-carousel-wrap {
+  position: relative;
+}
+
+/* A full-height fade with the chevron in it, not a floating disc: the gradient
+   dissolves the edge card into the page background, which is itself the "there
+   is more" signal — the row visibly runs out of view instead of ending at a
+   crisp border. The strip stops above the scrollbar's lane (`bottom: 6px`
+   mirrors the row's padding) so the fade never sits on the bar it shares an
+   edge with. */
+.am-caro-btn {
+  position: absolute;
+  top: 0;
+  bottom: 6px;
+  z-index: 1;
+  width: 56px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.am-caro-btn:hover {
+  color: var(--fg);
+}
+
+.am-caro-btn.prev {
+  left: 0;
+  background: linear-gradient(to left, transparent, var(--bg) 75%);
+}
+
+.am-caro-btn.next {
+  right: 0;
+  background: linear-gradient(to right, transparent, var(--bg) 75%);
 }
 
 /* Cards in a row are the SAME height, and their footers line up.
@@ -460,6 +573,18 @@
   opacity: 0.85;
 }
 
+/* "partly downloaded" — a fetch that stopped (D424). DASHED like the two dead
+   ends above, because something really is missing; WARNING-coloured rather than
+   muted, because unlike them this one is waiting on the reader — the Download
+   beside it finishes the job and the trash discards it. It borrows
+   `am-card-engine-off`'s palette deliberately: both mean "not loadable as it
+   stands", and a third colour for one more shade of that would spend the card's
+   attention on a distinction the tag's own words already draw. */
+.am-card-engine-partial {
+  color: var(--warning-soft);
+  border-style: dashed;
+}
+
 /* "part of FLUX.2 klein 4B" — a repo this app fetched as a piece of something
    else. Quiet like the dead end above, because it is a fact about the repo and
    not a warning; SOLID-bordered unlike it, because nothing is missing here —
@@ -626,13 +751,12 @@
   outline-offset: -2px;
 }
 
-/* The empty Local tab carries a control as well as a sentence (HF-8): it is a
-   door to Discover, not a dead end. .cc-empty centres the text; the paragraph
-   only needs its default margins dropped so the button sits under the line
-   rather than a blank line below it. */
-.am-empty p {
-  margin: 0 0 12px;
-}
+/* The empty Local tab used to carry a control as well as a sentence (HF-8) — a
+   door to the Discover tab rather than a dead end — and `.am-empty p` existed to
+   sit the sentence on top of the button. Both are gone: a machine with no models
+   now gets a capability row with recommended cards in it, so the sentence is
+   only reached when the curation is empty too, and there is nowhere left to send
+   anybody from there. `.cc-empty` alone centres it. */
 
 /* -- the Discover tab's search ----------------------------------------------
    At the TOP of the tab, above the curated sections, because it is what
@@ -961,6 +1085,32 @@
 .am-card-power:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* -- a recommended card ------------------------------------------------------
+   A model this machine does NOT have, sitting in the same row as the ones it
+   does. It has almost NOTHING here on purpose: it is `.cc-mdcard.am-card` with
+   the same head, facts row and footer as the card beside it, because the whole
+   argument for putting the two in one row is that a reader sees one kind of
+   thing at two stages of its life rather than two grids of differently-shaped
+   cards that happen to both be about models. What tells them apart is the
+   CONTENT — a Download where the others have Load, Explore, details and delete,
+   and no "used 4h ago" — not a second card skin.
+
+   What it does need is the footer, and only because of what goes in it: this
+   card's left-hand fact is a full repo id, where a disk card's is "used 4h ago".
+   `.cc-mdcard-meta` is `nowrap` with no overflow rule, which in a fixed-width
+   card put `mlx-community/Qwen3.5-9B-OptiQ-4bit` straight through the Download
+   button. The id ellipsizes and the actions keep their width; the whole id is on
+   the hover, and the card's NAME above is the readable form of it anyway. */
+.am-reccard .cc-mdcard-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-reccard .cc-mdcard-actions {
+  flex: 0 0 auto;
 }
 
 /* -- Suggested (the curated shortlist, SPEC §40) ------------------------------

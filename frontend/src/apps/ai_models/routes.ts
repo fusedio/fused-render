@@ -2,9 +2,19 @@
 //
 //   /ai-models/playground   (the default — bare /ai-models redirects here)
 //   /ai-models/local
-//   /ai-models/discover
 //   /ai-models/engines
 //   /ai-models/usage
+//
+// **There is no /ai-models/discover, and the Hub-search code is still here**
+// (discover/, lib/discoverView.ts). The Local tab answers Discover's question
+// now — each capability's row ends in the curation's recommendations with a
+// Download button, so "what should I get" is drawn where "what do I have"
+// appears (D423) — and a tab whose whole content is a second, emptier version of
+// that is a strip entry that costs a reader a click to learn nothing. Unrouted
+// rather than deleted: the Hub search is a real surface with real tests, and the
+// judgement being made here is about the STRIP, not about the code. It falls out
+// of `AI_MODELS_TABS` below, so `/ai-models/discover` is an unknown sub-path and
+// lands on the default like any other stale link.
 //
 // It used to be `?tab=`, with the default expressed as the ABSENCE of the
 // param so that `/ai-models` stayed the page's URL. That is the trade this
@@ -37,7 +47,7 @@
  *  App.tsx redirects to the default tab. */
 export const AI_MODELS_PREFIX = "/ai-models";
 
-export type AiModelsTab = "playground" | "local" | "discover" | "engines" | "usage";
+export type AiModelsTab = "playground" | "local" | "engines" | "usage";
 
 /** Tab order is TAB-STRIP order, and the first entry is the default. Playground
  *  leads because it is what an empty machine should land on: the sidebar entry
@@ -47,7 +57,6 @@ export type AiModelsTab = "playground" | "local" | "discover" | "engines" | "usa
 export const AI_MODELS_TABS: readonly AiModelsTab[] = [
   "playground",
   "local",
-  "discover",
   "engines",
   "usage",
 ] as const;

@@ -2320,6 +2320,20 @@ export interface AiModelRepo {
   } | null;
   revisions: number;
   refs: string[];
+  /**
+   * A download that never finished — cancelled, crashed, or still in flight
+   * (D424). Read from the residue of the stopped fetch (a part file in
+   * `blobs/`, or no snapshot at all), never from the format: a repo nothing
+   * here can load is a different fact, and a fully downloaded SigLIP tower
+   * must not offer to resume anything.
+   *
+   * It outranks every other state on the card. `engine` is null and
+   * `capability` a guess read off half a snapshot, so the card drops both and
+   * offers the two things that are true: Download, which RESUMES from the bytes
+   * already on disk, and the trash, which discards them and puts the model back
+   * among the recommendations.
+   */
+  partial: boolean;
 }
 
 export interface AiModelsResult {

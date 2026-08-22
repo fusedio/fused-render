@@ -23,6 +23,19 @@ export function hubUrl(repo: AiModelRepo): string {
   return `${HUB_ORIGIN}/${HUB_PREFIX[repo.kind]}${id}`;
 }
 
+/** The same address for a model that is NOT on this disk — a recommended card,
+ *  which has a repo id and none of the rest of an `AiModelRepo`.
+ *
+ *  Always the model prefix (the empty one): the curation recommends models, and
+ *  a dataset or a Space is not something its Download button can pull. Here
+ *  rather than as a second literal in `RecommendedCard` so the origin is written
+ *  once — the two cards sit side by side in one row, and one of them linking to
+ *  a stale mirror would be invisible.
+ */
+export function hubModelUrl(id: string): string {
+  return `${HUB_ORIGIN}/${id.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export function shortCommit(commit: string): string {
   // Cache directories are named by full sha; the first 7 are what anyone reads.
   return /^[0-9a-f]{16,}$/i.test(commit) ? commit.slice(0, 7) : commit;
