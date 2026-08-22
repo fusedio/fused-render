@@ -12,6 +12,7 @@ import {
   primaryValue,
   runButtonState,
   runsFor,
+  stoppedNote,
   summaryLine,
 } from "@apps/ai_models/lib/benchmark";
 
@@ -314,5 +315,36 @@ describe("runButtonState", () => {
     expect(runButtonState("text-generation", "org/text", {
       "text-generation": "org/text",
     }, true).label).toBe("Running…");
+  });
+});
+
+// -- a run that was stopped from outside --------------------------------------
+
+describe("stoppedNote", () => {
+  it("says the run was stopped by something else, and that nothing was kept", () => {
+    // Finding 6: the run just vanished. No row appended, no error set, the
+    // button silently re-enabled — so the person who pressed Run and waited
+    // minutes got no signal at all that their benchmark had died.
+    const note = stoppedNote("org/model");
+    expect(note).toContain("org/model");
+    // Both halves matter: WHY it stopped (nobody pressed anything here) and
+    // that there is nothing to look for in the history.
+    expect(note.toLowerCase()).toContain("stopped");
+    expect(note.toLowerCase()).toContain("nothing was recorded");
+  });
+
+  it("does not blame the model, and does not read as a failure", () => {
+    // The distinction the note exists to draw: a failed run is a fact about the
+    // model and is kept; a stopped one is a fact about the app and is not. The
+    // words "failed" and "error" would collapse them.
+    const note = stoppedNote("org/model").toLowerCase();
+    expect(note).not.toContain("failed");
+    expect(note).not.toContain("error");
+  });
+
+  it("names the likely cause, since the user did not stop it themselves", () => {
+    // There is no cancel control on a benchmark, so "cancelled" with no
+    // explanation reads as a bug. The shared resident worker is the real cause.
+    expect(stoppedNote("org/model")).toContain("fused.ai.cancel()");
   });
 });

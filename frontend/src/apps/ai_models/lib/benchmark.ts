@@ -363,3 +363,29 @@ export function runButtonState(
         : "Run the fixed workload for this capability",
   };
 }
+
+/** What to tell the user when a run came back stopped rather than measured.
+ *
+ *  **Nobody pressed anything here.** A benchmark has no cancel control — it owns
+ *  no download-manager row, deliberately (see `ai/benchmark.py`) — so a run that
+ *  ends `cancelled` was stopped by something else reaching the same resident
+ *  worker, which one model per capability is shared by the whole app makes
+ *  possible: `fused.ai.cancel()` from any open page does it.
+ *
+ *  Without this the failure was silent in the worst way: nothing appended, no
+ *  error set, the button quietly re-enabled — so somebody who pressed Run and
+ *  waited several minutes was given no signal at all that their run had died,
+ *  and would reasonably conclude the button was broken.
+ *
+ *  Deliberately NOT worded as a failure. A failed run is a fact about the model
+ *  and is kept in the history; a stopped one is a fact about the app and is not,
+ *  and "failed" would collapse the two — which is the whole distinction the
+ *  server draws by answering with no `run` at all.
+ */
+export function stoppedNote(model: string): string {
+  return (
+    `The ${model} benchmark was stopped before it finished — most likely by ` +
+    `fused.ai.cancel() from another page, since one model per capability is ` +
+    `shared. Nothing was recorded; press Run again to retry.`
+  );
+}

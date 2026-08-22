@@ -1592,6 +1592,29 @@
   color: var(--fg-muted);
 }
 
+/* A run in flight. A plain spinner line, NOT `.am-card-runtime`/ModelProgress:
+   that draws a job row's detail and byte counts, and a benchmark deliberately
+   has no job row (see BenchmarkTab.tsx). There is genuinely nothing to report
+   until the held-open request returns, and an invented percentage is what makes
+   live work read as frozen. The reused `.am-runtime-dot` is the one honest
+   signal — something is happening. */
+.am-bench-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* A run stopped from outside — `fused.ai.cancel()` from another page reaching
+   the shared worker. Muted, not `--error`: nothing failed and the model is not
+   at fault, so it reads as an explanation rather than as a fault. Deliberately
+   not the ErrorBanner for the same reason. */
+.am-bench-stopped {
+  margin: 0 0 var(--am-gap-head);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 /* The change against the last comparable run. Colour comes from `better`, never
    from the sign: on an image section a negative change is the improvement, so a
    green-for-plus rule would be wrong on one section in four. */
