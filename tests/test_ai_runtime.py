@@ -29,6 +29,12 @@ from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
 from fused_render.server.routers import ai_models, ai_runtime
 from fused_render.server.routers.ai_models import CachedModel
+# `no_egress` is imported for its SIDE EFFECT: it is an autouse fixture, so
+# binding the name in this module installs it for every test here, including
+# the model-mirror tests below. See its docstring — Windows CI proved that
+# "every test stubs the Hub" is not the same claim as "no test reaches the
+# network".
+from test_ai_hub_fetch import no_egress  # noqa: F401
 
 # os.geteuid is POSIX-only; a bare call below would crash collection of this
 # whole module on Windows, before any skipif could act on it.
@@ -6880,6 +6886,17 @@ def test_the_size_walk_is_not_repeated_while_a_repo_sits_still(client, hub, monk
 
 
 # -- the model mirror's permission is handed down per model (AI-5l) --------------
+#
+# `mirror.base_url()` now falls back to a real address (`render.fused.io`) when
+# `FUSED_MODEL_MIRROR` is unset, so an unset env var no longer means "no
+# mirror" — it means "the default mirror". None of the tests below currently
+# call `mirror.manifest()` (the function that makes the HTTP request), which
+# is why they have gotten away without a network guard so far, but that is
+# safety by coincidence: the next mirror test added to this file, or a change
+# to one of these that starts exercising `manifest()`, would reach the real
+# `render.fused.io` with nothing stopping it. The `no_egress` import above is
+# what closes that gap — do not remove it because "nothing here does
+# networking".
 
 
 def _suggested_id():
