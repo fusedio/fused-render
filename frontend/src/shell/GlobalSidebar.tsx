@@ -1,9 +1,9 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks, plus Canvases once this machine is signed
-// in to Fused), the explorer's Bookmarks below it, and a single Settings
-// trigger pinned to the bottom that opens a menu holding everything else
-// (Config / App Basics for now, plus Templates / Mounts / AI Models /
+// primary nav on top (Home / Tasks / AI Models, plus Canvases once this
+// machine is signed in to Fused), the explorer's Bookmarks below it, and a
+// single Settings trigger pinned to the bottom that opens a menu holding
+// everything else (Config / App Basics for now, plus Templates / Mounts /
 // Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
@@ -234,7 +234,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — surfaced as a dot on the
-  // bottom trigger now that AI Models lives inside the menu.
+  // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
   const residentDot = residentModels.length ? (
@@ -257,6 +257,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
   const canvasesActive = pathname === "/canvases";
+  const aiModelsActive = pathname === "/ai-models";
   // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
   // would lead to a sign-in wall — the menu entry is the right weight for
   // "there is a thing here you could set up"; a top-of-sidebar row is for a
@@ -368,7 +369,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // someone looks for a named destination — and `prefsActive` below drops it
     // instead, so the two never light at once.
     { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
-    { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
+    // No /ai-models entry either, and unlike Canvases it is dropped outright:
+    // its primary row is ungated, so a menu copy would only ever be the
+    // double-selection the Tasks note rejects.
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
 
@@ -423,6 +426,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         ]
       : []),
     {
+      key: "ai-models",
+      label: "AI Models",
+      icon: AI_MODELS_ICON,
+      href: "/ai-models",
+      active: aiModelsActive,
+      badge: residentDot,
+    },
+    {
       key: "preferences",
       label: "Preferences",
       icon: PREFERENCES_ICON,
@@ -434,10 +445,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       onClick: (e) => togglePrefsMenu(e.currentTarget),
     },
   ];
-
-  // The trigger's own dot mirrors the strongest signal inside the menu, so
-  // it is not silently hidden while the menu is closed.
-  const triggerDot = residentDot;
 
   return (
     <>
@@ -471,13 +478,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={canvasesActive}
             />
           )}
+          <NavItem
+            href="/ai-models"
+            id="ai-models-link"
+            label="AI Models"
+            icon={AI_MODELS_ICON}
+            active={aiModelsActive}
+            extra={residentDot}
+          />
         </div>
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
           <PreferencesTrigger
             open={prefsPos !== null}
-            dot={triggerDot}
             active={prefsActive}
             onToggle={togglePrefsMenu}
           />
