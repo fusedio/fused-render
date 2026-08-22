@@ -337,6 +337,74 @@ def test_removal_leaves_user_mounts(home, sessions_zip, monkeypatch):
     assert [m["id"] for m in mounts_mod.list_mounts()] == [user["id"]]
 
 
+# -- retired builtins (a name that left BUILTIN_MOUNTS) -----------------------
+
+
+def _retired_learn_record() -> dict:
+    """What an install upgraded past D419 already has in its mounts.json."""
+    return {
+        "id": "learn0000001",
+        "name": "learn",
+        "remote": ":archive:/Applications/FusedRender.app/Contents/Resources/learn.zip",
+        "read_only": True,
+        "read_only_user": True,
+        "builtin": "learn",
+    }
+
+
+def test_prunes_the_record_of_a_retired_builtin(home, sessions_zip):
+    # BUGBOT: dropping `learn` from BUILTIN_MOUNTS left every already-installed
+    # machine with a record nothing visits — _ensure_builtin_mount's
+    # remove-when-the-zip-is-gone branch only runs for names still in the dict.
+    # run_automount then failed to attach it on every startup (the upgrade took
+    # its zip out of the bundle), and delete_mount 400s on any `builtin`
+    # marker, so the broken row was permanent and unremovable.
+    from fused_render.shell.mounts.store import _write
+    _write([_retired_learn_record()])
+    mounts_mod.ensure_builtin_mounts()
+    assert [m["name"] for m in mounts_mod.list_mounts()] == ["sessions"]
+
+
+def test_pruning_a_retired_builtin_detaches_it_and_stops_its_serve(
+        home, sessions_zip, monkeypatch):
+    # The record going is not enough: rcd survives server restarts, so the old
+    # mount and the serve bound to its remote outlive it unless torn down.
+    from fused_render.shell.mounts.store import _write
+    record = _retired_learn_record()
+    _write([record])
+    mp = mounts_mod.mountpoint(record)
+    detached, stopped = [], []
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: {mp})
+    monkeypatch.setattr(mounts_mod, "detach_mount",
+                        lambda m, force=False: detached.append((m["id"], force)))
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: 5572)
+    monkeypatch.setattr(mounts_mod, "_stop_serve_for",
+                        lambda port, remote: stopped.append(remote))
+    mounts_mod.ensure_builtin_mounts()
+    assert detached == [(record["id"], True)]
+    assert stopped == [record["remote"]]
+
+
+def test_pruning_leaves_user_mounts_and_live_builtins(home, sessions_zip):
+    from fused_render.shell.mounts.store import _write
+    user = mounts_mod.add_mount("mydata", "s3remote:bucket/prefix")
+    mounts_mod.ensure_builtin_mounts()
+    _write(mounts_mod.list_mounts() + [_retired_learn_record()])
+    mounts_mod.ensure_builtin_mounts()
+    assert sorted(m["name"] for m in mounts_mod.list_mounts()) == ["mydata", "sessions"]
+    assert [m for m in mounts_mod.list_mounts() if m["id"] == user["id"]]
+
+
+def test_pruning_never_touches_a_user_mount_named_after_a_retired_builtin(
+        home, sessions_zip):
+    # No `builtin` marker => not ours, whatever it is called.
+    user = mounts_mod.add_mount("learn", "s3remote:my-learn-bucket")
+    mounts_mod.ensure_builtin_mounts()
+    kept = [m for m in mounts_mod.list_mounts() if m["id"] == user["id"]]
+    assert len(kept) == 1
+    assert kept[0]["remote"] == "s3remote:my-learn-bucket"
+
+
 def test_never_clobbers_user_mount_named_sessions(home, sessions_zip):
     user = mounts_mod.add_mount("sessions", "s3remote:my-sessions-bucket")
     mounts_mod.ensure_builtin_mounts()

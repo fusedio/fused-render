@@ -67,9 +67,60 @@ def builtin_zip_path(name: str) -> str | None:
 
 
 def ensure_builtin_mounts() -> None:
-    """Upsert every builtin mount record (BUILTIN_MOUNTS)."""
+    """Upsert every builtin mount record (BUILTIN_MOUNTS), after dropping the
+    records of builtins a PREVIOUS version shipped and this one doesn't."""
+    _prune_retired_builtin_mounts()
     for name in BUILTIN_MOUNTS:
         _ensure_builtin_mount(name)
+
+
+def _prune_retired_builtin_mounts() -> None:
+    """Remove every record marked `builtin: <name>` for a name that is no
+    longer a row in BUILTIN_MOUNTS — a builtin the app used to ship.
+
+    Retiring a builtin (D419 dropped `learn`) otherwise strands its record
+    forever on every install that already had one. `_ensure_builtin_mount`'s
+    remove-when-the-zip-is-gone branch only ever runs for names still IN
+    BUILTIN_MOUNTS, so nothing visits the retired one: run_automount keeps
+    trying to attach it every startup and fails once the upgrade removed its
+    zip from the bundle, and delete_mount refuses any record carrying a
+    `builtin` marker — so the broken row can't be cleared by the user either.
+    D123's promise, that the record goes when its zip is absent "so it can't
+    linger as a broken mount in the UI", has to hold for a builtin the app
+    retired just as much as for one whose zip vanished.
+
+    Unlike that branch this does NOT check whether the remote's file is still
+    on disk: a retired builtin is retired whether or not an older bundle is
+    still sitting in /Applications. The same-home-two-versions case stays
+    symmetric with every other removal here — an older app re-creates its own
+    record on ITS next startup.
+
+    Same lock discipline as _ensure_builtin_mount: the store read-modify-write
+    happens entirely under `_store_lock`, and the rcd-touching force-detach
+    (which can block for a full rc timeout) is only PLANNED there and executed
+    after the `with` block. Never raises — a storage failure here must not
+    break the user's own mounts."""
+    from fused_render.shell.mounts import list_mounts
+    try:
+        detach_targets: list[tuple[dict, str]] = []
+        with _store_lock:
+            mounts = list_mounts()
+            retired = [m for m in mounts
+                       if m.get("builtin") and m["builtin"] not in BUILTIN_MOUNTS]
+            if retired:
+                retired_ids = {id(m) for m in retired}
+                _write([m for m in mounts if id(m) not in retired_ids])
+                for m in retired:
+                    logger.info("dropped retired builtin mount record %r (%r)",
+                                m.get("name"), m.get("builtin"))
+                    # The live mount and its serve are keyed to the remote the
+                    # record carried — same as _ensure_builtin_mount's
+                    # zip-gone path.
+                    detach_targets.append((m, m.get("remote", "")))
+        for target in detach_targets:
+            _force_detach_builtin_mount(*target)
+    except Exception:
+        logger.exception("pruning retired builtin mount records failed")
 
 
 def _ensure_builtin_mount(name: str) -> None:
