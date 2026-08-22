@@ -32,16 +32,19 @@ export const UNRECOGNISED = "unrecognised";
  *  is how a capability added server-side shows up here without a frontend
  *  change.
  *
- *  Embeddings sits LAST of the four, the same place it sits in
+ *  Embeddings sits LAST of the five, the same place it sits in
  *  `engines.CAPABILITY_LABELS`: it is the one capability whose output is not
- *  something a reader looks at, so it belongs behind the three that produce
- *  text, an image and a transcript. Listed rather than left to fall through,
- *  because a first-class capability that sorted itself by the accident of
- *  listing order would land in a different place on two machines.
+ *  something a reader looks at, so it belongs behind the four that produce
+ *  text, an image, a video and a transcript. Video sits beside image — the
+ *  two visual-generation capabilities together — rather than after speech, so
+ *  the two things a reader LOOKS AT lead the list. Listed rather than left to
+ *  fall through, because a first-class capability that sorted itself by the
+ *  accident of listing order would land in a different place on two machines.
  */
 const CAPABILITY_ORDER = [
   "text-generation",
   "text-to-image",
+  "text-to-video",
   "automatic-speech-recognition",
   "embeddings",
 ];

@@ -7839,6 +7839,56 @@ an AI Models page that could say what was on disk but not what was *running*.
   correctness**, since an auto-unloaded model's next call raises
   `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
   existing `model_loading` handling already covers it.
+- **AI-14** **A fifth capability, `text-to-video`, and the first with no
+  "everywhere" runner.** `fused.ai.video({prompt, ...})` renders text to a
+  short mp4 with audio through MiniMax H3, on `antirez/h3.c` — a standalone
+  Metal binary this app bundles the way it bundles rclone (D103's pattern;
+  `registry.h3_bin()` is `rcd.py::rclone_bin()`'s resolution ladder read
+  against a different binary, `build_dmg.sh` stages it the same way). The
+  `h3-video` runner's `worker.py` is therefore unlike every other runner
+  here: it loads no model into its own interpreter and calls no library —
+  it spawns the resolved binary as a subprocess per render (absolute exe
+  path, `close_fds=False`, no `cwd=` — the repo's PROJ-atfork subprocess
+  discipline), reads its stdout for `N/M` step lines, and kills the child
+  on a ✕. `POST /api/ai/video` mirrors `/api/ai/image` — job-backed,
+  server-decided path and seed — minus `guidance` (H3 is CFG-distilled and
+  takes no such parameter, so one is refused as an unknown option rather
+  than silently accepted) and minus a live preview (none exists in this
+  cut), plus `frames`: h3's own valid grid is `5 + 17n` (VERIFIED against
+  the built binary's `h3_align_frame_count`/`h3_valid_params`, see D429),
+  so a requested count is rounded UP to the next grid point rather than
+  merely clamped, and `steps`/canvas floors and ceilings ([2, 1000] steps,
+  32-multiple canvas up to 768×1344 pixels) are the binary's own hard
+  limits, not this app's guess at them. **No fallback exists anywhere
+  else** — h3.c is Metal-only, so off Apple Silicon (or on a Mac whose
+  build never staged the binary) `catalog()` reports `default: null` for
+  this capability for the first time, and every call answers 409 with the
+  reason rather than ever reaching a render.
+- **AI-14a** **ffmpeg reaches the subprocess through the runner's OWN venv,
+  never through the app or the system PATH** (D430). h3 needs a real
+  ffmpeg EXECUTABLE to mux the rendered frames and the generated audio
+  into one mp4 — dropping the mux step (`--frames-dir`, raw PPM frames)
+  drops the audio, which is H3's headline feature — and `imageio-ffmpeg`'s
+  wheel already carries one per platform; `worker.py` points `H3_FFMPEG`
+  at `imageio_ffmpeg.get_ffmpeg_exe()` before spawning h3, so the
+  subprocess never has to find one on a PATH a supervisor child may not
+  even have.
+- **AI-14b** **The curated catalog entry is metadata only, and stays that
+  way through every test in this build.** The real repo,
+  `MiniMaxAI/MiniMax-H3` (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist — a
+  401), is 498.5GB WHOLE: it carries both the FL2VA and Ref2VA checkpoints
+  (144.05GB each) plus a second, unused copy of their shared components at
+  the repo root (~210GB more). h3.c's own loader (VERIFIED by reading
+  h3.c's `h3_load_dir` at the pinned commit) never opens a path outside
+  `FL2VA/` or `Ref2VA/`, so this build's prompt-only FL2VA path downloads
+  ONLY the `FL2VA/` tree (`allow_patterns=["FL2VA/*"]` on
+  `h3_video/worker.py`'s `download()`) at its own measured 144.05GB
+  (`catalog.py`'s `size_gb: 144.1`), never the whole repo. No test, build
+  step, or CI run may fetch it or run a real render either way — every
+  worker test drives a REAL executable fake standing in for the h3 binary
+  (a script that writes a tiny mp4 and prints real progress lines over a
+  real pipe, never a canned subprocess result), and the one real
+  end-to-end render happens later, on an M3, by a human.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

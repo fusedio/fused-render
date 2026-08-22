@@ -761,6 +761,36 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
+    # v1's only checkpoint: FL2VA (frame + language to video + audio), one
+    # of the two top-level trees `MiniMaxAI/MiniMax-H3` actually ships —
+    # NOT its own repo (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist; that
+    # id 401s). The real repo is 498.5GB whole (measured against the Hub's
+    # per-file byte sums, 2026-08-23) because it carries BOTH checkpoints —
+    # `FL2VA/` (144.05GB) and `Ref2VA/` (144.05GB) — plus a second, unused
+    # copy of their shared components at the repo root
+    # (`text_encoder/`+`transformer/`+`transformer_ref/`+`vae/`+`audio_vae/`,
+    # ~210GB more). h3.c's loader (`h3_load_dir` in h3.c, read at the pinned
+    # commit) never opens a bare root path — every file it touches is
+    # `FL2VA/…` or `Ref2VA/…` — so `FL2VA/*` is both NECESSARY and
+    # SUFFICIENT for this v1's prompt-only path, and `h3_video/worker.py`'s
+    # `download()` passes it as `allow_patterns` rather than fetching the
+    # whole 498.5GB repo. `size_gb` here is `FL2VA/`'s own measured total
+    # (144,051,182,625 bytes across its 81 files) — the whole of what a
+    # Download actually fetches, per this file's own `size_gb` rule — and
+    # is metadata only: never fetched by this app's own build or tests (see
+    # the hard "never download the H3 model" constraint).
+    "h3-video": [
+        {
+            "id": "MiniMaxAI/MiniMax-H3",
+            "recommended": True,
+            "label": "MiniMax H3 FL2VA",
+            "nickname": "MiniMax H3",
+            "size_gb": 144.1,
+            "note": "Text-to-video with audio. One resident model — the ref2va "
+                    "checkpoint (a second 144GB tree in the same repo) is not "
+                    "fetched or offered in this build.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`
@@ -967,8 +997,19 @@ def describe() -> list[dict]:
                 "runnerNote": runner.note or None if runner else None,
                 "available": status.ok,
                 "reason": status.reason or None,
+                # Gated on `status.ok`, which every capability before video
+                # generation made irrelevant: each of them has an
+                # "everywhere" row, so SOME runner was always available and
+                # this was always non-null in practice. Video is the first
+                # capability that can be genuinely unservable here — h3.c is
+                # Metal-only with no fallback — and a caller with no model
+                # specified must be told there is nothing to load, not handed
+                # an id `default_for()` would then fail to load anyway. The
+                # suggestion LIST still shows the entry either way (`models`
+                # below) — a repo worth downloading once you have a Mac is
+                # still worth listing today, per `_runner_for`'s own fallback.
                 "default": for_capability(capability)[0]["id"]
-                if for_capability(capability) else None,
+                if status.ok and for_capability(capability) else None,
                 "models": for_capability(capability),
             }
         )

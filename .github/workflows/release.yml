@@ -68,7 +68,15 @@ jobs:
   build-sign-notarize-release:
     needs: prepare-release
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
-    runs-on: macos-14
+    # macos-15, not macos-14: h3.c (bundled by build_dmg.sh, D428) uses Metal 4
+    # APIs (MTLGPUFamilyMetal4, MPSGraph's scaledDotProductAttention...,
+    # MTLMathModeSafe) that only exist in the macOS 26 SDK. macos-14's image
+    # tops out at Xcode 16.2 (macOS 15 SDK) with no macOS 26 SDK anywhere on
+    # it; macos-15's image carries Xcode 26.x SIDE BY SIDE with its older
+    # default, selected explicitly below. This is a compile-SDK requirement,
+    # not a deployment-target bump — the app's own MACOSX_DEPLOYMENT_TARGET is
+    # unchanged.
+    runs-on: macos-15
     outputs:
       version: ${{ steps.artifacts.outputs.version }}
       dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
@@ -140,6 +148,23 @@ jobs:
           rm -f "$API_KEY_PATH"
 
           rm -f "$CERT_PATH"
+
+      - name: Select Xcode with the macOS 26 SDK (Metal 4)
+        # See the runs-on comment above: h3.c needs Metal 4 declarations the
+        # image's DEFAULT Xcode does not have. Picks the newest Xcode_26*.app
+        # the image ships rather than hardcoding a patch version, since GH
+        # rotates which patch releases are preinstalled.
+        run: |
+          set -euo pipefail
+          XCODE_PATH="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [[ -z "$XCODE_PATH" ]]; then
+            echo "FATAL: no Xcode with the macOS 26 SDK is installed on this runner image." >&2
+            ls /Applications | grep -i xcode >&2 || true
+            exit 1
+          fi
+          echo "Using $XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH"
+          xcodebuild -version
 
       - name: Build, sign, notarize, staple DMG
         env:

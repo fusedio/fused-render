@@ -404,6 +404,49 @@ describe("a capability's row is disk then recommended", () => {
   });
 });
 
+describe("video generation's place in the reading order", () => {
+  // CAPABILITY_ORDER puts text-to-video beside text-to-image — the two visual
+  // generation capabilities together, ahead of speech and embeddings.
+  it("sorts between text-to-image and automatic-speech-recognition", () => {
+    const catalogWithVideo: AiCatalogCapability[] = [
+      capability("automatic-speech-recognition", [curated("mlx-community/whisper-tiny")]),
+      capability("text-to-video", [curated("MiniMaxAI/MiniMax-H3-FL2VA")], {
+        runner: "h3-video",
+        runnerShortLabel: "H3",
+      }),
+      capability("text-generation", [curated("mlx-community/Qwen3.5-9B-OptiQ-4bit")]),
+      capability("text-to-image", [curated("mlx-community/FLUX.2-Klein-4B-4bit")]),
+    ];
+    const sections = mergeSections(
+      groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
+    );
+    expect(sections.map((s) => s.key)).toEqual([
+      "text-generation",
+      "text-to-image",
+      "text-to-video",
+      "automatic-speech-recognition",
+    ]);
+  });
+
+  // Unavailable is still SHOWN, with its reason — the same rule every other
+  // capability follows (HF-8) and the first one that can be unavailable on
+  // every runner it has, since h3-video has no fallback anywhere.
+  it("still renders, with its reason, when this machine has no h3 binary", () => {
+    const catalogWithVideo: AiCatalogCapability[] = [
+      capability("text-to-video", [curated("MiniMaxAI/MiniMax-H3-FL2VA")], {
+        available: false,
+        reason: "needs Apple Silicon — MLX runs on Metal only (this is linux/x86_64)",
+        default: null,
+      }),
+    ];
+    const sections = mergeSections(
+      groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
+    );
+    const video = sections.find((s) => s.key === "text-to-video");
+    expect(video).toBeDefined();
+  });
+});
+
 describe("which rows exist at all", () => {
   // The whole point on a fresh machine, and the extension of D265's empty-state
   // fix: a capability with nothing downloaded still gets a row, because the row

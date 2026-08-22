@@ -24,6 +24,20 @@ def _linux(monkeypatch):
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
 
 
+def _runner(code):
+    """`registry.by_code(code)`, asserted present.
+
+    `by_code` returns `Runner | None` — real when a code is misspelled, but
+    every code this file names is a row this test suite itself registers, so
+    a `None` here is a real regression (a runner renamed or removed) and
+    should fail LOUDLY on the missing code rather than as an opaque
+    `AttributeError` two lines later on whatever attribute was read first.
+    """
+    runner = registry.by_code(code)
+    assert runner is not None, code
+    return runner
+
+
 def test_embeddings_is_a_registered_capability():
     assert registry.EMBEDDINGS == "embeddings"
     assert registry.EMBEDDINGS in registry.capabilities()
@@ -44,11 +58,11 @@ def test_mlx_embed_is_registered_before_transformers_embed():
 
 def test_mlx_embed_is_gated_to_apple_silicon(monkeypatch):
     _windows(monkeypatch)
-    assert not registry.by_code("mlx-embed").available().ok
+    assert not _runner("mlx-embed").available().ok
     _linux(monkeypatch)
-    assert not registry.by_code("mlx-embed").available().ok
+    assert not _runner("mlx-embed").available().ok
     _mac_arm(monkeypatch)
-    assert registry.by_code("mlx-embed").available().ok
+    assert _runner("mlx-embed").available().ok
 
 
 def test_transformers_embed_runs_everywhere(monkeypatch):
@@ -57,7 +71,7 @@ def test_transformers_embed_runs_everywhere(monkeypatch):
     embeddings does too."""
     for setter in (_mac_arm, _windows, _linux):
         setter(monkeypatch)
-        assert registry.by_code("transformers-embed").available().ok
+        assert _runner("transformers-embed").available().ok
 
 
 def test_apple_silicon_resolves_to_mlx_embed(monkeypatch):
@@ -111,3 +125,131 @@ def test_every_task_label_this_module_names_is_classified_exactly_once():
     entry nobody can reach."""
     overlap = set(registry._TASK_CAPABILITIES) & registry.NO_RUNNER_YET
     assert not overlap
+
+
+def _with_h3_binary(monkeypatch, tmp_path):
+    fake = tmp_path / "h3"
+    fake.write_text("#!/bin/sh\necho fake h3\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_H3_BIN", str(fake))
+    return fake
+
+
+def _without_h3_binary(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_H3_BIN", raising=False)
+    monkeypatch.setattr(registry.shutil, "which", lambda name: None)
+    monkeypatch.setattr(registry.sys, "frozen", None, raising=False)
+
+
+def test_video_generation_is_a_registered_capability():
+    assert registry.VIDEO_GENERATION == "text-to-video"
+    assert registry.VIDEO_GENERATION in registry.capabilities()
+
+
+def test_h3_video_is_the_only_video_runner():
+    codes = {r.code for r in registry.all_runners() if r.capability == registry.VIDEO_GENERATION}
+    assert codes == {"h3-video"}
+
+
+def test_h3_video_row_present_on_apple_silicon_with_a_binary(monkeypatch, tmp_path):
+    """The gate itself (`_h3_available`, wired via `_available`), independent
+    of whether the `h3_video` folder has a `worker.py` yet — `Runner.available`
+    also requires the folder to be built, which is Task 2's concern and not
+    this one's."""
+    _mac_arm(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    assert _runner("h3-video")._available().ok
+
+
+def test_h3_video_row_absent_off_apple_silicon(monkeypatch, tmp_path):
+    _windows(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    status = _runner("h3-video")._available()
+    assert not status.ok
+    assert "Apple Silicon" in status.reason
+
+    _linux(monkeypatch)
+    status = _runner("h3-video")._available()
+    assert not status.ok
+    assert "Apple Silicon" in status.reason
+
+
+def test_h3_video_row_absent_with_no_binary(monkeypatch):
+    _mac_arm(monkeypatch)
+    _without_h3_binary(monkeypatch)
+    status = _runner("h3-video")._available()
+    assert not status.ok
+    assert "h3" in status.reason.lower()
+
+
+def test_h3_bin_resolves_the_env_override(monkeypatch, tmp_path):
+    fake = _with_h3_binary(monkeypatch, tmp_path)
+    assert registry.h3_bin() == str(fake)
+
+
+def test_h3_bin_ignores_a_stale_override_that_is_not_a_file(monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_H3_BIN", "/no/such/file")
+    monkeypatch.setattr(registry.shutil, "which", lambda name: None)
+    monkeypatch.setattr(registry.sys, "frozen", None, raising=False)
+    assert registry.h3_bin() is None
+
+
+def test_h3_bin_falls_back_to_path(monkeypatch):
+    _without_h3_binary(monkeypatch)
+    monkeypatch.setattr(
+        registry.shutil, "which",
+        lambda name: "/usr/local/bin/h3" if name == "h3" else None)
+    assert registry.h3_bin() == "/usr/local/bin/h3"
+
+
+def test_h3_bin_resolves_the_packaged_app_bundle(monkeypatch, tmp_path):
+    monkeypatch.delenv("FUSED_RENDER_H3_BIN", raising=False)
+    monkeypatch.setattr(registry.shutil, "which", lambda name: None)
+    monkeypatch.setattr(registry.sys, "frozen", "macosx_app", raising=False)
+    contents = tmp_path / "FusedRender.app" / "Contents"
+    bin_dir = contents / "Resources" / "bin"
+    bin_dir.mkdir(parents=True)
+    bundled = bin_dir / "h3"
+    bundled.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(
+        registry.sys, "executable", str(contents / "MacOS" / "FusedRender"), raising=False)
+    assert registry.h3_bin() == str(bundled)
+
+
+def test_catalog_defaults_to_the_fl2va_entry_on_apple_silicon(monkeypatch, tmp_path):
+    _mac_arm(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    from fused_render.ai import catalog
+
+    rows = {row["capability"]: row for row in catalog.describe()}
+    video = rows[registry.VIDEO_GENERATION]
+    assert video["available"]
+    assert video["default"] == "MiniMaxAI/MiniMax-H3"
+
+
+def test_catalog_default_is_null_when_unavailable(monkeypatch):
+    _windows(monkeypatch)
+    from fused_render.ai import catalog
+
+    rows = {row["capability"]: row for row in catalog.describe()}
+    video = rows[registry.VIDEO_GENERATION]
+    assert not video["available"]
+    assert video["default"] is None
+
+
+def test_video_generation_removed_from_ruled_out_tasks():
+    assert "video generation" not in registry.NO_RUNNER_YET
+    assert registry._TASK_CAPABILITIES["video generation"] == registry.VIDEO_GENERATION
+
+
+def test_hub_repo_h3_cannot_read_hits_the_existing_wrong_format_refusal():
+    """Removing "video generation" from the ruled-out list gives every video
+    repo on the Hub a Load button — including ones h3.c cannot read (a
+    diffusers text-to-video pipeline, say). This is not a new mechanism: it
+    is the same "unknown checkpoint, refuse with a sentence" pattern
+    `mflux_image`'s worker already uses for a repo it cannot classify
+    (`test_ai_mflux_worker.py::test_a_model_with_no_variant_is_named_as_the_
+    cause`); the h3_video worker gets its own version of that refusal, tested
+    directly in `test_ai_h3_worker.py` rather than duplicated here.
+    """
+    assert registry.capability_for_task("video generation") == registry.VIDEO_GENERATION

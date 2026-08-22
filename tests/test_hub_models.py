@@ -581,27 +581,35 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     The menu used to list every tag the Hub recognises — twenty-six of them, of
     which this app can load four — so the control that looked most like the
     point of the feature was mostly a list of ways to get results with no
-    working button.
+    working button. (A fifth, video generation, joined since — see the "text
+    to video" mapping below.)
     """
     tasks = client.get("/api/ai-models/hub/tasks").json()["tasks"]
     offered = [t["tag"] for t in tasks]
     # Every offered tag resolves to a capability something here serves. Asked of
-    # the registry, which is the same authority the Load button uses.
+    # the registry, which is the same authority the Load button uses. This is a
+    # claim about the REGISTRY, not about THIS machine — video generation has no
+    # "everywhere" row, so the tag is offered (and refuses at Download time with
+    # "needs Apple Silicon") on a machine that cannot actually serve it, same as
+    # every other capability's menu entry is offered independent of whether ITS
+    # runner resolves here.
     for tag in offered:
         assert registry.capability_for_task(hub._friendly_task(tag)) is not None, tag
     # And the ones that made the complaint are gone, by name.
     for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
                    "text-classification", "summarization", "image-classification"):
         assert absent not in offered
-    # …while the four the Engines tab is about are all reachable. EMBEDDINGS
+    # …while the five the Engines tab is about are all reachable. EMBEDDINGS
     # arrives through `zero-shot-image-classification` and deliberately NOT
     # through `feature-extraction`: the dual encoders the embedding runners load
     # carry the former, and the sentence-transformers checkpoints that carry the
     # latter are exactly what the `absent` list above keeps out (see
-    # `registry.NO_RUNNER_YET`'s note on those two labels).
+    # `registry.NO_RUNNER_YET`'s note on those two labels). VIDEO_GENERATION
+    # arrives through "text-to-video" (or "image-to-video"), the Hub's own tag
+    # for a diffusers video pipeline (`hub_cache.py::_diffusers_task`).
     assert {registry.capability_for_task(hub._friendly_task(t)) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
-        registry.EMBEDDINGS}
+        registry.EMBEDDINGS, registry.VIDEO_GENERATION}
 
 
 def test_the_menu_follows_the_registry_rather_than_a_second_list(client, monkeypatch):

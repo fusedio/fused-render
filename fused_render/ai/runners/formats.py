@@ -81,6 +81,19 @@ NEMO_ASR_TARGET = "nemo.collections.asr.models."
 #: safetensors, rather than the single-file layout diffusers writes.
 MFLUX_COMPONENTS = ("transformer", "text_encoder", "vae")
 
+#: What an h3-readable snapshot always has at its ROOT: the `FL2VA/`
+#: checkpoint tree h3.c's own loader requires (`h3_load_dir` in h3.c,
+#: verified against the pinned commit — every path it opens is
+#: `FL2VA/…` or `Ref2VA/…`, never bare). The real repo
+#: (`MiniMaxAI/MiniMax-H3`) ALSO carries a root-level `model_index.json`
+#: — h3.c's own bookkeeping file, not a diffusers pipeline manifest — so
+#: this check has to run, and RETURN, before the `DIFFUSERS_INDEX` check
+#: below, or a full MiniMax-H3 snapshot would be mislabelled as a
+#: diffusers-loadable repo too. `Ref2VA/` is deliberately not required:
+#: this build never fetches it (v1 is FL2VA-only), so a snapshot missing
+#: it is still the ordinary, complete case here.
+H3_COMPONENT = "FL2VA"
+
 #: Repo id -> the mflux VARIANT class that loads it and the model config that
 #: describes it. mflux has no `AutoPipeline`, and the variant and its config are
 #: two arguments nothing can guess, so an unknown repo is refused with a
@@ -819,7 +832,7 @@ UNLOADABLE_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "compressed-tensors
 #: the config names an ASR class nothing else in this app can read — it is
 #: just decisive about matching NOTHING, which the early return in `loaders()`
 #: enforces directly rather than through this table.
-DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
+DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "h3-video", "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
             # diffusion pipeline whichever wheel opens it — and not about a
@@ -952,6 +965,10 @@ def has_mflux_components(dirnames) -> bool:
     return all(name in dirnames for name in MFLUX_COMPONENTS)
 
 
+def has_h3_components(dirnames) -> bool:
+    return H3_COMPONENT in dirnames
+
+
 def missing_mflux_components(snapshot_dir: str) -> list[str]:
     """The component folders an mflux load needs and this snapshot lacks."""
     return [name for name in MFLUX_COMPONENTS
@@ -1023,6 +1040,15 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # speech model as a chat model. (The `weights.safetensors` era had the
         # same leak — `.safetensors` counts as torch weights — fixed by the
         # same return.)
+        return tuple(found)
+    if has_h3_components(dirnames):
+        found.append("h3-video")
+        # …and NOTHING else, for the diffusers branch's reason: the real
+        # repo carries a root `model_index.json` of its own (h3.c's
+        # bookkeeping, not a diffusers manifest), and without this return
+        # the check below would ALSO claim it and the page would offer a
+        # Diffusers Load button that opens on a layout diffusers cannot
+        # read.
         return tuple(found)
     if repo_id in MFLUX_VARIANTS and has_mflux_components(dirnames):
         found.append("mflux-image")

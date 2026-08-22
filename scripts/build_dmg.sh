@@ -258,6 +258,66 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Stage the h3 binary (SPEC §40, D103's pattern): `fused.ai.video()`'s
+#     `h3-video` runner shells out to `antirez/h3.c`, a Metal binary that is
+#     the only working local engine for MiniMax H3 — there is no PyPI wheel
+#     for it, and unlike rclone there is no upstream release archive either,
+#     so this clones the repo at a PINNED COMMIT and builds it with the host's
+#     clang rather than downloading a prebuilt artifact. Cached under build/
+#     keyed by the pinned sha, exactly like rclone is keyed by its version, so
+#     re-running the script doesn't rebuild unless the pin changes.
+#
+#     No OFFLINE Metal shader toolchain is needed: h3.c's Metal shaders
+#     (h3_shaders.metal) compile at RUNTIME through the Metal framework's own
+#     shading-language compiler (MTLLibrary newLibraryWithSource:), not ahead
+#     of time. **But the SDK still has to be a recent one** — CORRECTED after
+#     hitting it in CI: the Objective-C source (h3_metal.m, h3_gpu.m) at the
+#     pinned commit references Metal 4 / MPSGraph declarations
+#     (`MTLGPUFamilyMetal4`, `MTLMathModeSafe`,
+#     `scaledDotProductAttentionWithQueryTensor:...`) that exist only in the
+#     macOS 26 SDK — a plain `xcode-select --install` command-line-tools
+#     clang is NOT sufficient unless that install happens to be for Xcode 26+;
+#     the CI workflow selects an Xcode with that SDK explicitly before this
+#     step runs (see the `macos-desktop`/`build-sign-notarize-release` jobs'
+#     own comments). This is a compile-SDK requirement, not a deployment-
+#     target one — the Makefile below still links only the frameworks macOS
+#     ships (Foundation, Metal, MetalPerformanceShaders(Graph), Accelerate),
+#     and the app's own `MACOSX_DEPLOYMENT_TARGET` is untouched.
+#
+#     Apple-Silicon-only, like the rclone build above and for the same
+#     packaging reason: this script's py2app target is arm64-only (see the
+#     FRAMEWORK_PYTHON note), and h3.c's own Metal path has no other target.
+# ---------------------------------------------------------------------------
+
+H3_COMMIT="8974cc055ea9c02fcd14cc27dfda3e1027c05153"
+H3_STAGE_DIR="$BUILD_DIR/h3-bin/${H3_COMMIT}"
+H3_STAGED_BIN="$H3_STAGE_DIR/h3"
+
+if [[ ! -x "$H3_STAGED_BIN" ]]; then
+  echo "==> building h3 (antirez/h3.c @ ${H3_COMMIT})"
+  H3_SRC_DIR="$BUILD_DIR/h3-src"
+  rm -rf "$H3_SRC_DIR"
+  git clone --quiet https://github.com/antirez/h3.c.git "$H3_SRC_DIR"
+  git -C "$H3_SRC_DIR" checkout --quiet "$H3_COMMIT"
+  # `make -j8`, not bare `make`: this is a from-scratch build of ~25 C/
+  # Objective-C translation units on every cache miss (a version bump, or a
+  # fresh build/), and `all` is the Makefile's default target — it builds
+  # both the `h3` CLI and `libh3.a`; only the CLI is staged, since the runner
+  # shells out to it rather than linking against the static library.
+  (cd "$H3_SRC_DIR" && make -j8 h3)
+  if [[ ! -x "$H3_SRC_DIR/h3" ]]; then
+    echo "FATAL: h3.c build did not produce an executable h3 binary." >&2
+    exit 1
+  fi
+  mkdir -p "$H3_STAGE_DIR"
+  cp "$H3_SRC_DIR/h3" "$H3_STAGED_BIN"
+  chmod +x "$H3_STAGED_BIN"
+  rm -rf "$H3_SRC_DIR"
+else
+  echo "==> h3 (${H3_COMMIT}) already staged, skipping build"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
 #    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
 #    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
@@ -890,6 +950,33 @@ if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; th
   exit 1
 fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
+
+# ---------------------------------------------------------------------------
+# 4d-ter. Bundle the h3 binary (staged in step 2c above) at the same
+#     Contents/Resources/bin/ spot as rclone and uv — a real Mach-O binary,
+#     signed by the same sweep (step 5), no extra rule needed there.
+#     `registry.h3_bin()` looks here first after the env override.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling h3 (${H3_COMMIT})"
+H3_DEST="$APP_DIR/Contents/Resources/bin/h3"
+mkdir -p "$(dirname "$H3_DEST")"
+cp "$H3_STAGED_BIN" "$H3_DEST"
+chmod +x "$H3_DEST"
+
+# `-h`/`--help` rather than a full render: this smoke test runs on every
+# build and must not spend minutes loading a 62GB snapshot nobody staged
+# here — it only has to prove the binary launches and links, the same bar
+# the rclone/uv version smoke tests above hold themselves to. `|| true` for
+# the same reason as those: `set -e` would abort on the assignment and take
+# the diagnostic with it.
+H3_SMOKE_OUT="$("$H3_DEST" --help 2>&1 || true)"
+if [[ -z "$H3_SMOKE_OUT" ]]; then
+  echo "FATAL: bundled h3 produced no output at all — it likely failed to launch" >&2
+  echo "       (a missing dynamic framework link is the usual cause)." >&2
+  exit 1
+fi
+echo "    h3 launches OK"
 
 # ---------------------------------------------------------------------------
 # 4e. Bundle sessions.zip (D123/D227): the repo's core_apps/sessions/ content
