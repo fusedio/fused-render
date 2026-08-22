@@ -3,8 +3,10 @@
 // Everything else on /ai-models is ABOUT models — what is on disk, what could
 // be, which backend serves it. This tab is the one that answers the first
 // question a person has ("what can this thing actually do?") by letting them
-// do it: a chat box for a text model, a prompt-to-picture stage for an image
-// model, a record-and-transcribe stage for a speech model. The stage is chosen
+// do it: a one-shot prompt for a text model, a prompt-to-picture stage for an
+// image model, a record-and-transcribe stage for a speech model. Every stage
+// is the same API-surface shape — input, Run, the result of that run — on the
+// hero card's centered column. The stage is chosen
 // by the selected model's capability, so a capability added server-side gets a
 // named placeholder here rather than a blank.
 //
@@ -24,17 +26,18 @@
 // non-default settings, written with `replaceSearch` because browsing models
 // is not history the back button should replay.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChatStage } from "./ChatStage";
+import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
-import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
+import { capabilityIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
+import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -43,7 +46,6 @@ import {
   type AiCatalogCapability,
   type AiCatalogModel,
 } from "@platform/lib/api";
-import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -57,10 +59,6 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 const GROUP_LABELS: Record<string, string> = Object.fromEntries(
   PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
 );
-const GROUP_BLURBS: Record<string, string> = Object.fromEntries(
-  PLAYGROUND_GROUPS.map((g) => [g.capability, g.blurb]),
-);
-
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
 }
@@ -104,27 +102,6 @@ export default function PlaygroundTab() {
       alive = false;
     };
   }, [catalogEpoch]);
-
-  // Job rows while anything is live, so the header can draw the same progress
-  // the Local tab draws — matched by TITLE (the supervisor sets it to the
-  // model id), the same join AiModels.tsx uses and for the same reason: the id
-  // derivation sanitises characters and must not be copied here.
-  const anyBusy = isBusy(runtime);
-  const [jobs, setJobs] = useState<Job[]>([]);
-  useEffect(() => {
-    if (!anyBusy) {
-      setJobs([]);
-      return;
-    }
-    let alive = true;
-    const tick = () => fetchJobs().then((s) => alive && setJobs(s.jobs), () => {});
-    void tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, [anyBusy]);
 
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];
 
@@ -181,19 +158,21 @@ export default function PlaygroundTab() {
   const selectedResident = residentRow?.model === selected?.model.id ? residentRow : undefined;
   const selectedDownloading =
     !!selected && runtime.downloading.some((d) => d.model === selected.model.id);
-  const jobForSelected = selected
-    ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
-    : undefined;
 
-  const runDownload = async () => {
-    if (!selected) return;
+  // The sidebar cards and the stage header share this: same call, same error
+  // surface (the stage's banner — the card has no room for a sentence).
+  const runDownloadFor = async (id: string, capability: string) => {
     setActionError(null);
     try {
-      await downloadAiModel(selected.model.id, selected.row.capability);
+      await downloadAiModel(id, capability);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);
     }
+  };
+  const runDownload = () => {
+    if (!selected) return;
+    return runDownloadFor(selected.model.id, selected.row.capability);
   };
   const runLoad = async () => {
     if (!selected) return;
@@ -258,79 +237,87 @@ export default function PlaygroundTab() {
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
         {capabilities.map((row) => {
-          // The catalog's curated half, in its own smallest-first order, notes
-          // and all — but the RECOMMENDED subset of it (D425), because this tab
-          // is where someone types a sentence rather than shops for a download:
-          // see `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
+          // The catalog's curated half, in its own smallest-first order — but
+          // the RECOMMENDED subset of it (D425), because this tab is where
+          // someone types a sentence rather than shops for a download: see
+          // `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
           // capability carousels beside what this disk already holds, with the
           // Hub search above them for anything the curation never named (D426).
           //
           // The uncurated repos this disk happens to hold (D323's union) are
           // still playable but sit apart under their own quiet caption — they
-          // have no curator and no note, and mixed in they read as
-          // recommendations nobody made.
+          // have no curator, and mixed in they read as recommendations nobody
+          // made.
           const offered = playgroundModels(row);
           const curated = offered.filter((m) => m.source === "curated");
           const cached = offered.filter((m) => m.source !== "curated");
           const draw = (model: AiCatalogModel) => {
             const active = selected?.model.id === model.id;
-            const resident = runtime.loaded.some(
-              (m) => m.model === model.id && m.state === "ready",
-            );
+            const downloading = runtime.downloading.some((d) => d.model === model.id);
+            const name = modelName(model);
+            // The full name under the nickname — the label, or for a cached
+            // entry (where the label IS the display name) the repo id, so the
+            // second line never just repeats the first.
+            const fullName = model.label !== name ? model.label : model.id !== name ? model.id : null;
+            // The card is a div-as-button, not a <button>: the Download CTA
+            // lives inside it, and a button inside a button is markup browsers
+            // are free to mangle.
             return (
-              <button
-                type="button"
+              <div
                 key={model.id}
+                role="button"
+                tabIndex={0}
                 className={"pg-model" + (active ? " active" : "")}
                 aria-pressed={active}
                 onClick={() => select(model.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    select(model.id);
+                  }
+                }}
                 title={model.label}
               >
                 <span className="pg-model-name">
-                  {resident ? (
-                    <span className="pg-dot loaded" aria-hidden="true" />
-                  ) : model.downloaded ? (
-                    <span className="pg-dot disk" aria-hidden="true" />
-                  ) : null}
-                  {modelName(model)}
+                  {/* Live from the supervisor, not the catalog's `loaded`
+                      snapshot — a dot that outlives an unload is a lie. */}
+                  {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
+                    <span className="pg-model-live" title="Loaded — answering from memory" />
+                  )}
+                  {name}
                 </span>
-                {/* The curator's sentence — why you would pick this one. The
-                    same `note` a recommended card carries on the Local tab; for
-                    the reader with no AI vocabulary it is the only line here
-                    that answers "which one do I click". */}
-                {model.note && <span className="pg-model-note">{model.note}</span>}
-                <span className="pg-model-meta">
-                  <span>{resident ? "Ready" : model.downloaded ? "On this machine" : ""}</span>
-                  {/* The size, translated: "will this melt my laptop" is the
-                      question a newcomer is actually asking of a GB figure,
-                      so the verdict leads and the number stays for hover. */}
-                  <span
-                    className={"pg-fit" + (model.fit ? " " + model.fit : "")}
-                    title={
-                      model.size_gb != null
-                        ? `${model.size_gb} GB download — judged against this machine's memory`
-                        : undefined
-                    }
-                  >
+                {fullName && <span className="pg-model-full">{fullName}</span>}
+                <span className="pg-model-foot">
+                  <span className="pg-model-size">
                     {model.size_gb != null ? `${model.size_gb} GB` : "—"}
-                    {model.fit === "easy"
-                      ? " · runs easily"
-                      : model.fit === "tight"
-                        ? " · tight fit"
-                        : model.fit === "no"
-                          ? " · too big here"
-                          : ""}
                   </span>
+                  {/* On disk = nothing to say: the CTA exists only while there
+                      is an action to take. */}
+                  {!model.downloaded && (
+                    <button
+                      type="button"
+                      className="pg-model-dl"
+                      disabled={downloading}
+                      onClick={(e) => {
+                        // Selecting too is fine; a second click must not be.
+                        e.stopPropagation();
+                        select(model.id);
+                        void runDownloadFor(model.id, row.capability);
+                      }}
+                    >
+                      {downloading ? "Downloading…" : "Download"}
+                    </button>
+                  )}
                 </span>
-              </button>
+              </div>
             );
           };
           return (
-            <section key={row.capability} className="pg-group">
-              <h4 className="pg-group-title">{groupLabel(row.capability)}</h4>
-              {GROUP_BLURBS[row.capability] && (
-                <p className="pg-group-blurb">{GROUP_BLURBS[row.capability]}</p>
-              )}
+            <details key={row.capability} className="pg-group" open>
+              <summary className="pg-group-head">
+                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
+                <span className="pg-group-title">{groupLabel(row.capability)}</span>
+              </summary>
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
                 // ruled-out group look identical, and HF-8 already paid for
@@ -356,7 +343,7 @@ export default function PlaygroundTab() {
                   {cached.map(draw)}
                 </>
               )}
-            </section>
+            </details>
           );
         })}
       </aside>
@@ -380,72 +367,113 @@ export default function PlaygroundTab() {
           </p>
         ) : (
           <>
-            <div className="pg-stage-head">
-              <div>
-                <h3 className="pg-stage-title">
-                  {modelName(selected.model)}
-                  <span className="pg-stage-kind"> · {groupLabel(selected.row.capability)}</span>
-                </h3>
-                {/* The curator's sentence, in full — the sidebar clamps it.
-                    For the zero-jargon reader this is the model introducing
-                    itself; the mechanics (loaded, downloading) stay on the
-                    quieter line below it. */}
-                {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-                <p className="pg-stage-state">
-                  {stateLine}
-                  {evicts ? ` ${evicts}` : ""}
-                </p>
-              </div>
-              <div className="pg-stage-actions">
-                {/* The playground's exit ramp: everything tried here is one
-                    `fused.ai` call in a page, and this hands the /apps
-                    composer a seed naming the model, the tuned settings and
-                    the call — the user finishes the sentence with the app
-                    they want. */}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  title="Open the app builder with this model and your settings pre-filled"
-                  onClick={() =>
-                    navigateUrl(
-                      "/apps?seed=" +
-                        encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
-                    )
-                  }
-                >
-                  Build an app with this AI
-                </button>
-                {!selected.model.downloaded && !selectedDownloading && (
-                  <button type="button" className="btn btn-secondary" onClick={runDownload}>
-                    Download{selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
-                  </button>
-                )}
-                {selected.model.downloaded && !selectedResident && (
+            <section className="pg-hero">
+              <div className="pg-hero-head">
+                <span className="pg-hero-icon" title={groupLabel(selected.row.capability)}>
+                  {capabilityIcon(selected.row.capability)}
+                </span>
+                <div className="pg-hero-names">
+                  {/* No capability word beside the name — the icon says it,
+                      with the label as its tooltip for whoever hovers. */}
+                  <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
+                  {/* The full repo id — author/name as Hugging Face knows it.
+                      A link only when it IS a repo id: llama.cpp entries are
+                      keyed by bare .gguf filename (formats.GGUF_RECIPES), and
+                      huggingface.co/<filename> is a 404 dressed as a link. */}
+                  {selected.model.id.includes("/") ? (
+                    <a
+                      className="pg-hero-repo"
+                      href={hubModelUrl(selected.model.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {selected.model.id}
+                    </a>
+                  ) : (
+                    <span className="pg-hero-repo">{selected.model.id}</span>
+                  )}
+                </div>
+                <div className="pg-stage-actions">
+                  {/* The playground's exit ramp: everything tried here is one
+                      `fused.ai` call in a page, and this hands the /apps
+                      composer a seed naming the model, the tuned settings and
+                      the call — the user finishes the sentence with the app
+                      they want. */}
                   <button
                     type="button"
-                    className="btn btn-secondary"
-                    onClick={runLoad}
-                    title="Optional — the first generation loads it too"
+                    className="btn btn-primary"
+                    title="Open the app builder with this model and your settings pre-filled"
+                    onClick={() =>
+                      navigateUrl(
+                        "/apps?seed=" +
+                          encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
+                      )
+                    }
                   >
-                    Load
+                    Build an app with this AI
                   </button>
-                )}
-                {selectedResident && selectedResident.state === "ready" && (
-                  <button type="button" className="btn btn-secondary" onClick={runUnload}>
-                    Unload
-                  </button>
-                )}
+                  {!selected.model.downloaded && !selectedDownloading && (
+                    <button type="button" className="btn btn-secondary" onClick={runDownload}>
+                      Download
+                      {selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
+                    </button>
+                  )}
+                  {selected.model.downloaded && !selectedResident && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={runLoad}
+                      title="Optional — the first generation loads it too"
+                    >
+                      Load
+                    </button>
+                  )}
+                  {selectedResident && selectedResident.state === "ready" && (
+                    <button type="button" className="btn btn-secondary" onClick={runUnload}>
+                      Unload
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-            {(selectedDownloading || (selectedResident && selectedResident.state !== "ready")) && (
-              <ModelProgress detail={selectedResident?.detail} job={jobForSelected} />
-            )}
+              {(selected.model.params ||
+                selected.model.quantization ||
+                selected.model.size_gb != null) && (
+                <dl className="pg-hero-facts">
+                  {selected.model.params && (
+                    <div className="pg-hero-fact">
+                      <dt>Parameters</dt>
+                      <dd>{selected.model.params}</dd>
+                    </div>
+                  )}
+                  {selected.model.quantization && (
+                    <div className="pg-hero-fact">
+                      <dt>Quantization</dt>
+                      <dd>{selected.model.quantization}</dd>
+                    </div>
+                  )}
+                  {selected.model.size_gb != null && (
+                    <div className="pg-hero-fact">
+                      <dt>Download</dt>
+                      <dd>{selected.model.size_gb} GB</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              {/* The curator's sentence, in full — the sidebar clamps it.
+                  For the zero-jargon reader this is the model introducing
+                  itself; the mechanics (loaded, downloading) stay on the
+                  quieter line below it. */}
+              {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
+              <p className="pg-stage-state">
+                {stateLine}
+                {evicts ? ` ${evicts}` : ""}
+              </p>
+            </section>
             {selected.row.capability === "text-generation" ? (
-              <ChatStage
+              <TextStage
                 key={selected.model.id}
                 model={selected.model.id}
                 modelLabel={modelName(selected.model)}
-                ready={!!selectedResident && selectedResident.state === "ready"}
                 downloaded={selected.model.downloaded}
               />
             ) : selected.row.capability === "text-to-image" ? (

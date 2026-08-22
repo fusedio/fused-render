@@ -1,5 +1,8 @@
 // The image stage: prompt in, picture out (SPEC AI-9).
 //
+// Shaped like the text stage (D431): heading, prompt, Generate. Every
+// parameter — chips included — lives behind the Config fold.
+//
 // The controls follow what the image playgrounds converged on (fal, Midjourney
 // web, Ideogram, Leonardo): ASPECT RATIO chips, not raw width×height sliders —
 // people think in shapes, developer forms think in pixels — with the exact
@@ -12,16 +15,16 @@
 // with no hint keeps the server's 28.
 //
 // A render is job-shaped — the reply carries the job to watch and the SETTLED
-// parameters (width snapped, steps clamped, seed invented), and the caption
-// echoes that reply, never the request. While it denoises the worker drops a
-// preview beside the output path and this stage polls it; the job survives a
-// tab switch on purpose (it shows in Activity), so only the WATCH stops on
-// unmount.
+// parameters (width snapped, steps clamped, seed invented). While it denoises
+// the worker drops a preview beside the output path and this stage polls it;
+// the job survives a tab switch on purpose (it shows in Activity), so only the
+// WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
-import { RailChips, RailSection, RailSlider, StarterPrompts } from "./controls";
+import { MenuIcons } from "@platform/ui/MenuIcons";
+import { AdvancedPanel, RailChips, RailSlider, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
@@ -85,9 +88,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     numParam("guidance", DEFAULTS.guidance, ...GUIDANCE_RANGE),
   );
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
-  const [railOpen, setRailOpen] = useState(false);
   const [run, setRun] = useState<Run | null>(null);
-  const [gallery, setGallery] = useState<ImageStarted[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewLive, setPreviewLive] = useState(false);
@@ -107,7 +108,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   }, [prompt, width, height, steps, guidance, seed, modelSteps]);
 
   const abortRef = useRef<AbortController | null>(null);
+  const boxRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // Grows with the prompt so a Shift+Enter newline is visible.
+  const grow = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight, 180) + "px";
+  };
 
   // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
   // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
@@ -163,7 +173,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           return;
         }
         setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, done: true } : r));
-        setGallery((g) => [started, ...g.filter((i) => i.jobId !== started.jobId)].slice(0, 12));
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
         setError((e as Error).message);
@@ -174,20 +183,51 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     }
   };
 
+  // Back to empty. Settings stay put — this clears the prompt and its result,
+  // not the setup.
+  const clear = () => {
+    setPrompt("");
+    setRun(null);
+    setError(null);
+    setPreviewLive(false);
+    const box = boxRef.current;
+    if (box) {
+      box.style.height = "auto";
+      box.focus();
+    }
+  };
+
   const busy = !!run && !run.done;
   const job = busy ? run.job : null;
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
-  const settled = run?.started;
+  // One box for shimmer, preview and final picture, so the column cannot
+  // resize mid-render — the worker's preview is a thumbnail, and sizing by its
+  // own pixels is what made the layout jump. 80% shrinks the result; the vh
+  // term is the old max-height cap as a width, so the ratio holds.
+  const shot = run
+    ? {
+        aspectRatio: `${run.started.width} / ${run.started.height}`,
+        width: `min(80%, ${Math.round(run.started.width * 0.8)}px, calc(50vh * ${(
+          run.started.width / run.started.height
+        ).toFixed(3)}))`,
+      }
+    : undefined;
 
   return (
-    <div className={"pg-work" + (railOpen ? " rail-open" : "")}>
-      <div className="pg-main pg-image">
-        <div className="pg-composer">
+    <div className="pg-work">
+      {/* The action only: the hero card above names the model and its state. */}
+      <h2 className="pg-work-title">Describe a picture</h2>
+
+      <div className="pg-composer">
           <textarea
-            rows={1}
+            ref={boxRef}
+            rows={2}
             value={prompt}
             placeholder="Describe the picture…"
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => {
+              setPrompt(e.target.value);
+              grow();
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -195,6 +235,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               }
             }}
           />
+          {!busy && run && (
+            <button
+              type="button"
+              className="pg-ghost-btn pg-clear"
+              title="Clear the prompt and the picture"
+              onClick={clear}
+            >
+              Clear
+            </button>
+          )}
           {busy ? (
             <button
               type="button"
@@ -208,110 +258,17 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               type="button"
               className="btn btn-primary pg-send"
               disabled={!prompt.trim()}
+              title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
-              Generate
+              Generate <kbd className="pg-kbd">⏎</kbd>
             </button>
           )}
-        </div>
-        {error && <p className="pg-error">{error}</p>}
-
-        {!run && (
-          <div className="pg-empty-stage">
-            <p className="pg-empty-title">Make a picture with {entry.nickname || entry.label}</p>
-            <p className="pg-empty-sub">
-              {entry.defaults?.steps != null
-                ? "Runs entirely on this machine — the Quick setting is what this model was benchmarked at."
-                : "Runs entirely on this machine."}
-            </p>
-            <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void generate(p)} />
-          </div>
-        )}
-
-        {run && (
-          <figure className="pg-image-result">
-            {run.done ? (
-              <img
-                src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
-                alt={run.started.prompt}
-                style={{ aspectRatio: `${run.started.width} / ${run.started.height}` }}
-              />
-            ) : (
-              <>
-                <img
-                  src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
-                  alt="Render in progress"
-                  style={
-                    previewLive
-                      ? { aspectRatio: `${run.started.width} / ${run.started.height}` }
-                      : { display: "none" }
-                  }
-                  onLoad={() => setPreviewLive(true)}
-                  onError={() => setPreviewLive(false)}
-                />
-                {!previewLive && (
-                  <div
-                    className="pg-image-wait"
-                    style={{ aspectRatio: `${run.started.width} / ${run.started.height}` }}
-                    aria-hidden="true"
-                  />
-                )}
-              </>
-            )}
-            <figcaption className="pg-image-caption">
-              {busy ? (
-                <>
-                  <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                  {pct !== null && (
-                    <span className="pg-bar">
-                      <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                    </span>
-                  )}
-                </>
-              ) : settled ? (
-                // The SETTLED parameters — what actually ran (the server
-                // snaps and clamps silently), with the seed one click away.
-                <>
-                  {settled.width}×{settled.height} · {settled.steps} steps · guidance{" "}
-                  {settled.guidance} ·{" "}
-                  <button
-                    type="button"
-                    className="pg-seed"
-                    title="Reuse this seed — the same prompt and settings render the same picture"
-                    onClick={() => setSeed(String(settled.seed))}
-                  >
-                    seed {settled.seed}
-                  </button>
-                </>
-              ) : null}
-            </figcaption>
-          </figure>
-        )}
-
-        {gallery.length > 0 && (
-          <div className="pg-image-strip">
-            {gallery.map((item) => (
-              <img
-                key={item.jobId}
-                src={rawUrl(item.path) + "&t=" + item.jobId}
-                alt={item.prompt}
-                className={run?.started.jobId === item.jobId ? "active" : undefined}
-                title={`${item.prompt} — seed ${item.seed}`}
-                onClick={() => setRun({ started: item, job: null, done: true })}
-              />
-            ))}
-          </div>
-        )}
-
-        <div className="pg-under">
-          <button type="button" className="pg-ghost-btn pg-rail-toggle" onClick={() => setRailOpen((v) => !v)}>
-            {railOpen ? "Hide controls" : "Controls"}
-          </button>
-        </div>
       </div>
 
-      <aside className="pg-rail" aria-label="Image settings">
-        <RailSection title="Shape">
+      {/* Chips lead the fold; sliders and the seed follow. */}
+      <AdvancedPanel>
+        <div className="pg-config-chips">
           <RailChips
             options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
             active={aspect}
@@ -323,31 +280,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               }
             }}
           />
-          <details className="pg-custom">
-            <summary>Custom size{aspect === null ? ` — ${width}×${height}` : ""}</summary>
-            <RailSlider
-              label="Width"
-              hint="Snapped to a multiple of 16 by the server."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={width}
-              fallback={DEFAULTS.width}
-              onChange={setWidth}
-            />
-            <RailSlider
-              label="Height"
-              hint="Bigger is slower and needs more memory."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={height}
-              fallback={DEFAULTS.height}
-              onChange={setHeight}
-            />
-          </details>
-        </RailSection>
-        <RailSection title="Quality">
           {speedChips && (
             <RailChips
               options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
@@ -358,47 +290,124 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               }}
             />
           )}
-          <RailSlider
-            label="Steps"
-            hint={
-              entry.defaults?.steps != null
-                ? "This model is distilled for few steps — more is slower, rarely better."
-                : "Denoising passes — more is slower and usually cleaner."
-            }
-            min={STEPS_RANGE[0]}
-            max={STEPS_RANGE[1]}
-            step={1}
-            value={steps}
-            fallback={modelSteps}
-            onChange={setSteps}
+        </div>
+        <RailSlider
+          label="Width"
+          hint="Snapped to a multiple of 16 by the server."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={16}
+          value={width}
+          fallback={DEFAULTS.width}
+          onChange={setWidth}
+        />
+        <RailSlider
+          label="Height"
+          hint="Bigger is slower and needs more memory."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={16}
+          value={height}
+          fallback={DEFAULTS.height}
+          onChange={setHeight}
+        />
+        <RailSlider
+          label="Steps"
+          hint={
+            entry.defaults?.steps != null
+              ? "This model is distilled for few steps — more is slower, rarely better."
+              : "Denoising passes — more is slower and usually cleaner."
+          }
+          min={STEPS_RANGE[0]}
+          max={STEPS_RANGE[1]}
+          step={1}
+          value={steps}
+          fallback={modelSteps}
+          onChange={setSteps}
+        />
+        <RailSlider
+          label="Guidance"
+          hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
+          min={GUIDANCE_RANGE[0]}
+          max={GUIDANCE_RANGE[1]}
+          step={0.5}
+          value={guidance}
+          fallback={DEFAULTS.guidance}
+          onChange={setGuidance}
+        />
+        <label className="pg-ctl">
+          <span className="pg-ctl-head">
+            <span className="pg-ctl-label">Seed</span>
+          </span>
+          <input
+            className="pg-rail-input"
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
-          <RailSlider
-            label="Guidance"
-            hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
-            min={GUIDANCE_RANGE[0]}
-            max={GUIDANCE_RANGE[1]}
-            step={0.5}
-            value={guidance}
-            fallback={DEFAULTS.guidance}
-            onChange={setGuidance}
-          />
-        </RailSection>
-        <RailSection title="Seed">
-          <label className="pg-ctl">
-            <input
-              className="pg-rail-input"
-              type="text"
-              inputMode="numeric"
-              value={seed}
-              placeholder="Random each time"
-              onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-            />
-            <span className="pg-ctl-hint">
-              Same seed + same prompt + same settings = the same picture.
-            </span>
-          </label>
-        </RailSection>
-      </aside>
+          <span className="pg-ctl-hint">
+            Same seed + same prompt + same settings = the same picture.
+          </span>
+        </label>
+      </AdvancedPanel>
+
+      {error && <p className="pg-error">{error}</p>}
+
+      {!run && (
+          <div className="pg-empty-stage">
+            <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void generate(p)} />
+          </div>
+        )}
+
+        {run && (
+          <div className="pg-answer-block">
+          <p className="pg-answer-label">Result</p>
+          <figure className="pg-image-result">
+            {run.done ? (
+              <div className="pg-image-frame" style={shot}>
+                <img src={rawUrl(run.started.path) + "&t=" + run.started.jobId} alt={run.started.prompt} />
+                {/* A download link, not a clipboard write: ClipboardItem takes
+                    image/png only and the render's format is unknown here. */}
+                <a
+                  className="pg-copy-btn pg-image-save"
+                  href={rawUrl(run.started.path)}
+                  download={run.started.path.split("/").pop() || "picture.png"}
+                  title="Save this picture"
+                  aria-label="Save this picture"
+                >
+                  {MenuIcons.download}
+                </a>
+              </div>
+            ) : (
+              <div className="pg-image-frame" style={shot}>
+                <img
+                  src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
+                  alt="Render in progress"
+                  style={previewLive ? undefined : { display: "none" }}
+                  onLoad={() => setPreviewLive(true)}
+                  onError={() => setPreviewLive(false)}
+                />
+                {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
+              </div>
+            )}
+            {/* Progress only. The settled parameters were dropped by request,
+                and D429's seed-reuse button with them: an invented seed is now
+                surfaced nowhere, so a random render cannot be reproduced. */}
+            {busy && (
+              <figcaption className="pg-image-caption">
+                <span>{job?.detail || "Starting — a cold model loads first…"}</span>
+                {pct !== null && (
+                  <span className="pg-bar">
+                    <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
+                  </span>
+                )}
+              </figcaption>
+            )}
+          </figure>
+          </div>
+        )}
     </div>
   );
 }
