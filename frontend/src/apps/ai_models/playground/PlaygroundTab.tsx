@@ -32,6 +32,7 @@ import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
+import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import {
@@ -136,24 +137,16 @@ export default function PlaygroundTab() {
   // here with only a task in mind. It only steers the fallback: an explicit
   // `model` always wins, and an unknown cap value falls through silently.
   const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
-  const selected = useMemo(() => {
-    // Only a row the SIDEBAR ACTUALLY DRAWS is selectable. An unavailable
-    // capability renders its reason in place of its model buttons (HF-8), so
-    // selecting into one lit up nothing, and the first Send died on a raw
-    // engine error while the real explanation sat one group away, unread.
-    const usable = capabilities.filter((r) => r.available && r.models.length);
-    for (const row of usable) {
-      const hit = row.models.find((m) => m.id === asked);
-      if (hit) return { row, model: hit };
-    }
-    const rows = [...usable.filter((r) => r.capability === askedCap), ...usable];
-    for (const row of rows) {
-      const fallback =
-        row.models.find((m) => m.id === row.default) ?? row.models[0];
-      if (fallback) return { row, model: fallback };
-    }
-    return null;
-  }, [capabilities, asked, askedCap]);
+  // Only a row the SIDEBAR ACTUALLY DRAWS is selectable — which since D425 is
+  // narrower than "in the catalog": an unavailable capability renders its
+  // reason in place of its model buttons (HF-8), and an unrecommended model
+  // nobody has downloaded is not offered here at all. Both rules live in
+  // `pick.ts`, with the sidebar reading the same `playgroundModels` below, so
+  // the drawn list and the selectable list cannot come apart.
+  const selected = useMemo(
+    () => pickPlaygroundModel(capabilities, asked, askedCap),
+    [capabilities, asked, askedCap],
+  );
 
   // What the URL asked for, when this machine cannot give it. Home's strip is
   // the STATIC `PLAYGROUND_GROUPS` list, not the catalog, so every machine
@@ -265,14 +258,19 @@ export default function PlaygroundTab() {
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
         {capabilities.map((row) => {
-          // The same recommendation foundation Discover's "Suggested models"
-          // grid renders: the catalog's CURATED half, in the catalog's own
-          // smallest-first order, notes and all. The uncurated repos this disk
-          // happens to hold (D323's union) are still playable but sit apart
-          // under their own quiet caption — they have no curator and no note,
-          // and mixed in they read as recommendations nobody made.
-          const curated = row.models.filter((m) => m.source === "curated");
-          const cached = row.models.filter((m) => m.source !== "curated");
+          // The catalog's curated half, in its own smallest-first order, notes
+          // and all — but the RECOMMENDED subset of it (D425), because this tab
+          // is where someone types a sentence rather than shops for a download:
+          // see `pick.ts`. The Discover tab still shows the whole shortlist,
+          // which is the surface for "what could I have".
+          //
+          // The uncurated repos this disk happens to hold (D323's union) are
+          // still playable but sit apart under their own quiet caption — they
+          // have no curator and no note, and mixed in they read as
+          // recommendations nobody made.
+          const offered = playgroundModels(row);
+          const curated = offered.filter((m) => m.source === "curated");
+          const cached = offered.filter((m) => m.source !== "curated");
           const draw = (model: AiCatalogModel) => {
             const active = selected?.model.id === model.id;
             const resident = runtime.loaded.some(
@@ -338,8 +336,17 @@ export default function PlaygroundTab() {
                 // that lesson once.
                 <p className="pg-group-off">{row.reason || "Not available on this machine."}</p>
               )}
-              {row.available && !row.models.length && (
-                <p className="pg-group-off">Nothing to suggest yet.</p>
+              {row.available && !offered.length && (
+                // `offered`, not `row.models`: a capability whose whole
+                // shortlist is unrecommended and undownloaded has models in
+                // the catalog and nothing to draw here, and a silent empty
+                // group is the one outcome this filter must not produce. The
+                // curation is meant to prevent it (catalog.py keeps at least
+                // one recommended entry per list, and a test pins that) — this
+                // line is what the failure looks like if it ever slips.
+                <p className="pg-group-off">
+                  Nothing to try here yet — the Discover tab is where a first model comes from.
+                </p>
               )}
               {row.available && curated.map(draw)}
               {row.available && cached.length > 0 && (

@@ -2628,6 +2628,19 @@ export interface AiCatalogModel {
   /** Whether a worker is holding it RIGHT NOW — read live from the supervisor,
    *  unlike `downloaded`, which comes from a memoised disk scan. */
   loaded: boolean;
+  /** Whether the curation marks this as a first thing to TRY (D425) — a
+   *  per-model flag on the wire, unrelated to the Local tab's
+   *  `MergedSection.recommended`, which is that page's own name for "curated
+   *  and not on this disk".
+   *
+   *  The Playground sidebar is the only surface that filters on it (models
+   *  recommended OR already on the disk); every other picker reads the whole
+   *  list, because "what could I have" and "what should I try first" are
+   *  different questions asked by different people. Always false on a cached
+   *  entry — a recommendation is a person's mark, and nobody made one about a
+   *  repo the user found themselves. NOT the default: `default` is still the
+   *  smallest entry and owes nothing to this flag. */
+  recommended: boolean;
 }
 
 export interface AiCatalogCapability {
