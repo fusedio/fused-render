@@ -21,7 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
-import { RailChips, RailSection, RailSlider, StarterPrompts } from "./controls";
+import { AdvancedPanel, RailChips, RailSlider, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
@@ -85,9 +85,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     numParam("guidance", DEFAULTS.guidance, ...GUIDANCE_RANGE),
   );
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
-  const [railOpen, setRailOpen] = useState(false);
   const [run, setRun] = useState<Run | null>(null);
-  const [gallery, setGallery] = useState<ImageStarted[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewLive, setPreviewLive] = useState(false);
@@ -163,7 +161,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           return;
         }
         setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, done: true } : r));
-        setGallery((g) => [started, ...g.filter((i) => i.jobId !== started.jobId)].slice(0, 12));
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
         setError((e as Error).message);
@@ -180,9 +177,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const settled = run?.started;
 
   return (
-    <div className={"pg-work" + (railOpen ? " rail-open" : "")}>
-      <div className="pg-main pg-image">
-        <div className="pg-composer">
+    <div className="pg-work">
+      <div className="pg-composer">
           <textarea
             rows={1}
             value={prompt}
@@ -213,10 +209,100 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               Generate
             </button>
           )}
-        </div>
-        {error && <p className="pg-error">{error}</p>}
+      </div>
 
-        {!run && (
+      {/* Shape and speed are the two choices a first render actually makes;
+          exact sizes, steps, guidance and the seed live behind Advanced. */}
+      <div className="pg-params">
+        <RailChips
+          options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
+          active={aspect}
+          onPick={(value) => {
+            const pick = ASPECTS.find((a) => a.value === value);
+            if (pick) {
+              setWidth(pick.width);
+              setHeight(pick.height);
+            }
+          }}
+        />
+        {speedChips && (
+          <RailChips
+            options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
+            active={speed}
+            onPick={(value) => {
+              const pick = speedChips.find((c) => c.value === value);
+              if (pick) setSteps(pick.steps);
+            }}
+          />
+        )}
+      </div>
+
+      <AdvancedPanel>
+        <RailSlider
+          label="Width"
+          hint="Snapped to a multiple of 16 by the server."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={16}
+          value={width}
+          fallback={DEFAULTS.width}
+          onChange={setWidth}
+        />
+        <RailSlider
+          label="Height"
+          hint="Bigger is slower and needs more memory."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={16}
+          value={height}
+          fallback={DEFAULTS.height}
+          onChange={setHeight}
+        />
+        <RailSlider
+          label="Steps"
+          hint={
+            entry.defaults?.steps != null
+              ? "This model is distilled for few steps — more is slower, rarely better."
+              : "Denoising passes — more is slower and usually cleaner."
+          }
+          min={STEPS_RANGE[0]}
+          max={STEPS_RANGE[1]}
+          step={1}
+          value={steps}
+          fallback={modelSteps}
+          onChange={setSteps}
+        />
+        <RailSlider
+          label="Guidance"
+          hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
+          min={GUIDANCE_RANGE[0]}
+          max={GUIDANCE_RANGE[1]}
+          step={0.5}
+          value={guidance}
+          fallback={DEFAULTS.guidance}
+          onChange={setGuidance}
+        />
+        <label className="pg-ctl">
+          <span className="pg-ctl-head">
+            <span className="pg-ctl-label">Seed</span>
+          </span>
+          <input
+            className="pg-rail-input"
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+          />
+          <span className="pg-ctl-hint">
+            Same seed + same prompt + same settings = the same picture.
+          </span>
+        </label>
+      </AdvancedPanel>
+
+      {error && <p className="pg-error">{error}</p>}
+
+      {!run && (
           <div className="pg-empty-stage">
             <p className="pg-empty-title">Make a picture with {entry.nickname || entry.label}</p>
             <p className="pg-empty-sub">
@@ -287,118 +373,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             </figcaption>
           </figure>
         )}
-
-        {gallery.length > 0 && (
-          <div className="pg-image-strip">
-            {gallery.map((item) => (
-              <img
-                key={item.jobId}
-                src={rawUrl(item.path) + "&t=" + item.jobId}
-                alt={item.prompt}
-                className={run?.started.jobId === item.jobId ? "active" : undefined}
-                title={`${item.prompt} — seed ${item.seed}`}
-                onClick={() => setRun({ started: item, job: null, done: true })}
-              />
-            ))}
-          </div>
-        )}
-
-        <div className="pg-under">
-          <button type="button" className="pg-ghost-btn pg-rail-toggle" onClick={() => setRailOpen((v) => !v)}>
-            {railOpen ? "Hide controls" : "Controls"}
-          </button>
-        </div>
-      </div>
-
-      <aside className="pg-rail" aria-label="Image settings">
-        <RailSection title="Shape">
-          <RailChips
-            options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
-            active={aspect}
-            onPick={(value) => {
-              const pick = ASPECTS.find((a) => a.value === value);
-              if (pick) {
-                setWidth(pick.width);
-                setHeight(pick.height);
-              }
-            }}
-          />
-          <details className="pg-custom">
-            <summary>Custom size{aspect === null ? ` — ${width}×${height}` : ""}</summary>
-            <RailSlider
-              label="Width"
-              hint="Snapped to a multiple of 16 by the server."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={width}
-              fallback={DEFAULTS.width}
-              onChange={setWidth}
-            />
-            <RailSlider
-              label="Height"
-              hint="Bigger is slower and needs more memory."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={height}
-              fallback={DEFAULTS.height}
-              onChange={setHeight}
-            />
-          </details>
-        </RailSection>
-        <RailSection title="Quality">
-          {speedChips && (
-            <RailChips
-              options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
-              active={speed}
-              onPick={(value) => {
-                const pick = speedChips.find((c) => c.value === value);
-                if (pick) setSteps(pick.steps);
-              }}
-            />
-          )}
-          <RailSlider
-            label="Steps"
-            hint={
-              entry.defaults?.steps != null
-                ? "This model is distilled for few steps — more is slower, rarely better."
-                : "Denoising passes — more is slower and usually cleaner."
-            }
-            min={STEPS_RANGE[0]}
-            max={STEPS_RANGE[1]}
-            step={1}
-            value={steps}
-            fallback={modelSteps}
-            onChange={setSteps}
-          />
-          <RailSlider
-            label="Guidance"
-            hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
-            min={GUIDANCE_RANGE[0]}
-            max={GUIDANCE_RANGE[1]}
-            step={0.5}
-            value={guidance}
-            fallback={DEFAULTS.guidance}
-            onChange={setGuidance}
-          />
-        </RailSection>
-        <RailSection title="Seed">
-          <label className="pg-ctl">
-            <input
-              className="pg-rail-input"
-              type="text"
-              inputMode="numeric"
-              value={seed}
-              placeholder="Random each time"
-              onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-            />
-            <span className="pg-ctl-hint">
-              Same seed + same prompt + same settings = the same picture.
-            </span>
-          </label>
-        </RailSection>
-      </aside>
     </div>
   );
 }

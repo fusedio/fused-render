@@ -1,14 +1,15 @@
-/* The Playground tab of /ai-models (AiModelsPlayground.tsx + the three stage
- * components + PlaygroundControls.tsx). Page chrome and buttons come from the
- * cc- and btn families like the rest of the page; everything here is the tab's
- * own three-zone layout — model sidebar, work area, settings rail — and the
- * stage furniture. Prefixed pg-.
+/* The Playground tab of /ai-models (PlaygroundTab.tsx + the four stage
+ * components + controls.tsx). Page chrome and buttons come from the cc- and
+ * btn families like the rest of the page; everything here is the tab's own
+ * two-zone layout — model sidebar, stage — and the stage furniture. Prefixed
+ * pg-.
  *
- * The zones follow the playground convention the research settled on: the
- * OUTPUT gets the most real estate, one primary action (accent), parameters
- * subordinate in a right rail as slider+number pairs with a one-line hint.
- * The rail is persistent on wide windows and collapses behind a "Controls"
- * toggle below ~1100px; the model sidebar stacks below ~760px. */
+ * Every stage is the SAME shape: one centered column on the hero card's
+ * gutter (min(680px, 100% - 64px)) reading as an API surface — input, Run,
+ * the result of that run. Common parameters sit inline under the composer;
+ * everything else is behind a closed-by-default Advanced <details>. The old
+ * right rail, the chat transcript and the image gallery died in this
+ * unification. The model sidebar stacks below ~760px. */
 
 /* On the playground the page's own <main> stops scrolling and becomes a flex
  * column (.pg-fill), so this tab OWNS the viewport height — the sidebar and
@@ -34,44 +35,75 @@
 /* -- the model sidebar ------------------------------------------------------ */
 
 .pg-side {
-  flex: 0 0 264px;
+  flex: 0 0 300px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   border-right: 1px solid var(--border);
   padding-right: 18px;
   min-height: 0;
   overflow-y: auto;
 }
 
-.pg-group {
+/* A capability section: a <details>, open by default, its summary the
+ * icon + task-word header. The default disclosure triangle is replaced by a
+ * caret on the right so the icon owns the left edge.
+ *
+ * Spacing is MARGINS, not flex gap: Chrome keeps <details> block-level
+ * whatever display it is handed, so a gap here silently does nothing. */
+.pg-group > :not(summary) {
+  margin: 8px 0 0;
+}
+
+.pg-group-head {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--fg-muted);
+}
+
+.pg-group-head::-webkit-details-marker {
+  display: none;
+}
+
+.pg-group-head::after {
+  content: "";
+  margin-left: auto;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--fg-muted);
+  border-bottom: 1.5px solid var(--fg-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.pg-group[open] > .pg-group-head::after {
+  transform: rotate(45deg);
+}
+
+.pg-group-head:hover {
+  color: var(--fg);
+}
+
+.pg-group-icon {
+  display: inline-flex;
+  flex: none;
 }
 
 .pg-group-title {
-  margin: 0 0 4px;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
 }
 
 .pg-group-off {
   margin: 0;
   font-size: 12px;
   line-height: 1.45;
-  color: var(--fg-muted);
-}
-
-/* What this group of models DOES, in task words — the zero-jargon reader's
- * anchor before any model name means anything. */
-.pg-group-blurb {
-  margin: -2px 0 4px;
-  font-size: 11.5px;
-  line-height: 1.4;
   color: var(--fg-muted);
 }
 
@@ -85,29 +117,17 @@
   color: var(--fg-muted);
 }
 
-/* The curator's one-liner on a sidebar row — clamped to two lines; the stage
- * header carries it in full. */
-.pg-model-note {
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--fg-muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* A row, not a card: LM Studio / Jan style — quiet until hovered, the active
- * one carried by an accent edge and a wash rather than a boxed border. */
+/* A CARD now, reversing the old "row, not a card" call (D428): spacious,
+ * bordered, four facts and nothing else — nickname, full name, size, and the
+ * Download CTA. The active one is carried by an accent border + wash. */
 .pg-model {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 6px 9px 6px 11px;
-  border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0 7px 7px 0;
-  background: transparent;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -116,12 +136,12 @@
 }
 
 .pg-model:hover {
-  background: rgba(var(--tint), 0.05);
+  border-color: var(--ctl-quiet-border-hover);
 }
 
 .pg-model.active {
-  border-left-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.07);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .pg-model:focus-visible {
@@ -131,47 +151,65 @@
 
 .pg-model-name {
   font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 6px;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.pg-model-meta {
+/* Loaded right now: a green dot ahead of the name. */
+.pg-model-live {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success-bright);
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+/* The full name, quiet under the nickname; a cached row shows its repo id
+ * here instead so the two lines never repeat each other. */
+.pg-model-full {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-model-foot {
+  margin-top: 4px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
+  min-height: 20px;
   font-size: 11.5px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
-/* The fit verdict rides the size figure: quiet colour, no chip chrome — it is
- * metadata that answers "will this melt my laptop", not a state light. */
-.pg-fit.easy {
-  color: var(--success-soft);
+.pg-model-dl {
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
 }
 
-.pg-fit.tight {
-  color: var(--warning-soft);
+.pg-model-dl:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
-.pg-fit.no {
-  color: var(--error);
-}
-
-.pg-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.pg-dot.loaded {
-  background: var(--success-bright);
-}
-
-.pg-dot.disk {
-  border: 1.5px solid var(--fg-muted);
+.pg-model-dl:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* -- the stage shell --------------------------------------------------------- */
@@ -183,14 +221,92 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* The stage is the scroller now — a one-shot column has no inner log to
+     scroll, so the hero rides along with the content. */
+  overflow-y: auto;
 }
 
-.pg-stage-head {
+/* The stage header as a card, centered with wide side margins — the model
+   introducing itself before the stage below it. `width: min(...)` rather than
+   max-width + auto margins alone so the side breathing room survives narrow
+   windows too. */
+.pg-hero {
+  width: min(680px, calc(100% - 64px));
+  /* Extra room below: the stage's own gap reads too tight under a card this
+     heavy, and the work column needs to start as its own thing. */
+  margin: 0 auto 16px;
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 22px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.pg-hero-head {
+  display: flex;
   align-items: flex-start;
   gap: 12px;
+}
+
+/* capabilityIcon draws at 16px; CSS wins over the SVG's width/height
+   attributes, so the hero scales it without a second icon set. */
+.pg-hero-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+.pg-hero-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.pg-hero-names {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The full author/name as Hugging Face knows it, linking there when it is a
+   repo id. */
+.pg-hero-repo {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+a.pg-hero-repo:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.pg-hero-facts {
+  display: flex;
   flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+}
+
+.pg-hero-fact dt {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.pg-hero-fact dd {
+  margin: 1px 0 0;
+  font-size: 13px;
 }
 
 .pg-stage-title {
@@ -219,9 +335,14 @@
   color: var(--fg-muted);
 }
 
+/* Top-right of the hero card, beside the names — vertical space is the
+   stage's, not the header's. */
 .pg-stage-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-self: flex-start;
   flex: none;
 }
 
@@ -237,84 +358,81 @@
   color: var(--fg-muted);
 }
 
-/* Work area = main column + settings rail. */
+/* The work area: one centered column on the hero card's own gutter, so every
+   stage lines up under the header it belongs to. */
 
 .pg-work {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  gap: 20px;
-  align-items: stretch;
-}
-
-.pg-main {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pg-rail {
-  flex: 0 0 248px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(var(--tint), 0.02);
-  align-self: flex-start;
-  max-height: 100%;
-  overflow-y: auto;
-}
-
-.pg-rail-toggle {
-  display: none;
-}
-
-@media (max-width: 1100px) {
-  .pg-work {
-    flex-direction: column;
-  }
-
-  .pg-rail {
-    display: none;
-    flex: none;
-    width: 100%;
-    max-height: none;
-  }
-
-  .pg-work.rail-open .pg-rail {
-    display: flex;
-  }
-
-  .pg-rail-toggle {
-    display: inline-block;
-  }
-}
-
-/* -- rail controls ------------------------------------------------------------ */
-
-.pg-rail-section {
+  width: min(680px, calc(100% - 64px));
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.pg-rail-section + .pg-rail-section {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+/* The invitation over the composer: ONE line naming the action. The hero card
+   above it already carries the model's name and load state, so this says
+   neither. */
+.pg-work-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.pg-rail-title {
-  margin: 0;
-  font-size: 10.5px;
+/* Common parameters, inline under the composer: the choices a first run
+   actually makes, before the Config fold. */
+.pg-params {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pg-params > .pg-ctl {
+  max-width: 420px;
+}
+
+/* The Config fold: closed by default so the surface above it reads as one
+   simple call. Deliberately quiet — no card, no background; it should not
+   compete with the composer for attention. */
+.pg-config > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
   color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.pg-config > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pg-config > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--fg-muted);
+  border-bottom: 1.5px solid var(--fg-muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.pg-config[open] > summary::after {
+  transform: rotate(45deg);
+}
+
+.pg-config > summary:hover {
+  color: var(--fg);
+}
+
+.pg-config-body {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .pg-ctl {
@@ -446,18 +564,6 @@
   background: rgba(var(--accent-rgb), 0.1);
 }
 
-.pg-custom summary {
-  font-size: 12px;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.pg-custom[open] {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 /* -- shared stage furniture ---------------------------------------------------- */
 
 .pg-composer {
@@ -471,7 +577,18 @@
 }
 
 .pg-composer:focus-within {
-  border-color: var(--ctl-quiet-border-hover);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.12);
+}
+
+/* The Enter hint riding inside the Run button — a quiet glyph, not a boxed
+   chip; the box read as a second button inside the button. */
+.pg-kbd {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  margin-left: 6px;
+  opacity: 0.55;
 }
 
 .pg-composer textarea {
@@ -490,6 +607,16 @@
 
 .pg-send {
   flex: none;
+}
+
+/* Clear, beside Run once a reply exists — quiet on purpose. Same 32px height
+   as .btn (buttons-modal.css) so the two labels sit on one line. */
+.pg-clear {
+  flex: none;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
 }
 
 .pg-under {
@@ -543,13 +670,12 @@
 /* Empty states: a real invitation, not a blank box. */
 
 .pg-empty-stage {
-  margin: auto 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   gap: 6px;
-  padding: 32px 16px;
+  padding: 4px 16px 24px;
 }
 
 .pg-empty-title {
@@ -606,42 +732,62 @@
   background: rgba(var(--accent-rgb), 0.08);
 }
 
-/* -- chat ---------------------------------------------------------------------- */
+/* -- text ---------------------------------------------------------------------- */
 
-.pg-chat {
-  flex: 1;
-  min-height: 0;
-}
-
-.pg-chat .pg-chat-log {
+/* The one reply, rendered — the text stage's output card. */
+/* Label + card, so "Response" can wear the Config summary's voice without
+   being mistaken for a fold. */
+.pg-answer-block {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 4px 2px;
+  gap: 8px;
 }
 
-.pg-turn-user {
-  align-self: flex-end;
-  max-width: 72%;
-  padding: 8px 13px;
-  border-radius: 14px 14px 4px 14px;
-  background: rgba(var(--accent-rgb), 0.1);
-  border: 1px solid rgba(var(--accent-rgb), 0.18);
-  font-size: 13.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.pg-answer-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
 }
 
-.pg-turn-model {
-  align-self: stretch;
-  max-width: 100%;
+.pg-answer {
+  position: relative;
   font-size: 13.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  /* Right padding leaves the first line clear of the copy button. */
+  padding: 14px 44px 14px 16px;
+  background: var(--bg-alt);
+}
+
+/* Copy, as an icon pinned to the card's top-right corner. */
+.pg-copy-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.pg-copy-btn:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: rgba(var(--tint), 0.06);
+}
+
+.pg-copy-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .pg-turn-foot {
@@ -850,30 +996,6 @@
   color: var(--fg);
 }
 
-.pg-image-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-}
-
-.pg-image-strip img {
-  height: 84px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  cursor: pointer;
-  opacity: 0.8;
-}
-
-.pg-image-strip img:hover {
-  opacity: 1;
-}
-
-.pg-image-strip img.active {
-  opacity: 1;
-  border-color: var(--accent);
-}
-
 /* -- transcription ------------------------------------------------------------------ */
 
 .pg-dropzone {
@@ -1036,11 +1158,6 @@
 .pg-meter-bar.lit {
   background: var(--success-bright);
   height: 16px;
-}
-
-.pg-transcribe {
-  flex: 1;
-  min-height: 0;
 }
 
 /* The recording itself, playable, with the re-run action beside it — the
@@ -1253,8 +1370,11 @@
     max-height: 38vh;
   }
 
-  .pg-turn-user {
-    max-width: 88%;
+  /* The 64px gutter is hero-card breathing room; on a phone it is dead
+     space. */
+  .pg-hero,
+  .pg-work {
+    width: 100%;
   }
 }
 

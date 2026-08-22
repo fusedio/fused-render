@@ -2612,6 +2612,14 @@ export interface AiCatalogModel {
    *  stripped copy of it (catalog.py states why); absent on a cached entry,
    *  where the fallback is `label`. */
   nickname?: string | null;
+  /** Parameter count as the publisher states it ("4B", "8B (~1B active)") —
+   *  a curated string, never parsed out of the repo id (catalog.py's AI-2c
+   *  rule). Absent on cached entries and anywhere nobody wrote one. */
+  params?: string | null;
+  /** The quantization scheme by its own name ("OptiQ 4-bit", "GGUF Q4_K_M").
+   *  Absent where no honest short name exists — the header omits the line
+   *  rather than inventing one. */
+  quantization?: string | null;
   /** Curated per-model generation hints (catalog.py) — today only `steps`, the
    *  denoise count a distilled image model was benchmarked at. Absent on
    *  cached entries and on models nobody has measured; the consumer keeps the
