@@ -3187,6 +3187,46 @@ def test_cancelling_the_OWNER_still_stops_the_install_it_started(shared_install)
     _drain_downloads()
 
 
+def _await_detail(job_id, needle, timeout=10.0):
+    """The row's detail once it contains `needle` — the loop reports one tick
+    after it starts waiting, so this is a wait and not a read."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = _row_now(job_id)
+        if row and needle in (row.get("detail") or ""):
+            return row["detail"]
+        time.sleep(0.02)
+    raise AssertionError(f"the row never said {needle!r}: "
+                         f"{(_row_now(job_id) or {}).get('detail')!r}")
+
+
+def test_a_download_waiting_on_someone_elses_env_build_says_so(shared_install):
+    """"Preparing MLX — sync…" on a download that is not preparing anything is
+    a true sentence read as a lie: two rows said the same thing while one was
+    doing the work and the other was parked behind it, and a download that had
+    died looked no different either. Same shape the transcription queue solved
+    with `_QUEUED_DETAIL`."""
+    owner = supervisor.load("org/owner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/owner")
+    joiner = supervisor.load("org/joiner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/joiner")
+
+    detail = _await_detail(joiner["jobId"], "another download")
+    assert "Waiting for" in detail and "Fake" in detail
+
+    # The owner IS the one building it, and its row is unchanged.
+    owner_detail = _await_detail(owner["jobId"], "Preparing")
+    assert "another download" not in owner_detail
+
+    # And nothing keeps saying it once the install lands.
+    shared_install["done"] = True
+    for started in (owner, joiner):
+        row = _row(started["jobId"])
+        assert row["state"] == "done", row
+        assert "another download" not in (row.get("detail") or "")
+    _drain_downloads()
+
+
 def test_terminating_a_worker_that_JOINED_an_install_does_not_cancel_it(monkeypatch):
     """`_terminate` had the same bug: an eviction or `unload_all()` cancelled
     `install_key` unconditionally, so shutting one worker down killed a build

@@ -802,8 +802,13 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
                 if record.get("error"):
                     raise SupervisorError(str(record["error"]))
                 break
-            _report(job,
-                    detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
+            # Two different things happen in this loop and they have to READ
+            # differently: the owner is building the environment, the joiner is
+            # parked behind somebody else's build. See `_JOINED_INSTALL_DETAIL`.
+            _report(job, detail=(
+                f"Preparing {runner.short} — {record.get('stage') or 'installing'}…"
+                if worker.install_owned
+                else _JOINED_INSTALL_DETAIL.format(short=runner.short)))
             time.sleep(0.5)
         worker.install_key = ""
         worker.install_owned = False
@@ -1116,6 +1121,17 @@ def start_image(model: str, request: dict, job: str) -> None:
 
 #: What a queued transcription's row says while it waits.
 _QUEUED_DETAIL = "Queued behind another transcription…"
+
+#: What a download's row says while it waits for a runner environment ANOTHER
+#: download is building (`_ensure_venv`, and only for a joiner —
+#: `Worker.install_owned` is False). Same argument as `_QUEUED_DETAIL` above: a
+#: wait a person can see is a wait the row has to name. Both rows used to read
+#: "Preparing <runner> — <stage>…", so a download parked behind someone else's
+#: multi-GB `uv sync` looked exactly like the one doing the work — and exactly
+#: like one that had died. There is deliberately no percentage with it: nothing
+#: here knows how far another worker's install has got, and inventing a number
+#: is what `ModelProgress` refuses to do for precisely this phase.
+_JOINED_INSTALL_DETAIL = "Waiting for the {short} environment — another download is building it…"
 
 
 def transcribe_row_fields(title: str) -> dict:
