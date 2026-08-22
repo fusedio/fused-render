@@ -5449,6 +5449,118 @@ def test_the_bridges_accepted_image_keys_match_the_servers_constant():
     assert js_keys == sorted(ai_runtime._IMAGE_OPTIONS)
 
 
+def _run_ai_video(record='{state: "done"}', ticks="[]",
+                  opts='{prompt: "a fox running", onProgress: (job) => progress.push(job)}'):
+    """`_run_ai_image`'s harness for `aiVideo` — no preview, since this build
+    has none."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own video glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    fn = _js_fn_with_helper(source, "  function aiVideo(opts)")
+
+    prelude = """
+      const started = {jobId: "sys:ai-video:x", path: "/t/a.mp4", seed: 7,
+                       frames: 90, steps: 20};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const rows = TICKS;
+      const watchJob = () => ({
+        watch: (cb) => {
+          for (const row of rows) if (cb) cb(row);
+          return Promise.resolve(RECORD);
+        },
+        get: () => Promise.resolve(RECORD),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const progress = [];
+    """.replace("TICKS", ticks).replace("RECORD", record)
+    call = """
+      aiVideo(OPTS).then(
+        (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, progress, rows})),
+      );
+    """.replace("OPTS", opts)
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True, encoding="utf-8")
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_resolved_video_carries_the_url():
+    settled = _run_ai_video()
+    assert settled["ok"] is True, settled
+    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.mp4"
+    assert "previewUrl" not in settled["value"]
+
+
+def test_a_video_tick_carries_no_preview_field(state="running"):
+    """No live preview in this build — the tick is the record, copied, and
+    nothing more."""
+    settled = _run_ai_video(ticks="[%s]" % (RUNNING % 1))
+    assert settled["ok"] is True, settled
+    assert "previewUrl" not in settled["progress"][0]
+    assert settled["progress"][0]["done"] == 1
+
+
+def test_the_video_tick_a_page_sees_is_a_COPY_of_the_row(state="running"):
+    settled = _run_ai_video(ticks="[%s]" % (RUNNING % 1))
+    assert settled["rows"] == [{"state": "running", "done": 1, "total": 4}]
+    assert settled["progress"][0]["done"] == 1
+
+
+def test_the_bridge_rejects_an_unrecognised_video_option_before_the_POST():
+    settled = _run_ai_video(opts='{prompt: "a fox", strength: 0.6}')
+    assert settled["ok"] is False
+    assert settled["type"] == "bad_request"
+    assert "strength" in settled["message"]
+
+
+def test_guidance_is_rejected_by_the_video_bridge_too():
+    """H3 takes no such parameter — the bridge's whitelist must agree with the
+    server's, or a caller gets a 400 from the network instead of a same-tick
+    rejection."""
+    settled = _run_ai_video(opts='{prompt: "a fox", guidance: 4.0}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "guidance" in settled["message"]
+
+
+def test_onProgress_is_exempt_from_the_video_unknown_key_check():
+    settled = _run_ai_video(opts='{prompt: "a fox", onProgress: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_video_bridge_checks_the_envelope_BEFORE_the_prompt_field():
+    settled = _run_ai_video(opts='{bogus: "x"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'bogus' is not an option" in settled["message"]
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridges_accepted_video_keys_match_the_servers_constant():
+    """The drift guard, exactly like the image one above: the bridge's
+    whitelist and the server's accepted set are the same fact in two
+    languages."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiVideo(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const videoKeys = \[(.*?)\];', body)
+    assert match, "could not find aiVideo's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._VIDEO_OPTIONS)
+
+
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
     """Same drift guard for transcribe — compared against the CALLER-FACING
     set, which must NOT include `base`: the server's set is wider because

@@ -252,6 +252,50 @@ Every tick carries a ready-made URL for a **~32px thumbnail of the image so far*
 - **An aged-out row still answers off the file.** A backgrounded tab can sleep past job retention; the bridge then `stat`s `path` and **resolves normally** if the PNG is there. Only a missing row *and* no file rejects `ai_error` "the image job is no longer being reported". A missing row is not a failed render.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message). `fused.ai.cancel("text-to-image")` stops the render; the bare `fused.ai.cancel()` will not.
 
+## Video: `fused.ai.video({prompt, ...})`
+
+`fused.ai.image`'s twin — job-backed, resolves with a file — for text-to-video with audio, on MiniMax H3. **Apple Silicon only, with no fallback on any other platform**: this is the first local capability that can be genuinely unservable on the machine running your page, so always handle `.type === "unavailable"`.
+
+```js
+const vid = await fused.ai.video({
+  prompt: "a paper boat drifting down a rain-soaked street, cinematic",
+  onProgress: (job) => { if (job.total) bar.value = job.done / job.total; },
+});
+video.src = vid.url;   // ready-made /api/fs/raw url, with audio muxed in
+```
+
+### Options and the reply
+
+| Option | Default | Range | Notes |
+|---|---|---|---|
+| `prompt` | — | non-empty | trimmed; empty or non-string is `bad_request` **before** a job opens |
+| `model` | the `text-to-video` row's `default` (`null` if this machine cannot serve the capability at all) | the H3 FL2VA checkpoint | there is only one curated model in this build |
+| `width` / `height` | `768` | **256–1344**, and `width * height <= 768 * 1344` | clamped, then **snapped DOWN to a multiple of 32**; an over-large canvas is shrunk further to fit the pixel ceiling |
+| `frames` | `90` (~3.75s at 24fps) | h3's own grid, `5 + 17n` | **rounded to the nearest valid value**, not merely clamped — `100` becomes `107`, not refused |
+| `steps` | `20` | **1–50** | clamped; not a number → 400 |
+| `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
+| `onProgress(job)` | — | — | per denoising step |
+
+**No `guidance`** — H3 is CFG-distilled and takes no such parameter; passing one is refused `bad_request` like any other unsupported option, the same envelope rule `fused.ai.image` documents (D413). **No live preview either** (`previewUrl`/`previewPath` do not exist on this reply) — v1 has no fitted projection for H3's latent space.
+
+Resolves with `{jobId, path, url, model, prompt, width, height, frames, steps, seed}` — the render that actually happened, not the one you asked for (dimensions may have shrunk, `frames` may have moved to the nearest grid value).
+
+- **`seed` comes back whether or not you passed one.**
+- **The server owns where the mp4 goes**: `<home>/ai/videos/<YYYYmmdd-HHMMSS>-<uid>.mp4`, time-ordered, outlives the tab, nothing cleans these up.
+- **One row and one file per render.**
+
+### Availability: check it before you build the button
+
+Video generation has no "everywhere" runner — off Apple Silicon, or on a Mac with no `h3` binary staged, `fused.ai.models.catalog()` reports `default: null` for `text-to-video` and every call rejects `.type "unavailable"` with the reason ("needs Apple Silicon…" or "the h3 binary is not available…") in `.message`. Read `catalog()` first and hide or explain the feature rather than offering a button that always fails.
+
+### Slow renders, and cancelling one
+
+- **Hours, not minutes are the honest expectation** — the server allows up to **2 hours** per render (`VIDEO_TIMEOUT_S`), far past the image path's 15-minute cap, because a 768-class H3 render on real hardware can take that long.
+- **Renders serialize**, exactly like images: one at a time per worker, and a second call waits with no queue message on its row.
+- **An aged-out row still answers off the file** — the same backgrounded-tab recovery `fused.ai.image` documents, and more likely to matter here given how long a render can run.
+- `fused.ai.cancel("text-to-video")` stops the render **by killing the h3 subprocess directly** — a real process kill, not merely an abandoned HTTP request — and keeps the model resident so the next call starts warm.
+- Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"`.
+
 ## Transcription: `fused.ai.transcribe({path, ...})`
 
 Speech to text, locally. Job-backed and file-producing like `fused.ai.image` — but it hands you the **words as well**, because a transcript is text and the caller almost always wants it now.
@@ -373,15 +417,16 @@ Every ASR option `fused.ai.transcribe` takes — `task`, `language`, `initialPro
 
 ## What Actually Runs Locally Today
 
-Nine runners, three capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
+Ten runners, four capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
 | `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. The three Transformers rows that used to sit between them were withdrawn: llama.cpp reads a quantized GGUF of the same current-generation Qwen several times quicker, at roughly a third of the download and a third of the memory, so **local text ids are GGUF now** — the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
 | `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are opt-in and hardware-gated: offered only where the app sees a usable NVIDIA or AMD GPU, greyed out with the reason otherwise. |
 | `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
+| `text-to-video` | H3 (Apple Silicon) | **NOT everywhere — the first capability with no fallback row.** MiniMax H3 runs on `antirez/h3.c`, a bundled Metal binary; there is no CPU, CUDA or ROCm engine for it. Off Apple Silicon, or on a Mac whose build never staged the `h3` binary, `catalog()` reports `default: null` and every call to `fused.ai.video` rejects `.type "unavailable"`. |
 
-Those three strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
+Those four strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
 **Which runner serves you is not purely a hardware fact.** The user can override the default per capability from the AI Models page's Engines tab, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is it serving the capability right now). Read `active` to say what is running, `available` to say what this machine could do. Never hard-code either, and let `unavailable` messages reach the user.
 

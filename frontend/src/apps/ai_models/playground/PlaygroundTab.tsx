@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChatStage } from "./ChatStage";
 import { ImageStage } from "./ImageStage";
+import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
@@ -450,6 +451,12 @@ export default function PlaygroundTab() {
               />
             ) : selected.row.capability === "text-to-image" ? (
               <ImageStage
+                key={selected.model.id}
+                model={selected.model.id}
+                entry={selected.model}
+              />
+            ) : selected.row.capability === "text-to-video" ? (
+              <VideoStage
                 key={selected.model.id}
                 model={selected.model.id}
                 entry={selected.model}

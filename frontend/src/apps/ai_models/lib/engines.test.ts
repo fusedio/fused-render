@@ -370,6 +370,10 @@ describe("capabilityLabel", () => {
     expect(capabilityLabel("automatic-speech-recognition")).toBe("Speech to text");
   });
 
+  it("names the fifth capability too", () => {
+    expect(capabilityLabel("text-to-video")).toBe("Video generation");
+  });
+
   it("renders an unknown capability as ITSELF rather than hiding it", () => {
     // A capability added server-side should appear here — ugly but present —
     // instead of vanishing from the only page that can configure it.

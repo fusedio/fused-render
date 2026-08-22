@@ -112,6 +112,23 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
+ *   fused.ai.video({prompt, model, width, height, frames, steps, seed,
+ *                   onProgress}) -> Promise<{path, url, model, prompt, width,
+ *                                            height, frames, steps, seed}>
+ *     Text to video, with audio, locally (SPEC §40) — MiniMax H3, Apple
+ *     Silicon only (no fallback on other platforms: the first capability
+ *     with no "everywhere" runner). Same shape as fused.ai.image minus
+ *     guidance (H3 is CFG-distilled and takes no such parameter) and
+ *     previewUrl (no live preview in this build), plus frames — snapped
+ *     server-side to h3's own valid grid, so the resolved object may not
+ *     echo the number you asked for. Minutes to hours long
+ *     (VIDEO_TIMEOUT_S is 2h): onProgress fires per denoising step with the
+ *     download-manager record, and that row's ✕ really stops the render —
+ *     a real process kill, not merely an abandoned request. The seed comes
+ *     back whether or not one was passed. Rejects with .type "cancelled" |
+ *     "ai_error" | "unavailable" (no Apple Silicon, or the h3 binary is not
+ *     staged — reason in the message, checked BEFORE any Apple-Silicon-only
+ *     capability could otherwise look merely broken).
  *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
@@ -2730,6 +2747,58 @@
     });
   }
 
+  // fused.ai.video({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  //
+  // `aiImage`'s twin, minus `guidance` (H3 is CFG-distilled) and previewUrl
+  // (no live preview in this build), plus `frames`. Everything else about the
+  // waiting — onProgress per denoising step, the row's ✕ really stopping the
+  // render, the seed always coming back, resolving off the FILE when the row
+  // aged out from under a backgrounded tab — is the identical mechanism, so it
+  // is not restated here; see `aiImage`'s own comment for the reasoning.
+  function aiVideo(opts) {
+    opts = opts || {};
+    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed"];
+    const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
+    if (unknownErr) return Promise.reject(unknownErr);
+    if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
+      const err = new Error("fused.ai.video({prompt}): prompt must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of videoKeys) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return aiPost("/api/ai/video", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      const done = () => ({ ...started, url: rawUrl(started.path) });
+      const tick = onProgress ? (job) => onProgress({ ...job }) : null;
+      return watcher.watch(tick).then((record) => {
+        if (!record) {
+          // The row aged out from under us — the same backgrounded-tab race
+          // `aiImage` guards against, and more likely here: a video render can
+          // run for hours (VIDEO_TIMEOUT_S). The FILE is the other witness.
+          return stat(started.path).then(done, () => {
+            const err = new Error("the video job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the video was cancelled"
+            : record.message || "the video failed to render",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   // fused.ai.transcribe({path, ...}) -> Promise<{output, url, text, segments, ...}>
   //
   // The other call that resolves with a FILE, and the same waiting as
@@ -3209,7 +3278,8 @@
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
     // `opts.capability` says WHICH RUNNER gets the repo ("text-generation",
-    // "text-to-image", "automatic-speech-recognition"). Left out, the server
+    // "text-to-image", "automatic-speech-recognition", "text-to-video"). Left
+    // out, the server
     // infers it from what the repo is — the cached snapshot's format first, then
     // the catalog, then text generation for a cold unknown id (D321). Pass it
     // whenever the page already knows: inference cannot read a repo that is not
@@ -3232,6 +3302,7 @@
   };
   ai.models = aiModels;
   ai.image = aiImage;
+  ai.video = aiVideo;
   ai.transcribe = aiTranscribe;
   ai.embed = aiEmbed;
   // Stop the generation in flight on a local model, keeping it loaded — the

@@ -58,6 +58,22 @@ export function buildAppSeed(model: AiCatalogModel, capability: string): string 
         "it resolves with { url, seed, ... } and url renders straight into an <img>. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
+  } else if (capability === "text-to-video") {
+    const extra = opts([
+      ["width", readParam("w")],
+      ["height", readParam("h")],
+      ["frames", readParam("frames")],
+      ["steps", readParam("steps") ?? (model.defaults?.steps != null ? String(model.defaults.steps) : null)],
+      ["seed", readParam("seed")],
+    ]);
+    lines.push(
+      "It turns a text prompt into a short video with audio. Call it from the page with " +
+        `await fused.ai.video({ prompt, model: ${JSON.stringify(model.id)}${extra}, onProgress }) — ` +
+        "it resolves with { url, seed, ... } and url renders straight into a <video controls>. " +
+        "Apple Silicon only, with no fallback on other platforms — check fused.ai.models.catalog() " +
+        "before offering the feature. " +
+        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+    );
   } else if (capability === "automatic-speech-recognition") {
     const extra = opts([
       ["task", readParam("task") ? JSON.stringify(readParam("task")) : null],
