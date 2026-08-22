@@ -90,7 +90,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import schedule, tasks_store
+from fused_render import schedule, session_liveness, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import claude_sessions as sessions
 
@@ -1227,11 +1227,24 @@ def _numbers(tasks: dict[str, dict]) -> dict[str, str]:
 def _live(path: str | None, now: float) -> tuple[bool, float]:
     """(is this session running, when was it last active).
 
-    The same 45-second rule as the sessions inbox, and the same tail read — a
-    transcript's mtime alone lies, because Claude Code appends housekeeping
-    records after the turn is over. Skipped entirely for a file nothing has
-    touched in 90 seconds: it is stale either way, so the read would only be
-    deciding what kind of stale."""
+    Running is `session_liveness.transcript_turn_open` — the last MESSAGE in
+    the transcript, not a freshness window (D415). The 45-second window this
+    used to share with the sessions inbox lied in exactly one direction for
+    chat tasks: a headless turn writes no `turn_duration` record, so the final
+    assistant reply's own timestamp kept the window open and the board said In
+    Progress for the balance of 45 seconds after the answer had landed
+    (Akshil, 2026-08-21: chat-template tasks "take some time to update on
+    board when in progress and when done"). The last message cannot tell that
+    lie — a plain-text assistant row IS the turn ending, a user row or a
+    `tool_use` block IS one in flight — and it is already the rule the chat
+    page itself paints its working line by, so the board and the conversation
+    it opens now read the same fact.
+
+    The tail read for `active` stays: `_verdict_outvotes_live` and the row's
+    ordering need "when did something real last happen", which is a timestamp
+    question the turn-open rule does not answer. Skipped entirely for a file
+    nothing has touched in 90 seconds: it is stale either way, so the read
+    would only be deciding what kind of stale."""
     if not path:
         return False, 0.0
     try:
@@ -1240,8 +1253,8 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
         return False, 0.0
     if now - mtime > sessions._STALE_TAIL_SEC:
         return False, mtime
-    activity, last = sessions._tail(path, mtime)
-    running = (now - activity) < sessions._RUNNING_WINDOW_SEC
+    _activity, last = sessions._tail(path, mtime)
+    running = session_liveness.transcript_turn_open(path, now)
     return running, (last.timestamp() if last is not None else mtime)
 
 

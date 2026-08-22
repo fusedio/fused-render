@@ -173,6 +173,14 @@ def transcript_turn_open(path: str, now: float) -> bool:
     process died stays open in the file forever — a terminal closed mid-reply
     leaves a user row as the last word. `STALE_TAIL_SEC` is the ceiling on how
     long that lie may stand, and it is the same ceiling the window rule uses.
+
+    The ceiling is measured against the ROW's own timestamp, not just the
+    file's mtime (D420). Housekeeping appends (an away summary, an ai-title)
+    bump the mtime hours after a turn died, so a fresh file whose last
+    MESSAGE is a stale user row is not a turn in flight — it is the dead
+    turn's last word under somebody else's timestamp. A row with no readable
+    timestamp keeps the mtime's answer: the file gate already passed, and
+    inventing staleness a record does not claim is the wrong direction.
     """
     if not path:
         return False
@@ -193,6 +201,10 @@ def transcript_turn_open(path: str, now: float) -> bool:
     lines = [ln for ln in chunk.split("\n") if ln.strip()]
     if size > TAIL_BYTES and lines:
         lines = lines[1:]  # partial first line from the mid-file seek
+    def _row_fresh(obj) -> bool:
+        dt = parse_ts(obj.get("timestamp"))
+        return dt is None or (now - dt.timestamp()) <= STALE_TAIL_SEC
+
     for line in reversed(lines):
         try:
             obj = json.loads(line)
@@ -202,14 +214,15 @@ def transcript_turn_open(path: str, now: float) -> bool:
             return True
         kind = obj.get("type")
         if kind == "user":
-            return True
+            return _row_fresh(obj)
         if kind != "assistant":
             continue   # attachments, mode records, housekeeping: not the reply
         message = obj.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if isinstance(content, list):
-            return any(isinstance(b, dict) and b.get("type") == "tool_use"
-                       for b in content)
+            return _row_fresh(obj) and any(
+                isinstance(b, dict) and b.get("type") == "tool_use"
+                for b in content)
         return False   # a plain-text assistant reply is a turn that ended
     return False
 

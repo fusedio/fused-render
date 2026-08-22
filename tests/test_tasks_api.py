@@ -88,6 +88,15 @@ def _assistant(text, ts):
                         "content": [{"type": "text", "text": text}]}}
 
 
+def _assistant_tool(ts):
+    """An assistant row still mid-work — a `tool_use` block is a turn that
+    has not finished speaking (session_liveness.transcript_turn_open)."""
+    return {"type": "assistant", "timestamp": ts,
+            "message": {"role": "assistant",
+                        "content": [{"type": "tool_use", "id": "t1",
+                                     "name": "Bash", "input": {}}]}}
+
+
 def _ai_title(title, session_id="s"):
     return {"type": "ai-title", "aiTitle": title, "sessionId": session_id}
 
@@ -1616,11 +1625,16 @@ def test_transcript_activity_after_the_verdict_restores_the_pulse(
     the verdict and the transcript's vote stayed suppressed for as long as the
     work ran. The verdict may only silence its own echo: a tail meaningfully
     newer than the moment the turn resolved is NEW work, and the task is In
-    Progress."""
+    Progress.
+
+    "Visibly mid-build" is a `tool_use` row — under the last-message rule
+    (D415 in `_live`) that is what an unfinished turn looks like, where a
+    plain-text assistant reply is a turn that ENDED and correctly reads
+    Done however fresh it is."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("go", _near_now(-40), uuid="u1"),
         _assistant("first turn done", _near_now(-32)),
-        _assistant("still building the app", _near_now(-3)),
+        _assistant_tool(_near_now(-3)),
     ])
     _seed_schedule([_entry("e1", "go", _near_now(-40), state=schedule.SENT,
                            fired=_near_now(-40), turn="ok",

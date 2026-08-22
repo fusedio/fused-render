@@ -313,8 +313,12 @@ def _rows(path, *rows):
     return path
 
 
-def _assistant(*blocks):
-    return {"type": "assistant", "timestamp": "2026-01-01T00:00:00Z",
+def _now_ts():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _assistant(*blocks, ts=None):
+    return {"type": "assistant", "timestamp": ts or _now_ts(),
             "message": {"role": "assistant",
                         "content": [{"type": b} for b in blocks]}}
 
@@ -336,8 +340,21 @@ def test_a_prompt_with_no_reply_yet_is_a_turn_in_flight(client, projects_dir,
                                                         tmp_path):
     path = _session(projects_dir, "proj", "s1", str(tmp_path))
     _rows(path, _assistant("text"),
-          {"type": "user", "timestamp": "2026-01-01T00:00:00Z"})
+          {"type": "user", "timestamp": _now_ts()})
     assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_stale_prompt_under_a_fresh_mtime_is_not_in_flight(client,
+                                                             projects_dir,
+                                                             tmp_path):
+    """Housekeeping appends (an away summary, an ai-title) bump the file's
+    mtime hours after a turn died, so the mtime gate alone let a long-dead
+    user row shimmer again (D420). The deciding ROW's own timestamp is
+    measured against the same stale ceiling."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, {"type": "user", "timestamp": "2026-01-01T00:00:00Z"},
+          {"type": "ai-title", "aiTitle": "old thread"})
+    assert _liveness(client, path).json()["running"] is False
 
 
 def test_an_assistant_still_calling_tools_is_a_turn_in_flight(client,
@@ -346,7 +363,7 @@ def test_an_assistant_still_calling_tools_is_a_turn_in_flight(client,
     """Mid-turn is the common case for a long agent run, and the reply text that
     precedes a tool call must not read as the end of it."""
     path = _session(projects_dir, "proj", "s1", str(tmp_path))
-    _rows(path, {"type": "user", "timestamp": "2026-01-01T00:00:00Z"},
+    _rows(path, {"type": "user", "timestamp": _now_ts()},
           _assistant("text", "tool_use"))
     assert _liveness(client, path).json()["running"] is True
 

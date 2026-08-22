@@ -163,6 +163,16 @@ def _assistant_rec(text, ts, session_id, cwd):
                         "content": [{"type": "text", "text": text}]}}
 
 
+def _assistant_tool_rec(ts, session_id, cwd):
+    """An assistant row still mid-work: a `tool_use` block is a turn that has
+    not finished speaking (session_liveness.transcript_turn_open)."""
+    return {"type": "assistant", "timestamp": ts, "cwd": cwd,
+            "sessionId": session_id,
+            "message": {"role": "assistant",
+                        "content": [{"type": "tool_use", "id": "t1",
+                                     "name": "Bash", "input": {}}]}}
+
+
 def _write_transcript(projects_dir, session_id, cwd, records, mtime=None):
     d = projects_dir / ("-enc-" + session_id)
     d.mkdir(parents=True, exist_ok=True)
@@ -515,12 +525,14 @@ def test_verdict_suppresses_its_own_echo(client, target, spawned, projects_dir):
     assert _board_status(client, "sess-echo") == "done"
 
 
-def test_transcript_past_echo_window_reads_in_progress(client, target, spawned,
-                                                       projects_dir):
-    """SYMPTOM 3's shape: verdict landed, dock shows finished, but the
-    transcript got a real record >5s after turn_at — board flips back to
-    In Progress for up to the 45s liveness window. Pinned as CURRENT behavior;
-    whether 5s is wide enough for the CLI's real teardown is the question."""
+def test_late_closing_text_does_not_flip_the_board_back(client, target,
+                                                        spawned, projects_dir):
+    """SYMPTOM 3's shape, now closed (D415 in `_live`): verdict landed, dock
+    shows finished, and the transcript's late record is a plain-text
+    assistant reply — the turn's own last word, however late the CLI wrote
+    it. The last-message rule reads that as a turn that ENDED, so the board
+    agrees with the dock instead of flipping back to In Progress for the
+    balance of a 45s window."""
     schedule.create(str(target), "late tail", _in(-5))
     _tick()
     stored = _entry()
@@ -535,7 +547,30 @@ def test_transcript_past_echo_window_reads_in_progress(client, target, spawned,
                                       "sess-tail", str(target))],
                       mtime=late.timestamp())
     assert _job(_entry()["id"])["state"] == "done"  # dock: finished
-    assert _board_status(client, "sess-tail") == "in_progress"
+    assert _board_status(client, "sess-tail") == "done"
+
+
+def test_work_past_the_verdict_keeps_in_progress(client, target, spawned,
+                                                 projects_dir):
+    """TASK-001's protection survives the last-message rule: the session kept
+    WORKING after the verdict (its newest row is a `tool_use` still in
+    flight, well past the echo window), and the board must not wear the
+    green Done ring while Claude is visibly still building."""
+    schedule.create(str(target), "keep building", _in(-5))
+    _tick()
+    stored = _entry()
+    schedule._turn_tick(dict(stored), "r-1", DummyAgent(),
+                        {"session_id": "sess-work", "done": True})
+    turn_at = tasks_store.epoch(_entry()["turn_at"])
+    late = datetime.fromtimestamp(turn_at + 27, tz=timezone.utc)
+    _write_transcript(projects_dir, "sess-work", str(target),
+                      [_user_rec("keep building",
+                                 _iso(late - timedelta(seconds=40)),
+                                 "sess-work", str(target)),
+                       _assistant_tool_rec(_iso(late), "sess-work",
+                                           str(target))],
+                      mtime=late.timestamp())
+    assert _board_status(client, "sess-work") == "in_progress"
 
 
 def test_busy_poisoning_by_an_orphan_holds_the_board(client, target, spawned,
@@ -627,8 +662,8 @@ def test_a_quiet_chat_task_is_not_running(client, projects_dir, target):
 
 
 def test_a_live_chat_task_is_running(client, projects_dir, target):
-    """And the other half: a transcript written to just now IS a live turn —
-    the heuristic keeps its job where it is the only evidence available."""
+    """And the other half: a prompt just typed, no reply yet, IS a live turn —
+    the transcript keeps its job where it is the only evidence available."""
     _write_transcript(projects_dir, "sess-chat", str(target),
                       [_user_rec("hello", _iso(_now()), "sess-chat",
                                  str(target))],
@@ -636,6 +671,45 @@ def test_a_live_chat_task_is_running(client, projects_dir, target):
     row = {t["key"]: t for t in _board(client)}["sess-chat"]
     assert row["status"] == "in_progress"
     assert row["messages"][0]["turn"] == ""
+
+
+def test_a_finished_chat_reply_is_done_the_moment_it_lands(client,
+                                                           projects_dir,
+                                                           target):
+    """THE CHAT-TASK LAG (Akshil, 2026-08-21: chat-template tasks "take some
+    time to update on board when in progress and when done"). A headless turn
+    writes no `turn_duration` record, so under the 45-second window the final
+    reply's own freshness kept the board on In Progress for the balance of
+    the window. The last-message rule reads the plain-text assistant reply as
+    the turn ending — Done on the very next poll, not 45 seconds later."""
+    now = _now()
+    _write_transcript(projects_dir, "sess-chat", str(target),
+                      [_user_rec("do the thing",
+                                 _iso(now - timedelta(seconds=6)),
+                                 "sess-chat", str(target)),
+                       _assistant_rec("done, here it is", _iso(now),
+                                      "sess-chat", str(target))],
+                      mtime=time.time())
+    row = {t["key"]: t for t in _board(client)}["sess-chat"]
+    assert row["live"] is False
+    assert row["messages"][-1]["turn"] == "idle"
+    assert row["status"] == "done"
+
+
+def test_a_chat_turn_mid_tool_call_is_running(client, projects_dir, target):
+    """A reply that is still using tools has not finished speaking: the
+    newest assistant row carries a `tool_use` block, and the board stays on
+    In Progress however that row is worded."""
+    now = _now()
+    _write_transcript(projects_dir, "sess-chat", str(target),
+                      [_user_rec("do the thing",
+                                 _iso(now - timedelta(seconds=6)),
+                                 "sess-chat", str(target)),
+                       _assistant_tool_rec(_iso(now), "sess-chat",
+                                           str(target))],
+                      mtime=time.time())
+    row = {t["key"]: t for t in _board(client)}["sess-chat"]
+    assert row["status"] == "in_progress"
 
 
 def test_a_scheduled_run_that_is_over_still_speaks(client, target, spawned,
