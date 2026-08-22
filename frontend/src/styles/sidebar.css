@@ -220,8 +220,7 @@ a.sidebar-rail-btn {
 }
 
 /* Title truncates when the sidebar is dragged narrow (min 180px) so the
-   brand row never overflows; logo, version and collapse button keep their
-   size and the version stays visible beside the ellipsis. */
+   brand row never overflows; logo and collapse button keep their size. */
 .sidebar-brand .brand-title {
   min-width: 0;
   overflow: hidden;
@@ -229,12 +228,27 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
-/* Package version after the name — smaller and muted grey. */
-.sidebar-brand .brand-version {
-  font-size: 10.5px;
-  font-weight: 500;
+/* The version chip, on the Settings row's trailing edge (shell/GlobalSidebar):
+   a small outlined pill, quiet on purpose — it is a fact about the install, not
+   a control, so it must not out-shout the row it rides on. Background is a tint
+   wash rather than --bg-alt (the recipe .fh-index-chip uses), because the
+   sidebar IS --bg-alt and the chip would be an invisible ring on its own color.
+   Monospace + tabular figures so the pill doesn't change width when a digit
+   does. */
+.version-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.05);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 14px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
-  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .sidebar-section {

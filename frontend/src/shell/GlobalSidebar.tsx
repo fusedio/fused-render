@@ -124,6 +124,7 @@ function PreferencesTrigger({
   open,
   dot,
   active,
+  trailing,
   onToggle,
 }: {
   open: boolean;
@@ -131,6 +132,9 @@ function PreferencesTrigger({
   /** The current route is one of the menu's destinations — the trigger is
       the only sidebar chrome that can show it. */
   active: boolean;
+  /** Trailing-edge content, same slot NavItem gives Tasks its count — this
+      row's is the version chip. */
+  trailing?: React.ReactNode;
   onToggle: (el: HTMLElement) => void;
 }) {
   return (
@@ -146,6 +150,7 @@ function PreferencesTrigger({
         {dot}
       </span>{" "}
       Settings
+      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
     </button>
   );
 }
@@ -441,7 +446,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   return (
     <>
-      <SidebarFrame title="Render" version={config.version} homeHref="/home" rail={rail}>
+      <SidebarFrame title="Render" homeHref="/home" rail={rail}>
         <div className="sidebar-section sidebar-group">
           <NavItem
             href="/home"
@@ -475,10 +480,24 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* The version rides the Settings row's trailing edge rather than the
+              brand row it used to sit in. Two reasons it moved: the brand row is
+              one click target for Home, so a version glued to the title read as
+              part of the app's NAME; and it competed for the line the title
+              ellipsises on when the sidebar is dragged narrow. Down here it is
+              what it is — a footnote about this install, in the same trailing
+              slot the Tasks row states its count in. */}
           <PreferencesTrigger
             open={prefsPos !== null}
             dot={triggerDot}
             active={prefsActive}
+            trailing={
+              config.version ? (
+                <span className="version-chip" title={`Fused Render v${config.version}`}>
+                  v{config.version}
+                </span>
+              ) : undefined
+            }
             onToggle={togglePrefsMenu}
           />
         </div>
