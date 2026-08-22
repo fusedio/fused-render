@@ -28,13 +28,20 @@
 // the page stays live, and the job row carries the progress through the shared
 // ModelProgress the other tabs use.
 import { useEffect, useState } from "react";
+import { BenchmarkChart } from "./BenchmarkChart";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
+import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import {
+  DASH,
+  formatLoad,
+  formatMemory,
+  formatPrimary,
   latestByModel,
   orderCapabilities,
   primaryMetric,
+  primaryValue,
   runsFor,
   summaryLine,
   type ModelLatest,
@@ -42,6 +49,7 @@ import {
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import {
+  deleteAiBenchmarks,
   getAiBenchmarks,
   runAiBenchmark,
   type AiBenchmarkRun,
@@ -59,6 +67,13 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // at a time per capability is a SERVER rule (a second load would evict the
   // first model mid-measurement), and the button disables on this.
   const [running, setRunning] = useState<{ model: string; jobId: string } | null>(null);
+  // The optional focus filter, SEEDED from `?cap=` once and held in state
+  // thereafter. State rather than reading the URL every render because
+  // `writeParams` uses `history.replaceState`, which deliberately fires no
+  // navigation event (a filter change must not stack a history entry) — so a
+  // component that read only the URL would clear the param and go on drawing
+  // the old filter.
+  const [focus, setFocus] = useState<string | null>(() => readParam("cap"));
 
   // On the same trigger as the cache walk, for the reason the Local tab's
   // catalog fetch rides it: a run that just finished is a new row here, and a
@@ -110,13 +125,26 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     }
   };
 
+  const forget = async (id: string) => {
+    setError(null);
+    try {
+      // The endpoint answers with the fresh history, so the page adopts state it
+      // just re-read rather than splicing an array it hopes still matches disk —
+      // the same discipline the Local tab's delete follows.
+      const history = await deleteAiBenchmarks([id]);
+      setRuns(history.runs);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
   if (!data && runs === null) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
   // Which capabilities get a section: every one this machine has a downloaded
   // model for, UNION every one with a recorded run. The union is what keeps a
   // history readable after its model was deleted — the runs are still the truth
   // about what happened, and dropping the section would silently hide them.
-  const capabilities = orderCapabilities([
+  const all = orderCapabilities([
     ...new Set([
       ...CAPABILITY_ORDER,
       ...repos.map((r) => r.capability).filter((c): c is string => !!c),
@@ -124,9 +152,37 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     ]),
   ]);
 
+  // `?cap=` narrows the page to one section. The SAME param the playground reads
+  // (lib/params.ts, routes.ts) and the same one Home's cards link in with, so a
+  // link that opens the playground on image generation opens this tab on image
+  // generation too. A `cap` naming nothing here is IGNORED rather than shown as
+  // an empty page: the param travels between tabs (`tabHref` keeps the query),
+  // so this tab will see values that were never meant for it.
+  const focused = focus && all.includes(focus) ? focus : null;
+  const capabilities = focused ? [focused] : all;
+
   return (
     <div className="am-bench">
       <ErrorBanner>{error}</ErrorBanner>
+      {focused && (
+        <p className="am-group-note">
+          Showing {capabilityLabel(focused)} only.{" "}
+          <button
+            type="button"
+            className="am-bench-linkbtn"
+            // Both halves: the state is what this tab draws from, and the URL
+            // is dropped so a copied link no longer carries a filter the reader
+            // has just cleared. `writeParams` (replaceState) rather than a
+            // navigation — a view narrowing is not a page to go back to.
+            onClick={() => {
+              setFocus(null);
+              writeParams({ cap: null });
+            }}
+          >
+            Show every capability
+          </button>
+        </p>
+      )}
       {capabilities.map((capability) => (
         <CapabilitySection
           key={capability}
@@ -136,6 +192,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           running={running}
           job={running ? jobByModel.get(running.model) : undefined}
           onRun={start}
+          onForget={forget}
         />
       ))}
     </div>
@@ -149,6 +206,7 @@ function CapabilitySection({
   running,
   job,
   onRun,
+  onForget,
 }: {
   capability: string;
   repos: AiModelRepo[];
@@ -157,6 +215,7 @@ function CapabilitySection({
   running: { model: string; jobId: string } | null;
   job?: ReturnType<CacheScan["jobByModel"]["get"]>;
   onRun: (model: string, capability: string) => void;
+  onForget: (id: string) => void;
 }) {
   const metric = primaryMetric(capability);
   const latest = new Map<string, ModelLatest>(
@@ -204,6 +263,17 @@ function CapabilitySection({
             <BenchmarkRow key={model} model={model} row={latest.get(model)!} gone />
           ))}
         </div>
+      )}
+
+      {/* Siblings of the rows, not children of them: the rows are the current
+          answer, and these two are the evidence behind it. The chart draws
+          nothing until something has been measured — it returns null rather
+          than an empty axis, which would read as a measurement of zero. */}
+      {runs !== null && runs.length > 0 && (
+        <>
+          <BenchmarkChart capability={capability} runs={runs} />
+          <RunTable capability={capability} runs={runs} onForget={onForget} />
+        </>
       )}
     </section>
   );
@@ -272,4 +342,168 @@ function BenchmarkRow({
       )}
     </div>
   );
+}
+
+/** The table's columns, and how each one sorts.
+ *
+ *  A table rather than a switch in the comparator, so a column cannot exist in
+ *  the header and be unsortable in the body — which is what a per-column `if`
+ *  produced the first time round.
+ *
+ *  Every `value` may return null, and null always sorts LAST regardless of
+ *  direction. That is deliberate: an unmeasured metric is not "the smallest",
+ *  and sorting by throughput must not fill the top of the table with runs that
+ *  measured nothing.
+ */
+const COLUMNS: {
+  key: string;
+  label: string;
+  numeric: boolean;
+  value: (run: AiBenchmarkRun) => number | string | null;
+}[] = [
+  { key: "date", label: "When", numeric: true, value: (r) => r.startedAt },
+  { key: "model", label: "Model", numeric: false, value: (r) => r.model },
+  // Labelled by the capability's own metric at render time — "Throughput",
+  // "Per step" — because one heading cannot name four different things.
+  { key: "metric", label: "", numeric: true, value: primaryValue },
+  { key: "memory", label: "Memory", numeric: true, value: (r) => r.peakResidentBytes },
+  { key: "load", label: "Load", numeric: true, value: (r) => r.loadSeconds },
+  { key: "device", label: "Device", numeric: false, value: (r) => r.device },
+  { key: "version", label: "App", numeric: false, value: (r) => r.appVersion },
+];
+
+/** Every run for one capability, newest first by default.
+ *
+ *  **Collapsed by default**, because it is the archive and the rows above are
+ *  the answer: a section with four models and thirty runs would otherwise open
+ *  as a wall of numbers with the current state buried at the top of it. The
+ *  summary line says how many are hiding, so nothing is invisible — only
+ *  folded.
+ */
+function RunTable({
+  capability,
+  runs,
+  onForget,
+}: {
+  capability: string;
+  runs: AiBenchmarkRun[];
+  onForget: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Newest first: the default question about a history is "what happened last".
+  const [sort, setSort] = useState<{ key: string; desc: boolean }>({ key: "date", desc: true });
+  const metric = primaryMetric(capability);
+
+  const column = COLUMNS.find((c) => c.key === sort.key) ?? COLUMNS[0]!;
+  const ordered = [...runs].sort((a, b) => {
+    const left = column.value(a);
+    const right = column.value(b);
+    // Nulls last in BOTH directions — see COLUMNS.
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    const cmp =
+      typeof left === "number" && typeof right === "number"
+        ? left - right
+        : String(left).localeCompare(String(right));
+    return sort.desc ? -cmp : cmp;
+  });
+
+  return (
+    <details className="am-bench-history" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>
+        {runs.length} recorded {runs.length === 1 ? "run" : "runs"}
+      </summary>
+      <div className="am-bench-tablewrap">
+        <table className="am-bench-table">
+          <thead>
+            <tr>
+              {COLUMNS.map((col) => (
+                <th key={col.key} className={col.numeric ? "num" : undefined}>
+                  <button
+                    type="button"
+                    className="am-bench-sort"
+                    aria-sort={
+                      sort.key === col.key ? (sort.desc ? "descending" : "ascending") : "none"
+                    }
+                    onClick={() =>
+                      setSort((prev) =>
+                        prev.key === col.key
+                          ? { key: col.key, desc: !prev.desc }
+                          : // A fresh column starts DESCENDING for a number and
+                            // ASCENDING for a name, which is what each one's
+                            // interesting end is.
+                            { key: col.key, desc: col.numeric },
+                      )
+                    }
+                  >
+                    {col.key === "metric" ? (metric?.label ?? "Result") : col.label}
+                    {sort.key === col.key && <span aria-hidden="true">{sort.desc ? " ↓" : " ↑"}</span>}
+                  </button>
+                </th>
+              ))}
+              {/* No header for the delete column: a heading over a column of ✕
+                  buttons names the action, not the data. */}
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {ordered.map((run) => (
+              <tr key={run.id} className={run.ok ? undefined : "failed"}>
+                {/* Locale date and time, not a relative age: two runs an hour
+                    apart are the interesting case, and "3 days ago" cannot tell
+                    them apart. */}
+                <td className="num">{new Date(run.startedAt * 1000).toLocaleString()}</td>
+                <td className="cc-mono">{run.model}</td>
+                {/* A failed run's cell carries the REASON rather than a dash:
+                    the row exists because something went wrong, and the dash
+                    would make it look like a page bug. */}
+                <td className="num" title={run.ok ? undefined : (run.error ?? "")}>
+                  {run.ok ? formatPrimary(run) : "failed"}
+                </td>
+                <td className="num">{formatMemory(run)}</td>
+                <td className="num">{formatLoad(run)}</td>
+                <td>{run.device ?? DASH}</td>
+                <td>
+                  {run.appVersion}
+                  {/* The workload revision, shown only where it is NOT the
+                      newest one in this section — a seam the reader has to know
+                      about, because runs either side of it are not comparable
+                      and the chart deliberately draws no delta across it. */}
+                  {run.workload.revision !== newestRevision(runs) && (
+                    <span className="am-bench-rev" title="A different workload version — not comparable with the newest runs">
+                      {" "}
+                      w{run.workload.revision}
+                    </span>
+                  )}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="am-bench-forget"
+                    title="Forget this run"
+                    aria-label={`Forget the run from ${new Date(run.startedAt * 1000).toLocaleString()}`}
+                    onClick={() => onForget(run.id)}
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+/** The workload revision the newest run in this section was measured under —
+ *  what every other row's revision is marked AGAINST. Computed from the runs
+ *  rather than from the frontend's own idea of "current", because this page has
+ *  no such idea: the server owns the revision, and a hardcoded copy here would
+ *  start marking every row the day the server bumped it. */
+function newestRevision(runs: AiBenchmarkRun[]): number | null {
+  let newest: AiBenchmarkRun | null = null;
+  for (const run of runs) if (!newest || run.startedAt > newest.startedAt) newest = run;
+  return newest ? newest.workload.revision : null;
 }

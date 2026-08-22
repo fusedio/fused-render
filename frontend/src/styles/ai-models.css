@@ -1507,3 +1507,370 @@
   border-radius: 999px;
   vertical-align: 1px;
 }
+
+/* -- Benchmark (the Benchmark tab, SPEC AI-16) --------------------------------
+   Laid out in the Local tab's vocabulary — .am-section per capability, the
+   .am-section-head / .am-section-title pair for the heading — so a capability
+   means the same thing on either tab. What is here is only what those classes
+   have no answer for: a model row that carries a measurement, a line chart, and
+   the run archive under it.
+
+   Every colour is a global token (tokens.css), so both themes come for free the
+   way the rest of this file gets them. The ONE exception is the six series
+   colours below, because there is no categorical palette in tokens.css to
+   borrow — those are declared as local custom properties with a light-theme
+   override, on the same `:root[data-theme="light"]` seam tokens.css uses. */
+
+.am-bench {
+  /* One capability's numbers are read against another's; a wide measure would
+     put a model name and its throughput at opposite ends of the window. */
+  max-width: 1000px;
+}
+
+/* The unit, stated once per section in the heading's right-hand slot. Same size
+   and colour as the Local tab's byte subtotals sitting in the same slot, for
+   the same reason: it qualifies the heading rather than competing with it. */
+.am-bench-metric {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-bench-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* One model. Three columns — who, what it measured, and the button — because
+   the middle one is what the eye scans down and it must start at the same x on
+   every row whatever the model is called. */
+.am-bench-row {
+  display: grid;
+  grid-template-columns: minmax(0, 22ch) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-model {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* The id is long and the column is narrow: wrapping it beats truncating,
+     because the org half is what two similarly-named repos differ in. */
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+/* A model whose weights are gone but whose runs are not. Not an error colour —
+   nothing failed; the history simply outlived its subject. */
+.am-bench-gone {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-bench-latest {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.am-bench-summary {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Never benchmarked" — the absence of a measurement, said quietly. It is the
+   normal state of a fresh machine, not a warning. */
+.am-bench-never {
+  color: var(--fg-muted);
+}
+
+/* The change against the last comparable run. Colour comes from `better`, never
+   from the sign: on an image section a negative change is the improvement, so a
+   green-for-plus rule would be wrong on one section in four. */
+.am-bench-delta {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.am-bench-delta.better {
+  color: var(--success-bright);
+}
+
+.am-bench-delta.worse {
+  color: var(--warning-soft);
+}
+
+/* A link-shaped button — it changes a view, so it is a <button>, but it reads
+   as the sentence it sits inside. */
+.am-bench-linkbtn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-soft);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* -- the chart -------------------------------------------------------------- */
+
+.am-bench-chart {
+  margin-top: var(--am-gap-head);
+}
+
+/* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
+   plot fills whatever width the column has without the component measuring
+   anything (see BenchmarkChart.tsx). */
+.am-bench-plot {
+  display: block;
+  width: 100%;
+  height: 160px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-axis-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  /* The viewBox is stretched horizontally, which would scale a stroke with it. */
+  vector-effect: non-scaling-stroke;
+}
+
+.am-bench-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.am-bench-dot {
+  fill: currentColor;
+  stroke: var(--bg-alt);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The six series colours. `color` rather than `stroke`/`fill` directly, so the
+   line, the dots and the legend swatch all inherit one declaration — a legend
+   whose colours are declared separately from its lines is a legend that can
+   disagree with the chart.
+
+   Chosen for hue separation at small size rather than for brand: these are
+   categorical, so what matters is that two adjacent lines are distinguishable,
+   including for the commonest colour-vision deficiencies (hence blue/orange
+   before red/green). */
+.am-bench-series.c0,
+.am-bench-key.c0 {
+  color: #6aa8ff;
+}
+.am-bench-series.c1,
+.am-bench-key.c1 {
+  color: #e0a33e;
+}
+.am-bench-series.c2,
+.am-bench-key.c2 {
+  color: #3fca6b;
+}
+.am-bench-series.c3,
+.am-bench-key.c3 {
+  color: #cf8bf3;
+}
+.am-bench-series.c4,
+.am-bench-key.c4 {
+  color: #4fd1c5;
+}
+.am-bench-series.c5,
+.am-bench-key.c5 {
+  color: #ff8f8f;
+}
+
+/* Light mode: the same six hues, darkened enough to clear the contrast a
+   hairline and a 10px legend label need against white. */
+:root[data-theme="light"] .am-bench-series.c0,
+:root[data-theme="light"] .am-bench-key.c0 {
+  color: #1f5fbf;
+}
+:root[data-theme="light"] .am-bench-series.c1,
+:root[data-theme="light"] .am-bench-key.c1 {
+  color: #8a5a00;
+}
+:root[data-theme="light"] .am-bench-series.c2,
+:root[data-theme="light"] .am-bench-key.c2 {
+  color: #1a7f37;
+}
+:root[data-theme="light"] .am-bench-series.c3,
+:root[data-theme="light"] .am-bench-key.c3 {
+  color: #7a3fa8;
+}
+:root[data-theme="light"] .am-bench-series.c4,
+:root[data-theme="light"] .am-bench-key.c4 {
+  color: #0f7c74;
+}
+:root[data-theme="light"] .am-bench-series.c5,
+:root[data-theme="light"] .am-bench-key.c5 {
+  color: #b03030;
+}
+
+/* The scale and the direction, in a row UNDER the plot rather than as <text>
+   inside a stretched viewBox — the same reason UsageChart puts its axis in a
+   sibling div. */
+.am-bench-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-bench-peak {
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.am-bench-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* A line, not a dot: it is standing in for a polyline, and a round swatch beside
+   a line chart reads as a different mark. */
+.am-bench-swatch {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 2px;
+  background: currentColor;
+}
+
+/* The legend's model id inherits the series colour above; the id itself stays
+   readable body text, because the colour is the swatch's job. */
+.am-bench-key .cc-mono {
+  color: var(--fg);
+}
+
+/* -- the run archive -------------------------------------------------------- */
+
+/* Collapsed by default. The rows above are the answer and this is the evidence,
+   so it opens on request — the summary says how many runs are folded, which is
+   what keeps "collapsed" from meaning "hidden". */
+.am-bench-history {
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+.am-bench-history > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px 0;
+}
+
+/* The table is wider than a narrow window on purpose (eight columns of facts),
+   so it scrolls INSIDE this box rather than making the page scroll sideways. */
+.am-bench-tablewrap {
+  overflow-x: auto;
+  margin-top: 6px;
+}
+
+.am-bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.am-bench-table th,
+.am-bench-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Numbers right-aligned and tabular, so a column of them can be compared by
+   eye — which is the entire reason this table exists. */
+.am-bench-table th.num,
+.am-bench-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-table thead th {
+  padding: 0;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+/* The whole header cell is the sort control, so the hit target is the column
+   heading rather than a few pixels of text inside it. */
+.am-bench-sort {
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.am-bench-sort:hover {
+  color: var(--fg);
+}
+
+.am-bench-sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A run that failed. Tinted rather than hidden: "this model OOMs on this
+   laptop" is a result, and it has to be legible as one. */
+.am-bench-table tr.failed td {
+  color: var(--error);
+}
+
+/* A run measured under a different workload version — the comparability seam.
+   Marked so a reader knows why no delta is drawn across it. */
+.am-bench-rev {
+  color: var(--warning-soft);
+  font-size: 11px;
+}
+
+.am-bench-forget {
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.am-bench-forget:hover {
+  color: var(--error);
+  border-color: var(--border);
+}
+
+.am-bench-forget:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
