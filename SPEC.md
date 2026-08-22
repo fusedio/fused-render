@@ -6262,8 +6262,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   non-loopback `connect` or `getaddrinfo`, so a broken mirror path fails saying
   so instead of reporting somebody else's status code — and on a machine with a
   valid `HF_TOKEN` that same test would have PASSED by downloading a real repo.
-  Explicitly out of scope: `FUSED_MODEL_MIRROR` is **unset on every shipped
-  build**, so this changes nothing until an operator points it somewhere;
+  **`FUSED_MODEL_MIRROR` ships ON**, defaulting to `https://render.fused.io/mirror`
+  (`mirror.DEFAULT_BASE`) when unset; the documented opt-out is setting it to
+  `""` (D420 amendment). The per-model permission above is unchanged by that —
+  a default base names no repo by itself — and every failure mode still falls
+  back to the Hub, which is what makes shipping this default safe before every
+  suggested model has a mirror object (see D420). Explicitly out of scope:
   component repos (`vad`, diarization, a GGUF transformer) stay on the Hub, being
   tens of megabytes and not the "downloaded a model" signal; and the mirror pins a
   commit, so a suggested model updated upstream keeps installing the pinned one

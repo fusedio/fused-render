@@ -548,7 +548,10 @@ def _child_env(token: str, model: str = "") -> dict:
     server's: an operator (or a parent process) exporting it would otherwise hand
     every worker permission for every model. `FUSED_MODEL_MIRROR` itself is left
     alone — an operator pointing it at staging is the supported way to use this,
-    and unset is the shipped default that leaves every download on the Hub path.
+    and unset now means the shipped default (`mirror.DEFAULT_BASE`), not "no
+    mirror" — this permission is what still keeps that default from widening
+    anything: a base URL alone names no repo, and only a suggested model's id
+    ever reaches `FUSED_MODEL_MIRROR_OK`.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):

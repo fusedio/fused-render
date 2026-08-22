@@ -1885,13 +1885,15 @@ def test_an_unmirrored_model_never_touches_the_mirror(base, monkeypatch, tmp_pat
     assert state["requests"] == [], "an unpermitted model was named to the mirror"
 
 
-def test_no_mirror_configured_leaves_every_download_exactly_where_it_was(
+def test_the_documented_opt_out_leaves_every_download_exactly_where_it_was(
         base, monkeypatch, tmp_path, payload):
-    """The shipped default. With no base URL there is no mirror code in the
-    path at all — the same download, byte for byte, that shipped before this."""
+    """The explicit opt-out. `FUSED_MODEL_MIRROR` unset now means the shipped
+    default (`https://render.fused.io/mirror`) — this pins the OTHER state, an
+    operator (or a privacy-conscious user) setting it to `""`, which is the same
+    "no mirror code in the path at all" as before this default flipped on."""
     state = _mirror_server(payload)
     _mirror_wire(base, monkeypatch, tmp_path, state)
-    monkeypatch.delenv("FUSED_MODEL_MIRROR", raising=False)
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "")
     fell_back = _hub_answers(base, monkeypatch, payload)
 
     assert base.download_snapshot("org/m") == "/cache/snapshots/from-the-hub"
@@ -2495,14 +2497,15 @@ def test_an_unpermitted_file_is_never_named_to_the_mirror(base, monkeypatch,
     assert state["requests"] == []
 
 
-def test_no_mirror_configured_leaves_a_one_file_download_where_it_was(base,
+def test_the_documented_opt_out_leaves_a_one_file_download_where_it_was(base,
                                                                      monkeypatch,
                                                                      tmp_path,
                                                                      payload):
-    """The shipped default: no base URL, no mirror code in the path at all."""
+    """The explicit opt-out (`FUSED_MODEL_MIRROR=""`): no mirror code in the
+    path at all. Unset alone no longer means this — see `mirror.DEFAULT_BASE`."""
     state = _mirror_file_server(payload)
     _mirror_wire(base, monkeypatch, tmp_path, state)
-    monkeypatch.delenv("FUSED_MODEL_MIRROR")
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "")
     fell_back = _hub_answers_for_a_file(base, monkeypatch, payload)
 
     assert base.download_file("org/m", FILE_NAME) == "/cache/blobs/from-the-hub"

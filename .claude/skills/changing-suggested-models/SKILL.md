@@ -9,7 +9,7 @@ description: Use when adding, removing, or swapping a model in one of the curate
 
 `fused_render/ai/catalog.py`'s `SUGGESTIONS` table is the curated list the AI Models page shows per runner. **Editing that table is only half the change.** The other half is `scripts/build_model_mirror.py`, which publishes the model to our own CloudFront/S3 mirror (SPEC AI-5l/AI-5m). Skip it and the model still works — every download falls back to huggingface.co — but silently: the whole point of the mirror is that CloudFront's access logs are the only telemetry this app has for "did a user download a model" (D420), and a suggested model with no mirror objects is invisible to those logs forever, with nothing on screen to say so.
 
-**The invariant that matters:** every id in `catalog.all_suggested_ids()` must have a manifest on the mirror once `FUSED_MODEL_MIRROR` is set for a build. `scripts/build_model_mirror.py --check <base-url>` is what proves that, and it is meant to gate a release the same way `making-a-release`'s steps gate a version bump.
+**The invariant that matters:** every id in `catalog.all_suggested_ids()` should have a manifest on the mirror — `FUSED_MODEL_MIRROR` ships ON by default (`mirror.DEFAULT_BASE`, `https://render.fused.io/mirror`), so an unpublished suggested model is not hypothetical, it 404s against the live distribution today and falls back to the Hub, invisibly. `scripts/build_model_mirror.py --check <base-url>` is what proves a target is actually published, and it is meant to gate a release the same way `making-a-release`'s steps gate a version bump.
 
 ## Step 1 — find the row, and get its id shape right
 

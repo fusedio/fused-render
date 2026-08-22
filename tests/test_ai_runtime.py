@@ -7041,8 +7041,9 @@ def test_an_inherited_permission_is_stripped_rather_than_passed_on(monkeypatch,
 
 def test_an_operator_set_base_url_reaches_the_worker(monkeypatch, tmp_path):
     """`FUSED_MODEL_MIRROR` is left exactly as it was found — pointing it at a
-    staging distribution is the supported way to use this, and unset is the
-    shipped default that leaves every download on today's path."""
+    staging distribution is the supported way to use this. Unset now falls
+    back to the shipped default (`mirror.DEFAULT_BASE`) rather than to no
+    mirror at all; the per-model permission below is what still gates it."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_MODEL_MIRROR", "https://mirror.example/staging")
     env = supervisor._child_env("t", _suggested_id())

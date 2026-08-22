@@ -93,14 +93,95 @@ def _point_at(monkeypatch, state, model_id="org/m"):
 # -- the permission is per-model, and it is what gates the probe ------------------
 
 
-def test_no_mirror_is_configured_so_nothing_is_probed(mirror, monkeypatch):
-    """The default for every user: no base URL, no request, no mirror.
+def test_unset_now_means_the_shipped_default_not_no_mirror(mirror, monkeypatch):
+    """The reversal this module used to encode the opposite of.
 
-    The env var being unset is not a degraded state — it is the shipped one, and
-    every download stays on today's Hub path.
+    Before the default flipped on, deleting `FUSED_MODEL_MIRROR` was this
+    file's spelling of "no mirror is configured". It is not anymore: unset now
+    resolves to `DEFAULT_BASE`, exactly like an operator having typed it. This
+    checks `base_url()` alone (never `manifest()`) so the test itself cannot
+    become the thing `no_egress` exists to catch — probing the *real* default
+    host is not this test's job.
+    """
+    monkeypatch.delenv("FUSED_MODEL_MIRROR", raising=False)
+
+    assert mirror.base_url() == mirror.DEFAULT_BASE
+
+
+def test_the_documented_opt_out_yields_no_mirror(mirror, monkeypatch):
+    """Setting the var to `""` is how a user (or an air-gapped install, or a
+    test) says "no mirror at all" now that unset no longer means that.
+
+    `allowed()` must be False even though `FUSED_MODEL_MIRROR_OK` matches the
+    model asked about — the opt-out has to win over a base URL that happens to
+    still be configured for the permission half.
     """
     state = _serve(_manifest())
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "")
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
+
+    assert mirror.base_url() == ""
+    assert mirror.allowed("org/m") is False
+    assert mirror.manifest("org/m") is None
+    assert state["requests"] == [], "a mirror that opted out was probed"
+
+
+@pytest.mark.parametrize("spelling", ["off", "0", "none", "None", "OFF"])
+def test_other_falsy_spellings_also_opt_out_for_free(mirror, monkeypatch, spelling):
+    """`off`/`0`/`none` need no special-case code: none of them is a valid
+    `http(s)://host` URL, so `_valid_base` already reads every one of them as
+    "no mirror" — the same path the empty-string opt-out takes."""
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", spelling)
+
+    assert mirror.base_url() == ""
+
+
+def test_an_env_value_overrides_the_default(mirror, monkeypatch):
+    """The operator escape hatch: pointing it at staging (or a test server)
+    is not shadowed by the shipped default."""
+    state = _serve(_manifest())
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", state["origin"])
+
+    assert mirror.base_url() == state["origin"]
+
+
+def test_a_corrupted_default_constant_still_fails_validation(mirror, monkeypatch):
+    """`DEFAULT_BASE` is not exempt from `_valid_base` — a future edit that
+    breaks its scheme or netloc must read as no mirror, not crash and not
+    silently serve a bad URL to every worker."""
     monkeypatch.delenv("FUSED_MODEL_MIRROR", raising=False)
+    monkeypatch.setattr(mirror, "DEFAULT_BASE", "not-a-url")
+
+    assert mirror.base_url() == ""
+
+
+def test_the_default_does_not_widen_who_may_be_named_to_the_mirror(mirror,
+                                                                    monkeypatch):
+    """The privacy invariant, with the default in play. An id outside
+    `catalog.all_suggested_ids()` never reaches `FUSED_MODEL_MIRROR_OK` (that
+    is `supervisor._mirror_ok`'s job, tested elsewhere) — this pins the other
+    half, in the client itself: even with the shipped default base active,
+    `allowed()` is false for any id the permission env var does not name."""
+    monkeypatch.delenv("FUSED_MODEL_MIRROR", raising=False)
+    monkeypatch.delenv("FUSED_MODEL_MIRROR_OK", raising=False)
+
+    assert mirror.base_url() == mirror.DEFAULT_BASE
+    assert mirror.allowed("somebody/a-model-we-never-suggested") is False
+
+    monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
+    assert mirror.allowed("somebody/a-model-we-never-suggested") is False
+    assert mirror.allowed("org/m") is True
+
+
+def test_no_mirror_is_configured_so_nothing_is_probed(mirror, monkeypatch):
+    """The documented opt-out: no base URL, no request, no mirror.
+
+    This used to be reached by deleting `FUSED_MODEL_MIRROR`; now that unset
+    means the shipped default, the way to reach "no mirror" is the explicit
+    opt-out above. This test now exercises it end to end through `manifest()`.
+    """
+    state = _serve(_manifest())
+    monkeypatch.setenv("FUSED_MODEL_MIRROR", "")
     monkeypatch.setenv("FUSED_MODEL_MIRROR_OK", "org/m")
 
     assert mirror.allowed("org/m") is False

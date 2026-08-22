@@ -41,15 +41,24 @@ surface. The manifest request is also the one signal that a download STARTED,
 and it is made exactly once per attempt before a single byte moves.
 
 **Two environment variables, and the second one is a privacy rule.**
-`FUSED_MODEL_MIRROR` is the base URL — unset on every shipped build today, which
-leaves every download on the Hub path. `FUSED_MODEL_MIRROR_OK` carries the ONE
-repo id this process is permitted to name to the mirror, set by
+`FUSED_MODEL_MIRROR` is the base URL, and it is **on by default** — unset now
+means `DEFAULT_BASE` (`https://render.fused.io/mirror`), not "no mirror". The
+explicit opt-out is setting it to `""` (or to anything that is not a valid
+`http(s)://host` URL — `"off"`, `"0"`, `"none"` all land there too, for free,
+because `_valid_base` already refuses them; there is no separate spelling to
+maintain). `os.environ.get` is what makes the distinction possible at all:
+unset (`None`) reads as "use the default", set-to-empty reads as "no mirror",
+and `_env` below must never collapse those two into one. `FUSED_MODEL_MIRROR_OK`
+carries the ONE repo id this process is permitted to name to the mirror, set by
 `supervisor._child_env` only when `catalog.all_suggested_ids()` contains it. The
 worker cannot make that decision itself: `catalog` is unreachable from a runner's
 interpreter, which imports this file as a bare module with no `fused_render`
 package on `sys.path`. But more to the point it MUST not — probing the mirror for
 an arbitrary repo id would tell us which models a user downloads, and the whole
-point of gating it to the curated list is that we never learn that.
+point of gating it to the curated list is that we never learn that. **A default
+base does not widen that rule**: `allowed()` still requires both a base URL AND
+`FUSED_MODEL_MIRROR_OK == model_id`, so a model outside the curated list still
+produces no manifest request regardless of what the base defaults to.
 
 **Stdlib only**, like `worker_base`, and for the same reason: this file is
 imported by every runner's interpreter, so anything imported here becomes a
@@ -80,6 +89,13 @@ SCHEMA = 1
 
 BASE_ENV = "FUSED_MODEL_MIRROR"
 OK_ENV = "FUSED_MODEL_MIRROR_OK"
+
+#: The shipped default for `FUSED_MODEL_MIRROR` when it is unset. Run through
+#: `_valid_base` exactly like an env-supplied value in `base_url` below — a
+#: constant that skipped that check would be one a later edit could break
+#: silently, with no test catching a scheme or netloc typo until a real
+#: download quietly stopped reaching the mirror.
+DEFAULT_BASE = "https://render.fused.io/mirror"
 
 #: A manifest is a few KB of names. Anything wildly larger is not one, and
 #: reading a response into memory unbounded on the strength of an operator's
@@ -138,8 +154,20 @@ def _valid_base(raw):
 
 
 def base_url():
-    """The mirror's base URL, or `""` for "there is no mirror"."""
-    return _valid_base(_env(BASE_ENV))
+    """The mirror's base URL, or `""` for "there is no mirror".
+
+    Unset (`None`) is the shipped default: `DEFAULT_BASE`, validated the same
+    way an operator's value would be. SET to `""` is the explicit opt-out —
+    `os.environ.get` is what lets `_env` tell "unset" and "set to empty" apart,
+    and collapsing that distinction is the one mistake that would make the
+    opt-out unreachable. Anything else that is not a valid `http(s)` URL
+    (`"off"`, `"0"`, garbage) falls out of `_valid_base` as `""` too, with no
+    separate keyword list to keep in sync.
+    """
+    raw = _env(BASE_ENV)
+    if raw is None:
+        return _valid_base(DEFAULT_BASE)
+    return _valid_base(raw)
 
 
 def allowed(model_id):
@@ -316,6 +344,11 @@ def fetch_json(url):
 def _env(name):
     # Read at CALL time rather than captured at import: a worker's permission
     # arrives in its environment, and one process serves one download.
+    #
+    # `os.environ.get` rather than `os.environ.get(name, "")`: `base_url`
+    # depends on getting `None` back for "unset" so it can tell that apart
+    # from `""` ("set to empty", the documented opt-out). Defaulting the
+    # `.get` here would silently merge the two and make the opt-out dead.
     return os.environ.get(name)
 
 
