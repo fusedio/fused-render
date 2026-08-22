@@ -965,6 +965,7 @@ async function loadTarget(target, name) {
     persistOpen();
     renderAll();
     monitorOptimization(L);
+    monitorVectorSummary(L);
     fitTo(desc.bounds);
     refreshCode();
   } catch (e) {
@@ -1028,6 +1029,40 @@ function monitorOptimization(L) {
       }
     } catch (error) {
       d.warnings = [...(d.warnings || []), "Couldn't monitor optimization: " + error.message];
+    } finally {
+      L._jobMonitor = false;
+    }
+  })();
+}
+
+// A non-GeoPackage vector source draws a coarse sample while the server builds
+// its one-time feature overview. Poll until it is ready, then bump the tile
+// revision so MapLibre refetches the exact overview in place.
+function monitorVectorSummary(L) {
+  const d = L && L.descriptor;
+  if (!d || d.kind !== "vector_tiles_mvt" || !d.data.job_url || L._jobMonitor) return;
+  L._jobMonitor = true;
+  (async () => {
+    try {
+      while (state.layers.get(L.target) === L) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const response = await fetch(d.data.job_url, { cache: "no-store" });
+        if (!response.ok) throw new Error("overview status HTTP " + response.status);
+        const job = await response.json();
+        if (job.status === "ready") {
+          L.tileRevision = (L.tileRevision || 0) + 1;
+          rebuildVectorTiles();
+          toast("ok", "Overview ready", "Every feature is now placed; reopening is instant.");
+          return;
+        }
+        if (job.status === "error") {
+          d.warnings = [...(d.warnings || []), "Overview build failed: " + (job.message || "unknown error")];
+          renderStyleDock();
+          return;
+        }
+      }
+    } catch (error) {
+      d.warnings = [...(d.warnings || []), "Couldn't monitor the overview build: " + error.message];
     } finally {
       L._jobMonitor = false;
     }
@@ -1591,14 +1626,23 @@ function rebuildVectorTiles() {
     const d = L.descriptor, s = L.style || {};
     const sourceLayer = d.data.source_layer || "layer";
     const visibility = L.visible ? "visible" : "none";
+    const base = absTiles(d.data.tile_url);
+    const tileUrl = base + (base.includes("?") ? "&" : "?") + "rev=" + (L.tileRevision || 0);
+    if (map.getSource(sourceId) && L._vtileUrl !== tileUrl) {
+      for (const layerId of [ids.point, ids.line, ids.fill]) {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+      }
+      map.removeSource(sourceId);
+    }
     if (!map.getSource(sourceId)) {
       map.addSource(sourceId, {
         type: "vector",
-        tiles: [absTiles(d.data.tile_url)],
+        tiles: [tileUrl],
         minzoom: d.minzoom ?? 0,
         maxzoom: d.maxzoom ?? 18,
         ...safeBounds(d.bounds),
       });
+      L._vtileUrl = tileUrl;
     }
     const fillColor = cssColor(s.fill_color, [56, 135, 255, 90]);
     const lineColor = cssColor(s.line_color, [90, 200, 255, 220]);

@@ -231,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
 
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) == 2 and parts[0] == "jobs":
-            result = self.engine.job(parts[1])
+            result = self.engine.job(parts[1]) or self.vectors.job(parts[1])
             self._json(200 if result else 404, result or {"error": "unknown source"})
             return
 
