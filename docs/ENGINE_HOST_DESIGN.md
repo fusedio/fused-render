@@ -31,6 +31,35 @@ The sections below are the original map-framed design record; read
 `engine_host`/`engines` for `map_engine`/`map_tiles` and
 `/api/engines/map/proxy/…` for `/api/map/…`.
 
+## Public surface: `fused.tiles` / `/api/tiles/*`
+
+`/api/engines/*` (and the engine ids, daemon paths, reinit and proxy it
+exposes) is **internal**. It is not on the `window.fused` bridge and is not
+documented for page authors; only built-in templates and the tile surface below
+call it, and it may change shape without notice.
+
+The **public** face is `server/routers/tiles.py` — `fused.tiles.open/status/close`
+over `/api/tiles/*`. It lets a custom map/tile viewer use the shared `:1777`
+server instead of spinning up its own daemon, while never learning an engine id,
+a daemon path, the reinit replay, or the proxy:
+
+- `POST /api/tiles/open {target, options?}` runs the map engine (via
+  `map_render.py`, the same way `/api/run` runs a UDF) and returns a PUBLIC
+  layer `{id, kind, bounds, minzoom, maxzoom, tileUrl, vectorTileUrl, dataUrl,
+  warnings, closeToken}`. Every URL is a same-origin `/api/tiles/{id}/…` path —
+  no `/api/engines`, child origin or token ever leaves this endpoint.
+- `GET /api/tiles/{layer}/{z}/{x}/{y}.png|.pbf` and `GET /api/tiles/{layer}/status`
+  are a bounded **allowlist** (not a passthrough): each validates `{layer}` as a
+  bare token and delegates to the map engine through the internal `engines._forward`,
+  so a healed/restarted daemon still answers a URL the page holds.
+- `POST /api/tiles/{layer}/close {closeToken}` forgets the layer's reinit so a
+  restart no longer replays it.
+
+`open`/`close` carry the D3 `X-Fused` guard; the tile/status GETs are open reads.
+There is no path-to-code / engine-id / daemon parameter anywhere in this surface —
+`ENGINES = {"geo": "map"}` is the only engine binding, and a future second tile
+engine is a one-line addition there.
+
 ---
 
 ## The bug, as observed
