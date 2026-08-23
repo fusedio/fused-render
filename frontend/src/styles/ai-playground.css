@@ -529,6 +529,20 @@ a.pg-hero-repo:hover {
   font-size: 13px;
 }
 
+/* The memory verdict, which is the one fact here that is a JUDGEMENT rather
+ * than a figure — so it carries a tooltip saying what it was judged against.
+ * No hue: this page spends colour on what is running (D461), and an amber
+ * "tight fit" would be the loudest thing on a card that was deliberately
+ * quietened. A dotted underline instead, because the tooltip has to advertise
+ * itself somehow and `cursor: help` on one item inside a row of plain facts
+ * announces a different kind of thing to press (D454 lost that argument once
+ * already, on the Tasks list). */
+.pg-hero-fact-warn {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
 .pg-stage-title {
   margin: 0;
   font-size: 17px;

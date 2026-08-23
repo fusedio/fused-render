@@ -343,6 +343,13 @@ export default function PlaygroundTab() {
   // never understating it, and null when there is nothing to say at all (see
   // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
+  // The fit verdict, but only when it is a WARNING: "easy" and null both draw
+  // nothing (see the fact itself for why).
+  const warnFit =
+    selected && (selected.model.fit === "tight" || selected.model.fit === "no")
+      ? selected.model.fit
+      : null;
+
   // The running pull's own figures, for the header's ring and byte line.
   // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
   // 0, which React renders as a literal "0".
@@ -696,7 +703,8 @@ export default function PlaygroundTab() {
               </div>
               {(selected.model.params ||
                 selected.model.quantization ||
-                selected.model.size_gb != null) && (
+                selected.model.size_gb != null ||
+                warnFit) && (
                 <dl className="pg-hero-facts">
                   {selected.model.params && (
                     <div className="pg-hero-fact">
@@ -714,6 +722,45 @@ export default function PlaygroundTab() {
                     <div className="pg-hero-fact">
                       <dt>Download</dt>
                       <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
+                    </div>
+                  )}
+                  {/* WILL IT RUN HERE — the server's verdict over the weights
+                      and this machine's RAM (`_fit_verdict`), back on the card
+                      after the state line that used to carry it was deleted for
+                      being prose. A fact beside the others rather than a chip
+                      by the name: this page spends its loud colours on what is
+                      RUNNING (D461), and a coloured badge here would be the
+                      same "quieter card" argument re-lost.
+
+                      Drawn ONLY as a warning. "easy" is the common case on any
+                      capable machine, and a mark that appears on nearly every
+                      model marks nothing — the same reason the ✓ downloaded
+                      chip went (D448) — so absence IS the good news, and the
+                      card gains no element at all in the ordinary case. `null`
+                      draws nothing for the server's own reason: a verdict over
+                      a size nobody measured is the lie the "—" size cell
+                      exists to avoid.
+
+                      Its own fact, not a line on Download: fetching and
+                      running are different questions, and the Download slot is
+                      the one that turns into a progress ring mid-pull — which
+                      is exactly when "will this even fit" is worth reading. */}
+                  {warnFit && (
+                    <div className="pg-hero-fact">
+                      <dt>Memory</dt>
+                      <dd
+                        className="pg-hero-fact-warn"
+                        title={
+                          "Judged against this machine's memory — " +
+                          (warnFit === "no"
+                            ? "it may crawl or fail to load."
+                            : "close other heavy apps while it runs.")
+                        }
+                      >
+                        {warnFit === "no"
+                          ? "Likely too big for this machine"
+                          : "Tight fit on this machine"}
+                      </dd>
                     </div>
                   )}
                 </dl>
