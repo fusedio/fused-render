@@ -2459,6 +2459,49 @@ def test_loading_a_second_text_model_evicts_the_first(fake_runner):
     assert not supervisor._alive(first)
 
 
+def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
+    """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
+    SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`
+    holds `_lock` across that call, every other supervisor call — `describe`,
+    `ready_worker`, a health poll, another model's load — queues behind it for
+    the whole teardown. This is exactly why a benchmark "Run all" looked frozen
+    specifically on its first model: only the first load evicts a previously
+    resident worker, so 2..N never hit this path and the freeze looked like it
+    was about the first model rather than about eviction."""
+    supervisor.load("org/first", registry.TEXT_GENERATION)
+    _wait_ready("org/first")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    # What a benchmark's second model load does: request a different model for
+    # the same capability, which evicts the first.
+    t = threading.Thread(
+        target=supervisor.load, args=("org/second", registry.TEXT_GENERATION)
+    )
+    t.start()
+    try:
+        assert started.wait(timeout=5), "eviction never reached _terminate"
+
+        # While the old worker is (slowly) tearing down, an ordinary read must
+        # not queue behind it — that queuing is the bug.
+        t0 = time.monotonic()
+        supervisor.describe()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0, f"describe() blocked {elapsed:.1f}s behind _terminate"
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
     first = supervisor.load("org/same", registry.TEXT_GENERATION)
     worker = _wait_ready("org/same")

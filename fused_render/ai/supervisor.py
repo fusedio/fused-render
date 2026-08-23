@@ -1151,19 +1151,37 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # bring-up and the switch never happened. A mismatch falls through
             # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
-        if current is not None:
+        evicting = current is not None
+        if evicting:
             # Eviction: the weights of the old model must be released BEFORE the
-            # new ones start loading, or the machine holds both at once — which
-            # on 16GB of unified memory is the difference between a load and a
-            # swap storm.
+            # new one's process is spawned, or the machine holds both at once —
+            # which on 16GB of unified memory is the difference between a load
+            # and a swap storm. `current.stopping = True` and popping it out of
+            # `_workers` happen HERE, in the same locked block that inserts the
+            # new worker below — so no other thread ever reads the capability
+            # slot as briefly empty (and mints a competing worker into it) or
+            # sees two workers resident for one capability at once. What moves
+            # outside the lock is only the actual teardown I/O below
+            # (`_terminate`, ~9s worst case: a `/quit` POST, SIGTERM+wait,
+            # SIGKILL+wait, `proc.wait`) and the new worker's `_bring_up`
+            # thread, which this function deliberately does not start until
+            # AFTER that teardown returns — so the memory-overlap invariant
+            # holds even though the lock is no longer what's enforcing the
+            # ordering. `RLock`, not a plain `Lock`, so `_terminate`
+            # re-acquiring `_lock` for its own bookkeeping below is not a
+            # deadlock either way; this was always a latency problem
+            # (everything else queued behind the ~9s teardown), not a
+            # correctness one.
             current.stopping = True
-            _terminate(current)
             _workers.pop(capability, None)
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24))
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
+
+    if evicting:
+        _terminate(current)
 
     _report(job, title=model, state="running", kind="download", cancellable=True,
             detail="Preparing…", done=None, total=None)
