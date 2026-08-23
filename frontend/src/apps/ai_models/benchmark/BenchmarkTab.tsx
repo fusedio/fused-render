@@ -431,13 +431,22 @@ function CapabilitySection({
 
   return (
     <section className="am-section">
+      {/* Plain heading now, no unit badge — that lived here when this was
+          the section's only place to say what a number meant. It is now
+          stated TWICE more: once by the Capability/Metric selects above (the
+          reader chose it, it is not news), and once by the trend
+          instrument's own heading below, which is the one that actually
+          needs it (every leaderboard row already carries its own unit
+          inline, e.g. "859.7 × realtime"). A `{metric.label} · {metric.unit}`
+          pill repeated ~40px below an identical one was the actual bug this
+          removes. The `<h3>` itself STAYS: this `<section>` also frames the
+          leaderboard (every model, not just the selected one) and the run
+          archive below, and a landmark section needs its own accessible
+          name rather than borrowing a sibling `<select>`'s current value —
+          the select's value changes on click, the heading should not blink
+          with it. */}
       <div className="am-section-head">
         <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
-        {/* What the SELECTED metric means, in the heading's right-hand slot —
-            the one place a unit can be stated once for the whole section
-            instead of on every row. A capability this frontend does not know
-            has no metric and says nothing, rather than guessing. */}
-        {metric && <span className="am-bench-metric">{metric.label} · {metric.unit}</span>}
       </div>
 
       {runs === null ? (
