@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const apps = () => readFileSync(join(import.meta.dir, "Apps.tsx"), "utf8");
-const card = () => readFileSync(join(import.meta.dir, "AppPreviewCard.tsx"), "utf8");
+const card = () => readFileSync(join(import.meta.dir, "..", "..", "platform", "ui", "AppPreviewCard.tsx"), "utf8");
 
 test("the hub draws the recent row while the exhaustive catalog loads", () => {
   const src = apps();

@@ -1277,6 +1277,13 @@ def _outgoing(entry: dict) -> str:
     never existed."""
     message = entry.get("message") or ""
     target = entry.get("target") or ""
+    # A message with no words is left exactly as it is. The block is a PREFIX
+    # to something a human said, and prepending it to nothing would send a
+    # send that is pure machinery — which every reader here strips back to ""
+    # anyway, leaving a turn whose only content the model is asked to answer
+    # is a description of a file.
+    if not message.strip():
+        return message
     if not target or os.path.isdir(target) or not os.path.isfile(target):
         return message
     state = json.dumps({"entry": target, "scheduled": True})

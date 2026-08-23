@@ -21,7 +21,7 @@
 // heading would advertise a feature this machine cannot show.
 import { useEffect, useState } from "react";
 import { matchPlaygroundApps, type ShowcaseAppMeta } from "./appMatch";
-import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import { runCommunity, SHOWCASE_TAG, touchCommunityApp } from "@platform/lib/community";
 import { urlForFsPath } from "@platform/lib/router";
 import type { AppInfo } from "@platform/lib/api";

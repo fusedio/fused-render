@@ -15,7 +15,7 @@ import { expect, test } from "bun:test";
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, ...p), "utf8");
 
 const SHOT = read("appShot.ts");
-const CARD = read("..", "..", "apps", "builder", "AppPreviewCard.tsx");
+const CARD = read("..", "ui", "AppPreviewCard.tsx");
 const APPS = read("..", "..", "apps", "builder", "Apps.tsx");
 const PREVIEW = read("..", "..", "apps", "explorer", "Preview.tsx");
 

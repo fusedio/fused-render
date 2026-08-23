@@ -92,6 +92,15 @@ def test_a_target_that_is_not_on_disk_is_left_alone(tmp_path):
     assert schedule._outgoing(_entry("")) == "run the weekly report"
 
 
+def test_a_message_with_no_words_is_left_alone(target):
+    """The block is a PREFIX to something a human said. On its own it is a
+    send that is pure machinery, which every reader here strips back to "" —
+    a turn whose only content is a description of a file."""
+    file, _ = target
+    for empty in ("", "   ", "\n"):
+        assert schedule._outgoing(_entry(file, empty)) == empty
+
+
 def test_nothing_but_the_target_is_claimed(target):
     """There is no screen to snapshot, no pane shot to take and no annotation
     to carry, and inventing any of them would put a description of a screen
