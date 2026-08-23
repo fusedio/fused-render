@@ -22,6 +22,7 @@ import {
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
+import { splitThink } from "./think";
 import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
@@ -114,26 +115,6 @@ const STARTERS: Starter[] = [
       "and say what would change your mind.",
   },
 ];
-
-/** Split one reply into the deliberation and the answer. A block still open
- *  (mid-stream) is all deliberation. Both spellings: <think> from
- *  reasoning-tuned models, <thinking> from whatever a hand-written system
- *  prompt asks for — longer tag first, or "<thinking>" parses as "<think>" plus
- *  stray text. */
-function splitThink(text: string): { think: string | null; answer: string; thinking: boolean } {
-  for (const tag of ["thinking", "think"]) {
-    const open = text.indexOf(`<${tag}>`);
-    if (open < 0) continue;
-    const close = text.indexOf(`</${tag}>`);
-    if (close < 0) return { think: text.slice(open + tag.length + 2), answer: "", thinking: true };
-    return {
-      think: text.slice(open + tag.length + 2, close).trim(),
-      answer: text.slice(close + tag.length + 3).replace(/^\s+/, ""),
-      thinking: false,
-    };
-  }
-  return { think: null, answer: text, thinking: false };
-}
 
 function replyStats(usage: ChatUsage | null | undefined): string | null {
   if (!usage?.output_tokens) return null;
