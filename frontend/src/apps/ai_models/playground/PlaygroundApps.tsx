@@ -73,7 +73,7 @@ export function PlaygroundApps({ capability, modelId }: { capability: string; mo
   return (
     <section className="pg-apps" aria-label="Apps that can use this model">
       <h4 className="pg-apps-head">Use it in an app</h4>
-      <div className="apps-cards">
+      <div className="pg-apps-row">
         {offers.map(({ app, recommended }) => (
           <span
             key={app.slug}

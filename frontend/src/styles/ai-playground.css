@@ -1350,8 +1350,8 @@ a.pg-hero-repo:hover {
 }
 
 /* ---- The showcase-app strip under the stage (PlaygroundApps.tsx). The
- * cards themselves are the hub's own .app-pcard inside its .apps-cards grid
- * (styles/apps.css) — this block only places the section. Appended at file
+ * cards themselves are the hub's own .app-pcard (styles/apps.css) — this
+ * block only places the section and lays them out as one scrollable row. Appended at file
  * end under its own `.pg-apps-` prefix: the rest of this sheet is under
  * concurrent redesign (#760) and this block must merge clean. ---- */
 .pg-apps {
@@ -1362,6 +1362,19 @@ a.pg-hero-repo:hover {
    * floor spacing `auto` would otherwise collapse to zero. */
   margin-top: auto;
   padding-top: 28px;
+}
+/* One horizontal row, never wrapping: overflow scrolls sideways inside the
+ * strip. The card wrappers are display:contents, so the .app-pcard anchors
+ * themselves are the flex items — fixed at the hub grid's minimum width. */
+.pg-apps-row {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  /* Room for the scrollbar so it doesn't sit on the cards' bottom edge. */
+  padding-bottom: 6px;
+}
+.pg-apps-row .app-pcard {
+  flex: 0 0 300px;
 }
 .pg-apps-head {
   margin: 0 0 12px;
