@@ -253,7 +253,9 @@ export default function PlaygroundTab() {
       : selectedDownloading
         ? "Downloading…"
         : selected.model.downloaded
-          ? "Downloaded — loads on first use."
+          ? // A downloaded, not-yet-loaded model needs no sentence — the first
+            // run loads it, and saying so on every visit was noise (user call).
+            ""
           : selectedSize
             ? `Not downloaded — ${selectedSize.text} to fetch.` +
               // The fit verdict, spelled out where the Download decision is
@@ -502,10 +504,12 @@ export default function PlaygroundTab() {
                   itself; the mechanics (loaded, downloading) stay on the
                   quieter line below it. */}
               {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-              <p className="pg-stage-state">
-                {stateLine}
-                {evicts ? ` ${evicts}` : ""}
-              </p>
+              {(stateLine || evicts) && (
+                <p className="pg-stage-state">
+                  {stateLine}
+                  {evicts ? ` ${evicts}` : ""}
+                </p>
+              )}
             </section>
             {selected.row.capability === "text-generation" ? (
               <TextStage
