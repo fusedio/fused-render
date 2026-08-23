@@ -3,8 +3,10 @@
 // Everything else on /ai-models is ABOUT models — what is on disk, what could
 // be, which backend serves it. This tab is the one that answers the first
 // question a person has ("what can this thing actually do?") by letting them
-// do it: a chat box for a text model, a prompt-to-picture stage for an image
-// model, a record-and-transcribe stage for a speech model. The stage is chosen
+// do it: a one-shot prompt for a text model, a prompt-to-picture stage for an
+// image model, a record-and-transcribe stage for a speech model. Every stage
+// is the same API-surface shape — input, Run, the result of that run — on the
+// hero card's centered column. The stage is chosen
 // by the selected model's capability, so a capability added server-side gets a
 // named placeholder here rather than a blank.
 //
@@ -24,27 +26,31 @@
 // non-default settings, written with `replaceSearch` because browsing models
 // is not history the back button should replay.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChatStage } from "./ChatStage";
+import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
-import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
+import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
+import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
+import { PlaygroundApps } from "./PlaygroundApps";
+import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { fetchJobs, type Job } from "@platform/lib/jobs";
 import {
   downloadAiModel,
   getAiCatalog,
+  type AiUnsupportedModel,
   loadAiModel,
   unloadAiModel,
   type AiCatalogCapability,
   type AiCatalogModel,
 } from "@platform/lib/api";
-import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -58,10 +64,6 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 const GROUP_LABELS: Record<string, string> = Object.fromEntries(
   PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
 );
-const GROUP_BLURBS: Record<string, string> = Object.fromEntries(
-  PLAYGROUND_GROUPS.map((g) => [g.capability, g.blurb]),
-);
-
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
 }
@@ -69,7 +71,7 @@ function groupLabel(capability: string): string {
 
 type CatalogLoad =
   | { status: "loading" }
-  | { status: "ok"; capabilities: AiCatalogCapability[] }
+  | { status: "ok"; capabilities: AiCatalogCapability[]; unsupported: AiUnsupportedModel[] }
   | { status: "error"; message: string };
 
 export default function PlaygroundTab() {
@@ -98,7 +100,13 @@ export default function PlaygroundTab() {
   useEffect(() => {
     let alive = true;
     getAiCatalog().then(
-      (data) => alive && setCatalog({ status: "ok", capabilities: data.capabilities }),
+      (data) =>
+        alive &&
+        setCatalog({
+          status: "ok",
+          capabilities: data.capabilities,
+          unsupported: data.unsupported ?? [],
+        }),
       (e: Error) => alive && setCatalog({ status: "error", message: e.message }),
     );
     return () => {
@@ -106,10 +114,10 @@ export default function PlaygroundTab() {
     };
   }, [catalogEpoch]);
 
-  // Job rows while anything is live, so the header can draw the same progress
-  // the Local tab draws — matched by TITLE (the supervisor sets it to the
-  // model id), the same join AiModels.tsx uses and for the same reason: the id
-  // derivation sanitises characters and must not be copied here.
+  // Job rows while anything is live, so the size rule can read a running
+  // pull's own measured total — matched by TITLE (the supervisor sets it to
+  // the model id), the same join AiModels.tsx uses and for the same reason:
+  // the id derivation sanitises characters and must not be copied here.
   const anyBusy = isBusy(runtime);
   const [jobs, setJobs] = useState<Job[]>([]);
   useEffect(() => {
@@ -128,6 +136,10 @@ export default function PlaygroundTab() {
   }, [anyBusy]);
 
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];
+  // Downloaded, and runnable by nothing here. Drawn rather than dropped: this
+  // sidebar is the only list of what is on the disk that this tab shows, and a
+  // model that silently is not in it reads as a download that failed.
+  const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
   // The selection lives in the URL. An unknown or absent id falls back to the
   // first capability's default silently (PT-9's posture: a stale link opens
@@ -185,16 +197,30 @@ export default function PlaygroundTab() {
   const jobForSelected = selected
     ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
     : undefined;
+  // Rows by MODEL, for the sidebar's own size cells — the same title match
+  // `jobForSelected` uses one line up, and for the same reason: the job id
+  // derivation sanitises characters and a second copy of that rule in
+  // TypeScript would drift from the Python one. What a running pull's total does
+  // to the size shown is `shared/modelSize`'s rule, not this file's.
+  const jobByModel = useMemo(
+    () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
+    [jobs],
+  );
 
-  const runDownload = async () => {
-    if (!selected) return;
+  // The sidebar cards and the stage header share this: same call, same error
+  // surface (the stage's banner — the card has no room for a sentence).
+  const runDownloadFor = async (id: string, capability: string) => {
     setActionError(null);
     try {
-      await downloadAiModel(selected.model.id, selected.row.capability);
+      await downloadAiModel(id, capability);
       refreshAiRuntime();
     } catch (e) {
       setActionError((e as Error).message);
     }
+  };
+  const runDownload = () => {
+    if (!selected) return;
+    return runDownloadFor(selected.model.id, selected.row.capability);
   };
   const runLoad = async () => {
     if (!selected) return;
@@ -224,114 +250,107 @@ export default function PlaygroundTab() {
     return <ErrorBanner>{catalog.message}</ErrorBanner>;
   }
 
-  // The state line under the model name: what is TRUE right now, in words. The
-  // sidebar dots carry the same facts; this is where they are spelled out.
-  const stateLine = !selected
-    ? ""
-    : selectedResident
-      ? selectedResident.state === "ready"
-        ? "Loaded — answering from memory."
-        : selectedResident.detail || "Loading…"
-      : selectedDownloading
-        ? "Downloading…"
-        : selected.model.downloaded
-          ? "Downloaded — loads on first use."
-          : selected.model.size_gb != null
-            ? `Not downloaded — ${selected.model.size_gb} GB to fetch.` +
-              // The fit verdict, spelled out where the Download decision is
-              // being made — the badge says "too big here", this says why.
-              (selected.model.fit === "no"
-                ? " This one is likely too big for this machine's memory — it may crawl or fail to load."
-                : selected.model.fit === "tight"
-                  ? " A tight fit for this machine — close other heavy apps while it runs."
-                  : "")
-            : "Not downloaded.";
-
-  // Eviction is reversible, so it is a sentence rather than a modal — but it
-  // must be said BEFORE the click that does it (AI-4): one resident model per
-  // capability, and using this one stops that one.
-  const evicts =
-    selected && residentRow && residentRow.model !== selected.model.id
-      ? `Using this stops ${residentRow.model.split("/").pop()}.`
-      : null;
+  // The size to name for the selected model, wherever this page names one —
+  // never understating it, and null when there is nothing to say at all (see
+  // `shared/modelSize`).
+  const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
 
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
         {capabilities.map((row) => {
-          // The catalog's curated half, in its own smallest-first order, notes
-          // and all — but the RECOMMENDED subset of it (D425), because this tab
-          // is where someone types a sentence rather than shops for a download:
-          // see `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
+          // The catalog's curated half, in its own smallest-first order — but
+          // the RECOMMENDED subset of it (D425), because this tab is where
+          // someone types a sentence rather than shops for a download: see
+          // `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
           // capability carousels beside what this disk already holds, with the
           // Hub search above them for anything the curation never named (D426).
           //
           // The uncurated repos this disk happens to hold (D323's union) are
           // still playable but sit apart under their own quiet caption — they
-          // have no curator and no note, and mixed in they read as
-          // recommendations nobody made.
+          // have no curator, and mixed in they read as recommendations nobody
+          // made.
           const offered = playgroundModels(row);
           const curated = offered.filter((m) => m.source === "curated");
           const cached = offered.filter((m) => m.source !== "curated");
           const draw = (model: AiCatalogModel) => {
             const active = selected?.model.id === model.id;
-            const resident = runtime.loaded.some(
-              (m) => m.model === model.id && m.state === "ready",
-            );
+            const downloading = runtime.downloading.some((d) => d.model === model.id);
+            const name = modelName(model);
+            // The full name under the nickname — the label, or for a cached
+            // entry (where the label IS the display name) the repo id, so the
+            // second line never just repeats the first.
+            const fullName = model.label !== name ? model.label : model.id !== name ? model.id : null;
+            // The card is a div-as-button, not a <button>: the Download CTA
+            // lives inside it, and a button inside a button is markup browsers
+            // are free to mangle.
+            // The advertised figure, or a running pull's own total when that
+            // is larger (see `shared/modelSize`).
+            const job = jobByModel.get(model.id);
+            const size = modelSizeHint(model.size_gb, job);
             return (
-              <button
-                type="button"
+              <div
                 key={model.id}
+                role="button"
+                tabIndex={0}
                 className={"pg-model" + (active ? " active" : "")}
                 aria-pressed={active}
                 onClick={() => select(model.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    select(model.id);
+                  }
+                }}
                 title={model.label}
               >
                 <span className="pg-model-name">
-                  {resident ? (
-                    <span className="pg-dot loaded" aria-hidden="true" />
-                  ) : model.downloaded ? (
-                    <span className="pg-dot disk" aria-hidden="true" />
-                  ) : null}
-                  {modelName(model)}
+                  {/* Live from the supervisor, not the catalog's `loaded`
+                      snapshot — a dot that outlives an unload is a lie. */}
+                  {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
+                    <span className="pg-model-live" title="Loaded — answering from memory" />
+                  )}
+                  {name}
                 </span>
-                {/* The curator's sentence — why you would pick this one. The
-                    same `note` a recommended card carries on the Local tab; for
-                    the reader with no AI vocabulary it is the only line here
-                    that answers "which one do I click". */}
-                {model.note && <span className="pg-model-note">{model.note}</span>}
-                <span className="pg-model-meta">
-                  <span>{resident ? "Ready" : model.downloaded ? "On this machine" : ""}</span>
-                  {/* The size, translated: "will this melt my laptop" is the
-                      question a newcomer is actually asking of a GB figure,
-                      so the verdict leads and the number stays for hover. */}
+                {fullName && <span className="pg-model-full">{fullName}</span>}
+                <span className="pg-model-foot">
                   <span
-                    className={"pg-fit" + (model.fit ? " " + model.fit : "")}
+                    className="pg-model-size"
                     title={
-                      model.size_gb != null
-                        ? `${model.size_gb} GB download — judged against this machine's memory`
+                      size
+                        ? `${size.text} download — judged against this machine's memory`
                         : undefined
                     }
                   >
-                    {model.size_gb != null ? `${model.size_gb} GB` : "—"}
-                    {model.fit === "easy"
-                      ? " · runs easily"
-                      : model.fit === "tight"
-                        ? " · tight fit"
-                        : model.fit === "no"
-                          ? " · too big here"
-                          : ""}
+                    {modelSizeLabel(model.size_gb, job)}
                   </span>
+                  {/* On disk = nothing to say: the CTA exists only while there
+                      is an action to take. */}
+                  {!model.downloaded && (
+                    <button
+                      type="button"
+                      className="pg-model-dl"
+                      disabled={downloading}
+                      onClick={(e) => {
+                        // Selecting too is fine; a second click must not be.
+                        e.stopPropagation();
+                        select(model.id);
+                        void runDownloadFor(model.id, row.capability);
+                      }}
+                    >
+                      {downloading ? "Downloading…" : "Download"}
+                    </button>
+                  )}
                 </span>
-              </button>
+              </div>
             );
           };
           return (
-            <section key={row.capability} className="pg-group">
-              <h4 className="pg-group-title">{groupLabel(row.capability)}</h4>
-              {GROUP_BLURBS[row.capability] && (
-                <p className="pg-group-blurb">{GROUP_BLURBS[row.capability]}</p>
-              )}
+            <details key={row.capability} className="pg-group" open>
+              <summary className="pg-group-head">
+                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
+                <span className="pg-group-title">{groupLabel(row.capability)}</span>
+              </summary>
               {!row.available && (
                 // Visible with its reason, never hidden: an absent group and a
                 // ruled-out group look identical, and HF-8 already paid for
@@ -350,16 +369,67 @@ export default function PlaygroundTab() {
                   Nothing to try here yet — the Local tab is where a first model comes from.
                 </p>
               )}
+              {/* Curated first, then the uncurated repos this disk happens to
+                  hold — one run of cards, no divider. The "Your downloads"
+                  caption that used to separate them said something the cards
+                  no longer needed said: a curated entry not yet fetched wears
+                  a Download button and a fetched one does not, so which half
+                  is on this disk is legible from the cards themselves, and the
+                  heading was a second answer to a question already answered. */}
               {row.available && curated.map(draw)}
-              {row.available && cached.length > 0 && (
-                <>
-                  <p className="pg-side-cap">Your downloads</p>
-                  {cached.map(draw)}
-                </>
-              )}
-            </section>
+              {row.available && cached.map(draw)}
+            </details>
           );
         })}
+
+        {unsupported.length > 0 && (
+          // **Everything downloaded appears, and what cannot run says so.**
+          // These rows used to be absent — `/api/ai/catalog` only listed models
+          // some capability could load — so a text-to-speech model or a depth
+          // estimator was a multi-gigabyte download that simply was not in the
+          // sidebar, which reads as a bug in the download rather than as an
+          // answer. Last, and collapsed by DEFAULT (the only `<details>` here
+          // that is): it is a reference list, not a menu — nothing in it is
+          // selectable, so leaving it open would put dead cards between the
+          // reader and the ones they came for.
+          <details className="pg-group">
+            <summary className="pg-group-head">
+              <span className="pg-group-icon">{unsupportedIcon()}</span>
+              <span className="pg-group-title">Not supported</span>
+            </summary>
+            <p className="pg-group-off">
+              On this disk, and nothing here runs it. The AI Models page is where these
+              can be deleted.
+            </p>
+            {unsupported.map((model) => (
+              // A card, so the shape matches the ones above — but a plain div:
+              // no role, no tabIndex, no click. There is nothing to select, and
+              // a control that looks pressable and is not teaches the wrong
+              // thing about every card beside it.
+              <div key={model.id} className="pg-model pg-model-off">
+                <span className="pg-model-name">{model.label}</span>
+                <span className="pg-model-full">{model.id}</span>
+                <span className="pg-model-foot">
+                  {/* `shared/modelSize`, like every other size cell on this
+                      page — with no job, since a repo already on the disk is
+                      not downloading. Hand-formatting it here would be the
+                      second copy of a rule that exists because the copies
+                      disagreed. */}
+                  <span className="pg-model-size">{modelSizeLabel(model.size_gb)}</span>
+                  {/* What it IS, when the repo said. Null is its own answer and
+                      gets no chip: "we could not tell" is what the missing
+                      label means, and inventing one would be a claim. */}
+                  {model.task && <span className="pg-model-task">{model.task}</span>}
+                </span>
+                {/* The server's own sentence, written per task beside the
+                    classification it explains (`ai/tasks.py`). Empty for a repo
+                    we could not identify — an explanation we have not earned is
+                    worse than none — and then the line simply is not drawn. */}
+                {model.reason && <p className="pg-model-why">{model.reason}</p>}
+              </div>
+            ))}
+          </details>
+        )}
       </aside>
 
       <div className="pg-stage">
@@ -381,72 +451,103 @@ export default function PlaygroundTab() {
           </p>
         ) : (
           <>
-            <div className="pg-stage-head">
-              <div>
-                <h3 className="pg-stage-title">
-                  {modelName(selected.model)}
-                  <span className="pg-stage-kind"> · {groupLabel(selected.row.capability)}</span>
-                </h3>
-                {/* The curator's sentence, in full — the sidebar clamps it.
-                    For the zero-jargon reader this is the model introducing
-                    itself; the mechanics (loaded, downloading) stay on the
-                    quieter line below it. */}
-                {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-                <p className="pg-stage-state">
-                  {stateLine}
-                  {evicts ? ` ${evicts}` : ""}
-                </p>
-              </div>
-              <div className="pg-stage-actions">
-                {/* The playground's exit ramp: everything tried here is one
-                    `fused.ai` call in a page, and this hands the /apps
-                    composer a seed naming the model, the tuned settings and
-                    the call — the user finishes the sentence with the app
-                    they want. */}
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  title="Open the app builder with this model and your settings pre-filled"
-                  onClick={() =>
-                    navigateUrl(
-                      "/apps?seed=" +
-                        encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
-                    )
-                  }
-                >
-                  Build an app with this AI
-                </button>
-                {!selected.model.downloaded && !selectedDownloading && (
-                  <button type="button" className="btn btn-secondary" onClick={runDownload}>
-                    Download{selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
-                  </button>
-                )}
-                {selected.model.downloaded && !selectedResident && (
+            <section className="pg-hero">
+              <div className="pg-hero-head">
+                <div className="pg-hero-names">
+                  <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
+                  {/* The full repo id — author/name as Hugging Face knows it.
+                      A link only when it IS a repo id: llama.cpp entries are
+                      keyed by bare .gguf filename (formats.GGUF_RECIPES), and
+                      huggingface.co/<filename> is a 404 dressed as a link. */}
+                  {selected.model.id.includes("/") ? (
+                    <a
+                      className="pg-hero-repo"
+                      href={hubModelUrl(selected.model.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {selected.model.id}
+                    </a>
+                  ) : (
+                    <span className="pg-hero-repo">{selected.model.id}</span>
+                  )}
+                </div>
+                <div className="pg-stage-actions">
+                  {/* The playground's exit ramp: everything tried here is one
+                      `fused.ai` call in a page, and this hands the /apps
+                      composer a seed naming the model, the tuned settings and
+                      the call — the user finishes the sentence with the app
+                      they want. */}
                   <button
                     type="button"
                     className="btn btn-secondary"
-                    onClick={runLoad}
-                    title="Optional — the first generation loads it too"
+                    title="Open the app builder with this model and your settings pre-filled"
+                    onClick={() =>
+                      navigateUrl(
+                        "/apps?seed=" +
+                          encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
+                      )
+                    }
                   >
-                    Load
+                    Build an app with this AI
                   </button>
-                )}
-                {selectedResident && selectedResident.state === "ready" && (
-                  <button type="button" className="btn btn-secondary" onClick={runUnload}>
-                    Unload
-                  </button>
-                )}
+                  {!selected.model.downloaded && !selectedDownloading && (
+                    <button type="button" className="btn btn-secondary" onClick={runDownload}>
+                      Download{selectedSize ? ` (${selectedSize.text})` : ""}
+                    </button>
+                  )}
+                  {selected.model.downloaded && !selectedResident && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={runLoad}
+                      title="Optional — the first generation loads it too"
+                    >
+                      Load
+                    </button>
+                  )}
+                  {selectedResident && selectedResident.state === "ready" && (
+                    <button type="button" className="btn btn-secondary" onClick={runUnload}>
+                      Unload
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-            {(selectedDownloading || (selectedResident && selectedResident.state !== "ready")) && (
-              <ModelProgress detail={selectedResident?.detail} job={jobForSelected} />
-            )}
+              {(selected.model.params ||
+                selected.model.quantization ||
+                selected.model.size_gb != null) && (
+                <dl className="pg-hero-facts">
+                  {selected.model.params && (
+                    <div className="pg-hero-fact">
+                      <dt>Parameters</dt>
+                      <dd>{selected.model.params}</dd>
+                    </div>
+                  )}
+                  {selected.model.quantization && (
+                    <div className="pg-hero-fact">
+                      <dt>Quantization</dt>
+                      <dd>{selected.model.quantization}</dd>
+                    </div>
+                  )}
+                  {selected.model.size_gb != null && (
+                    <div className="pg-hero-fact">
+                      <dt>Download</dt>
+                      <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              {/* The curator's sentence, in full — the sidebar clamps it.
+                  For the zero-jargon reader this is the model introducing
+                  itself; the mechanics (loaded, downloading) stay on the
+                  quieter line below it. */}
+              {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
+            </section>
             {selected.row.capability === "text-generation" ? (
-              <ChatStage
+              <TextStage
                 key={selected.model.id}
                 model={selected.model.id}
                 modelLabel={modelName(selected.model)}
-                ready={!!selectedResident && selectedResident.state === "ready"}
                 downloaded={selected.model.downloaded}
               />
             ) : selected.row.capability === "text-to-image" ? (
@@ -477,6 +578,7 @@ export default function PlaygroundTab() {
                 still load and manage this model.
               </p>
             )}
+            <PlaygroundApps capability={selected.row.capability} modelId={selected.model.id} />
           </>
         )}
       </div>

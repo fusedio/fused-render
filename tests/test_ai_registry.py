@@ -6,7 +6,7 @@ Platform gating is driven the same way `test_ai_models_api.py` drives it:
 `monkeypatch.setattr(registry.platform, "system"/"machine", ...)` rather than
 running on whatever machine CI happens to be.
 """
-from fused_render.ai import registry
+from fused_render.ai import registry, tasks
 
 
 def _mac_arm(monkeypatch):
@@ -94,37 +94,10 @@ def test_no_cuda_or_rocm_embed_variant_exists():
     assert not any("cuda" in code or "rocm" in code for code in codes)
 
 
-def test_the_task_label_that_routes_to_embeddings_is_the_dual_encoder_one():
-    """`zero-shot-image-classification`, which is the tag a SigLIP or CLIP repo
-    actually carries — a dual encoder, described by one thing you can do with
-    its two towers."""
-    assert registry._TASK_CAPABILITIES["zero-shot image classification"] == registry.EMBEDDINGS
-
-
-def test_the_capabilitys_own_names_deliberately_stay_unclassified():
-    """The trap this capability sets for itself: "embeddings" (the Hub's
-    `feature-extraction`) and "sentence embeddings" (`sentence-similarity`) read
-    like the obvious labels for it, and are not.
-
-    What wears them is a sentence-transformers checkpoint — a text encoder plus
-    a pooling config, with no vision tower and no `get_text_features`/
-    `get_image_features` for either embedding runner to call. Mapping them would
-    put a Load button on `sentence-transformers/all-MiniLM-L6-v2`, a download
-    that then refuses; `test_hub_models.py::test_a_result_is_never_something_
-    this_app_cannot_run` pins that by the repo id itself.
-    """
-    for label in ("embeddings", "sentence embeddings"):
-        assert label in registry.NO_RUNNER_YET, label
-        assert label not in registry._TASK_CAPABILITIES, label
-
-
-def test_every_task_label_this_module_names_is_classified_exactly_once():
-    """The completeness rule `test_ai_models_api.py::test_every_task_label_is_
-    classified` checks from the listing side, restated here from the registry
-    side: no label is in both tables, which would make one of them a dead
-    entry nobody can reach."""
-    overlap = set(registry._TASK_CAPABILITIES) & registry.NO_RUNNER_YET
-    assert not overlap
+# The task-vocabulary tests that used to live here (the embeddings dual-encoder
+# tag, the ruled-out-names trap, the no-label-in-both-tables completeness rule)
+# moved to `test_ai_tasks.py` along with `_TASK_CAPABILITIES`/`NO_RUNNER_YET`
+# themselves (D433) — this file keeps only what is actually about `registry.py`.
 
 
 def _with_h3_binary(monkeypatch, tmp_path):
@@ -237,19 +210,22 @@ def test_catalog_default_is_null_when_unavailable(monkeypatch):
     assert video["default"] is None
 
 
-def test_video_generation_removed_from_ruled_out_tasks():
-    assert "video generation" not in registry.NO_RUNNER_YET
-    assert registry._TASK_CAPABILITIES["video generation"] == registry.VIDEO_GENERATION
+def test_video_generation_is_classified_as_supported_not_ruled_out():
+    """The task-vocabulary half of this (D433 moved the table to `ai/tasks.py`,
+    keyed by the Hub's own `text-to-video` tag rather than a prose label)."""
+    reading = tasks.classify("text-to-video")
+    assert reading.support == tasks.SUPPORTED
+    assert reading.capability == registry.VIDEO_GENERATION
 
 
 def test_hub_repo_h3_cannot_read_hits_the_existing_wrong_format_refusal():
-    """Removing "video generation" from the ruled-out list gives every video
-    repo on the Hub a Load button — including ones h3.c cannot read (a
-    diffusers text-to-video pipeline, say). This is not a new mechanism: it
-    is the same "unknown checkpoint, refuse with a sentence" pattern
-    `mflux_image`'s worker already uses for a repo it cannot classify
-    (`test_ai_mflux_worker.py::test_a_model_with_no_variant_is_named_as_the_
-    cause`); the h3_video worker gets its own version of that refusal, tested
-    directly in `test_ai_h3_worker.py` rather than duplicated here.
+    """`text-to-video` being SUPPORTED gives every video repo on the Hub a Load
+    button — including ones h3.c cannot read (a diffusers text-to-video
+    pipeline, say). This is not a new mechanism: it is the same "unknown
+    checkpoint, refuse with a sentence" pattern `mflux_image`'s worker already
+    uses for a repo it cannot classify (`test_ai_mflux_worker.py::test_a_model_
+    with_no_variant_is_named_as_the_cause`); the h3_video worker gets its own
+    version of that refusal, tested directly in `test_ai_h3_worker.py` rather
+    than duplicated here.
     """
-    assert registry.capability_for_task("video generation") == registry.VIDEO_GENERATION
+    assert tasks.classify("text-to-video").capability == registry.VIDEO_GENERATION

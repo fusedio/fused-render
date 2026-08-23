@@ -33,6 +33,7 @@ from fused_render.server import create_app
 from fused_render.ai import catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import hub_cache as ai_models_mod
+from fused_render.ai import tasks as ai_tasks
 
 # Windows makes symlinks a privileged operation, and huggingface_hub itself
 # falls back to copies there — the dedup rule under test is a POSIX-cache one.
@@ -725,7 +726,11 @@ def test_pipeline_tag_from_the_model_card_wins(client, hub):
         (["BertForSequenceClassification"], "bert", "text classification"),
         (["BertForMaskedLM"], "bert", "fill mask"),
         (["ViTForImageClassification"], "vit", "image classification"),
-        (["T5ForConditionalGeneration"], "t5", "text-to-text generation"),
+        # An encoder-decoder is not the causal-LM path mlx-lm serves, and the
+        # Hub retired its own `text2text-generation` tag — so what such a
+        # checkpoint is USED for is the surviving honest answer, and it is not
+        # served here either way.
+        (["T5ForConditionalGeneration"], "t5", "translation"),
         # Same head, different job — the model type is what separates them.
         (["WhisperForConditionalGeneration"], "whisper", "speech recognition"),
         (["SomethingEntirelyNew"], "mystery", None),
@@ -811,8 +816,11 @@ def test_a_text_only_encoder_decoder_is_still_text_to_text(client, hub):
     _snapshot_file(repo, "c1", "config.json", json.dumps(
         {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}))
     row = _repo_row(client, "org/t5")
-    assert row["task"] == "text-to-text generation"
+    assert row["task"] == "translation"
     assert row["capability"] is None
+    # …and it SAYS so, rather than leaving a null the card has to guess about.
+    assert row["support"] == "no-runner"
+    assert row["supportReason"]
 
 
 @requires_symlinks
@@ -821,7 +829,7 @@ def test_diffusers_and_sentence_transformers_are_recognised(client, hub):
     _snapshot_file(a, "c1", "model_index.json", json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
     b = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(b, "c1", "modules.json", "[]")
-    assert _repo_row(client, "org/sd")["task"] == "image generation"
+    assert _repo_row(client, "org/sd")["task"] == "text to image"
     assert _repo_row(client, "org/sd")["library"] == "diffusers"
     assert _repo_row(client, "org/st")["task"] == "embeddings"
 
@@ -911,7 +919,7 @@ def test_diffusers_weights_in_component_subfolders_are_counted(client, hub):
     _snapshot_file(repo, "c1", "text_encoder/model.safetensors", _safetensors({"emb": (32000, 4096)}))
     _snapshot_file(repo, "c1", "vae/diffusion_pytorch_model.safetensors", _safetensors({"conv": (512, 512)}))
     row = _repo_row(client, "org/flux")
-    assert row["task"] == "image generation"
+    assert row["task"] == "text to image"
     assert row["params"] == 12000 * 1_000_000 + 32000 * 4096 + 512 * 512
 
 
@@ -1069,18 +1077,23 @@ def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
 
 @requires_symlinks
 @pytest.mark.parametrize(
-    "class_name,expected",
+    "class_name,expected,tag",
     [
-        ("StableVideoDiffusionPipeline", "video generation"),
-        ("MusicGenPipeline", "audio generation"),
-        ("AudioLDM2Pipeline", "audio generation"),
-        ("StableDiffusionPipeline", "image generation"),
+        ("StableVideoDiffusionPipeline", "video generation", "text-to-video"),
+        ("MusicGenPipeline", "audio generation", "text-to-audio"),
+        ("AudioLDM2Pipeline", "audio generation", "text-to-audio"),
+        ("StableDiffusionPipeline", "text to image", "text-to-image"),
     ],
 )
-def test_a_diffusers_pipeline_names_its_medium(client, hub, class_name, expected):
+def test_a_diffusers_pipeline_names_its_medium(client, hub, class_name, expected, tag):
+    """…in the Hub's own vocabulary. A pipeline read from `model_index.json` and
+    a card that names the same thing must classify identically, which is why
+    this path emits a TAG and the label comes from the one table."""
     repo = _repo(hub, "models--org--p", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "model_index.json", json.dumps({"_class_name": class_name}))
-    assert _repo_row(client, "org/p")["task"] == expected
+    row = _repo_row(client, "org/p")
+    assert row["task"] == expected
+    assert row["taskTag"] == tag
 
 
 @requires_symlinks
@@ -1254,71 +1267,67 @@ def test_an_architecture_derived_task_is_explained_too(client, hub):
 
 
 @requires_symlinks
-def test_an_unknown_tag_still_shows_its_label_and_source(client, hub):
-    # The Hub's vocabulary is open-ended, so a tag we have no sentence for
-    # degrades to label + provenance rather than to nothing.
+def test_a_tag_this_build_never_heard_of_still_shows_its_label_and_source(client, hub):
+    """The Hub's vocabulary GROWS, and this table is a snapshot of it — so an
+    unvendored tag degrades to label + provenance rather than to nothing.
+
+    What it must not degrade to is a capability. `support` says `unknown`, which
+    is a different answer from the ruled-out tag below and is what stops the
+    format fallbacks from filing it under whichever runner reads the bytes."""
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: graph-ml\n---\n")
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: holographic-telepathy\n---\n")
     row = _repo_row(client, "org/m")
-    assert row["task"] == "graph ml"
+    assert row["task"] == "holographic telepathy"
+    assert row["taskTag"] == "holographic-telepathy"
     assert row["taskSource"] == "the model card's pipeline_tag"
     assert row["taskHelp"] is None
+    assert row["support"] == "unknown"
+    assert row["capability"] is None
 
 
-def test_every_label_this_module_can_produce_is_explained():
-    """The glossary is keyed by LABEL so one table serves both evidence paths —
-    which only works while the paths agree on the label.
+@requires_symlinks
+def test_a_task_nothing_here_runs_says_which_and_why(client, hub):
+    """The state the page could not draw before: not a missing button, a
+    sentence. `graph-ml` is a task we recognise perfectly well and serve not at
+    all, and telling that apart from "we have never heard of this" is the whole
+    reason `support` has three values."""
+    repo = _repo(hub, "models--org--g", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: graph-ml\n---\n")
+    row = _repo_row(client, "org/g")
+    assert row["task"] == "graph machine learning"
+    assert row["support"] == "no-runner"
+    assert row["supportReason"] == "Nothing on this machine runs graph machine learning models."
+    assert row["capability"] is None
+    # …and the glossary still explains the TASK, which is a different question
+    # from whether we run it.
+    assert row["taskHelp"]
 
-    They drifted once: a whisper model read from its card said "automatic
-    speech recognition" and the same model read from its config said "speech
-    recognition", so the card path — the preferred one — fell through the
-    glossary. This pins the invariant instead of the two instances: every label
-    the module's OWN tables can produce has a sentence. (Passthrough tags from
-    the Hub's open vocabulary are deliberately not covered; those degrade to
-    label + source.)
+
+def test_every_tag_this_module_can_produce_is_in_the_vocabulary():
+    """The evidence paths here INVENT nothing: each one answers with a Hub tag,
+    and every tag it can answer with is a row in `ai/tasks.py`.
+
+    This replaces two tests that enumerated the prose labels the module could
+    produce and checked each was explained and classified. Both were sound until
+    the tag-to-label step grew a passthrough — after which the enumeration was a
+    fiction, and `reinforcement-learning` walked through the hole and took a
+    Load button with it. Keyed on the tag now, which is the value that actually
+    travels: a producer emitting something unvendored fails HERE, where it is
+    one line to classify, rather than on somebody's card.
     """
-    produced = set(ai_models_mod._FRIENDLIER_TAGS.values())
-    produced |= {task for _, task in ai_models_mod._ARCH_TASKS}
-    produced |= {ai_models_mod._diffusers_task(name)
-                 for name in ("StableDiffusionPipeline", "StableVideoDiffusionPipeline", "MusicGenPipeline")}
-    produced |= {"embeddings", "text generation"}  # the sentence-transformers and GGUF branches
-    missing = sorted(label for label in produced if label not in ai_models_mod._TASK_HELP)
-    assert not missing, f"labels with no explanation: {missing}"
-
-
-def _labels_this_module_can_produce():
-    """Every task label the listing's own tables can put on a card."""
-    produced = set(ai_models_mod._FRIENDLIER_TAGS.values())
-    produced |= {task for _, task in ai_models_mod._ARCH_TASKS}
-    produced |= {ai_models_mod._diffusers_task(name)
-                 for name in ("StableDiffusionPipeline", "StableVideoDiffusionPipeline",
-                              "MusicGenPipeline")}
-    produced |= {"embeddings", "text generation"}
-    return {label for label in produced if label}
-
-
-def test_every_task_label_is_classified():
-    """Every label is either loadable by a runner or explicitly ruled out.
-
-    A label nobody has thought about and a label that has been ruled out both
-    produce `capability: null`, so they look identical from the page — and that
-    is how "image + text to text" lost its Load button while the app's own
-    Discover tab went on recommending the models that carry exactly that label
-    — today every entry in the MLX catalog — as chat models.
-
-    Pinning the CLASSIFICATION rather than the instance: growing the vocabulary
-    without deciding what runs it now fails here instead of quietly removing a
-    control from a card.
-    """
-    unclassified = sorted(
-        label for label in _labels_this_module_can_produce()
-        if label not in _ai_registry._TASK_CAPABILITIES
-        and label not in _ai_registry.NO_RUNNER_YET
-    )
-    assert not unclassified, (
-        "task labels neither mapped to a capability nor listed in "
-        f"registry.NO_RUNNER_YET: {unclassified}"
-    )
+    produced = {task for _, task in ai_models_mod._ARCH_TASKS}
+    produced |= {ai_models_mod._diffusers_task(name) for name in
+                 ("StableDiffusionPipeline", "StableVideoDiffusionPipeline", "MusicGenPipeline")}
+    # The branches that answer without a table: sentence-transformers, and the
+    # decisive weight layouts.
+    produced |= {"feature-extraction"}
+    produced |= {found[0] for found in (
+        ai_models_mod._format_task("mlx-community/FLUX.2-Klein-4B-4bit", set(),
+                                   {"transformer", "text_encoder", "vae"}, {}),
+        ai_models_mod._format_task("org/w", {"model.bin", "vocabulary.txt"}, set(), {}),
+    ) if found}
+    unvendored = sorted(tag for tag in produced if tag not in ai_tasks.TASKS)
+    assert not unvendored, f"tags this module emits that nothing classifies: {unvendored}"
 
 
 def test_a_vision_language_model_is_still_loadable_as_a_chat_model(client, hub):
@@ -1348,7 +1357,8 @@ def test_every_suggested_model_could_be_loaded_by_the_page():
     for code, entries in catalog.SUGGESTIONS.items():
         runner = _ai_registry.by_code(code)
         assert runner is not None, f"{code!r} suggests models and is not a runner"
-        assert runner.capability in set(_ai_registry._TASK_CAPABILITIES.values()), (
+        assert runner.capability in {ai_tasks.TASKS[t].capability
+                                     for t in ai_tasks.supported_tags()}, (
             f"nothing in the task vocabulary maps to {runner.capability!r}, so no "
             f"cached card will ever offer Load for the models suggested under it"
         )
@@ -1532,7 +1542,7 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
     _snapshot_file(repo, "c1", "model_index.json",
                    json.dumps({"_class_name": "Flux2KleinPipeline"}))
     row = _repo_row(client, "black-forest-labs/FLUX.2-klein-4B")
-    assert row["task"] == "image generation"
+    assert row["task"] == "text to image"
     assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"]["code"] == "diffusers-image"
 
@@ -1623,12 +1633,12 @@ def test_the_two_FLUX_klein_repos_read_the_same_and_the_label_matches_the_gate(
         _snapshot_file(mlx, "c1", f"{component}/weights.safetensors",
                        _safetensors({"w": (4, 4)}))
     row = _repo_row(client, "mlx-community/FLUX.2-Klein-4B-4bit")
-    assert row["task"] == "image generation"
+    assert row["task"] == "text to image"
     assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"]["code"] == "mflux-image" and row["engine"]["available"]
     # The invariant behind both halves: a card that offers Load shows a task
     # this machine can actually serve.
-    assert _ai_registry.capability_for_task(row["task"]) == row["capability"]
+    assert ai_tasks.capability_for_tag(row["taskTag"]) == row["capability"]
 
 
 @requires_symlinks
@@ -1675,7 +1685,38 @@ def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, mo
     for row in rows:
         if not (row["engine"] and row["engine"]["available"]):
             continue  # no Load button, so nothing to contradict
-        assert _ai_registry.capability_for_task(row["task"]) == row["capability"], row
+        assert ai_tasks.capability_for_tag(row["taskTag"]) == row["capability"], row
+
+
+@requires_symlinks
+def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub, monkeypatch):
+    """The video-pipeline bug, and the other half of the same gate.
+
+    A diffusers VIDEO pipeline is a `model_index.json` repo, and the diffusers
+    runners are DECISIVE about that format — so `_engine`'s "let the format
+    answer" branch used to hand it the image capability, and the card offered
+    Load for a model nothing here can run. The branch exists for a real case
+    (a CT2 conversion carries no tag, an MLX one carries no config, and both are
+    speech models beyond doubt), so the fix is not to remove it: it fires only
+    where the task is UNKNOWN. `text-to-video` is not unknown — it is refused,
+    with a sentence.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--org--vid", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "StableVideoDiffusionPipeline"}))
+    row = _repo_row(client, "org/vid")
+    assert row["task"] == "video generation"
+    assert row["support"] == "no-runner"
+    assert row["capability"] is None
+    # No engine row either: `_engine` returns nothing once the capability is
+    # refused, so the card cannot promise a backend for it.
+    assert row["engine"] is None
+    # …and the same repo read by the LOAD route agrees, which is the invariant
+    # that stops a card offering what a load then refuses.
+    assert ai_models_mod.cached_capability("org/vid").capability is None
 
 
 @requires_symlinks
@@ -1823,7 +1864,7 @@ def test_the_card_and_a_load_without_a_capability_agree(client, hub):
 def test_a_repo_that_is_not_cached_says_so(client, hub):
     """`cached=False` is what lets the load route fall back to the catalog and
     then to the old default, instead of refusing a cold load."""
-    assert ai_models_mod.cached_capability("org/never-downloaded") == (False, None, None)
+    assert ai_models_mod.cached_capability("org/never-downloaded")[:3] == (False, None, None)
     # A folder with no revision in it is an interrupted download, not evidence.
     (hub / "models--org--empty").mkdir()
     assert ai_models_mod.cached_capability("org/empty").cached is False
@@ -1832,7 +1873,7 @@ def test_a_repo_that_is_not_cached_says_so(client, hub):
 def test_a_repo_id_can_never_become_a_path(hub):
     """The lookup builds a cache folder name out of a request body's string."""
     for hostile in ("../../etc", "..", "a/../../b", "org\\evil"):
-        assert ai_models_mod.cached_capability(hostile) == (False, None, None)
+        assert ai_models_mod.cached_capability(hostile)[:3] == (False, None, None)
 
 
 @requires_symlinks
@@ -2079,3 +2120,144 @@ def test_cached_models_does_not_offer_half_a_snapshot(client, hub):
     (repo / "blobs" / "shard2.fusedpart").write_bytes(b"x" * 32)
 
     assert "org/chat" not in {m.repo_id for m in ai_models_mod.cached_models()}
+
+
+# -- the empty shell a stopped fetch leaves behind (D437) ----------------------
+# The state a user hit: a cancelled download whose folder held one 40-byte
+# `refs/main` and not a single blob. The listing has to call that partial (no
+# snapshot IS the evidence), so the page drew a "partly downloaded" card under
+# Unrecognised offering to resume a download with nothing to resume from. The
+# fetch thread tidies it on its way out now; these pin what it may and may not
+# take with it.
+
+
+def test_a_refs_only_shell_is_discarded(client, hub):
+    repo = _repo(hub, "models--org--never-started", refs={"main": "c1"})
+    # …and the folder really is the state the field reported: partial, tiny, and
+    # filed with no capability of its own.
+    row = _repo_row(client, "org/never-started")
+    assert row["partial"] is True
+    assert row["capability"] is None
+
+    assert ai_models_mod.discard_empty_shell("org/never-started") is True
+    assert not repo.exists()
+
+
+def test_a_stopped_fetch_with_bytes_on_disk_is_KEPT(client, hub):
+    """The rule this must not break (D275/AI-5i). A part file is exactly what a
+    resume picks up, so a folder holding one is a download in progress as far as
+    this app is concerned — not litter."""
+    repo = _repo(hub, "models--org--half")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 4096)
+
+    assert ai_models_mod.discard_empty_shell("org/half") is False
+    assert repo.exists()
+
+
+@requires_symlinks
+def test_a_finished_download_is_never_discarded(client, hub):
+    """Called on every fetch's way out, including the successful ones — so the
+    successful ones have to be a no-op. Read off the FOLDER, never off the job's
+    outcome."""
+    repo = _repo(hub, "models--org--done", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    assert ai_models_mod.discard_empty_shell("org/done") is False
+    assert repo.exists()
+
+
+def test_discarding_a_shell_that_is_not_there_is_not_an_error(client, hub):
+    """The ordinary case: nothing was ever created, or a previous pass already
+    tidied it. This runs in a `finally` and must never raise."""
+    assert ai_models_mod.discard_empty_shell("org/nothing") is False
+
+
+def test_a_shell_named_by_a_path_is_refused(client, hub):
+    """Same discipline as every other destructive path here: a repo id is turned
+    into ONE folder name, and anything that is not one is not looked at."""
+    assert ai_models_mod.discard_empty_shell("../../etc") is False
+
+
+# -- bytes that ARRIVED, vs blocks reserved for them (D440) --------------------
+# Our fetcher preallocates a part file to the full length of the file it is
+# fetching, so a repo 15% into a 1.6GB download measures 1.6GB on disk. `size`
+# is right about the disk and wrong about the download, and a card drawing "how
+# much of this is here" from it read as nearly finished.
+
+
+def _sidecar(repo, blob, size, done_per_segment, segment=32 * 1024 * 1024):
+    """A part file's sidecar in the shape `worker_base._FileFetch.flush` writes."""
+    segments = []
+    start = 0
+    for done in done_per_segment:
+        end = min(start + segment, size) - 1
+        segments.append({"start": start, "end": end, "done": done})
+        start = end + 1
+    (repo / "blobs" / f"{blob}.fusedpart.json").write_text(
+        json.dumps({"version": 3, "etag": blob, "size": size, "segments": segments})
+    )
+
+
+def test_fetched_bytes_reads_the_sidecar_not_the_part_files_length(client, hub):
+    repo = _repo(hub, "models--org--pulling")
+    # Preallocated to 96MB; only 40MB of it is durable.
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * (96 * 1024 * 1024))
+    _sidecar(repo, "w", 96 * 1024 * 1024,
+             [32 * 1024 * 1024, 8 * 1024 * 1024, 0])
+
+    row = _repo_row(client, "org/pulling")
+
+    # `size` still counts the part file's whole length (plus its little sidecar):
+    # that is what the folder holds, and it is what the page PRINTS.
+    assert row["size"] > 96 * 1024 * 1024
+    # …and this is what arrived: two full segments and a third of a third one.
+    assert row["fetchedBytes"] == 40 * 1024 * 1024
+
+
+def test_a_part_file_with_no_sidecar_counts_nothing(client, hub):
+    """No sidecar means nothing has SAID any of those bytes are durable, and the
+    file may be pure preallocation — so it contributes zero rather than its
+    length. Same posture as `_unfinished_fetch`: positive evidence only."""
+    repo = _repo(hub, "models--org--bare")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+
+    assert _repo_row(client, "org/bare")["fetchedBytes"] == 0
+
+
+def test_a_torn_sidecar_counts_nothing_rather_than_raising(client, hub):
+    repo = _repo(hub, "models--org--torn")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+    (repo / "blobs" / "w.fusedpart.json").write_text("{not json")
+
+    assert _repo_row(client, "org/torn")["fetchedBytes"] == 0
+
+
+def test_a_sidecar_claiming_more_than_its_segment_is_clamped(client, hub):
+    """A sidecar is written by another process; a `done` past the segment's own
+    width must not inflate the total."""
+    repo = _repo(hub, "models--org--liar")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 1024)
+    _sidecar(repo, "w", 1024, [999_999_999], segment=1024)
+
+    assert _repo_row(client, "org/liar")["fetchedBytes"] == 1024
+
+
+def test_hf_incomplete_files_count_their_length(client, hub):
+    """`huggingface_hub` APPENDS, so for its part files the length IS the
+    progress — the opposite of ours, which is why the two are read differently."""
+    repo = _repo(hub, "models--org--hf", blobs={"done": 100})
+    (repo / "blobs" / "abc.incomplete").write_bytes(b"x" * 900)
+
+    assert _repo_row(client, "org/hf")["fetchedBytes"] == 1000
+
+
+@requires_symlinks
+def test_a_finished_repo_reports_every_byte_as_fetched(client, hub):
+    """The ordinary case, and the one the fraction never draws: nothing is
+    outstanding, so the two numbers agree."""
+    _repo(hub, "models--org--done", blobs={"w": 4096},
+          snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    row = _repo_row(client, "org/done")
+
+    assert row["fetchedBytes"] == row["size"]

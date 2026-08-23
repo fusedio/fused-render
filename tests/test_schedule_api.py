@@ -7,6 +7,8 @@ two ways to say *when*, and ValueError arriving as a 400.
 
 Nothing here spawns a real claude — no test lets a message come due.
 """
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -470,3 +472,55 @@ def test_replaces_is_a_no_op_when_there_is_nothing_to_move(client, target, task_
                                 "due": "2030-02-01T09:00:00Z", **body})
         assert res.status_code == 200
         assert _number_for(res.json()["entry"]["id"]) == ""
+
+
+def test_immediate_rides_the_round_trip_and_never_touches_when_it_runs(
+        client, target):
+    """"Run this now" and "run this at a time I chose" are the same `due` and
+    two different intentions (Akshil, 2026-08-23).
+
+    The New task form sends `immediate` when the card was opened from the List
+    or the Board and the when-row — which is folded into More options there —
+    was never touched. Nothing about the SCHEDULE changes: the entry is due when
+    it says it is due, and the scheduler reads that and only that. The flag
+    exists so the calendar can stay a plan instead of becoming a log of
+    everything anyone ever typed into the Tasks page.
+
+    It has to survive the round trip because the reading must survive a reload:
+    a due date that says "now" reads identically for both kinds, so the fact
+    cannot be re-derived once the moment has passed."""
+    due = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "do it now",
+                            "due": due, "immediate": True})
+    assert res.status_code == 200
+    entry = res.json()["entry"]
+    assert entry["immediate"] is True
+    # Still a perfectly ordinary pending message, due exactly when it said.
+    assert entry["state"] == "pending"
+    listed = client.get("/api/schedule").json()["entries"]
+    assert next(e for e in listed if e["id"] == entry["id"])["immediate"] is True
+
+
+def test_immediate_is_false_by_default_and_never_a_400(client, target):
+    """Absent, null and a planned task all read the same way: this was put on a
+    calendar. That is the right default for every caller that is not the New
+    task form, and for every entry stored before the flag existed."""
+    for body in ({}, {"immediate": None}, {"immediate": False}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600, **body})
+        assert res.status_code == 200
+        assert res.json()["entry"]["immediate"] is False
+
+
+def test_a_repeating_message_is_never_immediate(client, target):
+    """A rule's anchor is a chosen time by construction — it is the pattern's
+    starting point — so the two cannot be true at once. The form never sends the
+    pairing (ticking Repeat marks the time as picked); the model refuses it
+    anyway rather than storing a template that claims nobody planned it."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "every morning",
+                            "repeats": "0 9 * * *", "immediate": True})
+    assert res.status_code == 200
+    assert res.json()["entry"]["immediate"] is False

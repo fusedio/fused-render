@@ -171,7 +171,8 @@ def api_schedule_create(body: dict = Body(...),
             return _error("delay_seconds: must be positive", status=400)
         due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
-    # `title`, `description`, `new_task_each_run` and `session_learned` are
+    # `title`, `description`, `new_task_each_run`, `session_learned` and
+    # `immediate` are
     # passed straight through and normalised by the model (`_text`/`_flag`),
     # not here. Deliberately NOT
     # validated into a 400: the form omits them when they are blank or unticked,
@@ -189,6 +190,7 @@ def api_schedule_create(body: dict = Body(...),
             title=body.get("title"), description=body.get("description"),
             new_task_each_run=body.get("new_task_each_run"),
             session_learned=body.get("session_learned"),
+            immediate=body.get("immediate"),
             # THE ONE ENDPOINT ALLOWED TO MAKE A FOLDER. The New task form lets
             # you name a folder that does not exist yet — it shows the path as a
             # new folder while you type it — and this is where that promise is

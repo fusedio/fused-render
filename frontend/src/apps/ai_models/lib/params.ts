@@ -1,7 +1,7 @@
 // Query-param IO for the playground's stages.
 //
 // These three lived in `AiModelsPlayground.tsx` — the page component the
-// stages are children of — so ChatStage/ImageStage/TranscribeStage each
+// stages are children of — so TextStage/ImageStage/TranscribeStage each
 // imported their own parent to read a URL param. A child importing its parent
 // for a utility is a cycle waiting to be one, and it meant the stages could
 // not be reasoned about (or tested) without pulling the whole picker, the

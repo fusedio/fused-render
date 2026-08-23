@@ -21,7 +21,7 @@ const DEFAULTS = { width: 512, height: 512, frames: 90, steps: 20 };
 const SIZE_RANGE = [256, 1344] as const;
 // h3's own frame grid is `5 + 17n`, n in [1, 21] -- VERIFIED against the
 // built h3 binary's own h3_align_frame_count/h3_valid_params (the server
-// route's own D429 comment carries the same citation): n=0 (5 frames) is
+// route's own D449 comment carries the same citation): n=0 (5 frames) is
 // refused at generation time ("requires at least one trained 22-frame
 // decoder chunk"), so the grid this slider offers starts at 22, not 5. The
 // slider steps by 17 so every value it can land on is one the server will
@@ -119,7 +119,7 @@ export function VideoStage({ model, entry }: { model: string; entry: AiCatalogMo
   const settled = run?.started;
 
   return (
-    <div className={"pg-work" + (railOpen ? " rail-open" : "")}>
+    <div className={"pg-work pg-work-video" + (railOpen ? " rail-open" : "")}>
       <div className="pg-main pg-video">
         <div className="pg-composer">
           <textarea

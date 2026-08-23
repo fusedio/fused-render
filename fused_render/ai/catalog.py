@@ -97,6 +97,14 @@ from fused_render.ai import registry
 #: derived by stripping the label's parenthetical at runtime, for the reason
 #: `short_label` and `family_label` are fields too (AI-2c): a stripped name
 #: is a value nobody owns and no test can see.
+#: `params` and `quantization` are the two facts the Playground's stage header
+#: prints beside the size — parameter count as the publisher states it ("4B",
+#: "8B (~1B active)", "4B effective") and the quantization scheme by its own
+#: name. Curated fields for the same AI-2c reason as `nickname`: parsing them
+#: out of a repo id breaks on the first ternary, MoE or effective-size entry.
+#: Both optional — an entry whose scheme has no honest short name (the plain
+#: MLX/CT2 Whisper conversions, the embeddings encoders) omits `quantization`
+#: rather than inventing one, and the header omits the line.
 #:
 #: **`recommended` IS A SECOND AXIS, AND IT IS THE ONLY ONE THE PLAYGROUND
 #: READS.** Opt-in, absent almost everywhere: every entry here is a model this
@@ -248,6 +256,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # still load it once.
         {
             "id": "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+            "params": "1.2B",
+            "quantization": "MLX 4-bit",
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
             "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
@@ -256,6 +266,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            "params": "4B",
+            "quantization": "OptiQ 4-bit",
             "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
             "nickname": "Qwen3.5 4B",
@@ -285,6 +297,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # ships `lfm2_moe.py`, read out of it.
         {
             "id": "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
+            "params": "8B (~1B active)",
+            "quantization": "MLX 4-bit",
             "label": "LFM2.5 8B-A1B (MLX 4-bit)",
             "nickname": "LFM2.5 8B-A1B",
             "size_gb": 4.9,
@@ -294,6 +308,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
+            "params": "4B effective",
+            "quantization": "MLX 4-bit",
             "label": "Gemma 4 E4B (4-bit)",
             "nickname": "Gemma 4 E4B",
             "size_gb": 5.2,
@@ -314,6 +330,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # "the 9B above" wording was the reordering's first casualty.
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+            "params": "27B",
+            "quantization": "Ternary 2-bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
             "nickname": "Ternary Bonsai 27B",
             # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
@@ -329,6 +347,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+            "params": "9B",
+            "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
             "nickname": "Qwen3.5 9B",
             "size_gb": 8.2,
@@ -341,6 +361,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # is about size_gb alone, not how confident the entry is.
         {
             "id": "mlx-community/Qwen3.8-27B-4bit",
+            "params": "27B",
+            "quantization": "MLX 4-bit",
             "label": "Qwen3.8 27B (MLX 4-bit)",
             "nickname": "Qwen3.8 27B",
             # Measured from the repo's blob sizes, not estimated.
@@ -360,6 +382,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # into swap is not something to suggest on one machine's evidence.
         {
             "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
+            "params": "27B",
+            "quantization": "OptiQ 4-bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
             "nickname": "Qwen3.6 27B",
             "size_gb": 20.0,
@@ -470,6 +494,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # this file's own "every line is somebody's answer" test.
         {
             "id": "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+            "params": "1.2B",
+            "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
             "nickname": "LFM2.5 1.2B Instruct",
             "size_gb": 0.7,
@@ -479,6 +505,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.5-4B-Q4_K_M.gguf",
+            "params": "4B",
+            "quantization": "GGUF Q4_K_M",
             "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
             "nickname": "Qwen3.5 4B",
@@ -488,6 +516,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "gemma-4-E4B-it-Q4_K_M.gguf",
+            "params": "4B effective",
+            "quantization": "GGUF Q4_K_M",
             "label": "Gemma 4 E4B (Q4_K_M)",
             "nickname": "Gemma 4 E4B",
             "size_gb": 5.0,
@@ -514,6 +544,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # what most machines resolve to, there is nothing left on the table.
         {
             "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+            "params": "8B (~1B active)",
+            "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 8B-A1B (Q4_K_M)",
             "nickname": "LFM2.5 8B-A1B",
             "size_gb": 5.2,
@@ -523,6 +555,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            "params": "27B",
+            "quantization": "GGUF UD-Q3_K_XL",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
             "nickname": "Qwen3.8 27B",
             "size_gb": 13.1,
@@ -535,6 +569,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "diffusers-image": [
         {
             "id": "tonera/FLUX.2-klein-4B-int8-diffusers",
+            "params": "4B",
+            "quantization": "int8 (torchao)",
             "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
             "nickname": "FLUX.2 klein 4B",
@@ -587,6 +623,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "mflux-image": [
         {
             "id": "mlx-community/FLUX.2-Klein-4B-4bit",
+            "params": "4B",
+            "quantization": "MLX 4-bit",
             "recommended": True,
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
             "nickname": "FLUX.2 klein 4B",
@@ -622,6 +660,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "mlx-whisper": [
         {
             "id": "mlx-community/whisper-tiny.en-8bit",
+            "params": "39M",
+            "quantization": "MLX 8-bit",
             "label": "Whisper tiny English (MLX 8-bit)",
             "nickname": "Whisper tiny English",
             "recommended": True,
@@ -632,6 +672,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-small-mlx",
+            "params": "244M",
             "label": "Whisper small (MLX)",
             "nickname": "Whisper small",
             "size_gb": 0.5,
@@ -641,6 +682,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-large-v3-turbo",
+            "params": "809M",
             "label": "Whisper large-v3 turbo (MLX)",
             "nickname": "Whisper large-v3 turbo",
             "size_gb": 1.6,
@@ -650,6 +692,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "mlx-community/whisper-large-v3-mlx",
+            "params": "1.5B",
             "label": "Whisper large-v3 (MLX)",
             "nickname": "Whisper large-v3",
             "size_gb": 3.1,
@@ -680,6 +723,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "faster-whisper": [
         {
             "id": "Systran/faster-whisper-tiny.en",
+            "params": "39M",
             "label": "Whisper tiny English (CT2)",
             "nickname": "Whisper tiny English",
             "size_gb": 0.08,
@@ -689,6 +733,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "Systran/faster-whisper-small",
+            "params": "244M",
             "label": "Whisper small (CT2)",
             "nickname": "Whisper small",
             "size_gb": 0.5,
@@ -697,6 +742,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
+            "params": "809M",
             "recommended": True,
             "label": "Whisper large-v3 turbo (CT2)",
             "nickname": "Whisper large-v3 turbo",
@@ -746,6 +792,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     "transformers-embed": [
         {
             "id": "google/siglip2-base-patch16-384",
+            "params": "375M",
             "recommended": True,
             "label": "SigLIP2 base (384px)",
             "size_gb": 1.5,
@@ -755,6 +802,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         },
         {
             "id": "google/siglip2-so400m-patch14-384",
+            "params": "1.1B",
             "label": "SigLIP2 so400m (384px)",
             "size_gb": 4.6,
             "note": "Noticeably better matches than the base model, for three "

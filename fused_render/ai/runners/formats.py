@@ -124,6 +124,64 @@ MFLUX_VARIANTS = {
     },
 }
 
+#: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also
+#: supports base-image editing, keyed by the same repo id.
+#:
+#: **A second, independent table, not a nested key under the row above** —
+#: `Flux2KleinEdit` does not subclass `Flux2Klein` — its own `__mro__` is
+#: `['Flux2KleinEdit', 'Module', 'dict', 'object']`, verified against mflux
+#: 0.19.0 on Apple Silicon — so the two are unrelated classes over the same
+#: snapshot, and a single row cannot hold two unrelated `variant`/`module`
+#: pairs without one of them reading as an override of the other, which it is
+#: not. The module path is a full dotted submodule,
+#: `mflux.models.flux2.variants.edit.flux2_klein_edit`, one level deeper than
+#: the plain row's package — do not derive it from the plain row's by string
+#: surgery, since nothing about the nesting is guaranteed to hold for a
+#: future model.
+#:
+#: **`config` and `vae` are deliberately ABSENT here, not repeated.** They are
+#: facts about the CHECKPOINT — the model config method and the autoencoder
+#: the conversion carries — and editing changes only which class denoises it,
+#: never which weights or which latent space it denoises. Copying them into a
+#: second row would let the two rows disagree after a future edit to one of
+#: them (a config method renamed, a vae swapped for a re-fit) touches only
+#: the row someone remembered to change — a drift `mflux_edit_recipe` below
+#: makes structurally impossible by reading them off `MFLUX_VARIANTS` every
+#: time, rather than by convention. An `image_paths` request keeps
+#: `MFLUX_VARIANTS`'s row's OWN key — absence here just means "no edit class
+#: known for this repo", refused with a sentence exactly the way an absent
+#: row in the table above already is.
+MFLUX_EDIT_VARIANTS = {
+    "mlx-community/FLUX.2-Klein-4B-4bit": {
+        "variant": "Flux2KleinEdit",
+        "module": "mflux.models.flux2.variants.edit.flux2_klein_edit",
+    },
+}
+
+
+def mflux_edit_recipe(model_id: str) -> dict | None:
+    """The full edit-mode recipe for `model_id` — `MFLUX_EDIT_VARIANTS`'s own
+    `variant`/`module`, with `config`/`vae` DERIVED from `MFLUX_VARIANTS`'s
+    row for the same id — or None when either table has no row for it.
+
+    The one reader of both tables at once, so the two can never independently
+    say something different about a checkpoint's config or latent space; see
+    `MFLUX_EDIT_VARIANTS`'s own comment for why that would otherwise be a
+    silent drift rather than a loud one.
+    """
+    edit = MFLUX_EDIT_VARIANTS.get(model_id)
+    plain = MFLUX_VARIANTS.get(model_id)
+    if edit is None or plain is None:
+        return None
+    # `.get("vae")`, not a hard index: `MFLUX_VARIANTS`'s own docstring
+    # declares the key optional ("a variant with no `vae` simply gets no
+    # preview"), and `_build_variant` reads it the same soft way
+    # (`recipe.get("vae")`) — a plain row that ever ships without one must
+    # not make the edit recipe raise where the plain row itself would not.
+    # `config` stays a hard index: every row in this table names one, and
+    # `_build_variant` reads it unconditionally.
+    return {**edit, "config": plain["config"], "vae": plain.get("vae")}
+
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
 
@@ -1083,6 +1141,17 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # only caller it was) went with it. Deliberately NOT replaced by a
     # `.gguf`-style DECISIVE claim: safetensors says nothing about the modality,
     # which is why this branch sits last, after every check that does.
-    if torch_weights and not unloadable_quant(config):
+    #
+    # **`config` is REQUIRED, not merely consulted.** `mlx_lm.load` resolves a
+    # checkpoint by reading `config.json` and importing
+    # `mlx_lm.models.<model_type>`, so a weights directory without one is not a
+    # repo this engine can open, whatever the extensions say. Claiming it anyway
+    # is how `SymphonyGen/SymphonyGen` — four bare `.pt` checkpoints of a
+    # symbolic-music policy, no config, `library_name: pytorch` — matched
+    # `mlx-text`, which then let the caller's format fallback call it a chat
+    # model. Same shape as the Parakeet early return above: the honest answer
+    # for weights nothing can resolve is "no runner", not "the one engine whose
+    # file extensions happen to match".
+    if torch_weights and config and not unloadable_quant(config):
         found.append("mlx-text")
     return tuple(found)
