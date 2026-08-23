@@ -67,8 +67,12 @@ export function ConfigPanel({ open, children }: { open: boolean; children: React
   if (!open) return null;
   return (
     <aside className="pg-config-card" aria-label="Settings">
-      <p className="pg-config-head">Settings</p>
-      <div className="pg-config-body">{children}</div>
+      {/* Two boxes, not one: beside the column the <aside> is a full-height
+          rail and this inner box is what sticks inside it. */}
+      <div className="pg-config-inner">
+        <p className="pg-config-head">Settings</p>
+        <div className="pg-config-body">{children}</div>
+      </div>
     </aside>
   );
 }

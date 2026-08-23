@@ -461,7 +461,15 @@ a.pg-hero-repo:hover {
    page furniture. Styled outside the container query below, so the narrow-
    window fallback — the same card, full column width, in flow under the input
    — is one dialect with it. */
+   The <aside> is only the RAIL the card travels in — the visuals are on the
+   inner box, which is what sticks. In the fallback the rail is a plain
+   in-flow div and the inner box is simply the card. */
 .pg-config-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.pg-config-inner {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -509,18 +517,36 @@ a.pg-hero-repo:hover {
     );
     grid-template-columns: minmax(0, 1fr) var(--pg-card);
     column-gap: 16px;
+    /* So the rail below can take its grid area as a containing block. */
+    position: relative;
   }
 
+  /* Load-bearing: without it auto-placement drops the stage's SECOND child
+     into the empty second column. */
   .pg-work.has-config > * {
     grid-column: 1;
   }
 
+  /* Absolutely positioned INTO the second column rather than placed in it: an
+     in-flow card would size its own grid row, so opening the cog would push
+     the composer down by the card's height — the exact shove this layout
+     exists to avoid. An abspos grid child takes its grid area as its
+     containing block, with the row edges falling back to the container's
+     padding box when the row placement is auto, so `inset: 0` is a full-height
+     rail in a 240px track. (`grid-row: 1 / -1` would NOT do this: negative
+     line numbers resolve against the EXPLICIT grid, and there are no explicit
+     rows here.) The track holds its width whether anything is in it or not, so
+     the column-width math above is untouched. */
   .pg-work.has-config > .pg-config-card {
     grid-column: 2;
-    /* The card's grid area is every row of the column, so `sticky` keeps the
-       settings on screen while a long result scrolls past them. */
-    grid-row: 1 / -1;
-    align-self: start;
+    position: absolute;
+    inset: 0;
+  }
+
+  /* The card rides the rail: it stays on screen while a long result scrolls
+     past it. Sticky cannot live on the rail itself — an abspos box has nothing
+     to stick within — which is why the rail and the card are two boxes. */
+  .pg-work.has-config > .pg-config-card > .pg-config-inner {
     position: sticky;
     top: 0;
   }
