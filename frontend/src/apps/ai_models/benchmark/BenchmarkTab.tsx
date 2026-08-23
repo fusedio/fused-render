@@ -1,7 +1,9 @@
-// The Benchmark tab: one capability at a time, TWO instruments for it — a
-// ranked leaderboard ("which model is fastest here") and a per-model trend
-// chart ("is THIS model getting faster or slower") — plus the archive
-// underneath and a button to measure again (SPEC AI-14).
+// The Benchmark tab: one capability at a time, THREE instruments for it — a
+// ranked comparison chart (the hero: "which of these is fastest here"), a
+// leaderboard of every model with its own action (Run, Details), and a
+// per-model trend chart (secondary: "is THIS model getting faster or
+// slower") — plus the archive underneath and a button to measure again
+// (SPEC AI-14).
 //
 // **The question this tab exists to answer is "how fast is THIS model on THIS
 // laptop", and the only way to answer it comparably is to fix the work.** So a
@@ -11,16 +13,25 @@
 // models here, or one model across two app versions, are legitimately
 // comparable, which the passive Usage tab's figures never are.
 //
-// **Comparison and trend are two DIFFERENT questions, and an earlier design
-// tried to answer both with one chart** — every model as its own series,
-// sharing one timeline. With one or two runs per model that produced a
-// scatter of near-unlabelable dots, which is the real reason it needed
-// edge-avoiding end labels and kept repeating one date three times: those
-// were symptoms of asking a multi-model chart to also be a trend line. The
-// leaderboard already IS the comparison view (ranked rows, a proportional
-// bar per model) and does not need a second, duplicate chart drawn on top of
-// it; `ModelTrendChart` now draws exactly one model's own history, chosen by
-// clicking its leaderboard row.
+// **Comparison and trend are two DIFFERENT questions, and this tab has tried
+// to answer them with one chart TWICE, wrong both times.** First attempt:
+// every model as its own series on one shared timeline — with one or two runs
+// per model that was a scatter of near-unlabelable dots, which is the real
+// reason it needed edge-avoiding end labels and kept repeating one date three
+// times. Second attempt, after splitting the trend out: make the LEADERBOARD's
+// own inline mini-bar the whole comparison story and give the per-model trend
+// chart the hero's spot. That one shipped and broke differently — the trend
+// chart needs TWO RUNS OF THE SAME MODEL, and real usage spreads a handful of
+// runs ACROSS several different models far more often than it re-runs one, so
+// the trend chart's "single" state fired for nearly every model and the page
+// had NO CHART AT ALL. `ComparisonChart` is the actual fix: a real, gridlined
+// bar chart across every BENCHMARKED model, which renders whenever more than
+// one model has a measurement — the normal case — and the leaderboard's own
+// inline bar is deleted, since drawing the identical proportional comparison
+// twice (once properly, with an axis, once as an unlabelled sliver in each
+// row) was the duplicated ink. `ModelTrendChart` keeps its own spot, now
+// correctly secondary, for the model a reader picks by clicking a leaderboard
+// row.
 //
 // THE LISTING IS NOT THIS TAB'S. `scan` arrives from the page above
 // (lib/useCacheScan.ts) exactly as it does for the Local tab, because "which
@@ -49,6 +60,7 @@
 // counts, which is the progress that was always worth watching. See
 // `ai/benchmark.py`.
 import { useEffect, useState } from "react";
+import { ComparisonChart } from "./ComparisonChart";
 import { ModelTrendChart } from "./ModelTrendChart";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
@@ -58,6 +70,7 @@ import {
   DASH,
   availableMetrics,
   chartSeries,
+  comparisonBars,
   failureReason,
   formatLoad,
   formatMemory,
@@ -428,6 +441,9 @@ function CapabilitySection({
   // the first one's answer computed twice.
   const trendSeries = metric ? chartSeries(trendRuns, metric).series[0] ?? null : null;
   const trend = trendKind(trendSeries?.points.length ?? 0);
+  // The comparison chart's own data — every model with a real value, ranked
+  // best-first, direction included (`comparisonBars`, lib/benchmark.ts).
+  const bars = comparisonBars(ranked, metric);
 
   return (
     <section className="am-section">
@@ -472,14 +488,60 @@ function CapabilitySection({
         </p>
       ) : (
         <>
-          {/* INSTRUMENT ONE: the trend — one model, its own history, a real
-              time axis. Leads the section (the same "hero" placement the
-              chart always had) even though the model picker (the rows below)
-              comes after it in the DOM: clicking a row updates this chart in
-              place, which is the more useful order to read top-down once a
-              reader already knows which model they came here to check.
+          {/* INSTRUMENT ONE, THE HERO: the comparison chart — one bar per
+              BENCHMARKED model, ranked best-first. This is what answers the
+              question a reader arrives with ("which of these is fastest"),
+              and it renders whenever more than one model has been
+              benchmarked at all — the normal case. It replaces an earlier
+              design where the trend chart tried to be the hero: that needs
+              TWO RUNS OF THE SAME MODEL, and real usage spreads a handful of
+              runs across several different models far more often than it
+              re-runs one, so the trend chart's "single" state fired for
+              nearly every model and the page had no chart at all. Failed and
+              never-benchmarked models have nothing to plot (`comparisonBars`
+              excludes them) but stay fully visible in the rows below, which
+              is where their action — Run, Details — lives anyway. */}
+          {metric && bars.length > 0 ? (
+            <ComparisonChart bars={bars} metric={metric} />
+          ) : (
+            <p className="am-group-note">
+              No {(metric?.label ?? "runs").toLowerCase()} recorded for any {capabilityLabel(capability).toLowerCase()} model yet — press Run on one below.
+            </p>
+          )}
+          {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
+              with the action (Run, Details) the chart above has no room for.
+              Doubles as the trend chart's picker below: click a row (or focus
+              it and press Enter/Space) to choose which model that instrument
+              is showing. No bar here any more — that was the SAME
+              proportional comparison the chart above now draws once,
+              properly, with an axis; two copies of one comparison was the
+              duplicated ink this replaces. */}
+          <div className="am-bench-rows">
+            {ranked.map(({ model, row }) => {
+              const button = gone.has(model)
+                ? undefined
+                : runButtonState(capability, model, inFlight, row !== null);
+              return (
+                <BenchmarkRow
+                  key={model}
+                  model={model}
+                  row={row}
+                  metric={metric}
+                  button={button}
+                  gone={gone.has(model)}
+                  selected={model === selectedModel}
+                  onSelect={() => onSelectModel(model)}
+                  onRun={() => onRun(model, capability)}
+                />
+              );
+            })}
+          </div>
+          {/* INSTRUMENT THREE, SECONDARY: the trend — one model's own
+              history, a real time axis. Earns its space once someone has
+              actually re-run a model; until then it says so plainly rather
+              than drawing an empty frame (see `trendKind` below).
 
-              **Titled by what it now shows** — the model and the selected
+              **Titled by what it shows** — the model and the selected
               metric — rather than repeating the capability name the section
               heading above and the Capability `<select>` above THAT already
               both say. A model with a card gone from disk (`gone`) still
@@ -498,9 +560,7 @@ function CapabilitySection({
               own compact state — the value stated plainly, at a fraction of
               the height — and only two-or-more points earn
               `ModelTrendChart`. */}
-          {!metric || !selectedModel ? (
-            <p className="am-group-note">Click a model below to see its trend.</p>
-          ) : trend === "trend" ? (
+          {!metric || !selectedModel ? null : trend === "trend" ? (
             <ModelTrendChart runs={trendRuns} metric={metric} />
           ) : trend === "single" ? (
             <div className="am-bench-trend-single">
@@ -514,31 +574,6 @@ function CapabilitySection({
               No {metric.label.toLowerCase()} recorded for {shortModelName(selectedModel)} yet.
             </p>
           )}
-          {/* INSTRUMENT TWO: the comparison — every model, ranked, one line
-              each. Doubles as the trend chart's picker: click a row (or focus
-              it and press Enter/Space) to choose which model instrument one
-              is showing. */}
-          <div className="am-bench-rows">
-            {ranked.map(({ model, row, barFraction }) => {
-              const button = gone.has(model)
-                ? undefined
-                : runButtonState(capability, model, inFlight, row !== null);
-              return (
-                <BenchmarkRow
-                  key={model}
-                  model={model}
-                  row={row}
-                  metric={metric}
-                  barFraction={barFraction}
-                  button={button}
-                  gone={gone.has(model)}
-                  selected={model === selectedModel}
-                  onSelect={() => onSelectModel(model)}
-                  onRun={() => onRun(model, capability)}
-                />
-              );
-            })}
-          </div>
         </>
       )}
 
@@ -555,7 +590,6 @@ function BenchmarkRow({
   model,
   row,
   metric,
-  barFraction,
   button,
   gone,
   selected,
@@ -564,13 +598,9 @@ function BenchmarkRow({
 }: {
   model: string;
   row: ModelLatest | null;
-  /** The SELECTED metric — what the headline reads and what `barFraction` is
-   *  proportional to. Decided in `BenchmarkTab`/`leaderboard`, never here. */
+  /** The SELECTED metric — what the headline reads. Decided in
+   *  `BenchmarkTab`/`leaderboard`, never here. */
   metric: MetricSpec | null;
-  /** 0..1 against the section's best model, or null for no bar — see
-   *  `leaderboard`. Decided there, not here, for the same reason `button` is:
-   *  which way a metric points is exactly the thing a screenshot cannot check. */
-  barFraction: number | null;
   /** What the Run button says and whether it can be pressed — decided by
    *  `runButtonState`, never here: the rule about which run blocks which button
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
@@ -633,15 +663,10 @@ function BenchmarkRow({
           </span>
         ) : row ? (
           <>
-            {/* The bar: width proportional to how this model compares to the
-                section's best (`leaderboard`), never drawn for a failed or
-                unmeasured latest run — a bar of length zero would read as
-                "measured, and terrible" rather than "nothing to compare". */}
-            {barFraction !== null && (
-              <span className="am-bench-bar" aria-hidden="true">
-                <span className="am-bench-barfill" style={{ width: `${barFraction * 100}%` }} />
-              </span>
-            )}
+            {/* No bar here any more — the comparison chart above draws the
+                SAME proportional comparison once, properly, with a real
+                axis. Two copies of it (a mini-bar per row AND a chart) was
+                the duplicated ink this row is compacted to remove. */}
             <span className="am-bench-headline">{rowHeadline(row.latest, metric)}</span>
             {row.delta && (
               // The sign is not the meaning — on a lower-is-better metric a

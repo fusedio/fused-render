@@ -929,3 +929,56 @@ export function paddedAxisMax(peak: number): number {
   return peak > 0 ? peak * 1.2 : 0;
 }
 
+export interface ComparisonBar {
+  model: string;
+  /** The REAL measured value, not a normalised 0..1 fraction — this feeds a
+   *  chart with an honest axis in the metric's own unit, where `leaderboard`'s
+   *  `barFraction` (built for a compact inline bar with no axis to be honest
+   *  about) would draw a "goodness" score that does not correspond to any
+   *  gridline. */
+  value: number;
+}
+
+/** Every model worth a bar in the COMPARISON chart, in the leaderboard's own
+ *  best-first order — direction included, so a lower-is-better metric's
+ *  winner (the smallest number) leads the list.
+ *
+ *  **Bar length is meant to be `value` itself, scaled linearly against a
+ *  shared axis — never `barFraction`.** For a higher-is-better metric that
+ *  already makes the winner's bar the longest, because winning means the
+ *  biggest number. For a lower-is-better one it makes the winner's bar the
+ *  SHORTEST, because winning means the smallest number — which is correct,
+ *  not an inversion to fix: "shortest bar is the best model" is what a
+ *  reader expects from a duration or a memory figure once the ranking itself
+ *  (best-first, top to bottom) already says which end is which. Multiplying
+ *  by an inverted `barFraction` here would draw a value that does not match
+ *  any real gridline, which is dishonest in exactly the way a proper axis
+ *  exists to prevent.
+ *
+ *  **Failed and never-benchmarked models are excluded — filtered by
+ *  `barFraction === null`, `leaderboard`'s own signal for "nothing to bar"**,
+ *  reused here rather than re-deriving "was this measured" a second way. They
+ *  stay visible in the leaderboard ROWS (BenchmarkTab.tsx), which is where an
+ *  action — Run, Details — belongs; a chart has no row for either and would
+ *  either invent a value or draw a hole, and this function draws neither.
+ */
+export function comparisonBars(
+  ranked: LeaderboardRow[],
+  metric: MetricSpec | null,
+): ComparisonBar[] {
+  if (!metric) return [];
+  const bars: ComparisonBar[] = [];
+  for (const entry of ranked) {
+    if (entry.barFraction === null || !entry.row) continue;
+    const value = metricValueForSpec(entry.row.latest, metric);
+    // Defensive rather than load-bearing: `barFraction !== null` already
+    // means `leaderboard` found a measured value here, so this should never
+    // actually be null — but a bar chart is exactly the place a fabricated
+    // zero would be most visible, so the check stays rather than trusting a
+    // sibling function's invariant silently.
+    if (value === null) continue;
+    bars.push({ model: entry.model, value });
+  }
+  return bars;
+}
+

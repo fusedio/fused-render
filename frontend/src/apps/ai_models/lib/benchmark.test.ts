@@ -5,6 +5,7 @@ import {
   availableMetrics,
   chartAxisTicks,
   chartSeries,
+  comparisonBars,
   defaultCapability,
   defaultModel,
   failureReason,
@@ -599,6 +600,92 @@ describe("leaderboard", () => {
       { model: "b", row: null },
     ]);
     expect(rows.every((r) => r.barFraction === null)).toBe(true);
+  });
+});
+
+// -- the comparison chart: one bar per MEASURED model, best first ------------
+//
+// The chart that replaces the leaderboard's own inline mini-bar (a real
+// instrument answering "which model is fastest here", rather than the
+// per-model trend chart, which needs two runs of the SAME model and almost
+// never has them — real usage spreads a handful of runs across several
+// different models, so the trend chart's "single" state fires for nearly
+// every model on a real machine, and the page was left with no chart at
+// all).
+
+describe("comparisonBars", () => {
+  function latestFor(runs: AiBenchmarkRun[]): Map<string, ModelLatest> {
+    return new Map(latestByModel(runs).map((r) => [r.model, r]));
+  }
+
+  it("is every measured model, best first, with its real value — not a normalised fraction", () => {
+    const latest = latestFor([
+      run({ model: "slow", startedAt: 1, metrics: { tokensPerSecond: 10 } }),
+      run({ model: "fast", startedAt: 2, metrics: { tokensPerSecond: 40 } }),
+    ]);
+    const metric = primaryMetric("text-generation");
+    const ranked = leaderboard(metric, [
+      { model: "slow", row: latest.get("slow")! },
+      { model: "fast", row: latest.get("fast")! },
+    ]);
+    expect(comparisonBars(ranked, metric)).toEqual([
+      { model: "fast", value: 40 },
+      { model: "slow", value: 10 },
+    ]);
+  });
+
+  it("keeps the leaderboard's own order for a lower-is-better metric — the smaller number leads", () => {
+    // This is the whole point of the fix: a naive value-proportional bar
+    // chart reads correctly ONLY if the order already puts the best model
+    // first, because bar length here is the RAW value (a real, honest axis),
+    // not an inverted "goodness" fraction. seconds-per-step's winner has the
+    // SMALLEST number and therefore the SHORTEST bar — which is exactly
+    // "shortest bar wins" for this metric, not a bug.
+    const latest = latestFor([
+      run({ capability: "text-to-image", model: "slow", startedAt: 1, metrics: { secondsPerStep: 4 } }),
+      run({ capability: "text-to-image", model: "fast", startedAt: 2, metrics: { secondsPerStep: 1 } }),
+    ]);
+    const metric = primaryMetric("text-to-image");
+    const ranked = leaderboard(metric, [
+      { model: "slow", row: latest.get("slow")! },
+      { model: "fast", row: latest.get("fast")! },
+    ]);
+    expect(comparisonBars(ranked, metric)).toEqual([
+      { model: "fast", value: 1 },
+      { model: "slow", value: 4 },
+    ]);
+  });
+
+  it("excludes a failed latest run and a never-benchmarked model — nothing to plot for either", () => {
+    // Both stay VISIBLE elsewhere (the leaderboard rows, BenchmarkTab.tsx) —
+    // this function only decides what the CHART draws, and a model with no
+    // number cannot get a bar without inventing one.
+    const latest = latestFor([
+      run({ model: "winner", startedAt: 1, metrics: { tokensPerSecond: 40 } }),
+      run({ model: "broken", startedAt: 2, ok: false, error: "boom", metrics: {} }),
+    ]);
+    const metric = primaryMetric("text-generation");
+    const ranked = leaderboard(metric, [
+      { model: "winner", row: latest.get("winner")! },
+      { model: "broken", row: latest.get("broken")! },
+      { model: "never", row: null },
+    ]);
+    expect(comparisonBars(ranked, metric)).toEqual([{ model: "winner", value: 40 }]);
+  });
+
+  it("is empty for a capability this frontend does not know", () => {
+    const metric = primaryMetric("telepathy");
+    const ranked = leaderboard(metric, [{ model: "x", row: null }]);
+    expect(comparisonBars(ranked, metric)).toEqual([]);
+  });
+
+  it("is empty when nothing has been measured", () => {
+    const metric = primaryMetric("text-generation");
+    const ranked = leaderboard(metric, [
+      { model: "a", row: null },
+      { model: "b", row: null },
+    ]);
+    expect(comparisonBars(ranked, metric)).toEqual([]);
   });
 });
 

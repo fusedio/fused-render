@@ -1659,6 +1659,138 @@
   color: var(--accent-soft);
 }
 
+/* -- the comparison chart: the tab's hero instrument -------------------------
+   One horizontal bar per BENCHMARKED model, ranked best-first (SPEC AI-14).
+   Plain CSS flex, not SVG — a horizontal bar's length is `width: N%` on a
+   flex child and its value label is simply the next flex sibling, so there is
+   no stretched-viewBox distortion to work around (ModelTrendChart.tsx needs
+   that machinery for a line chart; a bar chart does not). Sits ABOVE the
+   leaderboard rows in the DOM (BenchmarkTab's `CapabilitySection`) — it
+   answers the question a reader arrives with, and unlike the per-model trend
+   chart below it renders whenever more than one model has been benchmarked,
+   which is the normal case. */
+.am-bench-compare {
+  margin-bottom: var(--am-gap-head);
+}
+
+.am-bench-compare-body {
+  display: flex;
+  gap: 10px;
+}
+
+/* Shared by the name column AND the empty spacer in the axis row below it —
+   ONE class for both widths, so the plot area and the tick row explaining it
+   can never drift out of alignment from editing one without the other. */
+.am-bench-compare-namecol {
+  flex: 0 0 26ch;
+  min-width: 0;
+}
+
+.am-bench-compare-names {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.am-bench-compare-name {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.am-bench-compare-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.am-bench-compare-axis-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* The gridlines above zero — lighter and dashed, the same treatment
+   `.am-bench-gridline` gives the trend chart's own axis, so the two
+   instruments read as one visual system. */
+.am-bench-compare-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--border);
+  opacity: 0.6;
+}
+
+.am-bench-compare-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.am-bench-compare-row {
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+
+/* The bar's own colour matches the trend chart's line (`--accent`) — one
+   instrument's worth of colour vocabulary shared across both, rather than a
+   second palette decision for a chart that is showing the same underlying
+   numbers a different way. */
+.am-bench-compare-bar {
+  height: 10px;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.am-bench-compare-value {
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.am-bench-compare-foot {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.am-bench-compare-axis {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 14px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-bench-compare-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* The first tick (0) and the last would otherwise hang off the plot's own
+   edges under `translateX(-50%)` — nudge them back onto the axis rather than
+   letting either spill past the chart's own box. */
+.am-bench-compare-axis span:first-child {
+  transform: translateX(0);
+}
+
+.am-bench-compare-axis span:last-child {
+  transform: translateX(-100%);
+}
+
 .am-bench-rows {
   display: flex;
   flex-direction: column;
@@ -1733,26 +1865,6 @@
   align-items: center;
   gap: 10px;
   font-size: 12px;
-}
-
-/* The leaderboard bar. A track the full width of its own slot in the row and a
-   fill scaled by `barFraction` (lib/benchmark.ts `leaderboard`) — never by the
-   raw number, which is what makes one section's tok/s comparable to another's
-   texts/s: both fill relative to their OWN section's best. */
-.am-bench-bar {
-  flex: 1 1 auto;
-  min-width: 40px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--border);
-  overflow: hidden;
-}
-
-.am-bench-barfill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent-soft);
 }
 
 .am-bench-headline {
