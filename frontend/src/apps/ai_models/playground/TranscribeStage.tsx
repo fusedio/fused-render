@@ -23,76 +23,8 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { ConfigPanel, CopyButton, StageHeader, StarterCards, type Starter } from "./controls";
-import { StarterIcons } from "./starterIcons";
+import { ConfigPanel, CopyButton, StageHeader } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-
-// The examples, for a stage whose input is a microphone (D452). A prompt here
-// is a SCRIPT: the words to say into it. Picking one only puts the line on
-// screen — it never starts recording, because a click that opens the mic
-// permission prompt is a click that asked for something else.
-//
-// Chosen for the things transcription actually gets wrong: proper nouns,
-// digits and dates, library names, unfamiliar first names, and one pangram for
-// plain coverage. A demo that reads "hello world" tells the reader nothing.
-const STARTERS: Starter[] = [
-  {
-    name: "The pangram",
-    icon: StarterIcons.pen,
-    prompt:
-      "The quick brown fox jumps over the lazy dog — then it stops, turns around, and does it " +
-      "again just to be sure.",
-  },
-  {
-    name: "Dates and numbers",
-    icon: StarterIcons.chart,
-    prompt:
-      "Ship it on March the third at nine forty-five in the morning, invoice number four eight " +
-      "two seven, total two thousand and sixteen dollars.",
-  },
-  {
-    name: "An address",
-    icon: StarterIcons.map,
-    prompt:
-      "The office moved to twelve Bishopsgate, third floor, London EC2N 4AJ — the entrance is " +
-      "round the back, past the bike racks.",
-  },
-  {
-    name: "Tongue twister",
-    icon: StarterIcons.music,
-    prompt:
-      "She sells sea shells by the sea shore, and the shells she sells are surely sea shells, " +
-      "so if she sells shells on the sea shore, the shells are sea shore shells.",
-  },
-  {
-    name: "Library names",
-    icon: StarterIcons.code,
-    prompt:
-      "Kubernetes, PostgreSQL, WebAssembly, quantisation and tokeniser — five words a " +
-      "transcript almost always gets wrong the first time.",
-  },
-  {
-    name: "A meeting note",
-    icon: StarterIcons.mail,
-    prompt:
-      "We agreed to cut the third milestone, move the review to Tuesday, and let Priya own the " +
-      "migration until the end of the quarter.",
-  },
-  {
-    name: "A grocery list",
-    icon: StarterIcons.bowl,
-    prompt:
-      "Two litres of milk, a loaf of rye, four tomatoes, olive oil, a jar of harissa, and " +
-      "whatever apples look least sad.",
-  },
-  {
-    name: "Names, five ways",
-    icon: StarterIcons.globe,
-    prompt:
-      "Siobhan, Xiaoming, Kwame, Aleksandr and Yuki all joined the call from four different " +
-      "time zones this morning.",
-  },
-];
 
 type Phase =
   | { step: "idle" }
@@ -124,10 +56,6 @@ export function TranscribeStage({ model }: { model: string }) {
   const [level, setLevel] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
-  // The picked script, shown above the record button so it can be read off the
-  // screen while recording. Session state, never in the URL: it is what the
-  // reader is about to say, not part of the run's setup.
-  const [script, setScript] = useState<string | null>(null);
 
   const [task, setTask] = useState<"transcribe" | "translate">(() =>
     readParam("task") === "translate" ? "translate" : "transcribe",
@@ -364,7 +292,6 @@ export function TranscribeStage({ model }: { model: string }) {
     setSource(null);
     setSegments([]);
     setError(null);
-    setScript(null);
     setPhase({ step: "idle" });
   };
 
@@ -377,18 +304,6 @@ export function TranscribeStage({ model }: { model: string }) {
           configOpen={configOpen}
           onToggleConfig={() => setConfigOpen((open) => !open)}
         />
-
-        {/* The picked script, above the record button rather than below it: it
-            has to be readable while the mic is live, and the recording panel
-            replaces the dropzone in place. Kept through the run, dropped once
-            there is a transcript to compare it against — at that point the
-            words are on screen twice and only one of them is the result. */}
-        {script && phase.step !== "done" && (
-          <p className="pg-script">
-            <span className="pg-script-label">Read this aloud</span>
-            {script}
-          </p>
-        )}
 
         {phase.step === "recording" ? (
           <div className="pg-recording">
@@ -472,13 +387,6 @@ export function TranscribeStage({ model }: { model: string }) {
               </button>
             )}
           </div>
-        )}
-
-        {/* Something to say, for a reader who came to hear the model and has no
-            recording to hand. Idle only: mid-run the row would offer a second
-            script while the first is being transcribed. */}
-        {phase.step === "idle" && !segments.length && (
-          <StarterCards samples={STARTERS} onPick={(sample) => setScript(sample.prompt)} />
         )}
 
         <ConfigPanel open={configOpen}>
