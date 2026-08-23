@@ -486,29 +486,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             }
           }}
         />
-        {/* The attached photo, UNDER the prompt and directly above the two
-            buttons that put it there — a picture between the sentence and the
-            controls, rather than a banner over the box you type in. */}
-        {base && (
-          <div className="pg-attach-row">
-            <span className="pg-attach">
-              <img src={rawUrl(base.path)} alt="" />
-              <span className="pg-attach-name" title={base.path}>
-                {base.name}
-              </span>
-              <button
-                type="button"
-                className="pg-attach-drop"
-                title="Remove this image"
-                aria-label="Remove this image"
-                onClick={() => setAttachment(null)}
-              >
-                ✕
-              </button>
-            </span>
-            <span className="pg-attach-note">This picture gets edited, not replaced.</span>
-          </div>
-        )}
         {/* The live view, while the webcam is open — in the same slot the
             photo it is about to become occupies, right above the Webcam button
             that opened it. */}
@@ -532,6 +509,27 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             row with the button column the other stages use, and Generate stays
             exactly where D453 put it. */}
         <div className="pg-composer-foot">
+          {/* The attached photo, on the floor's own line: the space left of the
+              buttons was empty, and the picture belongs beside the controls
+              that put it there rather than in a band of its own above them.
+              Thumbnail and ✕ only — the filename said nothing a look at the
+              picture does not (and ellipsised to "Screenshot 2026-08-23 at
+              12…", nothing at all), and the sentence about editing was a
+              caption on a control nobody had asked a question about. */}
+          {base && (
+            <span className="pg-attach">
+              <img src={rawUrl(base.path)} alt="" title={base.path} />
+              <button
+                type="button"
+                className="pg-attach-drop"
+                title="Remove this image"
+                aria-label="Remove this image"
+                onClick={() => setAttachment(null)}
+              >
+                ✕
+              </button>
+            </span>
+          )}
           {editable && (
             <div className="pg-attach-row">
               <button

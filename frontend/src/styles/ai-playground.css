@@ -978,21 +978,15 @@ a.pg-hero-repo:hover {
   padding: 0 4px;
 }
 
-/* The attached photo's own row sits between the prompt and the floor — a direct
-   child of the composer, unlike the floor's chip row — so it carries the gap
-   that keeps it off both. */
-.pg-composer > .pg-attach-row {
-  padding: 6px 4px 8px;
-}
-
-/* The picked photo, as a chip with its own thumbnail: small enough to be an
-   attachment rather than a result, large enough to tell two photos apart. */
+/* The picked photo, as a chip: the thumbnail and the way to drop it, nothing
+   else. It takes the empty half of the composer's floor (`margin-right: auto`),
+   so the picture sits on the same line as the buttons that put it there. */
 .pg-attach {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  max-width: 260px;
-  padding: 3px 3px 3px 4px;
+  gap: 4px;
+  margin-right: auto;
+  padding: 3px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
@@ -1006,14 +1000,6 @@ a.pg-hero-repo:hover {
   /* A checker-free flat ground: a transparent PNG over the composer's own fill
      would read as part of the box rather than as a picture in it. */
   background: rgba(var(--tint), 0.08);
-}
-
-.pg-attach-name {
-  font-size: 12px;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .pg-attach-drop {
