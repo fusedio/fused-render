@@ -591,18 +591,25 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     for tag in offered:
         assert ai_tasks.classify(tag).supported, tag
     # And the ones that made the complaint are gone, by name.
-    for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
-                   "text-classification", "summarization", "image-classification"):
+    #
+    # **`feature-extraction` and `sentence-similarity` LEFT this list**, and
+    # that is a capability shipping rather than the rule loosening. They now
+    # map to `TEXT_EMBEDDINGS`, so a filter on either leads to models this app
+    # really can load — which is exactly what `ai/tasks.py`'s note on those two
+    # rows said would happen when it shipped. The complaint this test encodes
+    # is "a filter with no working button behind it", and that has stopped
+    # being true of them while remaining true of every tag still named here.
+    for absent in ("fill-mask", "text-classification", "summarization",
+                   "image-classification"):
         assert absent not in offered
-    # …while the four the Engines tab is about are all reachable. EMBEDDINGS
-    # arrives through `zero-shot-image-classification` and deliberately NOT
-    # through `feature-extraction`: the dual encoders the embedding runners load
-    # carry the former, and the sentence-transformers checkpoints that carry the
-    # latter are exactly what the `absent` list above keeps out (see
-    # `ai/tasks.py`'s note on those two rows).
+    # …while the five the Engines tab is about are all reachable. EMBEDDINGS
+    # still arrives through `zero-shot-image-classification` ALONE: the dual
+    # encoders that capability loads carry that tag, and the text encoders
+    # carrying the other two got a capability of their own rather than being
+    # folded into it (`registry.TEXT_EMBEDDINGS`).
     assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
-        registry.EMBEDDINGS}
+        registry.EMBEDDINGS, registry.TEXT_EMBEDDINGS}
 
 
 def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monkeypatch):
@@ -622,7 +629,36 @@ def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monke
 def test_a_result_is_never_something_this_app_cannot_run(client, hub_cache, monkeypatch):
     """The hard guarantee. The menu constrains what a user can ASK for; this
     constrains what comes back, including for an unfiltered query where the Hub
-    is free to answer with anything it likes."""
+    is free to answer with anything it likes.
+
+    **`sentence-transformers/all-MiniLM-L6-v2` must still be absent, and WHAT
+    KEEPS IT OUT HAS CHANGED.** It used to be the capability: `ai/tasks.py`
+    mapped `feature-extraction` to nothing, so the row died at the
+    "capability is None" drop. Since `registry.TEXT_EMBEDDINGS` shipped, that
+    tag resolves to a real capability and the row survives that far — it is
+    now dropped one layer down, by FORMAT: the llama.cpp embedding rows
+    declare `hub_filter_tags=("gguf",)`, and that repo publishes safetensors
+    only, so `pick_gguf_file` finds nothing in its `siblings` and the row
+    goes.
+
+    That is a stronger guarantee than the one it replaces, because it rests
+    on what the repo actually contains rather than on a capability nobody had
+    written yet — a GGUF conversion of the same model would now correctly get
+    a button, and the safetensors original correctly still does not.
+
+    **Which is why this test overrides `_no_format_filter` for one
+    capability.** That autouse fixture hands every capability a runner with
+    no format tags, so the whole module can use tagless fixtures without
+    caring about the host (see its docstring). Here the format gate IS the
+    thing under test for the embedding row, so `text-embeddings` gets the
+    gguf-tagged stand-in and everything else keeps the tagless one — which is
+    also what the four surviving rows need, since none of them carries
+    `siblings` either.
+    """
+    monkeypatch.setattr(
+        hub, "for_capability",
+        lambda capability: _gguf_runner(
+            tags=("gguf",) if capability == registry.TEXT_EMBEDDINGS else ()))
     monkeypatch.setattr(httpx, "get", _reply([
         {"id": "org/chat", "pipeline_tag": "text-generation"},
         {"id": "org/vlm", "pipeline_tag": "image-text-to-text"},

@@ -39,6 +39,7 @@ from fused_render.ai.registry import (
     EMBEDDINGS,
     IMAGE_GENERATION,
     SPEECH_TO_TEXT,
+    TEXT_EMBEDDINGS,
     TEXT_GENERATION,
 )
 
@@ -121,23 +122,39 @@ _TASKS: tuple[Task, ...] = (
     _t("zero-shot-image-classification", "zero-shot image classification", "cv", EMBEDDINGS,
        "Says what an image shows, against labels you supply at the time rather than a fixed set."),
 
+    # **THESE TWO ROWS MOVED, and the comment they used to carry said they
+    # would.** They were `None` — withheld from the `embeddings` capability
+    # because what wears these tags is a sentence-transformers checkpoint: a
+    # text encoder plus a pooling configuration, with no vision tower and no
+    # `get_text_features` for the dual-encoder runners to call. That comment
+    # ended "Mean-pooling a text-only encoder is a different load path and a
+    # different catalog; when it ships, these two move." It has shipped
+    # (`registry.TEXT_EMBEDDINGS`), so they moved.
+    #
+    # **Both tags, one capability, and that is not a mistake to tidy up
+    # later.** The Hub splits this task in two and the split is not about the
+    # model — `feature-extraction` and `sentence-similarity` are worn by the
+    # same checkpoints, often by two revisions of the same repo, and nothing
+    # in either tag says anything a loader could act on differently. Mapping
+    # only one of them would have made a model's Load button depend on which
+    # word its uploader picked.
+    #
+    # **`sentence-transformers/all-MiniLM-L6-v2` still gets NO Load button**,
+    # which is the invariant `test_a_result_is_never_something_this_app_cannot_run`
+    # pins and the reason these rows were withheld in the first place. It is
+    # no longer withheld by the CAPABILITY, though — it is withheld by the
+    # FORMAT, one layer down: the llama.cpp embedding rows declare
+    # `hub_filter_tags=("gguf",)`, so `hub_models` drops a search result whose
+    # `siblings` hold no loadable GGUF, and that repo publishes safetensors
+    # only. The guarantee is the same and its evidence is now stronger — it
+    # rests on what the repo actually contains rather than on a capability
+    # nobody had written yet.
+    _t("feature-extraction", "embeddings", "multimodal", TEXT_EMBEDDINGS,
+       "Turns text into vectors, so things can be compared or searched by meaning."),
+    _t("sentence-similarity", "sentence embeddings", "nlp", TEXT_EMBEDDINGS,
+       "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG."),
+
     # ------------------------------------------------- text, nothing serves it
-    # **The two rows the embedding capability does NOT claim, despite being its
-    # own name.** What wears these tags is overwhelmingly a sentence-transformers
-    # checkpoint: a text encoder plus a pooling configuration, with no vision
-    # tower and no `get_text_features`/`get_image_features` for the embedding
-    # runners to call. Mapping them would put a Load button on
-    # `sentence-transformers/all-MiniLM-L6-v2` — a download that then refuses.
-    # Mean-pooling a text-only encoder is a different load path and a different
-    # catalog; when it ships, these two move.
-    _t("feature-extraction", "embeddings", "multimodal", None,
-       "Turns text into vectors, so things can be compared or searched by meaning.",
-       "The embedding runners here serve dual encoders (image and text into one space), "
-       "not text-only sentence encoders."),
-    _t("sentence-similarity", "sentence embeddings", "nlp", None,
-       "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG.",
-       "The embedding runners here serve dual encoders (image and text into one space), "
-       "not text-only sentence encoders."),
     _t("summarization", "summarization", "nlp", None,
        "Shortens a long text into its main points.",
        "A chat model does this from a prompt — no separate runner ships for it."),

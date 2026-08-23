@@ -1600,7 +1600,7 @@ def is_downloaded(model_id: str, cached: list[CachedModel] | None = None) -> boo
     finished — which is what keeps a caller from resuming a multi-GB pull.
     """
     models = cached_models() if cached is None else cached
-    recipe = formats.GGUF_RECIPES.get(model_id)
+    recipe = formats.gguf_recipe(model_id)
     if recipe is None:
         return any(model.repo_id == model_id for model in models)
     return any(model.repo_id == recipe["repo"] and recipe["file"] in model.files

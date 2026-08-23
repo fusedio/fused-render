@@ -924,6 +924,15 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image-rocm": "(ROCm)",
     "llamacpp-text": "(CPU)",
     "llamacpp-text-vulkan": "(Vulkan)",
+    # The text-embedding pair, for the identical reason as the pair above it:
+    # two builds of one library, told apart by nothing else. Their names also
+    # carry "Embeddings", which is NOT a qualifier but part of the name — it
+    # is what keeps all four llama.cpp rows from collapsing into one family
+    # whose qualifiers then repeat (see `registry`'s comment on the
+    # `llamacpp-embed` row, and
+    # `test_no_engine_name_advertises_the_format_its_sibling_also_reads`).
+    "llamacpp-embed": "(CPU)",
+    "llamacpp-embed-vulkan": "(Vulkan)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -3646,7 +3655,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed"}
+        "mlx-embed", "transformers-embed",
+        "mlx-text-embed", "llamacpp-embed", "llamacpp-embed-vulkan"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is

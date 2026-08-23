@@ -36,8 +36,22 @@ insert that reaches `worker_base`, and none of them has this app on its path.
 
 from __future__ import annotations
 
-import embed_common
-import formats
+import os
+import sys
+
+# `embed_common` and `formats` sit in THIS directory. Two loaders reach this
+# file — the three runners put `runners/` on `sys.path` and import it bare,
+# while `server/routers/ai_runtime.py` imports it as
+# `fused_render.ai.runners.text_embed_common` — and the package-relative
+# reading must be tried FIRST so the server does not end up with a second copy
+# of these modules under second names. `partial.py` carries the same two-line
+# guard for the same two loaders; see its comment for the drift it prevents.
+try:
+    from . import embed_common, formats
+except ImportError:  # pragma: no cover - the runner reading, exercised in prod
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import embed_common
+    import formats
 
 #: The batch ceiling, taken from `embed_common` rather than restated. The
 #: number is not a fact about dual encoders — it is a fact about how much

@@ -110,6 +110,18 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
         config={"model_type": "siglip"}, torch_weights=True))
+    # An embedding GGUF — the same file shape as the chat case above, told
+    # apart ONLY by the pooling type its header declares, and short-circuiting
+    # ahead of the chat branch — so the two cannot be exercised by one call.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={"model.gguf"}, dirnames=set(), config={},
+        torch_weights=False, gguf_architecture="bert",
+        gguf_pooling_type=formats.GGUF_POOLING_MEAN))
+    # …and a text encoder's safetensors, which short-circuits ahead of the
+    # dual-encoder branch for the same reason.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(), dirnames=set(),
+        config={"model_type": "bert"}, torch_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "

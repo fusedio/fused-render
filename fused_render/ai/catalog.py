@@ -823,6 +823,137 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
+    # Text embeddings — a SEPARATE capability from the block above (see
+    # `registry.TEXT_EMBEDDINGS`), and the one place in this file where that
+    # separation is most visible: two lists, not one aliased pair, because
+    # `llamacpp-embed` reads GGUF and `mlx-text-embed` reads safetensors.
+    # That is the `llamacpp-text`/`mlx-text` shape, not the
+    # `transformers-embed`/`mlx-embed` one — those two share a list because
+    # SigLIP publishes one format both engines open, and no such coincidence
+    # exists here.
+    #
+    # **What "smallest first" means on this capability, and why the default
+    # is still a good model.** Every entry in both lists is smaller than the
+    # SMALLEST entry in every other list in this file — the largest text
+    # embedder here is 1.14GB against 0.7GB for the smallest chat model, and
+    # most are under 400MB. So the module rule that position 0 is the default
+    # does not force a compromise the way it does for chat: the difference
+    # between the smallest row and the best one is a few hundred megabytes
+    # and a few seconds, not the difference between running and not running.
+    # Both lists therefore lead with a model chosen for RETRIEVAL quality
+    # that happens also to be the smallest, rather than with the smallest
+    # thing that would load. Two models that would have been smaller still
+    # were deliberately left out for exactly that reason — see below.
+    #
+    # **Every entry is retrieval-trained and has a known prompt scheme**
+    # (`formats.TEXT_EMBED_PROMPTS`), which is a curation rule and not a
+    # coincidence: an asymmetric model whose prefix pair this app does not
+    # know embeds one side wrongly and says nothing about it, so a curated
+    # row with an unknown scheme would be a row that quietly underperforms.
+    #
+    # Sizes are the Hub's own per-file byte sums for what each engine
+    # actually fetches (2026-08-23), rounded to one decimal like every other
+    # list here — with the caveat that at this scale one decimal is coarse,
+    # so the notes say the megabyte figure where it decides anything. Every
+    # repo checked ungated.
+    "llamacpp-embed": [
+        # Position 0, and it is the default a bare `fused.ai.embedText()`
+        # loads. **Not merely the smallest.** `bge-small-en-v1.5` in GGUF is
+        # 37MB, a quarter of this, and it was left out on purpose: it is
+        # English-only and 384-dim, and the 110MB difference is under two
+        # seconds of download against a measurably better encoder that also
+        # handles a 2048-token passage where bge-small truncates at 512.
+        # nomic-embed-text-v1.5 is Apache-2.0, trained specifically for
+        # retrieval, and its `search_query:`/`search_document:` prefixes are
+        # the clearest demonstration in the catalog of why `kind` exists.
+        {
+            "id": "nomic-embed-text-v1.5.Q8_0.gguf",
+            "params": "137M",
+            "quantization": "GGUF Q8_0",
+            "recommended": True,
+            "label": "nomic-embed-text v1.5 (Q8_0)",
+            "nickname": "nomic-embed",
+            "size_gb": 0.1,
+            "note": "The default and the best all-round pick — 146MB, "
+                    "768-dim, and it reads a 2048-token passage whole.",
+        },
+        {
+            "id": "embeddinggemma-300M-Q8_0.gguf",
+            "params": "300M",
+            "quantization": "GGUF Q8_0",
+            "label": "EmbeddingGemma 300M (Q8_0)",
+            "nickname": "EmbeddingGemma",
+            "size_gb": 0.3,
+            "note": "Multilingual where the row above is English-first, and "
+                    "Google's current small embedder — 334MB for the same "
+                    "768-dim vectors.",
+        },
+        # The accuracy option, and the only DECODER in either list — which is
+        # why it is here rather than being redundant with the two encoders
+        # above it. Last-token pooling on a 0.6B causal model buys real
+        # retrieval quality (it leads the small-model MTEB multilingual
+        # tables) at roughly twice the compute per item, since it runs a
+        # generative-sized stack to produce one vector.
+        {
+            "id": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+            "params": "600M",
+            "quantization": "GGUF Q8_0",
+            "label": "Qwen3-Embedding 0.6B (Q8_0)",
+            "nickname": "Qwen3-Embedding",
+            "size_gb": 0.6,
+            "note": "The strongest here, and the slowest per item — 1024-dim "
+                    "vectors out of a decoder rather than an encoder.",
+        },
+    ],
+    # The MLX list, and it is DIFFERENT REPOS rather than the same ones: this
+    # engine reads the original safetensors, so every row is an
+    # `mlx-community` conversion and none of them is a GGUF. A page that
+    # embedded a corpus on one engine and searches it from the other gets
+    # nonsense — unlike the `embeddings` capability above, these two backends
+    # share no vector space, exactly as `mlx-text` and `llamacpp-text` share
+    # no weights.
+    #
+    # **`mlx-community/all-MiniLM-L6-v2-4bit` is deliberately absent**, and it
+    # is the entry a future reader is most likely to try to add: it is 14MB,
+    # it is the famous one, and it is what upstream's own README example
+    # loads. It is not a retrieval model — all-MiniLM was trained for general
+    # sentence similarity, has no query/document convention at all, and is
+    # the exact checkpoint `ai/tasks.py` used to name as the thing this app
+    # must not offer a Load button for. Putting it at position 0 would make
+    # the smallest download the default AND make the default the one model
+    # here that is bad at the job this capability exists for.
+    "mlx-text-embed": [
+        {
+            "id": "mlx-community/multilingual-e5-small-mlx",
+            "params": "118M",
+            "recommended": True,
+            "label": "multilingual-e5-small",
+            "nickname": "e5-small",
+            "size_gb": 0.3,
+            "note": "The default here — 253MB, multilingual, and its "
+                    "query:/passage: prefixes are applied for you.",
+        },
+        {
+            "id": "mlx-community/embeddinggemma-300m-bf16",
+            "params": "300M",
+            "label": "EmbeddingGemma 300M (bf16)",
+            "nickname": "EmbeddingGemma",
+            "size_gb": 0.7,
+            "note": "768-dim against the 384 above, and the same model the "
+                    "llama.cpp list offers — the one row comparable across "
+                    "both engines.",
+        },
+        {
+            "id": "mlx-community/multilingual-e5-large-mlx",
+            "params": "560M",
+            "label": "multilingual-e5-large",
+            "nickname": "e5-large",
+            "size_gb": 1.1,
+            "note": "The accuracy option: noticeably better multilingual "
+                    "retrieval for four times the first row's download and "
+                    "1024-dim vectors to store.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`
@@ -855,6 +986,12 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
+    # A hardware variant, exactly like the row above it: the CPU and Vulkan
+    # llama.cpp embedding wheels open byte-for-byte the same GGUF, so their
+    # lists must be identical BY CONSTRUCTION rather than by whoever edits
+    # one remembering to edit the other. `mlx-text-embed` is NOT aliased to
+    # this key and must never be — it reads safetensors and has its own list.
+    "llamacpp-embed-vulkan": "llamacpp-embed",
     # Not a hardware variant of the same runner — a DIFFERENT runner that reads
     # the same repos (see the comment on the embeddings block above). Aliased
     # for the same reason as the pairs above: one list to keep in step rather
@@ -950,7 +1087,12 @@ def mirror_id(model_id: str) -> str:
         return ""
     from fused_render.ai.runners import formats
 
-    recipe = formats.GGUF_RECIPES.get(model_id)
+    # BOTH recipe tables, because both key their curated entries by GGUF
+    # FILENAME and both therefore need the same translation. A lookup that
+    # knew only the chat table would silently turn the mirror off for every
+    # text embedding model — no manifest request, which looks exactly like a
+    # normal download and is the failure this function exists to prevent.
+    recipe = formats.gguf_recipe(model_id)
     # A suggested id with no recipe row is already a repo id (every other
     # runner's list), so it is handed down as it is. Imported lazily to keep this
     # module free of a runner import at load time.

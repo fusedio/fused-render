@@ -1757,8 +1757,9 @@ def generate_text(model: str, body: dict):
                 yield event
 
 
-def generate_embed(model: str, body: dict) -> dict:
-    """One `{vectors, dim, model}` reply from the resident embedding model.
+def generate_embed(model: str, body: dict,
+                   capability: str = registry.EMBEDDINGS) -> dict:
+    """One `{vectors, dim, …}` reply from the resident embedding model.
 
     The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
     `generate_image` and `_wait_ready` use: an embed call answers in
@@ -1771,15 +1772,30 @@ def generate_embed(model: str, body: dict) -> dict:
     Blocking, and cheap to block on: unlike an image or a transcription this is
     one forward pass through a small tower, so holding the request open for it
     costs nothing the caller was not already waiting on.
+
+    **`capability` is a PARAMETER rather than this function being duplicated**,
+    because two capabilities now answer this exact shape:
+    `registry.EMBEDDINGS` (dual encoders, `/api/ai/embed`) and
+    `registry.TEXT_EMBEDDINGS` (text encoders, `/api/ai/embed-text`). Every
+    line below is about the residency protocol — is a worker ready, is one
+    loading, start one and report the job — and none of it is about what the
+    model does with the body, so a second copy would be two identical
+    residency implementations that could drift on the one thing this module
+    exists to get right. It defaults to `EMBEDDINGS` so every existing caller
+    reads unchanged.
+
+    The two do NOT share a resident slot, which is the point of them being
+    separate capabilities: `_workers` is keyed by capability, so a text
+    embedder loaded here cannot evict a SigLIP model loaded there.
     """
-    worker = ready_worker(registry.EMBEDDINGS, model)
+    worker = ready_worker(capability, model)
     if worker is None:
         with _lock:
-            current = _workers.get(registry.EMBEDDINGS)
+            current = _workers.get(capability)
         if current is not None and current.model == model:
             raise ModelNotReady(
                 f"{model} is still loading ({current.state})", job_id_for(model))
-        started = load(model, registry.EMBEDDINGS)
+        started = load(model, capability)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
     try:

@@ -48,8 +48,18 @@ from fused_render.ai import catalog, registry, supervisor
 # rule here costs nothing. `embed_common` joins them for the same reason: its
 # request-shape check is what BOTH embedding runners' own `generate()` calls,
 # and a body this route refuses must be refused for the identical reason a
-# worker asked directly would give.
-from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
+# worker asked directly would give. `text_embed_common` is that same rule for
+# the OTHER embedding capability — a different validator because it refuses
+# `paths` by name and takes a `kind` the dual encoders have no use for.
+from fused_render.ai.runners import (
+    diarize,
+    embed_common,
+    engine_options,
+    formats,
+    partial,
+    preview,
+    text_embed_common,
+)
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
@@ -637,9 +647,9 @@ def _catalog_with_downloads() -> list[dict]:
         # correct for any future runner whose ids work the same way without
         # this function needing to know which one.
         curated_repo_ids = {
-            formats.GGUF_RECIPES[entry["id"]]["repo"]
+            formats.gguf_recipe(entry["id"])["repo"]
             for entry in curated
-            if entry["downloaded"] and entry["id"] in formats.GGUF_RECIPES
+            if entry["downloaded"] and formats.gguf_recipe(entry["id"])
         }
         extra = [
             {
@@ -1397,5 +1407,96 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
             "vectors": result.get("vectors") or [],
             "dim": result.get("dim") or 0,
             "model": model,
+        },
+    }
+
+
+@router.post("/api/ai/embed-text")
+def api_ai_embed_text(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Embed text into the resident TEXT encoder's vector space.
+
+    **A separate route from `/api/ai/embed`, mirroring the separate capability
+    behind it** (`registry.TEXT_EMBEDDINGS` — see that constant for the whole
+    argument). The wire shape is deliberately IDENTICAL to that route's, down
+    to the error contract: `{ok, result|error:{type, message, jobId}}`, a 400
+    for a malformed request, a 409 `unavailable` when no runner can serve the
+    capability here, and — the fork that matters — a 409 `model_loading`
+    carrying the id of the load this call just started, exactly as
+    `/api/ai/embed` and `/api/ai`'s local-model path both do. A page that has
+    written the retry loop once should not need a second one.
+
+    **Two things this route adds, and both are about retrieval being
+    asymmetric.**
+
+    `kind` (`"query"` or `"document"`, default `"document"`) picks which half
+    of the model's own prompt pair goes in front of these texts.
+    `text_embed_common.DEFAULT_KIND` carries the argument for that default at
+    length; the short version is that it is the side which keeps a corpus
+    internally consistent for someone who has not read about prompt schemes
+    yet, and on the bge family it means no prefix at all.
+
+    `kind` and `promptScheme` travel BACK on the result, because both are
+    decisions made on the caller's behalf that change what the vectors mean
+    and that nothing downstream can detect: a wrongly-prompted batch still
+    returns unit vectors of the right dimension.
+
+    **`paths` is refused rather than ignored.** There is no vision tower here,
+    and a caller who found `fused.ai.embed`'s image half and assumed this
+    endpoint had one would otherwise get the FILENAMES embedded as prose —
+    plausible vectors, no error, nonsense results. `request_texts` says so by
+    name and points at the endpoint that does take images.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Same rule `generate()` enforces inside each worker's own venv
+    # (`text_embed_common.request_texts`) — refused HERE too, before a model
+    # is even resolved, so a malformed request costs nothing rather than a
+    # 409 that implies the fix is to wait. `/api/ai/embed` does the identical
+    # thing with its own validator, for the identical reason.
+    try:
+        texts, kind = text_embed_common.request_texts(body)
+    except ValueError as e:
+        return _embed_error("bad_request", str(e), status=400)
+
+    model = _model_of(body) or catalog.default_for(registry.TEXT_EMBEDDINGS)
+    if not model:
+        # See `api_ai_image`'s identical comment: no runner and no curated
+        # default are different facts, and only the runner's own reason tells
+        # the user what to do about it.
+        return _embed_error(
+            "unavailable",
+            registry.unavailable_reason(registry.TEXT_EMBEDDINGS)
+            or "no text embedding model is configured",
+            status=409)
+
+    try:
+        result = supervisor.generate_embed(
+            model, {"texts": texts, "kind": kind},
+            capability=registry.TEXT_EMBEDDINGS)
+    except supervisor.ModelNotReady as e:
+        # NOT a failure — the load already started, and its job id is what
+        # lets the caller show that download rather than just a rejection.
+        return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.SupervisorError as e:
+        return _embed_error("ai_error", str(e), status=502)
+
+    return {
+        "ok": True,
+        "result": {
+            "vectors": result.get("vectors") or [],
+            "dim": result.get("dim") or 0,
+            "model": model,
+            # The worker's own answer, not the request's: for `kind` the two
+            # agree, but reading it back from the reply is what keeps this
+            # honest the day a runner clamps or renames one.
+            "kind": result.get("kind") or kind,
+            # …and the scheme has no request half at all — it is derived from
+            # the model, by a curated table for the ids this app ships and by
+            # a filename heuristic for anything else
+            # (`formats.TEXT_EMBED_SCHEME_HINTS`). Reporting it is what makes
+            # that heuristic auditable instead of silent.
+            "promptScheme": result.get("promptScheme") or "none",
         },
     }

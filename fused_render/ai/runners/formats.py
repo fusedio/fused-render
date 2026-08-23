@@ -913,6 +913,34 @@ GGUF_RECIPES = {
 }
 
 
+def gguf_recipe(model_id: str) -> dict | None:
+    """The `(repo, file)` recipe for a curated GGUF FILENAME id, from either
+    table — or None for an id that is not one.
+
+    **The one lookup for "is this a filename-keyed curated id", and it exists
+    because there are now TWO such tables.** Both `GGUF_RECIPES` and
+    `TEXT_EMBED_RECIPES` key their entries by the GGUF's own filename, for
+    the same reason (a repo publishes many quantizations of one model, so a
+    bare repo id cannot address the one this app curates), and at least four
+    places in the server have to translate a filename id back to its repo:
+    `hub_cache.is_downloaded`, `catalog.mirror_id`,
+    `ai_runtime._catalog_with_downloads` and the Benchmark tab's own guard.
+
+    Each of those was written against `GGUF_RECIPES` alone, and each fails
+    QUIETLY for an id the other table owns rather than raising — a curated
+    model that shows "Download" forever after it has been downloaded, a
+    mirror that silently never gets asked. Routing all of them through one
+    function is what keeps a third table, whenever it arrives, from having to
+    find those four sites again.
+
+    The two tables' keys must stay disjoint, which they are by construction
+    (chat quantizations and embedding quantizations of different models) and
+    which `test_ai_formats.py` pins — `GGUF_RECIPES` is consulted first, so a
+    collision would resolve to the chat recipe and download the wrong file.
+    """
+    return GGUF_RECIPES.get(model_id) or TEXT_EMBED_RECIPES.get(model_id)
+
+
 # ---------------------------------------------------------------------------
 # Picking ONE GGUF file out of an arbitrary repo's own listing (D412).
 #
@@ -1449,29 +1477,83 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 #: (see `test_every_registered_runner_appears_in_loaders`).
 LLAMACPP_EMBED_RUNNERS = ("llamacpp-embed", "llamacpp-embed-vulkan")
 
-#: `model_type` values `mlx-text-embed` can open — the text encoders
-#: `mlx-embeddings` 0.1.x ships a module for, read out of the published wheel
-#: (`mlx_embeddings/models/*.py`) rather than from its README, on 2026-08-23.
+#: `model_type` values that are DECISIVELY a text encoder — an
+#: encoder-only architecture, which no causal language model can be. These
+#: need no second signal: `mlx_lm` ships no module for any of them, so a
+#: repo carrying one was never loadable as a chat model in the first place,
+#: and `mlx-embeddings` 0.1.x ships `models/bert.py`, `models/modernbert.py`
+#: and `models/xlm_roberta.py` for exactly these (read out of the published
+#: wheel on 2026-08-23, not from its README).
 #:
-#: **`siglip` is deliberately NOT here**, though that wheel ships a module
+#: Both spellings of XLM-RoBERTa are listed because both occur in the wild:
+#: the Hub's canonical `model_type` is `xlm-roberta` (checked on
+#: `mlx-community/multilingual-e5-base-mlx`) while the library's own module
+#: is `xlm_roberta`, and its loader normalises one to the other.
+#:
+#: **`siglip` is deliberately absent**, though the same wheel ships a module
 #: for it: SigLIP belongs to the OTHER capability (`registry.EMBEDDINGS`,
 #: served by `mlx-embed`), and claiming it here would put one repo in two
 #: capabilities' loader lists and let the AI Models page offer a dual encoder
-#: as a text embedder. The split between the two capabilities is the whole
-#: decision this section rests on; this frozenset is where it is enforced
-#: against the bytes.
-#:
-#: `colidefics3`, `colqwen2_5`, `qwen3_vl` and `llama_nemotron_vl` are also
-#: absent, and for a related reason: they are multimodal or late-interaction
-#: models whose output is a MATRIX of per-token vectors rather than one
-#: vector per text, which is not the contract `/api/ai/embed-text` publishes.
-MLX_TEXT_EMBED_MODEL_TYPES = frozenset({
-    "bert", "modernbert", "xlm-roberta", "xlm_roberta", "qwen3",
-    "gemma3_text", "lfm2", "llama_bidirec",
+#: as a text embedder.
+MLX_TEXT_ENCODER_MODEL_TYPES = frozenset({
+    "bert", "modernbert", "xlm-roberta", "xlm_roberta",
 })
 
+#: …and the `model_type` values `mlx-embeddings` can ALSO open, which are
+#: shared letter-for-letter with causal chat models this app already serves
+#: through `mlx-text`.
+#:
+#: **This is the safetensors twin of the `qwen3` problem
+#: `gguf_pooling_type`'s docstring describes**, and it is worse here, because
+#: there is no header key to settle it. Checked directly on 2026-08-23:
+#: `mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ` declares
+#: `model_type: qwen3` and `architectures: ["Qwen3ForCausalLM"]`, and ships a
+#: `chat_template.jinja` and a `generation_config.json` — a config file for
+#: file identical in shape to an ordinary Qwen3 chat checkpoint. On the config
+#: alone the two are the same repo.
+#:
+#: So a repo in THIS set is claimed only with a second signal
+#: (`ST_SIDECAR_NAMES` below), and a repo that has none falls through to
+#: `mlx-text` — a text embedder mis-tagged as a chat model on the AI Models
+#: page, which is the mild failure. The alternative direction is not mild:
+#: claiming every `qwen3` checkpoint in the local cache would put a
+#: text-embedding Load button on every Qwen3 chat model a user has ever
+#: downloaded.
+#:
+#: `colidefics3`, `colqwen2_5`, `qwen3_vl` and `llama_nemotron_vl` are in
+#: neither set, for a different reason again: they are multimodal or
+#: late-interaction models whose output is a MATRIX of per-token vectors
+#: rather than one vector per text, which is not the contract
+#: `/api/ai/embed-text` publishes.
+MLX_TEXT_EMBED_DECODER_MODEL_TYPES = frozenset({
+    "qwen3", "gemma3_text", "lfm2", "llama_bidirec",
+})
 
-def mlx_text_embed_model_type(config: dict) -> str | None:
+#: Files a sentence-transformers export drops beside its weights, recording
+#: that this checkpoint is meant to be POOLED into one vector rather than
+#: sampled from. Any one of them is the signal.
+#:
+#: **Not `1_Pooling/`, which is what a reader would expect and what a first
+#: draft of this used.** sentence-transformers writes the pooling config into
+#: a `1_Pooling/` subdirectory, but every MLX re-upload checked on 2026-08-23
+#: had flattened the export: `mlx-community/bge-small-en-v1.5-bf16` and
+#: `mlx-community/embeddinggemma-300m-bf16` carry
+#: `config_sentence_transformers.json`, `modules.json` and
+#: `sentence_bert_config.json` at the ROOT and no `1_Pooling/` at all. A
+#: directory check would therefore have matched none of this engine's own
+#: catalog. The directory is still accepted (`loaders()` checks `dirnames`
+#: too) because an unconverted upstream repo does carry it.
+ST_SIDECAR_NAMES = frozenset({
+    "config_sentence_transformers.json",
+    "modules.json",
+    "sentence_bert_config.json",
+})
+
+#: The subdirectory form of the same signal — see `ST_SIDECAR_NAMES`.
+ST_POOLING_DIR = "1_Pooling"
+
+
+def mlx_text_embed_model_type(config: dict, *, pooled: bool = False) -> str | None:
     """The text-encoder family this config declares, or None.
 
     `embed_model_type`'s counterpart for the other capability, and lowercased
@@ -1479,30 +1561,20 @@ def mlx_text_embed_model_type(config: dict) -> str | None:
     exported the checkpoint, and an `XLM-RoBERTa` would otherwise read as an
     unknown family.
 
-    **A `qwen3` config is ambiguous here and this function does not resolve
-    it** — the architecture is shared by Qwen3 chat models and by
-    Qwen3-Embedding, exactly as `gguf_pooling_type`'s docstring describes for
-    the GGUF side. `loaders()` below is where the tie is broken, using
-    evidence this function does not take: a sentence-transformers pooling
-    config sitting beside the weights.
+    `pooled` is the caller's answer to "does a sentence-transformers sidecar
+    sit beside these weights". It is required to claim one of the AMBIGUOUS
+    decoder families and ignored for the encoder-only ones — see the two
+    frozensets above for why the asymmetry is not an inconsistency.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str):
         return None
     model_type = model_type.strip().lower()
-    return model_type if model_type in MLX_TEXT_EMBED_MODEL_TYPES else None
-
-
-#: The file a sentence-transformers export drops beside its weights to record
-#: HOW to pool the encoder's per-token output into one vector. Its presence is
-#: the safetensors-side equivalent of a GGUF's `pooling_type` key: an ordinary
-#: causal checkpoint has no such file, and a repo published to be embedded
-#: with does.
-#:
-#: A DIRECTORY name, not a file — sentence-transformers writes
-#: `1_Pooling/config.json`, and `loaders()` is handed the snapshot's top-level
-#: `dirnames` already, so this costs no extra I/O in the one place it is read.
-ST_POOLING_DIR = "1_Pooling"
+    if model_type in MLX_TEXT_ENCODER_MODEL_TYPES:
+        return model_type
+    if pooled and model_type in MLX_TEXT_EMBED_DECODER_MODEL_TYPES:
+        return model_type
+    return None
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
@@ -1580,25 +1652,22 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # runner, offered by nothing — not "matches nothing here so fall
         # through to whatever else recognises the file layout."
         return tuple(found)
-    # A sentence-transformers TEXT encoder, for `mlx-text-embed` — asked
-    # before the dual-encoder branch below because the two are different
-    # capabilities reading different repos, and this is the narrower claim:
-    # it requires a `1_Pooling/` directory, which SigLIP and CLIP exports do
-    # not carry (their pooling is inside the checkpoint's own projection
-    # head, not a sidecar).
+    # A text encoder, for `mlx-text-embed` — asked before the dual-encoder
+    # branch below because the two are different capabilities reading
+    # different repos, and this is the narrower claim: SigLIP and CLIP
+    # exports carry no sentence-transformers sidecar and are not an
+    # encoder-only `model_type` either, so neither half of this condition can
+    # match one.
     #
-    # **The pooling directory is REQUIRED and that is what makes this branch
-    # safe.** `MLX_TEXT_EMBED_MODEL_TYPES` contains `qwen3`, `gemma3_text`
-    # and `lfm2` — architectures shared, letter for letter, with chat models
-    # this app already serves through `mlx-text`. On `model_type` alone this
-    # branch would claim every Qwen3 checkpoint in the local cache and offer
-    # to load a chat model as an encoder. `1_Pooling/config.json` is written
-    # by the sentence-transformers exporter and by nothing else, so it is the
-    # safetensors-side counterpart of the GGUF pooling key the branch at the
-    # top of this function turns on — the same distinction, the same
-    # evidence, read out of a different container.
-    if (torch_weights and ST_POOLING_DIR in dirnames
-            and mlx_text_embed_model_type(config)):
+    # The `pooled` evidence is what keeps `qwen3`/`gemma3_text`/`lfm2` from
+    # claiming every chat checkpoint in the local cache — see
+    # `MLX_TEXT_EMBED_DECODER_MODEL_TYPES`, which is where that whole argument
+    # lives. An encoder-only `model_type` needs no such evidence and is
+    # allowed through without it, which is why this reads the sidecar
+    # unconditionally and lets `mlx_text_embed_model_type` decide whether it
+    # mattered.
+    pooled = bool(ST_SIDECAR_NAMES & set(names)) or ST_POOLING_DIR in dirnames
+    if torch_weights and mlx_text_embed_model_type(config, pooled=pooled):
         found.append("mlx-text-embed")
         # …and NOTHING else, for the `.gguf` branch's reason: this snapshot
         # is a directory of safetensors with a config, so the `mlx-text`

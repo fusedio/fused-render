@@ -78,20 +78,48 @@ def test_the_tags_a_runner_serves(tag, capability):
     assert tasks.classify(tag).capability == capability
 
 
-def test_the_embedding_capabilitys_own_names_are_deliberately_unserved():
-    """The trap this capability sets for itself: `feature-extraction` and
-    `sentence-similarity` read like the obvious tags for it and are not.
+def test_the_text_embedding_tags_are_served_by_their_own_capability():
+    """`feature-extraction` and `sentence-similarity` map to
+    `TEXT_EMBEDDINGS`, and this test is the INVERSE of the one it replaces.
 
-    What wears them is a sentence-transformers checkpoint — a text encoder plus
-    a pooling config, with no vision tower and no `get_text_features`/
-    `get_image_features` for either embedding runner to call. Mapping them would
-    put a Load button on `sentence-transformers/all-MiniLM-L6-v2`, a download
-    that then refuses.
+    It used to assert both tags were ruled out with a "dual encoder" reason,
+    which was correct while the only embedding runners here were SigLIP/CLIP
+    ones: what wears these tags is a text encoder plus a pooling config, and a
+    Load button on one would have been a download that then refused. That
+    row's own comment in `ai/tasks.py` promised the two would move "when it
+    ships". It has shipped, so they moved.
+
+    **Both tags, not one.** The Hub splits this task in two and the split
+    describes nothing a loader could act on — the same checkpoints wear either
+    tag, sometimes across two revisions of one repo — so mapping one and
+    withholding the other would make a model's Load button depend on which
+    word its uploader picked.
+
+    The guarantee that used to rest on this test has NOT been dropped; it
+    moved one layer down, to
+    `test_hub_models.test_a_result_is_never_something_this_app_cannot_run`.
+    See that test for why a format gate is stronger evidence than a
+    capability gap.
     """
-    for tag in ("feature-extraction", "sentence-similarity", "image-feature-extraction"):
+    for tag in ("feature-extraction", "sentence-similarity"):
         reading = tasks.classify(tag)
-        assert reading.ruled_out, tag
-        assert "dual encoder" in reading.reason, tag
+        assert reading.capability == registry.TEXT_EMBEDDINGS, tag
+        assert not reading.ruled_out, tag
+
+
+def test_image_embeddings_did_not_move_with_the_text_ones():
+    """`image-feature-extraction` stayed ruled out, and the asymmetry is
+    deliberate rather than an oversight in the move above.
+
+    `TEXT_EMBEDDINGS` serves text encoders and nothing here loads a
+    vision-only feature extractor. The dual-encoder capability comes closest
+    and still cannot: a DINOv2 or a bare ViT has no text tower to put an
+    image beside, which is the whole of what that capability is for.
+    """
+    reading = tasks.classify("image-feature-extraction")
+    assert reading.ruled_out
+    assert reading.capability is None
+    assert "dual encoder" in reading.reason
 
 
 @pytest.mark.parametrize("tag", [

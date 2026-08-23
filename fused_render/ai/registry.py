@@ -85,6 +85,39 @@ SPEECH_TO_TEXT = "automatic-speech-recognition"
 #: those vectors and not what the runner returns, so borrowing it would have
 #: named the capability after a use case it does not implement.
 EMBEDDINGS = "embeddings"
+#: Vectors again, but out of a TEXT ENCODER — bge, e5, nomic-embed,
+#: EmbeddingGemma, Qwen3-Embedding — the models a retrieval or RAG page
+#: actually reaches for. Plain English rather than a Hub tag, like
+#: `EMBEDDINGS` above and for a sharper version of the same reason: these
+#: repos wear `feature-extraction` AND `sentence-similarity`, two tags for
+#: one thing, so either name would have implied the other tag was something
+#: else.
+#:
+#: **A SEPARATE capability from `EMBEDDINGS`, decided rather than defaulted —
+#: worth arguing here, because the two names look like they should be one
+#: thing.**
+#:
+#: `EMBEDDINGS` serves DUAL ENCODERS and nothing else — SigLIP and CLIP,
+#: through `get_text_features`/`get_image_features`
+#: (`formats.EMBED_MODEL_TYPES`). An ordinary text embedding model publishes
+#: neither method: it is a text encoder plus a pooling configuration. Passing
+#: `BAAI/bge-small-en-v1.5` to that capability downloads ~400MB, starts a
+#: worker, and dies on `AttributeError: 'BertModel' object has no attribute
+#: 'get_text_features'` — observed, not predicted. So these are not one
+#: capability with a missing branch. They are two load paths, two on-disk
+#: formats (GGUF and safetensors here; safetensors only there), two catalogs,
+#: and — because retrieval encoders are asymmetric — a request shape with a
+#: `kind` parameter that would mean nothing to a dual encoder.
+#:
+#: **The split also buys something a user can feel.** The supervisor holds one
+#: resident model PER CAPABILITY and evicts to make room for the next. Two
+#: capabilities means a page can hold a SigLIP model and a text embedder at
+#: once and neither evicts the other — "index my photos" and "search my
+#: notes" stop fighting over one slot on a machine with room for both.
+#: Whether to merge the two later is a live question; merging them NOW by
+#: teaching one of them both load paths would have been that question
+#: answered silently, in the direction that costs a slot.
+TEXT_EMBEDDINGS = "text-embeddings"
 
 RUNNERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runners")
 
@@ -1270,6 +1303,91 @@ _RUNNERS: tuple[Runner, ...] = (
         note="Runs on the CPU on any machine, or Apple Silicon's GPU — quick "
              "either way, since one item is a single forward pass.",
         _available=_torch_platform,
+    ),
+    # Text embeddings, the fifth capability — see `TEXT_EMBEDDINGS` above for
+    # why it is its own capability and not a fourth model type inside
+    # `embeddings`.
+    #
+    # **Arranged exactly like TEXT GENERATION, not like the embeddings pair
+    # above, and the difference is the format.** The two rows above share an
+    # embedding SPACE because SigLIP publishes one set of safetensors both
+    # engines read. These three do not: MLX opens safetensors and the two
+    # llama.cpp rows open GGUF, so their catalogs are different repos and
+    # their vectors are different models' vectors. That is the `mlx-text` /
+    # `llamacpp-text` / `llamacpp-text-vulkan` shape, down to the ordering —
+    # MLX takes the Macs, the CPU llama.cpp row keeps everything else, and
+    # the Vulkan row sits below both so `auto` can never fall into it.
+    Runner(
+        code="mlx-text-embed",
+        capability=TEXT_EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "mlx_text_embed"),
+        # "MLX Text Embeddings", distinct from the `mlx-embed` row's "MLX
+        # Embeddings" above by one word, and that word is doing real work:
+        # both rows install the SAME package (`mlx-embeddings`, which ships a
+        # SigLIP port and a set of text encoders), so a reader looking at the
+        # Engines tab sees two entries from one library and the only thing
+        # telling them apart is which kind of model each loads.
+        label="MLX Text Embeddings (Apple Silicon)",
+        short_label="MLX Text Embeddings",
+        family_label="MLX Text Embeddings",
+        note="Embeds on the GPU from the original safetensors — a different "
+             "catalog from the llama.cpp rows, which read GGUF.",
+        _available=_apple_silicon,
+    ),
+    Runner(
+        code="llamacpp-embed",
+        capability=TEXT_EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_embed"),
+        # **"llama.cpp Embeddings", not bare "llama.cpp", and the word is
+        # load-bearing rather than descriptive.** There are now FOUR
+        # llama.cpp rows in this table — two for chat, two for embeddings —
+        # and `test_no_engine_name_advertises_the_format_its_sibling_also_reads`
+        # keys a "family" on the label stem before the bracket. Sharing the
+        # stem "llama.cpp" would put all four in one family with the
+        # qualifiers `(CPU)`, `(Vulkan)`, `(CPU)`, `(Vulkan)` — two pairs of
+        # duplicates, which is that test's exact failure and, on the page, two
+        # rows a user cannot tell apart in the engine picker for a capability
+        # they did not mean to change.
+        #
+        # "(CPU)" then names the BUILD and not a prediction about the device,
+        # exactly as `llamacpp-text`'s does — that same `whl/cpu` index's
+        # macOS wheel links Metal.
+        label="llama.cpp Embeddings (CPU)",
+        short_label="llama.cpp Embeddings (CPU)",
+        family_label="llama.cpp Embeddings",
+        # ONE LINE, per `note`'s own rule. It leads with the fact that
+        # decides whether to bother: these models are tens of megabytes, which
+        # is the opposite of every other download this app offers and the
+        # reason a CPU row is a perfectly good default here rather than a
+        # fallback.
+        note="Tens of megabytes per model and quick on any CPU — an encoder "
+             "pass is far less work than a token loop.",
+        _available=_llamacpp_platform,
+        # A search result this engine cannot resolve at all (a plain
+        # safetensors sentence-transformers repo) is not actionable here —
+        # see `hub_filter_tags`' own docstring, and note that this is what
+        # keeps `sentence-transformers/all-MiniLM-L6-v2` out of the Discover
+        # tab now that its task tags map to this capability
+        # (`test_a_result_is_never_something_this_app_cannot_run`).
+        hub_filter_tags=("gguf",),
+    ),
+    Runner(
+        code="llamacpp-embed-vulkan",
+        capability=TEXT_EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "llamacpp_embed_vulkan"),
+        label="llama.cpp Embeddings (Vulkan)",
+        short_label="llama.cpp Embeddings (Vulkan)",
+        family_label="llama.cpp Embeddings",
+        # The honest note for this row, and it is more cautionary than its
+        # text-generation twin's on purpose: the Vulkan Linux wheel is
+        # ~182MB against a curated model list whose largest entry is 639MB
+        # and whose smallest is 146MB, so a user can download more WHEEL than
+        # MODEL here. Worth it when a page embeds thousands of chunks;
+        # not worth it to embed a search box.
+        note="Worth it for embedding thousands of chunks on an NVIDIA or AMD "
+             "GPU — the wheel is larger than most models on this list.",
+        _available=_vulkan,
+        hub_filter_tags=("gguf",),
     ),
 )
 

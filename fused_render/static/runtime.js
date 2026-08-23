@@ -125,6 +125,26 @@
  *     call just started — watch it and retry, exactly like the first
  *     fused.ai(...) on a cold local model) | "ai_error" | "unavailable" (no
  *     embedding runner on this machine).
+ *   fused.ai.embedText({texts, kind, model})
+ *     -> Promise<{vectors, dim, model, kind, promptScheme}>
+ *     TEXT into vectors, locally (SPEC §40) — a text encoder (bge, e5,
+ *     nomic-embed, EmbeddingGemma, Qwen3-Embedding). A DIFFERENT capability
+ *     from fused.ai.embed above, holding its own resident model, so a page
+ *     can have both loaded at once. This is the one for searching notes,
+ *     clustering documents or RAG; reach for embed() when pictures have to
+ *     land in the same space as words. No `paths` — there is no vision tower
+ *     here, and image paths are refused by name rather than embedded as
+ *     filenames.
+ *     `kind` is "query" | "document", default "document". Retrieval models
+ *     are ASYMMETRIC: a question and the passage that answers it want
+ *     different prompts, and the right prefix for the loaded model is applied
+ *     for you. So embed a corpus with the default, embed the search box with
+ *     kind:"query", and compare the two. Getting it wrong is not an error and
+ *     never surfaces as one — it silently costs recall — which is why `kind`
+ *     and the `promptScheme` actually applied both come back on the result.
+ *     Up to 64 items, vectors UNIT-NORMALIZED (cosine == a plain dot
+ *     product), not job-backed. Rejects with the same .type values embed()
+ *     does.
  *   fused.capture.* -> record the screen, record the mic, grab a still
  *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
  *     -> Promise<handle> and audio({source, path, maxSeconds, title})
@@ -3187,7 +3207,23 @@
       const ownPath = new URLSearchParams(window.location.search).get("path");
       if (ownPath) body.base = ownPath;
     }
-    return fetch("/api/ai/embed", {
+    return embedPost("/api/ai/embed", body);
+  }
+
+  // The POST half both embedding bridges share: the wire shape, the tolerant
+  // parse, and the 409 fork that carries a jobId.
+  //
+  // Factored out when `aiEmbedText` arrived, and only then. `aiEmbed` had
+  // copied `fused.ai`'s five-line `fail()` rather than sharing it, on the
+  // argument its own comment above makes — two modules, HTTP the only
+  // contract, five lines cheaper than a seam. That argument does not survive
+  // a THIRD copy inside the same function scope: these two calls must answer
+  // a 409 identically or a page written against one cannot retry the other,
+  // and there is no module boundary between them to justify the duplication.
+  // `fused.ai`'s own copy stays where it is — that one really is across a
+  // boundary.
+  function embedPost(url, body) {
+    return fetch(url, {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body),
@@ -3213,6 +3249,62 @@
         }
         return data.result;
       });
+  }
+
+  // fused.ai.embedText({texts, kind, model})
+  //   -> Promise<{vectors, dim, model, kind, promptScheme}>
+  //
+  // Text into vectors through a TEXT ENCODER — a different capability from
+  // `aiEmbed` above, with its own resident model, so a page can hold a SigLIP
+  // model and a text embedder at once and neither evicts the other.
+  //
+  // Vectors are UNIT-NORMALIZED, so a cosine similarity between two of them is
+  // a plain dot product — `a[i]*b[i]` summed, no magnitudes to divide by. Same
+  // guarantee `aiEmbed` makes, and it holds here for the same reason: the
+  // worker normalizes before it answers.
+  //
+  // **`kind` is the one argument worth reading about before using this.**
+  // Retrieval models are asymmetric — a question and the passage that answers
+  // it were trained with different prompts in front of them — and the prefix
+  // for the loaded model is applied server-side from a table
+  // (`formats.TEXT_EMBED_PROMPTS`). Embed a corpus with the default
+  // ("document"), embed the search box with kind:"query", compare. Passing the
+  // wrong one is NOT an error and cannot be detected downstream: the vectors
+  // come back unit length and the right width, just worse at finding things.
+  // That is why the reply carries `kind` and `promptScheme` back — so a page
+  // can show which convention was applied rather than trusting it.
+  //
+  // `paths` is rejected here rather than sent: there is no vision tower behind
+  // this endpoint, so image paths would be embedded as filename PROSE. Caught
+  // client-side for `aiEmbed`'s reason — a call that will certainly be refused
+  // should not pay for the trip first — and the server refuses it again by
+  // name for a caller that is not this bridge.
+  function aiEmbedText(opts) {
+    opts = opts || {};
+    if (!Array.isArray(opts.texts) || opts.texts.length === 0) {
+      const err = new Error(
+        "fused.ai.embedText({texts}): pass 'texts' — a non-empty array of "
+          + "strings",
+      );
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    if (opts.paths) {
+      const err = new Error(
+        "fused.ai.embedText({texts}): 'paths' is not something a text encoder "
+          + "can read — use fused.ai.embed() for images and text in one space",
+      );
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const body = { texts: opts.texts };
+    // Left OUT when the caller said nothing, rather than defaulted here: the
+    // default belongs to `text_embed_common.DEFAULT_KIND`, which is where its
+    // reasoning is written, and a second copy of the value in this file would
+    // be the one that goes stale if it ever moves.
+    if (opts.kind !== undefined) body.kind = opts.kind;
+    if (opts.model !== undefined) body.model = opts.model;
+    return embedPost("/api/ai/embed-text", body);
   }
 
   const aiModels = {
@@ -3244,6 +3336,7 @@
   ai.image = aiImage;
   ai.transcribe = aiTranscribe;
   ai.embed = aiEmbed;
+  ai.embedText = aiEmbedText;
   // Stop the generation in flight on a local model, keeping it loaded — the
   // next message answers straight away. Resolves false when there was nothing
   // to stop, which is not an error: a Stop pressed as the last token lands
