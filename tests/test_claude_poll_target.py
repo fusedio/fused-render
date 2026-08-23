@@ -1,17 +1,22 @@
 """A poll may only attach to a run about its own target (claude template).
 
 Run ids are global — RUNS is one flat directory — and the `run` url param
-survives some hops the target does not. The reproduction: open a folder
-listing's claude pane, send a message, then click a SIBLING row. That is a
-selection change, not a navigation, so the shell url keeps `run` while the
-pane's `_file` moves to the new row — and the old conversation re-attached,
-streaming, under whichever folder was clicked (found by duplicating an app
-folder and switching between the two).
+survives some hops the target does not. The historical reproduction: open a
+folder listing's claude pane, send a message, then click a SIBLING row. That
+was a selection change, not a navigation, so the shell url kept `run` while
+the pane's `_file` moved to the new row — and the old conversation
+re-attached, streaming, under whichever folder was clicked (found by
+duplicating an app folder and switching between the two).
 
-Two halves. The pane now drops the chat params on a retarget
-(frontend listing/chat-params.ts — its own tests), and the agent refuses the
-attach outright when the caller's target provably is not the run's: the belt
-these tests cover.
+That reproduction is no longer reachable at all: since D460 the pane's `_file`
+is unconditionally the OPEN FOLDER on every mode — a row click never moves it,
+so there is no retarget for `run` to survive across (the belt that used to
+live in `listing/chat-params.ts`, tracking the target and stripping the params
+on a change, is deleted along with the mechanism that made it necessary). What
+these tests still cover is the SECOND half, which is not selection-shaped and
+so is untouched by D460: the agent refuses an attach outright when the
+caller's target provably is not the run's, whatever put a stale `run` on the
+url in the first place (a bookmark, a shared link, a bug not yet imagined).
 """
 import importlib.util
 import json

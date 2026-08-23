@@ -237,7 +237,11 @@ export function RepoCard({
   // partial repo wears `partly downloaded` in both states.
   const pulling = jobFraction(job) !== null;
   const part = pulling || resumable(repo) ? partialFraction(repo, job, estimate) : null;
-  // "Complete, on this disk, and not resident." NOT gated on `loaded` — a model
+  // "Complete, on this disk, and not resident." The card's WASH and nothing else
+  // now: the footer chip that also said it was removed by request (D448) — the
+  // green surface had made it a second answer to a question already answered, and
+  // in a row where most cards are downloaded it was a badge on almost every one.
+  // NOT gated on `loaded` — a model
   // whose weights are going INTO memory is still a model this machine has, and
   // dropping the wash for the seconds a load takes would flash the one card the
   // reader is watching. It ends when `am-card-loaded` takes over, which says
@@ -513,25 +517,6 @@ export function RepoCard({
           {when ? `used ${when}` : ""}
         </span>
         <span className="cc-mdcard-actions">
-          {/* "This one is already here." The card's background says it too, and
-              deliberately: the wash is what a SWEEP reads and this chip is what
-              a READ confirms — the same two-channel argument the Loaded badge
-              rests on, one step down in loudness.
-              **The same chip a Hub search result wears** (`.am-suggest-have`),
-              down to the ✓ and the lowercase word, because it states the same
-              fact about the same disk; a second pill saying it in a second style
-              would be two vocabularies for one answer. The Loaded badge outranks
-              it, and the two never appear together — `have` stands down the
-              moment a model is resident, where the badge says strictly more.
-              Before Load, so the footer reads state-then-action. */}
-          {have && (
-            <span
-              className="am-suggest-have am-card-have-chip"
-              title={`${repo.id} is downloaded — ${formatSize(repo.size)} on this machine`}
-            >
-              ✓ downloaded
-            </span>
-          )}
           {/* Load / Unload — the one control on this page that costs MEMORY
               rather than disk.
 
@@ -596,20 +581,24 @@ export function RepoCard({
                (D424). There is nothing to load — the snapshot is incomplete —
                and the fetch is resumable, so the honest offer is the rest of it:
                the server picks up from the part file on disk instead of starting
-               over. Same word and same class as the recommended card's button,
-               because it is the same act at a later stage; with the trash beside
-               it, those are the two ways out of this state.
+               over. **"Continue downloading", not "Download"** (D448): the same
+               class as the recommended card's button because it is the same act,
+               but not the same WORD, because it is not the same act at the same
+               stage — "Download" on a card that already holds two thirds of the
+               model reads as an offer to start over, which is the one thing this
+               button does not do. With the trash beside it, those are the two
+               ways out of this state.
                Disabled while the pull is actually running, where "Downloading…"
                is what the label says and the job row below carries the bytes. */
             <button
               type="button"
               className="am-card-power"
               disabled={busy || fetching || !!job}
-              title={`Finish downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
-              aria-label={`Download ${repo.id} — resume the unfinished download`}
+              title={`Continue downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
+              aria-label={`Continue downloading ${repo.id} — resume the unfinished download`}
               onClick={onDownload}
             >
-              {fetching || job ? "Downloading…" : "Download"}
+              {fetching || job ? "Downloading…" : "Continue downloading"}
             </button>
           ) : (
             <button

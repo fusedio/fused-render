@@ -174,7 +174,9 @@ describe("defaultMode", () => {
   it("keeps a folder browsable when the registry leads with a GATED mode", () => {
     // The safety net under D280's reorder. The universal `/` key now ships
     // `["claude", "_listing", …]` so the preview PANE lands on the chat
-    // (`activePaneMode` takes modes[0] literally). The FULL-SCREEN folder route
+    // (`paneModeList` takes the list's own first entry literally — D460 deleted
+    // the row-mode resolution this comment used to name, `activePaneMode`, but
+    // the ordering claim stands unchanged). The FULL-SCREEN folder route
     // resolves through here instead, and "first unconditional" makes `_listing`
     // win from second place — which is why the reorder cannot leave a folder
     // opening as a chat with no file table. If this ever changes, opening any

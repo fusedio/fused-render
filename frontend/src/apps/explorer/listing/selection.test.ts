@@ -167,9 +167,11 @@ describe("rangeBetween", () => {
   });
 });
 
-// ONE press model for the whole explorer: a press selects, a double click
-// opens. The pure half of it is which SELECTION a press means; the opening is
-// the row's onDoubleClick and needs no decision at all.
+// ONE press model for the whole explorer: a press selects, and a plain
+// release that never left the row opens it (D460). The pure half of it is
+// which SELECTION a press means; the opening is Listing's onRowPointerUp and
+// is gated on the SAME `select`/`defer` answer plus the drag-slop test, so
+// nothing here needs a separate decision.
 //
 // Answered on POINTERDOWN rather than on click, because rows are drag sources
 // and a draggable element does not reliably deliver the click that follows the
@@ -315,7 +317,9 @@ describe("cameFromSelParam", () => {
 // The unified model, pinned at the source: neither half may be conditioned on
 // the preview pane again. A single click used to OPEN when the pane was off
 // and merely SELECT when it was on — two click models in one view, decided by
-// a layout state the user no longer even controls (listing/pane.ts).
+// a layout state the user no longer even controls (listing/pane.ts). D460
+// deleted double-click entirely: a plain click both selects (on the press)
+// and opens (on the release), unconditionally, in every listing.
 describe("the listing rows wire both halves of the model", () => {
   const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
 
@@ -328,13 +332,37 @@ describe("the listing rows wire both halves of the model", () => {
     expect(press).not.toContain("navigate(");
   });
 
-  test("a double click always opens, pane or no pane", () => {
-    const dbl = src.slice(
-      src.indexOf("const onRowDoubleClick ="),
+  test("the release opens a plain click, unconditionally — no double-click left", () => {
+    const release = src.slice(
+      src.indexOf("const onRowPointerUp ="),
       src.indexOf("// Kill the browser's own text selection"),
     );
-    expect(dbl).toContain("navigate(row.path");
-    expect(dbl).not.toContain("pane.on");
+    expect(release).toContain("navigate(row.path");
+    // The double-click detour is gone outright, not merely unconditional.
+    expect(src).not.toContain("onRowDoubleClick");
+    expect(src).not.toContain("onDoubleClick");
+  });
+
+  // A habitual double-click now double-opens (the second press lands on
+  // whatever row the newly-opened folder painted under the cursor) unless
+  // something swallows it — pinned as source wiring since a headless test
+  // cannot drive two real pointer events through React in sequence.
+  test("a press right after an open is swallowed, not read as an action", () => {
+    const down = src.slice(
+      src.indexOf("const onRowPointerDown ="),
+      src.indexOf("const onRowPointerUp ="),
+    );
+    // The guard is the FIRST thing a press does — before rowPressAction is
+    // even asked, so a suppressed press builds no selection either.
+    expect(down).toMatch(/if \(Date\.now\(\) < suppressPressUntilRef\.current\) return;/);
+    expect(down.indexOf("suppressPressUntilRef")).toBeLessThan(down.indexOf("rowPressAction"));
+    const up = src.slice(
+      src.indexOf("const onRowPointerUp ="),
+      src.indexOf("// Kill the browser's own text selection"),
+    );
+    // Armed only on the branch that actually navigates, and before the
+    // navigate call — the second press can arrive before this call returns.
+    expect(up).toMatch(/suppressPressUntilRef\.current = Date\.now\(\) \+ OPEN_SUPPRESS_MS;\s*\n\s*navigate\(row\.path/);
   });
 
   // The failure this whole model exists to rule out: rows are drag sources, and
@@ -343,8 +371,7 @@ describe("the listing rows wire both halves of the model", () => {
   //
   // Checked over BOTH row shapes — the plain listing's and the search hits' —
   // because they are written out separately and only one of them was ever
-  // wrong at a time. `onDoubleClick` is deliberately untouched: dblclick fires
-  // whether or not a click did.
+  // wrong at a time.
   test("neither row shape selects on a click event", () => {
     expect(src).not.toContain("onRowClick");
     const rows = src.split("data-flip-key={childPath}").slice(1);

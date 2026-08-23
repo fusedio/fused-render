@@ -20,8 +20,9 @@
 // The listing pane was the odd one out, and the four decisions above are it
 // converging on the shape the other half of the app already had.
 //
-//   claude   the chat, `chat_only=1`, about the selected row — about the OPEN
-//            FOLDER when the selection names no single row (paneSideTarget).
+//   claude   the chat, `chat_only=1`, about the OPEN FOLDER — never the
+//            selected row (D460: the pane stopped reading the selection at
+//            all, so `claude`'s subject is the same folder `git`/`mcp`'s is).
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
 //            a working tree belongs to the folder, so `git` is bound to the
 //            universal "/" key alone and the pane borrows the folder's entry.
@@ -32,20 +33,21 @@
 //   preview  **NOT SELECTABLE, and not in the switcher.** It survives as the
 //            pane's internal FALLBACK for one state: neither companion offered (a
 //            mount-backed folder, where both gates refuse), where the pane must
-//            still render something. There it shows what pane-modes.ts resolves —
-//            the "Select a file to preview." hint for the folder itself, a file
-//            row's own default template, or the metadata card. It is a state the
-//            pane falls into, never a mode a user picks, which is why
-//            `PANE_SIDE_MODES` still carries it (the fallback needs the type)
+//            still render something. There it shows a plain FOLDER-scoped hint —
+//            no row, no template, nothing selection-shaped (D460 deleted the
+//            row-preview machinery `pane-modes.ts` used to feed this branch). It
+//            is a state the pane falls into, never a mode a user picks, which is
+//            why `PANE_SIDE_MODES` still carries it (the fallback needs the type)
 //            while `paneSideMenu` never draws a row for it and `paneSideList`
 //            yields it only as that last resort.
 //
 // Closed at these three, and a per-ROW companion is deliberately not a fourth:
 // over a folder the thing you are looking at is a LIST, so a column that talks
 // about one row is a pill for a view nobody browses into. Anything of that shape
-// stays one click away — open the row, and the file sidebar has it. (Two of the
-// three ARE folder-bound rather than per-row, which is why `paneKey` and
-// `paneSideTarget` ask `isFolderBoundSide` instead of naming `git`.)
+// stays one click away — open the row, and the file sidebar has it. **All three
+// are folder-bound now** (D460) — every mode's subject, key and `_file` target
+// is the OPEN FOLDER, never the selection, so there is no per-row/per-folder
+// split left to ask `isFolderBoundSide` about.
 //
 // This also RETIRES the pane's old per-template switcher (`_panelMode`), which
 // offered every mode the selected row resolved — image/photos/pano for a .png,
@@ -196,15 +198,11 @@ export interface PaneSideEntries {
   mcpBound?: TemplateEntry | null;
 }
 
-// The companions whose SUBJECT is the open folder rather than the selected row —
-// `paneKey` and `paneSideTarget` both turn on this, and asking a predicate keeps
-// the two from drifting as the set grows (it went from one member to two when
-// `mcp` landed, and each site had `side === "git"` written into it).
-const FOLDER_BOUND_SIDES: ReadonlySet<string> = new Set(["git", "mcp"]);
-
-export function isFolderBoundSide(side: PaneSide): boolean {
-  return FOLDER_BOUND_SIDES.has(side);
-}
+// `isFolderBoundSide` and the `FOLDER_BOUND_SIDES` set it read used to separate
+// `git`/`mcp` (folder-subject) from `claude`/`preview` (row-subject) for
+// `paneKey` and `paneSideTarget`. D460 deleted the row half of that split — the
+// pane no longer has a row-subject mode at all — so both functions collapsed to
+// "the folder, always" and the predicate they shared had nothing left to ask.
 
 // **`preview` IS NOT ON OFFER — it is the last resort** (D285, the end of the arc
 // D281 and D284 walked). A folder subject lost its preview because a folder is not a
@@ -379,48 +377,17 @@ export function activePaneSide(offered: PaneSide[], want: PaneSideChoice | null)
   return offered[0] ?? PANE_SIDE_FALLBACK;
 }
 
-// WHAT THE PANE IS ABOUT, as a React key — and it is not always the selected row,
-// which is the whole reason this is a function and not `row.path`.
+// WHAT THE PANE IS ABOUT, as a React key. Every mode's subject is the OPEN
+// FOLDER now (D460), so the key is just the mode and the folder — nothing
+// about the selection enters into it, and switching rows never remounts any
+// of the three: arrow-keying down a listing does not reload a `git status`
+// per keystroke, spawn a second `agent.py`, or discard MCP curation the user
+// had typed, because none of them ever depended on which row (if any) is
+// selected in the first place.
 //
-// In `git` and `mcp` the subject is the FOLDER. The pane is keyed so that switching
-// rows remounts it (a stale iframe must not linger while the new row resolves), and
-// with the row in the key, arrow-keying down a listing would tear down and reload
-// the git view — a `git status` and a `git log` fork — on every keystroke, for a
-// view whose content did not change. The MCP panel is the same shape of waste (a
-// folder-wide AST read and a manifest parse per keystroke), and worse: a remount
-// would also discard whatever curation the user had typed. So the selection is left
-// out of both.
-//
-// `claude` and `preview` are both about the ROW, and drop to the folder itself
-// when the selection names no single one: the folder-scoped chat for `claude`, the
-// pane's self/placeholder states for `preview`.
-export function paneKey(
-  side: PaneSide,
-  folder: string,
-  // The lead row's path when EXACTLY ONE row is selected, else null.
-  rowPath: string | null,
-  selCount: number
-): string {
-  if (isFolderBoundSide(side)) return side + ":" + folder;
-  if (side === "claude") return "claude:" + (rowPath ?? folder);
-  if (rowPath) return "preview:" + rowPath;
-  // `preview` with nothing selected is now REACHED ONLY as the neither-companion
-  // fallback (D284): the no-selection state is a folder subject, so it lands on a
-  // companion wherever one is offered, and the `self` key below identifies the state
-  // that renders the "Select a file to preview." hint — a mount-backed folder, where
-  // the hint is the pane's only content. A multi-selection previews nothing and needs
-  // no per-path identity.
-  return selCount === 0 ? "preview:self:" + folder : "preview:none";
-}
-
-// The path a mode's iframe is aimed at (`_file`). Two subjects: the folder for the
-// folder-bound companions (`git`, `mcp`), the selected row for the rest — falling
-// back to the folder when there is no single row, so the chat has something to be
-// about.
-export function paneSideTarget(
-  side: PaneSide,
-  folder: string,
-  rowPath: string | null
-): string {
-  return isFolderBoundSide(side) ? folder : (rowPath ?? folder);
+// It used to take the lead row's path and the selection count too, back when
+// `claude` and `preview` followed the selection and `git`/`mcp` did not — see
+// the header's `isFolderBoundSide` note. There is nothing left to distinguish.
+export function paneKey(side: PaneSide, folder: string): string {
+  return side + ":" + folder;
 }
