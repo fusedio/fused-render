@@ -530,22 +530,21 @@ a.pg-hero-repo:hover {
 }
 
 /* The memory verdict, which is the one fact here that is a JUDGEMENT rather
- * than a figure — so it carries a tooltip saying what it was judged against,
- * advertised by a dotted underline: `cursor: help` on one item inside a row of
- * plain facts announces a different kind of thing to press, which D454 lost
- * that argument over once already on the Tasks list. */
+ * than a figure — so it carries a tooltip saying what it was judged against.
+ * The tooltip is NOT advertised: a dotted underline was tried and reads as a
+ * defect on a coloured word, and the sentence under it is an elaboration
+ * ("close other heavy apps while it runs") rather than something the reader is
+ * stuck without. `cursor: help` is not the fallback either — one item in a row
+ * of plain facts announcing a different kind of thing to press is the argument
+ * D454 already lost on the Tasks list. */
 .pg-hero-fact-judged {
-  text-decoration: underline dotted;
-  text-decoration-color: var(--border);
-  text-underline-offset: 3px;
+  white-space: nowrap;
 }
 
 /* A HUE ON THE TWO BAD ANSWERS ONLY — the app's own warning and error tokens,
  * on the text rather than in a filled badge: this row is four dt/dd pairs, and
  * a pill in one of the cells becomes a different kind of object and out-shouts
- * the Parameters and Download figures beside it. The underline takes the tint
- * too, so the tooltip's mark does not read as a stray grey rule under a
- * coloured word.
+ * the Parameters and Download figures beside it.
  *
  * "easy" gets NO GREEN. Green on this page means running (`.pg-model-live`, the
  * loaded badge, D461); a second meaning for it here would dilute that on nearly
@@ -553,12 +552,10 @@ a.pg-hero-repo:hover {
  * legible than three colours competing. */
 .pg-fact-tight {
   color: var(--warning);
-  text-decoration-color: rgba(var(--warning-rgb), 0.5);
 }
 
 .pg-fact-no {
   color: var(--error);
-  text-decoration-color: rgba(var(--error-rgb), 0.5);
 }
 
 .pg-stage-title {
