@@ -343,6 +343,28 @@ describe("the listing rows wire both halves of the model", () => {
     expect(src).not.toContain("onDoubleClick");
   });
 
+  // A habitual double-click now double-opens (the second press lands on
+  // whatever row the newly-opened folder painted under the cursor) unless
+  // something swallows it — pinned as source wiring since a headless test
+  // cannot drive two real pointer events through React in sequence.
+  test("a press right after an open is swallowed, not read as an action", () => {
+    const down = src.slice(
+      src.indexOf("const onRowPointerDown ="),
+      src.indexOf("const onRowPointerUp ="),
+    );
+    // The guard is the FIRST thing a press does — before rowPressAction is
+    // even asked, so a suppressed press builds no selection either.
+    expect(down).toMatch(/if \(Date\.now\(\) < suppressPressUntilRef\.current\) return;/);
+    expect(down.indexOf("suppressPressUntilRef")).toBeLessThan(down.indexOf("rowPressAction"));
+    const up = src.slice(
+      src.indexOf("const onRowPointerUp ="),
+      src.indexOf("// Kill the browser's own text selection"),
+    );
+    // Armed only on the branch that actually navigates, and before the
+    // navigate call — the second press can arrive before this call returns.
+    expect(up).toMatch(/suppressPressUntilRef\.current = Date\.now\(\) \+ OPEN_SUPPRESS_MS;\s*\n\s*navigate\(row\.path/);
+  });
+
   // The failure this whole model exists to rule out: rows are drag sources, and
   // a draggable element does not reliably deliver the click after the press. A
   // selection path hung off `click` is one that can silently stop working.

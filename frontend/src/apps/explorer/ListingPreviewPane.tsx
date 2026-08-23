@@ -178,18 +178,19 @@ export default function ListingPreviewPane({
     );
   }
 
-  // --- the fallback: neither companion is offered -----------------------------
-  // A mount-backed folder, where both gates refuse. The pane must still show
-  // something, and since D443 that something is a plain folder-scoped hint —
-  // there is no selected row left to resolve a template or a metadata card
-  // for. The switcher above still draws both companions, disabled and
-  // explained (paneSideMenu), which is the honest account of why this is what
-  // the pane has to say.
+  // --- the fallback: no companion is offered ----------------------------------
+  // A mount-backed folder, where all three gates refuse (claude, git AND
+  // mcp — paneSideList only falls back here once every one of them has
+  // answered no). The pane must still show something, and since D443 that
+  // something is a plain folder-scoped hint — there is no selected row left
+  // to resolve a template or a metadata card for. The switcher above still
+  // draws all three companions, disabled and explained (paneSideMenu), which
+  // is the honest account of why this is what the pane has to say.
   return (
     <div className="listing-pane">
       {strip()}
       <div className="pane-center">
-        <div className="pane-hint">No chat or Git companion is available for this folder.</div>
+        <div className="pane-hint">No companion is available for this folder.</div>
       </div>
     </div>
   );

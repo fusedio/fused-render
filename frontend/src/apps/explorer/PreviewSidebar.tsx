@@ -184,18 +184,25 @@ export default function PreviewSidebar({
   }, []);
 
   // A width written to the store by SOMETHING ELSE, while this column is up.
-  // There is exactly one such writer and one such moment: the reopen drag
-  // (SideReopenEdge) that just brought this component into existence and is
-  // still running, its strip already unmounted, its pointer still down. Without
-  // this the second half of that gesture would move the cursor and not the edge.
+  // The original such writer and moment: the reopen drag (SideReopenEdge)
+  // that just brought this component into existence and is still running,
+  // its strip already unmounted, its pointer still down. Without this the
+  // second half of that gesture would move the cursor and not the edge.
   //
-  // Nothing else needs it — the divider above owns its own width and only writes
-  // the store at pointer-up (where this fires with the value it already has, and
-  // the identity check below makes it a no-op). The store's header argues the
-  // choice of channel.
+  // Since D443 there is a SECOND writer too — the folder listing's pane
+  // (`listing/pane.ts`) drags this same store — and the value it writes is
+  // clamped into ITS OWN (narrower, 220px) floor, not this sidebar's 380px
+  // one. Applying it unclamped here would let a folder-pane drag open this
+  // column below `MIN_W`, so the value is re-clamped against THIS container
+  // before it lands in `width`, exactly as the mount-time seed and the
+  // resize observer below already do. Unmeasurable (no split element yet) is
+  // the one case left alone — nothing here to clamp against.
   useEffect(() => subscribeSideWidth(() => {
     const w = getSideWidth();
-    if (w !== null) setWidth((prev) => (prev === w ? prev : w));
+    if (w === null) return;
+    const containerW = splitEl()?.getBoundingClientRect().width ?? 0;
+    const clamped = containerW > 0 ? clampSideWidth(w, w, containerW) : w;
+    setWidth((prev) => (prev === clamped ? prev : clamped));
   }), []);
 
   // Pointer capture, like the listing's divider (listing/pane.ts): without it
