@@ -5,6 +5,7 @@ import {
   availableMetrics,
   chartAxisTicks,
   chartSeries,
+  commonDevice,
   comparisonBars,
   defaultCapability,
   defaultModel,
@@ -19,6 +20,8 @@ import {
   leaderboard,
   metricValueForSpec,
   middleEllipsis,
+  niceAxisMax,
+  niceAxisTicks,
   orderCapabilities,
   paddedAxisMax,
   primaryMetric,
@@ -42,6 +45,27 @@ import {
 } from "@apps/ai_models/lib/benchmark";
 
 const MACHINE = { platform: "Darwin", arch: "arm64", cpuCount: 10, totalMemoryBytes: 3.2e10 };
+
+// Two metric fixtures reused across the axis-tick tests below: one ordinary
+// (already in its own display unit — a tick is just a rounded number) and
+// one byte-valued (`peakResidentBytes` stores bytes, but a reader reads
+// memory in MB/GB — see `formatMetricSpecValue`'s own comment on why that key
+// is special-cased to `formatSize`).
+const REALTIME: MetricSpec = {
+  key: "realtimeFactor",
+  label: "Speed",
+  unit: "× realtime",
+  higherIsBetter: true,
+  digits: 1,
+};
+
+const MEMORY: MetricSpec = {
+  key: "peakResidentBytes",
+  label: "Peak memory",
+  unit: "",
+  higherIsBetter: false,
+  digits: 0,
+};
 
 function run(over: Partial<AiBenchmarkRun> = {}): AiBenchmarkRun {
   return {
@@ -495,6 +519,50 @@ describe("rowDetail", () => {
   it("is null for a failed run — its detail comes from failureReason instead", () => {
     expect(rowDetail(run({ ok: false, error: "boom", metrics: {} }), TEXT_METRIC)).toBeNull();
   });
+
+  // The device is noise repeated on every model's row when the hardware
+  // doesn't change between them — dropped whenever it matches the section's
+  // own `expectedDevice` (the third argument, computed by `commonDevice`).
+  it("drops the device when it matches the section's expected device", () => {
+    expect(rowDetail(run({ device: "mps" }), TEXT_METRIC, "mps")).toBe(
+      "TTFT 310 ms · loaded in 8.4 s",
+    );
+  });
+
+  it("keeps the device when it DIFFERS from the section's expected one — the outlier is the signal", () => {
+    expect(rowDetail(run({ device: "cpu" }), TEXT_METRIC, "mps")).toBe(
+      "TTFT 310 ms · loaded in 8.4 s · cpu",
+    );
+  });
+
+  it("keeps the device by default, with no expected device to compare against", () => {
+    // No third argument — the old, always-shown behaviour, for a caller with
+    // no opinion about what this section's hardware "should" be.
+    expect(rowDetail(run(), TEXT_METRIC)).toBe("TTFT 310 ms · loaded in 8.4 s · mps");
+  });
+});
+
+describe("commonDevice", () => {
+  function latest(device: string | null, ok = true): ModelLatest {
+    const record = ok ? run({ device }) : run({ device, ok: false, error: "boom", metrics: {} });
+    return { model: "m", latest: record, delta: null };
+  }
+
+  it("is the device most models report", () => {
+    expect(commonDevice([latest("mps"), latest("mps"), latest("cpu")])).toBe("mps");
+  });
+
+  it("is null with nothing to compare — no false 'expected' to contrast an outlier against", () => {
+    expect(commonDevice([])).toBeNull();
+  });
+
+  it("ignores a failed run's device — it never actually ran on it", () => {
+    expect(commonDevice([latest("mps"), latest("cpu", false)])).toBe("mps");
+  });
+
+  it("is null when every model failed or reported nothing", () => {
+    expect(commonDevice([latest(null), latest(null, false)])).toBeNull();
+  });
 });
 
 describe("failureReason", () => {
@@ -511,18 +579,30 @@ describe("failureReason", () => {
 
 describe("yAxisTicks", () => {
   it("divides the domain into equal, labelled steps from zero to the peak", () => {
-    const ticks = yAxisTicks(100, 1, 4);
+    const ticks = yAxisTicks(100, REALTIME, 4);
     expect(ticks.map((t) => t.value)).toEqual([0, 25, 50, 75, 100]);
     expect(ticks.map((t) => t.label)).toEqual(["0", "25", "50", "75", "100"]);
   });
 
   it("trims trailing zeros the same way every other formatted number does", () => {
-    const ticks = yAxisTicks(1, 2, 4);
+    const ticks = yAxisTicks(1, { ...REALTIME, digits: 2 }, 4);
     expect(ticks.map((t) => t.label)).toEqual(["0", "0.25", "0.5", "0.75", "1"]);
   });
 
   it("has no ticks over an empty domain — there is nothing to draw a scale for", () => {
-    expect(yAxisTicks(0, 1)).toEqual([]);
+    expect(yAxisTicks(0, REALTIME)).toEqual([]);
+  });
+
+  // The bug this fixes: the trend chart's y axis went through `formatNumber`
+  // even for `peakResidentBytes`, which stores raw bytes — a reader picking
+  // "Peak memory" saw the axis printed as "294748160" rather than as memory.
+  // `formatMetricSpecValue` (the same formatter every row's own memory figure
+  // already uses) is what turns a byte count into "MB"/"GB"; every tick this
+  // chart prints has to go through it, memory included, or the next chart to
+  // add a byte-valued metric regresses the exact same way.
+  it("formats a byte metric's ticks through the metric's own formatter, not a bare number", () => {
+    const ticks = yAxisTicks(900 * 1024 * 1024, MEMORY, 4);
+    expect(ticks.map((t) => t.label)).toEqual(["0 B", "225 MB", "450 MB", "675 MB", "900 MB"]);
   });
 });
 
@@ -1061,6 +1141,74 @@ describe("paddedAxisMax", () => {
 
   it("stays zero over an empty domain — nothing to pad", () => {
     expect(paddedAxisMax(0)).toBe(0);
+  });
+});
+
+describe("niceAxisTicks", () => {
+  it("lands on round numbers derived from the peak's magnitude, not an even division of it", () => {
+    // The reported bug: a peak of 859.7 evenly divided into 4 lands on
+    // 214.9 / 429.9 / 644.8 / 859.7 — none of them a number anyone would
+    // choose for an axis. A bar chart has no headroom problem (the winning
+    // bar reaching the end of the axis IS "this is the maximum"), so the top
+    // should be the smallest round number at or past the peak, not a padded
+    // fraction of it.
+    const ticks = niceAxisTicks(859.7, REALTIME, 4);
+    expect(ticks.map((t) => t.value)).toEqual([0, 250, 500, 750, 1000]);
+    // Unlabelled by unit — the section's own metric badge and every row's
+    // value already say "× realtime" once; repeating it on every gridline
+    // would be the wrong kind of literal (see `axisTickLabel`'s own comment).
+    expect(ticks.map((t) => t.label)).toEqual(["0", "250", "500", "750", "1000"]);
+  });
+
+  it("never sets a top below the true peak — every bar must fit inside the axis", () => {
+    const ticks = niceAxisTicks(42, REALTIME, 4);
+    const top = ticks[ticks.length - 1]!.value;
+    expect(top).toBeGreaterThanOrEqual(42);
+  });
+
+  it("picks a round step for a small, sub-1 domain too", () => {
+    const ticks = niceAxisTicks(1, { ...REALTIME, digits: 2 }, 4);
+    expect(ticks.map((t) => t.value)).toEqual([0, 0.25, 0.5, 0.75, 1]);
+  });
+
+  it("has no ticks over an empty domain — there is nothing to draw a scale for", () => {
+    expect(niceAxisTicks(0, REALTIME)).toEqual([]);
+  });
+
+  // The bug this section fixes: switching the Metric select to "Peak memory"
+  // used to plot the axis in raw BYTES (a huge, unreadable integer) because
+  // the tick label went through `formatNumber` instead of the metric's own
+  // formatter. `formatMetricSpecValue` — the same function every bar's own
+  // end-value label already goes through — is what turns a byte count into
+  // "250 MB", and every number this chart prints must go through it, memory
+  // included.
+  it("scales a byte metric's step in a human unit, not raw bytes, and labels it through the metric's own formatter", () => {
+    const peak = 900 * 1024 * 1024; // 900 MB
+    const ticks = niceAxisTicks(peak, MEMORY, 4);
+    expect(ticks.map((t) => t.label)).toEqual(
+      ticks.map((t) => formatMetricSpecValue(t.value, MEMORY)),
+    );
+    // Round in MB, not in bytes — 250 MB steps, not some ragged byte count
+    // that happens to format into an ugly number.
+    expect(ticks.map((t) => t.label)).toEqual(["0 B", "250 MB", "500 MB", "750 MB", "1000 MB"]);
+    expect(ticks[ticks.length - 1]!.value).toBeGreaterThanOrEqual(peak);
+  });
+
+  it("scales a multi-gigabyte byte peak in GB rather than staying in MB", () => {
+    const peak = 2.5 * 1024 ** 3; // 2.5 GB
+    const ticks = niceAxisTicks(peak, MEMORY, 4);
+    expect(ticks.map((t) => t.value)).toEqual([0, 1, 2, 3, 4].map((n) => n * 1024 ** 3));
+    expect(ticks[ticks.length - 1]!.value).toBeGreaterThanOrEqual(peak);
+  });
+});
+
+describe("niceAxisMax", () => {
+  it("is the top tick niceAxisTicks would draw", () => {
+    expect(niceAxisMax(859.7, REALTIME, 4)).toBe(1000);
+  });
+
+  it("stays zero over an empty domain", () => {
+    expect(niceAxisMax(0, REALTIME)).toBe(0);
   });
 });
 

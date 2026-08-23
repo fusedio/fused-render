@@ -37,7 +37,7 @@
 // against the frame, was the bug this fixes). There is still no separate
 // "peak N unit" caption — the aria-label states the true peak in words, and
 // the chart itself is for seeing the shape, not reading the exact top tick.
-import { MIN_TREND_POINTS, chartAxisTicks, chartSeries, formatNumber, paddedAxisMax, type MetricSpec, yAxisTicks } from "@apps/ai_models/lib/benchmark";
+import { MIN_TREND_POINTS, chartAxisTicks, chartSeries, formatMetricSpecValue, paddedAxisMax, type MetricSpec, yAxisTicks } from "@apps/ai_models/lib/benchmark";
 import type { AiBenchmarkRun } from "@platform/lib/api";
 
 // The plot's own coordinate space. Taller than the old 160px box — this chart
@@ -90,7 +90,7 @@ export function ModelTrendChart({
   const pxPct = (x: number) => (px(x) / W) * 100;
   const pyPct = (y: number) => (py(y) / H) * 100;
 
-  const ticks = yAxisTicks(axisMax, metric.digits, 3);
+  const ticks = yAxisTicks(axisMax, metric, 3);
 
   // Three x ticks at most — first run, the middle one, last run — never a
   // claim of even spacing the runs don't have (see the file header on why the
@@ -133,7 +133,7 @@ export function ModelTrendChart({
             preserveAspectRatio="none"
             className="am-bench-plot"
             role="img"
-            aria-label={`${metric.label} across ${runs.length} runs, peak ${yMax.toFixed(metric.digits)} ${metric.unit}`}
+            aria-label={`${metric.label} across ${runs.length} runs, peak ${formatMetricSpecValue(yMax, metric)}`}
           >
             {/* Gridlines for every tick, including the zero baseline — one
                 rule rather than a special-cased "axis line" plus separate
@@ -187,7 +187,7 @@ export function ModelTrendChart({
               transform: `translate(${translateX}, ${translateY})`,
             }}
           >
-            {formatNumber(last.y, metric.digits)} {metric.unit}
+            {formatMetricSpecValue(last.y, metric)}
           </span>
         </div>
       </div>

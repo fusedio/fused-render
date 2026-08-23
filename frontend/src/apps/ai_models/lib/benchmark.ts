@@ -313,7 +313,11 @@ export function rowHeadline(run: AiBenchmarkRun, metric: MetricSpec | null): str
  *  this line exactly when one of them is the thing the headline is already
  *  showing.
  */
-export function rowDetail(run: AiBenchmarkRun, metric: MetricSpec | null): string | null {
+export function rowDetail(
+  run: AiBenchmarkRun,
+  metric: MetricSpec | null,
+  expectedDevice: string | null = null,
+): string | null {
   if (!run.ok) return null;
   const parts: string[] = [];
   const ttft = metricValue(run, "ttftMs");
@@ -323,7 +327,17 @@ export function rowDetail(run: AiBenchmarkRun, metric: MetricSpec | null): strin
   if (run.loadSeconds !== null && metric?.key !== "loadSeconds") {
     parts.push(`loaded in ${formatLoad(run)}`);
   }
-  if (run.device) parts.push(run.device);
+  // The device is USUALLY the same string for every model on one machine —
+  // repeating it on every row is noise, so it is DROPPED whenever it matches
+  // `expectedDevice` (the capability's own common device — `commonDevice`
+  // below computes it, and `BenchmarkTab.tsx` is the one caller that knows
+  // it). It is KEPT when it differs: a runner falling back to CPU for one
+  // model while everything else in the section runs on `mps` is exactly the
+  // fact a reader wants surfaced, and that is the outlier this rule exists to
+  // preserve rather than delete along with the repetition. Defaults to null
+  // (never matches a real device string) so a caller with no opinion about
+  // what is "expected" gets the old, always-shown behaviour.
+  if (run.device && run.device !== expectedDevice) parts.push(run.device);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
@@ -343,6 +357,42 @@ export interface ModelLatest {
    *  that the model still works. */
   latest: AiBenchmarkRun;
   delta: BenchmarkDelta | null;
+}
+
+/** The device most of a capability's benchmarked models last ran on — the
+ *  "expected" device `rowDetail` compares each model's own device against to
+ *  decide whether it is worth printing.
+ *
+ *  On one machine every model almost always reports the SAME device (`mps`,
+ *  `cuda`, `cpu`) — the hardware does not change per model — which is exactly
+ *  why the per-model detail line drops it by default. But "almost always" is
+ *  not "always": a runner that falls back to CPU for one model while every
+ *  other model in the section runs on `mps` is a genuinely interesting fact,
+ *  and the model whose device does not match this one is the outlier that
+ *  fact belongs to.
+ *
+ *  A plurality vote across every LATEST run in the section, not a strict
+ *  unanimous check — one outlier must not blank the "expected" device for
+ *  everyone else, which a `some row disagrees -> no consensus` rule would do.
+ *  Ties and an all-null section fall back to null, in which case `rowDetail`
+ *  shows every model's device: with no majority to call "expected", nothing
+ *  is an outlier either.
+ */
+export function commonDevice(rows: ModelLatest[]): string | null {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const device = row.latest.ok ? row.latest.device : null;
+    if (device) counts.set(device, (counts.get(device) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [device, count] of counts) {
+    if (count > bestCount) {
+      best = device;
+      bestCount = count;
+    }
+  }
+  return best;
 }
 
 /** Runs for one capability, oldest first. Order is the store's own append
@@ -473,6 +523,29 @@ export interface AxisTick {
   label: string;
 }
 
+/** `value` formatted the way ITS OWN chart tick should read.
+ *
+ *  A byte-valued metric (only `peakResidentBytes` today) goes through
+ *  `formatSize` — the identical formatter every leaderboard row's own memory
+ *  figure and every comparison-chart bar's own end-value label already use —
+ *  because the STORED unit (bytes) is never what a reader reads an axis in;
+ *  "294748160" is not a number anyone reads as memory, where "281 MB" is.
+ *  Every other metric already stores its own display unit, so a tick is just
+ *  its rounded number, unlabelled — the unit itself is stated once already,
+ *  by the section's metric badge and by every row's own value, and repeating
+ *  it on every gridline would be the wrong kind of literal.
+ *
+ *  **One function for every axis this tab draws** (`yAxisTicks` below and
+ *  `niceAxisTicks`), so a byte-valued metric added after this one gets the
+ *  fix for free rather than needing its own axis to remember it — the bug
+ *  this exists to prevent was exactly a chart that forgot, and reformatted a
+ *  raw byte count as a bare number.
+ */
+function axisTickLabel(value: number, metric: MetricSpec): string {
+  if (metric.key === "peakResidentBytes") return formatSize(value);
+  return formatNumber(value, metric.digits);
+}
+
 /** `count + 1` evenly spaced gridlines from 0 to `yMax`, the chart's own
  *  domain — not a "nice round number" scale that would need to EXTEND the
  *  domain past the tallest point to land on one. Equal division always ends
@@ -482,13 +555,17 @@ export interface AxisTick {
  *  Empty over an empty domain: a scale with a top of zero is not a scale for
  *  anything, and the chart already draws nothing in that case (see
  *  `BenchmarkChart`).
+ *
+ *  Used by `ModelTrendChart`, against its own `paddedAxisMax` domain — see
+ *  `niceAxisTicks` below for the COMPARISON chart's own, differently-shaped
+ *  axis (round numbers past the raw peak, no padding).
  */
-export function yAxisTicks(yMax: number, digits: number, count = 4): AxisTick[] {
+export function yAxisTicks(yMax: number, metric: MetricSpec, count = 4): AxisTick[] {
   if (yMax <= 0) return [];
   const ticks: AxisTick[] = [];
   for (let i = 0; i <= count; i++) {
     const value = (yMax * i) / count;
-    ticks.push({ value, label: formatNumber(value, digits) });
+    ticks.push({ value, label: axisTickLabel(value, metric) });
   }
   return ticks;
 }
@@ -927,6 +1004,93 @@ export function trendKind(pointCount: number): TrendKind {
  */
 export function paddedAxisMax(peak: number): number {
   return peak > 0 ? peak * 1.2 : 0;
+}
+
+/** The "loose" round-number ladder a nice axis step is chosen from — the same
+ *  set most charting libraries use (D3's `nice()` among them): steps of 1, 2
+ *  or 5 read as round at a glance, and 2.5 is what keeps a domain like 1000
+ *  from being forced into a step of either 200 (five ticks too many) or 500
+ *  (only two ticks) — 250 is the one that actually lands on 0/250/500/750/1000.
+ */
+const NICE_STEP_MULTIPLES = [1, 2, 2.5, 5, 10];
+
+/** The smallest value in `NICE_STEP_MULTIPLES`'s ladder, scaled to `rawStep`'s
+ *  own magnitude, that is still `>= rawStep` — so `count` of them never
+ *  undershoots the peak they are meant to cover. `0` over a non-positive
+ *  input, which every caller already guards before multiplying by it. */
+function niceStep(rawStep: number): number {
+  if (rawStep <= 0) return 0;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const residual = rawStep / magnitude;
+  const multiple = NICE_STEP_MULTIPLES.find((m) => residual <= m + 1e-9) ?? 10;
+  return multiple * magnitude;
+}
+
+/** The byte ladder a byte-valued metric's NICE STEP is chosen WITHIN — the
+ *  same KB/MB/GB/TB rungs `formatSize` (every row's own memory figure) would
+ *  pick for a value near `peak`. Stepping directly in raw bytes produces a
+ *  step that is round in bytes but ugly once formatted (a "nice" 250 million
+ *  byte step reads as "238 MB", not "250 MB") — this is the one place that
+ *  has to know the ladder exists, so every other metric (already stored in
+ *  its own display unit) needs no equivalent. */
+function byteStepDivisor(peak: number): number {
+  const KB = 1024;
+  const MB = KB * 1024;
+  const GB = MB * 1024;
+  const TB = GB * 1024;
+  if (peak >= TB) return TB;
+  if (peak >= GB) return GB;
+  if (peak >= MB) return MB;
+  if (peak >= KB) return KB;
+  return 1;
+}
+
+/** The COMPARISON chart's own axis ticks: ROUND numbers derived from `peak`'s
+ *  magnitude — 0/250/500/750/1000 style — never an even division of the raw
+ *  peak (`yAxisTicks`'s job, for a chart that DOES need headroom past its
+ *  peak — a line chart's, not a bar chart's; see `ComparisonChart.tsx`'s own
+ *  comment on why a bar reaching the end of its axis is exactly how "this is
+ *  the maximum" should read, not a defect to pad away).
+ *
+ *  The reported bug: 859.7 divided evenly into 4 lands on 214.9 / 429.9 /
+ *  644.8 / 859.7 — a padded top on top of THAT (`paddedAxisMax`, the old
+ *  code path) made it worse, landing on 343.9 / 687.7 / 1031.6. None of those
+ *  is a number a reader would ever choose for a scale. `niceStep` is what
+ *  fixes it: the smallest round step (from `NICE_STEP_MULTIPLES`'s ladder)
+ *  that still covers the peak in `count` steps, so the axis top is always
+ *  `>= peak` without ever being a padded fraction of it.
+ *
+ *  `metric` decides the unit the rounding happens WITHIN — a byte-valued
+ *  metric rounds in KB/MB/GB/TB (`byteStepDivisor`), matching what
+ *  `formatSize` would print for a value near the peak, so "round" and
+ *  "reads clean once formatted" are the same claim; every other metric rounds
+ *  directly in its own stored unit, since that unit IS what a tick already
+ *  reads in. Every label goes through `axisTickLabel`, the same formatter
+ *  `yAxisTicks` uses — one function, so a byte-valued metric added later gets
+ *  the fix for free rather than needing its own axis to remember it.
+ */
+export function niceAxisTicks(peak: number, metric: MetricSpec, count = 4): AxisTick[] {
+  if (peak <= 0) return [];
+  const divisor = metric.key === "peakResidentBytes" ? byteStepDivisor(peak) : 1;
+  const step = niceStep(peak / divisor / count) * divisor;
+  if (step <= 0) return [];
+  const ticks: AxisTick[] = [];
+  for (let i = 0; i <= count; i++) {
+    const value = step * i;
+    ticks.push({ value, label: axisTickLabel(value, metric) });
+  }
+  return ticks;
+}
+
+/** The top of `niceAxisTicks`' own domain — always `>= peak` (never a padded
+ *  FRACTION of it, unlike `paddedAxisMax`; a bar chart has no headroom
+ *  problem to pad away). Just the last tick `niceAxisTicks` would draw,
+ *  pulled out on its own because `ComparisonChart` needs the number to scale
+ *  every bar's own `width: N%` against, separately from the tick labels
+ *  themselves. */
+export function niceAxisMax(peak: number, metric: MetricSpec, count = 4): number {
+  const ticks = niceAxisTicks(peak, metric, count);
+  return ticks.length > 0 ? ticks[ticks.length - 1]!.value : 0;
 }
 
 export interface ComparisonBar {

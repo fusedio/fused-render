@@ -28,7 +28,7 @@
 // already produces "shortest bar wins" for a lower-is-better metric (the
 // winner's raw number is the smallest one), which is correct, not something
 // to invert.
-import { formatMetricSpecValue, middleEllipsis, paddedAxisMax, shortModelName, yAxisTicks, type ComparisonBar, type MetricSpec } from "@apps/ai_models/lib/benchmark";
+import { formatMetricSpecValue, middleEllipsis, niceAxisTicks, shortModelName, type ComparisonBar, type MetricSpec } from "@apps/ai_models/lib/benchmark";
 
 export function ComparisonChart({
   bars,
@@ -49,12 +49,18 @@ export function ComparisonChart({
 
   let peak = 0;
   for (const bar of bars) if (bar.value > peak) peak = bar.value;
-  // The domain top is padded past the true peak — see ModelTrendChart's own
-  // comment on why (the best bar must not touch the frame's far edge, which
-  // reads as clipped rather than as the best result).
-  const axisMax = paddedAxisMax(peak);
-  if (axisMax <= 0) return null;
-  const ticks = yAxisTicks(axisMax, metric.digits, 3);
+  // **No padding here, on purpose — this is a BAR chart, not a line chart.**
+  // `ModelTrendChart` pads its domain because a line's topmost POINT must not
+  // sit pinned to the frame's own edge, which reads as clipped. A bar has no
+  // such problem: a bar reaching the end of the axis IS exactly how "this is
+  // the maximum" should read. `niceAxisTicks` picks the axis's own top —
+  // always `>= peak`, in ROUND numbers derived from its magnitude
+  // (0/250/500/750/1000 style), never an even division of the raw peak
+  // (859.7 divided into 3 used to land on 343.9/687.7/1031.6 — not a number
+  // anyone would choose for a scale) — see its own comment in lib/benchmark.ts.
+  const ticks = niceAxisTicks(peak, metric, 4);
+  if (ticks.length === 0) return null;
+  const axisMax = ticks[ticks.length - 1]!.value;
   const pct = (value: number) => (value / axisMax) * 100;
 
   return (
