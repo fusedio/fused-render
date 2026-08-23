@@ -825,7 +825,7 @@ def run(model: str, capability: str) -> dict:
        reading two numbers side by side.
     4. The timed pass.
     5. Memory and device off `describe()`.
-    6. **Unload, if step 2 loaded it** (D445) — success, failure or exception
+    6. **Unload, if step 2 loaded it** (D446) — success, failure or exception
        alike. A benchmark is a measurement, not a claim on the model's
        residency, so a cold run must not leave gigabytes parked after the
        button stops spinning; a WARM run (step 2 returned `None`) unloads
@@ -883,7 +883,7 @@ def run(model: str, capability: str) -> dict:
                 model, capability)
             record["ok"] = True
         finally:
-            # D445: a benchmark that had to COLD-LOAD the model tears it back
+            # D446: a benchmark that had to COLD-LOAD the model tears it back
             # down when it is done — success, a failed workload, a timeout, or
             # an exception mid-measurement alike, which is exactly the `finally`
             # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`
