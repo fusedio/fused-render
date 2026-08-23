@@ -465,14 +465,40 @@ def reset() -> None:
 # --------------------------------------------------------------------- reading
 
 
-def list_jobs(*, now: float | None = None) -> list[dict]:
+def list_jobs(*, now: float | None = None, mark_read: bool = False) -> list[dict]:
     """Every live record, oldest first.
 
     Ascending by start time so rows never reorder under the pointer: a new job
     appends at the BOTTOM of the column, nearest the screen edge the eye is
     already on — the same ordering rule the toast stack above it follows.
 
-    This is the ONE place `first_read_at` gets set — not `upsert`'s own
+    **`mark_read` defaults to False, and that default is deliberate, not an
+    oversight to fix later.** This function is not only the shell's `GET
+    /api/jobs` — `grep -rn "list_jobs(" fused_render/` also finds
+    `supervisor._cancel_state` (polled every `_CANCEL_CHECK_INTERVAL_S`,
+    0.5s, for the whole duration of every model load) and
+    `capture._cancel_requested` (an internal cancel poll of its own), neither
+    of which is a person looking at the corner. If this function marked rows
+    read by default, a scheduled run finishing while any model happened to be
+    loading would get `first_read_at` stamped by the supervisor's own poll
+    within half a second, with no browser anywhere — the row would sweep
+    `FINISHED_TTL_S` later with nobody having seen it, which is exactly the
+    failure the read gate exists to prevent, reached through a different
+    door, and silently: the same scheduled run would be visible or invisible
+    depending on whether a model happened to be loading. Only
+    `routers/jobs.py`'s `GET /api/jobs` — the one client-facing read of this
+    list — passes `mark_read=True`.
+
+    **The asymmetry that decides the default:** a row that never gets marked
+    lingers for up to `FINISHED_UNREAD_DROP_S` (10 minutes) before the
+    backstop takes it — a cosmetic cost, an extra row on screen. A row marked
+    by a caller that was never actually looking loses the outcome entirely
+    within `FINISHED_TTL_S` (3s) — not cosmetic, the exact failure this whole
+    feature exists to prevent. Between "row lingers too long" and "row
+    vanishes before anyone saw it", the safe default is the one that can only
+    ever err toward lingering.
+
+    This is the ONE place `first_read_at` CAN be set — not `upsert`'s own
     `_public` call when a reporter's tick lands it on a terminal state,
     which is a WRITE the reporter sees, not a READ the corner made. Setting
     it there would restart the exact bug FINISHED_TTL_S's read-gating
@@ -481,17 +507,18 @@ def list_jobs(*, now: float | None = None) -> list[dict]:
 
     **Order matters**: `_sweep` runs FIRST, against whatever `first_read_at`
     values already existed from an EARLIER call, and only THEN does this
-    function mark newly-terminal rows as read for THIS call. A row can
-    therefore never be swept in the same call that first reveals it — the
-    sweep that could act on today's read already ran before today's read
-    happened.
+    function (when `mark_read`) mark newly-terminal rows as read for THIS
+    call. A row can therefore never be swept in the same call that first
+    reveals it — the sweep that could act on today's read already ran before
+    today's read happened.
     """
     now = time.time() if now is None else now
     with _lock:
         _sweep(now)
-        for job in _jobs.values():
-            if job.state != RUNNING and job.first_read_at is None:
-                job.first_read_at = now
+        if mark_read:
+            for job in _jobs.values():
+                if job.state != RUNNING and job.first_read_at is None:
+                    job.first_read_at = now
         jobs = sorted(_jobs.values(), key=lambda j: (j.started_at, j.id))
         return [_public(job, now) for job in jobs]
 

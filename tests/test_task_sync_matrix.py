@@ -132,7 +132,7 @@ def _entry(entry_id=None):
 
 
 def _job(entry_id):
-    rows = [j for j in jobs.list_jobs() if j["id"] == "sys:schedule:" + entry_id]
+    rows = [j for j in jobs.list_jobs(mark_read=True) if j["id"] == "sys:schedule:" + entry_id]
     return rows[0] if rows else None
 
 
@@ -579,10 +579,10 @@ def test_done_job_row_survives_long_enough_for_the_dock(target, spawned):
     t0 = time.time()
     assert _job(entry["id"])["state"] == "done"
     # still there through the TTL window...
-    rows = jobs.list_jobs(now=t0 + jobs.FINISHED_TTL_S - 1)
+    rows = jobs.list_jobs(now=t0 + jobs.FINISHED_TTL_S - 1, mark_read=True)
     assert any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
     # ...and swept after it
-    rows = jobs.list_jobs(now=t0 + jobs.FINISHED_TTL_S + 60)
+    rows = jobs.list_jobs(now=t0 + jobs.FINISHED_TTL_S + 60, mark_read=True)
     assert not any(j["id"] == "sys:schedule:" + entry["id"] for j in rows)
 
 
@@ -591,7 +591,7 @@ def test_error_job_row_stays_until_dismissed(target, spawned):
     _tick()
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),
                         {"session_id": "s", "done": True, "error": "boom"})
-    rows = jobs.list_jobs(now=time.time() + 3600)
+    rows = jobs.list_jobs(now=time.time() + 3600, mark_read=True)
     assert any(j["id"] == "sys:schedule:" + entry["id"]
                and j["state"] == "error" for j in rows)
 

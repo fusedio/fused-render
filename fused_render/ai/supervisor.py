@@ -879,6 +879,13 @@ def _cancel_state(job: str) -> bool | None:
 
     Callers that can act on the distinction take the tri-state; the rest keep
     the boolean below, whose behaviour is unchanged.
+
+    Deliberately calls `jobs.list_jobs()` with its default `mark_read=False`:
+    this is a poll of our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole
+    duration of every model load), not a person looking at the corner, and
+    marking a terminal row read here would start its retention clock from a
+    poll nobody ever saw — see `list_jobs`'s own docstring, which names this
+    exact function as the reason `mark_read` defaults to False.
     """
     for record in jobs.list_jobs():
         if record["id"] == job:

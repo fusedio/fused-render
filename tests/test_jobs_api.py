@@ -46,6 +46,20 @@ def listing(client):
     return res.json()["jobs"]
 
 
+def read_jobs(*, now=None):
+    """Simulates the shell's `GET /api/jobs` — the ONE call allowed to start a
+    finished row's retention clock. Most of this file calls `jobs.list_jobs`
+    directly (rather than through `client`) so a test can control `now`
+    precisely; `jobs.list_jobs` itself defaults `mark_read` to False because
+    it has internal callers too (`supervisor._cancel_state`'s poll,
+    `capture._cancel_requested`'s) that must never start that clock — see
+    that function's own docstring. This wrapper is what makes a direct
+    `jobs.list_jobs` call in a test actually model the client read it is
+    standing in for.
+    """
+    return jobs.list_jobs(now=now, mark_read=True)
+
+
 # ------------------------------------------------------------------ reporting
 
 
@@ -195,9 +209,9 @@ def test_a_stalled_row_can_be_dismissed():
     was, because they closed the page."""
     jobs.upsert({"id": "gone", "title": "abandoned"}, now=1000.0)
     at = 1000.0 + jobs.STALE_AFTER_S + 1
-    assert jobs.list_jobs(now=at)[0]["stalled"] is True
+    assert read_jobs(now=at)[0]["stalled"] is True
     assert jobs.dismiss("gone", now=at) is True
-    assert jobs.list_jobs(now=at) == []
+    assert read_jobs(now=at) == []
 
 
 def test_a_dismissed_row_does_not_come_back_on_a_late_tick(client):
@@ -226,11 +240,11 @@ def test_a_dismissal_silences_late_ticks_but_not_a_fresh_start():
     # long it keeps at it.
     jobs.upsert({"id": "flux:job", "done": 5}, now=1002.0)
     jobs.upsert({"id": "flux:job", "state": "error", "message": "late"}, now=1600.0)
-    assert jobs.list_jobs(now=1600.0) == []
+    assert read_jobs(now=1600.0) == []
 
     # A new run announcing itself. Same name, different job — it gets its row.
     jobs.upsert({"id": "flux:job", "title": "run two", "state": "running"}, now=1003.0)
-    assert [r["title"] for r in jobs.list_jobs(now=1003.0)] == ["run two"]
+    assert [r["title"] for r in read_jobs(now=1003.0)] == ["run two"]
 
 
 def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):
@@ -254,15 +268,15 @@ def test_a_read_row_ages_out_but_an_error_never_does():
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
     jobs.upsert({"id": "bad", "title": "b", "state": "error", "message": "boom"}, now=1000.0)
 
-    first_read = {r["id"] for r in jobs.list_jobs(now=1000.0)}
+    first_read = {r["id"] for r in read_jobs(now=1000.0)}
     assert first_read == {"ok", "bad"}, "a row must not be swept on the read that first reveals it"
 
-    still_there = {r["id"] for r in jobs.list_jobs(now=1000.0 + jobs.FINISHED_TTL_S - 1)}
+    still_there = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S - 1)}
     assert still_there == {"ok", "bad"}
 
     # An error is the one outcome the user may have to act on, so it stays
     # until dismissed — the persistent-error toast's rule.
-    later = {r["id"] for r in jobs.list_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
+    later = {r["id"] for r in read_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
     assert later == {"bad"}
 
 
@@ -273,14 +287,14 @@ def test_an_unread_finished_row_survives_indefinitely_until_the_backstop():
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
 
     # Long past FINISHED_TTL_S, but never read — still there.
-    still_there = jobs.list_jobs(now=1000.0 + jobs.FINISHED_TTL_S * 100)
+    still_there = read_jobs(now=1000.0 + jobs.FINISHED_TTL_S * 100)
     assert [r["id"] for r in still_there] == ["ok"]
 
     # That very call was the first read, so its OWN retention clock now
     # starts from here — not from the original `finished_at` of 1000.0.
     read_at = 1000.0 + jobs.FINISHED_TTL_S * 100
-    assert jobs.list_jobs(now=read_at + jobs.FINISHED_TTL_S - 1) != []
-    assert jobs.list_jobs(now=read_at + jobs.FINISHED_TTL_S + 1) == []
+    assert read_jobs(now=read_at + jobs.FINISHED_TTL_S - 1) != []
+    assert read_jobs(now=read_at + jobs.FINISHED_TTL_S + 1) == []
 
 
 def test_a_never_read_row_is_still_bounded_by_the_unread_backstop():
@@ -288,7 +302,7 @@ def test_a_never_read_row_is_still_bounded_by_the_unread_backstop():
     (`_sweep`'s own docstring) — a lone unread row well under the cap needs a
     DIFFERENT ceiling, or a headless process would carry it forever."""
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
-    assert jobs.list_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) == []
+    assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) == []
 
 
 def test_an_unread_error_outlives_even_the_unread_backstop():
@@ -297,19 +311,54 @@ def test_an_unread_error_outlives_even_the_unread_backstop():
     an error nobody has read yet must survive well past `FINISHED_UNREAD_DROP_S`
     too, not just past `FINISHED_TTL_S`."""
     jobs.upsert({"id": "bad", "title": "b", "state": "error", "message": "boom"}, now=1000.0)
-    assert jobs.list_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
+    assert read_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
+
+
+def test_an_internal_caller_listing_jobs_does_not_start_the_retention_clock():
+    """`jobs.list_jobs()` is not only the shell's `GET /api/jobs` —
+    `supervisor._cancel_state` (polled every 0.5s for the whole duration of
+    every model load) and `capture._cancel_requested` call it too, with no
+    client ever having asked to see the row. If a plain `list_jobs()` call
+    started the retention clock, a scheduled run finishing while any model
+    happened to be loading would get `first_read_at` stamped by that internal
+    poll within half a second, and the row would sweep `FINISHED_TTL_S` later
+    with nobody having ever actually seen it — precisely the failure the read
+    gate exists to prevent, reached through a different door, and silently:
+    the same run would be visible or invisible depending on whether a model
+    happened to be loading at the time.
+
+    So a plain `jobs.list_jobs()` (the shape every internal caller uses, and
+    the shape a future internal caller would reach for first) must leave the
+    row exactly as unread as it found it — proven here by reading it a great
+    many times without `mark_read`, then confirming a REAL read still gets
+    the row's full `FINISHED_TTL_S` window from that point.
+    """
+    jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
+
+    # Simulates the supervisor's cancel poll: many reads, none of them real.
+    for i in range(20):
+        rows = jobs.list_jobs(now=1000.0 + i * 0.5)
+        assert any(r["id"] == "ok" for r in rows), "swept despite never being read"
+
+    # A real read finally arrives, long after the row finished — and it must
+    # still get the FULL FINISHED_TTL_S window from HERE, not find the row
+    # already gone or already partway through a clock nobody started for it.
+    real_read_at = 1000.0 + 20 * 0.5
+    assert any(r["id"] == "ok" for r in read_jobs(now=real_read_at))
+    assert any(r["id"] == "ok" for r in read_jobs(now=real_read_at + jobs.FINISHED_TTL_S - 1))
+    assert not any(r["id"] == "ok" for r in read_jobs(now=real_read_at + jobs.FINISHED_TTL_S + 1))
 
 
 def test_a_reporter_that_went_quiet_reads_as_stalled_then_disappears():
     jobs.upsert({"id": "a", "title": "t"}, now=1000.0)
 
-    assert jobs.list_jobs(now=1000.0 + jobs.STALE_AFTER_S - 1)[0]["stalled"] is False
+    assert read_jobs(now=1000.0 + jobs.STALE_AFTER_S - 1)[0]["stalled"] is False
     # Its page was closed mid-download. The work is probably still running —
     # which is why the row stays and is merely marked, not deleted.
-    assert jobs.list_jobs(now=1000.0 + jobs.STALE_AFTER_S + 1)[0]["stalled"] is True
+    assert read_jobs(now=1000.0 + jobs.STALE_AFTER_S + 1)[0]["stalled"] is True
     # A late tick un-stalls it without any timer having to fire.
     jobs.upsert({"id": "a", "done": 5}, now=1000.0 + jobs.STALE_AFTER_S + 2)
-    assert jobs.list_jobs(now=1000.0 + jobs.STALE_AFTER_S + 3)[0]["stalled"] is False
+    assert read_jobs(now=1000.0 + jobs.STALE_AFTER_S + 3)[0]["stalled"] is False
 
 
 def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
@@ -327,17 +376,17 @@ def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
     # The row has to be READ before FINISHED_TTL_S starts counting against it
     # — this call is that read, and establishes the clock at `read_at`.
     read_at = 1001.0
-    assert jobs.list_jobs(now=read_at) != []
+    assert read_jobs(now=read_at) != []
     aged = read_at + jobs.FINISHED_TTL_S + 1
-    assert jobs.list_jobs(now=aged) == []
+    assert read_jobs(now=aged) == []
 
     jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=aged + 0.1)
-    assert jobs.list_jobs(now=aged + 0.2) == []
+    assert read_jobs(now=aged + 0.2) == []
 
     # ...and the one case that SHOULD bring it back still does: a new run
     # announcing itself.
     jobs.upsert({"id": "w", "title": "Model", "state": "running"}, now=aged + 1)
-    assert [r["state"] for r in jobs.list_jobs(now=aged + 1)] == ["running"]
+    assert [r["state"] for r in read_jobs(now=aged + 1)] == ["running"]
 
 
 def test_eviction_under_the_cap_does_not_silence_a_live_reporter():
@@ -348,10 +397,10 @@ def test_eviction_under_the_cap_does_not_silence_a_live_reporter():
     for i in range(jobs.MAX_JOBS + 1):
         jobs.upsert({"id": f"j{i}", "title": "x"}, now=1000.0 + i * 0.01)
     at = 1000.0 + jobs.MAX_JOBS * 0.01
-    assert len(jobs.list_jobs(now=at)) == jobs.MAX_JOBS
+    assert len(read_jobs(now=at)) == jobs.MAX_JOBS
     # j0 was evicted; its next ordinary tick puts it back.
     jobs.upsert({"id": "j0", "title": "x", "done": 5}, now=at)
-    assert "j0" in {r["id"] for r in jobs.list_jobs(now=at)}
+    assert "j0" in {r["id"] for r in read_jobs(now=at)}
 
 
 def test_live_SERVER_work_is_never_evicted_by_the_cap():
@@ -373,7 +422,7 @@ def test_live_SERVER_work_is_never_evicted_by_the_cap():
                      "title": f"rec{i}.m4a", "state": "running"},
                     server=True, now=1000.0 + i * 0.01)
     at = 1000.0 + jobs.MAX_JOBS * 2 * 0.01
-    rows = jobs.list_jobs(now=at)
+    rows = read_jobs(now=at)
     assert len(rows) == jobs.MAX_JOBS * 2, "live server rows were evicted"
     assert all(r["owner"] == jobs.OWNER_SERVER for r in rows)
 
@@ -400,7 +449,7 @@ def test_live_server_rows_do_not_push_PAGE_rows_out():
                     now=1000.7 + i * 0.01)
     at = 1001.0
 
-    rows = jobs.list_jobs(now=at)
+    rows = read_jobs(now=at)
     page = [r for r in rows if r["owner"] == jobs.OWNER_PAGE]
     assert len(page) == 3, "live server work evicted the page's own rows"
     assert len(rows) == 73
@@ -416,7 +465,7 @@ def test_the_cap_still_bites_on_page_owned_rows():
         jobs.upsert({"id": f"page{i}", "title": "x", "state": "running"},
                     now=1000.0 + i * 0.01)
     at = 1000.0 + (jobs.MAX_JOBS + 10) * 0.01
-    assert len(jobs.list_jobs(now=at)) == jobs.MAX_JOBS
+    assert len(read_jobs(now=at)) == jobs.MAX_JOBS
 
 
 def test_a_watcher_SEES_THE_OUTCOME_of_a_job_that_finishes_under_a_full_queue():
@@ -443,7 +492,7 @@ def test_a_watcher_SEES_THE_OUTCOME_of_a_job_that_finishes_under_a_full_queue():
     failed = f"{jobs.SERVER_ID_PREFIX}ai-transcribe:5"
     jobs.upsert({"id": failed, "title": "rec5.m4a", "state": "error",
                  "message": "the decoder exploded"}, server=True, now=at)
-    seen = {r["id"]: r for r in jobs.list_jobs(now=at)}.get(failed)
+    seen = {r["id"]: r for r in read_jobs(now=at)}.get(failed)
     assert seen is not None, "the terminal row was evicted before any watcher saw it"
     assert seen["state"] == "error" and "exploded" in seen["message"]
 
@@ -452,7 +501,7 @@ def test_a_watcher_SEES_THE_OUTCOME_of_a_job_that_finishes_under_a_full_queue():
     stopped = f"{jobs.SERVER_ID_PREFIX}ai-transcribe:6"
     jobs.upsert({"id": stopped, "title": "rec6.m4a", "state": "cancelled"},
                 server=True, now=at)
-    seen = {r["id"]: r for r in jobs.list_jobs(now=at)}.get(stopped)
+    seen = {r["id"]: r for r in read_jobs(now=at)}.get(stopped)
     assert seen is not None and seen["state"] == "cancelled"
 
 
@@ -474,7 +523,7 @@ def test_finished_server_rows_are_still_capped():
         jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live{i}",
                      "title": "rec.m4a", "state": "running"}, server=True, now=at)
 
-    ids = {r["id"] for r in jobs.list_jobs(now=at)}
+    ids = {r["id"] for r in read_jobs(now=at)}
     # The two oldest finished rows paid; every live row survived.
     assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old0" not in ids
     assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old1" not in ids
@@ -489,12 +538,12 @@ def test_a_stale_server_row_is_still_dropped_by_the_AGE_sweep():
     a crashed worker's row would sit on the screen for the session."""
     jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:zombie",
                  "title": "x", "state": "running"}, server=True, now=1000.0)
-    assert jobs.list_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
+    assert read_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
 
 
 def test_a_dead_reporter_cannot_wedge_the_list_for_the_session():
     jobs.upsert({"id": "a", "title": "t"}, now=1000.0)
-    assert jobs.list_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
+    assert read_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
 
 
 def test_over_the_cap_the_live_work_is_what_survives():
@@ -506,7 +555,7 @@ def test_over_the_cap_the_live_work_is_what_survives():
     at = 1000.0 + jobs.MAX_JOBS * 0.01
     jobs.upsert({"id": "live", "title": "downloading"}, now=at)
 
-    ids = [r["id"] for r in jobs.list_jobs(now=at)]
+    ids = [r["id"] for r in read_jobs(now=at)]
     assert len(ids) == jobs.MAX_JOBS
     assert "live" in ids
     assert "done0" not in ids  # the oldest finished row is the one that went

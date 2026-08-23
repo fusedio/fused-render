@@ -40,9 +40,16 @@ def api_jobs_list():
     a client subtracting its own `Date.now()` from a server timestamp shows a
     job as stalled (or as finishing in the future) whenever the browser tab has
     been throttled or the timestamps crossed a suspend.
+
+    **This is the ONE caller that passes `mark_read=True`.** `list_jobs`
+    defaults it to False because the function has internal callers too
+    (`supervisor._cancel_state`'s poll, `capture._cancel_requested`'s), and
+    only an actual client asking "what should I draw" may start a finished
+    row's retention clock — see `list_jobs`'s own docstring for what goes
+    wrong if an internal poll starts it instead. This route is that client.
     """
     now = time.time()
-    return {"jobs": jobs_mod.list_jobs(now=now), "now": now}
+    return {"jobs": jobs_mod.list_jobs(now=now, mark_read=True), "now": now}
 
 
 @router.post("/api/jobs")
