@@ -93,7 +93,16 @@ from fused_render.ai import registry
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
 #: `nickname` is the short human name the Playground sidebar shows — the
-#: model without its quantization/engine qualifier. A curated FIELD, never
+#: model without its quantization/engine qualifier, and free to be plainer
+#: still: both Liquid rows read "Liquid 2.5" where the labels say "LFM2.5 1.2B
+#: Instruct" and "LFM2.5 8B-A1B", because the acronym and the instruct-tuning
+#: distinguish nothing on a tab where every text row is chat-tuned. The two
+#: sharing one nickname is deliberate and only safe because the sidebar card
+#: prints `params` beside it (the chip left of the download size): that is
+#: what separates them, so the name does not have to carry a size a reader is
+#: already looking at. A capability whose rows would collide with no
+#: distinguishing chip must not do this.
+#: A curated FIELD, never
 #: derived by stripping the label's parenthetical at runtime, for the reason
 #: `short_label` and `family_label` are fields too (AI-2c): a stripped name
 #: is a value nobody owns and no test can see.
@@ -259,7 +268,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "1.2B",
             "quantization": "MLX 4-bit",
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
-            "nickname": "LFM2.5 1.2B Instruct",
+            "nickname": "Liquid 2.5",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — quick "
                     "to fetch and to answer, and weaker than every other row.",
@@ -300,7 +309,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "8B (~1B active)",
             "quantization": "MLX 4-bit",
             "label": "LFM2.5 8B-A1B (MLX 4-bit)",
-            "nickname": "LFM2.5 8B-A1B",
+            "nickname": "Liquid 2.5",
             "size_gb": 4.9,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -497,7 +506,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "1.2B",
             "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
-            "nickname": "LFM2.5 1.2B Instruct",
+            "nickname": "Liquid 2.5",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — a "
                     "hybrid architecture built for CPU decode, so it answers "
@@ -547,7 +556,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "8B (~1B active)",
             "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 8B-A1B (Q4_K_M)",
-            "nickname": "LFM2.5 8B-A1B",
+            "nickname": "Liquid 2.5",
             "size_gb": 5.2,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "

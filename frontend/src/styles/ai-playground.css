@@ -244,6 +244,26 @@
   white-space: nowrap;
 }
 
+/* The parameter count, a filled chip left of the size. FILLED and borderless
+ * on purpose: the Download pill beside it is bordered, and a second bordered
+ * pill on the same line would read as a second thing to click. A wash of
+ * --tint rather than a colour, so it stays a label and not a status.
+ *
+ * `flex: none` like its two neighbours — the name is the only thing on this
+ * row that gives way. The curated string can be long ("8B (~1B active)"), and
+ * that is allowed to cost the name width: an MoE row's whole point is the
+ * parenthetical.  */
+.pg-model-chip {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(var(--tint), 0.07);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Was inheriting the foot's type; now that it lives on the name line it says
  * so itself. `flex: none` is the whole point of the slot — the size is the one
  * thing on the card that must not shrink. */
