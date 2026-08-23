@@ -321,6 +321,28 @@ def test_a_repo_on_this_disk_is_benchmarkable(disk):
     assert "on/disk" in disk._benchmarkable_models(ai_registry.TEXT_GENERATION)
 
 
+def test_a_repo_cached_for_a_different_capability_is_not_benchmarkable(monkeypatch):
+    """The bug: `admitted = {model.repo_id for model in cached}` (no
+    capability filter) admitted a downloaded Whisper model as benchmarkable
+    for text-generation — the docstring's own claim ("a curated speech model
+    cannot be benchmarked as a text one") only ever held for the CATALOG half
+    of this function, never the disk-scan half. `CachedModel.capability` is
+    what tells the two apart."""
+    from fused_render.server.routers import ai_benchmark as mod
+
+    monkeypatch.setattr(mod, "cached_models", lambda: [
+        _cached("openai/whisper-large-v3", ai_registry.SPEECH_TO_TEXT),
+        _cached("on/disk", ai_registry.TEXT_GENERATION),
+    ])
+    monkeypatch.setattr(mod.catalog, "for_capability", lambda cap: [])
+    admitted = mod._benchmarkable_models(ai_registry.TEXT_GENERATION)
+    assert "openai/whisper-large-v3" not in admitted
+    assert "on/disk" in admitted
+    # And the reverse: the speech model IS benchmarkable for its own capability.
+    assert "openai/whisper-large-v3" in mod._benchmarkable_models(
+        ai_registry.SPEECH_TO_TEXT)
+
+
 def test_a_partly_downloaded_repo_is_not_benchmarkable(monkeypatch):
     """`cached_models()` already drops a fetch that never finished (D424), which
     is what keeps a Run press from RESUMING a multi-GB pull inside the held-open

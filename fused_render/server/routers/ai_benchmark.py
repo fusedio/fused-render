@@ -115,11 +115,16 @@ def _benchmarkable_models(capability: str) -> set[str]:
 
     A capability's curated list is still the filter on WHICH ids the catalog half
     may contribute, so a curated speech model cannot be benchmarked as a text
-    one. And a partly downloaded repo is absent from `cached_models()` already
-    (D424), so nothing here can resume a stopped fetch.
+    one — and the disk half is filtered the same way, on `CachedModel.capability`
+    itself, for the identical reason: a repo cached for `automatic-speech-
+    recognition` passing this guard for `text-generation` would load Whisper
+    into the text runner, fail, and store a permanent history row for a
+    combination that was never valid. And a partly downloaded repo is absent
+    from `cached_models()` already (D424), so nothing here can resume a
+    stopped fetch.
     """
     cached = cached_models()
-    admitted = {model.repo_id for model in cached}
+    admitted = {model.repo_id for model in cached if model.capability == capability}
     for entry in catalog.for_capability(capability):
         entry_id = entry.get("id")
         # Only the filename-shaped ids have anything to add: a curated REPO id is
