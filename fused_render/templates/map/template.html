@@ -94,6 +94,10 @@
   .lc-progress { display: flex; align-items: center; gap: 8px; }
   .lc-progress span { flex: 1; min-width: 0; }
   .lc-progress button { border: 0; background: transparent; color: var(--accent); font: inherit; padding: 0; cursor: pointer; white-space: nowrap; }
+  .lc-confirm { display: flex; flex-direction: column; gap: 6px; }
+  .lc-confirm button { border: 1px solid var(--accent); background: var(--panel-2); color: var(--accent); font: inherit; border-radius: 7px; padding: 5px 8px; cursor: pointer; text-align: left; }
+  .lc-confirm button:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .lc-confirm button:disabled { opacity: 0.6; cursor: default; }
   .lc .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; flex: none; animation: spin .7s linear infinite; }
 
   #lmenu {
@@ -931,7 +935,7 @@ async function loadTarget(target, name) {
   state.layers.set(target, L);
   renderFileList(); renderLayerCards();
   try {
-    if (isRemoteCog(target) && await openClientCog(L, target)) {
+    if (isRemoteCog(target) && !cogInaccessibleOrigins.has(cogOrigin(target)) && await openClientCog(L, target)) {
       L.loading = false; L.visible = true;
       state.selected = target;
       persistOpen(); renderAll(); refreshCode();
@@ -1122,6 +1126,14 @@ function computeColorByStats(L) {
 // engine, which renders them properly.
 const COG_SUFFIX = /\.(tif|tiff)(\?|$)/i;
 const isRemoteCog = target => /^https?:\/\//i.test(target) && COG_SUFFIX.test(target);
+
+// Origins whose blob host refused the browser reader outright (auth or CORS):
+// re-fetching a doomed range request for every sibling file is wasted latency,
+// so once an origin turns us away, later loads from it go straight to Python.
+const cogInaccessibleOrigins = new Set();
+function cogOrigin(target) {
+  try { return new URL(target).origin; } catch (e) { return null; }
+}
 
 let decoderPool = null;
 function cogPool() {
@@ -1371,6 +1383,12 @@ async function openClientCog(L, target) {
   let geotiff, auto;
   try {
     geotiff = await deck.GeoTIFF.fromUrl(target);
+    // No overview pyramid means this is not cloud-optimized: reading it in the
+    // browser would pull the whole file at full resolution, so hand it to the
+    // Python engine, which meters that download behind a confirmation.
+    if (!(geotiff.overviews && geotiff.overviews.length)) {
+      throw new Error("no overview pyramid; not cloud-optimized");
+    }
     epsgResolver(geotiff.crs);
     // A device that never initialises must not strand the layer: time the wait
     // out so the Python engine still gets a chance.
@@ -1384,8 +1402,14 @@ async function openClientCog(L, target) {
     auto = await autoRescale(geotiff);
     if (!auto) throw new Error("not 8-bit imagery");
   } catch (error) {
-    // Falling back silently makes an unsupported file indistinguishable from a
-    // slow one, which cost real debugging time.
+    // A fetch/auth refusal means the whole origin is closed to the browser
+    // reader, so remember it; an unsupported-file decline is per-file and is not
+    // remembered. Falling back silently makes an unsupported file
+    // indistinguishable from a slow one, which cost real debugging time.
+    if (/failed to fetch|response code: 40[39]|public access is not permitted/i.test(error.message || "")) {
+      const origin = cogOrigin(target);
+      if (origin) cogInaccessibleOrigins.add(origin);
+    }
     L.cogFallbackReason = error.message;
     console.warn("browser COG reader declined " + target + ": " + error.message);
     return false;
@@ -1495,7 +1519,7 @@ function rebuildRasterTiles() {
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
-    if (d && d.status === "ok" && d.kind === "raster_tiles") {
+    if (d && d.status === "ok" && d.kind === "raster_tiles" && !awaitingDownload(d)) {
       const ids = rasterIds(L);
       wanted.set(ids.source, { L, ids });
     }
@@ -1908,6 +1932,12 @@ function swatchStyle(L) {
   return `background:rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
+// A remote raster with no pyramid is held until the user accepts the download,
+// so nothing paints and no tile is fetched until then.
+function awaitingDownload(d) {
+  return Boolean(d && (d.optimization || {}).status === "confirm_download");
+}
+
 function formatRasterStatus(L) {
   const d = L.descriptor;
   if (!d || d.kind !== "raster_tiles") return "";
@@ -2003,6 +2033,9 @@ function layerCard(L) {
       card.appendChild(status);
     }
   }
+  if (d && !L.loading && d.status === "ok" && awaitingDownload(d)) {
+    card.appendChild(downloadConfirmCard(L, d));
+  }
 
   card.onclick = () => { if (!L.loading) selectLayer(L.target); };
   const eye = h.querySelector(".lc-eye");
@@ -2010,6 +2043,42 @@ function layerCard(L) {
   const dots = h.querySelector(".lc-dots");
   if (dots) dots.onclick = ev => { ev.stopPropagation(); openLayerMenu(dots, L); };
   return card;
+}
+
+// The gate for a non-cloud-optimized remote raster: it names the download size
+// and only fetches once the user accepts. Accepting hands off to the same
+// optimize job that builds the local overview pyramid.
+function downloadConfirmCard(L, d) {
+  const bytes = (d.optimization || {}).download_bytes;
+  const size = bytes ? formatBytes(bytes) : null;
+  const box = document.createElement("div");
+  box.className = "lc-msg lc-confirm";
+  const text = document.createElement("div");
+  text.textContent = size
+    ? `Not cloud-optimized — displaying it downloads the whole file (${size}).`
+    : "Not cloud-optimized — displaying it downloads the whole file.";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = size ? `Download ${size} & display` : "Download & display";
+  button.onclick = async event => {
+    event.stopPropagation();
+    button.disabled = true;
+    button.textContent = "Starting…";
+    try {
+      const response = await fetch(d.data.optimize_url, { method: "POST", headers: { "X-Fused": "1" } });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      d.optimization = await response.json();
+      L.tileRevision = (L.tileRevision || 0) + 1;
+      renderAll();
+      monitorOptimization(L);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Download failed — retry";
+      toast("bad", "Couldn't start the download", error.message);
+    }
+  };
+  box.append(text, button);
+  return box;
 }
 
 let menuEl = null;

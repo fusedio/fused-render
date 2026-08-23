@@ -40,6 +40,12 @@ from raster_categories import classify_categories, read_pam_aux_xml, resolve_ren
 AUTO_OPTIMIZE_MAX_BYTES = int(
     os.environ.get("MAP_VIEWER_AUTO_OPTIMIZE_MAX_BYTES", str(512 << 20))
 )
+# A remote raster with no overview pyramid has to be read whole to show at all;
+# below this size that download happens quietly, above it the user is asked
+# first (see `awaiting_confirm` in `_describe`).
+DOWNLOAD_CONFIRM_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_DOWNLOAD_CONFIRM_BYTES", str(50 << 20))
+)
 PREVIEW_MAX_SIZE = int(os.environ.get("MAP_VIEWER_PREVIEW_MAX_SIZE", "512"))
 PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
@@ -695,11 +701,37 @@ class RasterEngine:
             indexes = tuple(index_list) if len(index_list) > 1 else index_list[0]
             render_bands = len(index_list)
             true_color = _is_true_color(dataset, index_list)
+            # The size decides both whether to build a local pyramid and whether
+            # displaying a remote source means downloading the whole file; a
+            # source that already has overviews needs neither, so skip the HTTP
+            # HEAD when it cannot matter.
+            source_size = (
+                None if overviews and is_remote_path(source) else _source_size(source)
+            )
+            fingerprint = _source_fingerprint(target, source, source_size, locator)
+            derivative = self.optimized_dir / f"{fingerprint}.tif"
+            # A remote raster with no overview pyramid cannot be read cheaply at
+            # any zoom — even a coarse preview reads it at full resolution — so
+            # past a size threshold, stop before touching a pixel and let the
+            # user decide rather than silently pulling the whole file. A local
+            # copy already built, a local source, or a cloud-optimized one never
+            # reaches this.
+            awaiting_confirm = (
+                is_remote_path(source)
+                and not overviews
+                and not crosses_antimeridian
+                and not derivative.exists()
+                and source_size is not None
+                and source_size > DOWNLOAD_CONFIRM_MAX_BYTES
+            )
             # A declared mask or alpha band already answers "which pixels are
-            # real", so there is nothing to infer from the collar.
+            # real", so there is nothing to infer from the collar. An unconfirmed
+            # download infers nothing either — that read is the whole file.
             inferred_nodata = (
                 _infer_background(dataset, index_list)
-                if dataset.nodata is None and not _has_own_mask(dataset)
+                if dataset.nodata is None
+                and not _has_own_mask(dataset)
+                and not awaiting_confirm
                 else None
             )
             requested = opts.get("rescale")
@@ -738,7 +770,7 @@ class RasterEngine:
             categories = None
             category_colors: dict[int, tuple[int, ...]] = {}
             embedded_colormap = None
-            if render_bands == 1:
+            if render_bands == 1 and not awaiting_confirm:
                 if sample_data is None:
                     try:
                         with Reader(locator) as reader:
@@ -779,13 +811,6 @@ class RasterEngine:
                             reader.tms, bounds, dataset.width, dataset.height
                         )
 
-            # The size only decides whether to build a local pyramid, which a
-            # source that already has overviews never needs. Asking for it costs
-            # a separate HTTP HEAD, so skip it when the answer cannot matter.
-            source_size = None if overviews and is_remote_path(source) else _source_size(source)
-            fingerprint = _source_fingerprint(
-                target, source, source_size, locator
-            )
             record = RasterSource(
                 source_id=fingerprint,
                 target=target,
@@ -818,7 +843,6 @@ class RasterEngine:
                 category_colors=category_colors,
             )
 
-        derivative = self.optimized_dir / f"{fingerprint}.tif"
         preview_derivative = self.optimized_dir / (
             f"{fingerprint}.preview-{PREVIEW_VERSION}.tif"
         )
@@ -860,10 +884,19 @@ class RasterEngine:
         # so a crossing source stays on the original via tile()'s shifted read.
         if record.crosses_antimeridian:
             record.optimization = {"status": "not_needed", "progress": 100}
+        # An oversized remote source with no pyramid waits for the user to accept
+        # the download before anything is fetched or built.
+        if awaiting_confirm:
+            record.optimization = {
+                "status": "confirm_download",
+                "progress": 0,
+                "download_bytes": source_size,
+            }
         needs_preparation = (
             not record.has_overviews
             and not record.preview_path
             and not record.crosses_antimeridian
+            and not awaiting_confirm
         )
         auto_optimize = (
             needs_preparation
@@ -905,6 +938,11 @@ class RasterEngine:
         if existing is not None:
             return self.descriptor(existing, artifact_id, existing_notices)
 
+        if awaiting_confirm:
+            notices.append(
+                "This raster is not cloud-optimized, so displaying it means "
+                "downloading the whole file. Confirm to continue."
+            )
         if needs_preparation:
             notices.append(
                 "A cached coarse preview is being prepared so the raster "
@@ -1316,6 +1354,10 @@ class RasterEngine:
             record = self.sources.get(source_id)
             if record is None:
                 return None
+            # Reading a tile of an unconfirmed source is the download the gate
+            # exists to withhold, so draw nothing until the user accepts it.
+            if record.optimization.get("status") == "confirm_download":
+                return self.transparent_tile()
             if (
                 not record.has_overviews
                 and not record.preview_path
