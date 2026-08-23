@@ -1060,6 +1060,18 @@ a.pg-hero-repo:hover {
   min-height: calc(4.5em + 12px);
 }
 
+/* The ONE-LINE input (the embed stage's search) starts at the TOP. The
+   composer's `align-items: flex-end` is a rule about a GROWING box: a textarea
+   fills the composer, so aligning its bottom is what keeps its last line level
+   with the Run button beside it. An input does not grow — it is one line inside
+   a box whose height comes from the button column's 72px — so flex-end left the
+   text sitting on the floor with an empty third of a card above it, reading as
+   a caption under nothing. Top-aligned it starts where every other stage's
+   prompt starts, which is what makes the four composers one shape. */
+.pg-composer input {
+  align-self: flex-start;
+}
+
 .pg-send {
   flex: none;
 }
