@@ -151,6 +151,7 @@ def _validate_interpreter(python: str) -> None:
 
 def _validate(engine_id: str, python: str, daemon: str) -> None:
     from fused_render import core_templates
+    from fused_render.shell.storage import home_dir
 
     if not _ENGINE_ID.match(engine_id):
         raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
