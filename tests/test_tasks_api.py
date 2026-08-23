@@ -622,6 +622,42 @@ def test_a_recurring_template_is_not_a_message(client, projects_dir):
     assert task["messages"][0]["template_id"] == "tpl"
 
 
+def test_immediate_reaches_the_message_the_calendar_reads(client, projects_dir):
+    """WAS THIS PLANNED, or merely due? A task typed on the List or the Board
+    with the when-row untouched runs now because "now" is the form's default —
+    nobody put it on a Tuesday — and the calendar draws nothing for it
+    (schedule-lib.taskChips). That reading is only possible if the flag the
+    entry was created with survives onto the MESSAGE, because a due date says
+    "now" for both kinds and the distinction cannot be re-derived later.
+
+    Per message, not per task: "do this now" and "and again on Thursday" are one
+    task with two very different messages, and only the second is a plan."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("now", "do it now", T9, claude_session_id="sess-a",
+               immediate=True),
+        _entry("thu", "and again", T12, claude_session_id="sess-a"),
+    ])
+    task = _by_key(client)["sess-a"]
+    by_entry = {m["entry_id"]: m for m in task["messages"] if m["entry_id"]}
+    assert by_entry["now"]["immediate"] is True
+    assert by_entry["thu"]["immediate"] is False
+
+
+def test_an_entry_stored_before_the_flag_existed_reads_as_planned(
+        client, projects_dir):
+    """The right default: every one of them came from a form that asked for a
+    time, so they all belong on the calendar exactly as they always did."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "hello", T9, claude_session_id="sess-a")])
+    messages = _by_key(client)["sess-a"]["messages"]
+    scheduled = next(m for m in messages if m["kind"] == "scheduled")
+    assert scheduled["immediate"] is False
+    # A CHAT message never carries it at all: it was typed, so there was no
+    # when-row for anybody to touch.
+    assert "immediate" not in next(m for m in messages if m["kind"] == "chat")
+
+
 def test_a_skipped_occurrence_reads_as_skipped_and_files_itself_away(
         client, projects_dir):
     """The user's skip and the loop's own missed verdict are the same fact about
@@ -1100,7 +1136,7 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
         "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
-        "unread", "entry_id", "template_id", "turn", "anchor"}
+        "unread", "entry_id", "template_id", "turn", "anchor", "immediate"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"

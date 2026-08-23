@@ -49,6 +49,7 @@ let targetVerdict: typeof import("./NewJobModal").targetVerdict;
 let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
+let saveActionLabel: typeof import("./NewJobModal").saveActionLabel;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -81,6 +82,7 @@ beforeAll(async () => {
   splitTargetPath = mod.splitTargetPath;
   PATH_MISSING = mod.PATH_MISSING;
   twoLevelsMissing = mod.twoLevelsMissing;
+  saveActionLabel = mod.saveActionLabel;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1708,5 +1710,95 @@ describe("the + New folder button below Browse", () => {
     expect(s).toContain("onName?.();");
     expect(s).toContain("onName={() => {");
     expect(s).toContain("pathRef.current?.focus()");
+  });
+});
+
+// ---- Run now vs put it on the calendar -------------------------------------
+// The card serves two intentions now (Akshil, 2026-08-23): "do this" — typed on
+// the List or the Board, where the when-row is folded away and `now` is only a
+// default — and "plan this", from the calendar or a slot click. Nothing about
+// WHEN it runs differs; what differs is whether the calendar claims it as a
+// plan, and what the button says it is about to do.
+describe("did anybody actually pick a time", () => {
+  test("an untouched when-row on a one-off rides the wire as `immediate`", () => {
+    const payload = buildSchedulePayload(form({ timePicked: false }));
+    expect(payload.immediate).toBe(true);
+    // …and it is still due, and still due at the same minute: the flag changes
+    // what the calendar draws, never what the scheduler does.
+    expect(payload.due).toBe("2026-08-17T09:00");
+  });
+
+  test("a picked time leaves the flag off the wire entirely", () => {
+    expect(buildSchedulePayload(form({ timePicked: true })).immediate).toBeUndefined();
+    // Absent means the same thing — every caller that is not this form.
+    expect(buildSchedulePayload(form({})).immediate).toBeUndefined();
+  });
+
+  test("a repeat is never immediate, even with the row untouched", () => {
+    // Ticking Repeat marks the time as picked in the component; this is the
+    // belt to that braces — a rule's anchor is a chosen time by definition, and
+    // the server refuses the pairing anyway.
+    const rule = buildSchedulePayload(form({ rule: DAILY, timePicked: false }));
+    expect(rule.immediate).toBeUndefined();
+    const cron = buildSchedulePayload(
+      form({ repeat: "cron", legacyCron: "0 9 * * *", timePicked: false }),
+    );
+    expect(cron.immediate).toBeUndefined();
+  });
+});
+
+describe("what the primary button says it will do", () => {
+  const now = new Date("2026-08-17T09:00:00");
+
+  test("a time still ahead is a Schedule", () => {
+    expect(saveActionLabel(new Date("2026-08-17T09:01:00"), false, now)).toBe("Schedule");
+    expect(saveActionLabel(new Date("2026-09-01T08:00:00"), false, now)).toBe("Schedule");
+  });
+
+  test("now, or already past, is a Run", () => {
+    // MINUTE precision, matching the field: a card opened on this minute and
+    // saved unchanged runs, and must not offer to schedule the moment it is in.
+    expect(saveActionLabel(new Date("2026-08-17T09:00:40"), false, now)).toBe("Run");
+    expect(saveActionLabel(new Date("2026-08-17T08:59:00"), false, now)).toBe("Run");
+    expect(saveActionLabel(new Date("2026-08-10T09:00:00"), false, now)).toBe("Run");
+  });
+
+  test("a repeat is always a Schedule, past anchor included", () => {
+    // A past anchor gets ONE catch-up run and then a standing pattern, and the
+    // pattern is the bigger fact — "Run" would name the catch-up and hide it.
+    expect(saveActionLabel(new Date("2026-08-10T09:00:00"), true, now)).toBe("Schedule");
+    expect(saveActionLabel(new Date("2026-09-10T09:00:00"), true, now)).toBe("Schedule");
+  });
+
+  test("an unreadable date does not claim it is about to run", () => {
+    expect(saveActionLabel(null, false, now)).toBe("Schedule");
+    expect(saveActionLabel(new Date("nonsense"), false, now)).toBe("Schedule");
+  });
+});
+
+describe("where the when-row lives", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("it is inside More options, which opens itself on a planning card", () => {
+    const s = src();
+    const more = s.indexOf('<details className="schedule-form-more"');
+    expect(more).toBeGreaterThan(-1);
+    // The when-row now sits AFTER the disclosure opens, not on the card's face.
+    expect(s.indexOf("Google's when-row")).toBeGreaterThan(more);
+    // Openness is React state, not a bare `open` attribute: a half-controlled
+    // <details> would slam shut on the next re-render, under the user's hand.
+    expect(s).toContain("const [moreOpen, setMoreOpen] = useState(planning);");
+    expect(s).toContain("onToggle={(e) => setMoreOpen(e.currentTarget.open)}");
+  });
+
+  test("the three when-controls are what mark the time as picked", () => {
+    const s = src();
+    // The date grid, the time list, and the Repeat tick — every way a person
+    // can state an opinion about when.
+    expect(s).toContain("setTimePicked(true);");
+    expect(s).toContain("if (on) setTimePicked(true);");
+    // And the opening value: an edit inherits what the entry was stored as, a
+    // new card is planned exactly when the caller says it is planning.
+    expect(s).toContain("(editing ? !editing.immediate : planning)");
   });
 });

@@ -368,13 +368,49 @@ export function StatusIcon({
 /** The folder a task's work happens in — a plain folder glyph and the folder's
  * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
  * not an initials avatar: that stands for a PERSON, and a directory is not one. */
-export function IdentityChip({ name, title }: { name: string; title?: string }) {
+export function IdentityChip({ name, title, onPick, active = false }: {
+  name: string;
+  title?: string;
+  /** Is the page filtered to this folder right now? Only meaningful with
+   * `onPick` — it is the pressed state of a control, not a fact about a label.
+   * It paints the chip as an ON pill and turns its press into "let it go". */
+  active?: boolean;
+  /** Makes the chip a TAG: pressed, it filters the page to this folder (Akshil,
+   * 2026-08-23). Given one, the chip becomes a real button — hover wash, focus
+   * ring, `stopPropagation` so it never counts as a press on the row it sits in.
+   * Without one it stays the plain label it has always been, which is what the
+   * board card and every other reader want. */
+  onPick?: () => void;
+}) {
   if (!name) return null;
-  return (
-    <span className="schedule-tv-id" title={title || name}>
+  const body = (
+    <>
       <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
       <span className="schedule-tv-id-name">{name}</span>
-    </span>
+    </>
+  );
+  if (!onPick) {
+    return (
+      <span className="schedule-tv-id" title={title || name}>{body}</span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
+      // The tooltip says what the press DOES, on top of the path it already
+      // said: a chip that only ever labelled something gives the reader no
+      // reason to try clicking it. On an ON chip it says the opposite thing,
+      // because that is what the press now does.
+      title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+      aria-pressed={active}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPick();
+      }}
+    >
+      {body}
+    </button>
   );
 }
 
@@ -881,6 +917,8 @@ export function TaskList({
   stale = false,
   onEditEntry,
   onReload,
+  onPickProject,
+  pinnedProjects = [],
   emptyLabel = "Nothing to show here.",
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
@@ -907,6 +945,24 @@ export function TaskList({
    * still saying "Scheduled" — not a stuck row, and nothing worth withholding
    * the affordance over. */
   onReload?: () => void;
+  /** Narrow the page to ONE project — what a press on a row's folder chip means
+   * (Akshil, 2026-08-23). The chip was already the answer to "where did this
+   * happen"; making it pressable turns it into the way to ask "what else
+   * happened there", which is the question a reader has the moment they notice
+   * the folder. It writes the SAME `projects` filter the toolbar's popover owns,
+   * so there is one filter with two ways in and the toolbar keeps showing (and
+   * clearing) what is on.
+   *
+   * Optional: without it the chip stays the plain label it has always been. */
+  onPickProject?: (project: string) => void;
+  /** The projects the page is currently FILTERED to — the toolbar's own
+   * `projects` value (Akshil, 2026-08-23). Two jobs, both about not hiding the
+   * thing the reader just pressed: it keeps the folder chip drawn when the
+   * filter has narrowed the list to one project (`spansProjects` would
+   * otherwise take it away at exactly the moment it became the answer to "what
+   * am I looking at"), and it is what a chip reads to know it is the one that
+   * is ON. */
+  pinnedProjects?: string[];
   emptyLabel?: string;
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
@@ -954,11 +1010,19 @@ export function TaskList({
     latest.current = tasks;
   }, [tasks]);
 
-  // Whether a row draws its folder chip at all — asked ONCE for the whole list,
-  // because the question is about the list and not about any one row
-  // (tasks-lib.spansProjects). Cheap, and memoised only so it is not a new answer
-  // on every keystroke of the search box.
-  const showProject = useMemo(() => spansProjects(tasks), [tasks]);
+  // Whether a row draws its folder chip at all, in two halves. The first is the
+  // old rule: a chip every visible row repeats distinguishes nothing
+  // (tasks-lib.spansProjects). The second is what a FILTER changes about that
+  // (Akshil, 2026-08-23) — narrowing to one project makes every row agree,
+  // which used to make the chips vanish; but the chip is now the control that
+  // did the narrowing, and a control that deletes itself on use leaves the
+  // reader with no on-screen answer to "which folder is this" and nothing to
+  // press to get back. So a pinned project keeps its chip, wearing the state.
+  const pinnedKey = pinnedProjects.join("\u0000");
+  const showProject = useMemo(
+    () => spansProjects(tasks) || pinnedKey !== "",
+    [tasks, pinnedKey],
+  );
 
   // The list's rows, in rank order and then by printed time (tasks-lib.sortByLane).
   // Memoised for the same reason `showProject` is: this runs on every keystroke of
@@ -1301,6 +1365,8 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onReload={onReload}
+          onPickProject={onPickProject}
+          pinned={pinnedProjects.includes(task.project)}
           onPageNote={setPageNote}
           read={read}
           onRead={clear}
@@ -1328,6 +1394,8 @@ function TaskNode({
   error,
   onEditEntry,
   onReload,
+  onPickProject,
+  pinned,
   onPageNote,
   read,
   onRead,
@@ -1361,6 +1429,12 @@ function TaskNode({
   error?: string;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
+  /** Filter the page to this row's folder — the List's handler, passed through
+   * untouched. See TaskList's own `onPickProject`. */
+  onPickProject?: (project: string) => void;
+  /** Is the page filtered to THIS row's folder? The chip wears it, so the
+   * control that narrowed the list is visibly the one that is on. */
+  pinned?: boolean;
   /** The List's page-level note — the only holder that survives this row being
    * filtered out by the very move it announces (see TaskList's render). */
   onPageNote: (s: string) => void;
@@ -2070,7 +2144,44 @@ function TaskNode({
             round when the time arrived; at the end of a row the last thing before
             the edge is the one a reader lands on, and the time is what changes. */}
         {showProject && (
-          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+          <IdentityChip
+            name={basename(task.project)}
+            title={tildePath(task.project, home)}
+            // A TAG, not a label (Akshil, 2026-08-23): pressing it narrows the
+            // page to this folder, and pressing it again lets it go. Only on
+            // the List — the Board card's foot keeps the plain chip, because a
+            // card is a drag target first and a button inside one competes with
+            // the gesture that moves it.
+            onPick={onPickProject && (() => onPickProject(task.project))}
+            // …and while the filter is on, the chip SAYS SO. Without this the
+            // one row-level trace of an active filter was the toolbar's little
+            // "1", four hundred pixels away from the rows it was acting on.
+            active={pinned}
+          />
+        )}
+        {/* HOW MANY MESSAGES this task holds, between the folder and the time
+            (Akshil, 2026-08-23). The row already says where the work happened
+            and when it last moved; the one thing it could not say is how much
+            of it there is — a task with one prompt and a task with forty read
+            identically until you opened them, which is the wrong thing to have
+            to do to choose which to open.
+
+            THE WORD, NOT A GLYPH (Akshil, 2026-08-23, second pass). It began as
+            a speech bubble and a number, on the argument that the row's busiest
+            end could not afford three more characters. It could: a bare "4"
+            between a folder and a time is a number with no unit, and the reader
+            has to learn what the bubble means before the row reads — where "4
+            messages" is read, not decoded. The count is the only thing on this
+            row that needed a noun, because it is the only one whose number
+            could be mistaken for another (a time, an id, a count of runs).
+
+            Drawn only when the server has counted at least one — zero is a task
+            whose thread has not started, and a "0 messages" is worse than the
+            space it would fill. */}
+        {task.message_count > 0 && (
+          <span className="tasks-row-msgs">
+            {task.message_count} message{task.message_count === 1 ? "" : "s"}
+          </span>
         )}
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session

@@ -1766,6 +1766,39 @@ export function composeTaskMessage(title: string, description: string): string {
   return `${name}\n\n${body}`;
 }
 
+// WHAT THE PRIMARY BUTTON SAYS. "Save" was the word for a card that only ever
+// wrote a row down; the same card now does two genuinely different things, and
+// the button is the last thing read before either of them happens (Akshil,
+// 2026-08-23).
+//
+//   Schedule — the picked time is still ahead, or the task repeats. Something is
+//              being written into the future, and nothing runs on this press.
+//   Run      — the time is now or already past, which is what a card opened from
+//              the List or the Board and left alone means. The press starts work.
+//
+// A repeat is always "Schedule" even when its anchor is behind: a past anchor
+// gets ONE catch-up run and then a pattern, and "Run" would describe the catch-up
+// while saying nothing about the standing rule, which is the bigger fact.
+//
+// An EDIT reads by the same rule rather than reverting to "Save": moving a task's
+// time forward and moving it into the past are the two things an edit does here,
+// and they deserve the same two words a create gets.
+//
+// Minute precision, matching the field and `pastNoteFor`: a card opened on the
+// current minute and saved unchanged says Run, not Schedule.
+export function saveActionLabel(
+  picked: Date | null,
+  repeatOn: boolean,
+  now: Date,
+): "Schedule" | "Run" {
+  if (repeatOn) return "Schedule";
+  // An unreadable date cannot be claimed to run now. Save is refused on it
+  // anyway (saveBlockedReason), so this is only about which word the disabled-
+  // looking button wears.
+  if (!picked || Number.isNaN(picked.getTime())) return "Schedule";
+  return startOfMinute(picked) > startOfMinute(now) ? "Schedule" : "Run";
+}
+
 // The body POSTed to /api/schedule — api.ts's own parameter type, nothing
 // added to it. That type models `title`, `description` and `new_task_each_run`
 // itself, so this alias only names what the builder returns.
@@ -1820,6 +1853,13 @@ export function buildSchedulePayload(form: {
   // across rather than allocate a second one, which is what renamed TASK-078 to
   // TASK-079 when only its time had changed.
   replacesEntryId?: string;
+  // DID ANYONE PICK THIS TIME? False when the card was opened from the List or
+  // the Board — where the when-row starts folded away — and the user never
+  // touched it, so `when` is only the form's own default of "now". The task
+  // still runs, and runs immediately; what changes is that the calendar knows
+  // not to draw it (design: a plan, not a log). Absent means "yes, treat it as
+  // planned", which is what every caller that is not this form means.
+  timePicked?: boolean;
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
@@ -1874,6 +1914,10 @@ export function buildSchedulePayload(form: {
     // Only ever sent on a repeating task: on a one-off there is no "each run"
     // for it to mean anything about.
     ...(repeating && form.newTaskEachRun ? { new_task_each_run: true } : {}),
+    // Only ever sent as `true`, and only on a one-off: a repeat's anchor is a
+    // time somebody chose by definition, and the server refuses the pairing
+    // anyway. Left off the wire otherwise, like every other flag here.
+    ...(!repeating && form.timePicked === false ? { immediate: true } : {}),
     // Only on an edit, and only as a non-empty string: a new task replaces
     // nothing, and the key is left off the wire rather than sent as "" for the
     // same reason `title` is.
@@ -2001,6 +2045,7 @@ export default function NewJobModal({
   editing,
   permissionModes,
   recentTargets,
+  planning = false,
   onClose,
   onCreated,
 }: {
@@ -2032,6 +2077,19 @@ export default function NewJobModal({
   // machine whose localStorage hasn't seen this form yet (QA 2026-08-15 —
   // the first open showed nothing but Browse).
   recentTargets?: string[];
+  // IS THIS CARD BEING USED TO PLAN? (Akshil, 2026-08-23.) True on the calendar
+  // — where the question in the reader's head is already "when" — and on any
+  // opening that arrived with a time (a slot click, an edit). False from the
+  // List and the Board, where a task is overwhelmingly something to run NOW and
+  // the when-row was the field everybody skipped past.
+  //
+  // It moves ONE thing: whether the when-row (and the Repeat that hangs off it)
+  // is on the card's face or folded into More options, which starts open when
+  // this is true. It never changes what the form can express — the row is one
+  // click away either way — and it is not a second answer to "is this
+  // scheduled": that is `timePicked` below, which reads what the user actually
+  // did rather than which view they came from.
+  planning?: boolean;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -2083,6 +2141,31 @@ export default function NewJobModal({
   const [when, setWhen] = useState(() =>
     toLocalInput(editing?.due ? new Date(editing.due) : (initialTime ?? new Date())),
   );
+  // DID ANYBODY PICK THIS TIME? The when-row's default is `now`, and "now"
+  // means two different things depending on how it got there: a time the user
+  // chose (or accepted, on the calendar, where choosing when is the whole
+  // reason the card is open) versus a field they never saw because it was
+  // folded into More options. The first belongs on the calendar; the second is
+  // a task somebody wanted RUN, and drawing it on the grid turned the plan into
+  // a log of everything ever typed (Akshil, 2026-08-23).
+  //
+  // It cannot be inferred from the value — both cases carry the same minute —
+  // so it is tracked as the FACT it is: set by the date grid, the time field
+  // and the Repeat tick, the three controls that mean "I have an opinion about
+  // when".
+  //
+  // The opening value says which kind this card is before anyone touches
+  // anything: an edit inherits what the entry was stored as (an older entry has
+  // no flag, which reads as planned — every one of them came from a form that
+  // asked), and a new card is planned exactly when it is `planning`.
+  const [timePicked, setTimePicked] = useState(
+    () => (editing ? !editing.immediate : planning),
+  );
+  // …and the disclosure the when-row now lives behind, open from the start on a
+  // planning card. State rather than a bare `open` attribute: `<details>` keeps
+  // its own openness in the DOM, and a React re-render would slam a
+  // half-controlled one shut under the user's hand.
+  const [moreOpen, setMoreOpen] = useState(planning);
   // The repeat CHOICE (a key into repeatChoicesFor) plus the one choice that
   // carries its own data: a custom rule from the recurrence dialog. Legacy
   // cron templates edit under the "cron" key and keep their line verbatim.
@@ -2194,6 +2277,11 @@ export default function NewJobModal({
     setRepeat(next.repeat);
     setCustomRule(next.customRule);
     setRepeatOn(on);
+    // Ticking Repeat is an opinion about when — the anchor is now a pattern's
+    // starting point, which is the most deliberate thing a time can be here.
+    // Unticking does not take the opinion back: the user has still been in this
+    // row on purpose.
+    if (on) setTimePicked(true);
     if (!on) {
       setNewTaskEachRun(false);
       if (recurOpen) closeRecur();
@@ -2434,11 +2522,16 @@ export default function NewJobModal({
       (picked.getFullYear() === new Date().getFullYear() ? "" : `, ${picked.getFullYear()}`)
     : "Pick a date";
 
+  // Both setters mark the time as PICKED, and so does the Repeat tick: between
+  // them they are every way a person can state an opinion about when. See
+  // `timePicked`. Marked even when the new value equals the old one — reopening
+  // the grid and clicking today is still an answer to the question.
   const setDatePart = (d: Date) => {
     const t = pickedOk ? picked : new Date();
     setWhen(toLocalInput(new Date(
       d.getFullYear(), d.getMonth(), d.getDate(), t.getHours(), t.getMinutes(),
     )));
+    setTimePicked(true);
   };
   const setTimePart = (h: number, m: number) => {
     const d = pickedOk ? picked : new Date();
@@ -2446,6 +2539,7 @@ export default function NewJobModal({
       d.getFullYear(), d.getMonth(), d.getDate(), h, m,
     )));
     setTimeText(fmtTime(h, m));
+    setTimePicked(true);
   };
   const commitTimeText = () => {
     const parsed = parseTime(timeText);
@@ -2640,6 +2734,9 @@ export default function NewJobModal({
           // The task's NUMBER has to survive the re-create an edit is; see
           // `replacesEntryId`. Empty on a new task, which replaces nothing.
           replacesEntryId: editing?.id ?? "",
+          // Whether anybody chose this time, which is what decides if the task
+          // is a plan or a thing to run. See `timePicked`.
+          timePicked,
         }),
       );
       rememberRecent(target);
@@ -2707,6 +2804,12 @@ export default function NewJobModal({
     replaced,
   };
   const ready = saveEnabled(gate);
+  // The word on the primary button: what this press is about to DO, not the
+  // generic "Save" the card wore while it only ever wrote a row down. See
+  // saveActionLabel — and note it is read from the same `picked`/`repeatOn` the
+  // when-row edits, so folding the row away does not freeze the word: a card
+  // left on its default of now says Run, which is exactly what it does.
+  const actionLabel = saveActionLabel(pickedOk ? picked : null, repeatOn, new Date());
 
   // What a press does when the form is not ready. Save is NOT disabled on that
   // any more — see saveBlockedReason for why a dead button was the wrong answer
@@ -2778,7 +2881,7 @@ export default function NewJobModal({
               mid-save would schedule the message twice. */}
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
-            {busy ? "Saving…" : "Save"}
+            {busy ? `${actionLabel === "Run" ? "Running" : "Scheduling"}…` : actionLabel}
           </button>
         </>
       }
@@ -3056,198 +3159,6 @@ export default function NewJobModal({
           />
         )}
 
-        {/* Google's when-row, its controls included: a date field that drops
-            a month grid and a time field that drops a 15-minute list (Akshil,
-            2026-08-15). Both write into the single `when` string. */}
-        <div className="schedule-form-line">
-          {ICON_CLOCK}
-          <div className="schedule-when">
-            <div
-              className="schedule-pop-wrap"
-              onBlur={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-                  setDateOpen(false);
-              }}
-              // Escape dismisses the GRID, not the modal around it — same
-              // contract as every other dropdown here.
-              onKeyDown={(e) => {
-                if (e.key === "Escape" && dateOpen) {
-                  e.stopPropagation();
-                  setDateOpen(false);
-                }
-              }}
-            >
-              <button ref={dateBtnRef} type="button"
-                      className="schedule-when-field"
-                      aria-describedby={pastNote ? pastHintId : undefined}
-                      aria-expanded={dateOpen}
-                      onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
-                {dateLabel}
-              </button>
-              {dateOpen && (
-                <div className="schedule-pop" style={popStyle(dateBtnRef.current, 300)}
-                     onMouseDown={(e) => e.preventDefault()}>
-                  {/* No floor at all now. A past day is a one-off saying "run
-                      this as soon as you can" (design §9), and for a rule it
-                      is legitimate too — it says "start this pattern, and run
-                      the one I missed". The date is still the series' ANCHOR,
-                      which is what makes "monthly on the second Wednesday"
-                      expressible by picking a past second Wednesday; what
-                      changed is that the server no longer waits for the next
-                      future slot to materialize from. It catches up on the
-                      latest past one first (SCH-13b), which is why picking a
-                      past day under a standing Repeat prints a note of its own
-                      rather than nothing. */}
-                  <MiniCalendar
-                    selected={pickedOk ? picked : new Date()}
-                    onPick={(d) => { setDatePart(d); setDateOpen(false); }}
-                  />
-                </div>
-              )}
-            </div>
-            <div
-              className="schedule-pop-wrap"
-              onBlur={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-                  setTimeOpen(false);
-              }}
-            >
-              <input
-                ref={timeRef}
-                type="text"
-                className="schedule-when-field schedule-when-time"
-                aria-describedby={pastNote ? pastHintId : undefined}
-                aria-expanded={timeOpen}
-                aria-label="Time"
-                value={timeText}
-                onFocus={(e) => { setTimeOpen(true); setDateOpen(false); e.target.select(); }}
-                onChange={(e) => setTimeText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") { commitTimeText(); setTimeOpen(false); }
-                  if (e.key === "Escape" && timeOpen) { e.stopPropagation(); setTimeOpen(false); }
-                }}
-                onBlur={commitTimeText}
-              />
-              {timeOpen && (
-                <div className="schedule-pop schedule-pop--time"
-                     style={popStyle(timeRef.current, 208)}
-                     onMouseDown={(e) => e.preventDefault()}>
-                  <TimeList
-                    selected={{ h: pickedOk ? picked.getHours() : 9, m: pickedOk ? picked.getMinutes() : 0 }}
-                    onPick={(h, m) => { setTimePart(h, m); setTimeOpen(false); }}
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-          {/* Repeat is a tick on the when-row, not a dropdown that is always
-              open (design §6): most tasks run once, and the menu they never
-              use was the loudest thing under the time. Unticking clears the
-              rule outright — see toggleRepeat. */}
-          <CheckField
-            className="new-task-check--repeat"
-            label="Repeat"
-            checked={repeatOn}
-            onChange={toggleRepeat}
-          />
-        </div>
-        {/* Not a refusal any more: past-due work is queued and runs when the
-            app next opens (design §9), so this says what will happen instead
-            of asking for a different answer. WHICH of the two things it says is
-            pastNoteFor's decision — a repeat's past anchor gets its own
-            sentence, because SCH-13b makes it one catch-up run and then the
-            pattern, not "as soon as it can" full stop.
-
-            One element for both wordings, so it keeps the id the date and time
-            fields point `aria-describedby` at, and stays directly under the row
-            it is about: printed after the repeat row it read as a complaint
-            about the recurrence rule (audit 2026-08-16). `role="status"` earns
-            its keep twice over now — ticking Repeat rewrites this line in
-            place, and a silent swap is the one thing worse than no line. */}
-        {pastNote && (
-          <span id={pastHintId} className="field-hint new-task-past schedule-form-sub"
-                role="status">
-            {pastNote}
-          </span>
-        )}
-        {repeatOn && (
-        <>
-        <div className="schedule-form-line schedule-form-line--sub">
-          <Dropdown
-            ariaLabel="Repeats"
-            className="schedule-repeat"
-            value={
-              repeat === "custom" && customRule
-                ? describeRule(customRule, pickedOk ? picked : new Date())
-                : repeat === "cron"
-                  ? describeRepeats(legacyCron)
-                  : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat"
-            }
-            options={[
-              // "Does not repeat" is gone from the menu: the tick above IS
-              // that answer now, and a dropdown that can contradict the
-              // checkbox it hangs from is two controls for one question.
-              ...choices
-                .filter((c) => c.key !== "none")
-                .map((c) =>
-                  c.key === "custom" && repeat === "custom" && customRule
-                    ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
-                    : { key: c.key, label: c.label },
-                ),
-              // Legacy cron templates keep their line under a key of their
-              // own — the form no longer writes cron, but editing one must
-              // not silently rewrite the rule.
-              ...(legacyCron ? [{ key: "cron", label: describeRepeats(legacyCron) }] : []),
-            ]}
-            onPick={(v) => {
-              if (v === "custom") {
-                // The dialog answers what "Custom…" means; the choice only
-                // commits once Done says so. One side panel at a time — the
-                // recurrence panel takes Browse's spot beside the card.
-                repeatBefore.current = repeat;
-                openRecur();
-                setRepeat("custom");
-              } else {
-                setRepeat(v);
-                // A non-custom pick makes an open recurrence panel moot.
-                if (recurOpen) closeRecur();
-              }
-            }}
-          />
-          {/* A task IS a Claude session, so a repeating task sends every run
-              into its own thread by construction — that is the default and
-              needs no flag. This is the opt-OUT: tick it and each occurrence
-              mints a fresh task, with a session and a TASK-nnn of its own
-              (design §6).
-
-              "FRESH", not "New" (Akshil, 2026-08-18): the card's own button says
-              New task, so "New task each run" read as a second thing the form
-              could create rather than as what this run's thread does. The flag,
-              the wire (`new_task_each_run`) and the behaviour are untouched —
-              this is the word the user reads. */}
-          <CheckField
-            label="Fresh task each run"
-            checked={newTaskEachRun}
-            onChange={setNewTaskEachRun}
-            describedBy={threadHintId}
-          />
-        </div>
-        {/* The thread this repeat writes into, said out loud. It is the one
-            thing about a repeating task that was invisible: a task IS a
-            session, so every run lands in the same chat — and an edit that
-            silently dropped that chat cost the user everything it had built
-            with nothing on screen to notice. Editing a task that already has
-            a thread says so in particular, because THAT is the sentence worth
-            reading before you change anything. */}
-        <span id={threadHintId} className="field-hint schedule-form-sub new-task-thread">
-          {newTaskEachRun
-            ? "Each run starts a new chat."
-            : learnedSession
-              ? "Every run adds to the chat this task has already started."
-              : "Every run adds to the same chat."}
-        </span>
-        </>
-        )}
         {recurOpen && (
           <CustomRecurrence
             initial={customRule}
@@ -3269,7 +3180,17 @@ export default function NewJobModal({
           />
         )}
 
-        <details className="schedule-form-more">
+        {/* WHEN, and everything that hangs off it, now lives HERE (Akshil,
+            2026-08-23) — open from the start when the card is being used to
+            plan (`planning`: the calendar, a slot click, an edit) and folded
+            away otherwise. A task typed on the List or the Board is
+            overwhelmingly one to run, and the when-row was a field everybody
+            scrolled past to reach Save; behind the disclosure it costs one
+            click for the people who want it and nothing at all for the people
+            who do not. The row is unchanged — same controls, same rules — it
+            has only moved. */}
+        <details className="schedule-form-more" open={moreOpen}
+                 onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
           {/* The disclosure is a QUIET row, not a button: secondary text and a
               chevron, the same object the task list opens its threads with
               (`tasks-caret`). It used to be accent yellow, which made the one
@@ -3286,6 +3207,198 @@ export default function NewJobModal({
             </span>
             More options
           </summary>
+          {/* Google's when-row, its controls included: a date field that drops
+              a month grid and a time field that drops a 15-minute list (Akshil,
+              2026-08-15). Both write into the single `when` string. */}
+          <div className="schedule-form-line">
+            {ICON_CLOCK}
+            <div className="schedule-when">
+              <div
+                className="schedule-pop-wrap"
+                onBlur={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                    setDateOpen(false);
+                }}
+                // Escape dismisses the GRID, not the modal around it — same
+                // contract as every other dropdown here.
+                onKeyDown={(e) => {
+                  if (e.key === "Escape" && dateOpen) {
+                    e.stopPropagation();
+                    setDateOpen(false);
+                  }
+                }}
+              >
+                <button ref={dateBtnRef} type="button"
+                        className="schedule-when-field"
+                        aria-describedby={pastNote ? pastHintId : undefined}
+                        aria-expanded={dateOpen}
+                        onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
+                  {dateLabel}
+                </button>
+                {dateOpen && (
+                  <div className="schedule-pop" style={popStyle(dateBtnRef.current, 300)}
+                       onMouseDown={(e) => e.preventDefault()}>
+                    {/* No floor at all now. A past day is a one-off saying "run
+                        this as soon as you can" (design §9), and for a rule it
+                        is legitimate too — it says "start this pattern, and run
+                        the one I missed". The date is still the series' ANCHOR,
+                        which is what makes "monthly on the second Wednesday"
+                        expressible by picking a past second Wednesday; what
+                        changed is that the server no longer waits for the next
+                        future slot to materialize from. It catches up on the
+                        latest past one first (SCH-13b), which is why picking a
+                        past day under a standing Repeat prints a note of its own
+                        rather than nothing. */}
+                    <MiniCalendar
+                      selected={pickedOk ? picked : new Date()}
+                      onPick={(d) => { setDatePart(d); setDateOpen(false); }}
+                    />
+                  </div>
+                )}
+              </div>
+              <div
+                className="schedule-pop-wrap"
+                onBlur={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                    setTimeOpen(false);
+                }}
+              >
+                <input
+                  ref={timeRef}
+                  type="text"
+                  className="schedule-when-field schedule-when-time"
+                  aria-describedby={pastNote ? pastHintId : undefined}
+                  aria-expanded={timeOpen}
+                  aria-label="Time"
+                  value={timeText}
+                  onFocus={(e) => { setTimeOpen(true); setDateOpen(false); e.target.select(); }}
+                  onChange={(e) => setTimeText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { commitTimeText(); setTimeOpen(false); }
+                    if (e.key === "Escape" && timeOpen) { e.stopPropagation(); setTimeOpen(false); }
+                  }}
+                  onBlur={commitTimeText}
+                />
+                {timeOpen && (
+                  <div className="schedule-pop schedule-pop--time"
+                       style={popStyle(timeRef.current, 208)}
+                       onMouseDown={(e) => e.preventDefault()}>
+                    <TimeList
+                      selected={{ h: pickedOk ? picked.getHours() : 9, m: pickedOk ? picked.getMinutes() : 0 }}
+                      onPick={(h, m) => { setTimePart(h, m); setTimeOpen(false); }}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Repeat is a tick on the when-row, not a dropdown that is always
+                open (design §6): most tasks run once, and the menu they never
+                use was the loudest thing under the time. Unticking clears the
+                rule outright — see toggleRepeat. */}
+            <CheckField
+              className="new-task-check--repeat"
+              label="Repeat"
+              checked={repeatOn}
+              onChange={toggleRepeat}
+            />
+          </div>
+          {/* Not a refusal any more: past-due work is queued and runs when the
+              app next opens (design §9), so this says what will happen instead
+              of asking for a different answer. WHICH of the two things it says is
+              pastNoteFor's decision — a repeat's past anchor gets its own
+              sentence, because SCH-13b makes it one catch-up run and then the
+              pattern, not "as soon as it can" full stop.
+
+              One element for both wordings, so it keeps the id the date and time
+              fields point `aria-describedby` at, and stays directly under the row
+              it is about: printed after the repeat row it read as a complaint
+              about the recurrence rule (audit 2026-08-16). `role="status"` earns
+              its keep twice over now — ticking Repeat rewrites this line in
+              place, and a silent swap is the one thing worse than no line. */}
+          {pastNote && (
+            <span id={pastHintId} className="field-hint new-task-past schedule-form-sub"
+                  role="status">
+              {pastNote}
+            </span>
+          )}
+          {repeatOn && (
+          <>
+          <div className="schedule-form-line schedule-form-line--sub">
+            <Dropdown
+              ariaLabel="Repeats"
+              className="schedule-repeat"
+              value={
+                repeat === "custom" && customRule
+                  ? describeRule(customRule, pickedOk ? picked : new Date())
+                  : repeat === "cron"
+                    ? describeRepeats(legacyCron)
+                    : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat"
+              }
+              options={[
+                // "Does not repeat" is gone from the menu: the tick above IS
+                // that answer now, and a dropdown that can contradict the
+                // checkbox it hangs from is two controls for one question.
+                ...choices
+                  .filter((c) => c.key !== "none")
+                  .map((c) =>
+                    c.key === "custom" && repeat === "custom" && customRule
+                      ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
+                      : { key: c.key, label: c.label },
+                  ),
+                // Legacy cron templates keep their line under a key of their
+                // own — the form no longer writes cron, but editing one must
+                // not silently rewrite the rule.
+                ...(legacyCron ? [{ key: "cron", label: describeRepeats(legacyCron) }] : []),
+              ]}
+              onPick={(v) => {
+                if (v === "custom") {
+                  // The dialog answers what "Custom…" means; the choice only
+                  // commits once Done says so. One side panel at a time — the
+                  // recurrence panel takes Browse's spot beside the card.
+                  repeatBefore.current = repeat;
+                  openRecur();
+                  setRepeat("custom");
+                } else {
+                  setRepeat(v);
+                  // A non-custom pick makes an open recurrence panel moot.
+                  if (recurOpen) closeRecur();
+                }
+              }}
+            />
+            {/* A task IS a Claude session, so a repeating task sends every run
+                into its own thread by construction — that is the default and
+                needs no flag. This is the opt-OUT: tick it and each occurrence
+                mints a fresh task, with a session and a TASK-nnn of its own
+                (design §6).
+
+                "FRESH", not "New" (Akshil, 2026-08-18): the card's own button says
+                New task, so "New task each run" read as a second thing the form
+                could create rather than as what this run's thread does. The flag,
+                the wire (`new_task_each_run`) and the behaviour are untouched —
+                this is the word the user reads. */}
+            <CheckField
+              label="Fresh task each run"
+              checked={newTaskEachRun}
+              onChange={setNewTaskEachRun}
+              describedBy={threadHintId}
+            />
+          </div>
+          {/* The thread this repeat writes into, said out loud. It is the one
+              thing about a repeating task that was invisible: a task IS a
+              session, so every run lands in the same chat — and an edit that
+              silently dropped that chat cost the user everything it had built
+              with nothing on screen to notice. Editing a task that already has
+              a thread says so in particular, because THAT is the sentence worth
+              reading before you change anything. */}
+          <span id={threadHintId} className="field-hint schedule-form-sub new-task-thread">
+            {newTaskEachRun
+              ? "Each run starts a new chat."
+              : learnedSession
+                ? "Every run adds to the chat this task has already started."
+                : "Every run adds to the same chat."}
+          </span>
+          </>
+          )}
           {/* Inside the same 26px icon gutter every other control hangs from —
               the details block was flush with the card edge, so the one control
               behind it was the only one in the form that did not line up

@@ -1328,6 +1328,16 @@
   border-radius: 4px;
 }
 
+/* THE GAP UNDER THE WHEN-ROW (Akshil, 2026-08-23). More options holds two
+   unrelated questions now — when this runs, and what it is allowed to do — and
+   with the when-row moved in they sat flush, so "Permissions" read as a label
+   belonging to the time above it rather than as the next thing. One space, at
+   the size the card already spaces its blocks by; the first child never takes
+   it, so a card whose fold contains only Permissions is unchanged. */
+.schedule-form-more > * + * {
+  margin-top: 12px;
+}
+
 .schedule-form-more[open] summary {
   margin-bottom: 10px;
 }

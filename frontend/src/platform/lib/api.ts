@@ -1978,6 +1978,12 @@ export interface TaskMessage {
   // "Ran" so this page and that card describe one outcome with one word.
   turn: "done" | "idle" | "unknown" | "cancelled" | "";
   anchor: string; // transcript record uuid, for scroll-to; "" if unknown
+  // "Run this now", not "run this at a time I picked": set by the New task form
+  // when the card was opened from the List or the Board and nobody touched the
+  // when-row. It is what keeps the calendar a PLAN — see schedule-lib.taskChips,
+  // which skips these — and it says nothing about when the message ran. Absent on
+  // a chat message and on anything an older server sent.
+  immediate?: boolean;
 }
 
 export interface Task {
@@ -2946,6 +2952,12 @@ export interface ScheduledMessage {
   // copies to each occurrence, so every run resumes the same conversation.
   // Ticking this copies "" instead, so each run starts its own.
   new_task_each_run?: boolean;
+  // Created to RUN, not to be planned: the New task form sets this when the card
+  // was opened from the List or the Board and the when-row was never touched, so
+  // `due` is only the form's own default of "now". The scheduler ignores it
+  // entirely; the calendar reads it, and draws nothing for a task nobody
+  // scheduled. Never true on a repeating entry.
+  immediate?: boolean;
 }
 
 export interface ScheduleResult {
@@ -2991,6 +3003,11 @@ export function scheduleMessage(body: {
   // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
   // split apart.
   new_task_each_run?: boolean;
+  // "The user never picked a time" — sent only by the New task form, and only
+  // for a one-off opened from the List or the Board with the when-row untouched.
+  // `due` is still sent (it is "now"); this is what tells the calendar the time
+  // was a default rather than a plan. See ScheduledMessage.immediate.
+  immediate?: boolean;
   // The id of the entry this one REPLACES — set only by an edit, which is
   // cancel + re-create and therefore mints a brand new entry id. A task that has
   // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without
