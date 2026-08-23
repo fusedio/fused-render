@@ -66,15 +66,29 @@ message text.
 `models.load`/`download` POST to a job-backed endpoint that answers
 immediately with a `jobId` — a Python caller has a thread to spend, so the
 job protocol is folded into the call: POST, then poll `GET /api/jobs` for
-that id until it reaches a terminal state, then return the settled reply.
-`wait=False` returns the immediate `{"jobId": ..., "path": ..., ...}` reply
-for a caller that wants to drive its own loop; `on_progress=` receives each
-polled job row; `timeout=` bounds the wait. A job whose reporter died shows
-up as `stalled` (`jobs.py::is_stalled`) well before its ten-minute registry
-eviction, and the wait loop raises immediately on that flag rather than
-polling out the full window — a hang this module can detect and refuses to
-reproduce. This is the one place the Python surface deliberately differs
-from the JS one: `await` becomes `return`.
+that id until it reaches a terminal state. `wait=False` returns the
+immediate `{"jobId": ..., "path": ..., ...}` reply for a caller that wants
+to drive its own loop; `on_progress=` receives each polled job row;
+`timeout=` bounds the wait. A missing row is tolerated for up to five
+consecutive polls once one has been seen (matching `runtime.js`'s
+`watchJob` — `jobs.py::_sweep` can evict a finished SERVER row on the very
+next `list_jobs()` above `MAX_JOBS`, the SPEC AI-10a transcription-queue
+case), and a `stalled` row (`jobs.py::is_stalled`) must persist past a
+grace period before raising rather than on its first observation — a
+legitimately slow phase (a denoiser between steps, a worker between
+reports) can trip the 30-second staleness flag while the work continues.
+This is the one place the Python surface deliberately differs from the JS
+one: `await` becomes `return`.
+
+**`transcribe()`'s settled reply carries the transcript's CONTENTS, not
+just its paths** — `{**reply, "text", "segments", "language", "duration",
+"speakers", "estimatedSpeakers"}`, read off `reply["output"]` the same way
+`runtime.js`'s own `aiTranscribe` reads it (the row only ever said *when*
+to read, never *what* it contains). `image()` does NOT get the same
+treatment: its JS counterpart resolves with `{path, url, previewUrl, seed,
+...}` and no pixel data, so returning paths there already matches — reading
+a PNG's bytes back into the reply would be new behavior neither surface
+has.
 
 **The request envelope is closed (D413) and this module does not
 re-validate it.** An option the server does not recognise is a 400 from the

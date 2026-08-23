@@ -494,6 +494,22 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
 # --------------------------------------------------------------- transcribe
 
 
+def _read_transcript(output_path: str, job_id: str | None = None) -> dict:
+    """Read the transcript JSON a finished `/api/ai/transcribe` job wrote to
+    `output` — the same read `runtime.js`'s own `aiTranscribe` does, and for
+    the identical reason (that function's own comment): the row only says
+    WHEN to read, and the file is "the only source guaranteed whole" — a
+    worker that finished before the first poll, or a caller that only asked
+    after the job aged out, still gets the right answer here.
+    """
+    try:
+        with open(output_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise AiError("ai_error", f"the transcript could not be read: {e}",
+                      job_id=job_id) from None
+
+
 def transcribe(path: str, model: str | None = None, language: str | None = None,
                task: str | None = None, initial_prompt: str | None = None,
                vad: bool | None = None, diarize: bool | None = None,
@@ -501,9 +517,13 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
                wait: bool = True, on_progress=None,
                timeout: float | None = None) -> dict:
     """`POST /api/ai/transcribe`. Job-backed (SPEC AI-9), so this blocks by
-    default: it posts, waits for the job to finish, and returns the settled
-    reply — `wait=False` returns the immediate `{"jobId", "path", "output",
-    ...}` reply instead, for a caller that wants to drive its own loop.
+    default: it posts, waits for the job to finish, reads the transcript back
+    off disk, and returns `{**reply, "text", "segments", "language",
+    "duration", "speakers", "estimatedSpeakers"}` — the same fields
+    `fused.ai.transcribe`'s own `done()` merges in, read from the SAME file
+    (`reply["output"]`), because the row only ever said when to read it, not
+    what it contains. `wait=False` returns the immediate `{"jobId", "path",
+    "output", ...}` reply with none of that — there is nothing to read yet.
 
     `path` is resolved to an absolute path locally rather than sent relative
     with a `base` — `/api/ai/transcribe` only accepts a relative `path`
@@ -523,10 +543,26 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     reply = _post_json("/api/ai/transcribe", body)
     if not wait:
         return reply
-    job = _wait_job(_require_job_id(reply, "/api/ai/transcribe"),
-                    on_progress=on_progress, timeout=timeout)
+    job_id = _require_job_id(reply, "/api/ai/transcribe")
+    job = _wait_job(job_id, on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
-    return reply
+    written = _read_transcript(reply["output"], job_id=job_id)
+    return {
+        **reply,
+        "text": written.get("text"),
+        "segments": written.get("segments"),
+        "language": written.get("language"),
+        "duration": written.get("duration"),
+        # The transcript's legend — None unless `diarize` was asked for, read
+        # from the FILE like everything else here, same as `runtime.js`: a
+        # caller never has to know which engine wrote it.
+        "speakers": written.get("speakers"),
+        # How many voices the clustering decided there were, present only on
+        # a run that had to estimate (D318); a caller who passed `speakers`
+        # already knows this and gets None here, matching the JS reply's
+        # `undefined` for the same case.
+        "estimatedSpeakers": written.get("estimatedSpeakers"),
+    }
 
 
 # ------------------------------------------------------------------- image
