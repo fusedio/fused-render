@@ -1562,6 +1562,39 @@ def cached_models() -> list[CachedModel]:
     return models
 
 
+def is_downloaded(model_id: str, cached: list[CachedModel] | None = None) -> bool:
+    """Does this disk hold `model_id` — a repo id OR a curated GGUF filename?
+
+    **The one place that answers "is this catalog entry on this machine".** It
+    was a closure inside `ai_runtime._catalog_with_downloads` and is now shared,
+    because a second reader appeared (`routers/ai_benchmark._benchmarkable_models`)
+    and wrote its own version — which got it wrong in the one way this function
+    exists to prevent, admitting every curated id because `catalog.for_capability`
+    is the CURATION and knows nothing about the filesystem. Two answers to this
+    question is how a page comes to offer a Run (or a Load) for bytes that are
+    not here.
+
+    Two id shapes, and the second is why `model_id in {m.repo_id …}` is not
+    enough on its own: `formats.GGUF_RECIPES` keys `llamacpp-text`'s catalog
+    entries by the GGUF's own FILENAME (AI-5m), because a repo id cannot address
+    one of a repo's several curated quantizations — so a filename id resolves
+    through the recipe's `(repo, file)` pair against `CachedModel.files`, the
+    snapshot's own top-level filenames.
+
+    `cached` is the already-paid-for `cached_models()` answer; callers making
+    several of these in a row should pass it rather than paying the memo lookup
+    per id. Either way a PARTLY downloaded repo is already absent from that list
+    (D424's `_unfinished_fetch` skip), so "downloaded" here means a fetch that
+    finished — which is what keeps a caller from resuming a multi-GB pull.
+    """
+    models = cached_models() if cached is None else cached
+    recipe = formats.GGUF_RECIPES.get(model_id)
+    if recipe is None:
+        return any(model.repo_id == model_id for model in models)
+    return any(model.repo_id == recipe["repo"] and recipe["file"] in model.files
+               for model in models)
+
+
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
