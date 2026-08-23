@@ -49,7 +49,7 @@ DOWNLOAD_CONFIRM_MAX_BYTES = int(
 # Cap the on-disk COG/preview derivative cache. Least-recently-opened entries
 # are evicted past this; a derivative backing a live layer is never removed.
 OPTIMIZED_CACHE_MAX_BYTES = int(
-    os.environ.get("MAP_VIEWER_OPTIMIZED_CACHE_MAX_BYTES", str(4 << 30))
+    os.environ.get("MAP_VIEWER_OPTIMIZED_CACHE_MAX_BYTES", str(2 << 30))
 )
 PREVIEW_MAX_SIZE = int(os.environ.get("MAP_VIEWER_PREVIEW_MAX_SIZE", "512"))
 PREVIEW_VERSION = "v3"

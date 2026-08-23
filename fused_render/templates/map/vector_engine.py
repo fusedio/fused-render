@@ -62,6 +62,11 @@ OVERVIEW_EXACT_MAX = int(
 MAX_TILE_CACHE = int(
     os.environ.get("MAP_VIEWER_VECTOR_TILE_CACHE_SIZE", "512")
 )
+# Cap the on-disk .pbf tile cache; least-recently-served tiles are evicted past
+# this (see _evict_disk_tiles).
+VECTOR_TILE_CACHE_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_VECTOR_TILE_CACHE_MAX_BYTES", str(2 << 30))
+)
 MAX_ATTRIBUTES = int(
     os.environ.get("MAP_VIEWER_VECTOR_TILE_ATTRIBUTES", "8")
 )
@@ -422,8 +427,40 @@ class VectorEngine:
             if cache_dir is not None
             else None
         )
+        self._disk_bytes = 0
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self._evict_disk_tiles()
+
+    def _evict_disk_tiles(self) -> None:
+        """Keep the on-disk .pbf tile cache under VECTOR_TILE_CACHE_MAX_BYTES,
+        deleting least-recently-served tiles first. Runs on startup and whenever
+        the running byte count (bumped per write, tiles touched on read) crosses
+        the cap, so the whole-tree scan is rare rather than per tile."""
+        if self.cache_dir is None or VECTOR_TILE_CACHE_MAX_BYTES <= 0:
+            return
+        entries = []
+        for root, _dirs, files in os.walk(self.cache_dir):
+            for name in files:
+                if not name.endswith(".pbf") or ".tmp" in name:
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                entries.append((path, stat.st_size, stat.st_mtime))
+        total = sum(size for _, size, _ in entries)
+        if total > VECTOR_TILE_CACHE_MAX_BYTES:
+            for path, size, _ in sorted(entries, key=lambda item: item[2]):
+                if total <= VECTOR_TILE_CACHE_MAX_BYTES:
+                    break
+                try:
+                    os.remove(path)
+                except OSError:
+                    continue
+                total -= size
+        self._disk_bytes = total
 
     def try_describe(self, request: dict[str, Any], obj: Any | None = None):
         target = obj if isinstance(obj, (str, os.PathLike)) else request.get("target")
@@ -1378,6 +1415,8 @@ class VectorEngine:
             tile = path.read_bytes()
         except OSError:
             return None
+        with contextlib.suppress(OSError):
+            os.utime(path, None)
         self._remember(key, tile)
         return tile
 
@@ -1408,6 +1447,9 @@ class VectorEngine:
         try:
             temporary.write_bytes(tile)
             os.replace(temporary, path)
+            self._disk_bytes += len(tile)
+            if self._disk_bytes > VECTOR_TILE_CACHE_MAX_BYTES:
+                self._evict_disk_tiles()
         finally:
             try:
                 temporary.unlink(missing_ok=True)
