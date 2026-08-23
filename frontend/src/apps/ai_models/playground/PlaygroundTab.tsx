@@ -53,6 +53,7 @@ import {
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 
 // What the groups are called HERE: the capability vocabulary is exact
 // ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
@@ -313,13 +314,22 @@ export default function PlaygroundTab() {
                     {name}
                   </span>
                   {/* On disk = nothing to say: the CTA exists only while there
-                      is an action to take. Left of the size, which is the
-                      figure it acts on. */}
+                      is an action to take. Left of the two figures it acts on.
+                      A glyph rather than the word, sharing the file's one
+                      download icon (MenuIcons.download, an arrow into a tray):
+                      the word competed with the model's name for the eye, and
+                      an arrow-into-tray is the same claim in a quarter of the
+                      width. The label survives as `aria-label`/`title` — it
+                      has to, because a screen reader gets nothing from a
+                      decorative path, and the title is what carries the
+                      running state a text button used to say out loud. */}
                   {!model.downloaded && (
                     <button
                       type="button"
                       className="pg-model-dl"
                       disabled={downloading}
+                      aria-label={downloading ? "Downloading…" : `Download ${name}`}
+                      title={downloading ? "Downloading…" : `Download ${name}`}
                       onClick={(e) => {
                         // Selecting too is fine; a second click must not be.
                         e.stopPropagation();
@@ -327,7 +337,7 @@ export default function PlaygroundTab() {
                         void runDownloadFor(model.id, row.capability);
                       }}
                     >
-                      {downloading ? "Downloading…" : "Download"}
+                      {MenuIcons.download}
                     </button>
                   )}
                   {/* Parameter count, left of the download weight: the two

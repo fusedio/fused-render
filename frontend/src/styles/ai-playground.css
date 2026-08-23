@@ -214,9 +214,13 @@
   background: var(--pg-card-bg-hover);
 }
 
+/* Selected = an accent OUTLINE and nothing else. The accent wash that used to
+ * fill the card made the selection read as a highlighter stripe down the rail
+ * and tinted the params chip's --tint wash sitting on top of it; the border
+ * alone is the quieter claim, and it is already zero-shift because every card
+ * carries a transparent one of the same width. */
 .pg-model.active {
   border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .pg-model:focus-visible {
@@ -295,34 +299,49 @@
   white-space: nowrap;
 }
 
-/* The CTA, inline on the name line and left of the size. `flex: none` and
- * nowrap for the same reason the size has them: the name is the only thing on
- * this row allowed to give up space. */
+/* The CTA, now a glyph on the name line, left of the chip and the size.
+ * `flex: none` for the same reason those two have it: the name is the only
+ * thing on this row allowed to give up space.
+ *
+ * BORDERLESS, where the text version was a bordered pill. The pill's outline
+ * was doing the work of saying "clickable" for a word that already said it;
+ * an arrow-into-tray says it by itself, and a second bordered shape beside
+ * the params chip made the row read as two chips of equal weight. What is
+ * left is a round hit area that only paints on hover.
+ *
+ * Muted, not white: the CTA shares a line with the model's name, and at full
+ * contrast it read as the louder of the two. It goes to --fg on hover, which
+ * is where a reader has already committed. */
 .pg-model-dl {
   flex: none;
-  font: inherit;
-  font-size: 11px;
-  /* Muted grey at normal weight, not white at 600: the CTA shares a line with
-   * the model's name, and at full contrast it read as the louder of the two.
-   * It goes to --fg on hover, which is where a reader has already committed. */
-  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--fg-muted);
-  white-space: nowrap;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
+  padding: 3px;
+  border: 0;
   border-radius: 999px;
   background: transparent;
   cursor: pointer;
 }
 
-.pg-model-dl:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
+/* 14px, not MenuIcons' own 16: the glyph sits beside 13px text and an 11px
+ * chip, and at 16 it was the biggest thing on the row. Overridden here rather
+ * than parameterised in MenuIcons — same call as `.pg-group-icon svg`. */
+.pg-model-dl svg {
+  width: 14px;
+  height: 14px;
 }
 
+.pg-model-dl:hover:not(:disabled) {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.1);
+}
+
+/* Mid-download: the glyph cannot say "Downloading…" the way the word did, so
+ * it dims and stops responding, and the title carries the sentence. */
 .pg-model-dl:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: default;
 }
 
