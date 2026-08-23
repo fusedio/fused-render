@@ -30,6 +30,7 @@ import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
+import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
@@ -37,7 +38,8 @@ import { capabilityIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-import { refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { fetchJobs, type Job } from "@platform/lib/jobs";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -103,6 +105,27 @@ export default function PlaygroundTab() {
     };
   }, [catalogEpoch]);
 
+  // Job rows while anything is live, so the size rule can read a running
+  // pull's own measured total — matched by TITLE (the supervisor sets it to
+  // the model id), the same join AiModels.tsx uses and for the same reason:
+  // the id derivation sanitises characters and must not be copied here.
+  const anyBusy = isBusy(runtime);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  useEffect(() => {
+    if (!anyBusy) {
+      setJobs([]);
+      return;
+    }
+    let alive = true;
+    const tick = () => fetchJobs().then((s) => alive && setJobs(s.jobs), () => {});
+    void tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [anyBusy]);
+
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];
 
   // The selection lives in the URL. An unknown or absent id falls back to the
@@ -158,6 +181,18 @@ export default function PlaygroundTab() {
   const selectedResident = residentRow?.model === selected?.model.id ? residentRow : undefined;
   const selectedDownloading =
     !!selected && runtime.downloading.some((d) => d.model === selected.model.id);
+  const jobForSelected = selected
+    ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
+    : undefined;
+  // Rows by MODEL, for the sidebar's own size cells — the same title match
+  // `jobForSelected` uses one line up, and for the same reason: the job id
+  // derivation sanitises characters and a second copy of that rule in
+  // TypeScript would drift from the Python one. What a running pull's total does
+  // to the size shown is `shared/modelSize`'s rule, not this file's.
+  const jobByModel = useMemo(
+    () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
+    [jobs],
+  );
 
   // The sidebar cards and the stage header share this: same call, same error
   // surface (the stage's banner — the card has no room for a sentence).
@@ -202,6 +237,11 @@ export default function PlaygroundTab() {
     return <ErrorBanner>{catalog.message}</ErrorBanner>;
   }
 
+  // The size to name for the selected model, wherever this page names one —
+  // never understating it, and null when there is nothing to say at all (see
+  // `shared/modelSize`).
+  const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
+
   // The state line under the model name: what is TRUE right now, in words. The
   // sidebar dots carry the same facts; this is where they are spelled out.
   const stateLine = !selected
@@ -214,8 +254,8 @@ export default function PlaygroundTab() {
         ? "Downloading…"
         : selected.model.downloaded
           ? "Downloaded — loads on first use."
-          : selected.model.size_gb != null
-            ? `Not downloaded — ${selected.model.size_gb} GB to fetch.` +
+          : selectedSize
+            ? `Not downloaded — ${selectedSize.text} to fetch.` +
               // The fit verdict, spelled out where the Download decision is
               // being made — the badge says "too big here", this says why.
               (selected.model.fit === "no"
@@ -262,6 +302,10 @@ export default function PlaygroundTab() {
             // The card is a div-as-button, not a <button>: the Download CTA
             // lives inside it, and a button inside a button is markup browsers
             // are free to mangle.
+            // The advertised figure, or a running pull's own total when that
+            // is larger (see `shared/modelSize`).
+            const job = jobByModel.get(model.id);
+            const size = modelSizeHint(model.size_gb, job);
             return (
               <div
                 key={model.id}
@@ -288,8 +332,15 @@ export default function PlaygroundTab() {
                 </span>
                 {fullName && <span className="pg-model-full">{fullName}</span>}
                 <span className="pg-model-foot">
-                  <span className="pg-model-size">
-                    {model.size_gb != null ? `${model.size_gb} GB` : "—"}
+                  <span
+                    className="pg-model-size"
+                    title={
+                      size
+                        ? `${size.text} download — judged against this machine's memory`
+                        : undefined
+                    }
+                  >
+                    {modelSizeLabel(model.size_gb, job)}
                   </span>
                   {/* On disk = nothing to say: the CTA exists only while there
                       is an action to take. */}
@@ -414,8 +465,7 @@ export default function PlaygroundTab() {
                   </button>
                   {!selected.model.downloaded && !selectedDownloading && (
                     <button type="button" className="btn btn-secondary" onClick={runDownload}>
-                      Download
-                      {selected.model.size_gb != null ? ` (${selected.model.size_gb} GB)` : ""}
+                      Download{selectedSize ? ` (${selectedSize.text})` : ""}
                     </button>
                   )}
                   {selected.model.downloaded && !selectedResident && (
@@ -454,7 +504,7 @@ export default function PlaygroundTab() {
                   {selected.model.size_gb != null && (
                     <div className="pg-hero-fact">
                       <dt>Download</dt>
-                      <dd>{selected.model.size_gb} GB</dd>
+                      <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
                     </div>
                   )}
                 </dl>

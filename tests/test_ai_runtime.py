@@ -3063,7 +3063,8 @@ def test_shutdown_cancels_an_environment_build_too(fake_runner, monkeypatch):
 
     cancelled = []
     monkeypatch.setattr(envinstall, "is_installed", lambda d: False)
-    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "abc123", "done": False})
+    monkeypatch.setattr(envinstall, "start",
+                        lambda d: {"key": "abc123", "done": False, "claimed": True})
     monkeypatch.setattr(envinstall, "progress", lambda key: {"done": False, "stage": "sync"})
     monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
     # The real one — the fixture stubs it, and this test is about what it does.
@@ -3082,6 +3083,379 @@ def test_shutdown_cancels_an_environment_build_too(fake_runner, monkeypatch):
 
     supervisor.unload_all()
     assert cancelled == ["abc123"], "the detached installer was left running"
+
+
+# -- one runner, one environment, several downloads waiting on it ----------------
+#
+# `envinstall` is single-flight per key: the first caller spawns `uv sync` and
+# every later caller joins and polls. `_ensure_venv` cancelled on the KEY, which
+# names the shared install rather than the caller's share of it — so cancelling
+# a download that was merely WAITING killed the build every other download of
+# that runner was joined to, and each of those then failed with a cancellation
+# nobody had asked for. Worse with no pinned Python yet, where the key is the
+# machine-global `PYTHON_BOOTSTRAP_KEY` and the blast radius is every runner.
+#
+# These tests need the REAL `_ensure_venv` (the `fake_runner` fixture stubs it
+# out, which is exactly why the path had no coverage) over a faked `envinstall`.
+
+
+@pytest.fixture()
+def shared_install(fake_runner, monkeypatch):
+    """A fake `envinstall` whose install is claimed once and joined thereafter.
+
+    `state["done"]` is the release: until the test sets it, every poll reports an
+    install still running, so a download parked in the venv phase stays parked
+    and is there to be cancelled. `state["cancelled"]` is every key `cancel` was
+    asked for — the assertion these tests are about.
+
+    **`cancel` does what the real one does, and that is not decoration.** The
+    real `envinstall.cancel` kills the pid AND writes
+    `done=True, error="the install was cancelled"` into the SHARED record every
+    joiner is polling (`envinstall.py`'s `cancel`), which is exactly how a cancel
+    reaches workers that never asked for one. A fake that only recorded the call
+    certified a behaviour production did not have: it let a joiner sail past a
+    cancellation that would really have killed it, and the test asserting the
+    joiner survives an owner's ✕ passed over a defect (see
+    `test_cancelling_the_OWNER_leaves_a_joiner_alone`).
+    """
+    from fused_render import envinstall
+
+    state = {"claims": 0, "done": False, "cancelled": [], "error": None}
+
+    def start(project_dir):
+        state["claims"] += 1
+        return {"key": "shared-key", "done": False, "claimed": state["claims"] == 1}
+
+    def cancel(key):
+        state["cancelled"].append(key)
+        # The real one refuses a record that is already done — there is no live
+        # pid to signal — so a cancel on the way past a FINISHED install must not
+        # invent an error for it either.
+        if state["done"]:
+            return False
+        state["done"] = True
+        state["error"] = "the install was cancelled"
+        return True
+
+    monkeypatch.setattr(envinstall, "is_installed",
+                        lambda d: state["done"] and not state["error"])
+    monkeypatch.setattr(envinstall, "start", start)
+    monkeypatch.setattr(envinstall, "progress",
+                        lambda key: {"done": state["done"], "error": state["error"],
+                                     "stage": "sync"})
+    monkeypatch.setattr(envinstall, "cancel", cancel)
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: sys.executable)
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "shared-key")
+    # The real one — the fixture stubs it, and these tests are about what it does.
+    monkeypatch.setattr(supervisor, "_ensure_venv", _REAL_ENSURE_VENV)
+    return state
+
+
+def _waiting_on_the_install(model, timeout=10.0):
+    """The download for `model`, once it is parked in the venv phase.
+
+    Started one at a time and awaited, because "who owns the install" is
+    whoever called `start()` first and two threads racing for that would make
+    every assertion below a coin toss.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        stub = supervisor._fetch_workers.get(model)
+        if stub is not None and stub.install_key:
+            return stub
+        time.sleep(0.02)
+    raise AssertionError(f"{model} never reached the environment build")
+
+
+def test_cancelling_a_JOINER_leaves_the_shared_install_running(shared_install):
+    """The defect, from the user's side: two downloads on one runner, ✕ on the
+    one that is only waiting, and the other one dies too."""
+    owner = supervisor.load("org/owner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/owner")
+    joiner = supervisor.load("org/joiner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/joiner")
+
+    jobs.request_cancel(joiner["jobId"])
+
+    assert _row(joiner["jobId"])["state"] == "cancelled"
+    assert shared_install["cancelled"] == [], \
+        "a joiner's ✕ tore down the install the owner was building"
+
+    # And the owner's download really does carry on to the end.
+    shared_install["done"] = True
+    assert _row(owner["jobId"])["state"] == "done"
+    _drain_downloads()
+
+
+def test_cancelling_the_OWNER_leaves_a_joiner_alone(shared_install):
+    """The SYMMETRIC case, and the one ownership got wrong in the other
+    direction.
+
+    `envinstall.cancel` does not just kill a pid — it writes
+    `error: "the install was cancelled"` into the SHARED record every joiner is
+    polling. So an owner's ✕ reached the joiners just as surely as a joiner's ✕
+    used to reach the owner: their next poll read the error and raised past the
+    `_VENV_ROUNDS` loop, and a download nobody had touched died saying "the
+    install was cancelled". Ownership cannot be the condition; "is anybody still
+    waiting on this" can.
+    """
+    owner = supervisor.load("org/owner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/owner")
+    joiner = supervisor.load("org/joiner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/joiner")
+
+    jobs.request_cancel(owner["jobId"])
+
+    assert _row(owner["jobId"])["state"] == "cancelled"
+    assert shared_install["cancelled"] == [], \
+        "the owner's ✕ cancelled an install the joiner was still waiting on"
+
+    # And the joiner really does get its environment and finish.
+    shared_install["done"] = True
+    assert _row(joiner["jobId"])["state"] == "done"
+    _drain_downloads()
+
+
+def test_the_LAST_download_waiting_on_an_install_does_stop_it(shared_install):
+    """The property the cancellation exists for, kept: an install nothing is
+    waiting on any more must not go on pulling gigabytes.
+
+    Both downloads cancelled, so the second ✕ is the last waiter leaving — and
+    THAT is the one that reaches the detached `uv sync`, which outlives the
+    threads and the app unless it is cancelled by name.
+    """
+    owner = supervisor.load("org/owner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/owner")
+    joiner = supervisor.load("org/joiner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/joiner")
+
+    jobs.request_cancel(owner["jobId"])
+    assert _row(owner["jobId"])["state"] == "cancelled"
+    jobs.request_cancel(joiner["jobId"])
+    assert _row(joiner["jobId"])["state"] == "cancelled"
+
+    assert shared_install["cancelled"] == ["shared-key"]
+    _drain_downloads()
+
+
+def test_a_GENUINE_build_failure_still_reaches_every_row_verbatim(shared_install):
+    """The distinction the retry must preserve.
+
+    A cancellation is somebody's decision about their own download and must not
+    be inherited; a resolver failure is a fact about the environment and every
+    row waiting on it has to say so, in uv's own words, without being retried
+    (PY-18). Both arrive as `error` on the same shared record, so the difference
+    has to come from somewhere else — which is why cancellation is now decided
+    before anything is written, rather than read back out of the record.
+    """
+    started = supervisor.load("org/broken", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/broken")
+
+    shared_install["done"] = True
+    shared_install["error"] = "No solution found: imagecodecs has no wheels"
+
+    row = _row(started["jobId"])
+    assert row["state"] == "error"
+    assert "imagecodecs" in row["message"]
+    # Nothing was cancelled: the install had already finished (badly), so there
+    # was no detached installer to stop.
+    assert shared_install["cancelled"] == []
+    _drain_downloads()
+
+
+def _await_detail(job_id, needle, timeout=10.0):
+    """The row's detail once it contains `needle` — the loop reports one tick
+    after it starts waiting, so this is a wait and not a read."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = _row_now(job_id)
+        if row and needle in (row.get("detail") or ""):
+            return row["detail"]
+        time.sleep(0.02)
+    raise AssertionError(f"the row never said {needle!r}: "
+                         f"{(_row_now(job_id) or {}).get('detail')!r}")
+
+
+def test_a_download_waiting_on_someone_elses_env_build_says_so(shared_install):
+    """"Preparing MLX — sync…" on a download that is not preparing anything is
+    a true sentence read as a lie: two rows said the same thing while one was
+    doing the work and the other was parked behind it, and a download that had
+    died looked no different either. Same shape the transcription queue solved
+    with `_QUEUED_DETAIL`."""
+    owner = supervisor.load("org/owner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/owner")
+    joiner = supervisor.load("org/joiner", registry.TEXT_GENERATION, weights_only=True)
+    _waiting_on_the_install("org/joiner")
+
+    detail = _await_detail(joiner["jobId"], "another download")
+    assert "Waiting for" in detail and "Fake" in detail
+
+    # The owner IS the one building it, and its row is unchanged.
+    owner_detail = _await_detail(owner["jobId"], "Preparing")
+    assert "another download" not in owner_detail
+
+    # And nothing keeps saying it once the install lands.
+    shared_install["done"] = True
+    for started in (owner, joiner):
+        row = _row(started["jobId"])
+        assert row["state"] == "done", row
+        assert "another download" not in (row.get("detail") or "")
+    _drain_downloads()
+
+
+def test_terminating_a_worker_while_another_waits_leaves_the_install(monkeypatch):
+    """`_terminate` is the other door out of the venv phase — an eviction, or
+    `unload_all` at shutdown — and it cancelled `install_key` unconditionally,
+    so shutting one worker down killed a build another one was joined to.
+
+    Both directions in one test, because they are one rule read twice. The
+    worker terminated first is the OWNER, deliberately: ownership is not the
+    question and cancelling on it took the joiners down with the record (see
+    `Worker.install_owned`). What decides is whether anybody is still waiting —
+    and the last one out still ends the install, which is what keeps a detached
+    multi-GB `uv sync` from outliving the app.
+    """
+    from fused_render import envinstall
+
+    cancelled = []
+    monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
+    owner = supervisor.Worker(model="a", capability=registry.TEXT_GENERATION,
+                              runner_code="r", token="t1")
+    joiner = supervisor.Worker(model="b", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t2")
+    supervisor._hold_install(owner, "shared-key", True)
+    supervisor._hold_install(joiner, "shared-key", False)
+
+    supervisor._terminate(owner)
+
+    assert cancelled == [], "one worker's teardown cancelled an install another was waiting on"
+    assert owner.install_key == "" and owner.install_owned is False
+
+    supervisor._terminate(joiner)
+
+    assert cancelled == ["shared-key"], "the last waiter left the installer running"
+    assert joiner.install_key == ""
+
+
+def test_releasing_a_share_twice_gives_back_only_one(monkeypatch):
+    """Two threads legitimately release the same worker — its own bring-up
+    thread on the way out of `_ensure_venv`, and `_terminate` from an eviction
+    that raced it. A second release that decremented again would hand the count
+    below zero and cancel an install the OTHER worker was still waiting on."""
+    from fused_render import envinstall
+
+    cancelled = []
+    monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
+    one = supervisor.Worker(model="a", capability=registry.TEXT_GENERATION,
+                            runner_code="r", token="t1")
+    two = supervisor.Worker(model="b", capability=registry.TEXT_GENERATION,
+                            runner_code="r", token="t2")
+    supervisor._hold_install(one, "shared-key", True)
+    supervisor._hold_install(two, "shared-key", False)
+
+    supervisor._release_install(one)
+    supervisor._release_install(one)
+
+    assert cancelled == []
+    supervisor._release_install(two)
+    assert cancelled == ["shared-key"]
+
+
+def test_a_rehold_landing_before_the_cancel_call_stops_it(monkeypatch):
+    """The window `_release_install` used to leave open: worker A is the only
+    waiter on a key, pops it under the lock — and, before it ever reaches
+    `envinstall.cancel`, an entirely fresh `load()` runs `envinstall.start()`,
+    finds the install still alive, and joins it via `_hold_install`. Cancel
+    then fires anyway, because it has no way to know a joiner just arrived —
+    and that joiner's next poll reads the "cancelled" error nobody asked for.
+
+    Reproduced deterministically, not by hoping a thread scheduler lands two
+    threads in the right order: `_install_waiters.pop` is the last thing
+    `_release_install` does before giving up `_lock`, so hooking it lets a
+    SEPARATE thread run the entire rejoin (`_hold_install`) to completion
+    right there, using the real lock to force the ordering rather than a
+    sleep. That models "A got preempted for the length of a whole
+    `envinstall.start` round trip", which is what the bug narrative describes
+    — a `dict.pop` and a couple of statements later, not a same-thread
+    reentrant call.
+    """
+    from fused_render import envinstall
+
+    cancelled = []
+    monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
+
+    owner = supervisor.Worker(model="a", capability=registry.TEXT_GENERATION,
+                              runner_code="r", token="t1")
+    rejoiner = supervisor.Worker(model="b", capability=registry.TEXT_GENERATION,
+                                 runner_code="r", token="t2")
+    key = "shared-key"
+    supervisor._hold_install(owner, key, True)
+
+    class _PopHook(dict):
+        """Stands in for `_install_waiters`, whose real `pop` is the only
+        thing both the buggy and fixed `_release_install` call on their way
+        out of the lock — the one seam that exists in either version."""
+
+        fired = False
+
+        def pop(self, k, *default):
+            result = super().pop(k, *default)
+            if k == key and not _PopHook.fired:
+                _PopHook.fired = True
+                # `_release_install` is still inside `with _lock:` here (this
+                # IS that block's last statement) — drop it just long enough
+                # for a genuinely different thread to run the whole rejoin,
+                # then take it back, exactly as `with _lock:`'s `__exit__`
+                # expects to find it.
+                supervisor._lock.release()
+                try:
+                    t = threading.Thread(
+                        target=supervisor._hold_install, args=(rejoiner, key, False))
+                    t.start()
+                    t.join(timeout=5)
+                    assert not t.is_alive(), "the rejoin never completed"
+                finally:
+                    supervisor._lock.acquire()
+            return result
+
+    monkeypatch.setattr(supervisor, "_install_waiters", _PopHook(supervisor._install_waiters))
+
+    supervisor._release_install(owner, cancel=True)
+
+    assert cancelled == [], \
+        "cancelled an install a fresh load() had already rejoined"
+    assert supervisor._install_waiters.get(key) == 1, \
+        "the rejoiner's own share went missing"
+    assert rejoiner.install_key == key
+
+
+def test_a_worker_past_the_venv_phase_cancels_nothing(monkeypatch, tmp_path):
+    """Ownership is cleared with the key, so a worker that is now downloading
+    cannot cancel an unrelated install later under a stale flag — the same
+    reason the key itself is cleared."""
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="R")
+    installed = {"yes": False}
+    cancelled = []
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: installed["yes"])
+    monkeypatch.setattr(envinstall, "start",
+                        lambda d: {"key": "shared-key", "done": False, "claimed": True})
+    monkeypatch.setattr(envinstall, "progress", lambda key: (
+        installed.update(yes=True) or {"done": True, "error": None, "stage": "done"}))
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+
+    assert supervisor._ensure_venv(runner, worker, "sys:ai-model:m") == "/venv/bin/python"
+
+    assert worker.install_key == "" and worker.install_owned is False
+    supervisor._terminate(worker)
+    assert cancelled == []
 
 
 def test_a_prerequisite_this_machine_lacks_is_said_before_a_row_opens(monkeypatch):
