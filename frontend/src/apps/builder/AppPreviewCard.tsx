@@ -85,7 +85,7 @@ export function AppPreviewCard({
   // copied into Fused/local). Decoration only — the card behaves the same.
   badge?: string;
   // Overrides where the card LANDS — an entry-page URL that carries a query
-  // string (the Playground's model handoff, D441). hrefFor deliberately
+  // string (the Playground's model handoff, D442). hrefFor deliberately
   // carries none, so a caller with params to hand over supplies the whole
   // URL; left-click then goes through navigateUrl instead of openApp, and
   // the browser gestures use the same href, so the two still can't disagree.

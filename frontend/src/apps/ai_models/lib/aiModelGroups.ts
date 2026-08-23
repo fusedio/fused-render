@@ -596,6 +596,19 @@ export function mergeSections(
  */
 export function noEngineReason(repo: AiModelRepo): string {
   if (repo.capability === null) {
+    // **The server's own sentence when it has one.** A null capability is three
+    // different facts (`AiModelRepo.support`), and this page used to print one
+    // line for all of them: a text-to-speech model, a video pipeline and a repo
+    // carrying a tag we have never heard of each read "the model type is not
+    // supported", which is true and tells a reader nothing about which of those
+    // they are looking at. `supportReason` is written per task, server-side,
+    // beside the classification it explains.
+    //
+    // The flat note stays as the fallback: an older server sends no `support`,
+    // and a repo whose task we genuinely cannot identify has no sentence to
+    // offer — that is what "unknown" means, and inventing one would be a claim
+    // we have not earned.
+    if (repo.supportReason) return repo.supportReason;
     // Agrees with the Unrecognised heading above the card, which is the only
     // other place on the page that has an opinion about this repo.
     return UNRECOGNISED_NOTE;
