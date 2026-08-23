@@ -25,6 +25,10 @@
        floor for text this small — so it is lifted to a value that clears it
        while still reading as "quieter than --dim". */
     --faint: #8a8f99;
+    /* The shell's own running colour, the same value tokens.css gives
+       --status-progress, so the shimmer on a chat row is the shimmer the
+       sidebar draws beside a running task. Two palettes, one hue. */
+    --status-progress: #facc15;
     --border: #34363e;
     --border-strong: #4a4d57;
     --accent: #d97757;
@@ -73,6 +77,7 @@
     --fg-strong: #000000;
     --dim: #61656c;
     --faint: #676c74;
+    --status-progress: #ca8a04;
     --border: #e3e4e8;
     --border-strong: #c9cbd2;
     --accent: #b8542f;
@@ -1019,35 +1024,61 @@
      rectangle. The two colours are the muted foreground and the accent, so the
      word stays legible at every point in the sweep instead of fading out
      against the strip at the trough. */
-  #topbar .tb-run {
+  /* THE SHELL'S OWN RUNNING SHIMMER, ported rather than reinvented
+     (sidebar.css `.sidebar-running`, and schedule.css's twin of it): same hue,
+     same 2.2s pace, same geometry — every "running" in this app is one mark.
+
+     Two details over there are load-bearing, and the first pass here got both
+     wrong. **The travel stays inside 100% → 0%** across a background 300% the
+     width of the box: every position in that range still covers the box, so no
+     frame can leave a letter unpainted. Going outside it — 100% → -100% over a
+     200% image, which is what this shipped as — exposes bare box at the ends,
+     and under `background-clip: text` an unpainted spot is not a dim letter,
+     it is a MISSING one. **And the clip box has to hold the whole glyph**: at
+     `line-height: 1` the painted area is shorter than the type and the
+     descender of the "g" in "running" comes out chipped, which is why the
+     leading and the hair of padding are here rather than the text being
+     trimmed to fit.
+
+     `-webkit-text-fill-color`, not `color: transparent`: the fill is what the
+     clip paints through. */
+  #topbar .tb-run,
+  .chat-row .row-run {
     display: none;
     flex: 0 0 auto;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: lowercase;
-    background: linear-gradient(90deg,
-      var(--faint) 0%, var(--faint) 35%, var(--accent) 50%,
-      var(--faint) 65%, var(--faint) 100%);
-    background-size: 200% 100%;
+    font-size: 10.5px;
+    line-height: 1.6;
+    padding: 1px 1px;
+    color: var(--status-progress);
+    background-image: linear-gradient(
+      100deg,
+      var(--status-progress) 30%,
+      color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+      var(--status-progress) 70%
+    );
+    background-size: 300% 100%;
+    background-repeat: repeat;
     -webkit-background-clip: text;
     background-clip: text;
-    color: transparent;
-    animation: tb-run-shimmer 1.6s linear infinite;
+    -webkit-text-fill-color: transparent;
+    animation: claude-running-shimmer 2.2s linear infinite;
+    white-space: nowrap;
   }
   body.running #topbar .tb-run { display: inline-block; }
-  @keyframes tb-run-shimmer {
+  /* ONE property animates, and it is the position of the highlight — never
+     opacity, never the fill, never anything that could take a letter away. */
+  @keyframes claude-running-shimmer {
     from { background-position: 100% 0; }
-    to   { background-position: -100% 0; }
+    to   { background-position: 0% 0; }
   }
   /* Still SAYS it, just stops moving: the word is the information and the
      shimmer is only what draws the eye to it. */
   @media (prefers-reduced-motion: reduce) {
-    #topbar .tb-run {
+    #topbar .tb-run,
+    .chat-row .row-run {
       animation: none;
-      background: none;
-      -webkit-background-clip: border-box;
-      background-clip: border-box;
-      color: var(--accent);
+      background-image: none;
+      -webkit-text-fill-color: var(--status-progress);
     }
   }
   /* TASK-023 (see showSession) — tabular figures for the same reason the
@@ -3246,34 +3277,11 @@
     line-height: 0;
   }
   .chat-row.has-pane .row-fileic { display: block; }
-  /* "running" on a row whose turn is still going — the same word and the same
-     shimmer the top strip wears once you are inside that chat, because it is
-     the same fact and a second vocabulary for it would be a second thing to
-     learn. Shares the keyframes; only the size differs, this being a list. */
-  .chat-row .row-run {
-    display: none;
-    flex: 0 0 auto;
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    background: linear-gradient(90deg,
-      var(--faint) 0%, var(--faint) 35%, var(--accent) 50%,
-      var(--faint) 65%, var(--faint) 100%);
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    animation: tb-run-shimmer 1.6s linear infinite;
-  }
+  /* "running" on a row whose turn is still going — declared WITH the top
+     strip's mark above, not beside it: it is the same fact seen from outside
+     the chat rather than inside it, and one rule is what keeps the two from
+     drifting into two shimmers. Only the visibility switch differs. */
   .chat-row.is-running .row-run { display: inline-block; }
-  @media (prefers-reduced-motion: reduce) {
-    .chat-row .row-run {
-      animation: none;
-      background: none;
-      -webkit-background-clip: border-box;
-      background-clip: border-box;
-      color: var(--accent);
-    }
-  }
   .chat-row .row-file {
     color: var(--faint);
     font-size: 12px;

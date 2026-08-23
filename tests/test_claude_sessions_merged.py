@@ -720,8 +720,8 @@ def test_running_says_so_at_the_top_of_the_conversation(template):
         in template
     assert "body.running #topbar .tb-run { display: inline-block; }" in template
     # Hidden by default — the state is the exception, not the resting shape.
-    css = template[template.index("#topbar .tb-run {"):]
-    css = css[:css.index("}")]
+    css = template[template.index("  #topbar .tb-run,"):]
+    css = css[:css.index("\n  }")]
     assert "display: none;" in css
 
 
@@ -732,16 +732,16 @@ def test_the_shimmer_is_clipped_to_the_word_and_stoppable(template):
 
     Reduced motion keeps the WORD and drops only the movement — the word is the
     information, the shimmer only draws the eye to it."""
-    css = template[template.index("#topbar .tb-run {"):]
-    css = css[:css.index("@keyframes tb-run-shimmer")]
+    css = template[template.index("  #topbar .tb-run,"):]
+    css = css[:css.index("@keyframes claude-running-shimmer")]
     assert "background-clip: text;" in css
-    assert "color: transparent;" in css
-    assert "animation: tb-run-shimmer" in css
+    assert "-webkit-text-fill-color: transparent;" in css
+    assert "animation: claude-running-shimmer" in css
     quiet = template[template.index("@media (prefers-reduced-motion: reduce) {",
-                                    template.index("#topbar .tb-run {")):]
+                                    template.index("  #topbar .tb-run,")):]
     quiet = quiet[:quiet.index("\n  }")]
     assert "animation: none;" in quiet
-    assert "color: var(--accent);" in quiet
+    assert "-webkit-text-fill-color: var(--status-progress);" in quiet
 
 
 def test_the_kebab_can_file_this_conversations_task(template):
@@ -816,10 +816,6 @@ def test_a_row_whose_turn_is_live_says_running(template):
     # by side spend the row's last inch saying one thing twice.
     assert 'row.querySelector(".row-sub").hidden = true;' in body
     assert ".chat-row.is-running .row-run { display: inline-block; }" in template
-    css = template[template.index(".chat-row .row-run {"):]
-    css = css[:css.index("}")]
-    assert "display: none;" in css
-    assert "animation: tb-run-shimmer" in css
 
 
 def test_the_name_reveal_is_eased_both_ways(template):
@@ -831,3 +827,34 @@ def test_the_name_reveal_is_eased_both_ways(template):
     assert "cubic-bezier(0.22, 0.61, 0.36, 1)" in css
     assert "opacity .2s ease .06s" in css      # trails, entering
     assert "opacity .14s ease" in css          # together, leaving
+
+
+def test_the_running_mark_is_the_shells_own_shimmer(template):
+    """Ported from sidebar.css `.sidebar-running`, not reinvented: same hue
+    (`--status-progress`, declared in BOTH template palettes), same 2.2s pace,
+    same geometry — every "running" in the app is one mark.
+
+    Two of those numbers are load-bearing, and the first pass here got both
+    wrong. The travel must stay inside 100% → 0% over a 300%-wide background,
+    or a frame exposes bare box — and under `background-clip: text` an
+    unpainted spot is a MISSING letter, not a dim one. And the clip box has to
+    hold the glyph, or the descender of the "g" is chipped off."""
+    assert "--status-progress: #facc15;" in template   # dark
+    assert "--status-progress: #ca8a04;" in template   # light
+    css = template[template.index("  #topbar .tb-run,"):]
+    css = css[:css.index("@media (prefers-reduced-motion")]
+    assert "background-size: 300% 100%;" in css
+    assert "line-height: 1.6;" in css
+    kf = template[template.index("@keyframes claude-running-shimmer {"):]
+    kf = kf[:kf.index("\n  }")]
+    assert "from { background-position: 100% 0; }" in kf
+    assert "to   { background-position: 0% 0; }" in kf
+    assert "-100%" not in kf, "the travel must not leave the painted range"
+
+
+def test_the_two_running_marks_are_one_rule(template):
+    """Declared together, so the strip's and the row's cannot drift into two
+    shimmers. Only the visibility switch differs."""
+    assert "  #topbar .tb-run,\n  .chat-row .row-run {" in template
+    assert "body.running #topbar .tb-run { display: inline-block; }" in template
+    assert ".chat-row.is-running .row-run { display: inline-block; }" in template
