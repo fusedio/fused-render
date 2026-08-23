@@ -450,12 +450,46 @@
 }
 
 /* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
- * chrome beside Explore, widened for a word instead of a glyph. */
+ * chrome beside Explore, widened for a word instead of a glyph.
+ *
+ * ACCENT-FILLED, and the one place on this page that is (Akshil). The house rule
+ * is that accent stays for focus and selection and a primary button fills with
+ * --fg (see .btn-primary) — this is a deliberate exception, not a drift, because
+ * the card's other three controls are all quiet .cc-iconbtn glyphs and "use this
+ * model now" is the one thing a reader came to the card to do. One filled
+ * control per card is still a card with an obvious next step; two would be a
+ * card with none.
+ *
+ * --on-accent, not --bg: the accent is bright lime in dark and dark olive in
+ * light, so the readable ink on it flips, and that token is the flip. */
 .am-card-try {
   width: auto;
   padding: 0 8px;
   font-size: 12px;
+  font-weight: 600;
   text-decoration: none;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Doubled selector to outrank `.cc-iconbtn:hover`, which is the same weight and
+   would otherwise be decided by import order alone — it paints a translucent
+   --tint wash and --fg text, which on an accent fill is a smear and unreadable
+   ink. Hover moves the fill TOWARD the ink in both themes (brighter lime on
+   dark, deeper olive on light), the same "one step further" idiom .btn-primary's
+   hover uses. */
+.am-card .am-card-try:hover,
+.am-card .am-card-try:focus-visible {
+  background: color-mix(in srgb, var(--accent) 82%, var(--fg));
+  color: var(--on-accent);
+}
+
+/* …and the focus ring has to change with the fill. `.cc-iconbtn:focus-visible`
+   draws an --accent outline, which on an --accent plate is an invisible focus
+   ring — the keyboard user's one indicator, gone. --fg is the highest-contrast
+   thing available against either theme's accent. */
+.am-card .am-card-try:focus-visible {
+  outline-color: var(--fg);
 }
 
 /* A card's controls are ALWAYS visible — the delete ✕ and the revisions
@@ -1119,13 +1153,54 @@
    comparing cards was being asked to judge a 3% difference in a tint. The rail
    and the tinted border are categorical — either the card has an edge or it does
    not — so they carry the distinction, and the surface just says "this model is
-   on this machine". */
-.am-card-have,
-.am-card-loaded {
-  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
+   on this machine".
+
+   GREY for DOWNLOADED, and the loaded card keeps its green (Akshil). Two passes
+   to get here. The problem was real: in a capability row where almost every card
+   is downloaded, a green plate on all of them marked nothing, and the one model
+   actually spending memory had to be picked out of a row of near-identical
+   plates. But the first fix took green off BOTH surfaces and left the resident
+   card wearing a 1px border and a 3px rail as its whole distinction — which is a
+   thin thing to find from across a carousel, and made the loudest state on the
+   page the quietest to spot. Green comes off the ORDINARY state instead.
+
+   So the two are now set apart in every channel — surface, border, rail — and the
+   earlier rule that they may differ only in border and gutter is deliberately
+   dropped. That rule existed to stop a reader judging two shades of one green;
+   there is no such judgement left once one card is green and the other is grey.
+
+   Downloaded mixes toward --fg-muted rather than being lightened by hand, because
+   the DIRECTION has to survive both palettes: toward the ink is brighter on the
+   dark page and darker on the light one, and both read as "more present". Its
+   pair is `.am-card-none` below, mixed the other way, so have/not-have is one
+   axis with two ends and a reader sweeping the grid gets it from surface weight
+   alone — with the green loaded card sitting outside that axis entirely, which is
+   the point of it being a different colour rather than a further step along. */
+.am-card-have {
+  background: color-mix(in srgb, var(--fg-muted) 14%, var(--bg-alt));
 }
 
+/* …and the far end of that axis: nothing of this model is on this disk. Mixed
+   toward --bg so the plate recedes toward the PAGE in both themes — --bg is
+   darker than --bg-alt in dark and lighter in light, and either way the card
+   stops reading as a raised surface.
+
+   Surface only, like every other state here (no border, no rail, no radius), and
+   deliberately NOT `opacity`: these are the cards carrying this page's one
+   primary action, and dimming the whole card would mute the Download button with
+   it, which reads as a control that has been refused rather than as a model
+   nobody has fetched. */
+.am-card-none {
+  background: color-mix(in srgb, var(--bg) 60%, var(--bg-alt));
+}
+
+/* Resident, and it keeps the green surface it shipped with. The two classes are
+   mutually exclusive in the TSX — `RepoCard` picks `am-card-loaded` OR
+   `am-card-have` from one ternary, never both — so this does not need to outrank
+   the grey above it; it is ordered after it only to read in the same sequence the
+   states do. */
 .am-card-loaded {
+  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
   border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
   box-shadow: inset 3px 0 0 var(--success-bright);
 }

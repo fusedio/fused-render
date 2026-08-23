@@ -249,6 +249,41 @@ export function startImage(request: ImageRequest): Promise<ImageStarted> {
   return postJson<ImageStarted>("/api/ai/image", request);
 }
 
+// -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
+
+/** `ImageRequest`'s twin, minus `guidance` (H3 is CFG-distilled and takes no
+ *  such parameter) and plus `frames`. Closed the same way, for the same
+ *  reason: `_reject_unknown` refuses any other key. */
+export interface VideoRequest {
+  prompt: string;
+  model?: string;
+  width?: number;
+  height?: number;
+  frames?: number;
+  steps?: number;
+  seed?: number;
+}
+
+/** The reply echoes the SETTLED request — width/height snapped and shrunk to
+ *  fit the canvas ceiling, `frames` rounded to h3's own grid, `steps`
+ *  clamped, `seed` invented — never what was asked. No `previewPath`: there
+ *  is no live preview in this build. */
+export interface VideoStarted {
+  jobId: string;
+  path: string;
+  model: string;
+  prompt: string;
+  width: number;
+  height: number;
+  frames: number;
+  steps: number;
+  seed: number;
+}
+
+export function startVideo(request: VideoRequest): Promise<VideoStarted> {
+  return postJson<VideoStarted>("/api/ai/video", request);
+}
+
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
 
 export interface EmbedResult {

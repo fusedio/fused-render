@@ -183,6 +183,12 @@ const MEDIA_GLYPHS = {
       <circle cx="10.2" cy="13" r="0.4" />
     </svg>
   ),
+  video: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
+      <path d="M16 10.5 21 7.5v9L16 13.5z" />
+    </svg>
+  ),
 } satisfies Record<string, ReactNode>;
 
 type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
@@ -194,6 +200,7 @@ type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
 const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
   "text-generation": ["chat", "chat"],
   "text-to-image": ["chat", "image"],
+  "text-to-video": ["chat", "video"],
   "automatic-speech-recognition": ["speech", "chat"],
   embeddings: ["chat", "meaning"],
 };
@@ -203,6 +210,7 @@ const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
 const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
   "text-generation": "chat",
   "text-to-image": "image",
+  "text-to-video": "video",
   "automatic-speech-recognition": "speech",
   embeddings: "meaning",
 };

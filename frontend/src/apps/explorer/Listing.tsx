@@ -219,7 +219,7 @@ export default function Listing({
   // INSIDE another view's pane rather than as a top-level surface, the no-
   // nesting guard for the preview pane's own `_listing` mode. That mode
   // embedded a real, second `Listing` inside this one's pane so a selected
-  // folder could be peeked at without navigating into it — and D443 deleted
+  // folder could be peeked at without navigating into it — and D460 deleted
   // the entire selection-driven pane that mode belonged to (FS-11): the pane
   // shows the open folder's own companions now, never a selected row's
   // anything, so there is no longer a second `Listing` anywhere for this one
@@ -602,7 +602,7 @@ export default function Listing({
     overlayOpenRef,
     // `globalKeys` defaults to true (useListingSelection.ts): there is no
     // caller left that ever passed false — the one that used to (`embedded`,
-    // the preview pane's own nested `_listing` mode) is gone with D443.
+    // the preview pane's own nested `_listing` mode) is gone with D460.
   });
 
   const {
@@ -737,7 +737,7 @@ export default function Listing({
   // OPENING A FOLDER SELECTS NOTHING (FS-16, D278). There is no folder
   // auto-select here and there is deliberately no code for one: a freshly opened
   // folder has an empty selection, and its pane shows the chat about the folder
-  // regardless (FS-11, D443) — the pane no longer reads the selection at all, so
+  // regardless (FS-11, D460) — the pane no longer reads the selection at all, so
   // there is no "until the user picks a row" any more: picking a row changes
   // nothing about what the pane shows.
   //
@@ -812,19 +812,19 @@ export default function Listing({
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
   // WHICH of the pane's three modes it is on. Resolved here, below the selection
-  // even though it no longer READS the selection (D443) — it stays here because
+  // even though it no longer READS the selection (D460) — it stays here because
   // it is folder-scoped state that lives alongside the other folder-scoped state
   // this component already holds (sideEntries, folderClaude/folderGit/folderMcp
   // above).
   //
-  // **THE PANE'S SUBJECT IS THE OPEN FOLDER, ALWAYS** (D443, superseding
+  // **THE PANE'S SUBJECT IS THE OPEN FOLDER, ALWAYS** (D460, superseding
   // D280/D281/D284/D285's whole arc of "which selection state is the subject").
   // It used to be a question with an answer that moved: a selected directory row,
   // else nothing selected (the folder itself, D284), else a selected file (no
   // subject at all — `null`, which is why the code below used to carry a
   // `paneSubjectDir === null` branch and `openAppEntry` an `!paneSubjectDir`
   // guard). All of that read the selection to decide what the pane would show,
-  // which is exactly the coupling D443 deletes: the subject is `base`, the open
+  // which is exactly the coupling D460 deletes: the subject is `base`, the open
   // folder, full stop — a plain string, never null, and it never changes
   // without a navigation. The indirection through a `paneSubjectDir` constant
   // is gone with the question it used to answer; `base` is used directly below.
@@ -956,7 +956,7 @@ export default function Listing({
   } | null>(null);
 
   // A HABITUAL DOUBLE-CLICK NOW DOUBLE-OPENS, and this is the guard against it.
-  // Single-click-open (D443) means the first press of what a lifetime of
+  // Single-click-open (D460) means the first press of what a lifetime of
   // double-clicking trained someone to do already navigates on its release —
   // and when that navigation is INTO A FOLDER, this same `Listing` instance
   // re-renders with the new `fsPath` rather than unmounting (shell/App.tsx
@@ -978,7 +978,7 @@ export default function Listing({
   // deliberate fast click a folder-hop later is the rare cost, not the norm.
   //
   // THIS IS NOT A DOUBLE-CLICK TIMER RESTORED FOR ITS OWN SAKE — there is
-  // still no delay before a plain press's own release opens IT (D443's whole
+  // still no delay before a plain press's own release opens IT (D460's whole
   // point stands: nothing here waits to see if a second click arrives before
   // acting on the first). It exists purely to absorb the SECOND press of a
   // pair that a habit built for the old model still sends, aimed at a row
@@ -1010,7 +1010,7 @@ export default function Listing({
     else toggleSelected(path);
   };
 
-  // SINGLE CLICK OPENS — in every listing, at every window width (D443). A
+  // SINGLE CLICK OPENS — in every listing, at every window width (D460). A
   // plain press SELECTS (onRowPointerDown above); the matching RELEASE OPENS,
   // provided the press never left the row (no drag, no sweep). Only a PLAIN
   // press opens: Shift and Mod still mean range and toggle, never navigation,
@@ -1022,7 +1022,7 @@ export default function Listing({
   // gate existed because a plain click had a second job to protect: the pane
   // used to follow the SELECTION, so a click that navigated away would have
   // made a row's own preview unreachable, and a folder was worst hit of all
-  // (FS-11's old text). D443 removed that coupling — the pane now shows the
+  // (FS-11's old text). D460 removed that coupling — the pane now shows the
   // open folder's own companions and never the selection — so there is nothing
   // left to protect, and the single-click model that already worked in the
   // pane extends to every listing.
@@ -1856,7 +1856,7 @@ export default function Listing({
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey): the mode
-                  and the OPEN FOLDER, nothing else (D443). Every mode's subject is
+                  and the OPEN FOLDER, nothing else (D460). Every mode's subject is
                   this folder now, so the key changes only when the folder or the
                   mode does — never when the selection moves — which is what stops
                   arrow-keying down the listing remounting the chat/git/mcp iframe

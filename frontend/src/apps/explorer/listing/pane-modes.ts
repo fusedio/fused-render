@@ -1,6 +1,6 @@
 // What is left of the preview pane's row-mode machinery, now that
 // `ListingPreviewPane` no longer previews a selected row's own templates at
-// all (D443) — it shows the OPEN FOLDER's companions (`claude`/`git`/`mcp`)
+// all (D460) — it shows the OPEN FOLDER's companions (`claude`/`git`/`mcp`)
 // or a plain fallback hint instead, neither of which is a question this
 // module ever answered.
 //
@@ -80,7 +80,7 @@ export function paneModeList(input: PaneModeInput): string[] {
 // (templates/shared/app_entry.py), and while `ListingPreviewPane` still had a
 // row MODE that could resolve to `claude` (a selected folder's default view,
 // D280), the flag was what stopped that folder's app page reappearing nested
-// one level deeper for the same mere selection D280 exists to refuse. D443
+// one level deeper for the same mere selection D280 exists to refuse. D460
 // deleted that row mode along with the rest of the selection-driven pane, so
 // the ONE caller left is the `claude` COMPANION iframe (always about the open
 // folder) — the flag still matters there for the plain layout reason above.
@@ -90,7 +90,7 @@ export function paneChatOnly(mode: string): boolean {
 
 // `activePaneMode`, `paneOpenTarget`/`PaneOpenTarget` and `paneOpenAction`/
 // `PaneOpenAction` used to live here: the ROW-mode default resolution and the
-// pane's expand button, both about a SELECTED ROW's own template. D443
+// pane's expand button, both about a SELECTED ROW's own template. D460
 // deleted the selected-row branch of `ListingPreviewPane` entirely — the pane
 // never previews a row any more, so there is no default to resolve and no
 // expand button pointing at a row-mode target — and by the time of this pass

@@ -285,14 +285,14 @@ export function cameFromSelParam(dest: string, from: string): string | null {
 //
 // The explorer has ONE press model: a press selects, and a plain RELEASE that
 // never left the row (no drag, no sweep) opens it — on every row, in every
-// listing, at every window width (D443, superseding the double-click rule
+// listing, at every window width (D460, superseding the double-click rule
 // below). It used to be double-click, and before that TWO models chosen by
 // whether the preview pane happened to be showing — pane off, a single click
 // selected AND opened; pane on, it only selected and a double click opened.
 // Both were defensible only while a click had to leave room for a plain press
 // to ALSO preview the row via the selection (the pane used to follow the
 // selection): a single click that navigated away would have made that preview
-// unreachable for exactly the rows it was most useful on. D443 deleted that
+// unreachable for exactly the rows it was most useful on. D460 deleted that
 // coupling — the pane now shows the open folder's own companions and never the
 // selection (see `listing/pane-side.ts`) — so there is nothing left for a
 // single click to preserve by not opening, and the double-click detour (itself

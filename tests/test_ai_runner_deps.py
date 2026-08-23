@@ -112,6 +112,20 @@ SPLIT_DISTRIBUTIONS = {
             "directly. It is not a duplicate; see the runner's pyproject."
         ),
     },
+    "ltx-pipelines-mlx": {
+        "companion": "ltx-core-mlx",
+        "reason": (
+            "ltx-pipelines-mlx depends on ltx-core-mlx BY NAME with no version "
+            "bound — neither package is on PyPI, so the dependency can only be "
+            "satisfied by a `[tool.uv.sources]` entry this folder supplies "
+            "itself; upstream's own workspace mapping (a root uv.lock) is not "
+            "visible from a runner's bare `uv sync`. Naming only ltx-pipelines-"
+            "mlx builds a venv `uv sync` cannot resolve at all, which is a "
+            "louder failure than sherpa-onnx's silent import error but the "
+            "same class of defect: a project whose own metadata will not carry "
+            "its other half into this folder's environment."
+        ),
+    },
 }
 
 

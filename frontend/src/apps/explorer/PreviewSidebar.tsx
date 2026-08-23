@@ -81,7 +81,7 @@ export function PreviewSideSlot() {
 // the life of the document: nothing is written to storage of any kind, so a drag
 // holds across the shell's navigation (this component remounts per file) and a
 // refresh gets the layout's answer again. That module's header argues the policy.
-// **Since D443 that store is also the FOLDER LISTING'S preview pane's** — a drag
+// **Since D460 that store is also the FOLDER LISTING'S preview pane's** — a drag
 // here carries over to it, and vice versa, within the session; the folder pane
 // re-clamps the shared number into its own (narrower) floors rather than these.
 
@@ -189,7 +189,7 @@ export default function PreviewSidebar({
   // its strip already unmounted, its pointer still down. Without this the
   // second half of that gesture would move the cursor and not the edge.
   //
-  // Since D443 there is a SECOND writer too — the folder listing's pane
+  // Since D460 there is a SECOND writer too — the folder listing's pane
   // (`listing/pane.ts`) drags this same store — and the value it writes is
   // clamped into ITS OWN (narrower, 220px) floor, not this sidebar's 380px
   // one. Applying it unclamped here would let a folder-pane drag open this

@@ -774,6 +774,28 @@ export function middleEllipsis(text: string, maxLength: number): string {
  *  in the order it arrived — the same rule `aiModelGroups.rank` follows, so a
  *  capability added server-side appears here instead of vanishing.
  */
+/** Which of `all` a Run press can actually measure — `workloadCapabilities`
+ *  is `AiBenchmarkHistory`'s own field, exactly `benchmark.WORKLOADS`' keys
+ *  server side. Narrower than the registry's full capability list: video
+ *  generation is the first capability the registry knows that has no fixed
+ *  workload (`benchmark.NO_WORKLOAD_YET`) — a real one would mean a multi-GB,
+ *  minutes-long render behind every press — so once any video model lands on
+ *  disk it would otherwise join `all` (the union with `repos.map(...)`) and
+ *  render a leaderboard section whose only Run outcome is a 400 toast.
+ *
+ *  Filtered against the SERVER's list rather than a capability named here by
+ *  hand, so a future workload lights this section back up with no frontend
+ *  edit — the same "server stays the source of truth" argument the video
+ *  traits payload (`VideoStage.tsx`) already makes for a different gap.
+ */
+export function benchmarkableCapabilities(
+  all: string[],
+  workloadCapabilities: string[],
+): string[] {
+  const known = new Set(workloadCapabilities);
+  return all.filter((capability) => known.has(capability));
+}
+
 export function orderCapabilities(capabilities: string[]): string[] {
   const rank = (key: string) => {
     const known = CAPABILITY_ORDER.indexOf(key);

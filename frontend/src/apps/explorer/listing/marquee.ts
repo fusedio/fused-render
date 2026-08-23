@@ -16,7 +16,7 @@
 // unselected row, and the background. Neither can turn into the other
 // mid-gesture. A press that never travels MARQUEE_DRAG_SLOP is neither: it is
 // the press that selects one row (selection's rowPressAction), and its
-// release opens it (D443). The same slop decides for the move-drag too, so
+// release opens it (D460). The same slop decides for the move-drag too, so
 // there is one threshold in the listing and not three.
 //
 // Router-free and DOM-free for the same reason pane-math.ts is: these are the

@@ -21,7 +21,7 @@
 // converging on the shape the other half of the app already had.
 //
 //   claude   the chat, `chat_only=1`, about the OPEN FOLDER — never the
-//            selected row (D443: the pane stopped reading the selection at
+//            selected row (D460: the pane stopped reading the selection at
 //            all, so `claude`'s subject is the same folder `git`/`mcp`'s is).
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
 //            a working tree belongs to the folder, so `git` is bound to the
@@ -34,7 +34,7 @@
 //            pane's internal FALLBACK for one state: neither companion offered (a
 //            mount-backed folder, where both gates refuse), where the pane must
 //            still render something. There it shows a plain FOLDER-scoped hint —
-//            no row, no template, nothing selection-shaped (D443 deleted the
+//            no row, no template, nothing selection-shaped (D460 deleted the
 //            row-preview machinery `pane-modes.ts` used to feed this branch). It
 //            is a state the pane falls into, never a mode a user picks, which is
 //            why `PANE_SIDE_MODES` still carries it (the fallback needs the type)
@@ -45,7 +45,7 @@
 // over a folder the thing you are looking at is a LIST, so a column that talks
 // about one row is a pill for a view nobody browses into. Anything of that shape
 // stays one click away — open the row, and the file sidebar has it. **All three
-// are folder-bound now** (D443) — every mode's subject, key and `_file` target
+// are folder-bound now** (D460) — every mode's subject, key and `_file` target
 // is the OPEN FOLDER, never the selection, so there is no per-row/per-folder
 // split left to ask `isFolderBoundSide` about.
 //
@@ -200,7 +200,7 @@ export interface PaneSideEntries {
 
 // `isFolderBoundSide` and the `FOLDER_BOUND_SIDES` set it read used to separate
 // `git`/`mcp` (folder-subject) from `claude`/`preview` (row-subject) for
-// `paneKey` and `paneSideTarget`. D443 deleted the row half of that split — the
+// `paneKey` and `paneSideTarget`. D460 deleted the row half of that split — the
 // pane no longer has a row-subject mode at all — so both functions collapsed to
 // "the folder, always" and the predicate they shared had nothing left to ask.
 
@@ -378,7 +378,7 @@ export function activePaneSide(offered: PaneSide[], want: PaneSideChoice | null)
 }
 
 // WHAT THE PANE IS ABOUT, as a React key. Every mode's subject is the OPEN
-// FOLDER now (D443), so the key is just the mode and the folder — nothing
+// FOLDER now (D460), so the key is just the mode and the folder — nothing
 // about the selection enters into it, and switching rows never remounts any
 // of the three: arrow-keying down a listing does not reload a `git status`
 // per keystroke, spawn a second `agent.py`, or discard MCP curation the user

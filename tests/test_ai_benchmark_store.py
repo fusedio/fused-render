@@ -116,9 +116,12 @@ def test_clear_empties_the_store(tmp_path, monkeypatch):
 
 def test_every_capability_has_a_workload(tmp_path, monkeypatch):
     """The guard that makes a fifth capability impossible to add without giving
-    it a comparable workload: a section with no fixed workload would render a
-    Run button that measures nothing defined."""
+    it a comparable workload OR a documented exemption
+    (`benchmark.NO_WORKLOAD_YET`): a section with no fixed workload would
+    render a Run button that measures nothing defined."""
     for capability in ai_registry.capabilities():
+        if capability in benchmark.NO_WORKLOAD_YET:
+            continue
         assert capability in benchmark.WORKLOADS, capability
 
 
@@ -127,6 +130,22 @@ def test_no_workload_names_a_capability_the_registry_does_not_know():
     can ever run."""
     known = set(ai_registry.capabilities())
     assert set(benchmark.WORKLOADS) <= known
+
+
+def test_the_no_workload_exemption_is_narrow_and_still_true():
+    """`NO_WORKLOAD_YET` is a decision on record, not a loosened guard — so an
+    entry that already has a workload (the exemption should have been
+    deleted) or that names a capability the registry no longer has (the
+    exemption cannot fire) is protection that has silently stopped
+    protecting, the same shape `test_the_unbounded_allow_list_is_not_quietly_
+    unused`-style checks enforce elsewhere in this app for the identical
+    reason."""
+    known = set(ai_registry.capabilities())
+    for capability in benchmark.NO_WORKLOAD_YET:
+        assert capability in known, capability
+        assert capability not in benchmark.WORKLOADS, (
+            f"{capability} has a workload now — remove it from "
+            f"NO_WORKLOAD_YET rather than leaving a stale exemption")
 
 
 def test_a_workload_carries_a_name_an_integer_revision_and_frozen_params():

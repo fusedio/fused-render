@@ -2723,6 +2723,25 @@ export interface AiCatalogCapability {
   reason: string | null;
   default: string | null;
   models: AiCatalogModel[];
+  /** The resolved video engine's own request shape — the frame grid, the
+   *  canvas default and the step default (`registry.VideoTraits`, server
+   *  side). `null` for every capability but video generation: it is the
+   *  first (only) one whose request shape varies by which runner resolved
+   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps against `h3-video`'s
+   *  `5 + 17n` at 864×480/20), so the Playground's frame/canvas/step
+   *  sliders read this rather than a hardcoded grid — a slider that
+   *  disagreed with the server would snap on every render and land off by
+   *  up to half its own travel. */
+  videoTraits: {
+    framesBase: number;
+    framesStep: number;
+    minFrames: number;
+    maxFrames: number;
+    defaultFrames: number;
+    defaultWidth: number;
+    defaultHeight: number;
+    defaultSteps: number;
+  } | null;
 }
 
 /** A model on this disk that NO capability can load, and why.
@@ -2902,6 +2921,14 @@ export interface AiBenchmarkHistory {
    *  each run, because the page has to caption the comparison before it has
    *  drawn a single run. */
   machine: AiBenchmarkMachine;
+  /** Exactly `benchmark.WORKLOADS`' keys (server side) — the capabilities a
+   *  Run press can actually measure, narrower than the registry's full
+   *  capability list. Video generation is the first capability this omits
+   *  (`benchmark.NO_WORKLOAD_YET`): a real workload would be a multi-GB,
+   *  minutes-long render behind every press. The Benchmark tab filters its
+   *  capability selector to this set rather than hardcoding the gap, so a
+   *  future workload lights the section up with no frontend change. */
+  workloadCapabilities: string[];
 }
 
 export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {

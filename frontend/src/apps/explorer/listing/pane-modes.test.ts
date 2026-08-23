@@ -39,7 +39,7 @@ describe("paneModeList — the selected target", () => {
     // opens the chat about itself rather than running anything of the folder's.
     // (The row-mode resolution that used to be pinned as a second call here —
     // `activePaneMode` — is deleted with the rest of the row-mode machinery,
-    // D443; `modes[0]` is the whole of what it ever did with a null override.)
+    // D460; `modes[0]` is the whole of what it ever did with a null override.)
     const modes = paneModeList({
       templates: dirTemplates(),
       conditions: verdicts(["claude", "git"], ["graph"]),
@@ -140,7 +140,7 @@ describe("paneModeList — gate visibility is the shared policy", () => {
 // the app page back on screen — nested one level deeper, running the same
 // Python, for the same mere selection. `chat_only=1` is what removes it, and
 // the claude template checks the flag BEFORE it looks an entry page up at all.
-// D443 deleted that row mode, but the `claude` COMPANION iframe is the exact
+// D460 deleted that row mode, but the `claude` COMPANION iframe is the exact
 // same template rendered the exact same way, so the flag is still required.
 describe("paneChatOnly", () => {
   test("the claude template never gets a pane of its own in here", () => {
@@ -165,7 +165,7 @@ describe("the pane never previews a folder as its app page", () => {
   );
 
   test("the pane's chat-only rule still guards its one claude surface", () => {
-    // D443 deleted the row-mode embed entirely (the pane no longer previews a
+    // D460 deleted the row-mode embed entirely (the pane no longer previews a
     // selected row's own templates at all), so the `claude` COMPANION iframe
     // is the only caller left — one query literal, spelled once as a constant,
     // one call asking whether to send it.
