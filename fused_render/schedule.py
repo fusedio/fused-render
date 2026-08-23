@@ -99,6 +99,7 @@ module; keep it acyclic.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -1251,6 +1252,42 @@ def _fail(entry: dict, reason: str) -> None:
     _emit(EVENT_FAILED, entry, reason)
 
 
+def _outgoing(entry: dict) -> str:
+    """The entry's message with the file it was scheduled against named in
+    front of it, or the message unchanged.
+
+    The Claude page prepends a `<live-app-state>` block to every send a human
+    makes, and that block is the ONLY durable record of which FILE a chat is
+    about: a transcript's own `cwd` is always the folder, because Claude Code
+    keys its session store by cwd and a file has no cwd. Both readers of that
+    record — `tasks_store.pane_file`, for which file "open this task" lands on,
+    and the template's `_cli_sessions`, for which chats a file is offered —
+    find nothing on a scheduled run, because the block is built in browser JS
+    at send time and a scheduled run has no browser. The session came from a
+    file and then read as if it had come from the folder.
+
+    So the one fact the scheduler actually holds is written in the same shape:
+    `entry["target"]`, when it is a file. Nothing else. There is no screen to
+    snapshot, no pane shot to take and no annotation to carry, and inventing
+    any of them would put a description of a screen nobody was looking at into
+    the transcript — the block says plainly that this is a scheduled run.
+
+    A folder target is left alone: the folder is already what the transcript's
+    cwd says, so a block naming it would add nothing and claim a pane that
+    never existed."""
+    message = entry.get("message") or ""
+    target = entry.get("target") or ""
+    if not target or os.path.isdir(target) or not os.path.isfile(target):
+        return message
+    state = json.dumps({"entry": target, "scheduled": True})
+    return ("<live-app-state>\n"
+            "The file this task was scheduled against. No one is at the "
+            "screen — this is a scheduled run, so there is no pane snapshot, "
+            "no screenshot and no annotation, only the target itself.\n"
+            f"{state}\n"
+            "</live-app-state>\n\n") + message
+
+
 def _send(entry: dict) -> None:
     """Spawn one claimed entry's session and record the outcome.
 
@@ -1260,7 +1297,7 @@ def _send(entry: dict) -> None:
     to read afterwards."""
     try:
         res = claude_spawn.spawn_helper(
-            entry["target"], entry["message"], entry.get("permission_mode")
+            entry["target"], _outgoing(entry), entry.get("permission_mode")
             or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "")
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")

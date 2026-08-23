@@ -94,7 +94,7 @@ def _said(text, cwd, **extra):
 def test_a_terminal_session_shows_up_in_this_files_past_chats(agent, target):
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("fix the header", workdir)])
-    rows = agent._sessions(file)["sessions"]
+    rows = agent._sessions(workdir)["sessions"]
     assert [(r["id"], r["preview"]) for r in rows] == [("cli-1", "fix the header")]
 
 
@@ -103,18 +103,18 @@ def test_newest_activity_first(agent, target):
     _cli_transcript(agent, workdir, "cli-old", [_said("oldest", workdir)], mtime=500)
     _cli_transcript(agent, workdir, "cli-mid", [_said("middle", workdir)], mtime=1000)
     _cli_transcript(agent, workdir, "cli-new", [_said("newest", workdir)], mtime=9000)
-    rows = agent._sessions(file)["sessions"]
+    rows = agent._sessions(workdir)["sessions"]
     assert [r["id"] for r in rows] == ["cli-new", "cli-mid", "cli-old"]
 
 
 def test_a_null_last_used_does_not_crash_the_sort(agent, target, monkeypatch):
     """The sort reads `last_used or created_at or 0`; a row missing both — or
     carrying explicit nulls — must fall to 0, not into a None comparison."""
-    file, _ = target
+    _, workdir = target
     rows = [{"id": "a", "preview": "p", "last_used": None, "created_at": 42.0},
             {"id": "b", "preview": "p", "last_used": None, "created_at": None}]
     monkeypatch.setattr(agent, "_cli_sessions", lambda f: list(rows))
-    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["a", "b"]
+    assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == ["a", "b"]
 
 
 # ------------------------------------------------- what the row is named with
@@ -131,7 +131,7 @@ def test_the_title_is_the_first_thing_the_user_actually_said(agent, target):
         _said("the real question", workdir),
         _said("a follow-up nobody titles a row with", workdir),
     ])
-    rows = agent._sessions(file)["sessions"]
+    rows = agent._sessions(workdir)["sessions"]
     assert rows[0]["preview"] == "the real question"
 
 
@@ -147,7 +147,7 @@ def test_rows_the_user_did_not_write_are_not_titles(agent, target):
         _said("<command-name>/clear</command-name>", workdir),
         _said("what I actually asked", workdir),
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == "what I actually asked"
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == "what I actually asked"
 
 
 def test_block_content_keeps_the_prose_and_drops_the_rest(agent, target):
@@ -159,7 +159,7 @@ def test_block_content_keeps_the_prose_and_drops_the_rest(agent, target):
                 {"type": "text", "text": "look at this screenshot"},
             ]}},
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == "look at this screenshot"
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == "look at this screenshot"
 
 
 def test_a_prepended_block_does_not_cost_the_row_its_name(agent, target):
@@ -174,7 +174,7 @@ def test_a_prepended_block_does_not_cost_the_row_its_name(agent, target):
         _said(records.prefixed(records.APP_STATE, records.PANE_SHOT,
                                records.PROSE), workdir),
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == records.PROSE
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == records.PROSE
 
 
 def test_an_annotation_send_is_named_with_the_note_the_user_wrote(agent, target):
@@ -186,7 +186,7 @@ def test_an_annotation_send_is_named_with_the_note_the_user_wrote(agent, target)
         _said(records.prefixed(records.APP_STATE, records.ANNOTATION,
                                records.ANNOTATED_ASK), workdir),
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == records.ANNOTATED_ASK
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == records.ANNOTATED_ASK
 
 
 def test_an_annotation_only_send_is_named_by_the_note_on_the_pin(agent, target):
@@ -205,7 +205,7 @@ def test_an_annotation_only_send_is_named_by_the_note_on_the_pin(agent, target):
         _said(records.prefixed(records.APP_STATE, records.PANE_SHOT,
                                records.ANNOTATION_NOTED), workdir),
     ])
-    sessions = agent._sessions(file)["sessions"]
+    sessions = agent._sessions(workdir)["sessions"]
     assert [s["id"] for s in sessions] == ["cli-1"]
     assert sessions[0]["preview"] == records.ANNOTATION_NOTE
 
@@ -218,7 +218,7 @@ def test_free_text_still_wins_over_the_notes_on_the_pins(agent, target):
         _said(records.prefixed(records.APP_STATE, records.ANNOTATION_NOTED,
                                records.ANNOTATED_ASK), workdir),
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == \
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == \
         records.ANNOTATED_ASK
 
 
@@ -239,7 +239,7 @@ def test_a_pin_with_no_note_names_nothing_and_the_scan_carries_on(agent, target)
         _said(records.prefixed(records.APP_STATE, records.ANNOTATION), workdir),
         _said("and now make it green", workdir),
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == \
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == \
         "and now make it green"
 
 
@@ -251,7 +251,7 @@ def test_a_wordless_send_is_skipped_like_any_other_nameless_record(agent, target
         _said(records.prefixed(records.APP_STATE, records.PANE_SHOT), workdir),
         _said("and now make it green", workdir),
     ])
-    assert agent._sessions(file)["sessions"][0]["preview"] == "and now make it green"
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == "and now make it green"
 
 
 @pytest.mark.parametrize("text", [
@@ -304,6 +304,45 @@ def test_the_two_annotation_readers_agree_exactly(agent, text):
     assert agent._ann_notes(text) == tasks_store.ann_notes(text)
 
 
+@pytest.mark.parametrize("text", [
+    records.APP_STATE,
+    records.APP_STATE + "\n\n" + records.PROSE,
+    records.APP_STATE + "\n\n" + records.PANE_SHOT,
+    records.PROSE,
+    records.ANNOTATION,
+    # `entry` wins outright over the url beside it.
+    '<live-app-state>\nstate\n{"entry":"/a/chosen.html",'
+    '"url":"/render?path=%2Fa%2Fother.html"}\n</live-app-state>',
+    # No entry: the url answers, and `_file` beats `path` — a templated
+    # preview's url names OUR template in `path` and the user's file in `_file`.
+    '<live-app-state>\nstate\n'
+    '{"url":"/render?path=%2Ftpl%2Fmap.py&_file=%2Fa%2Freal.parquet"}\n'
+    '</live-app-state>',
+    '<live-app-state>\nstate\n{"url":"/render?path=%2Fa%2Fonly.html"}\n'
+    '</live-app-state>',
+    # A block that is not LEADING is not machinery — it may be something a
+    # human typed, and it must not name their pane.
+    'what does this mean? <live-app-state>\n{"entry":"/a/typed.html"}\n'
+    '</live-app-state>',
+    # Neither key, an unparseable payload, a payload that is not an object, a
+    # non-string url: answers, not exceptions.
+    '<live-app-state>\nstate\n{"title":"no file here"}\n</live-app-state>',
+    '<live-app-state>\nstate\n{not json at all}\n</live-app-state>',
+    '<live-app-state>\nstate\n["a bare list"]\n</live-app-state>',
+    '<live-app-state>\nstate\n{"url":42}\n</live-app-state>',
+    '<live-app-state>\nno object at all\n</live-app-state>',
+    "",
+])
+def test_the_two_pane_readers_agree_exactly(agent, text):
+    """The FOURTH copy of a record rule, pinned like the others: a template may
+    not import fused_render (D166), so `agent._pane_file` and
+    `tasks_store.pane_file` are hand-duplicated. They decide two different
+    things off one block — which file "open this task" lands on, and which
+    chats a file is offered — and those two answers disagreeing is a row that
+    opens somewhere the list said it would not."""
+    assert agent._pane_file(text) == tasks_store.pane_file(text)
+
+
 def test_the_two_copies_carry_the_same_tag_lists(agent):
     """And the lists themselves, so a tag added to one side is caught even if no
     fixture above happens to exercise it."""
@@ -336,7 +375,7 @@ def test_the_preview_is_truncated(agent, target):
     """80 chars — a preview is a row title, not the message."""
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("x" * 500, workdir)])
-    assert agent._sessions(file)["sessions"][0]["preview"] == "x" * 80
+    assert agent._sessions(workdir)["sessions"][0]["preview"] == "x" * 80
 
 
 def test_a_session_nobody_spoke_in_is_not_a_past_chat(agent, target):
@@ -345,7 +384,7 @@ def test_a_session_nobody_spoke_in_is_not_a_past_chat(agent, target):
     opened and closed."""
     file, workdir = target
     _cli_transcript(agent, workdir, "empty", [{"type": "mode", "cwd": workdir}])
-    assert agent._sessions(file)["sessions"] == []
+    assert agent._sessions(workdir)["sessions"] == []
 
 
 # --------------------------------------------------------------- the scoping
@@ -359,7 +398,7 @@ def test_a_munge_collision_is_rejected_on_the_transcripts_own_cwd(agent, target)
     _cli_transcript(agent, workdir, "mine", [_said("about this folder", workdir)])
     _cli_transcript(agent, workdir, "theirs",
                     [_said("about some other folder", "/somewhere/else")])
-    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["mine"]
+    assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == ["mine"]
 
 
 def test_a_sibling_folders_sessions_are_not_this_targets(agent, tmp_path, target):
@@ -367,26 +406,122 @@ def test_a_sibling_folders_sessions_are_not_this_targets(agent, tmp_path, target
     other = tmp_path / "other"
     other.mkdir()
     _cli_transcript(agent, str(other), "cli-1", [_said("elsewhere", str(other))])
-    assert agent._sessions(file)["sessions"] == []
+    assert agent._sessions(workdir)["sessions"] == []
 
 
 def test_a_directory_target_is_its_own_workdir(agent, target):
     """`_workdir` is the one rule files and folders share — a folder target IS
-    the cwd — so the same store answers for both, and the folder chat sees the
-    sessions its files' chats see."""
+    the cwd — so the same store answers for both, and the folder chat sees
+    every chat that folder holds."""
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("about the project", workdir)])
     assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == ["cli-1"]
-    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["cli-1"]
+    # A FILE keys on that very same store — the pane filter is the only thing
+    # that separates the two lists, not a second directory. If this ever stops
+    # holding, resume and history break long before the list does.
+    assert agent._workdir(file) == workdir
+
+
+# ------------------------------------------------------ scoping to ONE file
+
+
+def _pane_said(text, cwd, pane):
+    """A user row as this page writes one: the app-state block naming the pane,
+    then the words."""
+    block = ('<live-app-state>\nA snapshot of the preview.\n'
+             + json.dumps({"entry": pane}) + '\n</live-app-state>')
+    return _said(block + "\n\n" + text, cwd)
+
+
+def test_a_file_is_offered_only_the_chats_opened_on_it(agent, target):
+    """The bug this exists for: three files in one folder shared one pile of
+    chats, because `_workdir` collapses a file to its parent before the store
+    is ever looked at. Selecting file 1 offered a chat that was entirely about
+    file 3."""
+    file, workdir = target
+    sibling = os.path.join(workdir, "other.html")
+    _cli_transcript(agent, workdir, "mine",
+                    [_pane_said("about this file", workdir, file)], mtime=2000)
+    _cli_transcript(agent, workdir, "theirs",
+                    [_pane_said("about the other one", workdir, sibling)],
+                    mtime=3000)
+    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["mine"]
+
+
+def test_a_folder_chat_is_not_offered_on_a_file(agent, target):
+    """A terminal session, or a chat started on the folder itself, has no pane
+    and is not about any one file. It belongs to the folder and is offered
+    there — showing it under every file in the folder is the pile itself."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "folder-chat",
+                    [_said("what is this project", workdir)])
+    assert agent._sessions(file)["sessions"] == []
+    assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == ["folder-chat"]
+
+
+def test_a_folder_is_offered_everything_it_holds(agent, target):
+    """The folder keeps the whole pile — file chats included. Nothing is lost
+    by the filter, it only moves one level down."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "on-a-file",
+                    [_pane_said("about this file", workdir, file)], mtime=2000)
+    _cli_transcript(agent, workdir, "on-the-folder",
+                    [_said("about the project", workdir)], mtime=3000)
+    assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == [
+        "on-the-folder", "on-a-file"]
+
+
+def test_the_pane_rides_the_row_so_the_page_can_name_it(agent, target):
+    """The page shows that file's name on a folder row and opens the row on it
+    — neither is possible if the read stops at the server."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "on-a-file",
+                    [_pane_said("about this file", workdir, file)], mtime=2000)
+    _cli_transcript(agent, workdir, "on-the-folder",
+                    [_said("about the project", workdir)], mtime=1000)
+    panes = {r["id"]: r["pane"] for r in agent._sessions(workdir)["sessions"]}
+    assert panes == {"on-a-file": file, "on-the-folder": ""}
+
+
+def test_the_pane_is_matched_as_a_path_not_as_text(agent, target):
+    """The block records the pane's own url and the target arrives from the
+    caller; the two can spell one file differently and still be it."""
+    file, workdir = target
+    spelled = os.path.join(workdir, ".", os.path.basename(file))
+    _cli_transcript(agent, workdir, "mine",
+                    [_pane_said("about this file", workdir, spelled)])
+    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["mine"]
+
+
+def test_a_wordless_pane_send_still_leaves_its_pane_behind(agent, target):
+    """The pane is read RAW and kept, so a first send that turns out to be
+    nothing but machinery does not cost the row the file it was opened on —
+    the record two lines down is titled with words and keeps the pane."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "mine", [
+        _pane_said("", workdir, file),
+        _said("what does this do", workdir),
+    ])
+    rows = agent._sessions(file)["sessions"]
+    assert [(r["id"], r["preview"]) for r in rows] == [("mine", "what does this do")]
+
+
+def test_a_munge_collision_is_still_rejected_under_the_filter(agent, target):
+    """The cwd guard runs first and stays first: a colliding transcript that
+    happens to name this very file in its block is still not ours."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "theirs",
+                    [_pane_said("elsewhere", "/somewhere/else", file)])
+    assert agent._sessions(file)["sessions"] == []
 
 
 def test_no_store_and_no_project_dir_are_both_just_empty(agent, target, tmp_path):
     """A machine that has never run Claude Code, and a folder that has never
     been chatted about, are answers — not the red traceback overlay."""
-    file, _ = target
-    assert agent._sessions(file)["sessions"] == []
+    _, workdir = target
+    assert agent._sessions(workdir)["sessions"] == []
     agent.PROJECTS = str(tmp_path / "gone")
-    assert agent._sessions(file)["sessions"] == []
+    assert agent._sessions(workdir)["sessions"] == []
 
 
 def test_an_id_that_cannot_round_trip_as_a_path_is_not_offered(agent, target):
@@ -396,7 +531,7 @@ def test_an_id_that_cannot_round_trip_as_a_path_is_not_offered(agent, target):
     file, workdir = target
     _cli_transcript(agent, workdir, ".hidden", [_said("dotfile", workdir)])
     _cli_transcript(agent, workdir, "ok", [_said("fine", workdir)])
-    assert [r["id"] for r in agent._sessions(file)["sessions"]] == ["ok"]
+    assert [r["id"] for r in agent._sessions(workdir)["sessions"]] == ["ok"]
 
 
 def test_the_list_is_capped(agent, target):
@@ -404,7 +539,7 @@ def test_the_list_is_capped(agent, target):
     for i in range(agent._CLI_SESSION_LIMIT + 12):
         _cli_transcript(agent, workdir, "cli-%03d" % i,
                         [_said("chat %d" % i, workdir)], mtime=1000 + i)
-    rows = agent._sessions(file)["sessions"]
+    rows = agent._sessions(workdir)["sessions"]
     assert len(rows) == agent._CLI_SESSION_LIMIT
     # and it is the NEWEST that survive the cap, not whatever os.listdir said
     assert rows[0]["id"] == "cli-041"
@@ -434,7 +569,7 @@ def test_the_title_read_does_not_parse_the_whole_transcript(agent, target):
 
     agent.open = counting_open
     try:
-        rows = agent._sessions(file)["sessions"]
+        rows = agent._sessions(workdir)["sessions"]
     finally:
         del agent.open
     assert rows[0]["preview"] == "the question"
@@ -446,7 +581,7 @@ def test_recency_comes_from_the_mtime_under_both_timestamp_keys(agent, target):
     is the only timestamp a transcript offers for free, so it lands on both."""
     file, workdir = target
     _cli_transcript(agent, workdir, "cli-1", [_said("hi", workdir)], mtime=4242)
-    row = agent._sessions(file)["sessions"][0]
+    row = agent._sessions(workdir)["sessions"][0]
     assert row["last_used"] == 4242
     assert row["created_at"] == 4242
 
@@ -465,7 +600,7 @@ def test_a_terminal_session_replays_through_the_ordinary_history_action(agent, t
          "message": {"role": "assistant",
                      "content": [{"type": "text", "text": "It renders a page."}]}},
     ])
-    listed = agent._sessions(file)["sessions"][0]["id"]
+    listed = agent._sessions(workdir)["sessions"][0]["id"]
     turns = agent.main(action="history", file=file, session_id=listed)["turns"]
     assert [t["role"] for t in turns] == ["user", "assistant"]
     assert turns[0]["text"] == "what does this file do"
@@ -500,3 +635,62 @@ def test_the_row_click_does_not_branch_on_provenance(template):
     assert "source" not in open_fn
     assert 'fused.params.set("session_id", s.id)' in open_fn
     assert "loadHistory(s.id)" in open_fn
+
+
+def test_the_row_names_the_other_file_only_when_there_is_one(template):
+    """`rowPane` is the whole rule: a chat opened on THIS target has nothing to
+    add, and on a file target that is every row — naming the same file all the
+    way down the list would cost every row its timestamp for no information."""
+    body = template[template.index("function rowPane("):]
+    body = body[:body.index("\n}")]
+    assert "paneSlashes(pane) === paneSlashes(FILE)" in body
+    assert 'return ""' in body
+
+
+def test_a_row_with_another_file_opens_the_host_on_it(template):
+    """Resuming a chat about another file HERE would sit its transcript beside
+    a preview of a file it never mentions. The host is sent to that file with
+    the session attached instead — the same URL "open this task" uses."""
+    body = template[template.index("function openPaneChat("):]
+    body = body[:body.index("\n}")]
+    assert '"/explorer/view/"' in body
+    assert '"?_side=claude&session_id="' in body
+    assert "encodeURIComponent(sessionId)" in body
+    # The in-app move, with a real navigation as the fallback for an absent or
+    # foreign parent — the same pair openTaskOnCalendar makes.
+    assert 'host.history.pushState(null, "", url)' in body
+    assert 'new Event("fused:navigate")' in body
+    assert "window.top.location.href = url" in body
+
+
+def test_the_time_and_the_file_name_share_one_cell(template):
+    """They occupy the SAME grid cell, so the cell is as wide as the wider of
+    the two and the row's geometry is identical at rest and on hover. Swapping
+    the text outright, or stacking two absolutely-positioned spans, reflows the
+    row under the pointer and makes the list jitter as it is scanned."""
+    css = template[template.index(".chat-row .row-right {"):]
+    css = css[:css.index("@media (prefers-reduced-motion")]
+    assert "display: grid;" in css
+    assert 'grid-template-areas: "slot";' in css
+    assert ".chat-row .row-right > * { grid-area: slot; }" in css
+    # And the swap is opacity only — nothing that takes the element out of flow.
+    assert ".chat-row .row-file { opacity: 0; }" in css
+    assert ".chat-row.has-pane:hover .row-file," in css
+    assert "display: none" not in css
+
+
+def test_only_a_row_with_another_file_swaps_on_hover(template):
+    """Every other row keeps its timestamp on hover, because there is nothing
+    to trade it for — `has-pane` is what says there is."""
+    body = template[template.index("function addChatRow("):]
+    body = body[:body.index("\n}")]
+    assert 'row.classList.add("has-pane")' in body
+    # The basename on the row, the whole path on hover: the folder is the one
+    # we are already looking at, and an ellipsised name needs somewhere to be
+    # read in full.
+    assert "label.title = pane;" in body
+    css = template[template.index(".chat-row .row-file { opacity: 0; }"):]
+    css = css[:css.index("@media (prefers-reduced-motion")]
+    for rule in (".chat-row.has-pane:hover .row-sub,",
+                 ".chat-row.has-pane:focus-visible .row-sub { opacity: 0; }"):
+        assert rule in css

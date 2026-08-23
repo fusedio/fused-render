@@ -1418,6 +1418,69 @@ def _strip_app_state(text: str) -> str:
     return _APP_STATE_BLOCK.sub("", text or "").strip()
 
 
+# ------------------------------------------------------- pane file on a record
+#
+# A MIRROR of `fused_render/tasks_store.py`'s `pane_file`, for the same reason
+# `_strip_machinery` below is one: a template may not import fused_render (SPEC
+# PY-15 / D166), and both sides have to get the same answer out of the same
+# `~/.claude/projects` records. **Change one, change the other** — the parity
+# test in tests/test_claude_sessions_merged.py pins them to identical output.
+#
+# What it reads and why it is the only durable record: the transcript's own
+# `cwd` is always a FOLDER (`_workdir` resolves a file target to its parent
+# before Claude Code ever sees it), so the pane's own url in the leading
+# app-state block is the only place the FILE a chat was opened on survives.
+_APP_STATE_LEAD = re.compile(
+    r"<%s>(.*?)</%s>" % (APP_STATE_TAG, APP_STATE_TAG), re.DOTALL)
+
+
+def _pane_file(text: str) -> str:
+    """The file the LEADING app-state block says the pane was on, or "".
+
+    Anchored, like every machinery matcher here: only a leading block is
+    machinery, and the tag further in may be something a human typed. The
+    state is prose followed by one JSON object, so the object is cut from
+    first `{` to last `}` and parsed properly rather than regexed — a title
+    containing `"url":` must not win.
+
+    Three answers, in order of honesty. `entry` is the state's own name for the
+    document the pane is about (template.html `appEntry`) and wins outright.
+    The url is the fallback for older blocks, and there `_file` must beat
+    `path`, because a templated preview's url is
+    `/render?path=<template>&_file=<file>`: `path` names OUR template, which
+    exists on disk and would sail through any isfile check as the target of
+    somebody's chat about their own parquet file.
+
+    A chat with no block ever — a folder chat, a terminal session — has no pane,
+    and "" is the right answer for it rather than a failure.
+    """
+    match = _APP_STATE_LEAD.match((text or "").lstrip())
+    if not match:
+        return ""
+    blob = match.group(1)
+    start, end = blob.find("{"), blob.rfind("}")
+    if start == -1 or end <= start:
+        return ""
+    try:
+        state = json.loads(blob[start:end + 1])
+    except ValueError:
+        return ""
+    if not isinstance(state, dict):
+        return ""
+    entry = state.get("entry")
+    if isinstance(entry, str) and entry:
+        return entry
+    url = state.get("url")
+    if not isinstance(url, str):
+        return ""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    for key in ("_file", "path"):
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
+    return ""
+
+
 # ------------------------------------------------ machinery on a user record
 #
 # A MIRROR of `fused_render/tasks_store.py`'s `strip_machinery` — same tag
@@ -2972,9 +3035,18 @@ _CLI_SESSION_LIMIT = 30
 _CLI_HEAD_BYTES = 131072
 
 
-def _cli_preview(path: str, workdir: str) -> str:
-    """The first thing a HUMAN said in one transcript, truncated to an 80-char
-    preview — or "" for a transcript this list has no business showing.
+def _cli_preview(path: str, workdir: str) -> tuple[str, str]:
+    """`(preview, pane)` for one transcript: the first thing a HUMAN said in it
+    truncated to 80 chars, and the FILE that chat was opened on. Either is ""
+    when the transcript has none — a preview of "" means a transcript this list
+    has no business showing at all.
+
+    The pane rides this read rather than getting one of its own: the first send
+    from a pane carries both the app-state block and the words, so the record
+    that answers the preview is the record that answers the pane, and a second
+    pass would double the opens to learn nothing new. It stops with the preview
+    for the same reason — scanning on past it would trade a bounded head read
+    for a full one on every pane-less chat.
 
     Read from the file's HEAD only, and only far enough to find that message:
     the alternative is parsing whole multi-MB transcripts to label a row.
@@ -3006,13 +3078,14 @@ def _cli_preview(path: str, workdir: str) -> str:
         with open(path, "rb") as fh:
             blob = fh.read(_CLI_HEAD_BYTES)
     except OSError:
-        return ""
+        return "", ""
     lines = blob.decode("utf-8", "replace").splitlines()
     # A head read cuts the last line mid-way. Drop it rather than let it look
     # like a corrupt transcript — we are the ones who truncated it.
     if len(blob) == _CLI_HEAD_BYTES and lines:
         lines.pop()
     cwd_seen = False
+    pane = ""
     for line in lines:
         if not line.startswith("{"):
             continue
@@ -3030,7 +3103,7 @@ def _cli_preview(path: str, workdir: str) -> str:
             cwd = row.get("cwd")
             if isinstance(cwd, str) and cwd:
                 if os.path.abspath(cwd) != workdir:
-                    return ""
+                    return "", ""
                 cwd_seen = True
         if row.get("type") != "user" or row.get("isMeta") or row.get("isSidechain"):
             continue
@@ -3042,27 +3115,51 @@ def _cli_preview(path: str, workdir: str) -> str:
                                if isinstance(b, dict) and b.get("type") == "text")
         if not isinstance(content, str):
             continue
+        # RAW, and before the stripper: the block the pane is named in is the
+        # very thing `_strip_machinery` exists to remove. Read once and kept,
+        # so a first send that turns out to be wordless still leaves the pane
+        # behind for the record two lines down to be titled with.
+        if not pane:
+            pane = _pane_file(content)
         # The pins are the fallback, not the first choice: a send that carried
         # both free text and annotations is named by the text (see `_ann_notes`
         # for why that reading is not folded into the stripper).
         content = _strip_machinery(content) or _ann_notes(content)
         if not content:
             continue
-        return content[:80] if cwd_seen else ""
-    return ""
+        return (content[:80], pane) if cwd_seen else ("", "")
+    return "", ""
 
 
 def _cli_sessions(file: str) -> list:
-    """Claude sessions about this target's folder — every transcript in this
-    cwd's project dir, whether it started in this page or in a terminal.
+    """Claude sessions about this target — every transcript in this cwd's
+    project dir when the target is a FOLDER, and only the ones opened on this
+    very file when it is a FILE.
 
     They need no import, no copy and no new resume path, which is the whole
     reason this is a dozen lines: a session's home is its cwd's project dir
     (`_munge(_workdir(file))`), the template keys on exactly the same dir, so
     these transcripts are already sitting where `_history` reads and where
     `--resume` looks from.
+
+    The folder collapse in `_workdir` is not a bug and is not undone here:
+    Claude Code keys its store by cwd and a file has no cwd, so resume, history
+    and spawn must all keep using the folder. What was wrong was only the LIST
+    — three files in one folder shared one pile of chats, and selecting file 1
+    offered you a chat that was entirely about file 3. The pane the chat was
+    opened on (`_pane_file`, off the leading app-state block) is what tells
+    them apart, and it is the same reading the server's Tasks list uses to
+    decide which file "open this task" lands on.
+
+    A transcript with no pane at all — a terminal session, a chat started on
+    the folder itself — belongs to the FOLDER, and is offered there. It is not
+    offered on a file, because it is not about one; showing it under every file
+    in the folder is the pile we are dismantling.
     """
     workdir = os.path.abspath(_workdir(file))
+    # "" for a folder target: the filter below is what a file target adds, and
+    # a folder is the case where every transcript in the dir already qualifies.
+    want = "" if os.path.isdir(file) else os.path.abspath(file)
     proj = os.path.join(PROJECTS, _munge(workdir))
     try:
         names = os.listdir(proj)
@@ -3087,14 +3184,19 @@ def _cli_sessions(file: str) -> list:
     for mtime, sid in found:
         if len(out) >= _CLI_SESSION_LIMIT:
             break
-        preview = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
+        preview, pane = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
         if not preview:
+            continue
+        # Compared as an abspath, not as text: the block records the pane's own
+        # url, and the target arrives from the caller — the two can spell the
+        # same file differently and still be it.
+        if want and (not pane or os.path.abspath(pane) != want):
             continue
         # mtime is the only timestamp a transcript offers for free — it is the
         # last activity, so it lands on `last_used` and `created_at` borrows it.
         out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
-                    "cwd": workdir})
+                    "cwd": workdir, "pane": pane})
     return out
 
 
@@ -3102,9 +3204,13 @@ def _sessions(file: str) -> dict:
     """Every Claude session about this target, newest activity first.
 
     ONE list, from the cwd's project dir, because the user has one memory: a
-    chat they had about this folder is a chat they had about this folder, and
-    it being in a terminal an hour ago rather than in this page does not make
-    it a different thing to go back to.
+    chat they had about this thing is a chat they had about this thing, and it
+    being in a terminal an hour ago rather than in this page does not make it a
+    different thing to go back to.
+
+    "This thing" is the target, though, not always its folder — see
+    `_cli_sessions` for why a FILE target is offered only the chats that were
+    opened on that file.
     """
     file = os.path.abspath(file)
     sessions = _cli_sessions(file)

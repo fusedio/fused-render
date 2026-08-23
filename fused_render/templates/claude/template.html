@@ -3167,6 +3167,42 @@
     flex: 1;
   }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
+  /* The right-hand slot holds the relative time and, on a row whose chat was
+     opened on some OTHER file than this target, that file's name. They share
+     ONE grid cell — both are `grid-area: slot`, so the cell is as wide as the
+     wider of the two and the row's geometry is identical at rest and on hover.
+     Swapping two absolutely-positioned spans, or replacing the text outright,
+     both reflow the row under the pointer and make the list jitter as it is
+     scanned. */
+  .chat-row .row-right {
+    display: grid;
+    grid-template-areas: "slot";
+    justify-items: end;
+    flex-shrink: 0;
+    max-width: 45%;
+  }
+  .chat-row .row-right > * { grid-area: slot; }
+  .chat-row .row-file {
+    color: var(--faint);
+    font-size: 12px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Only a row that HAS another file to name swaps; every other row keeps its
+     time on hover, because there is nothing to trade it for. */
+  .chat-row .row-file { opacity: 0; }
+  .chat-row.has-pane .row-sub,
+  .chat-row.has-pane .row-file { transition: opacity .12s; }
+  .chat-row.has-pane:hover .row-sub,
+  .chat-row.has-pane:focus-visible .row-sub { opacity: 0; }
+  .chat-row.has-pane:hover .row-file,
+  .chat-row.has-pane:focus-visible .row-file { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-row.has-pane .row-sub,
+    .chat-row.has-pane .row-file { transition: none; }
+  }
 
   /* ── skeleton loading placeholders ── */
   .skel-bar {
@@ -15273,21 +15309,58 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
-// One row for one past chat — every transcript in this cwd's project dir,
-// whether it started in this page or in a terminal (agent.py `_sessions`).
-// A row is resumable because its transcript is in this cwd's project dir,
-// which is precisely where `_cli_sessions` found it — so the SAME `history`
-// read and the same `--resume` on the next send work on it untouched.
+// Same normalization the peer link-outs use (artOpenHref, the shell's
+// router.ts urlForFsPath): only a drive-letter path has its backslashes
+// rewritten, because a backslash is a legal POSIX filename char.
+function paneSlashes(path) {
+  return /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/")
+                                      : String(path);
+}
+
+// The file this row's chat was opened on, or "" — and "" for a chat opened on
+// THIS target, which is every row when the target is a file. Naming the same
+// file on every row would be noise, and the swap below would trade a useful
+// timestamp for it.
+function rowPane(s) {
+  const pane = (s && s.pane) || "";
+  if (!pane) return "";
+  return paneSlashes(pane) === paneSlashes(FILE) ? "" : pane;
+}
+
+// One row for one past chat — every transcript in this cwd's project dir when
+// the target is a folder, and the ones opened on this very file when it is a
+// file (agent.py `_sessions`). A row is resumable because its transcript is in
+// this cwd's project dir, which is precisely where `_cli_sessions` found it —
+// so the SAME `history` read and the same `--resume` on the next send work on
+// it untouched, whichever file the chat was about.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
-                  '<span class="row-sub"></span>';
+                  '<span class="row-right"><span class="row-sub"></span>' +
+                  '<span class="row-file"></span></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
+  const pane = rowPane(s);
+  if (pane) {
+    row.classList.add("has-pane");
+    const label = row.querySelector(".row-file");
+    // Basename on the row, whole path on hover: the folder is already the one
+    // we are looking at, so the leading path repeated down the list says
+    // nothing, and a name that has been ellipsised still has somewhere to be
+    // read in full.
+    label.textContent = paneSlashes(pane).split("/").pop() || pane;
+    label.title = pane;
+  }
   const open = async () => {
+    // A chat about ANOTHER file does not belong in this pane: resuming it here
+    // would put its transcript beside a preview of a file it never mentions.
+    // The host is sent to that file with the session attached instead, so the
+    // reader lands on the same pairing the chat was had in — which is the same
+    // move, and the same URL, "open this task" makes from the Tasks list.
+    if (pane) return openPaneChat(pane, s.id);
     fused.params.set("session_id", s.id);
     showSession();
     enterChat();
@@ -15301,6 +15374,29 @@ function addChatRow(list, s) {
   row.onclick = open;
   row.onkeydown = (e) => { if (e.key === "Enter") open(); };
   list.appendChild(row);
+}
+
+// Open one file in the host's left pane with one session in the Claude side —
+// `/explorer/view/<path>?_side=claude&session_id=<id>`, the shell route the
+// Tasks list already opens a task on.
+//
+// The same top-window hop `openTaskOnCalendar` makes, and for the same reason:
+// the target is a shell ROUTE, so pushState + "fused:navigate" is the in-app
+// move and a real navigation is the fallback for an absent or foreign parent.
+function openPaneChat(pane, sessionId) {
+  const segs = paneSlashes(pane).replace(/^\/+/, "").split("/")
+    .filter(Boolean).map(encodeURIComponent);
+  const url = "/explorer/view/" + segs.join("/") + "?_side=claude&session_id="
+    + encodeURIComponent(sessionId);
+  try {
+    const host = window.top;
+    void host.location.href;   // throws when cross-origin
+    host.history.pushState(null, "", url);
+    host.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (err) { /* fall through to a real navigation */ }
+  try { window.top.location.href = url; }
+  catch (err) { location.href = url; }
 }
 
 // Content-shaped placeholder for the session list.
