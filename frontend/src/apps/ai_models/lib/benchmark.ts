@@ -31,71 +31,129 @@ import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
  *  summary line and a chart caption cannot each pick a different dash. */
 export const DASH = "—";
 
-export interface PrimaryMetric {
-  /** The key in `run.metrics` this capability is compared on. */
-  key: keyof AiBenchmarkMetrics;
-  /** For a column heading or a chart's y axis. */
+/** A metric this frontend can read off a run — either a key inside
+ *  `run.metrics` (capability-specific), or one of the two universal facts that
+ *  live on the run record ITSELF rather than in `metrics`: peak memory and
+ *  load time. One union rather than two separate lookup paths through the
+ *  rest of this file, so a caller comparing "is this the selected metric"
+ *  never has to know which of the two shapes it came from. */
+export type MetricKey = keyof AiBenchmarkMetrics | "peakResidentBytes" | "loadSeconds";
+
+export interface MetricSpec {
+  key: MetricKey;
+  /** For a column heading, a chart's y axis, or a `<select>` option. */
   label: string;
   unit: string;
-  /** Whether a bigger number is a faster model. False for seconds per step. */
+  /** Whether a bigger number is a faster model. False for seconds per step,
+   *  load time and memory — a chart, a unit badge or a leaderboard bar drawn
+   *  on any of those must read "smaller is better" or it states the opposite
+   *  of the truth. */
   higherIsBetter: boolean;
   /** Decimal places. Rates get one; a ratio people read as "40× faster than
    *  listening to it" gets one too, and nothing here gets more — a benchmark
-   *  repeated twice does not agree to three. */
+   *  repeated twice does not agree to three. Unused for `peakResidentBytes`,
+   *  which is formatted through `formatSize` instead of digits-and-a-unit. */
   digits: number;
 }
 
-/** One primary metric per capability — the number the section's chart plots and
- *  the row leads with.
+/** Every metric this frontend can plot or rank by, per capability — the
+ *  primary one FIRST (the section's chart and row default to it, and
+ *  `primaryMetric` below is just `[0]`), then whichever of the capability's
+ *  OTHER recorded numbers are worth a second look.
+ *
+ *  **Only genuine PERFORMANCE numbers are listed — never a workload
+ *  parameter echoed back on the record.** `steps`, `width`, `height`, `dim`,
+ *  `batch` and `audioSeconds` are all real keys `ai/benchmark.py`'s measure
+ *  functions return, and all excluded here: they are the FIXED WORKLOAD
+ *  describing itself, constant across every run of a given model (or every
+ *  run of any model, for the audio/embedding ones), so charting one over time
+ *  is a flat line with nothing to say — the exact "noise dressed as data"
+ *  problem model size has, applied to a number that at least LIVES on the
+ *  run record. `outputTokens` is excluded for the same reason on a fixed
+ *  `maxTokens` workload: a healthy run always reports the same count, and it
+ *  is a completion count, not a speed.
+ *
+ *  `peakResidentBytes` and `loadSeconds` are appended to every list rather
+ *  than declared per capability, because both are universal — every run
+ *  measures memory, and every run attempts a load — but PHYSICALLY live on
+ *  `AiBenchmarkRun` itself rather than inside `metrics` (see `MetricKey`).
  *
  *  Declared here rather than inferred from which keys a run happens to carry:
  *  every capability reports several metrics, so "the first non-null one" would
  *  silently change what a chart means the day a runner starts reporting one
  *  more. Keyed by the server's capability constants (ai/registry.py).
  */
-const PRIMARY: Record<string, PrimaryMetric> = {
-  "text-generation": {
-    key: "tokensPerSecond",
-    label: "Throughput",
-    unit: "tok/s",
-    higherIsBetter: true,
-    digits: 1,
-  },
-  "text-to-image": {
-    // NOT total seconds: the step count is per-model by design (a distilled
-    // model runs at 4 where another needs 28), so the per-step figure is the
-    // only comparable one. See ai/benchmark.py.
-    key: "secondsPerStep",
-    label: "Per step",
-    unit: "s/step",
-    higherIsBetter: false,
-    digits: 2,
-  },
-  "automatic-speech-recognition": {
-    key: "realtimeFactor",
-    label: "Speed",
-    unit: "× realtime",
-    higherIsBetter: true,
-    digits: 1,
-  },
-  "embeddings": {
-    key: "textsPerSecond",
-    label: "Throughput",
-    unit: "texts/s",
-    higherIsBetter: true,
-    digits: 1,
-  },
+const METRICS: Record<string, MetricSpec[]> = {
+  "text-generation": [
+    { key: "tokensPerSecond", label: "Throughput", unit: "tok/s", higherIsBetter: true, digits: 1 },
+    { key: "ttftMs", label: "Time to first token", unit: "ms", higherIsBetter: false, digits: 0 },
+    { key: "promptTokensPerSecond", label: "Prompt read", unit: "tok/s", higherIsBetter: true, digits: 1 },
+    { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
+    { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
+  ],
+  "text-to-image": [
+    // NOT total seconds as the PRIMARY: the step count is per-model by design
+    // (a distilled model runs at 4 where another needs 28), so the per-step
+    // figure is the only comparable one across models. Total render time is
+    // still worth its own series — see ai/benchmark.py.
+    { key: "secondsPerStep", label: "Per step", unit: "s/step", higherIsBetter: false, digits: 2 },
+    { key: "totalSeconds", label: "Total render", unit: "s", higherIsBetter: false, digits: 1 },
+    { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
+    { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
+  ],
+  "automatic-speech-recognition": [
+    { key: "realtimeFactor", label: "Speed", unit: "× realtime", higherIsBetter: true, digits: 1 },
+    { key: "totalSeconds", label: "Decode time", unit: "s", higherIsBetter: false, digits: 1 },
+    { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
+    { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
+  ],
+  "embeddings": [
+    { key: "textsPerSecond", label: "Throughput", unit: "texts/s", higherIsBetter: true, digits: 1 },
+    { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
+    { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
+  ],
 };
 
 /** The primary metric for a capability, or null when this frontend does not
- *  know the capability.
+ *  know the capability. The FIRST entry in `METRICS`' list — the chart and the
+ *  row default to it, and the metric `<select>` opens on it.
  *
  *  Null rather than a fallback: a capability added server-side should render as
  *  a section with a run table and no chart, which is honest, rather than as a
  *  chart of whichever number happened to be first.
  */
-export function primaryMetric(capability: string): PrimaryMetric | null {
-  return PRIMARY[capability] ?? null;
+export function primaryMetric(capability: string): MetricSpec | null {
+  return METRICS[capability]?.[0] ?? null;
+}
+
+/** Every metric the SELECTOR should offer for a capability, filtered to the
+ *  ones at least one run actually measured — a metric where every run is
+ *  `null` (a capability whose runs are all warm, say, for `loadSeconds`) is
+ *  not worth a dead option in the dropdown.
+ *
+ *  Falls back to the FULL declared list when `runs` cannot answer the
+ *  question either way: an empty list (nothing recorded yet, or every
+ *  recorded run happened to measure nothing) must not strand the selector
+ *  with zero options, which is a worse failure than offering one that turns
+ *  out empty.
+ */
+export function availableMetrics(capability: string, runs: AiBenchmarkRun[]): MetricSpec[] {
+  const specs = METRICS[capability] ?? [];
+  if (runs.length === 0) return specs;
+  const measured = specs.filter((spec) => runs.some((run) => metricValueForSpec(run, spec) !== null));
+  return measured.length > 0 ? measured : specs;
+}
+
+/** The metric the URL's `?benchMetric=` names, when it is one this capability
+ *  actually offers — `defaultMetric`'s pick (the first of `specs`, i.e. the
+ *  primary) otherwise. Same forgiving posture as `resolveCapability`: a stale
+ *  or foreign key falls through to the default rather than rendering nothing. */
+export function resolveMetric(specs: MetricSpec[], param: string | null): MetricSpec | null {
+  if (param) {
+    const found = specs.find((spec) => spec.key === param);
+    if (found) return found;
+  }
+  return specs[0] ?? null;
 }
 
 /** A number, or null when it was not measured. `undefined` (the key absent for
@@ -106,11 +164,23 @@ function metricValue(run: AiBenchmarkRun, key: keyof AiBenchmarkMetrics): number
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** A run's value for ANY `MetricSpec` — capability metric or one of the two
+ *  universal fields — or null when `spec` itself is null (an unknown
+ *  capability) or the value was not measured. The one place that has to know
+ *  `peakResidentBytes`/`loadSeconds` live outside `run.metrics`; every other
+ *  function in this file reads a metric through here rather than re-deciding
+ *  where on the record it lives. */
+export function metricValueForSpec(run: AiBenchmarkRun, spec: MetricSpec | null): number | null {
+  if (!spec) return null;
+  if (spec.key === "peakResidentBytes") return run.peakResidentBytes;
+  if (spec.key === "loadSeconds") return run.loadSeconds;
+  return metricValue(run, spec.key);
+}
+
 /** The run's primary metric, or null. Null for a failed run (no metrics at
  *  all), for an unknown capability, and for a runner that did not report it. */
 export function primaryValue(run: AiBenchmarkRun): number | null {
-  const metric = primaryMetric(run.capability);
-  return metric ? metricValue(run, metric.key) : null;
+  return metricValueForSpec(run, primaryMetric(run.capability));
 }
 
 /** `n` at `digits` places with trailing zeros trimmed — "42.1", "0", "3".
@@ -133,11 +203,25 @@ function withUnit(value: number | null, unit: string, digits: number): string {
   return value === null ? DASH : `${formatNumber(value, digits)} ${unit}`;
 }
 
+/** `value` as `spec` reports it — "42.1 tok/s", "5.2 GB", or a dash.
+ *
+ *  `peakResidentBytes` is special-cased to the platform's own byte formatter
+ *  rather than `digits`-and-a-unit: "5872000000 bytes" is not a number anyone
+ *  reads, and `formatSize` is the one place this app turns a byte count into
+ *  "5.2 GB" — a second copy here is how a memory chart comes to disagree with
+ *  the Local tab's own sizes.
+ */
+export function formatMetricSpecValue(value: number | null, spec: MetricSpec): string {
+  if (value === null) return DASH;
+  if (spec.key === "peakResidentBytes") return formatSize(value);
+  return withUnit(value, spec.unit, spec.digits);
+}
+
 /** The primary metric as the page shows it — "42.1 tok/s", or a dash. */
 export function formatPrimary(run: AiBenchmarkRun): string {
   const metric = primaryMetric(run.capability);
   if (!metric) return DASH;
-  return withUnit(metricValue(run, metric.key), metric.unit, metric.digits);
+  return formatMetricSpecValue(metricValueForSpec(run, metric), metric);
 }
 
 /** Seconds to load, or a dash for a warm run. */
@@ -199,11 +283,20 @@ export function failureReason(run: AiBenchmarkRun): string {
  *  here too, dominating the section. Both were the verbosity this function
  *  exists to cut: a failed run says just "Failed", with the reason a click
  *  away in `rowDetail`/`failureReason` rather than the row's headline.
+ *
+ *  **`metric` is the SELECTED one, not necessarily the primary** — the
+ *  leaderboard now reads by whichever metric the picker is on, so the row it
+ *  leads with has to be that metric's value, not always throughput. Memory
+ *  rides along as a second fact UNLESS memory itself is what is selected,
+ *  which would otherwise print it twice.
  */
-export function rowHeadline(run: AiBenchmarkRun): string {
+export function rowHeadline(run: AiBenchmarkRun, metric: MetricSpec | null): string {
   if (!run.ok) return "Failed";
-  const parts: string[] = [formatPrimary(run)];
-  if (run.peakResidentBytes !== null) parts.push(formatMemory(run));
+  if (!metric) return DASH;
+  const parts: string[] = [formatMetricSpecValue(metricValueForSpec(run, metric), metric)];
+  if (metric.key !== "peakResidentBytes" && run.peakResidentBytes !== null) {
+    parts.push(formatMemory(run));
+  }
   return parts.join(" · ");
 }
 
@@ -215,15 +308,21 @@ export function rowHeadline(run: AiBenchmarkRun): string {
  *  instead: that is a different KIND of fact (why it broke, not what else it
  *  measured), so this function returns null for one rather than folding both
  *  into one string a caller would have to re-parse to tell apart.
+ *
+ *  `metric` again decides what NOT to repeat: TTFT and load time drop out of
+ *  this line exactly when one of them is the thing the headline is already
+ *  showing.
  */
-export function rowDetail(run: AiBenchmarkRun): string | null {
+export function rowDetail(run: AiBenchmarkRun, metric: MetricSpec | null): string | null {
   if (!run.ok) return null;
   const parts: string[] = [];
   const ttft = metricValue(run, "ttftMs");
-  if (ttft !== null) parts.push(`TTFT ${formatNumber(ttft, 0)} ms`);
+  if (ttft !== null && metric?.key !== "ttftMs") parts.push(`TTFT ${formatNumber(ttft, 0)} ms`);
   const steps = metricValue(run, "steps");
   if (steps !== null) parts.push(`${formatNumber(steps, 0)} steps`);
-  if (run.loadSeconds !== null) parts.push(`loaded in ${formatLoad(run)}`);
+  if (run.loadSeconds !== null && metric?.key !== "loadSeconds") {
+    parts.push(`loaded in ${formatLoad(run)}`);
+  }
   if (run.device) parts.push(run.device);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
@@ -256,7 +355,7 @@ export function runsFor(runs: AiBenchmarkRun[], capability: string): AiBenchmark
 /** The newest run per model, with the delta against the last COMPARABLE one.
  *
  *  Comparable means: the same model, an earlier run, the same workload
- *  revision, and a primary metric that was actually measured. Each of those
+ *  revision, and a metric that was actually measured on both. Each of those
  *  drops a specific wrong answer —
  *
  *  * a different revision measured different work, so the difference is not the
@@ -264,11 +363,19 @@ export function runsFor(runs: AiBenchmarkRun[], capability: string): AiBenchmark
  *  * a failed or unmeasured run has no number, and treating its absence as a
  *    zero would report a 100% improvement out of nowhere.
  *
+ *  **`metric` defaults to each run's own primary** (omit it, or pass `null`,
+ *  and every model is scored on `primaryMetric(latest.capability)` — the
+ *  original behaviour). Passing an explicit metric scores every model on THAT
+ *  one instead, which is what the leaderboard now does once a reader picks a
+ *  different metric than the default: the delta shown beside a bar must be a
+ *  delta IN the thing the bar is ranking by, or the percentage and the ranking
+ *  would be reporting two different measurements under one row.
+ *
  *  Models come back in first-appearance order, which is the order the caller's
  *  list already has them in — the section's own model list decides layout, not
  *  this function.
  */
-export function latestByModel(runs: AiBenchmarkRun[]): ModelLatest[] {
+export function latestByModel(runs: AiBenchmarkRun[], metric?: MetricSpec | null): ModelLatest[] {
   const byModel = new Map<string, AiBenchmarkRun[]>();
   for (const run of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
     const list = byModel.get(run.model);
@@ -278,16 +385,17 @@ export function latestByModel(runs: AiBenchmarkRun[]): ModelLatest[] {
   const rows: ModelLatest[] = [];
   for (const [model, history] of byModel) {
     const latest = history[history.length - 1]!;
-    const value = primaryValue(latest);
+    const spec = metric ?? primaryMetric(latest.capability);
+    const value = metricValueForSpec(latest, spec);
     let delta: BenchmarkDelta | null = null;
     if (value !== null) {
       for (let i = history.length - 2; i >= 0; i--) {
         const candidate = history[i]!;
         if (candidate.workload.revision !== latest.workload.revision) continue;
-        const before = primaryValue(candidate);
+        const before = metricValueForSpec(candidate, spec);
         if (before === null || before === 0) continue;
         const percent = ((value - before) / before) * 100;
-        const higherIsBetter = primaryMetric(latest.capability)?.higherIsBetter ?? true;
+        const higherIsBetter = spec?.higherIsBetter ?? true;
         delta = { percent, better: higherIsBetter ? percent >= 0 : percent <= 0, previous: candidate };
         break;
       }
@@ -311,18 +419,26 @@ export interface Series {
   points: SeriesPoint[];
 }
 
-/** One polyline per model over one capability's runs, plus the y domain.
+/** One polyline per model over a set of runs, plus the y domain.
  *
- *  A run with no primary metric contributes no point: the alternative is
+ *  **Scoped to ONE model's history in practice** — the trend chart's whole
+ *  redesign point (a comparison across models belongs to the leaderboard, not
+ *  a shared timeline, see `BenchmarkTab.tsx`) — but this function stays
+ *  generic over `run.model` rather than assuming one, the same way it always
+ *  has: nothing here breaks if a caller ever hands it more than one model's
+ *  runs again.
+ *
+ *  A run with no value for `metric` contributes no point: the alternative is
  *  plotting a zero, which on a throughput chart is a visible, believable claim
- *  that the model produced nothing.
+ *  that the model produced nothing. `metric` defaults to each run's own
+ *  primary, same as `latestByModel`.
  *
  *  The domain starts at **zero** rather than at the smallest value. A rate axis
- *  cropped to its own range turns a 3% difference between two models into a
- *  chart where one is twice the other — the classic misleading axis, and this
- *  chart's entire job is comparison.
+ *  cropped to its own range turns a 3% difference into a chart where one point
+ *  looks twice another — the classic misleading axis, and this chart's entire
+ *  job is an honest one.
  */
-export function chartSeries(runs: AiBenchmarkRun[]): {
+export function chartSeries(runs: AiBenchmarkRun[], metric?: MetricSpec | null): {
   series: Series[];
   yMin: number;
   yMax: number;
@@ -332,7 +448,8 @@ export function chartSeries(runs: AiBenchmarkRun[]): {
   const index = new Map<string, Series>();
   let yMax = 0;
   ordered.forEach((run, x) => {
-    const y = primaryValue(run);
+    const spec = metric ?? primaryMetric(run.capability);
+    const y = metricValueForSpec(run, spec);
     if (y === null) return;
     let entry = index.get(run.model);
     if (!entry) {
@@ -612,23 +729,27 @@ export interface LeaderboardRow {
 
 /** One capability's models, ranked best-first for the leaderboard.
  *
+ *  **Takes the metric DIRECTLY rather than a capability** — the leaderboard
+ *  ranks by whatever the reader selected, memory or load time included, not
+ *  always the capability's primary. A caller wanting the old default passes
+ *  `primaryMetric(capability)`.
+ *
  *  Three groups, in this fixed order — measured, then failed, then never
  *  benchmarked — because they are different KINDS of "nothing to compare",
  *  and a plain sort by value would either crash on the ones with no number or
  *  silently treat "no run yet" as tied with "measured zero". Within the
- *  measured group, order is by the primary metric in whichever direction is
- *  actually better (see `barFraction`); the other two groups keep the input
+ *  measured group, order is by `metric` in whichever direction is actually
+ *  better for it (see `barFraction`); the other two groups keep the input
  *  order, because there is no value to rank them by.
  *
- *  An unknown capability (`primaryMetric` returns null) draws no bars and
- *  ranks nothing — the same "no guessed number" posture `primaryMetric` and
- *  `chartSeries` already take.
+ *  A null `metric` (an unknown capability, or nothing left to select from)
+ *  draws no bars and ranks nothing — the same "no guessed number" posture
+ *  `primaryMetric` and `chartSeries` already take.
  */
 export function leaderboard(
-  capability: string,
+  metric: MetricSpec | null,
   entries: { model: string; row: ModelLatest | null }[],
 ): LeaderboardRow[] {
-  const metric = primaryMetric(capability);
   if (!metric) return entries.map((e) => ({ ...e, barFraction: null }));
 
   const measured: { entry: (typeof entries)[number]; value: number }[] = [];
@@ -639,7 +760,7 @@ export function leaderboard(
       never.push(entry);
       continue;
     }
-    const value = primaryValue(entry.row.latest);
+    const value = metricValueForSpec(entry.row.latest, metric);
     if (value === null) failed.push(entry);
     else measured.push({ entry, value });
   }
@@ -664,56 +785,98 @@ export function leaderboard(
  *  count at once to pick a default and to print a count beside every option.
  */
 export function runCountsByCapability(runs: AiBenchmarkRun[]): Record<string, number> {
+  return countBy(runs, (run) => run.capability);
+}
+
+/** How many recorded runs each MODEL has, within whatever `runs` the caller
+ *  already scoped to one capability — the model picker's own version of
+ *  `runCountsByCapability`, and the same reason a section's `defaultModel`
+ *  needs this rather than a page-wide count: a model's run history only means
+ *  anything within the capability it was measured under. */
+export function runCountsByModel(runs: AiBenchmarkRun[]): Record<string, number> {
+  return countBy(runs, (run) => run.model);
+}
+
+function countBy(runs: AiBenchmarkRun[], keyOf: (run: AiBenchmarkRun) => string): Record<string, number> {
   const counts: Record<string, number> = {};
-  for (const run of runs) counts[run.capability] = (counts[run.capability] ?? 0) + 1;
+  for (const run of runs) counts[keyOf(run)] = (counts[keyOf(run)] ?? 0) + 1;
   return counts;
 }
 
-/** Which capability the selector opens on, absent an explicit `?cap=`: the one
- *  with the most recorded runs, ties broken by `capabilities`' OWN order —
- *  which is registry order, since callers pass it through `orderCapabilities`
- *  first. Ties are broken by scanning left to right and only replacing the
- *  leader on a STRICTLY greater count, so the earlier capability in the list
- *  wins a tie rather than the later one that happened to match it.
+/** The item in `order` with the most recorded runs, ties broken by `order`'s
+ *  OWN position — scanning left to right and only replacing the leader on a
+ *  STRICTLY greater count, so the earlier item wins a tie rather than the
+ *  later one that happened to match it. Falls through to `order[0]` when
+ *  nothing has ever run (every count 0), which is the same left-to-right scan
+ *  keeping its initial pick.
  *
- *  Falls through to the very first capability when nothing has ever run —
- *  every count is 0, so the same left-to-right scan keeps its initial pick —
- *  which is the same "first in registry order" default the tab used before it
- *  had a selector at all.
- */
-export function defaultCapability(
-  capabilities: string[],
-  counts: Record<string, number>,
-): string | null {
-  if (capabilities.length === 0) return null;
-  let best = capabilities[0]!;
+ *  Shared by `defaultCapability` (order = registry order) and `defaultModel`
+ *  (order = the leaderboard's own rank, so a tie breaks toward whichever
+ *  model is already reading as the better one) — one algorithm, so a fix to
+ *  the tie-break rule cannot land in one and not the other. */
+function mostRuns(order: string[], counts: Record<string, number>): string | null {
+  if (order.length === 0) return null;
+  let best = order[0]!;
   let bestCount = counts[best] ?? 0;
-  for (const capability of capabilities.slice(1)) {
-    const count = counts[capability] ?? 0;
+  for (const item of order.slice(1)) {
+    const count = counts[item] ?? 0;
     if (count > bestCount) {
-      best = capability;
+      best = item;
       bestCount = count;
     }
   }
   return best;
 }
 
-/** The selector's actual state: the URL's `?cap=` when it names a real
- *  capability, `defaultCapability`'s pick otherwise.
- *
- *  A `param` naming nothing in `capabilities` is treated exactly like an
- *  ABSENT one — a stale link, a value meant for a different reading of this
- *  page, or a capability this frontend has never heard of all fall through to
- *  the same default rather than rendering an empty selector on a param that
- *  travelled here from somewhere else. This is the same forgiving posture
- *  `orderCapabilities` and `routes.ts`'s `tabFromPath` already take toward an
- *  unrecognised value.
+/** `param` when it names something in `order`, `mostRuns`'s pick otherwise —
+ *  shared by `resolveCapability` and `resolveModel`. A `param` naming nothing
+ *  in `order` is treated exactly like an ABSENT one: a stale link, a value
+ *  meant for a different reading of this page, or a value this frontend has
+ *  never heard of all fall through to the same default rather than rendering
+ *  an empty selector on a param that travelled here from somewhere else —
+ *  the same forgiving posture `orderCapabilities` and `routes.ts`'s
+ *  `tabFromPath` already take toward an unrecognised value. */
+function resolveFromRuns(order: string[], param: string | null, counts: Record<string, number>): string | null {
+  if (param && order.includes(param)) return param;
+  return mostRuns(order, counts);
+}
+
+/** Which capability the selector opens on, absent an explicit `?cap=`: the one
+ *  with the most recorded runs, ties broken by `capabilities`' OWN order —
+ *  which is registry order, since callers pass it through `orderCapabilities`
+ *  first.
  */
+export function defaultCapability(
+  capabilities: string[],
+  counts: Record<string, number>,
+): string | null {
+  return mostRuns(capabilities, counts);
+}
+
+/** The selector's actual state: the URL's `?cap=` when it names a real
+ *  capability, `defaultCapability`'s pick otherwise. See `resolveFromRuns`. */
 export function resolveCapability(
   capabilities: string[],
   param: string | null,
   counts: Record<string, number>,
 ): string | null {
-  if (param && capabilities.includes(param)) return param;
-  return defaultCapability(capabilities, counts);
+  return resolveFromRuns(capabilities, param, counts);
+}
+
+/** Which model the per-model trend chart opens on, absent an explicit
+ *  `?benchModel=`: the one with the most recorded runs IN THIS CAPABILITY,
+ *  ties broken by `models`' own order — pass the leaderboard's own rank
+ *  order so a tie breaks toward the model already reading as the better one,
+ *  rather than an arbitrary list order. */
+export function defaultModel(models: string[], counts: Record<string, number>): string | null {
+  return mostRuns(models, counts);
+}
+
+/** The trend chart's actual model: the URL's `?benchModel=` when it names a
+ *  model in THIS capability's leaderboard, `defaultModel`'s pick otherwise.
+ *  See `resolveFromRuns` — a model belonging to a DIFFERENT capability (the
+ *  reader just switched `?cap=`) falls through to the default exactly like a
+ *  stale or foreign value would. */
+export function resolveModel(models: string[], param: string | null, counts: Record<string, number>): string | null {
+  return resolveFromRuns(models, param, counts);
 }

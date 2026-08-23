@@ -2,31 +2,39 @@ import { describe, expect, it } from "bun:test";
 import type { AiBenchmarkRun } from "@platform/lib/api";
 import {
   DASH,
+  availableMetrics,
   chartAxisTicks,
   chartSeries,
   defaultCapability,
+  defaultModel,
   failureReason,
   formatLoad,
   formatMemory,
+  formatMetricSpecValue,
   formatPrimary,
   formatRunDate,
   formatRunTime,
   latestByModel,
   leaderboard,
+  metricValueForSpec,
   middleEllipsis,
   orderCapabilities,
   primaryMetric,
   primaryValue,
   resolveCapability,
+  resolveMetric,
+  resolveModel,
   rowDetail,
   rowHeadline,
   runButtonState,
   runCountsByCapability,
+  runCountsByModel,
   runsFor,
   shortModelName,
   stoppedNote,
   summaryLine,
   yAxisTicks,
+  type MetricSpec,
   type ModelLatest,
 } from "@apps/ai_models/lib/benchmark";
 
@@ -207,6 +215,26 @@ describe("latestByModel", () => {
     expect(rows[0]!.latest.ok).toBe(false);
     expect(rows[0]!.delta).toBeNull();
   });
+
+  it("scores the delta against an EXPLICITLY selected metric, not always the primary", () => {
+    // The leaderboard bar and its delta must read the same measurement — a
+    // memory selection shows a memory delta, never a throughput one hiding
+    // under a memory-labelled bar.
+    const memory = availableMetrics("text-generation", [run()]).find(
+      (s) => s.key === "peakResidentBytes",
+    )!;
+    const rows = latestByModel(
+      [
+        run({ startedAt: 1, peakResidentBytes: 4_000_000_000, metrics: { tokensPerSecond: 100 } }),
+        run({ startedAt: 2, peakResidentBytes: 2_000_000_000, metrics: { tokensPerSecond: 10 } }),
+      ],
+      memory,
+    );
+    // Memory is LOWER-is-better: it halved, which is an IMPROVEMENT, even
+    // though the same run's tokensPerSecond collapsed.
+    expect(rows[0]!.delta!.percent).toBeCloseTo(-50);
+    expect(rows[0]!.delta!.better).toBe(true);
+  });
 });
 
 // -- the chart ----------------------------------------------------------------
@@ -247,6 +275,26 @@ describe("chartSeries", () => {
     // Zero rather than -Infinity out of a Math.max over nothing, which would
     // produce an unrenderable SVG.
     expect(yMax).toBe(0);
+  });
+
+  it("plots an EXPLICITLY selected metric instead of the capability's primary", () => {
+    // The per-model trend chart now plots whatever the reader picked — load
+    // time here, which lives on the run record itself, not in `metrics`.
+    const load = availableMetrics("text-generation", [run()]).find(
+      (s) => s.key === "loadSeconds",
+    )!;
+    const { series, yMax } = chartSeries(
+      [
+        run({ startedAt: 1, loadSeconds: 3.5, metrics: { tokensPerSecond: 999 } }),
+        run({ startedAt: 2, loadSeconds: null, metrics: { tokensPerSecond: 1 } }),
+      ],
+      load,
+    );
+    // The warm run (loadSeconds: null) contributes no point, even though its
+    // OTHER metric (tokensPerSecond) was measured — chartSeries must not fall
+    // back to the primary just because the selected one came up empty.
+    expect(series[0]!.points.map((p) => p.y)).toEqual([3.5]);
+    expect(yMax).toBe(3.5);
   });
 });
 
@@ -384,37 +432,65 @@ describe("shortModelName", () => {
   });
 });
 
+const TEXT_METRIC = primaryMetric("text-generation");
+
 describe("rowHeadline", () => {
-  it("is the primary metric and memory — nothing else", () => {
+  it("is the SELECTED metric and memory — nothing else", () => {
     // Load time and device used to dominate the row; they belong in the detail
     // now, not the one line every model gets scanned by.
-    expect(rowHeadline(run())).toBe("42.1 tok/s · 5.2 GB");
+    expect(rowHeadline(run(), TEXT_METRIC)).toBe("42.1 tok/s · 5.2 GB");
   });
 
   it("drops memory when it was not measured", () => {
-    expect(rowHeadline(run({ peakResidentBytes: null }))).toBe("42.1 tok/s");
+    expect(rowHeadline(run({ peakResidentBytes: null }), TEXT_METRIC)).toBe("42.1 tok/s");
+  });
+
+  it("reads a DIFFERENT metric when a different one is selected", () => {
+    // The leaderboard now ranks by whatever the reader picked, so the row it
+    // leads with has to follow — a memory selection headlines memory, not
+    // throughput, and does not repeat it a second time.
+    const memory = availableMetrics("text-generation", [run()]).find(
+      (m) => m.key === "peakResidentBytes",
+    )!;
+    expect(rowHeadline(run(), memory)).toBe("5.2 GB");
   });
 
   it("says just 'Failed' — the reason lives behind the details expander", () => {
-    expect(rowHeadline(run({ ok: false, error: "out of memory", metrics: {} }))).toBe(
-      "Failed",
-    );
+    expect(
+      rowHeadline(run({ ok: false, error: "out of memory", metrics: {} }), TEXT_METRIC),
+    ).toBe("Failed");
+  });
+
+  it("is a dash when there is no metric to read at all", () => {
+    expect(rowHeadline(run(), null)).toBe(DASH);
   });
 });
 
 describe("rowDetail", () => {
   it("carries exactly what the headline left out", () => {
-    expect(rowDetail(run())).toBe("TTFT 310 ms · loaded in 8.4 s · mps");
+    expect(rowDetail(run(), TEXT_METRIC)).toBe("TTFT 310 ms · loaded in 8.4 s · mps");
   });
 
   it("is null when there is nothing beyond the headline — no expander to draw", () => {
     expect(
-      rowDetail(run({ loadSeconds: null, device: null, metrics: { tokensPerSecond: 12 } })),
+      rowDetail(
+        run({ loadSeconds: null, device: null, metrics: { tokensPerSecond: 12 } }),
+        TEXT_METRIC,
+      ),
     ).toBeNull();
   });
 
+  it("drops load time from the detail when LOAD TIME is the selected metric", () => {
+    // It is already the headline; repeating it in the detail line would say
+    // the same fact twice under two different names.
+    const loadMetric = availableMetrics("text-generation", [run()]).find(
+      (m) => m.key === "loadSeconds",
+    )!;
+    expect(rowDetail(run(), loadMetric)).toBe("TTFT 310 ms · mps");
+  });
+
   it("is null for a failed run — its detail comes from failureReason instead", () => {
-    expect(rowDetail(run({ ok: false, error: "boom", metrics: {} }))).toBeNull();
+    expect(rowDetail(run({ ok: false, error: "boom", metrics: {} }), TEXT_METRIC)).toBeNull();
   });
 });
 
@@ -467,7 +543,7 @@ describe("leaderboard", () => {
       run({ model: "slow", startedAt: 1, metrics: { tokensPerSecond: 10 } }),
       run({ model: "fast", startedAt: 2, metrics: { tokensPerSecond: 40 } }),
     ]);
-    const rows = leaderboard("text-generation", [
+    const rows = leaderboard(primaryMetric("text-generation"), [
       { model: "slow", row: latest.get("slow")! },
       { model: "fast", row: latest.get("fast")! },
     ]);
@@ -484,7 +560,7 @@ describe("leaderboard", () => {
       run({ capability: "text-to-image", model: "slow", startedAt: 1, metrics: { secondsPerStep: 4 } }),
       run({ capability: "text-to-image", model: "fast", startedAt: 2, metrics: { secondsPerStep: 1 } }),
     ]);
-    const rows = leaderboard("text-to-image", [
+    const rows = leaderboard(primaryMetric("text-to-image"), [
       { model: "slow", row: latest.get("slow")! },
       { model: "fast", row: latest.get("fast")! },
     ]);
@@ -498,7 +574,7 @@ describe("leaderboard", () => {
       run({ model: "winner", startedAt: 1, metrics: { tokensPerSecond: 40 } }),
       run({ model: "broken", startedAt: 2, ok: false, error: "boom", metrics: {} }),
     ]);
-    const rows = leaderboard("text-generation", [
+    const rows = leaderboard(primaryMetric("text-generation"), [
       { model: "winner", row: latest.get("winner")! },
       { model: "broken", row: latest.get("broken")! },
       { model: "never", row: null },
@@ -511,12 +587,12 @@ describe("leaderboard", () => {
   it("draws no bars at all for a capability this frontend does not know", () => {
     // Same posture as `primaryMetric`: no guessed number rather than a bar
     // scaled on the wrong thing.
-    const rows = leaderboard("telepathy", [{ model: "x", row: null }]);
+    const rows = leaderboard(primaryMetric("telepathy"), [{ model: "x", row: null }]);
     expect(rows[0]!.barFraction).toBeNull();
   });
 
   it("does not blow up when every model in the section is unmeasured", () => {
-    const rows = leaderboard("text-generation", [
+    const rows = leaderboard(primaryMetric("text-generation"), [
       { model: "a", row: null },
       { model: "b", row: null },
     ]);
@@ -704,5 +780,149 @@ describe("middleEllipsis", () => {
 
   it("is a no-op for a budget too small to hold head, tail and the ellipsis usefully", () => {
     expect(middleEllipsis("whisper-large-v3-mlx", 0)).toBe("whisper-large-v3-mlx");
+  });
+});
+
+// -- the metric selector: which numbers a capability actually offers --------
+
+describe("availableMetrics", () => {
+  it("lists a capability's declared metrics, primary first", () => {
+    const specs = availableMetrics("text-generation", [run()]);
+    expect(specs.map((s) => s.key)).toEqual([
+      "tokensPerSecond",
+      "ttftMs",
+      "promptTokensPerSecond",
+      "peakResidentBytes",
+      "loadSeconds",
+    ]);
+    expect(specs[0]).toEqual(primaryMetric("text-generation")!);
+  });
+
+  it("never invents a workload parameter as a metric", () => {
+    // steps/width/height/dim/batch/audioSeconds are the FIXED workload
+    // describing itself, constant across runs — a flat line, not a trend.
+    const image = availableMetrics("text-to-image", [run({ capability: "text-to-image" })]);
+    expect(image.map((s) => s.key)).not.toContain("steps");
+    expect(image.map((s) => s.key)).not.toContain("width");
+    const embed = availableMetrics("embeddings", [run({ capability: "embeddings" })]);
+    expect(embed.map((s) => s.key)).not.toContain("dim");
+    expect(embed.map((s) => s.key)).not.toContain("batch");
+  });
+
+  it("drops a metric no run in this capability ever measured", () => {
+    // Every run here was warm (`loadSeconds: null`), so offering "Load time"
+    // would be a dropdown option that always renders an empty chart.
+    const specs = availableMetrics("text-generation", [
+      run({ loadSeconds: null }),
+      run({ loadSeconds: null }),
+    ]);
+    expect(specs.map((s) => s.key)).not.toContain("loadSeconds");
+    // But the ones that WERE measured stay.
+    expect(specs.map((s) => s.key)).toContain("tokensPerSecond");
+  });
+
+  it("offers the full list before anything has ever run — nothing to filter against yet", () => {
+    expect(availableMetrics("text-generation", []).length).toBeGreaterThan(1);
+  });
+
+  it("falls back to the full list rather than stranding the selector with zero options", () => {
+    // A contrived case: every run failed, so every metric reads null. Better
+    // to offer the whole declared set than an empty dropdown.
+    const specs = availableMetrics("text-generation", [
+      run({ ok: false, error: "boom", metrics: {} }),
+    ]);
+    expect(specs.length).toBeGreaterThan(0);
+  });
+});
+
+describe("metricValueForSpec", () => {
+  it("reads a capability metric out of run.metrics", () => {
+    expect(metricValueForSpec(run(), primaryMetric("text-generation"))).toBe(42.1);
+  });
+
+  it("reads memory and load time off the RUN ITSELF, not run.metrics", () => {
+    const memory = availableMetrics("text-generation", [run()]).find(
+      (s) => s.key === "peakResidentBytes",
+    )!;
+    const load = availableMetrics("text-generation", [run()]).find(
+      (s) => s.key === "loadSeconds",
+    )!;
+    expect(metricValueForSpec(run(), memory)).toBe(5_600_000_000);
+    expect(metricValueForSpec(run(), load)).toBe(8.4);
+  });
+
+  it("is null when the spec itself is null", () => {
+    expect(metricValueForSpec(run(), null)).toBeNull();
+  });
+});
+
+describe("formatMetricSpecValue", () => {
+  it("formats a plain metric with its unit", () => {
+    expect(formatMetricSpecValue(42.1, primaryMetric("text-generation")!)).toBe("42.1 tok/s");
+  });
+
+  it("formats memory through the platform's own byte formatter, not digits-and-a-unit", () => {
+    const memory = availableMetrics("text-generation", [run()]).find(
+      (s) => s.key === "peakResidentBytes",
+    )!;
+    expect(formatMetricSpecValue(5_600_000_000, memory)).toBe("5.2 GB");
+  });
+
+  it("is a dash for null, regardless of which metric", () => {
+    expect(formatMetricSpecValue(null, primaryMetric("text-generation")!)).toBe(DASH);
+  });
+});
+
+describe("resolveMetric", () => {
+  const SPECS: MetricSpec[] = availableMetrics("text-generation", [run()]);
+
+  it("keeps an explicit, valid metric key", () => {
+    expect(resolveMetric(SPECS, "loadSeconds")?.key).toBe("loadSeconds");
+  });
+
+  it("falls back to the primary (first) metric when the param is absent or unknown", () => {
+    expect(resolveMetric(SPECS, null)?.key).toBe(SPECS[0]!.key);
+    expect(resolveMetric(SPECS, "telepathyRate")?.key).toBe(SPECS[0]!.key);
+  });
+
+  it("is null when there is nothing to select from", () => {
+    expect(resolveMetric([], "tokensPerSecond")).toBeNull();
+  });
+});
+
+// -- the model picker: which model the trend chart opens on ------------------
+
+describe("runCountsByModel", () => {
+  it("counts runs per model rather than per capability", () => {
+    expect(
+      runCountsByModel([
+        run({ model: "a" }),
+        run({ model: "a" }),
+        run({ model: "b" }),
+      ]),
+    ).toEqual({ a: 2, b: 1 });
+  });
+});
+
+describe("defaultModel", () => {
+  it("picks the model with the most runs, ties broken by the given order", () => {
+    expect(defaultModel(["a", "b"], { a: 1, b: 1 })).toBe("a");
+    expect(defaultModel(["a", "b"], { a: 1, b: 5 })).toBe("b");
+  });
+
+  it("is null with nothing to choose from", () => {
+    expect(defaultModel([], {})).toBeNull();
+  });
+});
+
+describe("resolveModel", () => {
+  it("keeps an explicit ?benchModel= naming a real model in this capability", () => {
+    expect(resolveModel(["a", "b"], "b", { a: 5 })).toBe("b");
+  });
+
+  it("falls back to the default when the param names a model from a DIFFERENT capability", () => {
+    // The reader switched ?cap=; a model that belonged to the old one is
+    // exactly like a stale or foreign param.
+    expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 })).toBe("a");
   });
 });

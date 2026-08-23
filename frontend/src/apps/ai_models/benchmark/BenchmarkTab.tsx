@@ -1,6 +1,7 @@
-// The Benchmark tab: one section per AI capability, each listing the models this
-// machine has downloaded for it with what they measured last time and a button
-// to measure again (SPEC AI-14).
+// The Benchmark tab: one capability at a time, TWO instruments for it — a
+// ranked leaderboard ("which model is fastest here") and a per-model trend
+// chart ("is THIS model getting faster or slower") — plus the archive
+// underneath and a button to measure again (SPEC AI-14).
 //
 // **The question this tab exists to answer is "how fast is THIS model on THIS
 // laptop", and the only way to answer it comparably is to fix the work.** So a
@@ -9,6 +10,17 @@
 // a number exists only where somebody pressed it — and the deliberate gain: two
 // models here, or one model across two app versions, are legitimately
 // comparable, which the passive Usage tab's figures never are.
+//
+// **Comparison and trend are two DIFFERENT questions, and an earlier design
+// tried to answer both with one chart** — every model as its own series,
+// sharing one timeline. With one or two runs per model that produced a
+// scatter of near-unlabelable dots, which is the real reason it needed
+// edge-avoiding end labels and kept repeating one date three times: those
+// were symptoms of asking a multi-model chart to also be a trend line. The
+// leaderboard already IS the comparison view (ranked rows, a proportional
+// bar per model) and does not need a second, duplicate chart drawn on top of
+// it; `ModelTrendChart` now draws exactly one model's own history, chosen by
+// clicking its leaderboard row.
 //
 // THE LISTING IS NOT THIS TAB'S. `scan` arrives from the page above
 // (lib/useCacheScan.ts) exactly as it does for the Local tab, because "which
@@ -37,13 +49,14 @@
 // counts, which is the progress that was always worth watching. See
 // `ai/benchmark.py`.
 import { useEffect, useState } from "react";
-import { BenchmarkChart } from "./BenchmarkChart";
+import { ModelTrendChart } from "./ModelTrendChart";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { tabHref } from "@apps/ai_models/routes";
 import {
   DASH,
+  availableMetrics,
   failureReason,
   formatLoad,
   formatMemory,
@@ -55,14 +68,18 @@ import {
   primaryMetric,
   primaryValue,
   resolveCapability,
+  resolveMetric,
+  resolveModel,
   rowDetail,
   rowHeadline,
   runButtonState,
   runCountsByCapability,
+  runCountsByModel,
   runsFor,
   shortModelName,
   stoppedNote,
   type LeaderboardRow,
+  type MetricSpec,
   type ModelLatest,
   type RunButtonState,
   type RunsInFlight,
@@ -75,7 +92,6 @@ import {
   getAiBenchmarks,
   runAiBenchmark,
   type AiBenchmarkRun,
-  type AiModelRepo,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -98,15 +114,24 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // a timer that hides an explanation before it has been read is worse than a
   // line that waits to be replaced.
   const [stopped, setStopped] = useState<string | null>(null);
-  // The selector's raw choice — `null` until the reader (or a landing
-  // `?cap=`) has actually picked one, at which point `resolveCapability`
-  // below stops filling in a default and just honours it. SEEDED from
-  // `?cap=` once and held in state thereafter, the same reason the tab's old
-  // single-capability filter was: `writeParams` uses `history.replaceState`,
-  // which deliberately fires no navigation event (a selection must not stack
-  // a history entry) — so a component that read only the URL would clear the
-  // param and go on drawing the old choice.
+  // The three selectors' raw choices — each `null` until the reader (or a
+  // landing `?cap=`/`?benchMetric=`/`?benchModel=`) has actually picked one,
+  // at which point the matching `resolve*` function stops filling in a
+  // default and just honours it. SEEDED from the URL once and held in state
+  // thereafter, the same reason the capability filter always was:
+  // `writeParams` uses `history.replaceState`, which deliberately fires no
+  // navigation event (a selection must not stack a history entry) — so a
+  // component that read only the URL would clear the param and go on drawing
+  // the old choice. `benchMetric`/`benchModel` are deliberately NOT `?metric=`
+  // /`?model=` — `?model=` already means something specific and page-wide (the
+  // Playground's own picker seed, carried across tabs by `tabHref`), and
+  // reusing it here would mean clicking a leaderboard row silently changes
+  // what model the Playground preselects on the next tab switch, and a Local
+  // tab "Try" link would silently jump this tab's trend chart to an unrelated
+  // model. Scoped, tab-private names avoid that collision entirely.
   const [focus, setFocus] = useState<string | null>(() => readParam("cap"));
+  const [metricParam, setMetricParam] = useState<string | null>(() => readParam("benchMetric"));
+  const [modelParam, setModelParam] = useState<string | null>(() => readParam("benchModel"));
 
   // On the same trigger as the cache walk, for the reason the Local tab's
   // catalog fetch rides it: a run that just finished is a new row here, and a
@@ -191,8 +216,8 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // Whether the history has answered at all — the same predicate the early
   // return below used to gate on. Named here because the sync effect right
   // after it needs to know the SAME thing: don't write a resolved default
-  // into `?cap=` while `runs` is still `null` and `all` therefore reflects no
-  // recorded run yet, which could clobber an explicit `?cap=` with a
+  // into the URL while `runs` is still `null` and every count below therefore
+  // reflects no recorded run yet, which could clobber an explicit param with a
   // premature guess the moment the real counts land one render later.
   const loading = !data && runs === null;
 
@@ -209,37 +234,73 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     ]),
   ]);
 
-  // One capability at a time now — the tab used to stack all four sections and
-  // `?cap=` only narrowed that stack to one; `resolveCapability` (lib/
-  // benchmark.ts) is the SAME rule made the selector's only state: the URL's
-  // `?cap=` when it names a real capability, otherwise the most-run one
-  // (`defaultCapability`), ties broken by registry order and falling back to
-  // the first capability when nothing has ever run. `runs` may still be `null`
-  // (history not answered yet) — an empty count map picks the same "first in
-  // registry order" default `defaultCapability` gives an all-zero one, so the
-  // choice does not flicker once real counts arrive UNLESS a capability
-  // genuinely turns out to have more runs, which is the point of the feature.
-  const counts = runCountsByCapability(runs ?? []);
-  const selected = resolveCapability(all, focus, counts);
+  const capabilityCounts = runCountsByCapability(runs ?? []);
+  const selected = resolveCapability(all, focus, capabilityCounts);
+
+  // Everything below is scoped to the ONE selected capability, computed here
+  // (not inside a child component) because the URL-sync effect needs the
+  // final answers — `selectedMetric` and `selectedModel` — to write, and a
+  // hook cannot read state a child component holds.
+  const capabilityRepos = selected ? repos.filter((r) => r.capability === selected) : [];
+  const capabilityRuns = selected && runs !== null ? runsFor(runs, selected) : null;
+
+  // The metric selector's options recompute per capability (and per its own
+  // runs) — `availableMetrics` (lib/benchmark.ts) drops anything nothing has
+  // measured yet, so the dropdown never offers an option that would render an
+  // empty chart.
+  const metricSpecs = selected ? availableMetrics(selected, capabilityRuns ?? []) : [];
+  const selectedMetric = resolveMetric(metricSpecs, metricParam);
+
+  // The leaderboard — ranked best-first BY THE SELECTED METRIC, never pinned
+  // to the capability's primary. `leaderboard` (lib/benchmark.ts) owns the
+  // ordering and every bar's length, so the rule about which way a metric
+  // points is tested once rather than guessed again here.
+  const latest = new Map<string, ModelLatest>(
+    (capabilityRuns ? latestByModel(capabilityRuns, selectedMetric) : []).map((row) => [row.model, row]),
+  );
+  // Models with a card, then models that only have HISTORY — a run whose model
+  // has since been deleted is still a fact, and it belongs in the ranking
+  // rather than nowhere.
+  const orphans = [...latest.keys()].filter((model) => !capabilityRepos.some((r) => r.id === model));
+  const gone = new Set(orphans);
+  const ranked: LeaderboardRow[] = leaderboard(selectedMetric, [
+    ...capabilityRepos.map((r) => ({ model: r.id, row: latest.get(r.id) ?? null })),
+    ...orphans.map((model) => ({ model, row: latest.get(model) ?? null })),
+  ]);
+
+  // The trend chart's model: the URL's `?benchModel=` when it names a model IN
+  // THIS CAPABILITY's leaderboard, otherwise the one with the most recorded
+  // runs here — ties broken by the leaderboard's OWN rank (`ranked`'s order),
+  // so a tie breaks toward whichever model is already reading as the better
+  // one rather than an arbitrary list order.
+  const modelCounts = capabilityRuns ? runCountsByModel(capabilityRuns) : {};
+  const selectedModel = resolveModel(ranked.map((r) => r.model), modelParam, modelCounts);
+  const trendRuns = selectedModel && capabilityRuns
+    ? capabilityRuns.filter((r) => r.model === selectedModel)
+    : [];
 
   // Keep the URL in sync with whatever is actually selected — landing on a
-  // default (no `?cap=` yet) writes it in, and choosing a different capability
-  // updates it — via `replaceState` (`writeParams`), never a navigation: a
-  // selector change is not a page to go Back to. Runs after render rather than
-  // during it, since writing history is a side effect.
+  // default (no param yet) writes it in, and choosing a different capability,
+  // metric or model updates it — via `replaceState` (`writeParams`), never a
+  // navigation: a selector change is not a page to go Back to. Runs after
+  // render rather than during it, since writing history is a side effect.
   //
   // **This hook must run on EVERY render, loading or not** — React throws
   // ("Rendered more hooks than during the previous render") the moment a hook
-  // sits below a conditional return, because the loading render then calls one
-  // fewer hook than the render after it. The `loading` guard therefore lives
-  // INSIDE the effect, on the WRITE, not on the hook: skipping the call while
-  // `runs` is still `null` is what stops a not-yet-known history from
-  // clobbering an explicit `?cap=` with a premature "first in registry order"
-  // guess one render before the real counts arrive.
+  // sits below a conditional return, because the loading render would then
+  // call one fewer hook than the render after it. The `loading` guard
+  // therefore lives INSIDE the effect, on the WRITE, not on the hook: skipping
+  // the call while `runs` is still `null` is what stops a not-yet-known
+  // history from clobbering an explicit param with a premature guess one
+  // render before the real counts arrive.
   useEffect(() => {
     if (loading) return;
-    writeParams({ cap: selected });
-  }, [loading, selected]);
+    writeParams({
+      cap: selected,
+      benchMetric: selectedMetric?.key ?? null,
+      benchModel: selectedModel,
+    });
+  }, [loading, selected, selectedMetric, selectedModel]);
 
   if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
@@ -247,36 +308,65 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     <div className="am-bench">
       <ErrorBanner>{error}</ErrorBanner>
       {stopped && <p className="am-bench-stopped">{stopped}</p>}
-      {/* THE SELECTOR. A native <select> with a plain label, per the same
-          "boring control, name it and get out of the way" rule `EnginesTab`
-          uses for its own per-capability selects — four items is not enough to
-          earn a bespoke segmented control, and a second control vocabulary on
-          one page is a cost with no reader benefit at this count. */}
-      <div className="am-bench-capsel">
-        <label htmlFor="am-bench-cap">Capability</label>
-        <select
-          id="am-bench-cap"
-          className="field-control am-bench-capsel-input"
-          value={selected ?? ""}
-          onChange={(e) => setFocus(e.target.value)}
-        >
-          {all.map((capability) => {
-            const count = counts[capability] ?? 0;
-            return (
-              <option key={capability} value={capability}>
-                {capabilityLabel(capability)}
-                {count > 0 ? ` (${count})` : ""}
-              </option>
-            );
-          })}
-        </select>
+      {/* THE SELECTORS. Native `<select>`s with plain labels, the same "boring
+          control, name it and get out of the way" rule `EnginesTab` uses for
+          its own per-capability selects — this count of options is not enough
+          to earn a bespoke segmented control, and a third control vocabulary
+          on one page (beyond the leaderboard rows, which double as the model
+          picker by click) is a cost with no reader benefit. */}
+      <div className="am-bench-controls">
+        <div className="am-bench-capsel">
+          <label htmlFor="am-bench-cap">Capability</label>
+          <select
+            id="am-bench-cap"
+            className="field-control am-bench-capsel-input"
+            value={selected ?? ""}
+            onChange={(e) => setFocus(e.target.value)}
+          >
+            {all.map((capability) => {
+              const count = capabilityCounts[capability] ?? 0;
+              return (
+                <option key={capability} value={capability}>
+                  {capabilityLabel(capability)}
+                  {count > 0 ? ` (${count})` : ""}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+        {/* Hidden rather than disabled when there is nothing to pick from (an
+            unknown capability, or one with no declared metrics) — a select
+            with zero options renders as an empty, clickable-looking box, and
+            there is nothing honest for it to say. */}
+        {metricSpecs.length > 0 && (
+          <div className="am-bench-capsel">
+            <label htmlFor="am-bench-metric">Metric</label>
+            <select
+              id="am-bench-metric"
+              className="field-control am-bench-capsel-input"
+              value={selectedMetric?.key ?? ""}
+              onChange={(e) => setMetricParam(e.target.value)}
+            >
+              {metricSpecs.map((spec) => (
+                <option key={spec.key} value={spec.key}>
+                  {spec.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
       {selected && (
         <CapabilitySection
           key={selected}
           capability={selected}
-          repos={repos.filter((r) => r.capability === selected)}
-          runs={runs === null ? null : runsFor(runs, selected)}
+          metric={selectedMetric}
+          runs={capabilityRuns}
+          ranked={ranked}
+          gone={gone}
+          selectedModel={selectedModel}
+          trendRuns={trendRuns}
+          onSelectModel={setModelParam}
           inFlight={inFlight}
           onRun={start}
           onForget={forget}
@@ -288,16 +378,38 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
 
 function CapabilitySection({
   capability,
-  repos,
+  metric,
   runs,
+  ranked,
+  gone,
+  selectedModel,
+  trendRuns,
+  onSelectModel,
   inFlight,
   onRun,
   onForget,
 }: {
   capability: string;
-  repos: AiModelRepo[];
+  /** The reader's SELECTED metric — not necessarily the primary — resolved by
+   *  `BenchmarkTab`. Null only for a capability this frontend does not know. */
+  metric: MetricSpec | null;
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
+  /** Every model this capability knows about, ranked best-first — computed by
+   *  `BenchmarkTab` (`leaderboard`), since its length already answers "is
+   *  there anything to show" (repos + history, deleted models included). */
+  ranked: LeaderboardRow[];
+  /** Which of `ranked`'s models are orphans — on disk no longer, history
+   *  only. A model whose weights are gone still shows its history and still
+   *  answers a click (the trend chart draws it fine); it just has no button. */
+  gone: Set<string>;
+  /** The model the trend chart is currently showing, or null when there is
+   *  truly nothing to pick from. */
+  selectedModel: string | null;
+  /** `selectedModel`'s own runs, already filtered — `ModelTrendChart` draws
+   *  nothing else. */
+  trendRuns: AiBenchmarkRun[];
+  onSelectModel: (model: string) => void;
   /** Every capability's in-flight run, not just this one's — `runButtonState`
    *  reads its own key out, which keeps the "which capability blocks which"
    *  rule in one tested place rather than in each section's props. */
@@ -305,39 +417,20 @@ function CapabilitySection({
   onRun: (model: string, capability: string) => void;
   onForget: (id: string) => void;
 }) {
-  const metric = primaryMetric(capability);
-  const latest = new Map<string, ModelLatest>(
-    (runs ? latestByModel(runs) : []).map((row) => [row.model, row]),
-  );
-  // Models with a card, then models that only have HISTORY — a run whose model
-  // has since been deleted is still a fact, and it belongs under its own
-  // capability rather than nowhere.
-  const orphans = [...latest.keys()].filter((model) => !repos.some((r) => r.id === model));
-  const gone = new Set(orphans);
-
-  // Ranked best-first: the leaderboard is the reason this tab shows a list at
-  // all, and `leaderboard` (lib/benchmark.ts) owns the ordering and every
-  // bar's length so the rule about which way a metric points is tested once
-  // rather than guessed again here.
-  const ranked: LeaderboardRow[] = leaderboard(capability, [
-    ...repos.map((r) => ({ model: r.id, row: latest.get(r.id) ?? null })),
-    ...orphans.map((model) => ({ model, row: latest.get(model) ?? null })),
-  ]);
-
   return (
     <section className="am-section">
       <div className="am-section-head">
         <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
-        {/* What this section's numbers MEAN, in the heading's right-hand slot —
+        {/* What the SELECTED metric means, in the heading's right-hand slot —
             the one place a unit can be stated once for the whole section
             instead of on every row. A capability this frontend does not know
-            has no primary metric and says nothing, rather than guessing. */}
+            has no metric and says nothing, rather than guessing. */}
         {metric && <span className="am-bench-metric">{metric.label} · {metric.unit}</span>}
       </div>
 
       {runs === null ? (
         <SkeletonLines rows={2} label={`Loading ${capabilityLabel(capability)} benchmarks`} />
-      ) : repos.length === 0 && orphans.length === 0 ? (
+      ) : ranked.length === 0 ? (
         // Answered, and empty. It says WHICH nothing — no model rather than no
         // benchmark — and points at the next step rather than leaving the
         // reader to guess where a model would come from.
@@ -358,12 +451,25 @@ function CapabilitySection({
         </p>
       ) : (
         <>
-          {/* THE HERO: the chart leads the section, not the model list — the
-              trend is the first question this tab answers, and the list below
-              is the second one. It draws nothing until something has been
-              measured, returning null rather than an empty axis (which would
-              read as a measurement of zero). */}
-          {runs !== null && runs.length > 0 && <BenchmarkChart capability={capability} runs={runs} />}
+          {/* INSTRUMENT ONE: the trend — one model, its own history, a real
+              time axis. Leads the section (the same "hero" placement the
+              chart always had) even though the model picker (the rows below)
+              comes after it in the DOM: clicking a row updates this chart in
+              place, which is the more useful order to read top-down once a
+              reader already knows which model they came here to check. */}
+          {metric && trendRuns.length > 0 ? (
+            <ModelTrendChart runs={trendRuns} metric={metric} />
+          ) : (
+            <p className="am-group-note">
+              {selectedModel
+                ? `No ${(metric?.label ?? "runs").toLowerCase()} recorded for ${shortModelName(selectedModel)} yet.`
+                : "Click a model below to see its trend."}
+            </p>
+          )}
+          {/* INSTRUMENT TWO: the comparison — every model, ranked, one line
+              each. Doubles as the trend chart's picker: click a row (or focus
+              it and press Enter/Space) to choose which model instrument one
+              is showing. */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row, barFraction }) => {
               const button = gone.has(model)
@@ -374,9 +480,12 @@ function CapabilitySection({
                   key={model}
                   model={model}
                   row={row}
+                  metric={metric}
                   barFraction={barFraction}
                   button={button}
                   gone={gone.has(model)}
+                  selected={model === selectedModel}
+                  onSelect={() => onSelectModel(model)}
                   onRun={() => onRun(model, capability)}
                 />
               );
@@ -385,8 +494,10 @@ function CapabilitySection({
         </>
       )}
 
-      {/* The archive, under the leaderboard: the ranked rows are the current
-          answer, and this is the evidence behind it. */}
+      {/* The archive, under both instruments: the ranked rows and the trend
+          are the current answer, and this is the evidence behind them. Always
+          shows every run for the capability, independent of the metric/model
+          selection above — it is the raw record, not a filtered view. */}
       {runs !== null && runs.length > 0 && <RunTable capability={capability} runs={runs} onForget={onForget} />}
     </section>
   );
@@ -395,13 +506,19 @@ function CapabilitySection({
 function BenchmarkRow({
   model,
   row,
+  metric,
   barFraction,
   button,
   gone,
+  selected,
+  onSelect,
   onRun,
 }: {
   model: string;
   row: ModelLatest | null;
+  /** The SELECTED metric — what the headline reads and what `barFraction` is
+   *  proportional to. Decided in `BenchmarkTab`/`leaderboard`, never here. */
+  metric: MetricSpec | null;
   /** 0..1 against the section's best model, or null for no bar — see
    *  `leaderboard`. Decided there, not here, for the same reason `button` is:
    *  which way a metric points is exactly the thing a screenshot cannot check. */
@@ -413,16 +530,39 @@ function BenchmarkRow({
   button?: RunButtonState;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
+  /** This row is the one the trend chart above is currently showing. */
+  selected: boolean;
+  /** Choose this model for the trend chart — a click anywhere on the row, or
+   *  Enter/Space while it has focus. */
+  onSelect: () => void;
   onRun?: () => void;
 }) {
   // The one line beyond the headline — TTFT, load time, device, or a failed
   // run's own error — behind an expander so it never dominates the row. Only
   // drawn when there is something to say: a row whose whole story fits the
   // headline gets no expander at all.
-  const detail = row ? (row.latest.ok ? rowDetail(row.latest) : failureReason(row.latest)) : null;
+  const detail = row ? (row.latest.ok ? rowDetail(row.latest, metric) : failureReason(row.latest)) : null;
 
   return (
-    <div className="am-bench-row">
+    // A div-as-button, not a `<button>`: the Run button lives inside this row
+    // (the same shape the Playground's model cards settled on, D428) and a
+    // button inside a button is markup browsers are free to mangle. Clicking
+    // Run also selects the model for the trend chart — a harmless, arguably
+    // useful side effect (you are clearly interested in that model right
+    // now), so its own click is left to bubble here rather than stopped.
+    <div
+      className={"am-bench-row" + (selected ? " selected" : "")}
+      role="button"
+      tabIndex={0}
+      aria-pressed={selected}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+    >
       <div className="am-bench-model" title={model}>
         {/* Budget (28) is a hair under the column's own 30ch so the CSS
             `overflow: hidden` safety net (ai-models.css) never has to fire
@@ -454,18 +594,24 @@ function BenchmarkRow({
                 <span className="am-bench-barfill" style={{ width: `${barFraction * 100}%` }} />
               </span>
             )}
-            <span className="am-bench-headline">{rowHeadline(row.latest)}</span>
+            <span className="am-bench-headline">{rowHeadline(row.latest, metric)}</span>
             {row.delta && (
-              // The sign is not the meaning — on an image section a negative
-              // change is the improvement — so `better` decides the class and
-              // the sign is only printed.
+              // The sign is not the meaning — on a lower-is-better metric a
+              // negative change is the improvement — so `better` decides the
+              // class and the sign is only printed.
               <span className={"am-bench-delta" + (row.delta.better ? " better" : " worse")}>
                 {row.delta.percent >= 0 ? "+" : ""}
                 {row.delta.percent.toFixed(1)}%
               </span>
             )}
             {detail && (
-              <details className="am-bench-rowdetail">
+              <details
+                className="am-bench-rowdetail"
+                // A click inside the expander (opening it, or on the summary)
+                // is not a model selection — without this, opening "Details"
+                // on a row you did NOT mean to select would select it anyway.
+                onClick={(e) => e.stopPropagation()}
+              >
                 <summary>{row.latest.ok ? "Details" : "Failed — details"}</summary>
                 <p>{detail}</p>
               </details>
@@ -476,6 +622,12 @@ function BenchmarkRow({
         )}
       </div>
       {!gone && button && (
+        // No `stopPropagation` — see the row's own comment above. Pressing
+        // Run bubbles its click up to the row's `onClick` too, which selects
+        // this model for the trend chart. That is a plain assignment
+        // (`onSelect` sets state to the same model `onRun` is about to run),
+        // not a toggle, so it cannot fight the button's `disabled` state —
+        // there is nothing here for the two handlers to disagree about.
         <button
           type="button"
           className="cc-btn"
@@ -509,8 +661,11 @@ const COLUMNS: {
 }[] = [
   { key: "date", label: "When", numeric: true, value: (r) => r.startedAt },
   { key: "model", label: "Model", numeric: false, value: (r) => r.model },
-  // Labelled by the capability's own metric at render time — "Throughput",
-  // "Per step" — because one heading cannot name four different things.
+  // Labelled by the capability's own PRIMARY metric at render time —
+  // "Throughput", "Per step" — because one heading cannot name four different
+  // things. Deliberately the primary, not the tab's current selection: the
+  // archive is the raw record, independent of whatever the reader has the
+  // leaderboard/trend chart showing right now.
   { key: "metric", label: "", numeric: true, value: primaryValue },
   { key: "memory", label: "Memory", numeric: true, value: (r) => r.peakResidentBytes },
   { key: "load", label: "Load", numeric: true, value: (r) => r.loadSeconds },
@@ -520,11 +675,11 @@ const COLUMNS: {
 
 /** Every run for one capability, newest first by default.
  *
- *  **Collapsed by default**, because it is the archive and the rows above are
- *  the answer: a section with four models and thirty runs would otherwise open
- *  as a wall of numbers with the current state buried at the top of it. The
- *  summary line says how many are hiding, so nothing is invisible — only
- *  folded.
+ *  **Collapsed by default**, because it is the archive and the two instruments
+ *  above are the answer: a section with four models and thirty runs would
+ *  otherwise open as a wall of numbers with the current state buried at the
+ *  top of it. The summary line says how many are hiding, so nothing is
+ *  invisible — only folded.
  */
 function RunTable({
   capability,

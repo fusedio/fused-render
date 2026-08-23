@@ -1685,6 +1685,24 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
+  /* A `role="button"` div now (BenchmarkTab.tsx) — it picks the trend chart's
+     model — so it needs its own focus ring and pointer affordance, the two
+     things a native `<button>` gives away for free and a bare div does not. */
+  cursor: pointer;
+}
+
+.am-bench-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The row whose history the trend chart above is currently showing. Border
+   plus a light accent wash rather than either alone — the same idiom
+   `.bar-menu-item.active` (explorer.css) uses for its own "which one is this"
+   state, kept stronger than a hover tint so the two never blur. */
+.am-bench-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
 }
 
 .am-bench-model {
@@ -1814,15 +1832,23 @@
   color: var(--warning-soft);
 }
 
-/* -- the capability selector --------------------------------------------------
-   One <select>, one label, above the single capability the tab now shows — see
-   BenchmarkTab.tsx for why a native select rather than a segmented control:
-   four items does not earn a second control vocabulary on this page. */
+/* -- the selectors: capability, and which metric to read it by ----------------
+   Two <select>s, side by side, above the single capability/metric pair the
+   tab now shows — see BenchmarkTab.tsx for why native selects rather than a
+   segmented control: this count of options does not earn a second control
+   vocabulary on this page, and a THIRD control for the model picker is
+   avoided entirely — a leaderboard row IS the model picker, by click. */
+.am-bench-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: var(--am-gap-head);
+}
+
 .am-bench-capsel {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: var(--am-gap-head);
   font-size: 12px;
   color: var(--fg-muted);
 }
@@ -1887,7 +1913,7 @@
 
 /* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
    plot fills whatever width the column has without the component measuring
-   anything (see BenchmarkChart.tsx). */
+   anything (see ModelTrendChart.tsx). */
 .am-bench-plot {
   display: block;
   width: 100%;
@@ -1915,6 +1941,20 @@
   vector-effect: non-scaling-stroke;
 }
 
+/* `color` set once here rather than on a per-series wrapper: the trend chart
+   (ModelTrendChart.tsx) is scoped to ONE model now, so there is no longer a
+   categorical palette to pick from — `--series-1..6` (tokens.css) stays
+   reserved for wherever a page next needs to tell several lines apart by hue.
+   The line, its dots and its value label all inherit this ONE declaration,
+   the same reason `currentColor` was used when there were several: a label
+   whose colour were declared separately from its line could disagree with
+   the chart. */
+.am-bench-line,
+.am-bench-dot,
+.am-bench-endlabel {
+  color: var(--accent);
+}
+
 .am-bench-line {
   fill: none;
   stroke: currentColor;
@@ -1930,45 +1970,15 @@
   vector-effect: non-scaling-stroke;
 }
 
-/* The six series colours, from the shared categorical palette (tokens.css
-   --series-1..6, which carries both themes). `color` rather than `stroke`/`fill`
-   directly, so the line, the dots and the end label all inherit ONE
-   declaration — an end label whose colour is declared separately from its line
-   is a label that can disagree with the chart. */
-.am-bench-series.c0,
-.am-bench-endlabel.c0 {
-  color: var(--series-1);
-}
-.am-bench-series.c1,
-.am-bench-endlabel.c1 {
-  color: var(--series-2);
-}
-.am-bench-series.c2,
-.am-bench-endlabel.c2 {
-  color: var(--series-3);
-}
-.am-bench-series.c3,
-.am-bench-endlabel.c3 {
-  color: var(--series-4);
-}
-.am-bench-series.c4,
-.am-bench-endlabel.c4 {
-  color: var(--series-5);
-}
-.am-bench-series.c5,
-.am-bench-endlabel.c5 {
-  color: var(--series-6);
-}
-
-/* One label per series, anchored to its own latest point — see
-   BenchmarkChart's comment on why this is HTML positioned by percentage
-   rather than SVG `<text>`. Replaces the old separate legend row: a label that
-   already names its model needs no key beside the chart to decode it. */
-/* No `transform` here — BenchmarkChart.tsx sets it inline, per label, flipping
-   the anchor near an edge (right-aligning / dropping below the point) so a
-   label near the panel's border or its top gridline extends INTO the plot
-   instead of overflowing it. A single CSS rule cannot do that: it would need
-   to know where on the chart THIS particular point landed. */
+/* The latest run's own value, anchored to its point — see ModelTrendChart's
+   comment on why this is HTML positioned by percentage rather than SVG
+   `<text>`, and on why it shows the VALUE rather than the model name (the
+   section heading above already names it).
+   No `transform` here — ModelTrendChart.tsx sets it inline, flipping the
+   anchor near an edge (right-aligning / dropping below the point) so a label
+   near the panel's border or its top gridline extends INTO the plot instead
+   of overflowing it. A single CSS rule cannot do that: it would need to know
+   where on the chart THIS particular point landed. */
 .am-bench-endlabel {
   position: absolute;
   white-space: nowrap;
