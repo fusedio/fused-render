@@ -1330,10 +1330,44 @@ _RUNNERS: tuple[Runner, ...] = (
     # run MiniMax H3 (see the plan's "Engine = h3.c, bundled" decision — mlx-
     # video cannot run H3, ComfyUI on MPS falls back to bf16 speed, h3.c-ane's
     # compile cache is ~19GB per shape, Phosphene is an app whose deps do not
-    # survive a bare `uv sync`). One row, gated on BOTH Apple Silicon and a
-    # resolvable binary (`_h3_available`), so off a Mac — or on a Mac whose
-    # build never staged the binary — `catalog()` reports `default: null`
-    # for this capability for the first time.
+    # survive a bare `uv sync`). Two rows, both Apple-Silicon-only, ordered so
+    # a bare `fused.ai.video()` reaches the one that fits on a laptop.
+    #
+    # **`ltx-video` sits FIRST.** It is LTX-2.3 run through `ltx-2-mlx`, a
+    # pure-MLX, MIT-licensed port that keeps AUDIO (mlx-video's own LTX and
+    # Wan paths either want the 57-108 GB bf16 trees or render silent video —
+    # see the plan's "ltx-2-mlx, not mlx-video" decision) at an int4-distilled
+    # ~30 GB download that a 16 GB Mac can hold. Gated on the SAME
+    # `_apple_silicon` check `mlx-embed` above uses, not `_h3_available`: this
+    # row has no bundled binary to resolve, just a `uv sync`-able git package
+    # (Task 2), so "can this machine run MLX at all" is the whole gate.
+    #
+    # **`h3-video` stays exactly as it was, one row down.** MiniMax H3's 144.1
+    # GB checkpoint and 64 GB-class RAM floor make it the wrong "just try
+    # video" default on most of the Apple Silicon fleet, but it remains
+    # reachable — naming `MiniMaxAI/MiniMax-H3` explicitly still resolves
+    # here, unchanged — for whoever wants its ceiling instead of `ltx-video`'s
+    # floor. One row, gated on BOTH Apple Silicon and a resolvable binary
+    # (`_h3_available`), so off a Mac — or on a Mac whose build never staged
+    # the binary — the capability falls through to `ltx-video`'s own gate
+    # instead of disappearing outright, which is the change from before: only
+    # a machine that is not Apple Silicon at all now sees `default: null`
+    # for video generation.
+    Runner(
+        code="ltx-video",
+        capability=VIDEO_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "ltx_video"),
+        # The hardware qualifier lives on the long name only, per the naming
+        # note above the table — `short_label`/`family_label` name the engine
+        # ("LTX-2.3"), not the machine it happens to run on here.
+        label="LTX-2.3 (Apple Silicon)",
+        short_label="LTX-2.3",
+        family_label="LTX-2.3",
+        note="Text-to-video with audio, distilled to 8 steps. Needs 16 GB+ "
+             "of RAM; MiniMax H3 below is the higher-fidelity, higher-cost "
+             "alternative.",
+        _available=_apple_silicon,
+    ),
     Runner(
         code="h3-video",
         capability=VIDEO_GENERATION,

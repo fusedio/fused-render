@@ -146,9 +146,48 @@ def test_video_generation_is_a_registered_capability():
     assert registry.VIDEO_GENERATION in registry.capabilities()
 
 
-def test_h3_video_is_the_only_video_runner():
+def test_ltx_video_and_h3_video_are_the_registered_video_runners():
     codes = {r.code for r in registry.all_runners() if r.capability == registry.VIDEO_GENERATION}
-    assert codes == {"h3-video"}
+    assert codes == {"ltx-video", "h3-video"}
+
+
+def test_ltx_video_is_registered_before_h3_video():
+    """First-match-wins is the whole mechanism (see `registry.py`'s comment on
+    the table, and `test_mlx_embed_is_registered_before_transformers_embed`
+    above): `ltx-video` needs only Apple Silicon (16 GB+), while `h3-video`
+    additionally needs the staged h3.c binary, so an Apple Silicon machine
+    with no opinion resolves to the accessible ~30 GB engine rather than the
+    144 GB one."""
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.VIDEO_GENERATION]
+    assert codes == ["ltx-video", "h3-video"]
+
+
+def test_ltx_video_row_present_on_apple_silicon(monkeypatch):
+    _mac_arm(monkeypatch)
+    assert _runner("ltx-video")._available().ok
+
+
+def test_ltx_video_row_absent_off_apple_silicon(monkeypatch):
+    _windows(monkeypatch)
+    status = _runner("ltx-video")._available()
+    assert not status.ok
+    assert "Apple Silicon" in status.reason
+
+    _linux(monkeypatch)
+    status = _runner("ltx-video")._available()
+    assert not status.ok
+    assert "Apple Silicon" in status.reason
+
+
+def test_neither_video_runner_is_available_off_apple_silicon(monkeypatch, tmp_path):
+    """Both rows share the same underlying gate off a Mac — `ltx-video`
+    directly via `_apple_silicon`, `h3-video` because `_h3_available` checks
+    it first — so a machine with neither is left with no video capability at
+    all, unchanged from before this runner existed."""
+    _windows(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    assert not _runner("ltx-video")._available().ok
+    assert not _runner("h3-video")._available().ok
 
 
 def test_h3_video_row_present_on_apple_silicon_with_a_binary(monkeypatch, tmp_path):
@@ -217,6 +256,13 @@ def test_h3_bin_resolves_the_packaged_app_bundle(monkeypatch, tmp_path):
 
 
 def test_catalog_defaults_to_the_fl2va_entry_on_apple_silicon(monkeypatch, tmp_path):
+    """Registering `ltx-video` (Task 1) does not move this yet: `Runner.
+    available()` requires the folder to have a `worker.py` (its own
+    docstring), and `ltx_video/worker.py` does not exist until Task 3. Until
+    then `ltx-video` is a real, gated row that simply is not BUILT here, so
+    resolution still falls through to `h3-video` exactly as before — see
+    `test_ai_catalog.py`'s ltx-video curation tests (Task 6) for the point
+    where the default actually moves."""
     _mac_arm(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
     from fused_render.ai import catalog
