@@ -32,6 +32,7 @@ import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
+import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
@@ -68,6 +69,55 @@ const GROUP_LABELS: Record<string, string> = Object.fromEntries(
 );
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
+}
+
+// A sidebar row's download, counting. The row has one 20px corner for this and
+// the glyph that lived there says only "you may fetch this" — so a pull started
+// from the sidebar (or from the stage, or from another tab) left the row it is
+// about looking idle, with the percentage two hundred pixels away in the stage
+// header.
+//
+// A RING and not a bar: the slot is a square the width of an icon, and a 3px
+// bar in it is four pixels of fill nobody can read. It replaces the glyph in
+// place rather than joining it, because the arrow and the ring make the same
+// claim about the same model and the row has no room to make it twice.
+//
+// The arc is drawn with `stroke-dasharray`/`-dashoffset` on a circle rotated a
+// quarter turn back, so 0% starts at twelve o'clock. An unmeasured pull — no
+// total yet, which is the first second of every one of them and the whole of a
+// venv build — spins a fixed quarter-arc instead: a ring frozen at 0 reads as a
+// download that has stalled, which is the one thing it is not.
+const RING_R = 6.5;
+const RING_C = 2 * Math.PI * RING_R;
+
+/** How far a pull has got, 0–1, or null while nothing can divide. The job's
+ *  bytes and never the runtime's: only the worker doing the fetching knows.
+ *  One function because the ring, the byte line and both titles must not be
+ *  able to disagree about the same download. */
+function downloadFraction(job?: Job): number | null {
+  if (!job || job.unit !== "bytes" || !job.total || job.done === null) return null;
+  return Math.min(1, job.done / job.total);
+}
+
+function DownloadRing({ job }: { job?: Job }) {
+  const measured = downloadFraction(job);
+  return (
+    <svg
+      className={"pg-dl-ring" + (measured === null ? " pg-dl-ring-idle" : "")}
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+    >
+      <circle className="pg-dl-ring-track" cx="8" cy="8" r={RING_R} />
+      <circle
+        className="pg-dl-ring-arc"
+        cx="8"
+        cy="8"
+        r={RING_R}
+        strokeDasharray={RING_C}
+        strokeDashoffset={measured === null ? RING_C * 0.75 : RING_C * (1 - measured)}
+      />
+    </svg>
+  );
 }
 
 
@@ -293,6 +343,14 @@ export default function PlaygroundTab() {
   // never understating it, and null when there is nothing to say at all (see
   // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
+  // The running pull's own figures, for the header's ring and byte line.
+  // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
+  // 0, which React renders as a literal "0".
+  const downloadedFraction = downloadFraction(jobForSelected);
+  const downloadedBytes = !!(
+    jobForSelected && jobForSelected.unit === "bytes" && jobForSelected.total &&
+    jobForSelected.done !== null
+  );
 
   return (
     <div className="pg-body">
@@ -399,7 +457,13 @@ export default function PlaygroundTab() {
                       className="pg-model-dl"
                       disabled={downloading}
                       aria-label={downloading ? "Downloading…" : `Download ${name}`}
-                      title={downloading ? "Downloading…" : `Download ${name}`}
+                      title={
+                        downloading
+                          ? downloadFraction(job) !== null
+                            ? `Downloading — ${Math.floor((downloadFraction(job) as number) * 100)}%`
+                            : "Downloading…"
+                          : `Download ${name}`
+                      }
                       onClick={(e) => {
                         // Selecting too is fine; a second click must not be.
                         e.stopPropagation();
@@ -407,7 +471,7 @@ export default function PlaygroundTab() {
                         void runDownloadFor(model.id, row.capability);
                       }}
                     >
-                      {MenuIcons.download}
+                      {downloading ? <DownloadRing job={job} /> : MenuIcons.download}
                     </button>
                   )}
                 </span>
@@ -570,6 +634,48 @@ export default function PlaygroundTab() {
                     <button type="button" className="btn btn-secondary" onClick={runDownload}>
                       Download{selectedSize ? ` (${selectedSize.text})` : ""}
                     </button>
+                  )}
+                  {/* The pull, IN THE BUTTON'S OWN SLOT. Pressing Download used
+                      to empty this corner — the button's condition excludes a
+                      running download — so the one place the eye was already
+                      on went blank at the exact moment there was most to say,
+                      and the only counting left on the page was the sidebar
+                      row's size cell. `ModelProgress` is the drawing every
+                      other card on /ai-models uses for this (shared/), reading
+                      the same job row: bytes and a bar come from the worker
+                      doing the fetching, never from the runtime, which knows
+                      only that something is happening. No job row yet — the
+                      poll is a second behind the click — is its "Preparing…",
+                      not a blank. */}
+                  {selectedDownloading && (
+                    <div
+                      className="pg-hero-dl"
+                      title={
+                        downloadedFraction !== null
+                          ? `Downloading — ${Math.floor(downloadedFraction * 100)}%`
+                          : "Downloading…"
+                      }
+                    >
+                      {/* An icon, a ring, and the two byte figures — in the
+                          width of a button, which is all this corner has.
+                          Deliberately NOT `ModelProgress`, the drawing the
+                          /ai-models cards share: that one leads with a pulsing
+                          dot and the job's own sentence ("Fetching weights…")
+                          and ends in a bar that wants a whole card's width.
+                          Here the icon says which kind of work this is without
+                          a word, and a ring says how far in the space the
+                          sentence wanted. */}
+                      <span className="pg-hero-dl-icon" aria-hidden="true">
+                        {MenuIcons.download}
+                      </span>
+                      <DownloadRing job={jobForSelected} />
+                      {downloadedBytes && (
+                        <span className="pg-hero-dl-bytes">
+                          {formatSize(jobForSelected?.done as number)} /{" "}
+                          {formatSize(jobForSelected?.total as number)}
+                        </span>
+                      )}
+                    </div>
                   )}
                   {selected.model.downloaded && !selectedResident && (
                     <button

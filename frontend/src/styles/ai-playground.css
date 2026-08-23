@@ -353,11 +353,63 @@
   background: rgba(var(--tint), 0.1);
 }
 
-/* Mid-download: the glyph cannot say "Downloading…" the way the word did, so
- * it dims and stops responding, and the title carries the sentence. */
+/* Mid-download the slot stops responding — but it no longer DIMS. It used to,
+ * because a download glyph is the same glyph whether or not a pull is running
+ * and half opacity was the only difference available; the ring below is a
+ * different drawing altogether, and fading the one part of the row that is
+ * actually moving is the opposite of what it is for. */
 .pg-model-dl:disabled {
-  opacity: 0.5;
   cursor: default;
+}
+
+/* The pull, counting (DownloadRing) — in the sidebar row's corner, where it
+ * takes the place of the download arrow, and again in the stage header beside
+ * the byte figures. ONE drawing for both, because it is one fact and the two
+ * places would drift apart the way the header's old borrowed bar already had.
+ * 14px to match `.pg-model-dl svg`: in the row the ring stands exactly where
+ * the arrow stood, so nothing changes shape when a download starts. */
+.pg-dl-ring {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  /* 0% at twelve o'clock: the arc is drawn from the circle's own start point,
+     which SVG puts at three. */
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+
+.pg-dl-ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+
+.pg-dl-ring-track {
+  stroke: var(--border);
+}
+
+.pg-dl-ring-arc {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  /* The poll lands once a second, so the arc walks between readings rather
+     than jumping — the same easing the bar in `.am-runtime-bar-fill` uses. */
+  transition: stroke-dashoffset 200ms linear;
+}
+
+/* No total to divide by — the first second of a pull, and the whole of a venv
+   build. A quarter arc, turning: a ring pinned at zero reads as stalled. */
+.pg-dl-ring-idle {
+  animation: pg-dl-ring-spin 1.1s linear infinite;
+}
+
+@keyframes pg-dl-ring-spin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-dl-ring-idle {
+    animation: none;
+  }
 }
 
 /* The unsupported card's task word, and nothing else — the selectable cards
@@ -512,6 +564,37 @@ a.pg-hero-repo:hover {
   justify-content: flex-end;
   align-self: flex-start;
   flex: none;
+}
+
+/* The running pull, standing where the Download button stood — icon, ring,
+ * bytes, sized by its own content. It replaced a bar-and-sentence borrowed from
+ * the /ai-models cards, which needed a fixed 240px lane in a row of buttons and
+ * spent most of it on words ("Fetching weights…") that the download icon says
+ * in 14px. */
+.pg-hero-dl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.pg-hero-dl-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.pg-hero-dl-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Tabular, because these two numbers are re-rendered every second and
+   proportional digits make a still row look like a shivering one. */
+.pg-hero-dl-bytes {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .pg-error {
