@@ -57,10 +57,11 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 
 // What the groups are called HERE: the capability vocabulary is exact
 // ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
-// ("Speech to text") — this tab is the one surface named for what a person
-// DOES, so it gets the doing words (PLAYGROUND_GROUPS, shared with the Home
-// strip). An unknown capability falls back to the shared label, so a new
-// runner appears (plainly named) instead of vanishing.
+// ("Speech to text") — this tab names the WORK instead ("Text generation"),
+// which is the vocabulary the Home strip's cards already use
+// (PLAYGROUND_GROUPS, shared with them so one capability has one name). An
+// unknown capability falls back to the shared label, so a new runner appears
+// (plainly named) instead of vanishing.
 const GROUP_LABELS: Record<string, string> = Object.fromEntries(
   PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
 );
@@ -155,11 +156,15 @@ export default function PlaygroundTab() {
   // the order the server sent it — so a capability added server-side needs no
   // edit here.
   //
-  // The SIDEBAR only. `pickPlaygroundModel` still reads `capabilities` in the
-  // server's order, because its no-`?model` fallback is "the first usable row"
-  // (pick.ts) — handing it this array would make a bare visit to
-  // /ai-models/playground open the image stage, which is a different decision
-  // from where the sections sit, and not one this comment gets to make.
+  // This is also what the FALLBACK SELECTION reads, so a bare visit to
+  // /ai-models/playground opens on the first section of the rail rather than on
+  // whichever capability the server happened to list first. The two were worth
+  // separating for exactly one commit — where the sections sit and what the
+  // page opens on are different decisions — and the answer to the second one
+  // is that a page whose first section is images and whose stage is a chat box
+  // is a page arguing with itself. `pickPlaygroundModel` needs no change: its
+  // rule was always "the first usable row" (pick.ts), and this is now the order
+  // that phrase is about.
   const railRows = useMemo(() => {
     const order = [
       "text-to-image",
@@ -175,9 +180,9 @@ export default function PlaygroundTab() {
   }, [capabilities]);
 
   // The selection lives in the URL. An unknown or absent id falls back to the
-  // first capability's default silently (PT-9's posture: a stale link opens
-  // the page, not an error) — and the fallback is `default`, never models[0],
-  // which catalog.py's ordering rule makes the smallest vetted model.
+  // TOP SECTION's default silently (PT-9's posture: a stale link opens the
+  // page, not an error) — and the fallback is `default`, never models[0], which
+  // catalog.py's ordering rule makes the smallest vetted model.
   const asked = useMemo(() => readParam("model"), [urlVersion]);
   // `?cap=` names a capability, not a model — the Home strip's cards land
   // here with only a task in mind. It only steers the fallback: an explicit
@@ -190,8 +195,8 @@ export default function PlaygroundTab() {
   // `pick.ts`, with the sidebar reading the same `playgroundModels` below, so
   // the drawn list and the selectable list cannot come apart.
   const selected = useMemo(
-    () => pickPlaygroundModel(capabilities, asked, askedCap),
-    [capabilities, asked, askedCap],
+    () => pickPlaygroundModel(railRows, asked, askedCap),
+    [railRows, asked, askedCap],
   );
 
   // What the URL asked for, when this machine cannot give it. Home's strip is

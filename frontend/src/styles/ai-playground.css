@@ -124,7 +124,7 @@
   height: 18px;
 }
 
-/* The label as written — "Text", "Transcription", "Not supported" — instead of
+/* The label as written — "Text generation", "Transcription", "Not supported" — instead of
  * tracked-out caps. The words are already the section's own nouns, and shouting
  * them made four small headings compete with the cards under them. */
 .pg-group-title {
