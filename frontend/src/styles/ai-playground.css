@@ -115,17 +115,23 @@
  * say the same thing: no pointer (there is nothing to select), a dimmed body,
  * and a dashed border — the shape a reader already reads as "present but not
  * active" everywhere else in this app. */
-.pg-model-off {
+/* Both classes on purpose: `.pg-model` is declared LOWER in this file, so a
+ * single-class selector here loses the cascade and its border shorthand
+ * quietly wins — which is how the dashed edge stopped drawing at all. */
+.pg-model.pg-model-off {
   cursor: default;
-  border-style: dashed;
+  /* Colour named here, not inherited: the live cards' border is transparent
+   * now, and a dashed transparent edge is no edge at all. */
+  border: 1px dashed var(--border);
   background: transparent;
   color: var(--fg-muted);
 }
 
-.pg-model-off:hover {
+.pg-model.pg-model-off:hover {
   /* Explicitly NOT the hover the live cards get: hover feedback on something
    * that cannot be clicked is the exact false promise the dashed border is
    * there to withdraw. */
+  background: transparent;
   border-color: var(--border);
 }
 
@@ -150,17 +156,34 @@
   color: var(--fg-muted);
 }
 
-/* A CARD now, reversing the old "row, not a card" call (D428): spacious,
- * bordered, four facts and nothing else — nickname, full name, size, and the
- * Download CTA. The active one is carried by an accent border + wash. */
+/* The card fills, as local tokens rather than --bg-alt: the cards want to sit
+ * a step DARKER than the page's usual raised surface, and no single wash can
+ * do that in both themes (--tint lightens in dark, darkens in light), so each
+ * theme names its own pre-composited pair. Scoped to the sidebar because that
+ * is the only place a .pg-model exists. */
+.pg-side {
+  --pg-card-bg: #16181c;
+  --pg-card-bg-hover: #1d2025;
+}
+
+:root[data-theme="light"] .pg-side {
+  --pg-card-bg: #eaebee;
+  --pg-card-bg-hover: #e1e2e6;
+}
+
+/* A CARD, reversing the old "row, not a card" call (D428): one line — nickname,
+ * the Download CTA when there is one, size — carried by a fill, not an outline.
+ * Unselected draws NO border: a column of them was a stack of boxes, and the
+ * fill already says where each card ends. The border stays declared as
+ * transparent so gaining one on select moves nothing. */
 .pg-model {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 10px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 10px;
-  background: var(--bg-alt);
+  background: var(--pg-card-bg);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -168,8 +191,9 @@
   cursor: pointer;
 }
 
+/* Hover is a fill too, now that there is no edge to brighten. */
 .pg-model:hover {
-  border-color: var(--ctl-quiet-border-hover);
+  background: var(--pg-card-bg-hover);
 }
 
 .pg-model.active {
@@ -182,12 +206,34 @@
   outline-offset: -2px;
 }
 
+/* The card, on one line: nickname, then CTA and size pushed right. The name is
+ * the part that gives way — it truncates; neither of the other two ever does.
+ * Centred rather than baseline-aligned: one of the three is a padded button,
+ * and a shared baseline would hang it below the text it sits beside. */
+.pg-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .pg-model-name {
+  flex: 1;
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Was inheriting the foot's type; now that it lives on the name line it says
+ * so itself. `flex: none` is the whole point of the slot — the size is the one
+ * thing on the card that must not shrink. */
+.pg-model-size {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Loaded right now: a green dot ahead of the name. */
@@ -211,31 +257,28 @@
   white-space: nowrap;
 }
 
-.pg-model-foot {
-  margin-top: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 20px;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-
+/* The CTA, inline on the name line and left of the size. `flex: none` and
+ * nowrap for the same reason the size has them: the name is the only thing on
+ * this row allowed to give up space. */
 .pg-model-dl {
+  flex: none;
   font: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 3px 10px;
+  font-size: 11px;
+  /* Muted grey at normal weight, not white at 600: the CTA shares a line with
+   * the model's name, and at full contrast it read as the louder of the two.
+   * It goes to --fg on hover, which is where a reader has already committed. */
+  font-weight: 500;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
-  color: var(--fg);
   cursor: pointer;
 }
 
 .pg-model-dl:hover:not(:disabled) {
+  color: var(--fg);
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.08);
 }
@@ -243,6 +286,17 @@
 .pg-model-dl:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* The unsupported card's task word, and nothing else — the selectable cards
+ * are one line now, so they draw no foot at all. */
+.pg-model-foot {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
 }
 
 /* -- the stage shell --------------------------------------------------------- */

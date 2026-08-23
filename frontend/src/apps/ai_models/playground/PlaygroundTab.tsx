@@ -276,10 +276,6 @@ export default function PlaygroundTab() {
             const active = selected?.model.id === model.id;
             const downloading = runtime.downloading.some((d) => d.model === model.id);
             const name = modelName(model);
-            // The full name under the nickname — the label, or for a cached
-            // entry (where the label IS the display name) the repo id, so the
-            // second line never just repeats the first.
-            const fullName = model.label !== name ? model.label : model.id !== name ? model.id : null;
             // The card is a div-as-button, not a <button>: the Download CTA
             // lives inside it, and a button inside a button is markup browsers
             // are free to mangle.
@@ -303,28 +299,21 @@ export default function PlaygroundTab() {
                 }}
                 title={model.label}
               >
-                <span className="pg-model-name">
-                  {/* Live from the supervisor, not the catalog's `loaded`
-                      snapshot — a dot that outlives an unload is a lie. */}
-                  {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
-                    <span className="pg-model-live" title="Loaded — answering from memory" />
-                  )}
-                  {name}
-                </span>
-                {fullName && <span className="pg-model-full">{fullName}</span>}
-                <span className="pg-model-foot">
-                  <span
-                    className="pg-model-size"
-                    title={
-                      size
-                        ? `${size.text} download — judged against this machine's memory`
-                        : undefined
-                    }
-                  >
-                    {modelSizeLabel(model.size_gb, job)}
+                {/* The whole card, one line: nickname left, then the Download
+                    CTA and the size hard right. No repo id under the name —
+                    the stage header names the selected model in full. */}
+                <span className="pg-model-head">
+                  <span className="pg-model-name">
+                    {/* Live from the supervisor, not the catalog's `loaded`
+                        snapshot — a dot that outlives an unload is a lie. */}
+                    {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
+                      <span className="pg-model-live" title="Loaded — answering from memory" />
+                    )}
+                    {name}
                   </span>
                   {/* On disk = nothing to say: the CTA exists only while there
-                      is an action to take. */}
+                      is an action to take. Left of the size, which is the
+                      figure it acts on. */}
                   {!model.downloaded && (
                     <button
                       type="button"
@@ -340,6 +329,16 @@ export default function PlaygroundTab() {
                       {downloading ? "Downloading…" : "Download"}
                     </button>
                   )}
+                  <span
+                    className="pg-model-size"
+                    title={
+                      size
+                        ? `${size.text} download — judged against this machine's memory`
+                        : undefined
+                    }
+                  >
+                    {modelSizeLabel(model.size_gb, job)}
+                  </span>
                 </span>
               </div>
             );
@@ -406,20 +405,26 @@ export default function PlaygroundTab() {
               // a control that looks pressable and is not teaches the wrong
               // thing about every card beside it.
               <div key={model.id} className="pg-model pg-model-off">
-                <span className="pg-model-name">{model.label}</span>
-                <span className="pg-model-full">{model.id}</span>
-                <span className="pg-model-foot">
-                  {/* `shared/modelSize`, like every other size cell on this
-                      page — with no job, since a repo already on the disk is
-                      not downloading. Hand-formatting it here would be the
-                      second copy of a rule that exists because the copies
+                <span className="pg-model-head">
+                  <span className="pg-model-name">{model.label}</span>
+                  {/* Top-right, as on the selectable cards above — same slot,
+                      so the size reads the same however the card behaves.
+                      `shared/modelSize`, like every other size cell on this
+                      page, with no job: a repo already on the disk is not
+                      downloading. Hand-formatting it here would be the second
+                      copy of a rule that exists because the copies
                       disagreed. */}
                   <span className="pg-model-size">{modelSizeLabel(model.size_gb)}</span>
-                  {/* What it IS, when the repo said. Null is its own answer and
-                      gets no chip: "we could not tell" is what the missing
-                      label means, and inventing one would be a claim. */}
-                  {model.task && <span className="pg-model-task">{model.task}</span>}
                 </span>
+                <span className="pg-model-full">{model.id}</span>
+                {/* What it IS, when the repo said. Null is its own answer and
+                    gets no chip: "we could not tell" is what the missing label
+                    means, and inventing one would be a claim. */}
+                {model.task && (
+                  <span className="pg-model-foot">
+                    <span className="pg-model-task">{model.task}</span>
+                  </span>
+                )}
                 {/* The server's own sentence, written per task beside the
                     classification it explains (`ai/tasks.py`). Empty for a repo
                     we could not identify — an explanation we have not earned is
