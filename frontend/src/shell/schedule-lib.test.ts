@@ -548,6 +548,35 @@ describe("taskChips", () => {
     expect(chips[0].messages.map((m) => m.message_id)).toEqual(["MSG-1", "MSG-2", "MSG-3"]);
   });
 
+  it("a message nobody scheduled draws no chip at all", () => {
+    // A task typed on the List or the Board with the when-row untouched is due
+    // NOW because now is the form's default — it was never put on a Tuesday, so
+    // the grid does not claim it (Akshil, 2026-08-23). The flag is the server's,
+    // set at creation, so the reading survives a reload rather than being
+    // guessed from a due date that reads the same for both kinds.
+    const t = task({
+      key: "ran-it",
+      messages: [msg({ message_id: "MSG-1", at: at(2026, 7, 17, 9), immediate: true })],
+    });
+    expect(taskChips([t], days).get("2026-08-17")!).toEqual([]);
+  });
+
+  it("but a planned message on the same task still draws one", () => {
+    // The flag is per MESSAGE, not per task: "run this now" today and "and
+    // again on Thursday" are one task with two very different messages, and
+    // only the second belongs on the grid.
+    const t = task({
+      key: "both",
+      messages: [
+        msg({ message_id: "MSG-1", at: at(2026, 7, 17, 9), immediate: true }),
+        msg({ message_id: "MSG-2", at: at(2026, 7, 20, 9) }),
+      ],
+    });
+    const byDay = taskChips([t], days);
+    expect(byDay.get("2026-08-17")!).toEqual([]);
+    expect(byDay.get("2026-08-20")!.length).toBe(1);
+  });
+
   it("an hourly rule is ONE chip carrying +23, not 24 chips", () => {
     const t = task({
       key: "hourly",

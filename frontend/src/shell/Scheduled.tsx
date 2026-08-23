@@ -484,6 +484,16 @@ export default function Scheduled() {
               // a reason to hold onto it. See `stale` in TaskList.
               stale={tasksFailed}
               onEditEntry={editEntry}
+              // The folder chip as a TAG: pressing one narrows the page to that
+              // project. It REPLACES the project selection rather than adding to
+              // it — the gesture means "show me this folder", and a press that
+              // quietly widened an existing selection would be the opposite of
+              // what it looks like. Everything else about the filters is left
+              // alone, so a status or a search already on stays on, and the
+              // toolbar's popover is where it gets cleared again.
+              onPickProject={(project) =>
+                setFilters((f) => ({ ...f, projects: [project] }))
+              }
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
@@ -523,6 +533,14 @@ export default function Scheduled() {
           chatSessionId={newSession}
           chatBack={newBack}
           editing={editing}
+          // IS THIS CARD BEING USED TO PLAN? Three ways it is: the reader is on
+          // the calendar (where "when" is the question the view itself asks),
+          // the opening carried a time (a slot click), or an existing task is
+          // being changed. From the List or the Board it is not, and the
+          // when-row folds into More options — a task typed there is one to run
+          // now, and the row was what everybody skipped past (Akshil,
+          // 2026-08-23).
+          planning={view === "calendar" || creating instanceof Date || !!editing}
           permissionModes={state.permission_modes}
           // Newest-first fallback recents: past entries arrive newest first,
           // and the modal dedupes against what localStorage already knows.

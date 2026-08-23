@@ -196,6 +196,15 @@ const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
   12,
 );
+// The speech bubble on the LIST ROW's message count (2026-08-23) — lucide
+// "message-square", at the folder chip's 12px so the two chips beside each other
+// read as one register. Not a revival of the per-message ICON_CHAT below: that
+// one said which KIND a single message was, on a line that already carried two
+// glyphs; this one says how many there are, once, on the row.
+const ICON_MESSAGES = icon(
+  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+  12,
+);
 // There is no ICON_CLOCK/ICON_CHAT pair here any more (2026-08-18). A clock on a
 // scheduled message and a speech bubble on a chat one used to sit between the
 // status ring and MSG-003 on every thread row, saying where the message came
@@ -368,13 +377,43 @@ export function StatusIcon({
 /** The folder a task's work happens in — a plain folder glyph and the folder's
  * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
  * not an initials avatar: that stands for a PERSON, and a directory is not one. */
-export function IdentityChip({ name, title }: { name: string; title?: string }) {
+export function IdentityChip({ name, title, onPick }: {
+  name: string;
+  title?: string;
+  /** Makes the chip a TAG: pressed, it filters the page to this folder (Akshil,
+   * 2026-08-23). Given one, the chip becomes a real button — hover wash, focus
+   * ring, `stopPropagation` so it never counts as a press on the row it sits in.
+   * Without one it stays the plain label it has always been, which is what the
+   * board card and every other reader want. */
+  onPick?: () => void;
+}) {
   if (!name) return null;
-  return (
-    <span className="schedule-tv-id" title={title || name}>
+  const body = (
+    <>
       <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
       <span className="schedule-tv-id-name">{name}</span>
-    </span>
+    </>
+  );
+  if (!onPick) {
+    return (
+      <span className="schedule-tv-id" title={title || name}>{body}</span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="schedule-tv-id schedule-tv-id--tag"
+      // The tooltip says what the press DOES, on top of the path it already
+      // said: a chip that only ever labelled something gives the reader no
+      // reason to try clicking it.
+      title={`Show only ${title || name}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPick();
+      }}
+    >
+      {body}
+    </button>
   );
 }
 
@@ -881,6 +920,7 @@ export function TaskList({
   stale = false,
   onEditEntry,
   onReload,
+  onPickProject,
   emptyLabel = "Nothing to show here.",
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
@@ -907,6 +947,16 @@ export function TaskList({
    * still saying "Scheduled" — not a stuck row, and nothing worth withholding
    * the affordance over. */
   onReload?: () => void;
+  /** Narrow the page to ONE project — what a press on a row's folder chip means
+   * (Akshil, 2026-08-23). The chip was already the answer to "where did this
+   * happen"; making it pressable turns it into the way to ask "what else
+   * happened there", which is the question a reader has the moment they notice
+   * the folder. It writes the SAME `projects` filter the toolbar's popover owns,
+   * so there is one filter with two ways in and the toolbar keeps showing (and
+   * clearing) what is on.
+   *
+   * Optional: without it the chip stays the plain label it has always been. */
+  onPickProject?: (project: string) => void;
   emptyLabel?: string;
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
@@ -1301,6 +1351,7 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onReload={onReload}
+          onPickProject={onPickProject}
           onPageNote={setPageNote}
           read={read}
           onRead={clear}
@@ -1328,6 +1379,7 @@ function TaskNode({
   error,
   onEditEntry,
   onReload,
+  onPickProject,
   onPageNote,
   read,
   onRead,
@@ -1361,6 +1413,9 @@ function TaskNode({
   error?: string;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
+  /** Filter the page to this row's folder — the List's handler, passed through
+   * untouched. See TaskList's own `onPickProject`. */
+  onPickProject?: (project: string) => void;
   /** The List's page-level note — the only holder that survives this row being
    * filtered out by the very move it announces (see TaskList's render). */
   onPageNote: (s: string) => void;
@@ -2070,7 +2125,37 @@ function TaskNode({
             round when the time arrived; at the end of a row the last thing before
             the edge is the one a reader lands on, and the time is what changes. */}
         {showProject && (
-          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+          <IdentityChip
+            name={basename(task.project)}
+            title={tildePath(task.project, home)}
+            // A TAG, not a label (Akshil, 2026-08-23): pressing it narrows the
+            // page to this folder. Only on the List — the Board card's foot
+            // keeps the plain chip, because a card is a drag target first and a
+            // button inside one competes with the gesture that moves it.
+            onPick={onPickProject && (() => onPickProject(task.project))}
+          />
+        )}
+        {/* HOW MANY MESSAGES this task holds, between the folder and the time
+            (Akshil, 2026-08-23). The row already says where the work happened
+            and when it last moved; the one thing it could not say is how much
+            of it there is — a task with one prompt and a task with forty read
+            identically until you opened them, which is the wrong thing to have
+            to do to choose which to open.
+
+            A GLYPH AND A NUMBER, the same shape as the folder chip beside it,
+            and no word: "3 messages" spelled out is three times the ink for a
+            fact that is read at a glance, on the busiest end of the row. The
+            noun lives in the tooltip. Drawn only when the server has counted at
+            least one — zero is a task whose thread has not started, and a "0"
+            is worse than the space it would fill. */}
+        {task.message_count > 0 && (
+          <span
+            className="tasks-row-msgs"
+            title={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}
+          >
+            <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MESSAGES}</span>
+            {task.message_count}
+          </span>
         )}
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session

@@ -492,6 +492,68 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* HOW MANY MESSAGES the task holds — the chip between the folder and the time
+   (2026-08-23). Sized and spaced as the folder chip's twin: same 11px, same
+   muted register, same `flex: 0 0 auto` so the TITLE is still the only thing
+   that gives way when a row runs out of room.
+
+   `tabular-nums` for the same reason the time has it: a column of counts that
+   jitters as it goes 9 → 10 reads as movement in a list that has not changed. */
+.tasks-row-msgs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The glyph stays quieter than its number, exactly as the folder icon does
+   beside it: the bubble says what kind of fact this is, the digits are the
+   fact. */
+.tasks-row-msgs-icon {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.75;
+}
+
+/* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
+   folder, so on the List the chip is a real <button> — and it has to look like
+   one only when pointed at: a permanent box on every row would be a column of
+   buttons down the busiest edge of the list, which is the crowding this row has
+   twice been trimmed for.
+
+   So: no chrome at rest, a soft wash and a rounded box on hover and on keyboard
+   focus. `-4px/-6px` negative margins with matching padding, so growing the box
+   costs no layout — the chip occupies the same space it did as a bare label and
+   nothing beside it moves when the pointer arrives. */
+.tasks-row .schedule-tv-id--tag {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  margin: -3px -5px;
+  padding: 3px 5px;
+  border-radius: 5px;
+  transition: background-color 120ms ease;
+}
+
+/* `--ctl-quiet-bg-hover` is the app's own "a control is under the pointer" wash,
+   the one the quiet toolbar buttons wear — the tag is one of those, drawn inside
+   a row rather than on a bar. */
+.tasks-row .schedule-tv-id--tag:hover,
+.tasks-row .schedule-tv-id--tag:focus-visible {
+  background: var(--ctl-quiet-bg-hover);
+}
+
+.tasks-row .schedule-tv-id--tag:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
 /* The folder chip is `flex: 0 1 auto` where schedule.css defines it, because on a
    board card it is the thing that must shrink. On a task ROW it is not: the title
    is, and a chip that shrank alongside it would ellipsise a folder name while the
