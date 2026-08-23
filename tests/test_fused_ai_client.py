@@ -1,5 +1,5 @@
 """Tests for `fused_render/templates/shared/fused_ai.py` — the stdlib-only
-Python client for `fused.ai` (SPEC PY-19, D449-D451).
+Python client for `fused.ai` (SPEC PY-19, D457-D459).
 
 Loaded the way production loads it: the shared dir goes on `sys.path` (what
 both engines' path-seeding does) and then `import fused_ai` — not exec'd

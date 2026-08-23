@@ -173,7 +173,7 @@ def _server_json_path() -> str:
 def write_server_json(port: int, host: str = "127.0.0.1") -> None:
     """Publish this server's origin + the shared-template dir to
     `<home_dir()>/server.json`, for a process the server did NOT spawn (SPEC
-    PY-19, D451) — `fused_ai.py`'s `resolve_origin()` reads it as the fallback
+    PY-19, D459) — `fused_ai.py`'s `resolve_origin()` reads it as the fallback
     below `FUSED_RENDER_ORIGIN`. A server child already inherits the env var
     (`set_server_origin_env`, right above); a user-launched app inherits
     nothing and cannot compute the port itself, since the desktop launcher
