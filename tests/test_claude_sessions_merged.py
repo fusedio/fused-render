@@ -681,10 +681,12 @@ def test_the_name_opens_out_rather_than_appearing(template):
     A name laid out from `display: none` shoves the time sideways in one
     frame; one positioned out of flow overlaps the title instead of making
     room for itself."""
-    css = template[template.index(".chat-row .row-right {"):]
+    # Anchored on the .row-file rule itself, not on .row-right: the running
+    # mark sits between them and brings its own reduced-motion block.
+    css = template[template.index("  .chat-row .row-file {"):]
     css = css[:css.index("@media (prefers-reduced-motion")]
     assert "max-width: 0;" in css
-    assert "max-width: 180px; opacity: 1;" in css
+    assert "max-width: 180px;" in css
     assert "transition: max-width" in css
     # Nothing hides the time any more — it carries no opacity rule at all.
     assert ".row-sub { opacity" not in css
@@ -789,3 +791,43 @@ def test_archiving_says_what_it_actually_did(template):
     # A failed call leaves the item usable and puts the verb back.
     assert "archiveOpt.disabled = false;" in handler
     assert "refreshArchiveOpt()" in handler
+
+
+def test_a_hidden_menu_item_takes_no_space(template):
+    """`.kebab-opt` sets `display: block`, which beats the UA sheet's
+    `[hidden] { display: none }` — so an item hidden in markup still took its
+    full height and left a blank row under the one visible option, reading as a
+    menu still loading something. `#kebabpop[hidden]` already needed the same
+    fix one level up."""
+    assert ".kebab-opt[hidden] { display: none; }" in template
+    assert "#kebabpop[hidden] { display: none; }" in template
+
+
+def test_a_row_whose_turn_is_live_says_running(template):
+    """The list's only clue used to be a timestamp reading "now", which is
+    equally true of a chat that finished a second ago — so the one row worth
+    opening looked like all the others. Same word and same shimmer as the top
+    strip: one fact, one vocabulary, shared keyframes."""
+    body = template[template.index("function addChatRow("):]
+    body = body[:body.index("\n}")]
+    assert '<span class="row-run">running</span>' in body
+    assert 'row.classList.add("is-running")' in body
+    # It REPLACES the timestamp: "running" already says when, and the two side
+    # by side spend the row's last inch saying one thing twice.
+    assert 'row.querySelector(".row-sub").hidden = true;' in body
+    assert ".chat-row.is-running .row-run { display: inline-block; }" in template
+    css = template[template.index(".chat-row .row-run {"):]
+    css = css[:css.index("}")]
+    assert "display: none;" in css
+    assert "animation: tb-run-shimmer" in css
+
+
+def test_the_name_reveal_is_eased_both_ways(template):
+    """A linear snap read as a jump. The fade trails the width on the way in so
+    the name is never text in a box that has not finished opening, and the two
+    run together on the way out so it does not linger like a stuck tooltip."""
+    css = template[template.index(".chat-row.has-pane .row-file {"):]
+    css = css[:css.index("@media (prefers-reduced-motion")]
+    assert "cubic-bezier(0.22, 0.61, 0.36, 1)" in css
+    assert "opacity .2s ease .06s" in css      # trails, entering
+    assert "opacity .14s ease" in css          # together, leaving

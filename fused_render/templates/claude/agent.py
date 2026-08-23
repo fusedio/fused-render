@@ -2150,6 +2150,57 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
     return {"run_id": ""}
 
 
+def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
+    """Every session id under this target's FOLDER that has a run still going.
+
+    `_live_run` above answers the same question for ONE session and matches on
+    the exact target; a session list spans the whole folder — chats opened on
+    the folder's other files are rows in it — so this one matches on the
+    workdir instead, and answers for all of them in a single scan. Asking
+    `_live_run` per row would re-read every run dir once per row.
+
+    Both spellings of a run's session are collected, for the reason `_live_run`
+    spells out: a run knows the session it RESUMED (`resumed_from`) and the one
+    the CLI minted for it (the `session` file, or the head of out.jsonl before
+    the first poll has written one), and either can be the id a row carries.
+
+    Liveness is checked LAST and only for runs this folder owns — it is the one
+    test that touches a pid.
+    """
+    workdir = os.path.abspath(_workdir(file))
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return set()
+    if limit is not None:
+        names = names[:limit]
+    live = set()
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "")
+        if not target or os.path.abspath(_workdir(target)) != workdir:
+            continue
+        if not _alive(run_dir):
+            continue
+        own = ""
+        try:
+            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                own = fh.read().strip()
+        except OSError:
+            pass
+        if not own:
+            own = _session_from_out(run_dir)
+        for sid in (meta.get("resumed_from", ""), own):
+            if sid:
+                live.add(sid)
+    return live
+
+
 def _retry_info(row: dict):
     """One `api_retry` row as the page's view of it, or None if unreadable.
 
@@ -3160,6 +3211,9 @@ def _cli_sessions(file: str) -> list:
     # "" for a folder target: the filter below is what a file target adds, and
     # a folder is the case where every transcript in the dir already qualifies.
     want = "" if os.path.isdir(file) else os.path.abspath(file)
+    # One scan for the whole list — see `_live_sessions` for why this is not
+    # `_live_run` asked once per row.
+    live = _live_sessions(file)
     proj = os.path.join(PROJECTS, _munge(workdir))
     try:
         names = os.listdir(proj)
@@ -3196,7 +3250,7 @@ def _cli_sessions(file: str) -> list:
         # last activity, so it lands on `last_used` and `created_at` borrows it.
         out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
-                    "cwd": workdir, "pane": pane})
+                    "cwd": workdir, "pane": pane, "running": sid in live})
     return out
 
 

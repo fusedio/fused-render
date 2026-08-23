@@ -577,6 +577,13 @@
   }
   .kebab-opt:hover, .kebab-opt:focus-visible { background: var(--surface-2); }
   .kebab-opt[disabled] { color: var(--dim); cursor: default; }
+  /* The SAME story as `#kebabpop[hidden]` above, one level down: `display:
+     block` on the rule beats the UA sheet's `[hidden] { display: none }`, so an
+     item hidden in the markup still took its full height. The archive item is
+     hidden on a chat with no task behind it, and it left a blank row under
+     "New session in terminal" — a menu that reads as still loading something
+     (Akshil, 2026-08-23). */
+  .kebab-opt[hidden] { display: none; }
 
   /* "Comment on preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
@@ -3239,6 +3246,34 @@
     line-height: 0;
   }
   .chat-row.has-pane .row-fileic { display: block; }
+  /* "running" on a row whose turn is still going — the same word and the same
+     shimmer the top strip wears once you are inside that chat, because it is
+     the same fact and a second vocabulary for it would be a second thing to
+     learn. Shares the keyframes; only the size differs, this being a list. */
+  .chat-row .row-run {
+    display: none;
+    flex: 0 0 auto;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    background: linear-gradient(90deg,
+      var(--faint) 0%, var(--faint) 35%, var(--accent) 50%,
+      var(--faint) 65%, var(--faint) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: tb-run-shimmer 1.6s linear infinite;
+  }
+  .chat-row.is-running .row-run { display: inline-block; }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-row .row-run {
+      animation: none;
+      background: none;
+      -webkit-background-clip: border-box;
+      background-clip: border-box;
+      color: var(--accent);
+    }
+  }
   .chat-row .row-file {
     color: var(--faint);
     font-size: 12px;
@@ -3250,11 +3285,26 @@
   }
   /* Only a row that HAS a file opens; every other row is icon-less and its
      name element is permanently empty, so there is nothing to open. */
-  .chat-row.has-pane .row-file { transition: max-width .16s ease, opacity .12s; }
+  /* The reveal is EASED and the fade TRAILS the width both ways, so the name
+     is never text sitting in a box that has not finished opening (nor left
+     hanging in one that has already closed). Leaving: width and opacity run
+     together at the same short duration, because a name that lingers after the
+     pointer has gone reads as a stuck tooltip. */
+  .chat-row.has-pane .row-file {
+    transition: max-width .2s cubic-bezier(0.22, 0.61, 0.36, 1),
+                opacity .14s ease;
+  }
   .chat-row.has-pane:hover .row-file,
-  .chat-row.has-pane:focus-visible .row-file { max-width: 180px; opacity: 1; }
+  .chat-row.has-pane:focus-visible .row-file {
+    max-width: 180px;
+    opacity: 1;
+    transition: max-width .24s cubic-bezier(0.22, 0.61, 0.36, 1),
+                opacity .2s ease .06s;
+  }
   @media (prefers-reduced-motion: reduce) {
-    .chat-row.has-pane .row-file { transition: none; }
+    .chat-row.has-pane .row-file,
+    .chat-row.has-pane:hover .row-file,
+    .chat-row.has-pane:focus-visible .row-file { transition: none; }
   }
 
   /* ── skeleton loading placeholders ── */
@@ -15511,9 +15561,24 @@ function addChatRow(list, s) {
                   '<span class="row-right">' +
                   '<span class="row-fileic" aria-hidden="true">' + ICON_FILE +
                   '</span><span class="row-file"></span>' +
+                  '<span class="row-run">running</span>' +
                   '<span class="row-sub"></span></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
+  // A row whose turn is STILL GOING says so, in the same word and the same
+  // shimmer the top strip uses once you are inside that chat (agent.py
+  // `_live_sessions`). Without it the list's only clue was a timestamp reading
+  // "now", which is equally true of a chat that finished a second ago — so the
+  // one row you might want to open, because something is happening in it, was
+  // the one row that looked like all the others.
+  //
+  // It REPLACES the timestamp rather than joining it: "running" already says
+  // when, and the two side by side spend the row's last inch saying one thing
+  // twice.
+  if (s.running) {
+    row.classList.add("is-running");
+    row.querySelector(".row-sub").hidden = true;
+  }
   const pane = rowPane(s);
   if (pane) {
     row.classList.add("has-pane");
