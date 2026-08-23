@@ -28,27 +28,35 @@ import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterPrompts } from 
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
-// Small and fast on purpose: 512² renders in a quarter of 1024²'s time and is
-// plenty to judge a prompt by — the first picture arriving quickly IS the
-// playground's pitch, and the Custom sliders still go to 2048 for anyone who
-// wants a big one. Guidance 1 because the shortlist's defaults are
-// guidance-distilled (FLUX.2 klein bakes the prompt-following in — CFG on top
-// only slows it down and overcooks the colours).
-const DEFAULTS = { width: 512, height: 512, guidance: 1.0 };
+// Small, fast AND wide on purpose: 480x272 renders in a fraction of 1024²'s
+// time and is plenty to judge a prompt by — the first picture arriving quickly
+// IS the playground's pitch — and 16:9 is the shape the result reads best at
+// now that the frame spans the whole column. The Custom sliders still go to
+// 2048 for anyone who wants a big one. 272, not the 275 the height was asked
+// for: the route floors every side to a multiple of 16 (`side - side % 16`,
+// ai_runtime.py), so 275 RENDERS as 272 and a default saying 275 would be a
+// control lying about what runs. Guidance 1 because the shortlist's defaults
+// are guidance-distilled (FLUX.2 klein bakes the prompt-following in — CFG on
+// top only slows it down and overcooks the colours).
+const DEFAULTS = { width: 480, height: 272, guidance: 1.0 };
 // The rail's slider bounds, in one place so a URL value and a dragged value
 // cannot disagree about what the control's scale is.
 const SIZE_RANGE = [256, 2048] as const;
 const STEPS_RANGE = [1, 100] as const;
 const GUIDANCE_RANGE = [0, 20] as const;
 
-// Multiple-of-16 pairs on the same small-by-default footing as DEFAULTS.
-// The chip writes this pair into the same `w`/`h` params the custom sliders
-// edit; a pair matching no chip lights none of them.
+// Multiple-of-16 pairs, all small by default. The chip writes its pair into the
+// same `w`/`h` params the custom sliders edit; a pair matching no chip lights
+// none of them — including a saved link from before 16:9 was re-footed onto the
+// default size, which now lights nothing rather than lying.
 const ASPECTS = [
   { value: "1:1", label: "1:1", title: "Square — 512×512", width: 512, height: 512 },
   { value: "3:4", label: "3:4", title: "Portrait — 480×640", width: 480, height: 640 },
   { value: "4:3", label: "4:3", title: "Landscape — 640×480", width: 640, height: 480 },
-  { value: "16:9", label: "16:9", title: "Wide — 768×432", width: 768, height: 432 },
+  // The default pair, so a fresh stage lights a chip rather than none. 480/272
+  // is 1.76 rather than 1.778 — the nearest multiple-of-16 pair to the size
+  // asked for, and the same rounding SDXL's own "16:9" bucket carries.
+  { value: "16:9", label: "16:9", title: "Wide — 480×272", width: 480, height: 272 },
   { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768 },
 ] as const;
 
@@ -152,8 +160,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       const started = await startImage({
         prompt: wanted,
         model,
-        // Always sent, all four: the stage's defaults are its own (512², the
-        // model's steps, guidance 1), and leaving any off would hand the
+        // Always sent, all four: the stage's defaults are its own (480×272,
+        // the model's steps, guidance 1), and leaving any off would hand the
         // server its generic 1024² / 28 / 4.0.
         width,
         height,
@@ -203,14 +211,15 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
   // One box for shimmer, preview and final picture, so the column cannot
   // resize mid-render — the worker's preview is a thumbnail, and sizing by its
-  // own pixels is what made the layout jump. 80% shrinks the result; the vh
-  // term is the old max-height cap as a width, so the ratio holds.
+  // own pixels is what made the layout jump. Full parent width by request: the
+  // run's own ratio gives the height, so the render sizes to the page rather
+  // than to its pixel count — a 480×272 default fills the column instead of
+  // sitting at 80% of it. A portrait ratio is therefore TALL (a 9:16 render is
+  // ~1.8 column widths high); the old 80%/50vh caps are what that trades away.
   const shot = run
     ? {
         aspectRatio: `${run.started.width} / ${run.started.height}`,
-        width: `min(80%, ${Math.round(run.started.width * 0.8)}px, calc(50vh * ${(
-          run.started.width / run.started.height
-        ).toFixed(3)}))`,
+        width: "100%",
       }
     : undefined;
 
