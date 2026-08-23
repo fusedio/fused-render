@@ -52,7 +52,7 @@ const DEFAULT_SYSTEM =
   "to reason first, put that reasoning inside a <thinking>...</thinking> tag " +
   "before the answer, and keep it brief.";
 
-// Eight authored examples — two pages of four (D451). Each is a real ask with
+// Eight authored examples — two pages of four (D452). Each is a real ask with
 // its constraints spelled out, not a topic: what to write, how long, what to
 // leave out. A one-line "write a haiku" tests that the model answers; these
 // test what the reader actually came to find out, which is whether it follows

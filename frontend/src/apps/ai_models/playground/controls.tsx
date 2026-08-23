@@ -236,7 +236,7 @@ const STARTER_PAGE = 4;
 const STARTER_MIN = 2;
 
 /** Example prompts, as one row of outlined pills under the input: an icon and
- *  a short name each, with a round rotate button at the end (D451).
+ *  a short name each, with a round rotate button at the end (D452).
  *
  *  Research's one consistent finding on empty inputs (Open WebUI chips, AI
  *  Studio gallery, Replicate pre-fills): a blank box gives no value, a

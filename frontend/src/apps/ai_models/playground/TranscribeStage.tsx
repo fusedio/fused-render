@@ -27,7 +27,7 @@ import { ConfigPanel, CopyButton, StageHeader, StarterCards, type Starter } from
 import { StarterIcons } from "./starterIcons";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
-// The examples, for a stage whose input is a microphone (D451). A prompt here
+// The examples, for a stage whose input is a microphone (D452). A prompt here
 // is a SCRIPT: the words to say into it. Picking one only puts the line on
 // screen — it never starts recording, because a click that opens the mic
 // permission prompt is a click that asked for something else.

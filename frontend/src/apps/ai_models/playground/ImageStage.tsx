@@ -61,7 +61,7 @@ const ASPECTS = [
   { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768 },
 ] as const;
 
-// Eight authored examples — two pages of four (D451). Every one names a
+// Eight authored examples — two pages of four (D452). Every one names a
 // subject AND a way of rendering it (medium, light, lens, texture), because
 // that pairing is the thing a newcomer to image models does not know to write
 // and the difference it makes is the whole demonstration.
