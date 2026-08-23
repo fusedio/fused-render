@@ -997,6 +997,52 @@
     flex: 1;
     min-width: 0;
   }
+  /* "running", while a turn is live. Drawn only on `body.running`, which the
+     composer's stop-button swap already owns — one source of truth, no second
+     flag.
+
+     The shimmer is a moving highlight through the WORD, not a spinner: the
+     strip is 43px tall in the narrow view and already carries a spark, a name,
+     a file and an id, and a rotating glyph beside all that reads as a fifth
+     object rather than as a state of the fourth. A gradient clipped to the
+     text adds no box at all.
+
+     `background-size` at 200% with the position animated is what moves it;
+     clipping to the text is what makes it a shimmer rather than a swiping
+     rectangle. The two colours are the muted foreground and the accent, so the
+     word stays legible at every point in the sweep instead of fading out
+     against the strip at the trough. */
+  #topbar .tb-run {
+    display: none;
+    flex: 0 0 auto;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    background: linear-gradient(90deg,
+      var(--faint) 0%, var(--faint) 35%, var(--accent) 50%,
+      var(--faint) 65%, var(--faint) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: tb-run-shimmer 1.6s linear infinite;
+  }
+  body.running #topbar .tb-run { display: inline-block; }
+  @keyframes tb-run-shimmer {
+    from { background-position: 100% 0; }
+    to   { background-position: -100% 0; }
+  }
+  /* Still SAYS it, just stops moving: the word is the information and the
+     shimmer is only what draws the eye to it. */
+  @media (prefers-reduced-motion: reduce) {
+    #topbar .tb-run {
+      animation: none;
+      background: none;
+      -webkit-background-clip: border-box;
+      background-clip: border-box;
+      color: var(--accent);
+    }
+  }
   /* TASK-023 (see showSession) — tabular figures for the same reason the
      composer block's `.sb-id` has them: the same identifier must not shift
      width as its digits change. */
@@ -3553,6 +3599,16 @@
              holds the draft, so the composer is what can hand it over. -->
         <div id="kebabpop" role="menu" aria-label="More options" hidden>
           <button id="terminalopt" type="button" role="menuitem" class="kebab-opt"></button>
+          <!-- File this conversation's TASK away, or take the filing back
+               (Akshil, 2026-08-23). Below the terminal item and hidden outright
+               when this chat has no task behind it: the Tasks page keys a task
+               by its session id, so a chat that has never been listed there has
+               nothing to archive and an item that cannot act is worse than an
+               item that is not there. The label is decided at open time for the
+               same reason the terminal one is — the state can change from the
+               Tasks page while this menu sits closed. -->
+          <button id="archiveopt" type="button" role="menuitem" class="kebab-opt"
+                  hidden></button>
         </div>
       </div>
       <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
@@ -3589,6 +3645,19 @@
       <span class="tb-title">Claude</span>
       <span class="tb-file" id="banner-sub"></span>
       <span id="session" class="mono"></span>
+      <!-- "running", at the end of the chat's name, while a turn is live
+           (Akshil, 2026-08-23). The composer already swaps its arrow for a stop
+           square on `body.running`, but that sits at the BOTTOM of the pane and
+           says "you can stop this" rather than "this is working" — a reader who
+           has scrolled up, or who is watching the preview beside the chat, had
+           nothing at the top of the conversation saying it was still going.
+           Driven by that same body class, so there is ONE source of truth for
+           "a turn is live" and no second flag to fall out of step with it.
+
+           `aria-live="polite"`, not assertive: this is an ambient state, and a
+           reader that interrupts to announce the start of every turn is worse
+           than one that mentions it when it next comes up for air. -->
+      <span id="runmark" class="tb-run" aria-live="polite">running</span>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <!-- A scheduled message pending IN THIS SESSION closes the composer, and this
@@ -10864,6 +10933,81 @@ function enterChat() {
 const kebabBtn = document.getElementById("kebabbtn");
 const kebabPop = document.getElementById("kebabpop");
 const terminalOpt = document.getElementById("terminalopt");
+
+// ── archive / unarchive this conversation's task ───────────────────────
+// The Tasks page keys a task by its SESSION ID (`task.key`), which is the same
+// id this page already fetches /api/tasks for to learn a task's number — so
+// "which task is this chat" needs no new endpoint and no new identity.
+//
+// The item is HIDDEN, not disabled, when there is no task behind the chat: a
+// disabled row invites a reader to work out what would enable it, and the
+// answer here ("this conversation has never been listed as a task") is not
+// something they can act on from this menu.
+const archiveOpt = document.getElementById("archiveopt");
+let archiveKey = "";
+
+async function refreshArchiveOpt() {
+  const id = fused.params.get("session_id");
+  archiveKey = "";
+  archiveOpt.hidden = true;
+  archiveOpt.disabled = false;
+  if (!id) return;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
+    if (!task) return;
+    // The session can change while this is in flight (the reader clicked a
+    // recent chat as the menu opened); a stale answer must not label the item
+    // for a conversation nobody is looking at any more.
+    if (fused.params.get("session_id") !== id) return;
+    archiveKey = id;
+    archiveOpt.textContent = task.status === "archived"
+      ? "Unarchive this task" : "Archive this task";
+    archiveOpt.dataset.filed = task.status === "archived" ? "1" : "";
+    archiveOpt.hidden = false;
+  } catch (err) {
+    /* FAILS CLOSED, unlike the task-number read above: that one costs a nicer
+       label and falls back to the hash, where this one is an ACTION. An item
+       offered on a listing we could not read is an item whose verb we are
+       guessing at. */
+  }
+}
+
+archiveOpt.addEventListener("click", async () => {
+  if (!archiveKey) return;
+  const filed = archiveOpt.dataset.filed === "1";
+  archiveOpt.disabled = true;
+  try {
+    const res = await fetch(filed ? "/api/tasks/unarchive" : "/api/tasks/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ key: archiveKey }),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    // Confirmed INSIDE the item and then the menu leaves on its own — the same
+    // shape the terminal item uses, because this page has no toast of its own
+    // and one invented here would be a second vocabulary for "it worked".
+    //
+    // Archiving CANCELS this task's pending work as well as filing it
+    // (routers/tasks.py api_task_archive), and the count comes back in the
+    // answer, so the confirmation says what actually happened rather than a
+    // bare "done".
+    const body = await res.json().catch(() => ({}));
+    const off = Number(body && body.cancelled) || 0;
+    archiveOpt.textContent = filed
+      ? "Unarchived"
+      : (off ? `Archived — ${off} pending run${off === 1 ? "" : "s"} cancelled`
+             : "Archived");
+    setTimeout(() => { kebabClose(); archiveOpt.disabled = false; }, 1100);
+  } catch (err) {
+    archiveOpt.disabled = false;
+    archiveOpt.textContent = "Could not " + (filed ? "unarchive" : "archive")
+      + " — " + (err && err.message || err);
+    setTimeout(() => { void refreshArchiveOpt(); }, 2500);
+  }
+});
 function kebabClose() {
   kebabPop.hidden = true;
   kebabBtn.setAttribute("aria-expanded", "false");
@@ -10874,6 +11018,12 @@ function kebabOpen() {
   terminalOpt.textContent = fused.params.get("session_id")
     ? "Continue in terminal" : "New session in terminal";
   terminalOpt.disabled = false;
+  // Same rule, one step further: the archive item's very PRESENCE depends on
+  // there being a task, and its word on which way that task is filed — both of
+  // which the Tasks page can change while this menu sits closed. Asked fresh on
+  // every open rather than cached; a menu is opened rarely and a wrong verb
+  // here files something the user meant to unfile.
+  void refreshArchiveOpt();
   kebabPop.hidden = false;
   kebabBtn.setAttribute("aria-expanded", "true");
   // preventScroll, and it is load-bearing: the popup hangs BELOW the strip,

@@ -6920,4 +6920,25 @@ describe("the file mark after a task's title", () => {
     // absent would read as "about a folder".
     expect(body).toContain("flex: 0 0 auto");
   });
+
+  it("wears the row's own cursor, not a question mark", () => {
+    // The whole row is a link and reads as one under the pointer; a `help`
+    // cursor over one glyph inside it announces a different kind of thing to
+    // press and looks broken beside the row's own pointer (Akshil,
+    // 2026-08-23).
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    // Comments stripped first — the rule's own headstone names the property it
+    // no longer sets, and a substring search would find that instead.
+    const body = rest.slice(0, rest.indexOf("}")).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(body).not.toContain("cursor:");
+  });
+
+  it("sits against the title rather than floating between it and the folder", () => {
+    // The row's flex `gap` is 10px and applies between every pair of children,
+    // so the mark shipped with 10px on both sides plus a margin of its own. It
+    // belongs to the title, so the gap is pulled back on that side only.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
+  });
 });

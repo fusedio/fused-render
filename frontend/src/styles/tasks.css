@@ -527,10 +527,19 @@ button.tasks-caret,
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  margin-left: 5px;
+  /* PULLED BACK toward the title (Akshil, 2026-08-23). The row's flex `gap` is
+     10px and applies between every pair of children, so the mark shipped with
+     10px on both sides plus a 5px margin of its own — it read as a third
+     element floating between the title and the folder rather than as something
+     the title wears. It belongs to the title, so it sits against it and keeps
+     the full gap only on the folder side. */
+  margin-left: calc(var(--tasks-row-gap) * -1 + 4px);
   color: var(--fg-muted);
   opacity: 0.75;
-  cursor: help;
+  /* NO `cursor: help` (Akshil, 2026-08-23). The whole row is a link and reads
+     as one under the pointer; a question-mark cursor over one glyph inside it
+     announces a different kind of thing to press and looks broken beside the
+     row's own pointer. The tooltip needs no cursor to advertise it. */
 }
 .tasks-row-file:hover { opacity: 1; }
 

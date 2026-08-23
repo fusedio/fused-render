@@ -704,3 +704,88 @@ def test_the_icon_marks_the_row_at_rest(template):
     assert 'row.classList.add("has-pane")' in body
     assert "label.title = pane;" in body
     assert 'row.querySelector(".row-fileic").title = pane;' in body
+
+
+# ------------------------------------- the chat's own state and filing verbs
+
+
+def test_running_says_so_at_the_top_of_the_conversation(template):
+    """The composer's arrow already swaps for a stop square while a turn is
+    live, but that is at the BOTTOM of the pane and says "you can stop this"
+    rather than "this is working". Same body class drives both, so there is one
+    source of truth and no second flag to fall out of step."""
+    assert '<span id="runmark" class="tb-run" aria-live="polite">running</span>' \
+        in template
+    assert "body.running #topbar .tb-run { display: inline-block; }" in template
+    # Hidden by default — the state is the exception, not the resting shape.
+    css = template[template.index("#topbar .tb-run {"):]
+    css = css[:css.index("}")]
+    assert "display: none;" in css
+
+
+def test_the_shimmer_is_clipped_to_the_word_and_stoppable(template):
+    """A gradient through the text, not a spinner: the strip is 43px tall and
+    already carries a spark, a name, a file and an id, and a rotating glyph
+    beside all that reads as a fifth object rather than a state of the fourth.
+
+    Reduced motion keeps the WORD and drops only the movement — the word is the
+    information, the shimmer only draws the eye to it."""
+    css = template[template.index("#topbar .tb-run {"):]
+    css = css[:css.index("@keyframes tb-run-shimmer")]
+    assert "background-clip: text;" in css
+    assert "color: transparent;" in css
+    assert "animation: tb-run-shimmer" in css
+    quiet = template[template.index("@media (prefers-reduced-motion: reduce) {",
+                                    template.index("#topbar .tb-run {")):]
+    quiet = quiet[:quiet.index("\n  }")]
+    assert "animation: none;" in quiet
+    assert "color: var(--accent);" in quiet
+
+
+def test_the_kebab_can_file_this_conversations_task(template):
+    """Below the terminal item, and keyed by the SESSION ID — the Tasks page
+    keys a task by exactly that (`task.key`), so "which task is this chat"
+    needs no new endpoint and no second identity."""
+    pop = template[template.index('<div id="kebabpop"'):]
+    pop = pop[:pop.index("</div>")]
+    assert pop.index("terminalopt") < pop.index("archiveopt"), "terminal first"
+    assert 'id="archiveopt"' in pop
+    # HIDDEN, not disabled, when the chat has no task: a disabled row asks the
+    # reader to work out what would enable it, and the answer is not something
+    # they can act on from this menu.
+    assert "hidden></button>" in pop
+    body = template[template.index("async function refreshArchiveOpt("):]
+    body = body[:body.index("\n}")]
+    assert "archiveOpt.hidden = true;" in body
+    assert 't.key === id' in body
+    assert 'task.status === "archived"' in body
+
+
+def test_the_filing_verb_is_read_fresh_every_time_the_menu_opens(template):
+    """The Tasks page can archive the same task while this menu sits closed, so
+    a label written once would offer the wrong verb — and the wrong verb here
+    files something the reader meant to unfile."""
+    opener = template[template.index("function kebabOpen() {"):]
+    opener = opener[:opener.index("\n}")]
+    assert "refreshArchiveOpt()" in opener
+    # A session swapped mid-flight must not label the item for a conversation
+    # nobody is looking at any more.
+    body = template[template.index("async function refreshArchiveOpt("):]
+    body = body[:body.index("\n}")]
+    assert 'if (fused.params.get("session_id") !== id) return;' in body
+
+
+def test_archiving_says_what_it_actually_did(template):
+    """Archiving CANCELS the task's pending work as well as filing it
+    (routers/tasks.py api_task_archive returns the count), and that is a fact
+    about the schedule — not something to leave in a status the reader has to
+    go and look for."""
+    handler = template[template.index('archiveOpt.addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    assert '"/api/tasks/unarchive" : "/api/tasks/archive"' in handler
+    assert '"X-Fused": "1"' in handler
+    assert "body.cancelled" in handler
+    assert "pending run" in handler
+    # A failed call leaves the item usable and puts the verb back.
+    assert "archiveOpt.disabled = false;" in handler
+    assert "refreshArchiveOpt()" in handler
