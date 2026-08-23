@@ -151,7 +151,10 @@ async def _proxy(child, request: Request, path: str, body: bytes):
             answer, payload = fetch_task.result()
         except (OSError, http.client.HTTPException):
             connection.close()
-            if reused:
+            # Only replay a stale pooled connection for an idempotent request: a
+            # POST may already have run main() before the keep-alive dropped, so
+            # re-sending it could double-execute a side-effecting call.
+            if reused and request.method in ("GET", "HEAD"):
                 continue  # stale pooled connection — retry with a fresh one
             return None
         finally:

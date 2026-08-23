@@ -96,6 +96,9 @@ class Child:
     #: Last call routed to this child (monotonic); drives idle-retire of warm app
     #: workers only.
     last_used: float = field(default_factory=time.monotonic)
+    #: Calls currently in flight through this child; a busy warm worker is never
+    #: idle-retired, however long its `main()` runs.
+    inflight: int = 0
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
@@ -470,7 +473,8 @@ def reap_idle_app_workers(now: float | None = None) -> int:
     now = time.monotonic() if now is None else now
     with _lock:
         stale = [c for c in _children.values()
-                 if c.module and (now - c.last_used) >= APP_IDLE_RETIRE_S]
+                 if c.module and c.inflight == 0
+                 and (now - c.last_used) >= APP_IDLE_RETIRE_S]
         for child in stale:
             _children.pop(child.engine_id, None)
             _reinit.pop(child.engine_id, None)

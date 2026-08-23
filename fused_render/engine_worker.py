@@ -53,10 +53,6 @@ class _RoutedStdout:
 # module load below mutates sys.path, so a user module dir can't shadow it.
 from _binding import bind_params
 
-#: The per-call budget, enforced parent-side by the proxy (this worker does not
-#: kill its own thread); kept here for parity with executor's timeout.
-CALL_TIMEOUT_S = 60.0
-
 
 class _Target:
     """The one module this worker serves, imported once and re-imported on edit.

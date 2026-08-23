@@ -1,5 +1,4 @@
 import asyncio
-import os
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Body, Header, Request, Response

@@ -10,6 +10,8 @@ heal-on-failure + cancel-on-disconnect).
 import asyncio
 import json
 import os
+import sys
+import time
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
@@ -18,6 +20,7 @@ from fused_render import projectenv
 from fused_render.server import engine_host
 from fused_render.server.common import _error, _require_fused, resolve_py
 from fused_render.server.routers.engines import _forward
+from fused_render.shell import prefs as shell_prefs
 
 router = APIRouter()
 
@@ -48,9 +51,14 @@ async def api_engine(request: Request, x_fused: str | None = Header(default=None
     if not os.path.isfile(resolved):
         return _error(f"no such Python file: {resolved}", status=404)
 
-    # The same interpreter /api/run would choose (PY-17).
-    project = projectenv.project_env_for(resolved)
-    interpreter = projectenv.interpreter_for(project)
+    # The same interpreter /api/run would choose (PY-17): the built-in executor
+    # always runs on sys.executable and builds no venv, so only the fused engine
+    # gets the project venv python — mirroring /api/run's own dispatch.
+    if shell_prefs.effective_engine() == "fused":
+        project = projectenv.project_env_for(resolved)
+        interpreter = projectenv.interpreter_for(project)
+    else:
+        interpreter = sys.executable
     # The warm path does not build a missing venv yet: say so instead of spawning
     # a non-existent interpreter. Opening once via /api/run installs it.
     if not os.path.isfile(interpreter):
@@ -66,8 +74,15 @@ async def api_engine(request: Request, x_fused: str | None = Header(default=None
                       f"{os.path.basename(resolved)}: {e}", status=502)
 
     # Forward to the worker's /call; it returns the /api/run envelope verbatim.
+    # inflight keeps the idle reaper from retiring a worker mid-call, and stamps
+    # last_used at completion so idle is timed from the call's end, not its start.
     payload = json.dumps(params).encode("utf-8")
-    return await _forward(child.engine_id, request, "/call", payload)
+    child.inflight += 1
+    try:
+        return await _forward(child.engine_id, request, "/call", payload)
+    finally:
+        child.inflight -= 1
+        child.last_used = time.monotonic()
 
 
 @router.post("/api/engine/forget")
