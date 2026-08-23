@@ -536,9 +536,9 @@ a.pg-hero-repo:hover {
   width: min(680px, calc(100% - 64px));
   margin: 0 auto;
   /* A grid rather than a flex column: the settings card takes a second column
-     spanning the whole stack (grid-row: 1 / -1) while every other child stays
-     in the first. One column — the closed state — lays out exactly as the flex
-     column did. */
+     — a reserved track it is positioned into, see `.has-config` below — while
+     every other child stays in the first. One column, the closed state, lays
+     out exactly as the flex column did. */
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
