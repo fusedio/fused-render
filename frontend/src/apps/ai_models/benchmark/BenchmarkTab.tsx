@@ -70,6 +70,7 @@ import {
   DASH,
   availableMetrics,
   chartSeries,
+  commonDevice,
   comparisonBars,
   failureReason,
   formatLoad,
@@ -444,6 +445,13 @@ function CapabilitySection({
   // The comparison chart's own data — every model with a real value, ranked
   // best-first, direction included (`comparisonBars`, lib/benchmark.ts).
   const bars = comparisonBars(ranked, metric);
+  // The device most of THIS section's models last ran on — the hardware
+  // doesn't change per model, so a row's own detail line (`BenchmarkRow`
+  // below, via `rowDetail`) drops it whenever it MATCHES this, and keeps it
+  // only for the outlier that differs (see `commonDevice`, lib/benchmark.ts).
+  const expectedDevice = commonDevice(
+    ranked.map((r) => r.row).filter((row): row is ModelLatest => row !== null),
+  );
 
   return (
     <section className="am-section">
@@ -527,6 +535,7 @@ function CapabilitySection({
                   model={model}
                   row={row}
                   metric={metric}
+                  expectedDevice={expectedDevice}
                   button={button}
                   gone={gone.has(model)}
                   selected={model === selectedModel}
@@ -590,6 +599,7 @@ function BenchmarkRow({
   model,
   row,
   metric,
+  expectedDevice,
   button,
   gone,
   selected,
@@ -601,6 +611,10 @@ function BenchmarkRow({
   /** The SELECTED metric — what the headline reads. Decided in
    *  `BenchmarkTab`/`leaderboard`, never here. */
   metric: MetricSpec | null;
+  /** The device most of this section's OTHER models report — `rowDetail`
+   *  drops this row's own device when it matches, and keeps it when it
+   *  doesn't (`commonDevice`, lib/benchmark.ts). */
+  expectedDevice: string | null;
   /** What the Run button says and whether it can be pressed — decided by
    *  `runButtonState`, never here: the rule about which run blocks which button
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
@@ -619,7 +633,11 @@ function BenchmarkRow({
   // run's own error — behind an expander so it never dominates the row. Only
   // drawn when there is something to say: a row whose whole story fits the
   // headline gets no expander at all.
-  const detail = row ? (row.latest.ok ? rowDetail(row.latest, metric) : failureReason(row.latest)) : null;
+  const detail = row
+    ? row.latest.ok
+      ? rowDetail(row.latest, metric, expectedDevice)
+      : failureReason(row.latest)
+    : null;
 
   return (
     // A div-as-button, not a `<button>`: the Run button lives inside this row
