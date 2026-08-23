@@ -1186,7 +1186,25 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
         _worker_tokens.add(worker.token)
 
     if evicting:
-        _terminate(current)
+        try:
+            _terminate(current)
+        except Exception:  # noqa: BLE001 - best-effort; see below
+            # `_terminate` is best-effort internally (its own `/quit` call is
+            # guarded), but not blanket-guarded: `_release_install` ->
+            # `envinstall.cancel` and `_cleanup_files`'s callees can still
+            # raise. Every OTHER caller of `_terminate` pops its target from
+            # `_workers` BEFORE calling it, so a raise there never poisons a
+            # live slot. This is the one call site where the NEW worker is
+            # already published into `_workers[capability]` by the time this
+            # runs — an uncaught raise here would leave that worker resident
+            # in the table with its `_bring_up` thread never started, so
+            # every later `load()` for this capability takes the join branch
+            # above, hands back that permanently-"starting" record, and
+            # `_wait_ready` blocks for `LOAD_WAIT_TIMEOUT_S` (an hour). The
+            # eviction's job — releasing the OLD worker's resources — is done
+            # as well as it can be; a failure in that best-effort cleanup
+            # must not also break the NEW load it was clearing room for.
+            logger.exception("failed to terminate evicted worker %r", current.model)
 
     _report(job, title=model, state="running", kind="download", cancellable=True,
             detail="Preparing…", done=None, total=None)

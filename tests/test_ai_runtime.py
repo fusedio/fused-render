@@ -2502,6 +2502,38 @@ def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_ru
         t.join(timeout=5)
 
 
+def test_eviction_still_starts_the_new_worker_when_terminating_the_old_one_raises(
+        fake_runner, monkeypatch):
+    """The new worker is published into `_workers[capability]` BEFORE
+    `_terminate(current)` runs on the evicted one (see the comment in
+    `_start_resident`). If that call raises — `_terminate` is best-effort
+    internally but not blanket-guarded — the new worker must still get its
+    `_bring_up` thread started, or it sits in the table forever in a
+    non-`error` state: every later `load()` for this capability takes the
+    join branch and hands back that dead record, and `_wait_ready` blocks for
+    `LOAD_WAIT_TIMEOUT_S` (an hour)."""
+    supervisor.load("org/first", registry.TEXT_GENERATION)
+    _wait_ready("org/first")
+
+    real_terminate = supervisor._terminate
+
+    def raising_terminate(worker):
+        real_terminate(worker)  # still actually tear the old one down
+        raise RuntimeError("boom from a _terminate callee")
+
+    monkeypatch.setattr(supervisor, "_terminate", raising_terminate)
+
+    try:
+        supervisor.load("org/second", registry.TEXT_GENERATION)
+        worker = _wait_ready("org/second")
+        assert worker.model == "org/second"
+    finally:
+        # `fake_runner`'s own teardown calls `unload()`, which would hit this
+        # same raising stub again (and, this time unhandled, break fixture
+        # teardown) if it were still installed.
+        monkeypatch.setattr(supervisor, "_terminate", real_terminate)
+
+
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
     first = supervisor.load("org/same", registry.TEXT_GENERATION)
     worker = _wait_ready("org/same")
