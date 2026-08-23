@@ -319,6 +319,49 @@ def _cached_order(model: CachedModel):
     return (model.size <= 0, model.size, model.repo_id)
 
 
+def _unsupported_downloads() -> list[dict]:
+    """Model repos on this disk that NO capability can load, with the reason.
+
+    **The listing exists because dropping them was the wrong silence.** Every
+    picker reads `capabilities[]`, and a repo with no capability is in none of
+    those lists — so a user who downloaded a text-to-speech model, a depth
+    estimator or a symbolic-music policy watched it vanish from the Playground
+    with nothing said. "You have this, and here is why there is no button" is a
+    sentence only this side can write (`ai/tasks.py` writes it per task), and a
+    page that omits the row answers the reader's actual next question — where
+    did my download go — with nothing at all.
+
+    NOT in `capabilities[]` as a fake group, and that is deliberate: every app
+    reading this payload maps `models[]` and offers what it finds, so a row in
+    there is a row something will try to load. This is a separate key, which an
+    older client ignores and a picker has to opt into showing.
+
+    Sorted like the cached tail everywhere else — smallest first, unmeasurable
+    last. Components, datasets, Spaces and half-finished fetches never reach
+    here; `cached_models` has already dropped them, and none of them is a model
+    somebody chose.
+    """
+    return [
+        {
+            "id": model.repo_id,
+            "label": _cached_label(model.repo_id),
+            "size_gb": _cached_size_gb(model.size),
+            # What it IS, when anything said — the label a card prints beside
+            # the reason. None for a repo nothing could identify, where the
+            # reason is empty too and the row says only "on this disk,
+            # unrunnable", which is the honest whole of what we know.
+            "task": model.task,
+            # "no-runner" or "unknown" — never "supported", by construction:
+            # a supported task with a readable format has a capability and is
+            # in `capabilities[]` instead.
+            "support": model.support,
+            "reason": model.reason,
+        }
+        for model in sorted(cached_models(), key=_cached_order)
+        if model.capability is None
+    ]
+
+
 def _catalog_with_downloads() -> list[dict]:
     """`catalog.describe()`, plus the models this disk actually has.
 
@@ -543,7 +586,10 @@ def api_ai_catalog():
     Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
     belongs in the threadpool rather than on the event loop.
     """
-    return {"capabilities": _catalog_with_downloads(), "ramGb": _machine_ram_gb()}
+    return {"capabilities": _catalog_with_downloads(),
+            # Everything else on this disk, with the reason it is not above.
+            "unsupported": _unsupported_downloads(),
+            "ramGb": _machine_ram_gb()}
 
 
 @router.post("/api/ai/runtime/load")

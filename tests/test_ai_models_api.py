@@ -1689,6 +1689,37 @@ def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, mo
 
 
 @requires_symlinks
+def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub, monkeypatch):
+    """The video-pipeline bug, and the other half of the same gate.
+
+    A diffusers VIDEO pipeline is a `model_index.json` repo, and the diffusers
+    runners are DECISIVE about that format — so `_engine`'s "let the format
+    answer" branch used to hand it the image capability, and the card offered
+    Load for a model nothing here can run. The branch exists for a real case
+    (a CT2 conversion carries no tag, an MLX one carries no config, and both are
+    speech models beyond doubt), so the fix is not to remove it: it fires only
+    where the task is UNKNOWN. `text-to-video` is not unknown — it is refused,
+    with a sentence.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--org--vid", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "StableVideoDiffusionPipeline"}))
+    row = _repo_row(client, "org/vid")
+    assert row["task"] == "video generation"
+    assert row["support"] == "no-runner"
+    assert row["capability"] is None
+    # No engine row either: `_engine` returns nothing once the capability is
+    # refused, so the card cannot promise a backend for it.
+    assert row["engine"] is None
+    # …and the same repo read by the LOAD route agrees, which is the invariant
+    # that stops a card offering what a load then refuses.
+    assert ai_models_mod.cached_capability("org/vid").capability is None
+
+
+@requires_symlinks
 def test_a_genuine_image_to_image_repo_keeps_its_label_and_gets_no_load(client, hub):
     """The other side of the same rule: the override is for a task the app
     SERVES, read off decisive format evidence. A repo that really is img2img

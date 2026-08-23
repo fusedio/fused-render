@@ -318,7 +318,26 @@ _ARCH_TASKS = (
     ("ForZeroShotImageClassification", "zero-shot-image-classification"),
     ("ForImageClassification", "image-classification"),
     ("ForImageSegmentation", "image-segmentation"),
+    # The three other segmentation heads transformers ships. Read as nothing at
+    # all they fell through to the format branch, which is text.
+    ("ForSemanticSegmentation", "image-segmentation"),
+    ("ForInstanceSegmentation", "image-segmentation"),
+    ("ForUniversalSegmentation", "image-segmentation"),
     ("ForObjectDetection", "object-detection"),
+    ("ForZeroShotObjectDetection", "zero-shot-object-detection"),
+    # `Intel/dpt-beit-base-384`, and the case that showed the gap: its
+    # downloaded card's front matter is `license: mit` and nothing else, so the
+    # architecture is the whole of the local evidence and an unlisted suffix
+    # meant "no task", which the format fallback then read as a chat model.
+    ("ForDepthEstimation", "depth-estimation"),
+    ("ForVideoClassification", "video-classification"),
+    ("ForAudioClassification", "audio-classification"),
+    ("ForAudioFrameClassification", "audio-classification"),
+    ("ForTextToSpectrogram", "text-to-speech"),
+    ("ForTextToWaveform", "text-to-speech"),
+    ("ForVisualQuestionAnswering", "visual-question-answering"),
+    ("ForDocumentQuestionAnswering", "document-question-answering"),
+    ("ForMultipleChoice", "multiple-choice"),
     ("ForSequenceClassification", "text-classification"),
     ("ForTokenClassification", "token-classification"),
     ("ForQuestionAnswering", "question-answering"),
@@ -338,6 +357,19 @@ _ARCH_TASKS = (
 # …ForConditionalGeneration is the same head for "translate this" and "transcribe
 # this", so the model type is what separates them.
 _AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
+
+# …and the same head AGAIN for speech OUT. `Qwen/Qwen3-TTS-12Hz-1.7B-Base`
+# publishes no `pipeline_tag` at all — its sibling VoiceDesign repo does — so
+# the architecture is the only evidence there is, and read as a bare
+# `…ForConditionalGeneration` it came out "translation": the right VERDICT (no
+# runner either way) under a label that is simply wrong about what the model
+# does. Matched on the model type rather than on the architecture name, the
+# same way the audio-IN case above is, because the head is shared and the type
+# is what distinguishes them. A substring test: the family names it
+# (`qwen3_tts`, `parler_tts`, `xtts`), and an exact list would need a new entry
+# for every synthesis family that ships — the maintenance that let the two
+# multimodal families arrive mislabelled.
+_SPEECH_OUT_MARKERS = ("_tts", "tts_", "vits", "bark", "vall_e")
 
 # …and the same head again for a vision-language model. This sub-config is how
 # a multimodal wrapper says so — a nested block per extra tower — and it is
@@ -414,6 +446,18 @@ class _RepoMeta:
     #: reading of a config (`ai/tasks.py`). None when nothing said.
     task: str | None = None
     task_source: str | None = None
+    #: The config DECLARED an architecture and `_ARCH_TASKS` could not map its
+    #: suffix — which is a fact, not a silence, and the difference matters to
+    #: exactly one caller (`cached_capability`'s format fallback).
+    #:
+    #: transformers names a checkpoint's head in that string, and mlx-lm
+    #: resolves a checkpoint by importing `mlx_lm.models.<model_type>` for a
+    #: CAUSAL LM. So "this repo says it is a `…ForDepthEstimation`" is positive
+    #: evidence that the text runner cannot open it, even though the task came
+    #: out unknown — and treating it as "we know nothing, let the file
+    #: extensions decide" is how `Intel/dpt-beit-base-384` landed in the
+    #: Playground's TEXT section.
+    unmapped_arch: bool = False
     # One sentence on what the task means, when we have one for it.
     task_help: str | None = None
     params: int | None = None
@@ -498,6 +542,18 @@ def _diffusers_task(class_name: str) -> str:
     return "text-to-image"
 
 
+def _declares_architecture(config: dict) -> bool:
+    """Does this config NAME a head at all?
+
+    Separate from `_architecture_task` returning None, which conflates "no
+    architectures key" with "a key this table does not know" — and those are
+    opposite facts for a caller deciding whether to trust the file extensions.
+    """
+    architectures = config.get("architectures")
+    name = architectures[0] if isinstance(architectures, list) and architectures else None
+    return isinstance(name, str) and bool(name)
+
+
 def _architecture_task(config: dict) -> str | None:
     architectures = config.get("architectures")
     name = architectures[0] if isinstance(architectures, list) and architectures else None
@@ -506,9 +562,13 @@ def _architecture_task(config: dict) -> str | None:
     for suffix, task in _ARCH_TASKS:
         if name.endswith(suffix):
             if suffix == "ForConditionalGeneration":
-                # One head, three jobs, and the config is what tells them apart.
-                if config.get("model_type") in _AUDIO_MODEL_TYPES:
+                # One head, four jobs, and the config is what tells them apart.
+                model_type = config.get("model_type")
+                if model_type in _AUDIO_MODEL_TYPES:
                     return "automatic-speech-recognition"
+                if isinstance(model_type, str) and any(
+                        marker in model_type.lower() for marker in _SPEECH_OUT_MARKERS):
+                    return "text-to-speech"
                 # A MULTIMODAL WRAPPER — a language model with a vision (and
                 # sometimes audio) tower bolted on, which is what every current
                 # Qwen3.5 and gemma-4 checkpoint is, including the ones this
@@ -760,6 +820,9 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         task = _architecture_task(config)
         if task:
             meta.task, meta.task_source = task, "the architecture in config.json"
+        elif _declares_architecture(config):
+            # Read, and not recognised — see `_RepoMeta.unmapped_arch`.
+            meta.unmapped_arch = True
 
     # A GGUF file names the LIBRARY and nothing else. It used to name the task
     # too — "text generation", unconditionally — which put a Load button on
@@ -1179,7 +1242,8 @@ def cached_capability(repo_id: str) -> CacheReading:
     # decisive formats, which is what `_engine` exists to combine.
     reading = _tasks.classify(meta.task)
     _row, capability = _engine(meta, reading)
-    if capability is None and meta.loaders and reading.support == _tasks.UNKNOWN:
+    if (capability is None and meta.loaders
+            and reading.support == _tasks.UNKNOWN and not meta.unmapped_arch):
         # Nothing DECISIVE and nothing that told us what this IS, but the
         # runners that read the format may still agree about it: a directory of
         # safetensors with a `config.json` mlx-lm can resolve is read only by
@@ -1256,6 +1320,15 @@ class CachedModel(NamedTuple):
     # reason: `on_disk` (a set of repo ids) cannot say WHICH of a repo's
     # curated quantizations is present, only that the repo is.
     files: frozenset[str] = frozenset()
+    # What the model DOES and why we do not run it, when we do not
+    # (`ai/tasks.py`). Carried so a picker can SHOW an unloadable download
+    # rather than silently dropping it: "you have this, and here is why there
+    # is no button" is a sentence only this side can write, and a page that
+    # omits the row instead answers the user's next question ("where did my
+    # download go?") with nothing at all.
+    task: str | None = None
+    support: str = _tasks.UNKNOWN
+    reason: str = ""
 
 
 #: `cached_models()`'s memo: cache dir -> (read time, signature, answer). See the
@@ -1404,7 +1477,8 @@ def cached_models() -> list[CachedModel]:
         repo_meta = _repo_meta(repo_dir)
         size = _repo_size(repo_dir, by_dir[name])
         models.append(CachedModel(
-            repo_id, reading.capability, size, repo_meta.loaders, repo_meta.names))
+            repo_id, reading.capability, size, repo_meta.loaders, repo_meta.names,
+            _tasks.label_for(reading.tag), reading.support, reading.reason))
     _CACHED_MODELS[cache_dir] = (_now(), signature, models)
     return models
 

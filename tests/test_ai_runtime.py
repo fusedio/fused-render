@@ -6211,6 +6211,105 @@ def test_a_cached_repo_with_no_task_but_readable_weights_is_text(
     assert dispatched[0]["capability"] == registry.TEXT_GENERATION
 
 
+def test_the_catalog_lists_what_it_cannot_run_with_the_reason(client, hub):
+    """D433: everything downloaded appears somewhere, and the unrunnable half
+    says why.
+
+    These repos are in no `capabilities[]` list by construction — that is what
+    a null capability means — so before this key they were absent from every
+    picker, which reads as a download that failed rather than as an answer.
+    """
+    _cached_repo(hub, "Intel/dpt-beit-base-384", files=("model.safetensors",),
+                 config={"architectures": ["DPTForDepthEstimation"], "model_type": "dpt"})
+    _cached_repo(hub, "SymphonyGen/SymphonyGen", files=("stage_one.pt",))
+    body = client.get("/api/ai/catalog").json()
+    rows = {row["id"]: row for row in body["unsupported"]}
+    assert set(rows) == {"Intel/dpt-beit-base-384", "SymphonyGen/SymphonyGen"}
+
+    dpt = rows["Intel/dpt-beit-base-384"]
+    assert dpt["label"] == "dpt-beit-base-384"
+    assert dpt["task"] == "depth estimation"
+    assert dpt["support"] == "no-runner"
+    assert dpt["reason"] == "Nothing on this machine runs depth estimation models."
+
+    # A repo nothing could identify: no task, no sentence. The card then says
+    # only "on this disk, unrunnable", which is the whole of what is known.
+    policy = rows["SymphonyGen/SymphonyGen"]
+    assert policy["support"] == "unknown"
+    assert policy["task"] is None and policy["reason"] == ""
+
+    # …and never as a loadable row: every app maps `capabilities[].models` and
+    # offers what it finds.
+    listed = {m["id"] for row in body["capabilities"] for m in row["models"]}
+    assert not listed & set(rows)
+
+
+def test_an_unmapped_architecture_is_not_a_chat_model(client, hub, dispatched):
+    """`Intel/dpt-beit-base-384`, and the case that proved the card is not
+    enough.
+
+    A card downloaded from the Hub often carries NO `pipeline_tag` — the one
+    that repo's API row reports is inferred server-side from its tags, and its
+    actual front matter is `license: mit` and nothing else. So the architecture
+    is the whole of the local evidence, `…ForDepthEstimation` was a suffix
+    nothing mapped, and "no task" then let the file extensions decide: config +
+    safetensors is `mlx-text`, one capability, chat model, Load button.
+
+    A declared architecture we cannot map is EVIDENCE, not silence — transformers
+    names the head in that string, and mlx-lm imports `mlx_lm.models.<type>` for
+    a causal LM. Both halves are fixed here: the suffix is mapped now (so the
+    card reads "depth estimation"), and the fallback refuses a config that
+    declares a head this build does not recognise, which is what keeps the next
+    unlisted suffix out of the text section.
+    """
+    _cached_repo(hub, "Intel/dpt-beit-base-384", files=("model.safetensors",),
+                 config={"architectures": ["DPTForDepthEstimation"], "model_type": "dpt"})
+    reading = ai_models.cached_capability("Intel/dpt-beit-base-384")
+    assert reading.capability is None
+    assert reading.support == "no-runner" and reading.tag == "depth-estimation"
+    assert _load(client, {"model": "Intel/dpt-beit-base-384"}).status_code == 400
+    assert dispatched == []
+
+
+def test_an_unrecognised_head_stays_unloadable_even_unmapped(client, hub, dispatched):
+    """The structural half on its own, with a head no table will ever name.
+
+    The suffix list is a snapshot of transformers' vocabulary and will go stale
+    again; this is what stops the next gap from being a Load button rather than
+    a missing label.
+    """
+    _cached_repo(hub, "org/novel", files=("model.safetensors",),
+                 config={"architectures": ["SomethingEntirelyNewForWidgets"],
+                         "model_type": "widget"})
+    assert ai_models.cached_capability("org/novel").capability is None
+    assert _load(client, {"model": "org/novel"}).status_code == 400
+    assert dispatched == []
+
+
+def test_a_ruled_out_task_is_not_rescued_by_readable_weights(client, hub, dispatched):
+    """The TTS-under-TEXT bug, which is a DIFFERENT path from SymphonyGen below.
+
+    A real speech-synthesis repo has everything the text branch wants — a
+    `config.json` mlx-lm could resolve, a directory of safetensors — so
+    `formats.loaders` answers `('mlx-text',)` and the config guard never fires.
+    What stops it is the other gate: the card SAID what this is
+    (`text-to-speech`), that task is one we have ruled out, and a task we
+    recognise and do not serve is never overruled by what the weight files look
+    like. Without it the loaders-unanimity fallback files this under text
+    generation, which is how a Qwen3-TTS repo came to sit in the Playground's
+    chat section with a Load button.
+    """
+    repo = _cached_repo(hub, "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                        files=("model.safetensors",), config={"model_type": "qwen3"})
+    (repo / "snapshots" / "c0ffee" / "README.md").write_text(
+        "---\npipeline_tag: text-to-speech\n---\n")
+    reading = ai_models.cached_capability("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+    assert reading.cached and reading.capability is None
+    assert reading.support == "no-runner" and reading.reason
+    assert _load(client, {"model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base"}).status_code == 400
+    assert dispatched == []
+
+
 def test_weights_with_no_config_are_not_a_chat_model(client, hub, dispatched):
     """`SymphonyGen/SymphonyGen`'s shape: four bare `.pt` checkpoints of a
     symbolic-music policy, no `config.json`, no card task this app serves.

@@ -2709,8 +2709,40 @@ export interface AiCatalogCapability {
   models: AiCatalogModel[];
 }
 
-export function getAiCatalog(): Promise<{ capabilities: AiCatalogCapability[] }> {
-  return getJson<{ capabilities: AiCatalogCapability[] }>("/api/ai/catalog");
+/** A model on this disk that NO capability can load, and why.
+ *
+ *  Deliberately NOT a row in `capabilities[].models` — every app reading that
+ *  payload maps it and offers what it finds, so a row in there is a row
+ *  something will try to load. This is a separate list a picker opts into
+ *  showing, and the Playground shows it because "you downloaded this and it
+ *  cannot run here" is a better answer than the model quietly not being in the
+ *  sidebar at all. */
+export interface AiUnsupportedModel {
+  id: string;
+  /** The repo's own name, without the owner. */
+  label: string;
+  size_gb: number | null;
+  /** What the model does, in the Hub's vocabulary ("text to speech", "depth
+   *  estimation"), or null when nothing on the repo said. */
+  task: string | null;
+  /** `no-runner` (a task we recognise and do not serve) or `unknown` (a
+   *  pipeline tag this build has never heard of, or no evidence at all). Never
+   *  `supported`: that has a capability and is in `capabilities[]`. */
+  support: "no-runner" | "unknown";
+  /** The sentence to print. Empty for `unknown` — an explanation we have not
+   *  earned is worse than none. */
+  reason: string;
+}
+
+export function getAiCatalog(): Promise<{
+  capabilities: AiCatalogCapability[];
+  /** Optional: an older server does not send it. */
+  unsupported?: AiUnsupportedModel[];
+}> {
+  return getJson<{
+    capabilities: AiCatalogCapability[];
+    unsupported?: AiUnsupportedModel[];
+  }>("/api/ai/catalog");
 }
 
 export interface AiLoadStarted {
