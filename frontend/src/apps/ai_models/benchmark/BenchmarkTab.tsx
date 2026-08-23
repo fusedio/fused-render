@@ -75,6 +75,7 @@ import {
   failureReason,
   formatLoad,
   formatMemory,
+  benchmarkableCapabilities,
   formatMetricSpecValue,
   formatPrimary,
   latestByModel,
@@ -129,6 +130,13 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   const { data, repos, scanEpoch } = scan;
   // Every run ever recorded, oldest first. `null` until the store has answered.
   const [runs, setRuns] = useState<AiBenchmarkRun[] | null>(null);
+  // The server's own answer to "which capabilities can a Run press actually
+  // measure" (`AiBenchmarkHistory.workloadCapabilities`, exactly `benchmark.
+  // WORKLOADS`' keys) — narrower than `CAPABILITY_ORDER`'s full list. `[]`
+  // before the first fetch resolves is safe: `loading` (below) gates every
+  // render that reads `all` until `runs` and this land together out of the
+  // same response.
+  const [workloadCapabilities, setWorkloadCapabilities] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   // Which capability has a run in flight, and on which model. **Keyed by
   // capability, not a single slot**, because that is the unit the server
@@ -184,6 +192,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
       (history) => {
         if (!alive) return;
         setRuns(history.runs);
+        setWorkloadCapabilities(history.workloadCapabilities);
         setError(null);
       },
       (e) => {
@@ -343,6 +352,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
       // the same discipline the Local tab's delete follows.
       const history = await deleteAiBenchmarks([id]);
       setRuns(history.runs);
+      setWorkloadCapabilities(history.workloadCapabilities);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -361,10 +371,24 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // what keeps a history reachable after its model was deleted — the runs are
   // still the truth about what happened, and dropping it from the list would
   // silently hide them.
+  //
+  // **The two SPECULATIVE sources — `CAPABILITY_ORDER` and the on-disk
+  // repos — are filtered to `workloadCapabilities` first; recorded RUNS
+  // never are.** A capability with a downloaded model but no workload (video
+  // generation today) would otherwise render a section whose only Run
+  // outcome is a 400 — `/api/ai/benchmark`'s own refusal, since the POST
+  // route checks the identical `benchmark.WORKLOADS` this list is filtered
+  // against. A recorded run, by contrast, could only exist for a capability
+  // that HAD a workload at the time it ran — the same route already refused
+  // it otherwise — so it is real history regardless of what the CURRENT
+  // table says, and hiding it would be the same silent loss the comment
+  // above already argues against for a deleted model.
   const all = orderCapabilities([
     ...new Set([
-      ...CAPABILITY_ORDER,
-      ...repos.map((r) => r.capability).filter((c): c is string => !!c),
+      ...benchmarkableCapabilities(
+        [...CAPABILITY_ORDER, ...repos.map((r) => r.capability).filter((c): c is string => !!c)],
+        workloadCapabilities,
+      ),
       ...(runs ?? []).map((r) => r.capability),
     ]),
   ]);

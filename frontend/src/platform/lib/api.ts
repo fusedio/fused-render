@@ -2921,6 +2921,14 @@ export interface AiBenchmarkHistory {
    *  each run, because the page has to caption the comparison before it has
    *  drawn a single run. */
   machine: AiBenchmarkMachine;
+  /** Exactly `benchmark.WORKLOADS`' keys (server side) — the capabilities a
+   *  Run press can actually measure, narrower than the registry's full
+   *  capability list. Video generation is the first capability this omits
+   *  (`benchmark.NO_WORKLOAD_YET`): a real workload would be a multi-GB,
+   *  minutes-long render behind every press. The Benchmark tab filters its
+   *  capability selector to this set rather than hardcoding the gap, so a
+   *  future workload lights the section up with no frontend change. */
+  workloadCapabilities: string[];
 }
 
 export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {
