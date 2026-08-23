@@ -64,7 +64,7 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
     # A no-op that just says "there was nothing to stop" by default — most
     # tests here are warm and must never reach it at all; the ones that force a
-    # cold load override this with a recording fake (see D444's section below).
+    # cold load override this with a recording fake (see D446's section below).
     monkeypatch.setattr(benchmark.supervisor, "unload", lambda **kwargs: False)
     return clock
 
@@ -405,7 +405,7 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     assert record["error"] == "some/text-model did not finish loading in time"
 
 
-# -- unload after a cold benchmark (D444) ----------------------------------------
+# -- unload after a cold benchmark (D446) ----------------------------------------
 #
 # A benchmark that had to cold-load the model tears it back down when the run
 # ends, success or failure alike, because a measurement is not a claim on the

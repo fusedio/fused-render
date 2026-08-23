@@ -7941,7 +7941,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   existing `model_loading` handling already covers it.
 - **AI-14** **A local model can be BENCHMARKED on demand: a fixed workload per
   capability, run against one model, recorded forever with its throughput, its
-  memory, its load time and the machine it ran on** (D441, D442, D443). The AI
+  memory, its load time and the machine it ran on** (D443, D444, D445). The AI
   Models page's Benchmark tab (`/ai-models/benchmark`) draws one section per
   capability listing that capability's downloaded models with a Run button;
   `fused_render/ai/benchmark.py` performs the run and
@@ -7996,12 +7996,12 @@ an AI Models page that could say what was on disk but not what was *running*.
     decode-throughput measure and does not need intelligible speech, and this
     commits no binary asset to the repo. Stated risk: a model with
     speech-dependent early-exit behaviour could look faster on a tone than on
-    real audio. **D445 replaced this with a real 30-second clip fetched from
+    real audio. **D447 replaced this with a real 30-second clip fetched from
     our own mirror plus a word-error-rate accuracy metric, and was reverted
     the same day**: the clip asset was never published, so every machine
     failed every speech run with `SpeechClipUnavailable` — a live outage
     worse than the risk the tone accepted. The clip design and the WER DP are
-    unchanged in D445's own text and ready to re-land (a `git revert` of the
+    unchanged in D447's own text and ready to re-land (a `git revert` of the
     revert) once a human publishes the asset; until then this is the accurate
     description of what runs.
   - **AI-14g** **One benchmark at a time per capability, enforced server-side,
@@ -8134,7 +8134,7 @@ an AI Models page that could say what was on disk but not what was *running*.
     a bring-up that neither succeeds nor reports.
 
   - **AI-14k** **A benchmark that had to cold-load the model UNLOADS it when the
-    run ends** (D444) — success, a failed workload, a timeout, or an exception
+    run ends** (D446) — success, a failed workload, a timeout, or an exception
     mid-measurement alike, via a `try`/`finally` around the measure-and-read
     phase — **and never unloads a model that was already resident.** The signal
     is `_load_to_ready`'s own return value (`None` for warm, a float for cold),

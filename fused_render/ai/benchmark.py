@@ -34,11 +34,11 @@ one benchmark. The risk, stated rather than hidden: a model with
 speech-dependent early-exit behaviour could look faster on a tone than on real
 audio.
 
-**D445 tried replacing this tone with a real clip fetched from our own mirror
-plus a word-error-rate metric, and was reverted (see D445's updated
+**D447 tried replacing this tone with a real clip fetched from our own mirror
+plus a word-error-rate metric, and was reverted (see D447's updated
 DECISIONS.md entry).** The asset was never published, so every machine hit
 `SpeechClipUnavailable` on every speech run — a live, user-visible outage
-rather than a latent risk. The design in D445 is still the right one for when
+rather than a latent risk. The design in D447 is still the right one for when
 the clip exists; this file is back to the tone in the meantime, and re-landing
 it is a `git revert` of the revert.
 
@@ -159,7 +159,7 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
             "guidance": 4.0,
         }),
     ),
-    # D445 (module docstring) briefly replaced this with a real clip + a
+    # D447 (module docstring) briefly replaced this with a real clip + a
     # word-error-rate metric at revision=2, and was reverted before the asset
     # existed anywhere to fetch — every machine failed every speech run with
     # `SpeechClipUnavailable`. Back to the tone, back to revision=1, matching
@@ -811,7 +811,7 @@ def run(model: str, capability: str) -> dict:
        reading two numbers side by side.
     4. The timed pass.
     5. Memory and device off `describe()`.
-    6. **Unload, if step 2 loaded it** (D443) — success, failure or exception
+    6. **Unload, if step 2 loaded it** (D445) — success, failure or exception
        alike. A benchmark is a measurement, not a claim on the model's
        residency, so a cold run must not leave gigabytes parked after the
        button stops spinning; a WARM run (step 2 returned `None`) unloads
@@ -869,7 +869,7 @@ def run(model: str, capability: str) -> dict:
                 model, capability)
             record["ok"] = True
         finally:
-            # D443: a benchmark that had to COLD-LOAD the model tears it back
+            # D445: a benchmark that had to COLD-LOAD the model tears it back
             # down when it is done — success, a failed workload, a timeout, or
             # an exception mid-measurement alike, which is exactly the `finally`
             # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`
