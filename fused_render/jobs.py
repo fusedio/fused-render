@@ -52,14 +52,18 @@ STATES = (RUNNING,) + TERMINAL_STATES
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
 
-# How long a finished job stays on screen. Long enough to be noticed by someone
-# who was not staring at the corner when it landed, short enough that the
-# manager is a picture of what is happening NOW and empties itself.
+# How long a finished job stays on screen. The corner is meant to answer "is
+# my work done", not to be read as a log — once a `done`/`cancelled` row has
+# had a moment to register, it should clear itself so the manager stays a
+# picture of what is happening NOW, not an accumulating list of what already
+# happened. The client (`pollInterval` in jobs.ts) holds a matching grace
+# window on ACTIVE-cadence polling after the last running job disappears, so
+# the row is swept close to on-schedule instead of lagging behind a slow poll.
 #
 # An `error` is exempt: it is the one outcome the user may need to act on, so
 # it stays until dismissed — the same rule the persistent-error toast follows
 # (lib/toast's ttlMs=0). MAX_JOBS is what bounds it.
-FINISHED_TTL_S = 30.0
+FINISHED_TTL_S = 3.0
 
 # A running job with no update in this long is reported as `stalled`. Above
 # every reporter's poll cadence by a wide margin (the examples report at

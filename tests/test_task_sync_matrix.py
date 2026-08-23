@@ -565,9 +565,13 @@ def test_busy_poisoning_by_an_orphan_holds_the_board(client, target, spawned,
 
 
 def test_done_job_row_survives_long_enough_for_the_dock(target, spawned):
-    """SYMPTOM 2's dock half: the `done` job row must outlive at least one
-    dock poll cycle (1-5s) — FINISHED_TTL_S is the budget. Pin both that it
-    exists right after the verdict and that the sweep takes it inside 60s."""
+    """SYMPTOM 2's dock half: the `done` job row must survive at least until
+    FINISHED_TTL_S (now a few seconds, not the old 30s) — the budget the dock
+    relies on. That budget only holds because the dock's poll (`pollInterval`
+    in jobs.ts) keeps its 1s ACTIVE cadence for a grace window after the last
+    running job disappears, instead of dropping to its 5s idle cadence and
+    missing a sweep this short. Pin both that the row exists right after the
+    verdict and that the sweep takes it inside 60s."""
     entry = schedule.create(str(target), "watch me finish", _in(-5))
     _tick()
     schedule._turn_tick(dict(_entry()), "r-1", DummyAgent(),

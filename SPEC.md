@@ -4950,9 +4950,14 @@ stop it short of quitting the app.
   likely is not. It is dropped
   entirely after `STALE_DROP_S` (10 min) so a dead reporter cannot wedge the
   list for the session.
-- **BG-6** **Retention.** A finished record stays `FINISHED_TTL_S` (30s) — long
-  enough to be noticed by someone who was not watching the corner, short enough
-  that the manager stays a picture of *now*. An **error is exempt** and stays
+- **BG-6** **Retention.** A finished record stays `FINISHED_TTL_S` (3s) — the
+  corner is meant to answer "is my work done", not to be read as a log, so a
+  `done`/`cancelled` row clears itself almost as soon as it lands and the
+  manager stays a picture of *now* rather than an accumulating list. The
+  client's poll (`pollInterval`, jobs.ts) holds its fast (1s) cadence for a
+  grace window after the last running job disappears so it keeps up with this
+  short a sweep instead of lagging behind on its idle (5s) cadence. An
+  **error is exempt** and stays
   until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
