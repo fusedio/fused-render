@@ -259,10 +259,9 @@ def _int_path(coords, ring: bool):
 
 
 def _shoelace2(points) -> int:
-    import numpy as np
-
     x, y = points[:, 0], points[:, 1]
-    return int(x @ np.roll(y, -1) - np.roll(x, -1) @ y)
+    main = x[:-1] * y[1:] - x[1:] * y[:-1]
+    return int(main.sum() + x[-1] * y[0] - x[0] * y[-1])
 
 
 def _polygon_rings(polygon):
@@ -285,12 +284,13 @@ def _polygon_rings(polygon):
     return rings
 
 
-def _mvt_features(geometry):
+def _mvt_features(geometry, type_id=None):
     """(geometry_type, command_integers) features for one shapely geometry."""
     import numpy as np
     import shapely
 
-    type_id = shapely.get_type_id(geometry)
+    if type_id is None:
+        type_id = shapely.get_type_id(geometry)
     if type_id in (0, 4):
         points = np.rint(shapely.get_coordinates(geometry)).astype(np.int64)
         if len(points):
@@ -1269,17 +1269,19 @@ class VectorEngine:
         geometries = shapely.simplify(
             geometries, SIMPLIFY_TOLERANCE, preserve_topology=False
         )
+        type_ids = shapely.get_type_id(geometries)
+        drawable = ~(shapely.is_missing(geometries) | shapely.is_empty(geometries))
         columns = {
             name: table.column(name).to_pylist()
             for name in table.column_names
             if name != geometry_name
         }
         writer = LayerWriter("layer", MVT_EXTENT)
-        for row, geometry in enumerate(geometries):
-            if geometry is None or geometry.is_empty:
-                continue
+        for row in np.flatnonzero(drawable):
             properties = {name: values[row] for name, values in columns.items()}
-            for geometry_type, commands in _mvt_features(geometry):
+            for geometry_type, commands in _mvt_features(
+                geometries[row], int(type_ids[row])
+            ):
                 writer.feature(geometry_type, commands, properties)
         return writer.tile()
 
