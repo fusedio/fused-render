@@ -969,8 +969,17 @@ a.pg-hero-repo:hover {
   /* Padding rather than offset: the word needs room around it (flush to the
      box's rounded corner it read as cropped), and giving the padding to the
      button means the hit area grows with it instead of just the gap. */
-  padding: 3px 7px;
-  border-radius: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+}
+
+/* The prompt keeps a lane clear for it — ALWAYS, not only while Clear is on
+   screen: the text wraps inside this padding, so a lane that appeared with the
+   button would rewrap the whole prompt (and, with `useAutoGrow` writing an
+   inline height, leave the box a line short — the D453 bug). ~64px is Clear at
+   its widest plus the corner offset. */
+.pg-composer-stack textarea {
+  padding-right: 64px;
 }
 
 .pg-clear-corner:hover:not(:disabled) {

@@ -17,6 +17,10 @@ export interface Config {
   // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
   // every mount lives under.
   mounts_root: string;
+  // Where shell code may write scratch files — bytes the app made and can
+  // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
+  // the writer mkdirs it, and /api/fs/mkdir makes ONE level at a time.
+  cache_dir: string;
   // Whether this machine can raise the OS file/folder dialog from the server
   // process (server/dirpicker.py) — false on a hosted deploy with no GUI
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own

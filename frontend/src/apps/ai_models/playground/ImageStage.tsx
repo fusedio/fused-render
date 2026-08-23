@@ -325,19 +325,20 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   /** A webcam frame has no path — it does not exist anywhere yet — so this one
    *  case genuinely has to be written before it can be pointed at. It lands in
-   *  `<home>/ai/inputs`, beside the `ai/images` renders go to and NOT in it:
-   *  that directory is what the preview sweeper patrols, and a capture filed
-   *  among the outputs is a picture the user cannot tell from a generated one.
-   *  Both levels are mkdir'd — `/api/fs/mkdir` creates ONE directory by design
-   *  (a typo must not spawn a tree), and on a machine that has never rendered
-   *  anything neither level exists. */
+   *  the app's own scratch dir, `<cache>/image-playground`
+   *  (`~/.fused-render/cache/…`), and NOT anywhere in the user's home: bytes
+   *  this app invented belong with the app's state, and a capture dropped in
+   *  `ai/images` — a folder the user browses, holding renders — is a picture
+   *  nobody can tell from a generated one. Both levels are mkdir'd, because
+   *  `/api/fs/mkdir` creates ONE directory by design (a typo must not spawn a
+   *  tree) and on a fresh machine neither exists. */
   const save = async (data: Blob, name: string) => {
     setError(null);
     setAttaching(true);
     try {
       const config = await getConfig();
-      await mkdir(`${config.home}/ai`).catch(() => {});
-      const dir = `${config.home}/ai/inputs`;
+      await mkdir(config.cache_dir).catch(() => {});
+      const dir = `${config.cache_dir}/image-playground`;
       await mkdir(dir).catch(() => {});
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const path = `${dir}/${stamp}-${name}`;
