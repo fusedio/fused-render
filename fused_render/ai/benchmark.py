@@ -322,7 +322,14 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
     while True:
         start = _now()
         first_token_at = None
-        done = {}
+        # `None`, not `{}` — a stream that closes WITHOUT ever yielding a
+        # `done` frame (a worker killed or OOM-reaped mid-generation, the
+        # socket simply reaching EOF with no exception) must not be
+        # indistinguishable from "measured, nothing to report". `{}` used to
+        # stand for both, and `done.get("ok", True)` then defaulted a dead
+        # worker to a SUCCESSFUL run with every metric null — a benchmark
+        # that measured nothing recorded as the fastest possible one.
+        done: dict | None = None
         try:
             for event in supervisor.generate_text(model, body):
                 kind = event.get("type")
@@ -337,6 +344,13 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
             # loses no partial measurement.
             _await_settled_load(model, registry.TEXT_GENERATION, deadline)
     end = _now()
+    if done is None:
+        # The stream ended clean (no exception reached here — that path is
+        # `run()`'s own `except BaseException`) but never sent the one frame
+        # that says how it went. A dead worker is a fact about this model on
+        # this machine, not a run with nothing to report.
+        raise supervisor.SupervisorError(
+            "the model process ended without a result")
     if done.get("cancelled"):
         # `ok` is TRUE on this frame — the worker did what it was told — so
         # reading only `ok` recorded a truncated generation's token count as a

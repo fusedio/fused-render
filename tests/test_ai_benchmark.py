@@ -766,6 +766,31 @@ def test_a_worker_that_reports_a_cancelled_generation_is_not_a_measurement(
     assert bench_store.read() == []
 
 
+def test_a_stream_that_ends_with_no_done_frame_is_a_failure_not_a_success(
+        bench, monkeypatch):
+    """A worker killed or OOM-reaped mid-generation can close its side of the
+    connection cleanly (no exception here — that path is `run()`'s own
+    `except BaseException`, covered elsewhere) without ever sending the one
+    frame that says how the generation went. The bug: `done` started as `{}`
+    and `not done.get("ok", True)` defaults a MISSING frame to success, so a
+    dead worker recorded `ok: true` with every metric null — the fastest
+    possible measurement of nothing. A benchmark that measured nothing is a
+    failed run, not a successful one with no numbers."""
+    def generate_text(model, body):
+        bench.advance(1.0)
+        yield {"type": "chunk", "text": "x"}
+        # The stream just... ends. No "done" frame, no exception.
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert record["error"]
+    assert record["metrics"] == {}
+    stored = bench_store.read()
+    assert stored[-1]["id"] == record["id"]
+    assert stored[-1]["ok"] is False
+
+
 def test_a_cancelled_image_render_is_a_cancel_not_a_failed_model(bench, monkeypatch):
     """`generate_image`/`generate_transcript` say it with
     `SupervisorError("cancelled")` — the literal `start_image` switches on — so it
