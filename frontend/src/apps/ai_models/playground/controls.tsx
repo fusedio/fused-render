@@ -5,7 +5,7 @@
 // stage's title row asks for them (D430, D431, reshaped). Each control is a
 // slider+number pair with a one-line hint, defaults baked in and a
 // per-control reset once a value moves.
-import { useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
 /** The stage's one-line title, with the config cog right-aligned on the same
@@ -206,33 +206,116 @@ export function RailChips<T extends string>({
   );
 }
 
-/** Example prompts, as one horizontal row of chips directly under the input.
+/** One authored example. Three fields, because a prompt worth running is too
+ *  long to be its own label: `prompt` is the detailed thing that gets run,
+ *  `name` is the two-or-three words the pill shows, `icon` is what makes the
+ *  row scannable at a glance (starterIcons.tsx).
+ *
+ *  Stages extend it — the embed stage's samples carry the corpus their query
+ *  is searched against — which is why `StarterCards` is generic over the
+ *  sample type and hands the WHOLE sample back on a pick rather than a string. */
+export interface Starter {
+  name: string;
+  icon: ReactNode;
+  prompt: string;
+  /** What hover says, when the prompt alone does not say it. The embed stage's
+   *  prompt is a three-word query, and the interesting half of that sample is
+   *  what the query is searched AGAINST. */
+  detail?: string;
+}
+
+/** How many pills a page WANTS. Four fills the 680px column as one row, and
+ *  every stage authors eight, so rotate is two pages at full width. */
+const STARTER_PAGE = 4;
+
+/** …and the fewest it will fall to. The row never ellipsises a name — when the
+ *  width runs out it shows one pill fewer (see the measure below), and the
+ *  settings card's narrower column is the case that asked for it. Two rather
+ *  than three because a long-named pair can outgrow a very narrow column too,
+ *  and three clipped names are worse than two whole ones. */
+const STARTER_MIN = 2;
+
+/** Example prompts, as one row of outlined pills under the input: an icon and
+ *  a short name each, with a round rotate button at the end (D451).
+ *
  *  Research's one consistent finding on empty inputs (Open WebUI chips, AI
  *  Studio gallery, Replicate pre-fills): a blank box gives no value, a
  *  clickable example gives immediate value. They sit under the box rather than
- *  in a centered empty state because that is where the thing they fill is —
- *  one glance from the cursor, and the row scrolls sideways rather than
- *  growing the column. */
-export function StarterPrompts({
-  prompts,
+ *  in a centered empty state because that is where the thing they fill is.
+ *
+ *  Only a PAGE of them shows, with rotate for the rest: eight full prompts laid
+ *  out at once is a wall in front of the input, and the reader only needs one.
+ *  Rotation steps by whatever is on screen and is modular over the authored
+ *  order — no shuffle, so clicking back around lands on the same pills.
+ *
+ *  How many is on screen is MEASURED, never truncated: the pills hug their
+ *  names, so a narrower column shows one pill fewer rather than four cut-off
+ *  labels. See the layout effect below. */
+export function StarterCards<S extends Starter>({
+  samples,
   onPick,
 }: {
-  prompts: string[];
-  onPick: (prompt: string) => void;
+  samples: S[];
+  onPick: (sample: S) => void;
 }) {
+  const [offset, setOffset] = useState(0);
+  // How many fit, measured rather than guessed at a breakpoint: the pills hug
+  // their names, so what fits depends on which four names are up — a threshold
+  // in px would clip one page and leave a gap on another.
+  const [page, setPage] = useState(STARTER_PAGE);
+  const rowRef = useRef<HTMLDivElement>(null);
+  // The loop is: ask for the full page, and while the row overflows, ask for
+  // one fewer. It settles in at most two extra renders and cannot oscillate —
+  // the row is `flex: 1`, so its own width does not change with the count.
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    if (page > STARTER_MIN && row.scrollWidth > row.clientWidth + 1) setPage(page - 1);
+  }, [page, offset, samples]);
+  // A resize re-opens the question upwards: dropping a pill is a one-way
+  // ratchet within a layout, so a column that grows back (the settings card
+  // closing) has to re-ask for the full page and let the measure trim again.
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setPage(STARTER_PAGE));
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
+  const shown = Array.from({ length: Math.min(page, samples.length) }, (_, at) => {
+    return samples[(offset + at) % samples.length];
+  });
   return (
-    <div className="pg-starter-row">
-      {prompts.map((prompt) => (
+    <div className="pg-starters">
+      <div className="pg-starter-grid" ref={rowRef}>
+        {shown.map((sample) => (
+          <button
+            key={sample.name}
+            type="button"
+            className="pg-starter-card"
+            // The pill shows a name; the prompt it stands for is only legible
+            // on hover, so the title is load-bearing here, not decoration.
+            title={sample.detail ?? sample.prompt}
+            onClick={() => onPick(sample)}
+          >
+            <span className="pg-starter-icon" aria-hidden="true">
+              {sample.icon}
+            </span>
+            <span className="pg-starter-name">{sample.name}</span>
+          </button>
+        ))}
+      </div>
+      {samples.length > page && (
         <button
-          key={prompt}
           type="button"
-          className="pg-starter-chip"
-          title={prompt}
-          onClick={() => onPick(prompt)}
+          className="pg-starter-rotate"
+          title="Show other examples"
+          aria-label="Show other examples"
+          onClick={() => setOffset((at) => (at + page) % samples.length)}
         >
-          {prompt}
+          {MenuIcons.refresh}
         </button>
-      ))}
+      )}
     </div>
   );
 }

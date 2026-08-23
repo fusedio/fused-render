@@ -924,48 +924,132 @@ a.pg-hero-repo:hover {
   }
 }
 
-/* Example prompts: one horizontal row under the input, not a centered empty
-   state. It scrolls sideways rather than wrapping — wrapping a row of full
-   sentences would push the result below the fold on every stage. */
+/* Example prompts: one row of outlined pills under the input, each an icon and
+   a short name, with a round rotate button at the end. Pills rather than the
+   /apps hub's filled cards: a card carries a picture and a meta row, and these
+   carry two words — at pill size a fill and a shadow read as four heavy blocks
+   under a quiet input. Only the name is drawn; the prompt itself is two or
+   three clauses and lives in the hover title.
 
-.pg-starter-row {
+   Each pill HUGS its name (flex, `flex: none`) instead of taking an equal grid
+   column: equal columns are as wide as the longest name and truncate every
+   other one, which is the one thing a two-word label cannot afford. Nothing
+   here ellipsises; when the row runs out of width the COUNT drops instead —
+   `StarterCards` measures this box and shows one pill fewer (controls.tsx), so
+   the settings card's narrower column (D450) gets three whole names rather
+   than four cut ones. `overflow: hidden` is what makes that measurement
+   possible (scrollWidth vs clientWidth) and is never seen. No label above the
+   row (D448 deleted exactly that). */
+
+.pg-starters {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  /* Room for the focus ring. */
+  padding: 2px;
+}
+
+.pg-starter-grid {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-wrap: nowrap;
   gap: 8px;
-  overflow-x: auto;
-  /* Room for the chip's focus ring. */
-  padding: 2px;
-  /* No scrollbar: it is a one-line row of examples, and a bar under it reads
-     as chrome on a control. The chips themselves show there is more. */
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overflow: hidden;
 }
 
-.pg-starter-row::-webkit-scrollbar {
-  display: none;
-}
-
-.pg-starter-chip {
+.pg-starter-card {
   flex: none;
-  max-width: 260px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font: inherit;
   font-size: 12.5px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
+  padding: 7px 14px;
   text-align: left;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
 }
 
-.pg-starter-chip:hover {
+.pg-starter-card:hover {
   color: var(--fg);
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.08);
+}
+
+.pg-starter-icon {
+  display: flex;
+  flex: none;
+  /* A shade quieter than the name at rest — the glyph is for scanning the row,
+     the name is what is being read. */
+  opacity: 0.75;
+}
+
+.pg-starter-card:hover .pg-starter-icon {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Round, and the pill's own height: it is chrome on the row, not a ninth
+   example. Sized in one place — the pills' 12.5px line box plus their padding
+   and border — so the circle sits on the same baseline band as the row. */
+.pg-starter-rotate {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 33px;
+  height: 33px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.pg-starter-rotate:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.pg-starter-rotate svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The transcribe stage's picked script (D451): the words to say into the mic,
+   sitting above the record button. Quiet — the reader is looking at the button
+   and glancing here, not the other way round. */
+.pg-script {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 8px;
+}
+
+.pg-script-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
 }
 
 /* Label above, card below. Text and image stages both use it. */

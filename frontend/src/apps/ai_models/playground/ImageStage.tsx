@@ -24,7 +24,8 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterPrompts } from "./controls";
+import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterCards, type Starter } from "./controls";
+import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
@@ -60,10 +61,67 @@ const ASPECTS = [
   { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768 },
 ] as const;
 
-const STARTERS = [
-  "A lighthouse on a cliff at golden hour, oil painting",
-  "Isometric cutaway of a cozy coffee shop, warm light, detailed",
-  "Studio photo of a chrome robot holding a daisy, soft shadows",
+// Eight authored examples — two pages of four (D451). Every one names a
+// subject AND a way of rendering it (medium, light, lens, texture), because
+// that pairing is the thing a newcomer to image models does not know to write
+// and the difference it makes is the whole demonstration.
+const STARTERS: Starter[] = [
+  {
+    name: "Lighthouse at dusk",
+    icon: StarterIcons.landscape,
+    prompt:
+      "An oil painting of a lighthouse on a granite cliff at golden hour, heavy visible brush " +
+      "strokes, warm rim light down the tower, cold blue sea below, dramatic clouds.",
+  },
+  {
+    name: "Coffee shop cutaway",
+    icon: StarterIcons.cube,
+    prompt:
+      "Isometric cutaway of a two-storey corner coffee shop, warm interior lighting, tiny " +
+      "figures at the tables, plants on every windowsill, detailed miniature-diorama look.",
+  },
+  {
+    name: "Chrome robot",
+    icon: StarterIcons.robot,
+    prompt:
+      "Studio photograph of a polished chrome robot holding a single daisy, soft shadows, " +
+      "seamless grey backdrop, shallow depth of field, 85mm lens.",
+  },
+  {
+    name: "Night market",
+    icon: StarterIcons.camera,
+    prompt:
+      "Street photograph of a rainy night market, neon signs reflected in the puddles, steam " +
+      "rising off the food stalls, motion-blurred crowd, shot wide open at f/1.8.",
+  },
+  {
+    name: "Antique chart",
+    icon: StarterIcons.map,
+    prompt:
+      "An invented island drawn as an antique nautical chart: hand-lettered place names, a " +
+      "compass rose, sea monsters in the margins, aged parchment texture, ink and sepia.",
+  },
+  {
+    name: "Cat in orbit",
+    icon: StarterIcons.sparkle,
+    prompt:
+      "A ginger cat in a hand-stitched astronaut suit floating in a cupola window, Earth's " +
+      "day-night terminator behind it, photorealistic, gentle backlight, fine dust in the air.",
+  },
+  {
+    name: "Botanical plate",
+    icon: StarterIcons.leaf,
+    prompt:
+      "A botanical illustration plate of a fruit that does not exist: cross-section beside the " +
+      "whole fruit, fine ink outlines with watercolour washes, a Latin label underneath.",
+  },
+  {
+    name: "Bauhaus poster",
+    icon: StarterIcons.pen,
+    prompt:
+      "A Bauhaus-style concert poster in three flat colours — red, cream and black — bold " +
+      "geometric shapes, large sans-serif type blocked out, slight offset-print texture.",
+  },
 ];
 
 interface Run {
@@ -283,7 +341,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {/* Examples first, under the box they fill; hidden once a picture is on
           screen, which is what that space is then for. */}
-      {!run && <StarterPrompts prompts={STARTERS} onPick={(p) => void generate(p)} />}
+      {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
 
       {/* Chips lead the panel; sliders and the seed follow. */}
       <ConfigPanel open={configOpen}>

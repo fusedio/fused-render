@@ -19,20 +19,139 @@
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, ModelLoading, watchJob } from "./client";
-import { ConfigPanel, StageHeader } from "./controls";
+import { ConfigPanel, StageHeader, StarterCards, type Starter } from "./controls";
+import { StarterIcons } from "./starterIcons";
 
-// The prefill: a query about food against lines where the matches say
-// "delicious" and "bakery", not "food" — a keyword search finds nothing here,
-// which is exactly the point being made.
-const DEFAULT_QUERY = "good things to eat";
-const DEFAULT_LINES = [
-  "The pasta at that little place was delicious",
-  "My laptop battery died on the train",
-  "Fresh bread from the corner bakery",
-  "The hike took four hours in the rain",
-  "She fixed the bug by reverting one commit",
-  "We grilled vegetables in the garden all evening",
-].join("\n");
+// The examples (D451). A sample here is a whole SCENARIO, not a prompt: the
+// query and the six lines it is searched against travel together, because the
+// demonstration is the gap between them. Every set is built the same way —
+// three lines that match the query in meaning while sharing NO word with it,
+// three that share nothing at all — so a keyword search would come back empty
+// on exactly the lines this ranks first.
+interface EmbedSample extends Starter {
+  lines: string[];
+}
+
+const STARTERS: EmbedSample[] = [
+  {
+    name: "Good food",
+    icon: StarterIcons.bowl,
+    prompt: "good things to eat",
+    detail: 'Rank six lines against "good things to eat" — the matches never say "food"',
+    lines: [
+      "The pasta at that little place was delicious",
+      "My laptop battery died on the train",
+      "Fresh bread from the corner bakery",
+      "The hike took four hours in the rain",
+      "She fixed the bug by reverting one commit",
+      "We grilled vegetables in the garden all evening",
+    ],
+  },
+  {
+    name: "Debugging",
+    icon: StarterIcons.code,
+    prompt: "when the code finally behaved",
+    detail: 'Rank six lines against "when the code finally behaved" — no line repeats a word of it',
+    lines: [
+      "She reverted one commit and the tests went green",
+      "The pasta was far too salty",
+      "Three hours staring at a missing comma",
+      "Our flight left without us",
+      "The stack trace pointed at the wrong file",
+      "He repainted the kitchen on Sunday",
+    ],
+  },
+  {
+    name: "Money",
+    icon: StarterIcons.chart,
+    prompt: "spending too much",
+    detail: 'Rank six lines against "spending too much" — the matches talk about rent and groceries',
+    lines: [
+      "The rent went up again in March",
+      "I biked out to the lake at sunrise",
+      "Half my salary vanishes into this flat",
+      "The kettle finally boiled",
+      "Groceries cost nearly double what they did",
+      "We watched two films back to back",
+    ],
+  },
+  {
+    name: "Worn out",
+    icon: StarterIcons.heart,
+    prompt: "I need rest",
+    detail: 'Rank six lines against "I need rest" — the matches never use the word tired',
+    lines: [
+      "I fell asleep on the sofa before nine",
+      "The spreadsheet balanced on the first try",
+      "Four nights in a row of broken sleep",
+      "She won the tournament in straight sets",
+      "My eyes will not stay open past lunch",
+      "The garden badly needs weeding",
+    ],
+  },
+  {
+    name: "Getting away",
+    icon: StarterIcons.plane,
+    prompt: "a holiday somewhere warm",
+    detail: 'Rank six lines against "a holiday somewhere warm" — no line says holiday',
+    lines: [
+      "Two weeks on a Greek island in September",
+      "The compiler warning turned out to be harmless",
+      "I booked a night train south to Trieste",
+      "He alphabetised the whole bookshelf",
+      "My passport expires next month",
+      "Rain again, all afternoon",
+    ],
+  },
+  {
+    name: "Something to hear",
+    icon: StarterIcons.music,
+    prompt: "something to listen to",
+    detail: 'Rank six lines against "something to listen to" — the matches are about records and playing',
+    lines: [
+      "That album got me through the whole winter",
+      "The router needed a reboot again",
+      "She plays cello in a tiny quartet",
+      "I fixed the squeaky front door",
+      "Vinyl crackle before the first track",
+      "The bus was late for the third time",
+    ],
+  },
+  {
+    name: "Outside today",
+    icon: StarterIcons.landscape,
+    prompt: "what it is like outside",
+    detail: 'Rank six lines against "what it is like outside" — the matches describe weather without naming it',
+    lines: [
+      "Fog sat in the valley until noon",
+      "The invoice is still unpaid",
+      "Hail bounced off the car roof",
+      "He taught himself to solder",
+      "Twenty-nine degrees and not a breath of wind",
+      "The cat slept through the entire day",
+    ],
+  },
+  {
+    name: "Learning",
+    icon: StarterIcons.book,
+    prompt: "picking up a new skill",
+    detail: 'Rank six lines against "picking up a new skill" — the matches are practice, not the word skill',
+    lines: [
+      "Six months of evening classes in Portuguese",
+      "The fridge is empty again",
+      "I finally understand how recursion works",
+      "The train was cancelled without warning",
+      "Practising scales an hour a day",
+      "We repainted the hallway twice",
+    ],
+  },
+];
+
+// The prefill is the first sample: a query about food against lines where the
+// matches say "delicious" and "bakery", not "food" — a keyword search finds
+// nothing here, which is exactly the point being made.
+const DEFAULT_QUERY = STARTERS[0].prompt;
+const DEFAULT_LINES = STARTERS[0].lines.join("\n");
 
 // One under embed_common.MAX_ITEMS (64): the query rides in the same batch.
 const MAX_LINES = 63;
@@ -56,9 +175,13 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const run = async () => {
-    const asked = query.trim();
-    const items = lines
+  // Both inputs are arguments with the current state as their default: a
+  // sample card sets the query AND the corpus and runs in the same click, and
+  // reading them back off state would run the PREVIOUS scenario (setState is
+  // not visible until the next render).
+  const run = async (askText = query, lineText = lines) => {
+    const asked = askText.trim();
+    const items = lineText
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
@@ -128,7 +251,8 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
         />
         <p className="pg-embed-intro">
           Lines are ranked by how close their meaning is to the search, even when they share no
-          words with it. Run the example, then swap in your own lines from the settings cog above.
+          words with it. Pick an example below, or type a search and put your own lines in from
+          the settings cog above.
         </p>
 
         <div className="pg-composer">
@@ -177,6 +301,20 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
             <span className="pg-ctl-hint">One line per entry, up to {MAX_LINES}.</span>
           </label>
         </ConfigPanel>
+
+        {/* Until there is a ranking to read, the examples. Each one sets both
+            halves of the scenario and runs it — see `run`'s arguments. */}
+        {!ranked && !busy && (
+          <StarterCards
+            samples={STARTERS}
+            onPick={(sample) => {
+              const corpus = sample.lines.join("\n");
+              setQuery(sample.prompt);
+              setLines(corpus);
+              void run(sample.prompt, corpus);
+            }}
+          />
+        )}
 
         {status && <p className="pg-status">{status}</p>}
         {error && <p className="pg-error">{error}</p>}

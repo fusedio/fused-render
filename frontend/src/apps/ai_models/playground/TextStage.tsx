@@ -22,7 +22,8 @@ import {
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
-import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterPrompts } from "./controls";
+import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterCards, type Starter } from "./controls";
+import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
@@ -51,11 +52,71 @@ const DEFAULT_SYSTEM =
   "to reason first, put that reasoning inside a <thinking>...</thinking> tag " +
   "before the answer, and keep it brief.";
 
-const STARTERS = [
-  "Explain how a language model predicts the next word, simply",
-  "Write a haiku about running AI on a laptop",
-  "Draft a short, polite email declining a meeting",
-  "Give me three dinner ideas from rice, eggs and spinach",
+// Eight authored examples — two pages of four (D451). Each is a real ask with
+// its constraints spelled out, not a topic: what to write, how long, what to
+// leave out. A one-line "write a haiku" tests that the model answers; these
+// test what the reader actually came to find out, which is whether it follows
+// the shape it was given.
+const STARTERS: Starter[] = [
+  {
+    name: "How it guesses",
+    icon: StarterIcons.bulb,
+    prompt:
+      "Explain how a language model picks the next word to someone who has never written " +
+      "code. Use one everyday analogy, stay under 150 words, and end with the thing people " +
+      "most often get wrong about it.",
+  },
+  {
+    name: "Decline a meeting",
+    icon: StarterIcons.mail,
+    prompt:
+      "Write a short, warm email declining Thursday's design review because I am shipping a " +
+      "release that day. Offer to read the notes and send comments, keep it to four " +
+      "sentences, and do not apologise twice.",
+  },
+  {
+    name: "Dinner from this",
+    icon: StarterIcons.bowl,
+    prompt:
+      "I have rice, two eggs, spinach and a lemon. Give me three dinners I can cook in under " +
+      "20 minutes — a title and three steps each, ordered from least to most effort.",
+  },
+  {
+    name: "Explain an error",
+    icon: StarterIcons.code,
+    prompt:
+      "Explain what a Python KeyError means, the three most common ways it happens in real " +
+      "code, and how to fix each one. One short snippet per fix, no preamble.",
+  },
+  {
+    name: "Regex, in parts",
+    icon: StarterIcons.list,
+    prompt:
+      "Write a regular expression that matches an ISO date (YYYY-MM-DD) and nothing else, " +
+      "then explain it token by token as a bullet list, including why each anchor is there.",
+  },
+  {
+    name: "One day in Lisbon",
+    icon: StarterIcons.plane,
+    prompt:
+      "Plan one day in Lisbon for someone who would rather walk and drink coffee than queue " +
+      "for museums. Morning, afternoon, evening — one line each, plus the walk between them.",
+  },
+  {
+    name: "Three haiku",
+    icon: StarterIcons.pen,
+    prompt:
+      "Write three haiku about running a large AI model on a laptop that gets hot. Give each " +
+      "a different mood: proud, tired, funny. Nothing about clouds.",
+  },
+  {
+    name: "Argue both sides",
+    icon: StarterIcons.chart,
+    prompt:
+      "I am choosing between a laptop with 16GB of memory and one with 32GB for running AI " +
+      "models locally. Argue both sides in a short table, then commit to one recommendation " +
+      "and say what would change your mind.",
+  },
 ];
 
 /** Split one reply into the deliberation and the answer. A block still open
@@ -292,7 +353,9 @@ export function TextStage({
 
       {/* Examples first, under the box they fill; hidden once there is a
           reply to read, which is what that space is then for. */}
-      {!reply && !status && <StarterPrompts prompts={STARTERS} onPick={(p) => void send(p)} />}
+      {!reply && !status && (
+        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
+      )}
 
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
       <ConfigPanel open={configOpen}>
