@@ -3,7 +3,7 @@
 Today `fused.ai` exists only as JavaScript (`fused_render/static/runtime.js`) —
 a page-only surface. Every Python process that wants local inference
 re-implements the model layer from scratch. This document describes what was
-actually built to close that gap (SPEC PY-19, DECISIONS D448-D450) — an
+actually built to close that gap (SPEC PY-19, DECISIONS D449-D451) — an
 earlier draft of this file sketched a wider surface than shipped; the
 "Superseded" section at the bottom names what was cut and why.
 
