@@ -446,13 +446,23 @@ export function commonDevice(rows: ModelLatest[]): string | null {
   }
   let best: string | null = null;
   let bestCount = 0;
+  // A strict `count > bestCount` alone picks whichever device the Map
+  // happens to iterate first among ties — insertion order, i.e. which model
+  // reported it first — and never actually returns null for one, despite the
+  // doc above promising it. `tied` tracks whether the CURRENT leader shares
+  // its count with another device, and is cleared the moment a later device
+  // strictly exceeds it (a real majority, not a tie).
+  let tied = false;
   for (const [device, count] of counts) {
     if (count > bestCount) {
       best = device;
       bestCount = count;
+      tied = false;
+    } else if (count === bestCount) {
+      tied = true;
     }
   }
-  return best;
+  return tied ? null : best;
 }
 
 /** Runs for one capability, oldest first. Order is the store's own append

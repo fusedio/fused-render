@@ -573,6 +573,20 @@ describe("commonDevice", () => {
   it("is null when every model failed or reported nothing", () => {
     expect(commonDevice([latest(null), latest(null, false)])).toBeNull();
   });
+
+  it("is null on a genuine tie for the top spot — no majority, no 'expected'", () => {
+    // The bug: a strict `count > bestCount` only ever REPLACES the leader, so
+    // a 1-mps/1-cpu section returned whichever device happened to be first in
+    // iteration order (insertion order — i.e. whichever model reported it
+    // first) despite the doc above promising null for a tie.
+    expect(commonDevice([latest("mps"), latest("cpu")])).toBeNull();
+    // Order must not matter — the same tie, reported the other way round.
+    expect(commonDevice([latest("cpu"), latest("mps")])).toBeNull();
+  });
+
+  it("is not fooled into a tie by a later MAJORITY", () => {
+    expect(commonDevice([latest("mps"), latest("cpu"), latest("mps")])).toBe("mps");
+  });
 });
 
 describe("failureReason", () => {
