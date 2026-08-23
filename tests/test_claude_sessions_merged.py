@@ -663,34 +663,44 @@ def test_a_row_with_another_file_opens_the_host_on_it(template):
     assert "window.top.location.href = url" in body
 
 
-def test_the_time_and_the_file_name_share_one_cell(template):
-    """They occupy the SAME grid cell, so the cell is as wide as the wider of
-    the two and the row's geometry is identical at rest and on hover. Swapping
-    the text outright, or stacking two absolutely-positioned spans, reflows the
-    row under the pointer and makes the list jitter as it is scanned."""
+def test_the_time_is_never_traded_away(template):
+    """The right end reads [icon] [name] [time], and the TIME IS LAST and is
+    always drawn. It began as a cross-fade that swapped the time OUT for the
+    name; a row that answers "when" only while you are NOT pointing at it
+    answers at the wrong moment, and the two facts are not alternatives."""
+    body = template[template.index("function addChatRow("):]
+    body = body[:body.index("\n}")]
+    icon = body.index('class="row-fileic"')
+    name = body.index('class="row-file"')
+    time = body.index('class="row-sub"')
+    assert icon < name < time, "the order is icon, name, time"
+
+
+def test_the_name_opens_out_rather_than_appearing(template):
+    """It animates on `max-width`, growing the box the text already lives in.
+    A name laid out from `display: none` shoves the time sideways in one
+    frame; one positioned out of flow overlaps the title instead of making
+    room for itself."""
     css = template[template.index(".chat-row .row-right {"):]
     css = css[:css.index("@media (prefers-reduced-motion")]
-    assert "display: grid;" in css
-    assert 'grid-template-areas: "slot";' in css
-    assert ".chat-row .row-right > * { grid-area: slot; }" in css
-    # And the swap is opacity only — nothing that takes the element out of flow.
-    assert ".chat-row .row-file { opacity: 0; }" in css
-    assert ".chat-row.has-pane:hover .row-file," in css
-    assert "display: none" not in css
+    assert "max-width: 0;" in css
+    assert "max-width: 180px; opacity: 1;" in css
+    assert "transition: max-width" in css
+    # Nothing hides the time any more — it carries no opacity rule at all.
+    assert ".row-sub { opacity" not in css
 
 
-def test_only_a_row_with_another_file_swaps_on_hover(template):
-    """Every other row keeps its timestamp on hover, because there is nothing
-    to trade it for — `has-pane` is what says there is."""
+def test_the_icon_marks_the_row_at_rest(template):
+    """At rest the icon alone says "this chat was about a file" — enough to
+    pick those rows out without a column of filenames drowning the titles.
+    Drawn only on a row that HAS one, and answering with the whole path when
+    pointed at, because at rest it is the only part of this on screen."""
+    assert ".chat-row.has-pane .row-fileic { display: block; }" in template
+    css = template[template.index(".chat-row .row-fileic {"):]
+    css = css[:css.index(".chat-row .row-file {")]
+    assert "display: none;" in css
     body = template[template.index("function addChatRow("):]
     body = body[:body.index("\n}")]
     assert 'row.classList.add("has-pane")' in body
-    # The basename on the row, the whole path on hover: the folder is the one
-    # we are already looking at, and an ellipsised name needs somewhere to be
-    # read in full.
     assert "label.title = pane;" in body
-    css = template[template.index(".chat-row .row-file { opacity: 0; }"):]
-    css = css[:css.index("@media (prefers-reduced-motion")]
-    for rule in (".chat-row.has-pane:hover .row-sub,",
-                 ".chat-row.has-pane:focus-visible .row-sub { opacity: 0; }"):
-        assert rule in css
+    assert 'row.querySelector(".row-fileic").title = pane;' in body

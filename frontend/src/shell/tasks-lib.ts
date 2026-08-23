@@ -1153,6 +1153,21 @@ export function parseListMemory(raw: string | null): ListMemory {
 /** The query key the Claude pane reads to scroll a resumed chat to one turn. */
 export const MESSAGE_ANCHOR_PARAM = "msg";
 
+/** The FILE this task is about, or "" when it is about the folder.
+ *
+ * The server resolves `target` to the scheduled entry's own target, else the
+ * file the chat pane was on, else the project folder (routers/tasks.py
+ * `_place`), so "the target is not the project" IS the test for a file — that
+ * fallback is the only way the two are ever equal. Compared with trailing
+ * slashes off both, because a folder target can arrive spelled either way and
+ * a task about a folder must not grow a file mark over a slash. */
+export function taskFile(task: Task): string {
+  const trim = (p: string) => p.replace(/\/+$/, "");
+  const target = trim(task.target || "");
+  if (!target) return "";
+  return target === trim(task.project || "") ? "" : task.target;
+}
+
 /** The task's thread, top of the chat. Null when the task has never run —
  * there is no session to open yet. */
 export function taskHref(task: Task): string | null {

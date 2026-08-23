@@ -3167,40 +3167,47 @@
     flex: 1;
   }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
-  /* The right-hand slot holds the relative time and, on a row whose chat was
-     opened on some OTHER file than this target, that file's name. They share
-     ONE grid cell — both are `grid-area: slot`, so the cell is as wide as the
-     wider of the two and the row's geometry is identical at rest and on hover.
-     Swapping two absolutely-positioned spans, or replacing the text outright,
-     both reflow the row under the pointer and make the list jitter as it is
-     scanned. */
+  /* The right-hand end of a row: [file icon] [file name] [time], in that order,
+     and the TIME NEVER LEAVES. At rest a row whose chat was opened on another
+     file shows the icon alone beside the time — enough to say "this one is
+     about a file" while a column of filenames would drown the titles. On hover
+     the name opens out between them, pushing the icon left, and the title
+     ellipsises to pay for it.
+
+     The name animates on `max-width`, not on display or position: a name that
+     appears by being laid out shoves the time sideways in one frame, and one
+     that is positioned out of flow overlaps the title instead of making room.
+     `max-width` grows the same box the text already lives in, so the row opens
+     smoothly and the time is carried, never covered. */
   .chat-row .row-right {
-    display: grid;
-    grid-template-areas: "slot";
-    justify-items: end;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     flex-shrink: 0;
-    max-width: 45%;
+    max-width: 60%;
   }
-  .chat-row .row-right > * { grid-area: slot; }
+  .chat-row .row-fileic {
+    display: none;
+    flex: 0 0 auto;
+    color: var(--faint);
+    line-height: 0;
+  }
+  .chat-row.has-pane .row-fileic { display: block; }
   .chat-row .row-file {
     color: var(--faint);
     font-size: 12px;
-    max-width: 100%;
+    max-width: 0;
+    opacity: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Only a row that HAS another file to name swaps; every other row keeps its
-     time on hover, because there is nothing to trade it for. */
-  .chat-row .row-file { opacity: 0; }
-  .chat-row.has-pane .row-sub,
-  .chat-row.has-pane .row-file { transition: opacity .12s; }
-  .chat-row.has-pane:hover .row-sub,
-  .chat-row.has-pane:focus-visible .row-sub { opacity: 0; }
+  /* Only a row that HAS a file opens; every other row is icon-less and its
+     name element is permanently empty, so there is nothing to open. */
+  .chat-row.has-pane .row-file { transition: max-width .16s ease, opacity .12s; }
   .chat-row.has-pane:hover .row-file,
-  .chat-row.has-pane:focus-visible .row-file { opacity: 1; }
+  .chat-row.has-pane:focus-visible .row-file { max-width: 180px; opacity: 1; }
   @media (prefers-reduced-motion: reduce) {
-    .chat-row.has-pane .row-sub,
     .chat-row.has-pane .row-file { transition: none; }
   }
 
@@ -15327,6 +15334,16 @@ function rowPane(s) {
   return paneSlashes(pane) === paneSlashes(FILE) ? "" : pane;
 }
 
+// The one mark a row wears at rest to say "this chat was about a file". Inline
+// rather than a shared sprite for the same reason every other glyph in this
+// page is inline: the template is one file and has no icon module to import.
+const ICON_FILE =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+  '<path d="M14 2v6h6"/></svg>';
+
 // One row for one past chat — every transcript in this cwd's project dir when
 // the target is a folder, and the ones opened on this very file when it is a
 // file (agent.py `_sessions`). A row is resumable because its transcript is in
@@ -15338,9 +15355,13 @@ function addChatRow(list, s) {
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
+  // Icon, then name, then time — the time is LAST and always drawn, so the
+  // right edge of every row says the same thing whether or not it is hovered.
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
-                  '<span class="row-right"><span class="row-sub"></span>' +
-                  '<span class="row-file"></span></span>';
+                  '<span class="row-right">' +
+                  '<span class="row-fileic" aria-hidden="true">' + ICON_FILE +
+                  '</span><span class="row-file"></span>' +
+                  '<span class="row-sub"></span></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const pane = rowPane(s);
@@ -15353,6 +15374,9 @@ function addChatRow(list, s) {
     // read in full.
     label.textContent = paneSlashes(pane).split("/").pop() || pane;
     label.title = pane;
+    // The icon carries the path too: at rest it is the only part of this on
+    // screen, so pointing at it has to answer the question it raises.
+    row.querySelector(".row-fileic").title = pane;
   }
   const open = async () => {
     // A chat about ANOTHER file does not belong in this pane: resuming it here

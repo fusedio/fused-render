@@ -507,6 +507,33 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* THE FILE MARK AFTER THE TITLE (2026-08-23). A task whose target is a file
+   rather than its folder wears one glyph, and the name lives in the `title` —
+   the same place the folder chip has always kept its path, so one hover
+   habit answers both.
+
+   `z-index: 2` and `position: relative` are NOT decoration: `.tasks-rowlink`
+   is an invisible <a> stretched over the whole row at `z-index: 1`, and any
+   element that has to receive a pointer — even only to raise a tooltip — has
+   to sit above it or the link swallows the hover. The folder tag learned this
+   the hard way on 2026-08-23; this is the same lesson, not a second one.
+
+   `flex: 0 0 auto` beside a title that is the row's only shrinking element:
+   the mark must not be what disappears when a long title runs out of room,
+   because then it would say "about a folder" by being absent. */
+.tasks-row-file {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: 5px;
+  color: var(--fg-muted);
+  opacity: 0.75;
+  cursor: help;
+}
+.tasks-row-file:hover { opacity: 1; }
+
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
    folder, so on the List the chip is a real <button> — and it has to look like
    one only when pointed at: a permanent box on every row would be a column of

@@ -38,6 +38,7 @@ import {
   isMessageRunning,
   isRunningNow,
   isRunningIn,
+  taskFile,
   activeMessage,
   hasStarted,
   isPastDue,
@@ -6876,5 +6877,47 @@ describe("the folder chip as a filter tag", () => {
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("position: relative");
     expect(body).toContain("z-index: 2");
+  });
+});
+
+describe("the file mark after a task's title", () => {
+  it("names the file only when the target is not the folder", () => {
+    // routers/tasks.py `_place` falls back to the project folder when a task
+    // has no file, so target-equals-project IS the test for "about a folder".
+    expect(taskFile(task({ target: "/p/one.py", project: "/p" }))).toBe("/p/one.py");
+    expect(taskFile(task({ target: "/p", project: "/p" }))).toBe("");
+    expect(taskFile(task({ target: "", project: "/p" }))).toBe("");
+  });
+
+  it("does not grow a mark over a trailing slash", () => {
+    // A folder target arrives spelled either way; "/p/" and "/p" are one place.
+    expect(taskFile(task({ target: "/p/", project: "/p" }))).toBe("");
+    expect(taskFile(task({ target: "/p", project: "/p/" }))).toBe("");
+  });
+
+  it("is a glyph with the name in the tooltip, not the name itself", () => {
+    // The opposite call to the message count two elements along, for the
+    // opposite reason: a count is a number that needs a unit to be read at
+    // all, and a filename is prose. A column of prose is the crowding this
+    // row has twice been trimmed for.
+    expect(VIEWS).toContain("{taskFile_ && (");
+    expect(VIEWS).toContain('className="tasks-row-file"');
+    expect(VIEWS).toContain("title={tildePath(taskFile_, home)}");
+    expect(VIEWS).toContain("{ICON_FILE}");
+    // The same hover habit the folder chip's path already taught.
+    expect(VIEWS).toContain("title={tildePath(task.project, home)}");
+  });
+
+  it("sits above the row's stretched link, like every other hoverable", () => {
+    // `.tasks-rowlink` is an <a> over the whole row at z-index 1. An element
+    // that does not lift out of the way never receives the pointer — and this
+    // one exists only to be pointed at. Same lesson as the folder tag.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+    // And it is not what gives way when a long title runs out of room —
+    // absent would read as "about a folder".
+    expect(body).toContain("flex: 0 0 auto");
   });
 });
