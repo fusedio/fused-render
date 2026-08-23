@@ -818,7 +818,7 @@ a.pg-hero-repo:hover {
 
 /* Wide enough for the whole PAIR — column plus card — to sit centered with the
    stage's own 32px edges: 680 + 16 gap + 240 card + 2×32 = 1000cqw. Below this
-   the card stays in flow under the input, where D462 put it. That band used to
+   the card stays in flow under the input, the placement the cog pass shipped. That band used to
    keep the card beside the column by letting the column give up width; it no
    longer does, which is the price of never resizing the input. */
 @container (min-width: 1000px) {
@@ -1131,7 +1131,7 @@ a.pg-hero-repo:hover {
    floor holding the attach controls on the left and the Clear/Run column on the
    right — where the other three stages' composers are one row of [prompt |
    button column]. Only this stage sets the modifier, so those three are
-   untouched, and Run stays where D466 put it: the composer's bottom-right. */
+   untouched, and Run stays where every other composer puts it: bottom-right. */
 .pg-composer-stack {
   flex-direction: column;
   align-items: stretch;
@@ -1161,7 +1161,8 @@ a.pg-hero-repo:hover {
 /* The prompt keeps a lane clear for it — ALWAYS, not only while Clear is on
    screen: the text wraps inside this padding, so a lane that appeared with the
    button would rewrap the whole prompt (and, with `useAutoGrow` writing an
-   inline height, leave the box a line short — the D466 bug). ~64px is Clear at
+   inline height, leave the box a line short — the bug that hook exists for).
+   ~64px is Clear at
    its widest plus the corner offset. */
 .pg-composer-stack textarea {
   padding-right: 64px;
@@ -1449,7 +1450,7 @@ a.pg-hero-repo:hover {
    the settings card's narrower column (D464) gets three whole names rather
    than four cut ones. `overflow: hidden` is what makes that measurement
    possible (scrollWidth vs clientWidth) and is never seen. No label above the
-   row (D462 deleted exactly that). */
+   row: a rotate button does not need one. */
 
 .pg-starters {
   display: flex;

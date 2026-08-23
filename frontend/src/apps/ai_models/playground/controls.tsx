@@ -17,7 +17,11 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
  *  box keeps its old height and quietly turns into a scroller. A Clear button
  *  appearing beside the prompt used to be enough to do it. Hence the observer —
  *  and it watches the WIDTH only, because reacting to a height change would
- *  loop on the very thing this callback does. */
+ *  loop on the very thing this callback does.
+ *
+ *  CSS `field-sizing: content` would delete this hook outright. Deliberately
+ *  not used: it is Chromium-only, and this sheet is not a Chromium-only
+ *  sheet. Revisit when Safari and Firefox ship it. */
 export function useAutoGrow(max = 180) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const grow = useCallback(() => {

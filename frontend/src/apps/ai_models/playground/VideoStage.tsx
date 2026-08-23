@@ -1,6 +1,6 @@
 // The video stage: prompt in, a short clip with audio out (SPEC §40).
 //
-// Shaped like the text and image stages (D431, D462): heading with a cog,
+// Shaped like the text and image stages (D431): heading with a cog,
 // prompt, Generate — and every parameter behind the Config card, which is
 // what replaced the settings rail this stage was first written with.
 //
@@ -257,7 +257,7 @@ export function VideoStage({
             }
           }}
         />
-        {/* Clear at the top of this column, Generate at the bottom (D466) —
+        {/* Clear at the top of this column, Generate at the bottom —
             the column's width is set by Generate, the wider of the two, so
             nothing moves when Clear comes and goes. */}
         <div className="pg-composer-side">

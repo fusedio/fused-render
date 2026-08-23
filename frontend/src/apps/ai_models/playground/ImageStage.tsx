@@ -699,8 +699,9 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         {/* Clear, floating in the box's top-right corner: it appears only once
             there is a picture to throw away, and in this stacked composer a
             slot of its own would have cost the box a permanent 40px of height
-            (D466's stack is right where the prompt and the buttons share ONE
-            row — here they do not). Absolute, so it adds none. */}
+            (the shared Clear-above-Run stack is right where the prompt and the
+            buttons share ONE row — here they do not). Absolute, so it adds
+            none. */}
         {!busy && run && (
           <button
             type="button"
@@ -716,7 +717,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             attach beside Generate rather than across the box from it. The
             prompt therefore spans the whole box here rather than sharing its
             row with the button column the other stages use, and Generate stays
-            exactly where D466 put it. */}
+            exactly where those stages put it. */}
         <div className="pg-composer-foot">
           {/* The attached photo, on the floor's own line: the space left of the
               buttons was empty, and the picture belongs beside the controls
