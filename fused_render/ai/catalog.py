@@ -809,6 +809,58 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
+    # LTX-2.3 on MLX, through `ltx-2-mlx` — the accessible video engine (see
+    # the plan's "ltx-2-mlx, not mlx-video" decision) that a bare
+    # `fused.ai.video()` now reaches first (`registry.py`'s ordering).
+    #
+    # **`size_gb` is every byte BOTH downloads fetch, per this file's own
+    # rule** — the weights repo's curated file set (`ltx_video/worker.py`'s
+    # `download`, which picks exactly ONE transformer file out of the two
+    # this repo ships side by side — see that module's docstring for why a
+    # bare glob would have silently fetched both) PLUS the whole Gemma-3
+    # text encoder repo neither tier can render without. Measured against
+    # the Hub's own per-file byte sums, 2026-08-23:
+    #   int4: 20,479,309,067 B weights + 8,068,021,302 B gemma = 28.5 GB
+    #   int8: 29,754,496,331 B weights + 8,068,021,302 B gemma = 37.8 GB
+    # (the plan's own estimate — ~29.9/~39.2 GB — was written before the
+    # worker's final pattern set excluded the second, unused transformer
+    # copy; these are the re-derived figures the plan itself calls for).
+    "ltx-video": [
+        {
+            "id": "dgrauet/ltx-2.3-mlx-q4",
+            "recommended": True,
+            "label": "LTX-2.3 int4 distilled",
+            "nickname": "LTX-2.3 (int4)",
+            "size_gb": 28.5,
+            "note": "Text-to-video with audio, 8 denoising steps, on a "
+                    "16 GB+ Mac. Diverges from the bf16 sample at this "
+                    "tier — upstream's own ladder calls it a different "
+                    "valid composition, not a degraded one — and ships "
+                    "under the LTX-2 Community License, which is NOT H3's: "
+                    "it carries a revenue threshold and a non-compete "
+                    "(Attachment A, item 20).",
+            # `DistilledPipeline` runs a fixed 8-step stage-1 schedule
+            # (`ltx_video/worker.py`'s own default, and `registry.VIDEO_
+            # TRAITS["ltx-video"].default_steps`) — a property of the
+            # PIPELINE both tiers share, not of the quantization. Named
+            # explicitly here too, the same "one repo, one curator's hint"
+            # shape the image entries above use for their own step-distilled
+            # models, rather than relying only on the engine-level fallback
+            # (`registry.video_traits_for`) agreeing with it by construction.
+            "defaults": {"steps": 8},
+        },
+        {
+            "id": "dgrauet/ltx-2.3-mlx-q8",
+            "label": "LTX-2.3 int8 distilled",
+            "nickname": "LTX-2.3 (int8)",
+            "size_gb": 37.8,
+            "note": "The same LTX-2 Community License, for the tier that "
+                    "reproduces the bf16 sample — a 32 GB+ machine and "
+                    "roughly 9 GB more download than the int4 default.",
+            # Same pipeline, same schedule — see the int4 entry's own comment.
+            "defaults": {"steps": 8},
+        },
+    ],
     # v1's only checkpoint: FL2VA (frame + language to video + audio), one
     # of the two top-level trees `MiniMaxAI/MiniMax-H3` actually ships —
     # NOT its own repo (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist; that
@@ -1059,6 +1111,44 @@ def describe() -> list[dict]:
                 "default": for_capability(capability)[0]["id"]
                 if status.ok and for_capability(capability) else None,
                 "models": for_capability(capability),
+                # Absent for every capability but video generation — the
+                # same "absent rather than empty" shape `registry.VIDEO_
+                # TRAITS` itself uses. Video is the first (only) capability
+                # whose REQUEST SHAPE varies by which runner resolved (the
+                # frame grid, canvas and step defaults — `registry.
+                # VideoTraits`), and the Playground's own frame/canvas/step
+                # sliders need those numbers to draw a control that agrees
+                # with what the server will actually do — Task 5 of the
+                # LTX-2.3 plan de-hardcoded the SERVER's copy of H3's grid
+                # and left the client statically wired to it, which is the
+                # defect this field exists to close.
+                "videoTraits": (
+                    _video_traits_payload(runner.code)
+                    if capability == registry.VIDEO_GENERATION and runner is not None
+                    else None
+                ),
             }
         )
     return rows
+
+
+def _video_traits_payload(runner_code: str) -> dict:
+    """`registry.VideoTraits`, in the shape `describe()`'s payload wants —
+    absolute frame bounds rather than the `(base, step, n)` the server's own
+    grid math uses internally, because a slider draws a min/max/step/value,
+    not an `n` window it would have to re-derive the same arithmetic to get.
+    """
+    traits = registry.video_traits_for(runner_code)
+    min_frames, max_frames = registry.video_frame_bounds(traits)
+    default_frames = (traits.frames_base
+                      + traits.frames_step * traits.default_frames_n)
+    return {
+        "framesBase": traits.frames_base,
+        "framesStep": traits.frames_step,
+        "minFrames": min_frames,
+        "maxFrames": max_frames,
+        "defaultFrames": default_frames,
+        "defaultWidth": traits.default_width,
+        "defaultHeight": traits.default_height,
+        "defaultSteps": traits.default_steps,
+    }

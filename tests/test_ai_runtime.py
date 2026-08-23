@@ -427,6 +427,49 @@ def fake_video_runner(tmp_path, monkeypatch):
     supervisor.reset()
 
 
+def _only_video_runner(tmp_path, monkeypatch, code):
+    """A registry whose ONLY runner serves video generation, registered
+    under `code` — the mirror `fake_video_runner` needs to exercise
+    `registry.video_traits_for` per engine (Task 5): that fixture's own
+    `code="fake-video"` is deliberately NOT one of `registry.VIDEO_TRAITS`'
+    keys, so it always exercises the fallback (H3's numbers) rather than
+    letting a test pick which row it wants. This one takes the code as a
+    parameter for exactly that reason — see `_only_transcribe_runner` above,
+    which the same argument already justifies for that capability.
+    """
+    folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code=code, capability=registry.VIDEO_GENERATION,
+        folder=str(folder), label=f"Fake {code}",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setitem(catalog.SUGGESTIONS, code, [
+        {"id": f"org/{code}", "label": f"Fake {code}", "size_gb": None, "note": ""},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_ltx_video_runner(tmp_path, monkeypatch):
+    """Registered under the REAL `ltx-video` code, so the route resolves
+    `registry.VIDEO_TRAITS["ltx-video"]` rather than the fallback."""
+    yield from _only_video_runner(tmp_path, monkeypatch, "ltx-video")
+
+
+@pytest.fixture()
+def fake_h3_video_runner(tmp_path, monkeypatch):
+    """Registered under the REAL `h3-video` code — this is also what
+    `video_traits_for` falls back to, so it exists mainly to pin that the
+    row itself is right, independent of the fallback ever firing."""
+    yield from _only_video_runner(tmp_path, monkeypatch, "h3-video")
+
+
 def _only_transcribe_runner(tmp_path, monkeypatch, code):
     """A registry whose ONLY runner transcribes, under `code`, with the fake
     worker and this interpreter — so no CTranslate2, no weights, no audio.
@@ -2481,6 +2524,72 @@ UNBOUNDED_RUNNER_DEPENDENCIES = {
 }
 
 
+_FULL_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _uv_source_for(project_dir: str, name: str) -> dict | None:
+    """The `[tool.uv.sources]` entry routing `name`, or None.
+
+    A version specifier means nothing for a dependency `uv` resolves off a git
+    checkout instead of PyPI — `ltx-core-mlx`/`ltx-pipelines-mlx` carry no
+    operator at all in `[project].dependencies` (there is no PyPI release to
+    version against), so the BOUNDS test has to look here instead to decide
+    whether the requirement is pinned.
+    """
+    from fused_render import projectenv
+
+    meta = projectenv._load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return None
+    sources = meta.get("tool", {}).get("uv", {}).get("sources", {})
+    entry = sources.get(name)
+    return entry if isinstance(entry, dict) else None
+
+
+def _git_requirement_is_pinned(project_dir: str, name: str) -> bool:
+    """A git-sourced dependency counts as BOUNDED only pinned to a full commit.
+
+    A branch (`rev = "main"`), a tag that can be force-moved, or a bare git
+    URL with no `rev` at all are each exactly the unbounded-requirement risk
+    this suite exists to catch — `uv sync` re-resolves HEAD every time a venv
+    key changes, with no diff anywhere to explain what changed. A 40-hex `rev`
+    is the one form that cannot move under a user without a new commit to
+    this file naming it.
+    """
+    source = _uv_source_for(project_dir, name)
+    if source is None or "git" not in source:
+        return False
+    rev = source.get("rev")
+    return isinstance(rev, str) and bool(_FULL_GIT_SHA.match(rev))
+
+
+def test_a_git_dependency_pinned_to_a_full_commit_counts_as_bounded(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["ltx-core-mlx"]\n\n'
+        '[tool.uv.sources]\n'
+        'ltx-core-mlx = { git = "https://example.com/repo", '
+        'rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc" }\n')
+    assert _git_requirement_is_pinned(str(tmp_path), "ltx-core-mlx")
+
+
+@pytest.mark.parametrize("bad_source", [
+    '{ git = "https://example.com/repo", rev = "main" }',
+    '{ git = "https://example.com/repo", branch = "main" }',
+    '{ git = "https://example.com/repo" }',
+], ids=["branch-as-rev", "explicit-branch", "no-rev-at-all"])
+def test_a_git_dependency_on_a_branch_or_bare_url_still_fails_the_pin_check(
+        tmp_path, bad_source):
+    """The half that makes the positive case above safe: a rev that is not a
+    40-hex commit — a branch name, or nothing at all — must still read as
+    UNbounded, or the check above would rubber-stamp any `[tool.uv.sources]`
+    entry rather than the one shape that is actually pinned."""
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\ndependencies = ["ltx-core-mlx"]\n\n'
+        f'[tool.uv.sources]\n'
+        f'ltx-core-mlx = {bad_source}\n')
+    assert not _git_requirement_is_pinned(str(tmp_path), "ltx-core-mlx")
+
+
 @pytest.mark.parametrize("runner", registry.all_runners(), ids=lambda r: r.code)
 def test_every_runner_BOUNDS_its_model_runtimes(runner):
     """The generalisation of the mflux abort, applied to every manifest.
@@ -2496,6 +2605,12 @@ def test_every_runner_BOUNDS_its_model_runtimes(runner):
     supposed to move: bumping one is a normal change with a run behind it. What
     must not move silently is the major/minor, so the failure a new unbounded
     dependency produces is a prompt to decide, not a chore.
+
+    **A git-sourced requirement never carries an operator at all** (there is
+    no PyPI release to write `<` against), so it is checked through
+    `_git_requirement_is_pinned` instead — a full commit `rev` counts as
+    bounded, a branch or a bare URL does not (see the two tests above this
+    one, which exercise that half directly against a synthetic manifest).
     """
     from fused_render import projectenv
 
@@ -2506,12 +2621,17 @@ def test_every_runner_BOUNDS_its_model_runtimes(runner):
         name = name.strip().replace("_", "-").lower()
         if name in UNBOUNDED_RUNNER_DEPENDENCIES:
             continue
-        assert "<" in requirement or "==" in requirement, (
+        if "<" in requirement or "==" in requirement:
+            continue
+        if _git_requirement_is_pinned(runner.folder, requirement.strip()):
+            continue
+        assert False, (
             f"{os.path.relpath(runner.pyproject)} declares `{requirement}` with "
             f"no upper bound. These runners have no committed uv.lock and "
             f"`uv sync` runs bare, so every new venv key re-resolves this from "
             f"PyPI — a major bump lands on users with no commit behind it "
-            f"(the mflux abort above). Add a ceiling, or add `{name}` to "
+            f"(the mflux abort above). Add a ceiling, pin a git source to a full "
+            f"commit `rev`, or add `{name}` to "
             f"UNBOUNDED_RUNNER_DEPENDENCIES in {os.path.basename(__file__)} "
             f"with the reason it cannot change what a model computes.")
 
@@ -3748,7 +3868,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed", "h3-video"}
+        "mlx-embed", "transformers-embed", "ltx-video", "h3-video"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -4847,6 +4967,118 @@ def test_video_default_canvas_matches_h3s_own_default(client, fake_video_runner)
                         headers={"X-Fused": "1"}).json()
     assert (reply["width"], reply["height"]) == (864, 480)
     _wait_job(reply["jobId"])
+
+
+# -- Task 5: request shaping follows the SERVING runner's own traits -------------
+
+
+def test_h3_video_request_shape_is_unchanged(client, fake_h3_video_runner):
+    """The mirror of the two tests above, pinned against the REAL `h3-video`
+    code rather than the fallback — H3's own numbers must not move for this
+    runner just because a second one now exists."""
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert (reply["width"], reply["height"]) == (864, 480)
+    assert reply["steps"] == 20
+    _wait_job(reply["jobId"])
+
+    for asked in (1, 5, 21):
+        reply = client.post("/api/ai/video", json={"prompt": "x", "frames": asked},
+                            headers={"X-Fused": "1"}).json()
+        assert reply["frames"] == 22, (asked, reply["frames"])
+        _wait_job(reply["jobId"])
+
+
+def test_ltx_video_request_shape_follows_its_own_traits(client, fake_ltx_video_runner):
+    """`registry.VIDEO_TRAITS["ltx-video"]`: 704x480 canvas, 8 denoising
+    steps, frames on the `1 + 8n` grid — a bare call gets LTX's own shape,
+    not H3's, once `ltx-video` is the runner actually serving the request."""
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert (reply["width"], reply["height"]) == (704, 480)
+    assert reply["steps"] == 8
+    assert reply["frames"] == 97  # 1 + 8*12, this runner's own default n
+    _wait_job(reply["jobId"])
+
+    # Rounds UP to the next `1 + 8n` point, never to the nearest one — same
+    # direction rule as h3's grid, against a different spacing.
+    reply = client.post("/api/ai/video", json={"prompt": "x", "frames": 90},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["frames"] == 97  # 90 is between 89 (1+8*11) and 97; rounds up
+    _wait_job(reply["jobId"])
+
+
+def test_naming_the_OTHER_video_engines_cached_model_is_refused_not_started(
+        client, hub, monkeypatch, tmp_path):
+    """Naming a model explicitly does NOT pick its runner — resolution is by
+    CAPABILITY plus stored preference (`registry.py`'s own module docstring),
+    and `start_video`'s `_runner_or_raise` never reads `model` either. So on
+    a machine where `ltx-video` resolves (first in `_RUNNERS`, no preference
+    set) and the caller names a repo already cached in H3's own `FL2VA/`
+    layout, this used to build and start the ltx-video worker against that
+    repo — which would raise deep inside `load()` after a Hub listing round
+    trip, a confusing failure for someone who deliberately named a model
+    they already have on disk. The route now catches this itself, off the
+    SAME cached-format evidence the AI Models page's own card already reads
+    (`hub_cache.cached_capability`), before any job opens.
+
+    Two FAKE runners rather than the real `ltx-video`/`h3-video` folders:
+    what is under test is the ROUTE's own refusal, not either runner's
+    actual format check, and the codes have to be literally `ltx-video`/
+    `h3-video` because `formats.has_ltx_split_layout`/`has_h3_components`
+    key off those names, not off whichever runner happens to be registered.
+    """
+    def fake_runner(code):
+        folder = tmp_path / f"fake_{code.replace('-', '_')}"
+        folder.mkdir()
+        (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+        return registry.Runner(
+            code=code, capability=registry.VIDEO_GENERATION,
+            folder=str(folder), label=f"Fake {code}", short_label=code,
+        )
+
+    ltx = fake_runner("ltx-video")
+    h3 = fake_runner("h3-video")
+    # ltx-video FIRST, matching production ordering — the whole point is that
+    # it is the one that WOULD resolve here.
+    monkeypatch.setattr(registry, "_RUNNERS", (ltx, h3))
+    monkeypatch.setitem(catalog.SUGGESTIONS, "ltx-video", [
+        {"id": "org/ltx", "label": "Fake ltx", "size_gb": None, "note": ""}])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+
+    _cached_repo(hub, "MiniMaxAI/MiniMax-H3", dirs=("FL2VA",))
+
+    response = client.post(
+        "/api/ai/video", json={"prompt": "x", "model": "MiniMaxAI/MiniMax-H3"},
+        headers={"X-Fused": "1"})
+
+    assert response.status_code == 409
+    message = response.json()["error"]
+    assert "MiniMaxAI/MiniMax-H3" in message
+    assert "h3-video" in message
+    assert "Engines tab" in message
+    # No job opened for work that was never going to start — the same
+    # invariant `test_a_video_on_a_machine_with_no_video_runner_says_why`
+    # checks for the "nothing can serve this at all" 409.
+    assert not [j for j in jobs.list_jobs()
+               if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_naming_an_UNCACHED_model_is_not_refused_by_the_route(
+        client, fake_ltx_video_runner, monkeypatch):
+    """The refusal above needs EVIDENCE — an uncached id has none without a
+    network call this route has never made, so it reaches the runner's own
+    `load()` refusal instead, exactly as every other capability's route
+    already does for a model nothing here recognises. This is the negative
+    case that keeps the guard from becoming "the route silently accepts
+    only ids it has curated"."""
+    response = client.post(
+        "/api/ai/video",
+        json={"prompt": "x", "model": "someone/unrelated-repo-not-cached"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    _wait_job(response.json()["jobId"])
 
 
 def test_video_seed_is_invented_when_not_given_and_echoed_when_it_is(client, fake_video_runner):

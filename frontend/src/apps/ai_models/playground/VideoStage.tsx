@@ -9,28 +9,43 @@
 // Activity), same as the image stage, and only the WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
-import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
 import { RailSection, RailSlider, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
-// Small canvas and few frames by default — the first clip arriving quickly is
-// the point, exactly like the image stage's 512² default. H3's own valid
-// canvas ceiling is `width * height <= 768 * 1344`, enforced server-side.
-const DEFAULTS = { width: 512, height: 512, frames: 90, steps: 20 };
+// Small canvas by default — the first clip arriving quickly is the point,
+// exactly like the image stage's 512² default. This is a UI choice
+// independent of which engine is serving (H3's own valid canvas ceiling,
+// `width * height <= 768 * 1344`, and the identical one LTX-2.3 shares —
+// see `registry.py`'s own comment on why the pixel budget stays SHARED
+// across every video runner — are both enforced server-side regardless).
+const DEFAULTS = { width: 512, height: 512 };
 const SIZE_RANGE = [256, 1344] as const;
-// h3's own frame grid is `5 + 17n`, n in [1, 21] -- VERIFIED against the
-// built h3 binary's own h3_align_frame_count/h3_valid_params (the server
-// route's own D449 comment carries the same citation): n=0 (5 frames) is
-// refused at generation time ("requires at least one trained 22-frame
-// decoder chunk"), so the grid this slider offers starts at 22, not 5. The
-// slider steps by 17 so every value it can land on is one the server will
-// not have to move.
-const FRAMES_RANGE = [22, 362] as const;
 // [2, 50]: h3's own hard floor is 2 -- 1 step is refused outright
 // ("denoising steps must be in [2, 1000]") -- the ceiling (50) is this
-// app's own choice, far inside h3's actual [2, 1000].
+// app's own choice, far inside h3's actual [2, 1000]. Shared across every
+// engine, same as `SIZE_RANGE` — an app-chosen safety rail, not a fact
+// about either engine's weights (`registry.py`'s own `MIN_VIDEO_FRAMES_N`
+// comment makes the identical argument about the frame grid's own window).
 const STEPS_RANGE = [2, 50] as const;
+
+// **The fallback when the server sends no traits at all** — a capability row
+// from a build old enough to predate this field, or one the caller built by
+// hand for a test. Deliberately H3's own numbers: `registry.video_traits_for`
+// falls back to the exact same row for a runner code IT doesn't recognise,
+// so a missing payload here degrades to the request shape every video call
+// already had before a second engine existed, rather than an invented range.
+const FALLBACK_TRAITS: NonNullable<AiCatalogCapability["videoTraits"]> = {
+  framesBase: 5,
+  framesStep: 17,
+  minFrames: 22,
+  maxFrames: 362,
+  defaultFrames: 90,
+  defaultWidth: 864,
+  defaultHeight: 480,
+  defaultSteps: 20,
+};
 
 const STARTERS = [
   "A paper boat drifting down a rain-soaked street, cinematic",
@@ -44,13 +59,29 @@ interface Run {
   done: boolean;
 }
 
-export function VideoStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
-  const modelSteps = entry.defaults?.steps ?? DEFAULTS.steps;
+export function VideoStage({
+  model,
+  entry,
+  traits,
+}: {
+  model: string;
+  entry: AiCatalogModel;
+  /** `selected.row.videoTraits` — the RESOLVED engine's own request shape,
+   *  never a fact about `entry` (one model, not one engine). `null` on a
+   *  machine where nothing serves video generation at all, or from a build
+   *  old enough to predate this field — see `FALLBACK_TRAITS`. */
+  traits: AiCatalogCapability["videoTraits"];
+}) {
+  const engineTraits = traits ?? FALLBACK_TRAITS;
+  const framesRange = [engineTraits.minFrames, engineTraits.maxFrames] as const;
+  const modelSteps = entry.defaults?.steps ?? engineTraits.defaultSteps;
 
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
   const [width, setWidth] = useState(() => numParam("w", DEFAULTS.width, ...SIZE_RANGE));
   const [height, setHeight] = useState(() => numParam("h", DEFAULTS.height, ...SIZE_RANGE));
-  const [frames, setFrames] = useState(() => numParam("frames", DEFAULTS.frames, ...FRAMES_RANGE));
+  const [frames, setFrames] = useState(() =>
+    numParam("frames", engineTraits.defaultFrames, ...framesRange),
+  );
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
   const [railOpen, setRailOpen] = useState(false);
@@ -64,13 +95,13 @@ export function VideoStage({ model, entry }: { model: string; entry: AiCatalogMo
         prompt: prompt ? prompt : null,
         w: width !== DEFAULTS.width ? String(width) : null,
         h: height !== DEFAULTS.height ? String(height) : null,
-        frames: frames !== DEFAULTS.frames ? String(frames) : null,
+        frames: frames !== engineTraits.defaultFrames ? String(frames) : null,
         steps: steps !== modelSteps ? String(steps) : null,
         seed: seed ? seed : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [prompt, width, height, frames, steps, seed, modelSteps]);
+  }, [prompt, width, height, frames, steps, seed, modelSteps, engineTraits.defaultFrames]);
 
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -271,12 +302,12 @@ export function VideoStage({ model, entry }: { model: string; entry: AiCatalogMo
         <RailSection title="Length">
           <RailSlider
             label="Frames"
-            hint="Rounded to h3's own valid grid — the number that runs may differ slightly."
-            min={FRAMES_RANGE[0]}
-            max={FRAMES_RANGE[1]}
-            step={17}
+            hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
+            min={framesRange[0]}
+            max={framesRange[1]}
+            step={engineTraits.framesStep}
             value={frames}
-            fallback={DEFAULTS.frames}
+            fallback={engineTraits.defaultFrames}
             onChange={setFrames}
           />
           <RailSlider

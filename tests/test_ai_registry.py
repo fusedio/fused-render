@@ -119,9 +119,48 @@ def test_video_generation_is_a_registered_capability():
     assert registry.VIDEO_GENERATION in registry.capabilities()
 
 
-def test_h3_video_is_the_only_video_runner():
+def test_ltx_video_and_h3_video_are_the_registered_video_runners():
     codes = {r.code for r in registry.all_runners() if r.capability == registry.VIDEO_GENERATION}
-    assert codes == {"h3-video"}
+    assert codes == {"ltx-video", "h3-video"}
+
+
+def test_ltx_video_is_registered_before_h3_video():
+    """First-match-wins is the whole mechanism (see `registry.py`'s comment on
+    the table, and `test_mlx_embed_is_registered_before_transformers_embed`
+    above): `ltx-video` needs only Apple Silicon (16 GB+), while `h3-video`
+    additionally needs the staged h3.c binary, so an Apple Silicon machine
+    with no opinion resolves to the accessible ~30 GB engine rather than the
+    144 GB one."""
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.VIDEO_GENERATION]
+    assert codes == ["ltx-video", "h3-video"]
+
+
+def test_ltx_video_row_present_on_apple_silicon(monkeypatch):
+    _mac_arm(monkeypatch)
+    assert _runner("ltx-video")._available().ok
+
+
+def test_ltx_video_row_absent_off_apple_silicon(monkeypatch):
+    _windows(monkeypatch)
+    status = _runner("ltx-video")._available()
+    assert not status.ok
+    assert "Apple Silicon" in status.reason
+
+    _linux(monkeypatch)
+    status = _runner("ltx-video")._available()
+    assert not status.ok
+    assert "Apple Silicon" in status.reason
+
+
+def test_neither_video_runner_is_available_off_apple_silicon(monkeypatch, tmp_path):
+    """Both rows share the same underlying gate off a Mac — `ltx-video`
+    directly via `_apple_silicon`, `h3-video` because `_h3_available` checks
+    it first — so a machine with neither is left with no video capability at
+    all, unchanged from before this runner existed."""
+    _windows(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    assert not _runner("ltx-video")._available().ok
+    assert not _runner("h3-video")._available().ok
 
 
 def test_h3_video_row_present_on_apple_silicon_with_a_binary(monkeypatch, tmp_path):
@@ -189,15 +228,77 @@ def test_h3_bin_resolves_the_packaged_app_bundle(monkeypatch, tmp_path):
     assert registry.h3_bin() == str(bundled)
 
 
-def test_catalog_defaults_to_the_fl2va_entry_on_apple_silicon(monkeypatch, tmp_path):
+def test_catalog_defaults_to_the_ltx_entry_on_apple_silicon(monkeypatch, tmp_path):
+    """`ltx-video` resolves ahead of `h3-video` on Apple Silicon (Task 1's
+    ordering, buildable since Task 3) and now has its own curated shortlist
+    (Task 6), so a bare `fused.ai.video()` on such a machine defaults to the
+    smallest LTX-2.3 tier rather than H3's 144GB checkpoint. Reaching H3
+    itself needs the ENGINE PREFERENCE (the Engines tab) — naming
+    `MiniMaxAI/MiniMax-H3` explicitly is refused instead
+    (`test_ai_runtime.py::test_naming_the_OTHER_video_engines_cached_model_
+    is_refused_not_started`), since resolution is by capability plus stored
+    preference and never by `model`."""
     _mac_arm(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
     from fused_render.ai import catalog
 
+    assert registry.for_capability(registry.VIDEO_GENERATION).code == "ltx-video"
     rows = {row["capability"]: row for row in catalog.describe()}
     video = rows[registry.VIDEO_GENERATION]
     assert video["available"]
-    assert video["default"] == "MiniMaxAI/MiniMax-H3"
+    assert video["default"] == "dgrauet/ltx-2.3-mlx-q4"
+
+
+def test_catalog_video_traits_follow_the_resolved_engine(monkeypatch, tmp_path):
+    """The payload the Playground's frame/canvas/step sliders read
+    (`catalog.py`'s `videoTraits`, the fix for Task 5 leaving the CLIENT
+    hardcoded to H3's grid) — present only for video generation, and only
+    the resolved engine's own numbers, never a mix of the two rows."""
+    from fused_render.ai import catalog
+
+    _mac_arm(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    rows = {row["capability"]: row for row in catalog.describe()}
+    assert rows[registry.TEXT_GENERATION]["videoTraits"] is None
+    video = rows[registry.VIDEO_GENERATION]["videoTraits"]
+    assert video == {
+        "framesBase": 1, "framesStep": 8, "minFrames": 9, "maxFrames": 169,
+        "defaultFrames": 97, "defaultWidth": 704, "defaultHeight": 480,
+        "defaultSteps": 8,
+    }
+
+    # Pin `_RUNNERS` to h3-video alone (the same trick `test_ai_runtime.py`'s
+    # own video fixtures use) to check the OTHER engine's numbers reach the
+    # same field — proving this is read off whichever runner resolves, not
+    # hardcoded to ltx-video now that ltx-video is the common case.
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("h3-video"),))
+    rows = {row["capability"]: row for row in catalog.describe()}
+    video = rows[registry.VIDEO_GENERATION]["videoTraits"]
+    assert video == {
+        "framesBase": 5, "framesStep": 17, "minFrames": 22, "maxFrames": 362,
+        "defaultFrames": 90, "defaultWidth": 864, "defaultHeight": 480,
+        "defaultSteps": 20,
+    }
+
+
+def test_video_frame_bounds_matches_the_apps_own_n_window():
+    ltx = registry.video_traits_for("ltx-video")
+    assert registry.video_frame_bounds(ltx) == (9, 169)  # 1+8*1, 1+8*21
+    h3 = registry.video_traits_for("h3-video")
+    assert registry.video_frame_bounds(h3) == (22, 362)  # 5+17*1, 5+17*21
+
+
+def test_ltx_video_suggestions_name_their_own_8_step_default():
+    """`DistilledPipeline` runs a fixed 8-step stage-1 schedule regardless of
+    quantization tier — not the app's generic image-route default (28) or
+    H3's own 20 — so the Playground's step slider (`VideoStage.tsx`) must
+    not fall back to either. `entry.defaults.steps` is the per-model hint
+    that keeps it from doing so even if a future change moved `registry.
+    VIDEO_TRAITS["ltx-video"].default_steps` off 8 for some other reason."""
+    from fused_render.ai import catalog
+
+    for entry in catalog.SUGGESTIONS["ltx-video"]:
+        assert entry["defaults"] == {"steps": 8}, entry["id"]
 
 
 def test_catalog_default_is_null_when_unavailable(monkeypatch):
@@ -229,3 +330,24 @@ def test_hub_repo_h3_cannot_read_hits_the_existing_wrong_format_refusal():
     than duplicated here.
     """
     assert tasks.classify("text-to-video").capability == registry.VIDEO_GENERATION
+
+
+def test_video_traits_names_both_registered_video_runners():
+    assert set(registry.VIDEO_TRAITS) == {"ltx-video", "h3-video"}
+
+
+def test_video_traits_for_falls_back_to_h3_for_an_unknown_code():
+    """The exact request shape every video call got before `ltx-video`
+    existed — a runner under test (`fake_video_runner`'s `code="fake-
+    video"`), or one written before this table existed, must not get an
+    arbitrary new default or a `KeyError`."""
+    assert registry.video_traits_for("fake-video") == registry.VIDEO_TRAITS["h3-video"]
+    assert registry.video_traits_for(None) == registry.VIDEO_TRAITS["h3-video"]
+
+
+def test_video_traits_for_ltx_video():
+    traits = registry.video_traits_for("ltx-video")
+    assert (traits.frames_base, traits.frames_step) == (1, 8)
+    assert traits.default_frames_n == 12  # 1 + 8*12 = 97, upstream's own default
+    assert (traits.default_width, traits.default_height) == (704, 480)
+    assert traits.default_steps == 8

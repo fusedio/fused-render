@@ -257,6 +257,7 @@ function capability(
     reason: null,
     default: "mlx-lm",
     models,
+    videoTraits: null,
     ...over,
   };
 }
@@ -436,9 +437,35 @@ describe("video generation's place in the reading order", () => {
     ]);
   });
 
+  // Two engines now serve this capability (`ltx-video`, then `h3-video`), and
+  // NEITHER reaches a machine that is not Apple Silicon — unlike text
+  // generation or image generation, where a torch/diffusers row keeps the
+  // capability alive on Windows and Linux. Video generation is therefore
+  // still the one whose row can go fully unavailable, even with a second
+  // engine in the mix; this mirrors the `runner: "h3-video"` case above with
+  // `ltx-video`, pinning that the page needed no new code for it — the row
+  // renders off whichever runner the SERVER reports as effective, and
+  // neither this test nor `mergeSections` cares which one that is.
+  it("renders with ltx-video as the effective runner, same as h3-video", () => {
+    const catalogWithVideo: AiCatalogCapability[] = [
+      capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
+        runner: "ltx-video",
+        runnerShortLabel: "LTX-2.3",
+      }),
+    ];
+    const sections = mergeSections(
+      groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
+    );
+    const video = sections.find((s) => s.key === "text-to-video");
+    expect(video).toBeDefined();
+  });
+
   // Unavailable is still SHOWN, with its reason — the same rule every other
-  // capability follows (HF-8) and the first one that can be unavailable on
-  // every runner it has, since h3-video has no fallback anywhere.
+  // capability follows (HF-8), and video generation is still the one that can
+  // go unavailable on every engine it has: `ltx-video` and `h3-video` are
+  // BOTH gated on Apple Silicon (registry.py's ordering, SPEC §40's LTX-2.3
+  // plan), so neither reaches a Windows or Linux machine the way a torn-off
+  // torch/CUDA row keeps text or image generation alive there.
   it("still renders, with its reason, when this machine has no h3 binary", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
       capability("text-to-video", [curated("MiniMaxAI/MiniMax-H3-FL2VA")], {

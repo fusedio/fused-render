@@ -1288,6 +1288,18 @@ class CacheReading(NamedTuple):
     tell what this is", and a refusal that cannot tell them apart cannot explain
     itself. `tag` is the vocabulary key those came from, for a caller that wants
     to link to the glossary rather than reprint a sentence.
+
+    `runner_code`/`runner_reason` are `_engine`'s own answer to "which BACKEND
+    reads this file", carried past `capability` for a capability two runners
+    can share (video generation, since Task 1 of the LTX-2.3 plan: `ltx-video`
+    and `h3-video` read mutually unloadable layouts). `capability` alone
+    cannot tell a caller whether the SERVING runner is the one that reads
+    this repo — `runner_code` is that runner's code, and it can differ from
+    whichever runner `registry.for_capability(capability)` resolves to right
+    now. `None` for a repo `_engine` never named a specific runner for (not
+    cached, a component, or the rare case where several runners share a
+    capability with no decisive format evidence at all — `mlx-text`'s own
+    fallback below).
     """
 
     cached: bool
@@ -1296,6 +1308,8 @@ class CacheReading(NamedTuple):
     support: str = _tasks.UNKNOWN
     reason: str = ""
     tag: str | None = None
+    runner_code: str | None = None
+    runner_reason: str | None = None
 
 
 def cached_capability(repo_id: str) -> CacheReading:
@@ -1370,7 +1384,9 @@ def cached_capability(repo_id: str) -> CacheReading:
     # travels here is the vocabulary's answer, which is the half a load route
     # needs to explain a refusal without re-deriving anything.
     return CacheReading(True, capability, looks_like,
-                        reading.support, reading.reason, reading.tag)
+                        reading.support, reading.reason, reading.tag,
+                        _row.get("code") if _row else None,
+                        _row.get("reason") if _row else None)
 
 
 def _article(word: str) -> str:

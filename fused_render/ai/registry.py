@@ -1330,10 +1330,50 @@ _RUNNERS: tuple[Runner, ...] = (
     # run MiniMax H3 (see the plan's "Engine = h3.c, bundled" decision — mlx-
     # video cannot run H3, ComfyUI on MPS falls back to bf16 speed, h3.c-ane's
     # compile cache is ~19GB per shape, Phosphene is an app whose deps do not
-    # survive a bare `uv sync`). One row, gated on BOTH Apple Silicon and a
-    # resolvable binary (`_h3_available`), so off a Mac — or on a Mac whose
-    # build never staged the binary — `catalog()` reports `default: null`
-    # for this capability for the first time.
+    # survive a bare `uv sync`). Two rows, both Apple-Silicon-only, ordered so
+    # a bare `fused.ai.video()` reaches the one that fits on a laptop.
+    #
+    # **`ltx-video` sits FIRST.** It is LTX-2.3 run through `ltx-2-mlx`, a
+    # pure-MLX, MIT-licensed port that keeps AUDIO (mlx-video's own LTX and
+    # Wan paths either want the 57-108 GB bf16 trees or render silent video —
+    # see the plan's "ltx-2-mlx, not mlx-video" decision) at an int4-distilled
+    # ~30 GB download that a 16 GB Mac can hold. Gated on the SAME
+    # `_apple_silicon` check `mlx-embed` above uses, not `_h3_available`: this
+    # row has no bundled binary to resolve, just a `uv sync`-able git package
+    # (Task 2), so "can this machine run MLX at all" is the whole gate.
+    #
+    # **`h3-video` stays exactly as it was, one row down.** MiniMax H3's 144.1
+    # GB checkpoint and 64 GB-class RAM floor make it the wrong "just try
+    # video" default on most of the Apple Silicon fleet, but it remains
+    # reachable for whoever wants its ceiling instead of `ltx-video`'s floor —
+    # through the ENGINE PREFERENCE (the Engines tab), not by naming
+    # `MiniMaxAI/MiniMax-H3` in a request. Resolution here is by capability
+    # plus stored preference (`resolve()`, below), never by `model` — a
+    # request that names H3's repo while the preference (or the ordering,
+    # absent one) resolves to `ltx-video` reaches the ltx-video worker
+    # instead and is refused, by `server/routers/ai_runtime.py`'s own
+    # cached-format check, before a byte moves. One row, gated on BOTH Apple
+    # Silicon and a resolvable binary (`_h3_available`), so off a Mac — or
+    # on a Mac whose build never staged
+    # the binary — the capability falls through to `ltx-video`'s own gate
+    # instead of disappearing outright, which is the change from before: only
+    # a machine that is not Apple Silicon at all now sees `default: null`
+    # for video generation.
+    Runner(
+        code="ltx-video",
+        capability=VIDEO_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "ltx_video"),
+        # The hardware qualifier lives on the long name only, per the naming
+        # note above the table — `short_label`/`family_label` name the engine
+        # ("LTX-2.3"), not the machine it happens to run on here.
+        label="LTX-2.3 (Apple Silicon)",
+        short_label="LTX-2.3",
+        family_label="LTX-2.3",
+        note="Text-to-video with audio, distilled to 8 steps. Needs 16 GB+ "
+             "of RAM; MiniMax H3 below is the higher-fidelity, higher-cost "
+             "alternative.",
+        _available=_apple_silicon,
+    ),
     Runner(
         code="h3-video",
         capability=VIDEO_GENERATION,
@@ -1346,6 +1386,106 @@ _RUNNERS: tuple[Runner, ...] = (
         _available=_h3_available,
     ),
 )
+
+
+@dataclass(frozen=True)
+class VideoTraits:
+    """The shape of a video request, for the one runner that will actually
+    serve it — the three facts `server/routers/ai_runtime.py`'s route used
+    to hardcode as H3's own numbers before a second video runner existed:
+    the frame-count grid, the default canvas, and the default step count.
+
+    **The frame grid is `frames_base + frames_step * n`**, `n` starting at 0
+    — `_snap_frames` (`ai_runtime.py`) rounds a request UP to the nearest
+    point on it, never down, mirroring whichever engine's own alignment rule
+    it is (h3.c's `h3_align_frame_count` for H3; LTX has no compiled binary
+    to align against, but its VAE's temporal compression is 8, so `8n + 1`
+    is the natural grid its own upstream CLI defaults to). Side clamps and
+    the overall pixel budget stay SHARED across every video runner — those
+    are values the app itself chose as a safety rail, not a fact about
+    either engine's weights — so only the canvas DEFAULT is a trait here.
+
+    Not a dict of bare ints: the fields are named exactly once (here) and
+    read by name everywhere else, the same argument `Runner`'s own fields
+    make over a positional tuple.
+    """
+
+    #: `n = 0`'s frame count — the shortest clip the grid can name.
+    frames_base: int
+    #: The grid's spacing — the next valid frame count is `frames_base +
+    #: frames_step`, and so on.
+    frames_step: int
+    #: Which `n` a request that named no `frames` at all gets.
+    default_frames_n: int
+    default_width: int
+    default_height: int
+    default_steps: int
+
+
+#: Runner code -> its `VideoTraits`. ABSENT for a runner with no video
+#: capability — the same "absent rather than empty" shape `runners/engine_
+#: options.py`'s own table uses (see that module's docstring for the
+#: argument in full): the common case (a non-video runner) costs a dict
+#: lookup rather than an entry that says nothing.
+#:
+#: `video_traits_for` is the only reader outside this file, and it falls
+#: back to H3's own row for a code THIS table has never heard of — a runner
+#: registered by a test (`fake_video_runner`), or one written before this
+#: table existed. That fallback is not a guess: it is the exact request
+#: shape every video call got before a second engine existed, so a caller
+#: this table cannot name gets the behaviour it always had rather than a
+#: KeyError or an arbitrary new default.
+VIDEO_TRAITS: dict[str, VideoTraits] = {
+    # 97 = 1 + 8*12 — upstream's own CLI default (`--frames 97`), and this
+    # runner's own `worker.py` default. 704x480 and 8 steps are that same
+    # CLI's `--width`/`--height`/(distilled default) numbers.
+    "ltx-video": VideoTraits(
+        frames_base=1, frames_step=8, default_frames_n=12,
+        default_width=704, default_height=480, default_steps=8),
+    # VERIFIED against the built `h3` binary — see `ai_runtime.py`'s own
+    # comments beside `_FRAMES_STEP`/`_FRAMES_BASE` and the 864x480 default,
+    # which this row's numbers are copied from verbatim. Unchanged by this
+    # runner's addition; also serves as `video_traits_for`'s fallback.
+    "h3-video": VideoTraits(
+        frames_base=5, frames_step=17, default_frames_n=5,
+        default_width=864, default_height=480, default_steps=20),
+}
+
+
+def video_traits_for(code: str | None) -> VideoTraits:
+    """The request shape for `code`, falling back to H3's own numbers.
+
+    See `VIDEO_TRAITS`'s docstring for why the fallback is H3's row
+    specifically rather than some engine-neutral guess: it is the shape
+    every video request already had before this table existed, for a runner
+    this table does not name at all — `code=None` (nothing can serve this
+    capability at all, checked separately before a route ever gets here)
+    included.
+    """
+    return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["h3-video"])
+
+
+#: `n` ranges over this window on EVERY video runner's own grid — an
+#: app-chosen safety rail, not a fact about either engine's weights (see
+#: `VideoTraits`'s own docstring for that distinction), so it lives here as
+#: a public constant rather than duplicated as a private one in every place
+#: that needs the ACTUAL min/max frame count a runner's grid offers:
+#: `server/routers/ai_runtime.py`'s `_snap_frames` and `catalog.py`'s own
+#: video-traits payload for the Playground (SPEC §40's LTX-2.3 plan, the
+#: fix for Task 5 leaving the client hardcoded to H3's grid).
+MIN_VIDEO_FRAMES_N = 1
+MAX_VIDEO_FRAMES_N = 21
+
+
+def video_frame_bounds(traits: VideoTraits) -> tuple[int, int]:
+    """`(min, max)` actual frame counts `traits`' grid offers, at the app's
+    own `[MIN_VIDEO_FRAMES_N, MAX_VIDEO_FRAMES_N]` window — the two absolute
+    numbers a caller outside this module (a route clamping a request, a
+    payload describing a slider's range) needs, so neither has to re-derive
+    `frames_base + frames_step * n` itself.
+    """
+    return (traits.frames_base + traits.frames_step * MIN_VIDEO_FRAMES_N,
+            traits.frames_base + traits.frames_step * MAX_VIDEO_FRAMES_N)
 
 
 # The task vocabulary — which `pipeline_tag` means what, and which of them a
