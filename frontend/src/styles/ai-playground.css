@@ -24,6 +24,16 @@
   padding-bottom: 16px;
 }
 
+/* The gap under the page heading, which the caption used to pay for. Every
+ * other tab still has one and gets its 22px from `.cc-caption`'s
+ * margin-bottom; this tab dropped its caption, and the heading's own 2px is
+ * not a gap. Restated here on the head ROW rather than on `.cc-heading`,
+ * because the row's height is set by whichever column is taller — the heading
+ * on the left or the tab strip on the right — and only the row knows which. */
+.pg-fill .cc-page-head {
+  margin-bottom: 22px;
+}
+
 .pg-body {
   display: flex;
   gap: 22px;
