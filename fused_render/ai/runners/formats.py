@@ -1115,6 +1115,17 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # only caller it was) went with it. Deliberately NOT replaced by a
     # `.gguf`-style DECISIVE claim: safetensors says nothing about the modality,
     # which is why this branch sits last, after every check that does.
-    if torch_weights and not unloadable_quant(config):
+    #
+    # **`config` is REQUIRED, not merely consulted.** `mlx_lm.load` resolves a
+    # checkpoint by reading `config.json` and importing
+    # `mlx_lm.models.<model_type>`, so a weights directory without one is not a
+    # repo this engine can open, whatever the extensions say. Claiming it anyway
+    # is how `SymphonyGen/SymphonyGen` — four bare `.pt` checkpoints of a
+    # symbolic-music policy, no config, `library_name: pytorch` — matched
+    # `mlx-text`, which then let the caller's format fallback call it a chat
+    # model. Same shape as the Parakeet early return above: the honest answer
+    # for weights nothing can resolve is "no runner", not "the one engine whose
+    # file extensions happen to match".
+    if torch_weights and config and not unloadable_quant(config):
         found.append("mlx-text")
     return tuple(found)

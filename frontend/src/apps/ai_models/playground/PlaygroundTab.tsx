@@ -34,7 +34,7 @@ import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize"
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
-import { capabilityIcon } from "./capabilityIcons";
+import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
@@ -43,6 +43,7 @@ import { fetchJobs, type Job } from "@platform/lib/jobs";
 import {
   downloadAiModel,
   getAiCatalog,
+  type AiUnsupportedModel,
   loadAiModel,
   unloadAiModel,
   type AiCatalogCapability,
@@ -68,7 +69,7 @@ function groupLabel(capability: string): string {
 
 type CatalogLoad =
   | { status: "loading" }
-  | { status: "ok"; capabilities: AiCatalogCapability[] }
+  | { status: "ok"; capabilities: AiCatalogCapability[]; unsupported: AiUnsupportedModel[] }
   | { status: "error"; message: string };
 
 export default function PlaygroundTab() {
@@ -97,7 +98,13 @@ export default function PlaygroundTab() {
   useEffect(() => {
     let alive = true;
     getAiCatalog().then(
-      (data) => alive && setCatalog({ status: "ok", capabilities: data.capabilities }),
+      (data) =>
+        alive &&
+        setCatalog({
+          status: "ok",
+          capabilities: data.capabilities,
+          unsupported: data.unsupported ?? [],
+        }),
       (e: Error) => alive && setCatalog({ status: "error", message: e.message }),
     );
     return () => {
@@ -127,6 +134,10 @@ export default function PlaygroundTab() {
   }, [anyBusy]);
 
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];
+  // Downloaded, and runnable by nothing here. Drawn rather than dropped: this
+  // sidebar is the only list of what is on the disk that this tab shows, and a
+  // model that silently is not in it reads as a download that failed.
+  const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
   // The selection lives in the URL. An unknown or absent id falls back to the
   // first capability's default silently (PT-9's posture: a stale link opens
@@ -387,16 +398,67 @@ export default function PlaygroundTab() {
                   Nothing to try here yet — the Discover tab is where a first model comes from.
                 </p>
               )}
+              {/* Curated first, then the uncurated repos this disk happens to
+                  hold — one run of cards, no divider. The "Your downloads"
+                  caption that used to separate them said something the cards
+                  no longer needed said: a curated entry not yet fetched wears
+                  a Download button and a fetched one does not, so which half
+                  is on this disk is legible from the cards themselves, and the
+                  heading was a second answer to a question already answered. */}
               {row.available && curated.map(draw)}
-              {row.available && cached.length > 0 && (
-                <>
-                  <p className="pg-side-cap">Your downloads</p>
-                  {cached.map(draw)}
-                </>
-              )}
+              {row.available && cached.map(draw)}
             </details>
           );
         })}
+
+        {unsupported.length > 0 && (
+          // **Everything downloaded appears, and what cannot run says so.**
+          // These rows used to be absent — `/api/ai/catalog` only listed models
+          // some capability could load — so a text-to-speech model or a depth
+          // estimator was a multi-gigabyte download that simply was not in the
+          // sidebar, which reads as a bug in the download rather than as an
+          // answer. Last, and collapsed by DEFAULT (the only `<details>` here
+          // that is): it is a reference list, not a menu — nothing in it is
+          // selectable, so leaving it open would put dead cards between the
+          // reader and the ones they came for.
+          <details className="pg-group">
+            <summary className="pg-group-head">
+              <span className="pg-group-icon">{unsupportedIcon()}</span>
+              <span className="pg-group-title">Not supported</span>
+            </summary>
+            <p className="pg-group-off">
+              On this disk, and nothing here runs it. The AI Models page is where these
+              can be deleted.
+            </p>
+            {unsupported.map((model) => (
+              // A card, so the shape matches the ones above — but a plain div:
+              // no role, no tabIndex, no click. There is nothing to select, and
+              // a control that looks pressable and is not teaches the wrong
+              // thing about every card beside it.
+              <div key={model.id} className="pg-model pg-model-off">
+                <span className="pg-model-name">{model.label}</span>
+                <span className="pg-model-full">{model.id}</span>
+                <span className="pg-model-foot">
+                  {/* `shared/modelSize`, like every other size cell on this
+                      page — with no job, since a repo already on the disk is
+                      not downloading. Hand-formatting it here would be the
+                      second copy of a rule that exists because the copies
+                      disagreed. */}
+                  <span className="pg-model-size">{modelSizeLabel(model.size_gb)}</span>
+                  {/* What it IS, when the repo said. Null is its own answer and
+                      gets no chip: "we could not tell" is what the missing
+                      label means, and inventing one would be a claim. */}
+                  {model.task && <span className="pg-model-task">{model.task}</span>}
+                </span>
+                {/* The server's own sentence, written per task beside the
+                    classification it explains (`ai/tasks.py`). Empty for a repo
+                    we could not identify — an explanation we have not earned is
+                    worse than none — and then the line simply is not drawn. */}
+                {model.reason && <p className="pg-model-why">{model.reason}</p>}
+              </div>
+            ))}
+          </details>
+        )}
       </aside>
 
       <div className="pg-stage">
