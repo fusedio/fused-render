@@ -39,11 +39,12 @@ import {
   knownTotalSize,
   lookupTotalSize,
 } from "@apps/ai_models/lib/hubSize";
+import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { type AiCatalogModel, type HubModel } from "@platform/lib/api";
 import { timeAgo } from "@platform/lib/format";
-import { isRunning, type Job } from "@platform/lib/jobs";
+import { type Job } from "@platform/lib/jobs";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 
 /** The card every model on this page that is not a cache repo is drawn as.
@@ -180,37 +181,6 @@ function EngineTag({
     >
       {runner.shortLabel}
     </span>
-  );
-}
-
-/** The download manager's own ✕, or nothing.
- *
- *  Its rule and not a looser one: a running job its reporter never marked
- *  cancellable gets no ✕ rather than a dead one, and a cancel already asked for
- *  is not asked again.
- */
-function CancelButton({
-  id,
-  job,
-  onCancel,
-}: {
-  id: string;
-  job: Job | undefined;
-  onCancel: (job: Job) => void;
-}) {
-  const cancellable =
-    job && isRunning(job) && job.cancellable && !job.cancel_requested && !job.stalled ? job : null;
-  if (!cancellable) return null;
-  return (
-    <button
-      type="button"
-      className="cc-iconbtn"
-      title={`Stop downloading ${id}`}
-      aria-label={`Stop downloading ${id}`}
-      onClick={() => onCancel(cancellable)}
-    >
-      ✕
-    </button>
   );
 }
 

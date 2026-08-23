@@ -9,6 +9,7 @@
 // two differently-grouped sections.
 import { Revisions } from "./Revisions";
 import { hubUrl } from "./hub";
+import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { engineHueStyle, unloadCountdown } from "@apps/ai_models/lib/engines";
 import {
@@ -155,6 +156,7 @@ export function RepoCard({
   onDeleteRepo,
   onDeleteRevision,
   onDownload,
+  onCancel,
   onLoad,
   onUnload,
 }: {
@@ -191,6 +193,9 @@ export function RepoCard({
   /** Resume the unfinished download. The server picks up from the bytes on disk
    *  (D275) — this is the same POST the recommended card's Download sends. */
   onDownload: () => void;
+  /** Stop the pull that is running for this repo. The download manager's own
+   *  cancel, the same one the recommended and search cards send. */
+  onCancel: (job: Job) => void;
   onLoad: () => void;
   onUnload: () => void;
 }) {
@@ -600,7 +605,7 @@ export function RepoCard({
               type="button"
               className="am-card-power"
               disabled={busy || fetching || !!job}
-              title={`Finish downloading ${repo.id} — it resumes from the ${formatSize(repo.size)} already here`}
+              title={`Finish downloading ${repo.id} — it resumes from the ${formatSize(repo.fetchedBytes)} already here`}
               aria-label={`Download ${repo.id} — resume the unfinished download`}
               onClick={onDownload}
             >
@@ -625,6 +630,15 @@ export function RepoCard({
               {job ? "Loading…" : "Load"}
             </button>
           )}
+          {/* The way OUT of a running download, which this card did not have
+              (D440). While a pull is live the button above reads "Downloading…"
+              and is disabled, the trash is disabled too (deleting files a fetch
+              holds open is what `inUse` exists to stop) — so the card offered
+              nothing at all, and a 40GB fetch started by mistake had to be
+              cancelled from the download manager or waited out. The recommended
+              and search cards have had this ✕ all along; it is the same
+              component and the same manager-owned rule about when it appears. */}
+          <CancelButton id={repo.id} job={job} onCancel={onCancel} />
           {/* Into the Playground, pre-selected — the tab whose whole job is
               "use it now". Only where the playground could actually serve it:
               the same loadability verdict the Load button rests on, since a

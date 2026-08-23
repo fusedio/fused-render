@@ -399,6 +399,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
         onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
         onDownload={() => resumeCapability && runDownload(r.id, resumeCapability)}
+        onCancel={runCancelDownload}
         onLoad={() => runLoad(r)}
         onUnload={() => runUnload(r)}
       />

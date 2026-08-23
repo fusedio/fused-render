@@ -6726,10 +6726,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   A download **in flight** takes the same boundary in GREEN, at the job's own
   progress, on all three cards that can be downloading — amber is a boundary that
   has stopped moving and green is one that has not (D439). The partial fraction is
-  the **larger** of the two readings (bytes on disk over the total, and the job's
-  `done/total`), because they answer different questions — the disk counts every
-  byte present, the job counts what this run has moved — and the boundary must not
-  jump backwards when a resume starts. The job's own total is the denominator
+  the **larger** of the two readings (`fetchedBytes` over the total, and the job's
+  `done/total`) — a monotonic guard, so the boundary cannot jump backwards when a
+  resume starts.
+  **The numerator is `fetchedBytes`, never `size`** (D440). A part file is
+  preallocated to the full length of the file being fetched, so `size` reports the
+  whole download the moment it starts; `fetchedBytes` is the scan total corrected
+  per part file from the sidecar cursors `flush()` writes only after fsyncing the
+  data — the accounting a resume itself trusts. A part file with no sidecar counts
+  zero, not its length (positive evidence only); hf's `.incomplete` is not
+  corrected, since that writer appends and its length already is its progress; and
+  a sidecar's own bytes are excluded, because a fraction made of bookkeeping is not
+  a fraction. `size` remains the figure the page PRINTS — allocated bytes are what
+  the folder costs.
+  A card whose pull is RUNNING also carries the download manager's ✕, on all three
+  card kinds: while a fetch holds files open the primary button is a disabled
+  "Downloading…" and the trash is disabled too, so without it a multi-GB download
+  started by mistake could not be stopped from the card that started it. The job's own total is the denominator
   wherever there is one, and only when the job counts BYTES.
   All of it is **background only** — no border, no rail, no radius, no padding —
   because these cards sit in a horizontal carousel and a card that changed size on

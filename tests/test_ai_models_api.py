@@ -2135,3 +2135,88 @@ def test_a_shell_named_by_a_path_is_refused(client, hub):
     """Same discipline as every other destructive path here: a repo id is turned
     into ONE folder name, and anything that is not one is not looked at."""
     assert ai_models_mod.discard_empty_shell("../../etc") is False
+
+
+# -- bytes that ARRIVED, vs blocks reserved for them (D440) --------------------
+# Our fetcher preallocates a part file to the full length of the file it is
+# fetching, so a repo 15% into a 1.6GB download measures 1.6GB on disk. `size`
+# is right about the disk and wrong about the download, and a card drawing "how
+# much of this is here" from it read as nearly finished.
+
+
+def _sidecar(repo, blob, size, done_per_segment, segment=32 * 1024 * 1024):
+    """A part file's sidecar in the shape `worker_base._FileFetch.flush` writes."""
+    segments = []
+    start = 0
+    for done in done_per_segment:
+        end = min(start + segment, size) - 1
+        segments.append({"start": start, "end": end, "done": done})
+        start = end + 1
+    (repo / "blobs" / f"{blob}.fusedpart.json").write_text(
+        json.dumps({"version": 3, "etag": blob, "size": size, "segments": segments})
+    )
+
+
+def test_fetched_bytes_reads_the_sidecar_not_the_part_files_length(client, hub):
+    repo = _repo(hub, "models--org--pulling")
+    # Preallocated to 96MB; only 40MB of it is durable.
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * (96 * 1024 * 1024))
+    _sidecar(repo, "w", 96 * 1024 * 1024,
+             [32 * 1024 * 1024, 8 * 1024 * 1024, 0])
+
+    row = _repo_row(client, "org/pulling")
+
+    # `size` still counts the part file's whole length (plus its little sidecar):
+    # that is what the folder holds, and it is what the page PRINTS.
+    assert row["size"] > 96 * 1024 * 1024
+    # …and this is what arrived: two full segments and a third of a third one.
+    assert row["fetchedBytes"] == 40 * 1024 * 1024
+
+
+def test_a_part_file_with_no_sidecar_counts_nothing(client, hub):
+    """No sidecar means nothing has SAID any of those bytes are durable, and the
+    file may be pure preallocation — so it contributes zero rather than its
+    length. Same posture as `_unfinished_fetch`: positive evidence only."""
+    repo = _repo(hub, "models--org--bare")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+
+    assert _repo_row(client, "org/bare")["fetchedBytes"] == 0
+
+
+def test_a_torn_sidecar_counts_nothing_rather_than_raising(client, hub):
+    repo = _repo(hub, "models--org--torn")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+    (repo / "blobs" / "w.fusedpart.json").write_text("{not json")
+
+    assert _repo_row(client, "org/torn")["fetchedBytes"] == 0
+
+
+def test_a_sidecar_claiming_more_than_its_segment_is_clamped(client, hub):
+    """A sidecar is written by another process; a `done` past the segment's own
+    width must not inflate the total."""
+    repo = _repo(hub, "models--org--liar")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 1024)
+    _sidecar(repo, "w", 1024, [999_999_999], segment=1024)
+
+    assert _repo_row(client, "org/liar")["fetchedBytes"] == 1024
+
+
+def test_hf_incomplete_files_count_their_length(client, hub):
+    """`huggingface_hub` APPENDS, so for its part files the length IS the
+    progress — the opposite of ours, which is why the two are read differently."""
+    repo = _repo(hub, "models--org--hf", blobs={"done": 100})
+    (repo / "blobs" / "abc.incomplete").write_bytes(b"x" * 900)
+
+    assert _repo_row(client, "org/hf")["fetchedBytes"] == 1000
+
+
+@requires_symlinks
+def test_a_finished_repo_reports_every_byte_as_fetched(client, hub):
+    """The ordinary case, and the one the fraction never draws: nothing is
+    outstanding, so the two numbers agree."""
+    _repo(hub, "models--org--done", blobs={"w": 4096},
+          snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    row = _repo_row(client, "org/done")
+
+    assert row["fetchedBytes"] == row["size"]

@@ -204,7 +204,14 @@ export function partialFraction(
   // and dividing disk bytes by it produced a full card from a four-step job.
   const jobTotal = job?.unit === "bytes" && job.total && job.total > 0 ? job.total : null;
   const total = jobTotal ?? estimate;
-  const disk = total && total > 0 ? clampFraction(repo.size / total) : null;
+  // `fetchedBytes`, NOT `size` (D440). A part file is preallocated to the length
+  // of the file being fetched, so `size` says 1.6GB the moment a 1.6GB download
+  // starts — which drew a nearly-full card over a fetch 15% of the way in, and
+  // made this reading disagree with the job row on the same card. The server's
+  // `fetchedBytes` is the durable-byte accounting a resume itself trusts, which
+  // is the same thing the job counts: the two readings below are finally
+  // measuring one quantity, which is what makes taking the larger of them sound.
+  const disk = total && total > 0 ? clampFraction(repo.fetchedBytes / total) : null;
   if (live === null) return disk;
   if (disk === null) return live;
   // **The MAX, and this is the fix for a bar that jumped backwards.** The two

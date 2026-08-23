@@ -24,6 +24,10 @@ import {
 
 function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
   return {
+    // Defaults to `size`, which is true of every repo whose download finished —
+    // the two only diverge mid-fetch, where a part file is preallocated to its
+    // full length (D440), so a test about that case sets it explicitly.
+    fetchedBytes: over.size ?? 1000,
     dir: "models--" + over.id.replace("/", "--"),
     kind: "model",
     path: "/cache/" + over.id,
@@ -960,5 +964,41 @@ describe("jobFraction", () => {
   it("never draws as empty or as finished", () => {
     expect(jobFraction({ done: 0, total: 1_000, unit: "bytes" })).toBe(0.02);
     expect(jobFraction({ done: 1_000, total: 1_000, unit: "bytes" })).toBe(0.95);
+  });
+});
+
+describe("partialFraction over a PREALLOCATED part file", () => {
+  it("reads the bytes that arrived, not the blocks reserved for them", () => {
+    // The reported bug, with the real numbers off the reporter's disk: a 1.61GB
+    // whisper download 243MB in. `size` is already the full 1.61GB because the
+    // fetcher preallocates, so the old reading drew a card 95% full over a fetch
+    // 15% of the way through — and disagreed with the job row beside it.
+    const pulling = repo({
+      id: "mlx-community/whisper-large-v3-turbo",
+      partial: true,
+      size: 1_613_977_612,
+      fetchedBytes: 243_000_000,
+    });
+    expect(partialFraction(pulling, undefined, 1_613_977_612)).toBeCloseTo(0.15, 2);
+  });
+
+  it("agrees with the live job now that both count durable bytes", () => {
+    // Which is what makes taking the larger of the two sound: they are finally
+    // answers to one question, so the max is a monotonic guard rather than a
+    // choice between two different measurements.
+    const pulling = repo({
+      id: "org/half",
+      partial: true,
+      size: 1_000_000,
+      fetchedBytes: 250_000,
+    });
+    const idle = partialFraction(pulling, undefined, 1_000_000);
+    const live = partialFraction(
+      pulling,
+      { done: 250_000, total: 1_000_000, unit: "bytes" },
+      1_000_000,
+    );
+    expect(idle).toBeCloseTo(0.25);
+    expect(live).toBeCloseTo(0.25);
   });
 });
