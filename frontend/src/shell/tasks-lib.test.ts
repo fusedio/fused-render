@@ -6801,11 +6801,20 @@ describe("the list row's message count", () => {
     expect(VIEWS).toContain("{task.message_count > 0 && (");
   });
 
-  it("says the noun rather than drawing a glyph", () => {
-    // A bare "4" between a folder and a time is a number with no unit; the
-    // bubble it replaced had to be learned before the row could be read.
-    expect(VIEWS).toContain("message{task.message_count === 1 ? \"\" : \"s\"}");
-    expect(VIEWS).not.toContain("ICON_MESSAGES");
+  it("draws the glyph after the number, and keeps the noun for readers", () => {
+    // Reversed by request (D448). The objection to the bubble was that it has to
+    // be learned before the row can be read — true once, and repaid on every row
+    // after it on a page read by sweeping a column. What made the old bare "4"
+    // ambiguous was standing alone between a folder and a time; a number with a
+    // bubble welded to its right is not that number, which is what the
+    // inline-flex + gap in `.tasks-row-msgs` is for.
+    expect(VIEWS).toContain("tasks-row-msgs-icon");
+    expect(VIEWS).toContain("{ICON_MSG}");
+    // …and the noun is not gone, it moved to where a screen reader finds it: a
+    // bare digit is exactly as unlabelled to a reader who cannot see the glyph.
+    expect(VIEWS).toContain(
+      'aria-label={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}',
+    );
   });
 
   it("reads in the same register as the chip beside it", () => {

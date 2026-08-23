@@ -117,81 +117,88 @@ export default function AiModelsPage() {
         <div className="cc-page-head">
           <div>
             <h2 className="cc-heading">AI Models</h2>
-            {/* Monospace only for the cache PATH below — the Playground and
-                Engines captions are plain sentences, and the Engines tab's own
-                note (`.am-engines-note`) sits right under this one in the same
-                proportional font. Applying `.cc-mono` to every branch made
-                that one sentence look like a filesystem fact next to the other
-                that does not. */}
-            <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
-              {tab === "playground" ? (
-                // What the tab is FOR: trying a model, not managing one — the
-                // other tabs are the managing.
-                "Pick a local model and try it — chat, images, transcription"
-              ) : tab === "usage" ? (
-                // The window, stated in the chrome, because every figure on the
-                // tab is bounded by it and none of them is a lifetime total.
-                "Tokens, speed and failures through fused.ai since this server started"
-              ) : tab === "benchmark" ? (
-                // The caption says the two things a number here cannot say for
-                // itself: the work is FIXED (which is what makes two models
-                // comparable at all) and the answer is about THIS machine
-                // (which is why it does not travel). Not the cache path, for
-                // the reason the Engines branch below gives.
-                "A fixed workload per capability, timed on this machine"
-              ) : tab === "engines" ? (
-                // Not the cache path: this tab is not about the disk, and a
-                // caption naming a directory over a panel of engine pickers is
-                // the page's chrome contradicting its content.
-                "Which backend runs each kind of local model"
-              ) : data ? (
-                <>
-                  {/* The path is a DESTINATION, not a label. It is the one
-                      place on this page that answers "where has all this
-                      actually gone", and the app is a file explorer — leaving
-                      it as text asks the user to copy it into the thing they
-                      are already looking at. A real <a href> so middle-click
-                      and copy-link work, with left-click intercepted for
-                      client-side navigation like every other in-app link.
+            {/* Monospace only for the cache PATH below — the Usage, Benchmark
+                and Engines captions are plain sentences, and the Engines tab's
+                own note (`.am-engines-note`) sits right under this one in the
+                same proportional font. Applying `.cc-mono` to every branch made
+                those sentences look like filesystem facts next to the one that
+                is. */}
+            {/* No caption on the PLAYGROUND, where the tab below it is the
+                explanation: a rail of models with a composer beside them says
+                "pick one and try it" without a sentence saying so, and the
+                sentence's list of kinds just renamed the four section headings
+                a few pixels lower. The div is dropped rather than emptied, so
+                the heading does not sit on a caption's leading. Every other tab
+                keeps its caption — each carries a fact its tab does not repeat
+                (the window the figures are bounded by, the workload the timings
+                are of, the cache path, which backend runs what). */}
+            {tab !== "playground" && (
+              <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
+                {tab === "usage" ? (
+                  // The window, stated in the chrome, because every figure on the
+                  // tab is bounded by it and none of them is a lifetime total.
+                  "Tokens, speed and failures through fused.ai since this server started"
+                ) : tab === "benchmark" ? (
+                  // The caption says the two things a number here cannot say for
+                  // itself: the work is FIXED (which is what makes two models
+                  // comparable at all) and the answer is about THIS machine
+                  // (which is why it does not travel). Not the cache path, for
+                  // the reason the Engines branch below gives.
+                  "A fixed workload per capability, timed on this machine"
+                ) : tab === "engines" ? (
+                  // Not the cache path: this tab is not about the disk, and a
+                  // caption naming a directory over a panel of engine pickers is
+                  // the page's chrome contradicting its content.
+                  "Which backend runs each kind of local model"
+                ) : data ? (
+                  <>
+                    {/* The path is a DESTINATION, not a label. It is the one
+                        place on this page that answers "where has all this
+                        actually gone", and the app is a file explorer — leaving
+                        it as text asks the user to copy it into the thing they
+                        are already looking at. A real <a href> so middle-click
+                        and copy-link work, with left-click intercepted for
+                        client-side navigation like every other in-app link.
 
-                      …but only where there is something to open. `exists:
-                      false` means no download has ever created this directory,
-                      and a link to a path that is not there is worse than
-                      text: it looks like an answer and lands on an error. The
-                      path is still SHOWN — it is where the models would go, and
-                      the empty state below says so. */}
-                  {data.exists ? (
-                    <a
-                      className="am-cache-dir"
-                      href={urlForFsPath(data.cacheDir)}
-                      title={`Open ${data.cacheDir} in the explorer`}
-                      onClick={(e) => {
-                        if (
-                          e.defaultPrevented ||
-                          e.button !== 0 ||
-                          e.metaKey ||
-                          e.ctrlKey ||
-                          e.shiftKey ||
-                          e.altKey
-                        )
-                          return;
-                        e.preventDefault();
-                        navigate(data.cacheDir, { isDir: true });
-                      }}
-                    >
-                      {data.cacheDir}
-                    </a>
-                  ) : (
-                    data.cacheDir
-                  )}
-                  {repos.length
-                    ? ` · ${repos.length} cached · ${formatSize(data.totalSize)} total`
-                    : ""}
-                </>
-              ) : (
-                "Hugging Face cache"
-              )}
-            </div>
+                        …but only where there is something to open. `exists:
+                        false` means no download has ever created this directory,
+                        and a link to a path that is not there is worse than
+                        text: it looks like an answer and lands on an error. The
+                        path is still SHOWN — it is where the models would go, and
+                        the empty state below says so. */}
+                    {data.exists ? (
+                      <a
+                        className="am-cache-dir"
+                        href={urlForFsPath(data.cacheDir)}
+                        title={`Open ${data.cacheDir} in the explorer`}
+                        onClick={(e) => {
+                          if (
+                            e.defaultPrevented ||
+                            e.button !== 0 ||
+                            e.metaKey ||
+                            e.ctrlKey ||
+                            e.shiftKey ||
+                            e.altKey
+                          )
+                            return;
+                          e.preventDefault();
+                          navigate(data.cacheDir, { isDir: true });
+                        }}
+                      >
+                        {data.cacheDir}
+                      </a>
+                    ) : (
+                      data.cacheDir
+                    )}
+                    {repos.length
+                      ? ` · ${repos.length} cached · ${formatSize(data.totalSize)} total`
+                      : ""}
+                  </>
+                ) : (
+                  "Hugging Face cache"
+                )}
+              </div>
+            )}
           </div>
           <div className="am-head-actions">
             <div className="am-tabs" role="tablist" aria-label="AI models">

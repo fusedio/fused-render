@@ -125,6 +125,9 @@ console.log(JSON.stringify(calls));
 # So every display-only thumbnail stamps `_nofocus=1` exactly as the pane does,
 # and these pin that none of the three places that build such a URL forgets it.
 
+# platform/ui, not apps/builder: the card moved when a third app began drawing
+# it (#765) and this path did not move with it, so the read raised
+# FileNotFoundError on every python job.
 CARD = os.path.join("frontend", "src", "platform", "ui", "AppPreviewCard.tsx")
 BOOKMARK_CARDS = os.path.join("frontend", "src", "apps", "explorer", "BookmarkCards.tsx")
 EMBED_SHELL = os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx")

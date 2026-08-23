@@ -9,7 +9,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const apps = () => readFileSync(join(import.meta.dir, "Apps.tsx"), "utf8");
-const card = () => readFileSync(join(import.meta.dir, "..", "..", "platform", "ui", "AppPreviewCard.tsx"), "utf8");
+// The card moved to platform/ui when a third app began drawing it (#765); this
+// path did not move with it, so `card()` was reading a file that is no longer
+// there and the assertions below failed on a clean checkout of main.
+const card = () =>
+  readFileSync(join(import.meta.dir, "../../platform/ui/AppPreviewCard.tsx"), "utf8");
 
 test("the hub draws the recent row while the exhaustive catalog loads", () => {
   const src = apps();

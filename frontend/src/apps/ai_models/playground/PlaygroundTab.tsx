@@ -53,13 +53,15 @@ import {
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 
 // What the groups are called HERE: the capability vocabulary is exact
 // ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
-// ("Speech to text") — this tab is the one surface named for what a person
-// DOES, so it gets the doing words (PLAYGROUND_GROUPS, shared with the Home
-// strip). An unknown capability falls back to the shared label, so a new
-// runner appears (plainly named) instead of vanishing.
+// ("Speech to text") — this tab names the WORK instead ("Text generation"),
+// which is the vocabulary the Home strip's cards already use
+// (PLAYGROUND_GROUPS, shared with them so one capability has one name). An
+// unknown capability falls back to the shared label, so a new runner appears
+// (plainly named) instead of vanishing.
 const GROUP_LABELS: Record<string, string> = Object.fromEntries(
   PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
 );
@@ -140,10 +142,47 @@ export default function PlaygroundTab() {
   // model that silently is not in it reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
+  // The RAIL's reading order, which this tab now sets for itself: images lead.
+  // It diverges from `CAPABILITY_ORDER` (lib/aiModelGroups.ts) deliberately.
+  // That list is the order of the tabs that INVENTORY — Models and Benchmark
+  // draw one section per capability and must agree with each other — and its
+  // reasoning is about where a capability sits in a catalogue. This tab is not
+  // a catalogue: it is four things you can DO, and the picture is the one whose
+  // result you can judge at a glance, which is what earns it the top of the
+  // rail. Text is not demoted for being lesser; it is the one everybody
+  // already knows they can have.
+  //
+  // A capability missing from this list still draws — it sorts after these, in
+  // the order the server sent it — so a capability added server-side needs no
+  // edit here.
+  //
+  // This is also what the FALLBACK SELECTION reads, so a bare visit to
+  // /ai-models/playground opens on the first section of the rail rather than on
+  // whichever capability the server happened to list first. The two were worth
+  // separating for exactly one commit — where the sections sit and what the
+  // page opens on are different decisions — and the answer to the second one
+  // is that a page whose first section is images and whose stage is a chat box
+  // is a page arguing with itself. `pickPlaygroundModel` needs no change: its
+  // rule was always "the first usable row" (pick.ts), and this is now the order
+  // that phrase is about.
+  const railRows = useMemo(() => {
+    const order = [
+      "text-to-image",
+      "text-generation",
+      "automatic-speech-recognition",
+      "embeddings",
+    ];
+    const rank = (c: string) => {
+      const i = order.indexOf(c);
+      return i === -1 ? order.length : i;
+    };
+    return [...capabilities].sort((a, b) => rank(a.capability) - rank(b.capability));
+  }, [capabilities]);
+
   // The selection lives in the URL. An unknown or absent id falls back to the
-  // first capability's default silently (PT-9's posture: a stale link opens
-  // the page, not an error) — and the fallback is `default`, never models[0],
-  // which catalog.py's ordering rule makes the smallest vetted model.
+  // TOP SECTION's default silently (PT-9's posture: a stale link opens the
+  // page, not an error) — and the fallback is `default`, never models[0], which
+  // catalog.py's ordering rule makes the smallest vetted model.
   const asked = useMemo(() => readParam("model"), [urlVersion]);
   // `?cap=` names a capability, not a model — the Home strip's cards land
   // here with only a task in mind. It only steers the fallback: an explicit
@@ -156,8 +195,8 @@ export default function PlaygroundTab() {
   // `pick.ts`, with the sidebar reading the same `playgroundModels` below, so
   // the drawn list and the selectable list cannot come apart.
   const selected = useMemo(
-    () => pickPlaygroundModel(capabilities, asked, askedCap),
-    [capabilities, asked, askedCap],
+    () => pickPlaygroundModel(railRows, asked, askedCap),
+    [railRows, asked, askedCap],
   );
 
   // What the URL asked for, when this machine cannot give it. Home's strip is
@@ -257,7 +296,7 @@ export default function PlaygroundTab() {
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
-        {capabilities.map((row) => {
+        {railRows.map((row) => {
           // The catalog's curated half, in its own smallest-first order — but
           // the RECOMMENDED subset of it (D425), because this tab is where
           // someone types a sentence rather than shops for a download: see
@@ -276,10 +315,6 @@ export default function PlaygroundTab() {
             const active = selected?.model.id === model.id;
             const downloading = runtime.downloading.some((d) => d.model === model.id);
             const name = modelName(model);
-            // The full name under the nickname — the label, or for a cached
-            // entry (where the label IS the display name) the repo id, so the
-            // second line never just repeats the first.
-            const fullName = model.label !== name ? model.label : model.id !== name ? model.id : null;
             // The card is a div-as-button, not a <button>: the Download CTA
             // lives inside it, and a button inside a button is markup browsers
             // are free to mangle.
@@ -292,7 +327,10 @@ export default function PlaygroundTab() {
                 key={model.id}
                 role="button"
                 tabIndex={0}
-                className={"pg-model" + (active ? " active" : "")}
+                className={
+                  "pg-model" + (active ? " active" : "") +
+                  (model.downloaded ? "" : " pg-model-absent")
+                }
                 aria-pressed={active}
                 onClick={() => select(model.id)}
                 onKeyDown={(e) => {
@@ -303,16 +341,33 @@ export default function PlaygroundTab() {
                 }}
                 title={model.label}
               >
-                <span className="pg-model-name">
-                  {/* Live from the supervisor, not the catalog's `loaded`
-                      snapshot — a dot that outlives an unload is a lie. */}
-                  {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
-                    <span className="pg-model-live" title="Loaded — answering from memory" />
+                {/* The whole card, one line: nickname left, then the two
+                    figures and the Download glyph hard right. No repo id under
+                    the name — the stage header names the selected model in
+                    full. */}
+                <span className="pg-model-head">
+                  <span className="pg-model-name">
+                    {/* Live from the supervisor, not the catalog's `loaded`
+                        snapshot — a dot that outlives an unload is a lie. */}
+                    {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
+                      <span className="pg-model-live" title="Loaded — answering from memory" />
+                    )}
+                    {name}
+                  </span>
+                  {/* Parameter count, left of the download weight: the two
+                      numbers a reader compares rows by, and they mean
+                      different things — how much model, then how much to
+                      fetch. Printed as the curator wrote it ("4B", "8B (~1B
+                      active)"), never shortened here: catalog.py's AI-2c rule
+                      is that this string is a value somebody owns.
+                      Absent on a cached entry nobody curated, and the slot
+                      then draws nothing rather than a "—" the stage header
+                      would have to explain. */}
+                  {model.params && (
+                    <span className="pg-model-chip" title="Parameters">
+                      {model.params}
+                    </span>
                   )}
-                  {name}
-                </span>
-                {fullName && <span className="pg-model-full">{fullName}</span>}
-                <span className="pg-model-foot">
                   <span
                     className="pg-model-size"
                     title={
@@ -324,12 +379,26 @@ export default function PlaygroundTab() {
                     {modelSizeLabel(model.size_gb, job)}
                   </span>
                   {/* On disk = nothing to say: the CTA exists only while there
-                      is an action to take. */}
+                      is an action to take. Last on the row, RIGHT of the two
+                      figures it acts on: the facts read as a block that way
+                      (name, size of model, size of download) and the one
+                      control sits outside it, in the corner a reader's cursor
+                      is already heading for.
+                      A glyph rather than the word, sharing the file's one
+                      download icon (MenuIcons.download, an arrow into a tray):
+                      the word competed with the model's name for the eye, and
+                      an arrow-into-tray is the same claim in a quarter of the
+                      width. The label survives as `aria-label`/`title` — it
+                      has to, because a screen reader gets nothing from a
+                      decorative path, and the title is what carries the
+                      running state a text button used to say out loud. */}
                   {!model.downloaded && (
                     <button
                       type="button"
                       className="pg-model-dl"
                       disabled={downloading}
+                      aria-label={downloading ? "Downloading…" : `Download ${name}`}
+                      title={downloading ? "Downloading…" : `Download ${name}`}
                       onClick={(e) => {
                         // Selecting too is fine; a second click must not be.
                         e.stopPropagation();
@@ -337,7 +406,7 @@ export default function PlaygroundTab() {
                         void runDownloadFor(model.id, row.capability);
                       }}
                     >
-                      {downloading ? "Downloading…" : "Download"}
+                      {MenuIcons.download}
                     </button>
                   )}
                 </span>
@@ -406,20 +475,26 @@ export default function PlaygroundTab() {
               // a control that looks pressable and is not teaches the wrong
               // thing about every card beside it.
               <div key={model.id} className="pg-model pg-model-off">
-                <span className="pg-model-name">{model.label}</span>
-                <span className="pg-model-full">{model.id}</span>
-                <span className="pg-model-foot">
-                  {/* `shared/modelSize`, like every other size cell on this
-                      page — with no job, since a repo already on the disk is
-                      not downloading. Hand-formatting it here would be the
-                      second copy of a rule that exists because the copies
+                <span className="pg-model-head">
+                  <span className="pg-model-name">{model.label}</span>
+                  {/* Top-right, as on the selectable cards above — same slot,
+                      so the size reads the same however the card behaves.
+                      `shared/modelSize`, like every other size cell on this
+                      page, with no job: a repo already on the disk is not
+                      downloading. Hand-formatting it here would be the second
+                      copy of a rule that exists because the copies
                       disagreed. */}
                   <span className="pg-model-size">{modelSizeLabel(model.size_gb)}</span>
-                  {/* What it IS, when the repo said. Null is its own answer and
-                      gets no chip: "we could not tell" is what the missing
-                      label means, and inventing one would be a claim. */}
-                  {model.task && <span className="pg-model-task">{model.task}</span>}
                 </span>
+                <span className="pg-model-full">{model.id}</span>
+                {/* What it IS, when the repo said. Null is its own answer and
+                    gets no chip: "we could not tell" is what the missing label
+                    means, and inventing one would be a claim. */}
+                {model.task && (
+                  <span className="pg-model-foot">
+                    <span className="pg-model-task">{model.task}</span>
+                  </span>
+                )}
                 {/* The server's own sentence, written per task beside the
                     classification it explains (`ai/tasks.py`). Empty for a repo
                     we could not identify — an explanation we have not earned is

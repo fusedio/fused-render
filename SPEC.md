@@ -6721,11 +6721,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   one is never touched. It reads the FOLDER rather than the job's outcome, so the
   call is a no-op after a successful fetch and the next attempt tidies a crash.
 - **AI-7h** **The card's own surface states the disk facts, and one hue per engine
-  states the identity** (D436). A complete repo wears the green wash and the search
-  results' own **✓ downloaded** chip in its footer — the SAME wash a loaded card
-  wears, which is set apart by its tinted border and 3px rail rather than by a
-  stronger tint, since a card either has an edge or it does not and that is a
-  distinction a reader can make without judging a shade; a partly downloaded one wears a
+  states the identity** (D436). A complete repo wears the green wash — the SAME wash
+  a loaded card wears, which is set apart by its tinted border and 3px rail rather
+  than by a stronger tint, since a card either has an edge or it does not and that
+  is a distinction a reader can make without judging a shade. **The wash is the
+  whole marking**: the footer chip that also said it was removed at D448, since
+  almost every card in a capability row is downloaded and a badge on nearly all of
+  them marks nothing. A partly downloaded one wears a
   warning wash drawn as a hard-stop gradient at the fraction fetched — the live
   job's `done/total` where there is one, else bytes-on-disk over the curation's
   `size_gb`, clamped to 2–95%, and a FLAT wash where neither exists, because "some
@@ -6748,6 +6750,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   a sidecar's own bytes are excluded, because a fraction made of bookkeeping is not
   a fraction. `size` remains the figure the page PRINTS — allocated bytes are what
   the folder costs.
+  Its button says **"Continue downloading"**, not "Download" (D448): the same act
+  as the recommended card's, at a later stage, and the earlier word read as an
+  offer to start the fetch over.
   A card whose pull is RUNNING also carries the download manager's ✕, on all three
   card kinds: while a fetch holds files open the primary button is a disabled
   "Downloading…" and the trash is disabled too, so without it a multi-GB download

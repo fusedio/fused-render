@@ -21,10 +21,21 @@ const base = {
 };
 
 const ICONS: Record<string, ReactNode> = {
-  // Chat: a speech bubble.
+  // Chat: a speech bubble with three lines of writing in it — Material's
+  // `message`, whose bottom-left corner drops into the tail, drawn here rather
+  // than imported from react-icons/md. A hand path for one glyph beats a
+  // dependency in a build with three, and Material's own outlined assets are
+  // filled shapes at a heavier apparent weight, which would have made this the
+  // loudest of the four section icons instead of a peer.
+  //
+  // The lines sit on a 3-unit pitch centred on the body (7.5/10.5/13.5, body
+  // 4..17), which is what keeps the gaps above and below them equal. Material
+  // spaces its own the same way; at 18px that reads as writing rather than as
+  // three separate strokes.
   "text-generation": (
     <svg {...base}>
-      <path d="M21 12a8 8 0 0 1-8 8H5.5L3 22V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8Z" />
+      <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7l-4 4V6a2 2 0 0 1 2-2Z" />
+      <path d="M7 7.5h10M7 10.5h10M7 13.5h6" />
     </svg>
   ),
   // Images: a framed picture with sun and horizon.
