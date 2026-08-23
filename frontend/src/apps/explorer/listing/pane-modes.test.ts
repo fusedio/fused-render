@@ -137,11 +137,14 @@ describe("paneModeList — gate visibility is the shared policy", () => {
 //
 // The `claude` template has a preview pane OF ITS OWN, and for a FOLDER it fills
 // that pane by resolving the folder's entry page and rendering it
-// (templates/shared/app_entry.py). So making `claude` a folder's pane default
-// without taking that pane away would put the app page back on screen — nested
-// one level deeper, running the same Python, for the same mere selection.
-// `chat_only=1` is what removes it, and the claude template checks the flag
-// BEFORE it looks an entry page up at all.
+// (templates/shared/app_entry.py). While the pane still had a row MODE that
+// could resolve to `claude` (a selected folder's default view), making that
+// mode's default without taking the template's own pane away would have put
+// the app page back on screen — nested one level deeper, running the same
+// Python, for the same mere selection. `chat_only=1` is what removes it, and
+// the claude template checks the flag BEFORE it looks an entry page up at all.
+// D443 deleted that row mode, but the `claude` COMPANION iframe is the exact
+// same template rendered the exact same way, so the flag is still required.
 describe("paneChatOnly", () => {
   test("the claude template never gets a pane of its own in here", () => {
     expect(paneChatOnly("claude")).toBe(true);
@@ -164,12 +167,13 @@ describe("the pane never previews a folder as its app page", () => {
     "utf8",
   );
 
-  test("the pane's one chat-only rule serves both its claude surfaces", () => {
-    // The pane's `claude` SIDE has always passed the flag; the row-mode embed
-    // must pass it too, and both from this decision — one query literal, spelled
-    // once as a constant, and two callers asking whether to send it.
+  test("the pane's chat-only rule still guards its one claude surface", () => {
+    // D443 deleted the row-mode embed entirely (the pane no longer previews a
+    // selected row's own templates at all), so the `claude` COMPANION iframe
+    // is the only caller left — one query literal, spelled once as a constant,
+    // one call asking whether to send it.
     expect(src.match(/&chat_only=1/g)?.length).toBe(1);
-    expect(src.match(/paneChatOnly\(/g)?.length).toBe(2);
+    expect(src.match(/paneChatOnly\(/g)?.length).toBe(1);
   });
 
   test("the folder-entry rule is not consulted for a selected row", () => {

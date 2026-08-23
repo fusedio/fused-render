@@ -90,7 +90,6 @@ import {
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
-import { useSettledLead } from "@apps/explorer/listing/useSettledLead";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
@@ -738,9 +737,10 @@ export default function Listing({
 
   // OPENING A FOLDER SELECTS NOTHING (FS-16, D278). There is no folder
   // auto-select here and there is deliberately no code for one: a freshly opened
-  // folder has an empty selection, so its pane sits on its self target — showing the
-  // chat about the folder, since a folder is not a thing the pane previews (FS-11,
-  // D284) — until the user picks a row.
+  // folder has an empty selection, and its pane shows the chat about the folder
+  // regardless (FS-11, D443) — the pane no longer reads the selection at all, so
+  // there is no "until the user picks a row" any more: picking a row changes
+  // nothing about what the pane shows.
   //
   // What used to be here was a one-shot effect that walked the settled rows for
   // the first page, else the first row, and selected it — so the pane always had
@@ -813,68 +813,27 @@ export default function Listing({
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
-  // THE ROW THE PANE IS ABOUT, which is the lead ONCE IT HAS SETTLED (D281's cost
-  // fix — the rule, and why a pane mount has to be earned, are on pane-settle.ts).
-  // Every mount is an iframe load, and the `claude` side's iframe spawns `agent.py`
-  // through /api/run before it draws, so the pane must not chase a held arrow key
-  // down the listing. A move from rest still lands at once; only the rows passed
-  // THROUGH are skipped.
+  // WHICH of the pane's three modes it is on. Resolved here, below the selection
+  // even though it no longer READS the selection (D443) — it stays here because
+  // it is folder-scoped state that lives alongside the other folder-scoped state
+  // this component already holds (sideEntries, folderClaude/folderGit/folderMcp
+  // above).
   //
-  // The whole pane reads this and not `sel.lead`: the row it renders, the mode key
-  // that remounts it, and the folder/file question behind the pill. Reading the
-  // live lead for any of them would put the per-keystroke mount straight back.
-  // The LEAD is settled unconditionally — not `paths.length === 1 ? lead : null`,
-  // which mixed a live count into a settled value and made the pane flash its
-  // "Select a file to preview." hint with a row plainly selected: collapsing a
-  // 2-row selection onto a third row moved the count to 1 while the settled lead
-  // was still catching up from the multi-selection's `null`, so for one settle
-  // window there was a count of one and no row to show for it. Settling the lead
-  // alone means the pane TRAILS onto the previous row instead, which is what a
-  // debounce means and what arrowing already looks like.
-  const settledLead = useSettledLead(sel.lead);
-  // …and the pane's STATE stays live, because none of its other states mount
-  // anything: nothing selected is the self target, two or more is the count
-  // placeholder, and both must land the instant the selection does. Only the
-  // single-row case is expensive, and only it is settled.
-  const paneRow =
-    sel.paths.length === 1 && settledLead ? rowCtxByPath.get(settledLead) : undefined;
-
-  // WHICH of the pane's three modes it is on. Resolved here, below the selection,
-  // because no FOLDER SUBJECT has a `preview` side at all (pane-side's
-  // paneSideList, D281/D284) and so lands on the chat about it — a folder is not a
-  // thing this pane previews.
-  //
-  // **A FOLDER SUBJECT IS TWO STATES**: a selected directory, and NOTHING SELECTED,
-  // where the subject is this folder itself. D281 did only the first, which left the
-  // state every folder OPENS into (FS-16) reading "Preview" over a "Select a file to
-  // preview." hint — the more visible half of the same bug, and what the owner
-  // reported next. The self target keeps that hint only as the neither-companion
-  // fallback now (ListingPreviewPane's self branch).
-  //
-  // **The subject no longer enters into it at all** (D285): `preview` is not on offer
-  // for any row type, so there is nothing left to ask about the subject and
-  // `paneSideList` takes no flag. What it answers is what the FOLDER offers.
-  // --- OPEN APP: the entry page of THE PANE'S SUBJECT ------------------------
-  //
-  // One question asked of one subject, which is what keeps "a selected folder row"
-  // and "the open folder" from being two conditions with a precedence rule between
-  // them. The pane already resolves its subject and already pays the settled-lead
-  // debounce for it (paneRow above; paneSideTarget/paneKey downstream), so the
-  // precedence the owner asked for — a selected row wins over the open folder —
-  // falls out of asking the same value rather than being a tiebreak to maintain.
-  //
-  // The subject as a FOLDER, or null when there is no folder subject: a single
-  // settled directory row, else the open folder when nothing is selected. A FILE row
-  // has no entry page to open, and a MULTI-selection has no single subject at all
-  // (`paneRow` is only ever set for a single-row selection, so both fall out).
-  const paneSubjectDir =
-    paneRow?.isDir ? paneRow.path : sel.paths.length === 0 ? base : null;
+  // **THE PANE'S SUBJECT IS THE OPEN FOLDER, ALWAYS** (D443, superseding
+  // D280/D281/D284/D285's whole arc of "which selection state is the subject").
+  // It used to be a question with an answer that moved: a selected directory row,
+  // else nothing selected (the folder itself, D284), else a selected file (no
+  // subject at all). All of that read the selection to decide what the pane
+  // would show, which is exactly the coupling D443 deletes — the pane shows this
+  // folder's own companions no matter what is selected, so there is only one
+  // subject and it never changes without a navigation.
+  const paneSubjectDir = base;
 
   // The subject's entry page comes from the server (GET /api/apps/entry — the
-  // one copy of the rule, see the note above), one request per SETTLED subject:
-  // keyed on `paneSubjectDir`, an arrow-key walk re-keys only when the
-  // selection settles (useSettledLead's 250 ms gate), so a walk down a listing
-  // of folders issues nothing per row.
+  // one copy of the rule, `app_listing.app_entry`, D301), one request per FOLDER
+  // OPEN — `paneSubjectDir` is now a constant for the life of this component's
+  // mount, so this effect fires once per folder rather than once per selection
+  // change the way it used to.
   //
   // Cleared to null on every subject change BEFORE the fetch: the button must never
   // point at the previous subject while the new one resolves, which is the "whatever
@@ -910,11 +869,11 @@ export default function Listing({
   };
 
   const paneSides = paneSideList(sideEntries);
-  // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
+  // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
-  // skeleton: resolving a side here would put the pill on `preview` while the row's
-  // own `claude` default rendered a chat under it, and would then remount — and
-  // respawn `agent.py` — when the probe landed.
+  // skeleton: resolving a side here would put the pill on `preview` while a chat
+  // rendered under it regardless, and would then remount — and respawn
+  // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
   const paneSide = activePaneSide(paneSides, sideState.mode);
 
@@ -1863,45 +1822,15 @@ export default function Listing({
               // floor, so the two shares paint identically down there.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
-              {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey), which is
-                  the previewed row for two of the three modes and the FOLDER for
-                  Git — see there. Keying on the row is what stops a stale iframe
-                  lingering a frame while the new row's stat/list resolves; keying
-                  Git on the folder instead is what stops arrow-keying down the
-                  listing reloading a `git status` per keystroke.
-                  Nothing selected → the SELF target: the pane's subject is THIS
-                  folder, and it has no PREVIEW at all, so since D284 it lands on the
-                  chat about the folder like any other folder subject. It falls back
-                  to the neutral "Select a file to preview." hint only where neither
-                  companion is offered (ListingPreviewPane's self branch, which
-                  resolves no template and issues no stat) — and certainly not to a
-                  "lone app": that concept was deleted with D264 and the comment here
-                  outlived it by describing a resolution the self branch has never
-                  performed. Its listing is not the answer either — that is already
-                  on the left. */}
+              {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey): the mode
+                  and the OPEN FOLDER, nothing else (D443). Every mode's subject is
+                  this folder now, so the key changes only when the folder or the
+                  mode does — never when the selection moves — which is what stops
+                  arrow-keying down the listing remounting the chat/git/mcp iframe
+                  (a `git status`/`git log` fork, or a second `agent.py` spawn) on
+                  every keystroke. */}
               <ListingPreviewPane
-                key={paneKey(
-                  paneSide,
-                  fsPath,
-                  paneRow ? paneRow.path : null,
-                  sel.paths.length
-                )}
-                row={
-                  /* `paneRow` is already "the settled row of a single-row
-                     selection" (above), so it carries the count with it and needs
-                     no second check here. */
-                  paneRow ??
-                  (sel.paths.length === 0
-                    ? {
-                        path: fsPath,
-                        name:
-                          fsPath.replace(/\/+$/, "").split("/").pop() || fsPath,
-                        isDir: true,
-                        self: true,
-                      }
-                    : null)
-                }
-                selCount={sel.paths.length}
+                key={paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
                 appEntry={appEntryPath}
                 onOpenApp={openAppEntry}

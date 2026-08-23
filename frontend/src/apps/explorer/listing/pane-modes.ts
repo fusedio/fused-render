@@ -1,16 +1,19 @@
-// The preview pane's mode list and its default, as pure functions — the one
-// place that decides WHICH modes the listing's pane offers for a target and
-// WHICH of them it lands on. Extracted from ListingPreviewPane so the ordering
-// and default rules are testable without mounting the pane (the component
-// still owns icons, fetching and rendering).
+// The preview pane's mode list and its default, as pure functions over a
+// SELECTED ROW's own template list.
 //
-// Everything here describes a SELECTED row. The self target (nothing selected —
-// the folder already open on the left) never reaches this module: it shows no
-// mode menu at all and always renders the pane's neutral hint, so there is
-// nothing to rank and nothing to default to. It used to be modelled here, with
-// an elaborate no-default rule that existed only to stop a first-wins default
-// from opening a chat on the folder merely because the pane was on; hiding the
-// picker deletes the question instead of answering it.
+// **`ListingPreviewPane` no longer calls any of this** (D443): the pane
+// stopped previewing the selected row's own templates at all — it shows the
+// OPEN FOLDER's companions (`claude`/`git`/`mcp`) or a plain fallback hint,
+// neither of which is a question this module answers. What is left is a
+// pure, registry-shaped computation ("given this template list, this gate
+// state and this isDir, what modes are on offer and which leads") that is
+// still real and still worth guarding on its own terms — `mode-labels.test.ts`
+// uses `paneModeList` to check that no registry key can offer two
+// indistinguishably-named modes side by side, a question that has nothing to
+// do with whether any live component still calls it. `pane-modes.test.ts`
+// pins the functions themselves for the same reason a deleted caller does not
+// retire a unit test. `paneChatOnly` is the one function still wired into the
+// running app (ListingPreviewPane's companion-iframe branch).
 import type { TemplateEntry } from "@platform/lib/api";
 import { isModeVisible } from "@platform/lib/mode-visibility";
 
@@ -70,19 +73,15 @@ export function paneModeList(input: PaneModeInput): string[] {
 // the host's (see Preview's sideSrcFor, and CHAT_ONLY in
 // templates/claude/template.html).
 //
-// **And for a FOLDER it is more than a layout question.** The chat template fills
-// its own pane by resolving the folder's ENTRY PAGE and rendering it
-// (templates/shared/app_entry.py). Since `claude` leads the universal directory
-// key (D280), a selected folder's pane defaults to this template — so without the
-// flag the folder's app page would be back on screen, nested one level deeper,
-// running the same Python for the same mere selection that D280 exists to stop.
-// The template reads the flag BEFORE it looks an entry page up, so the flag is
-// the whole cure and not a cosmetic one.
-//
-// It lives here, as the one rule with two callers, because the pane has TWO
-// claude surfaces — its `claude` SIDE (the companion, about the selected row) and
-// now a row MODE (a folder's default view) — and a second literal in the second
-// place is how the first one would have been forgotten.
+// **It used to matter for a second reason, now historical.** The chat template
+// fills its own pane by resolving the folder's ENTRY PAGE and rendering it
+// (templates/shared/app_entry.py), and while `ListingPreviewPane` still had a
+// row MODE that could resolve to `claude` (a selected folder's default view,
+// D280), the flag was what stopped that folder's app page reappearing nested
+// one level deeper for the same mere selection D280 exists to refuse. D443
+// deleted that row mode along with the rest of the selection-driven pane, so
+// the ONE caller left is the `claude` COMPANION iframe (always about the open
+// folder) — the flag still matters there for the plain layout reason above.
 export function paneChatOnly(mode: string): boolean {
   return mode === "claude";
 }
@@ -149,7 +148,7 @@ export function paneOpenTarget(
 //             button offered to replace a two-pane view of a folder with a
 //             one-pane view of the same folder, which is not an action so much
 //             as a step backwards. Its one honest use, "get into this folder",
-//             is what double-click and Enter on the row already do.
+//             is what a click and Enter on the row already do.
 //
 // A folder holding a lone page used to get a second, LABELLED button here —
 // "Open as app" — which is gone with the app concept (D264).
