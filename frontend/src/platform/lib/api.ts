@@ -2779,6 +2779,27 @@ export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boo
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
 }
 
+/** Stop the generation in flight on `capability`'s resident worker, WITHOUT
+ *  unloading it — the weights stay, so whatever asked for this can start
+ *  answering again immediately. Distinct from `unloadAiModel`, which
+ *  terminates the worker process instead: that is right for "get this out of
+ *  memory" but wrong for "stop what it's doing", because killing the process
+ *  mid-stream does not resolve the in-flight request with a clean, readable
+ *  outcome — it drops the connection, and whatever was waiting on it sees a
+ *  socket error rather than a cooperative `cancelled: true`. False from the
+ *  server means there was nothing to stop, which is not an error: a Stop
+ *  pressed just as the last token (or the last step, or the one embed call)
+ *  settled should be a no-op.
+ *
+ *  `playground/client.ts` wraps the same route for its own Stop button
+ *  (`cancelGeneration`) — kept here too, rather than importing that module
+ *  from a sibling feature, because this is the platform-level HTTP surface
+ *  every other AI wrapper on this page (`unloadAiModel`, `runAiBenchmark`, …)
+ *  already lives beside. */
+export function cancelAiGeneration(capability?: string): Promise<{ cancelled: boolean }> {
+  return postJson<{ cancelled: boolean }>("/api/ai/cancel", capability ? { capability } : {});
+}
+
 // -- AI benchmarks (/api/ai/benchmark, SPEC AI-14) ----------------------------
 // One recorded benchmark run per entry, kept forever on disk — the deliberate
 // opposite of the in-memory usage counters below. Where those summarise the real

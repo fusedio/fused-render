@@ -59,7 +59,7 @@
 // through a COLD run the load's own row shows up in the manager with real byte
 // counts, which is the progress that was always worth watching. See
 // `ai/benchmark.py`.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ComparisonChart } from "./ComparisonChart";
 import { ModelTrendChart } from "./ModelTrendChart";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
@@ -106,6 +106,7 @@ import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import {
   advanceQueue,
+  observeStop,
   queueableModels,
   queueStatus,
   queueTally,
@@ -115,10 +116,10 @@ import {
 } from "@apps/ai_models/lib/benchmarkQueue";
 import { navigateUrl } from "@platform/lib/router";
 import {
+  cancelAiGeneration,
   deleteAiBenchmarks,
   getAiBenchmarks,
   runAiBenchmark,
-  unloadAiModel,
   type AiBenchmarkRun,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -240,6 +241,30 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // independent, legitimately-parallel queues.
   const [queues, setQueues] = useState<Record<string, BenchmarkQueue>>({});
 
+  // **A REF, mirroring `queues`, because `runAllFor`'s loop needs to observe
+  // a Stop that happens WHILE it is awaiting `start` — and React state does
+  // not give it that.** The bug this fixes: the loop used to drive
+  // `advanceQueue` off its own LOCAL `queue` variable, reassigning it only
+  // from `advanceQueue`'s own return value, while `stopAllFor` called
+  // `setQueues` — a state update the loop's closed-over variable never reads
+  // back. So `requestQueueStop` could be dispatched all day and the running
+  // loop's `queue.stopped` stayed `false` forever: Stop killed the in-flight
+  // model (recorded as a failure) and every model after it started anyway.
+  // `queuesRef.current` is written SYNCHRONOUSLY by `setQueue` below,
+  // wherever `setQueues` used to be called directly, so a read of it right
+  // after an `await` sees whatever `stopAllFor` wrote in the meantime —
+  // unlike `queues` itself, which is only current as of the last render.
+  // `observeStop` (benchmarkQueue.ts) is the pure fold that turns that
+  // observation into the queue the loop advances next; see its own docstring
+  // for the exact mechanism and why the bug shipped past every test in
+  // `benchmarkQueue.test.ts` (they reassign the SAME variable this loop used
+  // not to).
+  const queuesRef = useRef<Record<string, BenchmarkQueue>>({});
+  const setQueue = (capability: string, queue: BenchmarkQueue) => {
+    queuesRef.current = { ...queuesRef.current, [capability]: queue };
+    setQueues(queuesRef.current);
+  };
+
   // Drives `benchmarkQueue.ts`'s pure state machine with the REAL requests —
   // this is the one place that awaits `start` in a loop rather than firing
   // it once. Deliberately lives here, not inside `CapabilitySection`: a
@@ -252,30 +277,51 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   const runAllFor = async (capability: string, models: string[]) => {
     if (models.length === 0) return;
     let queue = startQueue(capability, models);
-    setQueues((prev) => ({ ...prev, [capability]: queue }));
+    setQueue(capability, queue);
     while (queue.current) {
       const model = queue.current;
       const { ok } = await start(model, capability);
-      queue = advanceQueue(queue, { model, ok });
-      setQueues((prev) => ({ ...prev, [capability]: queue }));
+      // Re-read the REF, not the closed-over `queue`, so a `requestQueueStop`
+      // written by `stopAllFor` while `start` was in flight is actually seen
+      // — see the ref's own comment above for the bug this closes.
+      const observed = queuesRef.current[capability]?.stopped ?? false;
+      queue = advanceQueue(observeStop(queue, observed), { model, ok });
+      setQueue(capability, queue);
     }
   };
 
   // Stop: mark the queue so it will not start another model once the
   // in-flight one settles (`requestQueueStop`, pure), AND separately
-  // interrupt that in-flight request — through the SAME mechanism a single
-  // run's own cancellation already uses elsewhere in the app
-  // (`unloadAiModel`; see `stoppedNote` and benchmarkQueue.ts's own header
-  // for why no second cancel idiom is invented here). The unload resolves
-  // the held-open benchmark request with `cancelled: true`, which `start`
-  // already turns into a `stoppedNote` and an `ok: false` for the queue.
+  // interrupt that in-flight request — through `cancelAiGeneration`
+  // (`POST /api/ai/cancel`), the SAME mechanism a single text run's own Stop
+  // button already uses elsewhere in the app (Playground's `TextStage`). This
+  // used to call `unloadAiModel` instead, on the theory that unloading the
+  // model a benchmark is using would resolve its held-open request with
+  // `cancelled: true` — **that theory was wrong.** `unload` terminates the
+  // worker PROCESS; it does not touch the in-flight generation's own
+  // `cancelled` flag, so the held-open `/generate` read does not get a clean
+  // `{"cancelled": true}` frame — it gets the process disappearing out from
+  // under it (`ConnectionResetError`/`IncompleteRead`), which `run()`'s
+  // generic `except BaseException` then recorded as a normal `ok:false`
+  // failure — a real, permanent "this model failed" row in the one history
+  // this feature exists to keep trustworthy, for a run somebody stopped on
+  // purpose. `cancel_generation` (`ai/supervisor.py`, untouched) is the
+  // COOPERATIVE channel: it asks the resident worker to set its own
+  // `cancelled` flag, which `_measure_text`/`_measure_image`/
+  // `_measure_transcript` all already recognise and turn into
+  // `benchmark.Cancelled` — nothing stored, exactly like a single run's ✕
+  // (see `benchmark.Cancelled`'s own docstring). `start` already turns the
+  // resulting `{cancelled: true}` into a `stoppedNote` and an `ok: false`
+  // for the queue, unchanged by this switch.
   const stopAllFor = (capability: string) => {
-    setQueues((prev) => {
-      const queue = prev[capability];
-      return queue ? { ...prev, [capability]: requestQueueStop(queue) } : prev;
-    });
-    const current = queues[capability]?.current;
-    if (current) unloadAiModel(current).catch(() => {});
+    // Read and write through the REF, not the `queues` state closure — the
+    // same reason `runAllFor`'s loop does: this is the write half of the
+    // exact race that comment describes, and a click handler closing over a
+    // stale `queues` from its own last render is as capable of missing a
+    // concurrent update as the loop was.
+    const queue = queuesRef.current[capability];
+    if (queue) setQueue(capability, requestQueueStop(queue));
+    if (queue?.current) cancelAiGeneration(capability).catch(() => {});
   };
 
   const forget = async (id: string) => {

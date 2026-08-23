@@ -26,13 +26,19 @@
 // **Stop only prevents the NEXT model from starting — it does not reach
 // into an in-flight request.** `requestQueueStop` just sets `stopped`; the
 // caller is responsible for ALSO interrupting the current run through
-// whatever already stops a single benchmark (`unloadAiModel` — the same
-// mechanism `stoppedNote` in benchmark.ts documents: unloading the model a
-// benchmark is using is what makes its held-open request resolve with
-// `cancelled: true`). This module deliberately does not invent a second
-// cancellation idiom; it only has to make sure that once the interrupted (or
-// naturally finished) run settles, `advanceQueue` sees `stopped` and goes no
-// further.
+// `cancelAiGeneration` (`POST /api/ai/cancel`, wired into BenchmarkTab.tsx's
+// `stopAllFor`) — the cooperative channel `ai/supervisor.py`'s
+// `cancel_generation` exposes, which asks the resident worker to set its own
+// `cancelled` flag rather than tearing the process down. (An earlier version
+// of this comment, and of `stopAllFor`, called `unloadAiModel` for this —
+// that was wrong: unloading terminates the worker PROCESS, which drops the
+// held-open request's connection instead of resolving it with a clean
+// `cancelled: true`, and `ai/benchmark.py`'s `run()` recorded the resulting
+// socket error as an ordinary `ok:false` failure — a permanent history row
+// for a run somebody stopped on purpose.) This module deliberately does not
+// invent a second cancellation idiom; it only has to make sure that once the
+// interrupted (or naturally finished) run settles, `advanceQueue` sees
+// `stopped` and goes no further.
 import type { LeaderboardRow } from "@apps/ai_models/lib/benchmark";
 
 /** One model's settled outcome within a queue — `ok` mirrors the run's own
@@ -126,6 +132,41 @@ export function advanceQueue(queue: BenchmarkQueue, result: QueueRunResult): Ben
  *  the same mechanism a single run's own cancellation already uses. */
 export function requestQueueStop(queue: BenchmarkQueue): BenchmarkQueue {
   return { ...queue, stopped: true };
+}
+
+/** Fold a possibly-newer `stopped` flag onto `queue` before it is handed to
+ *  `advanceQueue` — the fix for a real wiring bug, not a feature of its own.
+ *
+ *  **The bug this exists to close:** a caller that drives `advanceQueue` in a
+ *  loop over a LOCAL variable —
+ *
+ *      let queue = startQueue(cap, models);
+ *      while (queue.current) {
+ *        const { ok } = await run(queue.current);
+ *        queue = advanceQueue(queue, { model: queue.current, ok });
+ *      }
+ *
+ *  — and lets `requestQueueStop` write into a SEPARATE copy (e.g. React state
+ *  set from a Stop button's `onClick`, via `setQueues`) can call
+ *  `requestQueueStop` as many times as it likes: the loop's own `queue`
+ *  variable never reads that state back, so `advanceQueue` keeps seeing
+ *  `stopped: false` forever and starts every remaining model anyway. Every
+ *  test in this file passed while that shipped, because a test reassigns
+ *  `q = requestQueueStop(q)` onto the SAME variable `advanceQueue` reads next
+ *  — the pure logic was never wrong, only how the component wired it.
+ *
+ *  The fix is for the caller to track the queue in something a loop CAN read
+ *  mid-flight — a ref, not a `useState` closure — and merge whatever
+ *  `stopped` it observes there onto the queue it is about to advance:
+ *
+ *      queue = advanceQueue(observeStop(queue, queuesRef.current[cap].stopped),
+ *                          { model, ok });
+ *
+ *  Never returns a queue LESS stopped than it was already — a caller cannot
+ *  un-stop a queue by folding in a stale `false` observed before the real
+ *  stop was written. */
+export function observeStop(queue: BenchmarkQueue, latestStopped: boolean): BenchmarkQueue {
+  return queue.stopped || !latestStopped ? queue : { ...queue, stopped: true };
 }
 
 export type QueueStatus = "running" | "stopped" | "done";

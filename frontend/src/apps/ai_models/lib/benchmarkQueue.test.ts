@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   advanceQueue,
+  observeStop,
   queueableModels,
   queueStatus,
   queueTally,
@@ -159,5 +160,52 @@ describe("queueTally", () => {
   it("counts the in-flight model as neither settled nor remaining", () => {
     const q = startQueue("cap", ["a", "b", "c"]); // "a" in flight, nothing settled
     expect(queueTally(q)).toEqual({ succeeded: 0, failed: 0, remaining: 2 });
+  });
+});
+
+describe("observeStop", () => {
+  // This block pins the wiring bug the component shipped with (Stop after
+  // model 2 of 6 killed model 2, recorded it as a failure, and models 3-6 ran
+  // anyway) and the fix for it — see the function's own docstring for the
+  // exact mechanism.
+
+  it("reproduces the bug's mechanism: a LOCAL queue variable never learns " +
+    "about a requestQueueStop written into a separate copy", () => {
+    // This is exactly what the component's loop used to do: hold `queue` in
+    // a local variable, and let `requestQueueStop` produce a SEPARATE object
+    // (as `setQueues`'s updater does) that the loop's own variable never
+    // reads back. Feeding the UNTOUCHED original straight to `advanceQueue`
+    // — the bug — does not stop the queue.
+    const queue = startQueue("text-generation", ["a", "b", "c"]);
+    const separatelyStopped = requestQueueStop(queue); // e.g. via setQueues
+    expect(separatelyStopped.stopped).toBe(true); // the flag WAS set...
+    const advanced = advanceQueue(queue, { model: "a", ok: true });
+    expect(advanced.current).toBe("b"); // ...and yet the queue keeps going.
+    expect(advanced.stopped).toBe(false);
+  });
+
+  it("the fix: folding the observed flag through observeStop before " +
+    "advanceQueue actually stops the queue", () => {
+    const queue = startQueue("text-generation", ["a", "b", "c"]);
+    const separatelyStopped = requestQueueStop(queue); // e.g. a ref write
+    const merged = observeStop(queue, separatelyStopped.stopped);
+    const advanced = advanceQueue(merged, { model: "a", ok: true });
+    expect(advanced.current).toBeNull();
+    expect(queueStatus(advanced)).toBe("stopped");
+  });
+
+  it("is a no-op once the queue already knows it is stopped", () => {
+    const queue = requestQueueStop(startQueue("cap", ["a", "b"]));
+    expect(observeStop(queue, false)).toBe(queue); // same reference, no churn
+  });
+
+  it("never un-stops a queue from a stale false observation", () => {
+    const queue = requestQueueStop(startQueue("cap", ["a", "b"]));
+    expect(observeStop(queue, false).stopped).toBe(true);
+  });
+
+  it("leaves an unstopped queue alone when nothing newer says stop", () => {
+    const queue = startQueue("cap", ["a", "b"]);
+    expect(observeStop(queue, false)).toBe(queue);
   });
 });
