@@ -65,7 +65,7 @@ import { ModelTrendChart } from "./ModelTrendChart";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
-import { tabHref } from "@apps/ai_models/routes";
+import { tabHref, tabLabel } from "@apps/ai_models/routes";
 import {
   DASH,
   availableMetrics,
@@ -600,7 +600,7 @@ function CapabilitySection({
               navigateUrl(tabHref("local"));
             }}
           >
-            Local tab
+            {tabLabel("local")} tab
           </a>
           .
         </p>

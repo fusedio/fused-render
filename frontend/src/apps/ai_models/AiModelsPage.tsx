@@ -38,19 +38,22 @@ import PlaygroundTab from "./playground/PlaygroundTab";
 import UsageTab from "./usage/UsageTab";
 import { useCacheScan } from "./lib/useCacheScan";
 import { refreshAiRuntime } from "./lib/aiRuntime";
-import { AI_MODELS_TABS, tabFromPath, tabHref, type AiModelsTab } from "./routes";
+import { AI_MODELS_TABS, tabFromPath, tabHref, tabLabel, type AiModelsTab } from "./routes";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { formatSize } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 
-/** The strip's label and hover for each tab, in strip order (AI_MODELS_TABS).
- *  A table rather than one near-identical <a> block per tab: the links differed
- *  only in these two strings and the tab they named, and five copies of the same
- *  markup is five places to forget an aria attribute. A `Record` over the union,
- *  so adding a tab to `AiModelsTab` fails to compile until it has a label. */
+/** The strip's hover for each tab, in strip order (AI_MODELS_TABS). The label
+ *  itself lives in `routes.ts` (`tabLabel`) — the one thing about a tab that
+ *  copy elsewhere names too (BenchmarkTab's empty state points a reader at
+ *  "the Models tab"), so it has exactly one definition. A table rather than
+ *  one near-identical <a> block per tab: the links differed only in these two
+ *  strings and the tab they named, and five copies of the same markup is five
+ *  places to forget an aria attribute. A `Record` over the union, so adding a
+ *  tab to `AiModelsTab` fails to compile until it has a title. */
 const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
   playground: {
-    label: "Playground",
+    label: tabLabel("playground"),
     title: "Try a local model — chat, images, transcription",
   },
   // "and what to get next" is the tab's whole change: the row per capability
@@ -65,15 +68,15 @@ const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
   // this page's actual subject is the noun. The PATH stays `/ai-models/local`:
   // it is in bookmarks and in every `tabHref` cross-link, and a slug rename buys
   // nothing a reader can see.
-  local: { label: "Models", title: "Models on this machine, what to get next, and the Hub" },
+  local: { label: tabLabel("local"), title: "Models on this machine, what to get next, and the Hub" },
   // "on this machine" is the whole promise: a benchmark number is not portable,
   // so the hover says whose laptop it is about before the tab is even opened.
   benchmark: {
-    label: "Benchmark",
+    label: tabLabel("benchmark"),
     title: "How fast each downloaded model runs on this machine",
   },
-  engines: { label: "Engines", title: "Which backend runs each kind of local model" },
-  usage: { label: "Usage", title: "Tokens this app has generated since the server started" },
+  engines: { label: tabLabel("engines"), title: "Which backend runs each kind of local model" },
+  usage: { label: tabLabel("usage"), title: "Tokens this app has generated since the server started" },
 };
 
 export default function AiModelsPage() {

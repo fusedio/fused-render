@@ -74,6 +74,25 @@ export const AI_MODELS_TABS: readonly AiModelsTab[] = [
 
 export const DEFAULT_TAB: AiModelsTab = AI_MODELS_TABS[0];
 
+/** The tab strip's user-visible label for each tab — the single source other
+ *  copy that NAMES a tab should read from, rather than hardcoding a string
+ *  that can drift the moment the strip's label changes (as it did at D438,
+ *  "Local" → "Models": nothing pointed the empty-state copy at the actual
+ *  label, so it kept naming a tab that no longer exists on screen). The route
+ *  key (e.g. `"local"`) is NOT the label — it stays put across a rename, the
+ *  label does not. */
+const TAB_LABELS: Record<AiModelsTab, string> = {
+  playground: "Playground",
+  local: "Models",
+  benchmark: "Benchmark",
+  engines: "Engines",
+  usage: "Usage",
+};
+
+export function tabLabel(tab: AiModelsTab): string {
+  return TAB_LABELS[tab];
+}
+
 /** Is this pathname anywhere on the AI Models page? Exported so App.tsx's route
  *  dispatch and this module cannot drift into two spellings of one prefix — the
  *  same reason `isPanelPath` exists in the platform router. */
