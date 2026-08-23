@@ -74,7 +74,7 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
     # A no-op that just says "there was nothing to stop" by default — most
     # tests here are warm and must never reach it at all; the ones that force a
-    # cold load override this with a recording fake (see D436's section below).
+    # cold load override this with a recording fake (see D444's section below).
     monkeypatch.setattr(benchmark.supervisor, "unload", lambda **kwargs: False)
     # The reference speech clip is a network fetch this suite must never make
     # (see the class comment above) — every test that is not itself exercising
@@ -250,7 +250,7 @@ def test_image_steps_fall_back_to_the_server_default_without_a_catalog_hint(
 
 def test_speech_reports_a_realtime_factor_over_the_reference_clip(bench,
                                                                   monkeypatch):
-    """D437: the audio is the fixed reference clip (faked here — see the
+    """D445: the audio is the fixed reference clip (faked here — see the
     `bench` fixture — never a synthesized tone), and its duration comes from
     the WORKLOAD rather than from whatever the model claims it heard — a fixed
     workload whose length the measured thing gets to report is not fixed."""
@@ -325,7 +325,7 @@ def test_speech_reference_clip_row_title_is_not_a_name_a_user_could_have_dropped
     assert seen[-1] == benchmark._SPEECH_CLIP_FILENAME
 
 
-# -- fetching and caching the reference clip (D437) ------------------------------
+# -- fetching and caching the reference clip (D445) ------------------------------
 
 
 def test_the_placeholder_checksum_is_reported_as_not_yet_published(tmp_path,
@@ -484,7 +484,7 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     assert record["error"] == "some/text-model did not finish loading in time"
 
 
-# -- unload after a cold benchmark (D436) ----------------------------------------
+# -- unload after a cold benchmark (D444) ----------------------------------------
 #
 # A benchmark that had to cold-load the model tears it back down when the run
 # ends, success or failure alike, because a measurement is not a claim on the

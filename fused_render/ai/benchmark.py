@@ -28,7 +28,7 @@ comparability is recovered by making SECONDS PER STEP the primary metric with
 the step count recorded on the run.
 
 **Speech to text used to synthesize its own audio — a pure sine tone — and that
-was wrong (D437).** A tone contains no speech, so a model with any
+was wrong (D445).** A tone contains no speech, so a model with any
 speech-dependent early-exit or VAD-adjacent behaviour reports how fast it gives
 up on silence, not how fast it transcribes. `whisper-tiny.en-8bit` "decoding"
 30s of tone in 0.022s (1400x realtime) next to `whisper-large-v3-turbo` at
@@ -128,7 +128,7 @@ _EMBED_TEXTS = (
 )
 
 #: The fixed reference transcript a speech benchmark scores its output against
-#: (D437). This is the opening sentence of Lewis Carroll's *Alice's Adventures
+#: (D445). This is the opening sentence of Lewis Carroll's *Alice's Adventures
 #: in Wonderland* (1865) — public domain worldwide. **This text drives the
 #: audio, not the other way round**: whoever produces `_SPEECH_CLIP_FILENAME`
 #: (see that constant) must record or select a spoken reading of exactly this
@@ -137,7 +137,7 @@ _EMBED_TEXTS = (
 #: says. If the clip is sourced from an existing public-domain recording (e.g.
 #: a LibriVox reading, which volunteers dedicate to the public domain as a
 #: condition of the project) rather than freshly recorded, the reader's name
-#: and the recording's source URL belong in the DECISIONS.md entry for D437
+#: and the recording's source URL belong in the DECISIONS.md entry for D445
 #: (or right here) — that attribution is NOT filled in here because no such
 #: recording has actually been chosen yet, and inventing one would be a false
 #: provenance claim.
@@ -424,7 +424,7 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
     ),
     registry.SPEECH_TO_TEXT: Workload(
         name="speech-30s-clip",
-        # D437: was a synthesized tone at revision 1. A tone and a real speech
+        # D445: was a synthesized tone at revision 1. A tone and a real speech
         # clip are not the same work — the whole point of the change — so this
         # MUST NOT compare against revision-1 history.
         revision=2,
@@ -670,7 +670,7 @@ def _measure_transcript(model: str, workload: Workload, *,
                         timed: bool) -> dict:
     """Decode the fixed reference clip and report how many times faster than
     realtime it was, plus its word error rate against the known transcript
-    (D437 — this used to be a synthesized tone, see the module docstring).
+    (D445 — this used to be a synthesized tone, see the module docstring).
 
     `_ensure_speech_clip()` raises `SpeechClipUnavailable` — never falls back
     to anything synthesized — when the clip cannot be obtained: unreachable
@@ -1008,7 +1008,7 @@ def run(model: str, capability: str) -> dict:
        reading two numbers side by side.
     4. The timed pass.
     5. Memory and device off `describe()`.
-    6. **Unload, if step 2 loaded it** (D435) — success, failure or exception
+    6. **Unload, if step 2 loaded it** (D443) — success, failure or exception
        alike. A benchmark is a measurement, not a claim on the model's
        residency, so a cold run must not leave gigabytes parked after the
        button stops spinning; a WARM run (step 2 returned `None`) unloads
@@ -1066,7 +1066,7 @@ def run(model: str, capability: str) -> dict:
                 model, capability)
             record["ok"] = True
         finally:
-            # D435: a benchmark that had to COLD-LOAD the model tears it back
+            # D443: a benchmark that had to COLD-LOAD the model tears it back
             # down when it is done — success, a failed workload, a timeout, or
             # an exception mid-measurement alike, which is exactly the `finally`
             # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`

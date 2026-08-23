@@ -1062,6 +1062,85 @@ def _unfinished_fetch(repo_dir: str) -> bool:
     return not _snapshot_dirs(os.path.join(repo_dir, "snapshots"))
 
 
+def _fetched_bytes(repo_dir: str, scanned: int) -> int:
+    """How many of this repo's bytes actually ARRIVED (D440).
+
+    **Not the same number as the folder's size, and the difference is the bug
+    this exists for.** Our fetcher PREALLOCATES a part file to the full length of
+    the file it is fetching, so a repo 15% of the way through a 1.6GB download
+    measures 1.6GB — and a card drawing "how much of this is here" from that read
+    as nearly finished while the job row beside it said 243 MB. `_scan_repo` is
+    not wrong to count those bytes (the file really is that long, and this page's
+    other job is telling you what is eating the disk); they are just not an answer
+    to "how much arrived".
+
+    So this is the SCANNED total with one correction applied per part file:
+    subtract the length that was counted, add back what is durable. Starting from
+    the scan rather than re-adding the blobs is what keeps a finished repo's two
+    numbers identical — refs, snapshot entries and any stray file are counted
+    once, by the one walk that already knows how to count them.
+
+    Durable, per kind, from the evidence each kind carries:
+
+    * **`.fusedpart`** — the sidecar's segment cursors, the same accounting a
+      resume trusts: `flush()` fsyncs the data BEFORE recording an offset, so a
+      recorded cursor is always bytes the disk really has (see
+      `worker_base._FileFetch.flush`). No sidecar, or an unreadable one, counts
+      ZERO rather than the file's length: positive evidence only, the same posture
+      `_unfinished_fetch` takes, because the file may be pure preallocation.
+    * **`.incomplete`** — `huggingface_hub` APPENDS, so the length already IS the
+      progress. Left alone, which is why only our own suffix is corrected here.
+    """
+    corrected = scanned
+    try:
+        entries = list(os.scandir(os.path.join(repo_dir, "blobs")))
+    except OSError:
+        return scanned
+    for entry in entries:
+        if entry.name.endswith(worker_part_suffix() + ".json"):
+            # The sidecar's own bytes. Real, counted by the scan, and not part of
+            # the model — a card saying "9 bytes of this 1.6GB model are here"
+            # because a sidecar exists would be a fraction made of bookkeeping.
+            corrected -= _blob_size(entry.path)
+            continue
+        if not entry.name.endswith(worker_part_suffix()):
+            continue
+        corrected -= _blob_size(entry.path)
+        corrected += _part_progress(entry.path + ".json")
+    # A sidecar recording more than its part file is long would otherwise push
+    # this above the scan; a negative is impossible but cheap to rule out.
+    return max(0, corrected)
+
+
+def worker_part_suffix() -> str:
+    """Our own part suffix, which is the ONLY one `_fetched_bytes` corrects.
+
+    A function rather than a second constant so the reason stays attached: hf's
+    `.incomplete` is in `_PART_SUFFIXES` too (both mean "unfinished", which is
+    what `_unfinished_fetch` asks), and it must NOT be corrected, because that
+    writer appends and its length is already the progress.
+    """
+    return ".fusedpart"
+
+
+def _part_progress(sidecar: str) -> int:
+    """Durable bytes recorded for one part file, or 0 when nothing says."""
+    try:
+        with open(sidecar) as handle:
+            state = json.load(handle)
+        segments = state["segments"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    done = 0
+    for segment in segments:
+        try:
+            width = int(segment["end"]) - int(segment["start"]) + 1
+            done += max(0, min(int(segment["done"]), width))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return done
+
+
 def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str | None]:
     """Which backend would load this repo, and the capability it would load it
     AS — `(None, capability)` when nothing here reads the format.
@@ -1533,6 +1612,12 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # of models: a dataset or a Space in this cache is not something this
         # page can resume.
         "partial": kind == "model" and _unfinished_fetch(repo_dir),
+        # Bytes that actually ARRIVED, which is `size` for everything finished and
+        # very much less than it mid-fetch, since a part file is preallocated to
+        # its full length (D440). Only the cards that draw a FRACTION read this;
+        # every figure the page prints is still `size`, because what a folder
+        # costs on the disk is the allocated bytes.
+        "fetchedBytes": _fetched_bytes(repo_dir, scan.size),
     }
 
 
@@ -1655,6 +1740,55 @@ def _delete_repo(repo_dir: str) -> int:
         ignore_errors=True,
     )
     return freed
+
+
+def discard_empty_shell(repo_id: str) -> bool:
+    """Remove `repo_id`'s cache folder when a stopped fetch left NOTHING in it (D437).
+
+    The state a user hit in the wild: a cancelled download whose folder held one
+    40-byte `refs/main` and not a single blob. The listing has to call that
+    partial — no snapshot is exactly the evidence `_unfinished_fetch` reads — so
+    the page drew a "partly downloaded" card, under Unrecognised (no files, so no
+    task, so no capability), offering a resume of a download with nothing to
+    resume from. The card has a way out of that now; this stops it being drawn.
+
+    **Two positive conditions, both about emptiness, and no others.** No snapshot
+    directory AND no blob of any kind — not even a part file. That is the whole
+    of it: a folder in that state cannot resume, cannot load, and cannot tell
+    anybody what it was going to be, so the bytes it is protecting do not exist.
+    Notably NOT deleted:
+
+    * a folder with part files in it — those bytes are exactly what a resume
+      picks up (D275/AI-5i), and throwing them away is the behaviour that
+      argument rejected;
+    * a folder with a snapshot — some of the model is materialised and readable;
+    * anything on the strength of a MISSING marker or of the fetch having failed.
+      Emptiness is read off the folder, never inferred from the job's outcome, so
+      calling this after a SUCCESSFUL fetch is a no-op rather than a hazard.
+
+    Returns whether anything was removed. Never raises: this runs on a fetch
+    thread's way out, and a cache folder it could not tidy is not a reason to
+    turn a cancelled download into an error.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return False
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    try:
+        if not os.path.isdir(repo_dir) or os.path.islink(repo_dir):
+            return False
+        if _snapshot_dirs(os.path.join(repo_dir, "snapshots")):
+            return False
+        try:
+            blobs = list(os.scandir(os.path.join(repo_dir, "blobs")))
+        except OSError:
+            blobs = []  # no blobs/ at all, which is the emptiest case of all
+        if blobs:
+            return False
+        _delete_repo(repo_dir)
+        return True
+    except OSError:
+        return False
 
 
 def _delete_revision(repo_dir: str, revision: object) -> int:

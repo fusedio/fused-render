@@ -57,7 +57,15 @@ const TAB_CHROME: Record<AiModelsTab, { label: string; title: string }> = {
   // ends in the curation's recommendations (D423) and the box at the top
   // searches the Hub itself (D426), so this is no longer only an inventory of
   // what is already here.
-  local: { label: "Local", title: "Models on this machine, what to get next, and the Hub" },
+  // **"Models", not "Local".** The word was accurate about the FIRST version of
+  // this tab and stopped being the point of it: with the curation's
+  // recommendations in every row and a Hub search box at the top, three of the
+  // things on the tab are not local at all. "Local" also asked the reader to
+  // hold a distinction they do not have yet — local as against what? — where
+  // this page's actual subject is the noun. The PATH stays `/ai-models/local`:
+  // it is in bookmarks and in every `tabHref` cross-link, and a slug rename buys
+  // nothing a reader can see.
+  local: { label: "Models", title: "Models on this machine, what to get next, and the Hub" },
   // "on this machine" is the whole promise: a benchmark number is not portable,
   // so the hover says whose laptop it is about before the tab is even opened.
   benchmark: {
