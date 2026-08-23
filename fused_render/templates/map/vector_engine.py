@@ -13,6 +13,7 @@ import hashlib
 import math
 import os
 import sqlite3
+import struct
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -790,6 +791,59 @@ class VectorEngine:
             blobs.extend(row[0] for row in rows)
         return blobs
 
+    def _qix_summary(self, source: VectorSource) -> tuple | None:
+        """Occupancy overview from a shapefile's ``.qix`` quadtree — the analog
+        of the GeoPackage RTree walk. Reading the few-MB index instead of every
+        geometry is what keeps the first open of a large ``.shp`` from stalling
+        on a full-file read."""
+        locator = source.locator
+        if _suffix(locator) != ".shp" or not os.path.isfile(locator):
+            return None
+        qix = os.path.splitext(locator)[0] + ".qix"
+        if not os.path.isfile(qix):
+            return None
+        try:
+            return self._parse_qix(qix, source.feature_count)
+        except (OSError, ValueError, struct.error):
+            return None
+
+    def _parse_qix(self, qix: str, feature_count: int) -> tuple | None:
+        """Walk the ``.qix`` quadtree and return the bboxes of shape-bearing
+        nodes. Format (shapelib): 8-byte header, int32 shape count, int32 depth,
+        then nodes of {int32 subtree size, 4 f64 bounds, int32 shape count, that
+        many int32 ids, int32 subnode count, subnodes}."""
+        import numpy as np
+
+        with open(qix, "rb") as handle:
+            buf = handle.read()
+        if buf[:3] != b"SQT" or len(buf) < 16:
+            raise ValueError("not a shapefile quadtree index")
+        order = "<" if buf[3] == 1 else ">"
+        one, four = struct.Struct(order + "i"), struct.Struct(order + "4d")
+        bounds: list[tuple[float, float, float, float]] = []
+        pos, remaining = 16, [1]
+        while remaining:
+            if remaining[-1] == 0:
+                remaining.pop()
+                continue
+            remaining[-1] -= 1
+            pos += 4
+            box = four.unpack_from(buf, pos)
+            pos += 32
+            shapes = one.unpack_from(buf, pos)[0]
+            pos += 4 + 4 * shapes
+            subnodes = one.unpack_from(buf, pos)[0]
+            pos += 4
+            if shapes:
+                bounds.append(box)
+            if subnodes:
+                remaining.append(subnodes)
+        if not bounds or not (feature_count / 500 <= len(bounds) <= feature_count):
+            raise ValueError("the quadtree node walk is inconsistent with the layer")
+        boxes = np.asarray(bounds, dtype="float64")
+        per_node = feature_count / len(boxes)
+        return (boxes[:, 0], boxes[:, 2], boxes[:, 1], boxes[:, 3], per_node)
+
     def _summary_disk_path(self, source: VectorSource) -> Path | None:
         if self.cache_dir is None:
             return None
@@ -815,6 +869,12 @@ class VectorEngine:
             with self.lock:
                 self._summaries[sid] = summary
                 self._summary_jobs[sid] = {"status": "ready", "cached": True}
+            return False
+        summary = self._qix_summary(source)
+        if summary is not None:
+            with self.lock:
+                self._summaries[sid] = summary
+                self._summary_jobs[sid] = {"status": "ready", "indexed": True}
             return False
         self.summary_pool.submit(self._build_feature_summary, source)
         return True
