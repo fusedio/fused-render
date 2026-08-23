@@ -204,6 +204,16 @@ def test_a_model_not_ready_race_that_never_settles_is_a_real_failure(
     # time out rather than settle.
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: None)
+    # The cold load is STUBBED, like its sibling below — without this the wait
+    # calls the real `_start_resident`, which asks whether `uv` is on the box
+    # and raises "uv is not available, so the model environment cannot be
+    # built" long before any timeout is reached. That passes on a developer's
+    # machine and fails on every CI runner, which is exactly what it did.
+    pending = FakePending()
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident",
+                        lambda model, capability: ({"jobId": "j"}, pending))
+    monkeypatch.setattr(benchmark.supervisor, "_workers",
+                        {ai_registry.TEXT_GENERATION: pending})
 
     def generate_text(model, body):
         raise benchmark.supervisor.ModelNotReady(
