@@ -896,10 +896,21 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # (this app never produces one, but a Hub repo is not this app's to
     # control) — the first is representative, since every curated recipe
     # this runner reads means one file per repo per id.
+    #
+    # Its `pooling_type` is read from the SAME file in the same pass, because
+    # the architecture alone cannot tell a text-embedding GGUF from a chat one
+    # for the decoder families that ship both (`formats.gguf_pooling_type`).
+    # Two bounded peeks rather than one is two reads of a page the OS has just
+    # cached; folding them into a single parse would mean a second header
+    # parser in this module, which is the duplication `formats` exists to
+    # prevent.
     gguf_architecture = None
+    gguf_pooling_type = None
     gguf_files = sorted(n for n in names if n.lower().endswith(formats.GGUF_EXTENSION))
     if gguf_files:
-        gguf_architecture = formats.gguf_architecture(os.path.join(snapshot, gguf_files[0]))
+        gguf_path = os.path.join(snapshot, gguf_files[0])
+        gguf_architecture = formats.gguf_architecture(gguf_path)
+        gguf_pooling_type = formats.gguf_pooling_type(gguf_path)
 
     # Which backend's `load()` would accept this, by format alone. Cached with
     # everything else because it reads the same listing and the same config —
@@ -913,6 +924,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         config=config,
         torch_weights=_has_torch_weights(snapshot),
         gguf_architecture=gguf_architecture,
+        gguf_pooling_type=gguf_pooling_type,
     )
     # The snapshot's own top-level listing, carried past this function for
     # the one caller that needs it beyond format inference:

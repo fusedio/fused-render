@@ -1,0 +1,78 @@
+# The llama.cpp / GGUF TEXT EMBEDDING runner's environment — the VULKAN
+# variant, GPU acceleration on NVIDIA and AMD (SPEC §40, AI-11, D411).
+#
+# Identical to `llamacpp_embed/pyproject.toml` except for the one thing a
+# hardware variant is allowed to change: which of the maintainer's indexes the
+# one pinned dependency comes from. Read that file first — it carries the
+# no-`jinja2` reasoning, the second job `huggingface_hub` does for this
+# capability's up-front refusal, and the pin discipline this file reuses
+# verbatim; this one only states its difference.
+#
+# **Why this variant exists at all**, and it is the same argument
+# `llamacpp_text_vulkan/pyproject.toml` makes: the CPU index's macOS arm64
+# wheel links `libggml-metal.dylib`, so Apple Silicon already gets GPU
+# acceleration through the sibling folder, but that index's Linux and Windows
+# wheels are CPU only. The maintainer's separate `vulkan` index is the one
+# accelerated path that reaches BOTH NVIDIA and AMD from a single wheel — that
+# index publishes no ROCm/HIP build at all (checked in the text variant's own
+# audit), so this is not a third choice alongside a CUDA and a ROCm row, it is
+# the only accelerated path this backend has for either vendor.
+#
+# **THE PIN AND ITS AUDIT ARE THE TEXT VARIANT'S, unchanged.**
+# `llama-cpp-python==0.3.29` off this exact index is what
+# `llamacpp_text_vulkan/pyproject.toml` already pins, so the two platform tags
+# this folder can resolve to are byte-for-byte the two that file's audit
+# covers — `manylinux2014_x86_64.manylinux_2_17_x86_64` (181.77 MB) and
+# `win_amd64` (56.94 MB), both PASS under `zipfile.testzip()`, 2026-08-21, off
+# `releases/download/v0.3.29-vulkan/`. **No new audit was performed for this
+# folder and none was needed**, and this pin may not be bumped independently
+# of the other three: all four llama.cpp manifests move together after one
+# audit. That index publishes **no macOS build** (expected — Metal comes
+# through the CPU index) **and no Linux aarch64**, which is why
+# `registry._vulkan` gates on exactly that tag set rather than the wider one
+# `_llamacpp_platform` allows.
+#
+# **The size difference is why this is a second folder rather than a flag, and
+# it lands HARDER here than it does for text.** The Vulkan Linux wheel is
+# 181.77MB against the CPU index's 22.5MB — roughly 8x, almost all of it the
+# ~74.5MB Vulkan backend library — while the largest model this capability
+# curates is 639MB and the smallest is 146MB. So on this row a user can easily
+# download more WHEEL than MODEL, which is not true of the text pair, where
+# the smallest curated GGUF is 0.7GB. It is still worth offering: a page
+# embedding a folder of notes runs one encoder pass per chunk, and a GPU turns
+# a few thousand chunks from minutes into seconds. But it is one more reason
+# this row sits BELOW the CPU row and is never what `auto` reaches for.
+#
+# **A missing Vulkan loader is a HARD import failure, not a CPU fallback** —
+# `libggml-vulkan.so` declares `DT_NEEDED libvulkan.so.1`, and
+# `libggml.so`/`libllama.so` declare `DT_NEEDED libggml-vulkan.so.0` in turn
+# (the Windows DLL carries the same import on `vulkan-1.dll`). So
+# `import llama_cpp` fails outright on a machine with this wheel and no
+# loader, regardless of whether a GPU is present. `registry._vulkan` refuses
+# that machine a Load button before `uv sync` ever runs; see its docstring for
+# the milder missing-DRIVER case and why that half is refused for being
+# pointless rather than for being broken.
+[project]
+name = "fused-render-runner-llamacpp-embed-vulkan"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "llama-cpp-python==0.3.29",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# The maintainer's Vulkan wheel index. `explicit = true` for the identical
+# reason the CPU index's own manifest states — without it this index becomes a
+# candidate for every requirement in the graph, not only the one name below.
+[[tool.uv.index]]
+name = "llamacpp-vulkan"
+url = "https://abetlen.github.io/llama-cpp-python/whl/vulkan/"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llamacpp-vulkan" }

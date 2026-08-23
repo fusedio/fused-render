@@ -1,0 +1,71 @@
+# The MLX TEXT EMBEDDING runner's environment (SPEC §40, PY-16).
+#
+# **A separate folder from `mlx_embed/`, and the reason is the capability
+# split rather than the package.** Both folders install the SAME distribution
+# — `mlx-embeddings` — because that one package ships both a SigLIP port (the
+# dual encoder `registry.EMBEDDINGS` serves) and a set of text encoders (what
+# `registry.TEXT_EMBEDDINGS` serves). So this manifest is very nearly a copy
+# of `mlx_embed/pyproject.toml`, and that is not duplication to be collapsed:
+# `envinstall` keys a venv by the hash of the folder's manifest, and one
+# folder shared between two capabilities would mean ONE interpreter and one
+# resident-model slot for both — exactly the eviction conflict the capability
+# split exists to avoid (see `llama_embed.py`'s docstring). Two folders is how
+# a user gets to hold a SigLIP model and a text embedder at the same time.
+#
+# **The engine line carries a CEILING**, for the reason `mlx_embed/` and
+# `mflux_image/` both state at length: no lockfile is committed beside these
+# manifests and `uv sync` runs bare, so an unbounded requirement re-resolves
+# from PyPI on every new venv key — the way an unrelated minor bump has
+# reached users with no commit behind it before. `mlx-embeddings` is pre-1.0,
+# where a minor IS the breaking one, hence `>=0.1,<0.2` — the same bound
+# `mlx_embed/` uses, deliberately: the two folders install the same package
+# and a version skew between them would mean two copies of one library's
+# model zoo in two venvs, differing in which architectures they can open.
+#
+# **What was CHECKED about 0.1.0 rather than assumed.** The published wheel's
+# own contents were read on 2026-08-23 (`mlx_embeddings/models/*.py` out of
+# `mlx_embeddings-0.1.0-py2.py3-none-any.whl`, from PyPI). It ships
+# `bert.py`, `modernbert.py`, `xlm_roberta.py`, `qwen3.py`, `gemma3_text.py`,
+# `lfm2.py` and `llama_bidirec.py` — so text embedding models are genuinely
+# first-class here and this is NOT a scaffold around a package that only does
+# SigLIP. Every one of those `Model.__call__`s returns a `BaseModelOutput`
+# whose `text_embeds` field is already pooled and normalized, which is the
+# single seam `worker.py` reads (see `_TEXT_EMBEDS_FIELD` there).
+#
+# **`mlx-embeddings` is GPLv3**, which is worth stating in the manifest rather
+# than leaving to whoever next audits licences. It is not a new obligation:
+# `mlx_embed/` already installs the same package under the same licence, and
+# it is installed into a SEPARATE interpreter that this app talks to over
+# HTTP — never imported into fused-render's own process — which is the same
+# arrangement every runner has and the reason the licence does not reach the
+# app.
+#
+# What each dependency earns:
+#   mlx-embeddings  loads the text encoder and runs it. Pulls `mlx`,
+#                   `mlx-vlm` and `transformers` in itself (the tokenizer half
+#                   of a load is transformers' `AutoTokenizer`, through this
+#                   library's own `TokenizerWrapper`); named here rather than
+#                   assumed because all three are load-bearing.
+#   huggingface_hub downloads the snapshot.
+#   psutil          the RSS half of "how much memory is this costing" — the
+#                   MLX half comes from mlx's own allocator (see `memory()`),
+#                   exactly `mlx_text/pyproject.toml`'s reasoning.
+#
+# **No pillow and no pillow-heif**, unlike `mlx_embed/pyproject.toml`. That
+# folder declares them so it can open the image half of a dual-encoder
+# request; this capability refuses image input by name
+# (`text_embed_common.request_texts`), so a PIL here would be a dependency
+# users download to support a code path that raises before reaching it.
+[project]
+name = "fused-render-runner-mlx-text-embed"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-embeddings>=0.1,<0.2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

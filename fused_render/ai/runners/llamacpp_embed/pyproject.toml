@@ -1,0 +1,74 @@
+# The llama.cpp / GGUF TEXT EMBEDDING runner's environment — CPU (and Apple
+# Silicon Metal) build (SPEC §40, AI-2a, AI-11, D411).
+#
+# **Read `llamacpp_text/pyproject.toml` first.** It carries the argument for
+# why this app installs `llama-cpp-python` from the maintainer's own index at
+# all when AI-2a's wheels-only rule bars its PyPI sdist, the `explicit = true`
+# confinement that keeps that index from becoming a candidate for every other
+# requirement in the graph, and — most importantly — the residual-corruption
+# finding: that index has published corrupt macOS arm64 wheels for roughly two
+# releases in three (upstream issue #1650, still open), so a version bump is
+# only safe after re-running an integrity audit by hand. This file states its
+# differences from that one and repeats none of it.
+#
+# **THE PIN IS THE SAME VERSION, AND THAT IS DELIBERATE RATHER THAN
+# CONVENIENT.** `llama-cpp-python==0.3.29` is the exact version
+# `llamacpp_text/pyproject.toml` and `llamacpp_text_vulkan/pyproject.toml`
+# already pin, off the exact same index, so the four wheels this folder can
+# resolve to are byte-for-byte the four that file's audit covers
+# (macOS arm64, both manylinux_2_17 tags, win_amd64 — all PASS,
+# `zipfile.testzip()`, 2026-08-21). **No new audit was performed for this
+# folder and none was needed**; equally, this folder's pin may not be bumped
+# independently of the text pair's. If any of the three moves, all three move
+# together after one audit — a second llama.cpp version resident in a second
+# venv doubles the surface that audit has to cover for no benefit anyone can
+# name.
+#
+# **What is DIFFERENT from the text manifest, and it is one line: no
+# `jinja2`.** That runner declares it to render the chat template a GGUF
+# carries in its own metadata. An encoder has no chat template — there is no
+# conversation to format, only a prompt PREFIX chosen from
+# `formats.TEXT_EMBED_PROMPTS` and glued on by string concatenation
+# (`text_embed_common.prompted`). A dependency this runner never imports is a
+# dependency users download for nothing, and — since `state_digest` hashes
+# this file whole — one this app would have to keep a version ceiling honest
+# for on behalf of code that does not exist.
+#
+# `huggingface_hub` fetches the one GGUF file this runner ever downloads
+# (`worker_base.download_file`) AND, unlike the text runner's use of it, does
+# a second job here: `llama_embed._remote_header` builds a `resolve/main` URL
+# with `hf_hub_url`, attaches this machine's token with `build_hf_headers`,
+# and issues a 2MB `Range` request so a repo that is not an embedding model
+# can be refused BEFORE its weights are fetched. That is the up-front-refusal
+# contract in that module's docstring, and it is why this dependency is
+# load-bearing beyond "downloads happen".
+#
+# CPU only in the sense the text manifest means it: this is the maintainer's
+# `whl/cpu` index, the build with no CUDA/ROCm/Vulkan backend compiled in —
+# but that same index's macOS arm64 wheel links `libggml-metal.dylib`, so on
+# Apple Silicon this row runs on the GPU. The Vulkan sibling beside this
+# folder covers NVIDIA and AMD under Windows and Linux.
+[project]
+name = "fused-render-runner-llamacpp-embed"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "llama-cpp-python==0.3.29",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# The maintainer's CPU wheel index. `explicit = true` keeps it from becoming a
+# candidate for anything but the one name listed under `[tool.uv.sources]` —
+# see `llamacpp_text/pyproject.toml` for why that confinement matters here.
+[[tool.uv.index]]
+name = "llamacpp-cpu"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cpu/"
+explicit = true
+
+[tool.uv.sources]
+llama-cpp-python = { index = "llamacpp-cpu" }

@@ -425,11 +425,38 @@ def _gguf_uint_by_suffix(path: str, suffix: str) -> int | None:
     after them is simply not visible from here and reads as None. Both keys
     this is used for sit in the architecture block, ahead of the tokenizer.
     """
+    return gguf_uint_by_suffix_in(_gguf_peek(path), suffix)
+
+
+def _gguf_peek(path: str) -> bytes:
+    """The first `_GGUF_HEADER_PEEK_BYTES` of `path`, or `b""` if unreadable.
+
+    The one place the local read happens, so the four public readers above
+    and below differ only in which key they look for. `b""` for an
+    unreadable file rather than a raise: every caller's contract is already
+    "None means cannot tell", and empty bytes reach that answer through the
+    same code path a truncated or non-GGUF file does.
+    """
     try:
         with open(path, "rb") as handle:
-            buf = handle.read(_GGUF_HEADER_PEEK_BYTES)
+            return handle.read(_GGUF_HEADER_PEEK_BYTES)
     except OSError:
-        return None
+        return b""
+
+
+def gguf_uint_by_suffix_in(buf: bytes, suffix: str) -> int | None:
+    """`_gguf_uint_by_suffix`, over header bytes already in hand.
+
+    **The bytes-taking form is public and the path-taking one is not**,
+    which is the opposite of how this module's other pairs are arranged, and
+    it is because of who calls it. `runners/llama_embed.py` has to answer
+    "is this an embedding model" for a file that is NOT on the disk yet — it
+    reads a 2MB `Range` request off the Hub and refuses a bad repo before
+    the multi-gigabyte download starts, which is the whole of that runner's
+    up-front-refusal contract. It therefore has header bytes and no path,
+    and the alternative to this function is writing those bytes to a
+    temporary file so a path-shaped parser can read them back.
+    """
     try:
         if buf[:4] != b"GGUF":
             return None
@@ -442,6 +469,27 @@ def _gguf_uint_by_suffix(path: str, suffix: str) -> int | None:
             if key.endswith(suffix) and value_type in (4, 5):
                 fmt = "<I" if value_type == 4 else "<i"
                 (value,) = struct.unpack_from(fmt, buf, offset)
+                return value
+            offset = _gguf_skip_value(buf, offset, value_type)
+    except (struct.error, IndexError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def gguf_architecture_in(buf: bytes) -> str | None:
+    """`gguf_architecture`, over header bytes already in hand — see
+    `gguf_uint_by_suffix_in` for why the bytes-taking form is the public one."""
+    try:
+        if buf[:4] != b"GGUF":
+            return None
+        (kv_count,) = struct.unpack_from("<Q", buf, 16)
+        offset = 24
+        for _ in range(kv_count):
+            key, offset = _gguf_read_string(buf, offset)
+            (value_type,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            if key == "general.architecture" and value_type == _GGUF_TYPE_STRING:
+                value, _offset = _gguf_read_string(buf, offset)
                 return value
             offset = _gguf_skip_value(buf, offset, value_type)
     except (struct.error, IndexError, UnicodeDecodeError):
@@ -467,27 +515,7 @@ def gguf_architecture(path: str) -> str | None:
     fail in: a real text GGUF this cannot classify loses a Load button, an
     image or speech GGUF never gains one it would fail.
     """
-    try:
-        with open(path, "rb") as handle:
-            buf = handle.read(_GGUF_HEADER_PEEK_BYTES)
-    except OSError:
-        return None
-    try:
-        if buf[:4] != b"GGUF":
-            return None
-        (kv_count,) = struct.unpack_from("<Q", buf, 16)
-        offset = 24
-        for _ in range(kv_count):
-            key, offset = _gguf_read_string(buf, offset)
-            (value_type,) = struct.unpack_from("<I", buf, offset)
-            offset += 4
-            if key == "general.architecture" and value_type == _GGUF_TYPE_STRING:
-                value, _offset = _gguf_read_string(buf, offset)
-                return value
-            offset = _gguf_skip_value(buf, offset, value_type)
-    except (struct.error, IndexError, UnicodeDecodeError):
-        return None
-    return None
+    return gguf_architecture_in(_gguf_peek(path))
 
 
 def is_text_gguf(path: str) -> bool:
@@ -546,6 +574,296 @@ def gguf_expert_count(path: str) -> int | None:
     `gguf_block_count` — see `_gguf_uint_by_suffix`.
     """
     return _gguf_uint_by_suffix(path, ".expert_count")
+
+
+# ---------------------------------------------------------------------------
+# Text embedding GGUFs (SPEC §40) — the `text-embeddings` capability's own
+# format question, kept apart from every function above it.
+#
+# **Why this sits beside `GGUF_TEXT_ARCHITECTURES` rather than inside it.**
+# `text-embeddings` is a SEPARATE capability from `embeddings` (see
+# `registry.TEXT_EMBEDDINGS` for that decision) and a separate one again from
+# `text-generation`, and this module is where the difference has to be
+# decidable from the bytes. An embedding GGUF and a chat GGUF are the same
+# file format, produced by the same converter, and — for the family that
+# matters most here — carry the SAME `general.architecture`.
+
+
+#: `<arch>.pooling_type` values, from llama.cpp's own `llama_pooling_type`
+#: enum (`include/llama.h` at the commit `llama-cpp-python==0.3.29` vendors,
+#: `f05cf467`). Named rather than left as bare integers because the whole of
+#: `is_embedding_gguf`'s decision is which of these a file declares, and a
+#: `2` on its own says nothing to a reader.
+GGUF_POOLING_UNSPECIFIED = -1
+GGUF_POOLING_NONE = 0
+GGUF_POOLING_MEAN = 1
+GGUF_POOLING_CLS = 2
+GGUF_POOLING_LAST = 3
+#: A RERANKER, not an embedding model — a cross-encoder that scores a
+#: (query, document) PAIR and has no per-text vector to return at all. It is
+#: in this enum because llama.cpp serves both from one file format, and it is
+#: excluded below for exactly that reason.
+GGUF_POOLING_RANK = 4
+
+#: The pooling types this capability can turn into one vector per text. MEAN,
+#: CLS and LAST are the three real families — mean-pooled encoders
+#: (nomic-embed, e5, EmbeddingGemma), CLS-pooled encoders (the bge family),
+#: and last-token pooling on a decoder (Qwen3-Embedding). NONE returns
+#: per-TOKEN states rather than a sentence vector, UNSPECIFIED means the
+#: converter wrote no opinion, and RANK is a reranker — none of the three is
+#: a text embedding model in the sense this capability serves.
+GGUF_EMBED_POOLING_TYPES = frozenset({
+    GGUF_POOLING_MEAN, GGUF_POOLING_CLS, GGUF_POOLING_LAST})
+
+
+def gguf_pooling_type(path: str) -> int | None:
+    """`<arch>.pooling_type` out of a GGUF's own header, or None if absent.
+
+    **This key, and NOT `general.architecture`, is what tells a text
+    embedding GGUF from a chat one** — a finding rather than a preference.
+    The real header bytes of four published embedding GGUFs, read on
+    2026-08-23 through the same bounded peek this function does (over an HTTP
+    `Range` request rather than off the disk, which is the only difference):
+
+        CompendiumLabs/bge-small-en-v1.5-gguf   bert             pooling 2 (CLS)
+        nomic-ai/nomic-embed-text-v1.5-GGUF     nomic-bert       pooling 1 (MEAN)
+        ggml-org/embeddinggemma-300M-GGUF       gemma-embedding  pooling 1 (MEAN)
+        Qwen/Qwen3-Embedding-0.6B-GGUF          qwen3            pooling 3 (LAST)
+
+    Look at the last row. `qwen3` is IN `GGUF_TEXT_ARCHITECTURES` — it is the
+    architecture of the Qwen3 CHAT models this app already serves — so an
+    architecture allowlist cannot separate `Qwen3-Embedding-0.6B` from an
+    ordinary Qwen3 instruct model. The converter writes `qwen3.pooling_type`
+    for one and no pooling key at all for the other, so the pooling key is
+    the only signal IN THE FILE that answers the question this capability has
+    to ask. An architecture list would also have had to grow a row every time
+    another decoder family shipped an embedding variant, which is exactly the
+    maintenance shape `GGUF_TEXT_ARCHITECTURES`' own docstring argues against.
+
+    Matched by SUFFIX like `gguf_block_count` and `gguf_expert_count`, and
+    visible from the same bounded peek: the key sits in the architecture
+    block, ahead of the tokenizer arrays that make a large-vocabulary header
+    overflow the window. Checked on the Qwen3-Embedding file above, whose
+    151k-token vocabulary DOES overflow it — the pooling key was read at
+    position 25 of 36 keys, well before the read ran out.
+
+    Same fail-toward-None contract as its two siblings: a truncated read, a
+    value type this app does not model, or a file that is not a GGUF at all
+    are all "cannot tell", never a crash and never a guess. Callers must read
+    None as "no pooling declared", which `is_embedding_gguf` treats as NOT an
+    embedding model — the safe direction, since a false negative costs a user
+    one model they must name by hand, and a false positive is a chat model
+    loaded as an encoder and quietly returning meaningless vectors.
+    """
+    return _gguf_uint_by_suffix(path, ".pooling_type")
+
+
+def gguf_context_length(path: str) -> int | None:
+    """`<arch>.context_length` out of a GGUF's own header, or None.
+
+    **Why an EMBEDDING runner needs this when the chat runner does not.**
+    `llama_text` pins `_N_CTX = 8192` and lets llama.cpp truncate: a chat
+    model's context is a budget for a conversation, and asking for less than
+    the model supports costs history nobody has written yet. An embedding
+    call is the opposite shape — one text in, one vector out — and llama.cpp
+    requires the whole text to fit in a SINGLE batch to pool it, so `n_ctx`
+    here is not a budget but a per-item length limit. Pinning one number
+    across the catalog would truncate an 8192-token nomic passage at a bge
+    model's 512, or allocate a 32k Qwen3-Embedding context for a page
+    embedding one-line labels.
+
+    Same suffix match, same bounded peek and the same fail-toward-None
+    contract as `gguf_block_count`, and callers must read None the same way:
+    "no sizing information", never zero. `llama_embed.load` falls back to a
+    conservative fixed value on None rather than treating it as a limit.
+    """
+    return _gguf_uint_by_suffix(path, ".context_length")
+
+
+def is_embedding_gguf(path: str) -> bool:
+    """Would `llamacpp-embed` actually load this GGUF — checked, not assumed.
+
+    The counterpart to `is_text_gguf`, and DISJOINT from it on every file
+    either is right about: a chat GGUF declares no pooling type at all. See
+    `gguf_pooling_type` for why the pooling key rather than the architecture
+    is what this reads.
+    """
+    return gguf_pooling_type(path) in GGUF_EMBED_POOLING_TYPES
+
+
+#: The prompt a retrieval model wants in front of a QUERY and in front of a
+#: DOCUMENT, by scheme name.
+#:
+#: **Retrieval encoders are asymmetric and this is not a detail.** A question
+#: and the passage that answers it are different kinds of text, and every
+#: model named here was trained with that difference spelled out in its
+#: input. Embedding both sides identically costs real recall on the models
+#: that instruct one side — and costs it SILENTLY, which is the part that
+#: matters: the vectors still come back, still unit length, still comparable,
+#: just worse. Nothing downstream can detect it.
+#:
+#: Each value is `(query_prefix, document_prefix)`, applied by plain
+#: concatenation — no template engine, because every scheme here is literally
+#: a string glued to the front, checked against each model's own card.
+#:
+#: `"none"` is a REAL scheme and the fallback, not an absence: a model whose
+#: convention this table does not know is embedded verbatim on both sides,
+#: which is the symmetric behaviour every encoder supports and the only
+#: honest answer for a repo nobody here has read the card for. Guessing a
+#: prefix would be worse than not prefixing — a wrong instruction is not
+#: ignored, it is text the model dutifully encodes as though it were content.
+TEXT_EMBED_PROMPTS = {
+    "none": ("", ""),
+    # bge v1.5. The card instructs the QUERY only and says in as many words
+    # that the passage side takes none ("no instruction needed for
+    # passages"), so this is the one asymmetric scheme whose document branch
+    # is genuinely the empty string rather than a second prefix.
+    "bge": ("Represent this sentence for searching relevant passages: ", ""),
+    # nomic-embed-text v1 and v1.5. Its card is explicit that the task
+    # prefixes are REQUIRED rather than advisory — the model was trained
+    # multi-task and the prefix is what selects the task, so an unprefixed
+    # call is out of distribution on both sides, not merely un-tuned.
+    "nomic": ("search_query: ", "search_document: "),
+    # The e5 family (intfloat/e5-*-v2, multilingual-e5-*). Both sides
+    # prefixed, and the card warns that swapping the two is worse than using
+    # neither.
+    "e5": ("query: ", "passage: "),
+    # Qwen3-Embedding ships NAMED prompts in
+    # `config_sentence_transformers.json` (`query` and `document`); the query
+    # one is an instruction block and the document one is empty. The task
+    # sentence is Qwen's own default out of that file, kept verbatim rather
+    # than reworded — it is part of what the model was tuned against, not a
+    # comment this app is free to improve.
+    "qwen3": ("Instruct: Given a web search query, retrieve relevant passages "
+              "that answer the query\nQuery:", ""),
+    # EmbeddingGemma's card gives a prompt per task; these are its
+    # `Retrieval-query` and `Retrieval-document` forms. The document form
+    # ends at `text: ` because the card's template carries an optional
+    # `title:` ahead of it, and `none` is what that field takes when there is
+    # no title — which is always, here, since this API takes a flat list of
+    # strings and has nowhere for a caller to put one.
+    "gemma-embedding": ("task: search result | query: ", "title: none | text: "),
+}
+
+#: The two values `kind` may take. A closed set, checked at the edge
+#: (`text_embed_common.request_texts`) rather than defaulted through, because
+#: a typo'd `"queries"` silently falling back to the document prefix is the
+#: exact silent-degradation failure this whole table exists to prevent.
+TEXT_EMBED_KINDS = ("query", "document")
+
+#: What a caller who says nothing gets. See `text_embed_common.DEFAULT_KIND`
+#: for why it is this one.
+TEXT_EMBED_DEFAULT_KIND = "document"
+
+
+def text_embed_prompt(scheme: str, kind: str) -> str:
+    """The prefix to glue in front of one text, for `scheme` and `kind`.
+
+    An unknown scheme falls back to `"none"` rather than raising: this is
+    reached from a worker holding a resident model with a validated batch in
+    hand, and a scheme name that has drifted out of the table is a reason to
+    embed plainly, not to fail a call that would otherwise work.
+    """
+    query, document = TEXT_EMBED_PROMPTS.get(scheme) or TEXT_EMBED_PROMPTS["none"]
+    return query if kind == "query" else document
+
+
+#: Substrings of a model FILENAME that identify a prompt scheme, most
+#: specific first — the fallback for a repo `TEXT_EMBED_RECIPES` below does
+#: not curate.
+#:
+#: **A heuristic, and named as one.** A model's prompt convention is a fact
+#: about its training that the GGUF header records nowhere, so for an
+#: uncurated repo the filename is the only evidence there is. It is
+#: reasonable evidence — a GGUF conversion is named after the model it
+#: converts, near universally — but it is evidence and not proof, which is
+#: why the scheme actually applied travels back on every reply
+#: (`llama_embed.generate`'s `promptScheme`) rather than being applied out of
+#: sight. A caller who sees the wrong one can name a curated id instead.
+#:
+#: `qwen3-embedding` ahead of any bare `qwen3` and `nomic-embed` ahead of any
+#: bare `nomic` for the obvious reason; the e5 hints are spelled with their
+#: size suffix rather than as a bare `e5` because two letters that common
+#: match filenames with nothing to do with the family.
+TEXT_EMBED_SCHEME_HINTS = (
+    ("qwen3-embedding", "qwen3"),
+    ("embeddinggemma", "gemma-embedding"),
+    ("gemma-embedding", "gemma-embedding"),
+    ("nomic-embed", "nomic"),
+    ("multilingual-e5", "e5"),
+    ("e5-small", "e5"),
+    ("e5-base", "e5"),
+    ("e5-large", "e5"),
+    # bge-m3 is the family member that takes NO query instruction — its card
+    # says so outright — so it must not inherit the `bge` scheme below by
+    # substring. Ordered ahead of `bge-` for exactly that.
+    ("bge-m3", "none"),
+    ("bge-", "bge"),
+)
+
+
+def text_embed_scheme(model_id: str, filename: str = "") -> str:
+    """The prompt scheme for a model — the curated table, then the filename.
+
+    Curated first: `TEXT_EMBED_RECIPES` states the scheme outright for every
+    id this app recommends, so the heuristic never runs for the models most
+    people will ever load. Everything else falls to
+    `TEXT_EMBED_SCHEME_HINTS` over the filename and the repo id together, and
+    finally to `"none"`.
+
+    Lowercased on both sides: GGUF uploaders capitalise inconsistently, and a
+    scheme that turned on that would be precisely the silent wrong answer
+    this table exists to avoid.
+    """
+    recipe = TEXT_EMBED_RECIPES.get(model_id)
+    if recipe:
+        return recipe["scheme"]
+    haystack = f"{filename} {model_id}".lower()
+    for hint, scheme in TEXT_EMBED_SCHEME_HINTS:
+        if hint in haystack:
+            return scheme
+    return "none"
+
+
+#: Curated `(repo, file, scheme)` triples `runners/llama_embed.py` downloads,
+#: keyed by the GGUF's own filename — the identical id shape, and the
+#: identical reasoning, as `GGUF_RECIPES` below, which see. The extra field
+#: is `scheme`: unlike a chat model, an embedding model's prompt convention
+#: is part of what makes its vectors good and is recorded nowhere in the file.
+#:
+#: **Every quantization here is Q8_0, which is the opposite of the chat
+#: list's rule and is deliberate.** `GGUF_RECIPES` leads with Q4_K_M because
+#: a chat model's weights are gigabytes and Q4 is the difference between
+#: running and not running. These are tens of MEGABYTES — the whole of the
+#: largest entry here is a quarter of the SMALLEST chat entry — so a harder
+#: quantization buys nothing anyone would notice and costs retrieval quality
+#: that lands directly in the vector, where there is no sampling step
+#: afterwards to absorb it.
+#:
+#: Sizes and gating checked against the Hub's own per-file metadata on
+#: 2026-08-23; all three repos are ungated, and each file is a single
+#: root-level `.gguf` rather than a shard, because `worker_base.download_file`
+#: takes one filename and a sharded tier would be silently unloadable.
+#: `test_ai_formats.py` asserts every id here also appears in
+#: `catalog.SUGGESTIONS["llamacpp-embed"]`, so the two cannot drift — the
+#: same pin `GGUF_RECIPES` has.
+TEXT_EMBED_RECIPES = {
+    "nomic-embed-text-v1.5.Q8_0.gguf": {
+        "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+        "file": "nomic-embed-text-v1.5.Q8_0.gguf",
+        "scheme": "nomic",
+    },
+    "embeddinggemma-300M-Q8_0.gguf": {
+        "repo": "ggml-org/embeddinggemma-300M-GGUF",
+        "file": "embeddinggemma-300M-Q8_0.gguf",
+        "scheme": "gemma-embedding",
+    },
+    "Qwen3-Embedding-0.6B-Q8_0.gguf": {
+        "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+        "file": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+        "scheme": "qwen3",
+    },
+}
 
 
 #: Curated `(repo, file)` pairs `runners/llama_text.py` actually
@@ -816,6 +1134,93 @@ def pick_gguf_file(filenames) -> str | None:
     return None
 
 
+#: Quantization suffixes `pick_embedding_gguf_file` will choose between,
+#: MOST-preferred first — and it is nearly the REVERSE of
+#: `GGUF_SUFFIX_PRIORITY`, which is the point of having a second list rather
+#: than a flag on the first.
+#:
+#: **Why the preference inverts.** `GGUF_SUFFIX_PRIORITY` ranks `Q4_K_M`
+#: first because a chat model is gigabytes and the download is the binding
+#: cost; `Q6_K`/`Q8_0` sit at the bottom there as "closer to unquantized than
+#: to the sweet spot". An embedding model is tens of megabytes, so the
+#: download is not a cost anyone feels — while quantization error lands
+#: DIRECTLY in the vector this capability returns, with no sampling step
+#: after it to absorb the damage the way a token loop has. A Q4 embedding
+#: model is a worse answer for the same wall-clock and a saving nobody
+#: noticed.
+#:
+#: `Q8_0` leads rather than `F16`: it is within noise of full precision for
+#: this use and half the bytes. `F32` is ranked LAST among eligible files,
+#: below even Q4 — it is exactly twice `F16` for weights that were trained in
+#: half precision anyway, so choosing it is paying double for nothing at all.
+GGUF_EMBED_SUFFIX_PRIORITY = (
+    "Q8_0", "Q6_K", "F16", "BF16", "Q5_K_M", "Q5_K_S", "Q5_1", "Q5_0",
+    "Q4_K_M", "Q4_K_S", "Q4_1", "Q4_0", "F32",
+)
+
+
+def _embedding_gguf_rank(filename: str) -> int | None:
+    """`filename`'s position in `GGUF_EMBED_SUFFIX_PRIORITY`, or None.
+
+    A plain longest-suffix match on the stem rather than
+    `_GGUF_QUANT_TOKEN_RE`'s structured parse, because the two lists have
+    different jobs: that regex exists to recognise families and unsloth's
+    `UD-` dynamic quants across a chat ecosystem that publishes two dozen
+    tiers per repo, and an embedding repo publishes four. Every suffix an
+    embedding repo actually ships is a literal in the list above (checked
+    against the four repos named in `gguf_pooling_type`'s docstring), so a
+    literal match is both sufficient and impossible to get subtly wrong.
+
+    Anything unrecognised returns None — EXCLUDED from ranked candidacy, and
+    reachable only through `pick_embedding_gguf_file`'s single-candidate
+    fallback, exactly as in `pick_gguf_file`.
+    """
+    stem = filename[: -len(GGUF_EXTENSION)].upper()
+    for index, suffix in enumerate(GGUF_EMBED_SUFFIX_PRIORITY):
+        if stem.endswith(suffix) or stem.endswith(suffix.replace("_", "-")):
+            return index
+    return None
+
+
+def pick_embedding_gguf_file(filenames) -> str | None:
+    """The one GGUF `filenames` means as a TEXT EMBEDDING model, or None.
+
+    `pick_gguf_file`'s sibling, and it exists rather than being a parameter
+    on that function for one reason with two halves: the quality preference
+    inverts (see `GGUF_EMBED_SUFFIX_PRIORITY`), and the auxiliary-weight
+    exclusions differ in what they are protecting against. Sharing one
+    function behind a flag would have meant a body that reads as two
+    functions anyway, with the flag as the only thing keeping a chat repo's
+    `mmproj` and an embedding repo's `Q4` from being each other's problem.
+
+    Shape exclusions are the SAME three `pick_gguf_file` applies and are
+    applied for the same reasons — a subdirectory entry, a multi-part shard
+    (`worker_base.download_file` fetches one file), and an auxiliary weight.
+    """
+    candidates = []
+    for name in filenames:
+        if not isinstance(name, str) or "/" in name:
+            continue
+        if not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_SPLIT_RE.search(name) or GGUF_AUXILIARY_RE.search(name):
+            continue
+        candidates.append(name)
+    if not candidates:
+        return None
+    ranked = sorted(
+        ((rank, name) for rank, name in
+         ((_embedding_gguf_rank(name), name) for name in candidates)
+         if rank is not None),
+        key=lambda pair: (pair[0], pair[1]),
+    )
+    if ranked:
+        return ranked[0][1]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 #: Quantization methods NO engine in this app can read, so a repo declaring one
 #: is not offered a Load button (`loaders()` below) whatever else its snapshot
 #: contains. AWQ, GPTQ and compressed-tensors each need a package no runner
@@ -1037,10 +1442,72 @@ DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
 #: `llamacpp-text` here is exactly the trap this comment already describes for
 #: the other two families (see `test_every_registered_runner_appears_in_loaders`).
 LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
+#: Both llama.cpp EMBEDDING builds, for the reason the pair above states
+#: about itself: the CPU and Vulkan wheels open byte-for-byte the same file,
+#: so a branch that named only one of them would leave the other with no
+#: engine tag and no Load button on precisely the machines that chose it
+#: (see `test_every_registered_runner_appears_in_loaders`).
+LLAMACPP_EMBED_RUNNERS = ("llamacpp-embed", "llamacpp-embed-vulkan")
+
+#: `model_type` values `mlx-text-embed` can open — the text encoders
+#: `mlx-embeddings` 0.1.x ships a module for, read out of the published wheel
+#: (`mlx_embeddings/models/*.py`) rather than from its README, on 2026-08-23.
+#:
+#: **`siglip` is deliberately NOT here**, though that wheel ships a module
+#: for it: SigLIP belongs to the OTHER capability (`registry.EMBEDDINGS`,
+#: served by `mlx-embed`), and claiming it here would put one repo in two
+#: capabilities' loader lists and let the AI Models page offer a dual encoder
+#: as a text embedder. The split between the two capabilities is the whole
+#: decision this section rests on; this frozenset is where it is enforced
+#: against the bytes.
+#:
+#: `colidefics3`, `colqwen2_5`, `qwen3_vl` and `llama_nemotron_vl` are also
+#: absent, and for a related reason: they are multimodal or late-interaction
+#: models whose output is a MATRIX of per-token vectors rather than one
+#: vector per text, which is not the contract `/api/ai/embed-text` publishes.
+MLX_TEXT_EMBED_MODEL_TYPES = frozenset({
+    "bert", "modernbert", "xlm-roberta", "xlm_roberta", "qwen3",
+    "gemma3_text", "lfm2", "llama_bidirec",
+})
+
+
+def mlx_text_embed_model_type(config: dict) -> str | None:
+    """The text-encoder family this config declares, or None.
+
+    `embed_model_type`'s counterpart for the other capability, and lowercased
+    for the same reason that one is: `model_type` is written by whoever
+    exported the checkpoint, and an `XLM-RoBERTa` would otherwise read as an
+    unknown family.
+
+    **A `qwen3` config is ambiguous here and this function does not resolve
+    it** — the architecture is shared by Qwen3 chat models and by
+    Qwen3-Embedding, exactly as `gguf_pooling_type`'s docstring describes for
+    the GGUF side. `loaders()` below is where the tie is broken, using
+    evidence this function does not take: a sentence-transformers pooling
+    config sitting beside the weights.
+    """
+    model_type = config.get("model_type")
+    if not isinstance(model_type, str):
+        return None
+    model_type = model_type.strip().lower()
+    return model_type if model_type in MLX_TEXT_EMBED_MODEL_TYPES else None
+
+
+#: The file a sentence-transformers export drops beside its weights to record
+#: HOW to pool the encoder's per-token output into one vector. Its presence is
+#: the safetensors-side equivalent of a GGUF's `pooling_type` key: an ordinary
+#: causal checkpoint has no such file, and a repo published to be embedded
+#: with does.
+#:
+#: A DIRECTORY name, not a file — sentence-transformers writes
+#: `1_Pooling/config.json`, and `loaders()` is handed the snapshot's top-level
+#: `dirnames` already, so this costs no extra I/O in the one place it is read.
+ST_POOLING_DIR = "1_Pooling"
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
-           gguf_architecture: str | None = None) -> tuple[str, ...]:
+           gguf_architecture: str | None = None,
+           gguf_pooling_type: int | None = None) -> tuple[str, ...]:
     """Which runners' `load()` would accept this snapshot, by code.
 
     Format only: whether such a runner RUNS here, and whether the capability is
@@ -1054,10 +1521,25 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     file is I/O this pure evidence-classifier has never otherwise done, and
     the caller (`ai_models.py`) already has the snapshot path this needs.
     `None` when there is no GGUF, or when the caller could not read one.
+    `gguf_pooling_type` is the same arrangement for `gguf_pooling_type()`,
+    and it is what separates an embedding GGUF from a chat one — see that
+    function for why the architecture alone cannot.
     """
     found: list[str] = []
     if has_ct2_weights(names):
         found.append("faster-whisper")
+    # AHEAD of the chat-GGUF branch below, and that order IS the solution to
+    # the `qwen3` problem. `Qwen/Qwen3-Embedding-0.6B-GGUF` declares
+    # `general.architecture = qwen3`, which is in `GGUF_TEXT_ARCHITECTURES`,
+    # so the branch below would claim it as a chat model and the page would
+    # offer to load an encoder into a token loop. A declared pooling type is
+    # the stronger and narrower evidence — a chat GGUF never carries one — so
+    # it is asked first and returns unconditionally, exactly as the chat
+    # branch does against mflux/diffusers for the same class of reason.
+    if (has_gguf_weights(names)
+            and gguf_pooling_type in GGUF_EMBED_POOLING_TYPES):
+        found.extend(LLAMACPP_EMBED_RUNNERS)
+        return tuple(found)
     # Checked EARLY and returned on unconditionally, ahead of mflux/diffusers
     # below: a `.gguf` at the root is llama.cpp's format and nothing else's
     # (`DECISIVE`), and letting it fall through to those checks first is how
@@ -1097,6 +1579,31 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # ASR repo is "a speech model nothing here can load" — matching no
         # runner, offered by nothing — not "matches nothing here so fall
         # through to whatever else recognises the file layout."
+        return tuple(found)
+    # A sentence-transformers TEXT encoder, for `mlx-text-embed` — asked
+    # before the dual-encoder branch below because the two are different
+    # capabilities reading different repos, and this is the narrower claim:
+    # it requires a `1_Pooling/` directory, which SigLIP and CLIP exports do
+    # not carry (their pooling is inside the checkpoint's own projection
+    # head, not a sidecar).
+    #
+    # **The pooling directory is REQUIRED and that is what makes this branch
+    # safe.** `MLX_TEXT_EMBED_MODEL_TYPES` contains `qwen3`, `gemma3_text`
+    # and `lfm2` — architectures shared, letter for letter, with chat models
+    # this app already serves through `mlx-text`. On `model_type` alone this
+    # branch would claim every Qwen3 checkpoint in the local cache and offer
+    # to load a chat model as an encoder. `1_Pooling/config.json` is written
+    # by the sentence-transformers exporter and by nothing else, so it is the
+    # safetensors-side counterpart of the GGUF pooling key the branch at the
+    # top of this function turns on — the same distinction, the same
+    # evidence, read out of a different container.
+    if (torch_weights and ST_POOLING_DIR in dirnames
+            and mlx_text_embed_model_type(config)):
+        found.append("mlx-text-embed")
+        # …and NOTHING else, for the `.gguf` branch's reason: this snapshot
+        # is a directory of safetensors with a config, so the `mlx-text`
+        # branch at the bottom would otherwise claim it too and the page
+        # would offer to load a text encoder as a chat model.
         return tuple(found)
     family = embed_model_type(config)
     if family and torch_weights:
