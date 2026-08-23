@@ -107,13 +107,65 @@
   color: var(--fg-muted);
 }
 
-/* The quiet divider over the uncurated tail: models this disk holds that the
- * curation never heard of — playable, but not recommendations. */
-.pg-side-cap {
-  margin: 8px 0 2px;
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+/* A downloaded model nothing here runs. The live rows are one flat line
+ * (D443); this one keeps the stacked card shape — it carries a sentence — and
+ * says "present but not active" with a dashed border, a dimmed body and no
+ * pointer. */
+.pg-model-off {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  cursor: default;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+.pg-model-off:hover {
+  /* Explicitly NOT the hover the live rows get: hover feedback on something
+   * that cannot be clicked is the exact false promise the dashed border is
+   * there to withdraw. */
+  background: transparent;
+}
+
+/* The stacked card's own lines — the full repo id under the name, and the
+ * size + task foot. Only the unsupported card draws these since D443. */
+.pg-model-full {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-model-foot {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pg-model-off .pg-model-name {
+  color: var(--fg-muted);
+}
+
+/* What the model DOES, beside its size — the Hub's own task words. */
+.pg-model-task {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Why there is no button. Wraps, unlike every other line on a card: it is a
+ * sentence, and truncating the one line whose whole job is to explain would
+ * leave the reader exactly where the missing card did. */
+.pg-model-why {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
   color: var(--fg-muted);
 }
 
@@ -895,20 +947,23 @@ a.pg-hero-repo:hover {
   background: var(--bg-alt);
 }
 
-/* Fixed scrim, not theme colours: this sits on arbitrary photo pixels. */
+/* Fixed scrim, not theme colours: this sits on arbitrary photo pixels, so the
+   values are the same in both palettes by design. They are TOKENS all the same
+   (`--scrim-*`, tokens.css) — "every colour comes from the palette" is a rule
+   with no exceptions to remember, and test_theme.py holds it. */
 .pg-image-save {
   top: 10px;
   right: 10px;
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.25);
-  background: rgba(0, 0, 0, 0.55);
+  color: var(--scrim-fg);
+  border-color: var(--scrim-border);
+  background: var(--scrim-bg);
   text-decoration: none;
 }
 
 .pg-image-save:hover {
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.5);
-  background: rgba(0, 0, 0, 0.75);
+  color: var(--scrim-fg);
+  border-color: var(--scrim-border-hover);
+  background: var(--scrim-bg-hover);
 }
 
 .pg-image-wait {
@@ -1300,5 +1355,41 @@ a.pg-hero-repo:hover {
   margin: 0 0 10px;
   font-size: 12.5px;
   line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+/* ---- The showcase-app strip under the stage (PlaygroundApps.tsx). The
+ * cards themselves are the hub's own .app-pcard (styles/apps.css) — this
+ * block only places the section and lays them out as one scrollable row. Appended at file
+ * end under its own `.pg-apps-` prefix: the rest of this sheet is under
+ * concurrent redesign (#760) and this block must merge clean. ---- */
+.pg-apps {
+  /* Pinned to the bottom of the stage's viewport when the content above is
+   * short (`auto` soaks up the spare space — .pg-stage is a flex column),
+   * and pushed below the fold when it isn't: .pg-stage is the scroller, so
+   * tall stage content simply scrolls down to the strip. The padding is the
+   * floor spacing `auto` would otherwise collapse to zero. */
+  margin-top: auto;
+  padding-top: 28px;
+}
+/* One horizontal row, never wrapping: overflow scrolls sideways inside the
+ * strip. The card wrappers are display:contents, so the .app-pcard anchors
+ * themselves are the flex items — fixed at the hub grid's minimum width. */
+.pg-apps-row {
+  display: flex;
+  gap: 18px;
+  overflow-x: auto;
+  /* Room for the scrollbar so it doesn't sit on the cards' bottom edge. */
+  padding-bottom: 6px;
+}
+.pg-apps-row .app-pcard {
+  flex: 0 0 300px;
+}
+.pg-apps-head {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--fg-muted);
 }

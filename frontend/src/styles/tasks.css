@@ -492,6 +492,88 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* HOW MANY MESSAGES the task holds — the chip between the folder and the time
+   (2026-08-23). Sized and spaced as the folder chip's twin: same 11px, same
+   muted register, same `flex: 0 0 auto` so the TITLE is still the only thing
+   that gives way when a row runs out of room.
+
+   `tabular-nums` for the same reason the time has it: a column of counts that
+   jitters as it goes 9 → 10 reads as movement in a list that has not changed. */
+.tasks-row-msgs {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
+   folder, so on the List the chip is a real <button> — and it has to look like
+   one only when pointed at: a permanent box on every row would be a column of
+   buttons down the busiest edge of the list, which is the crowding this row has
+   twice been trimmed for.
+
+   So: no chrome at rest, a soft wash and a rounded box on hover and on keyboard
+   focus. `-4px/-6px` negative margins with matching padding, so growing the box
+   costs no layout — the chip occupies the same space it did as a bare label and
+   nothing beside it moves when the pointer arrives. */
+.tasks-row .schedule-tv-id--tag {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  margin: -3px -5px;
+  padding: 3px 5px;
+  border-radius: 5px;
+  transition: background-color 120ms ease;
+  /* ABOVE THE STRETCHED ROW LINK, like the caret and the hover actions — and
+     for the reason those two carry the same pair. `.tasks-rowlink` is an
+     absolutely positioned <a> over the whole row at `z-index: 1`, so a control
+     that does not lift itself out of the way is simply not clickable: the press
+     lands on the link and the row navigates instead. The bug that found this
+     was a good one to see — the ONE row whose tag worked was an upcoming task,
+     which has no conversation yet and therefore draws no rowlink at all
+     (Akshil, 2026-08-23: "i can click only on the first item's folder"). */
+  position: relative;
+  z-index: 2;
+}
+
+/* `--ctl-quiet-bg-hover` is the app's own "a control is under the pointer" wash,
+   the one the quiet toolbar buttons wear — the tag is one of those, drawn inside
+   a row rather than on a bar. */
+.tasks-row .schedule-tv-id--tag:hover,
+.tasks-row .schedule-tv-id--tag:focus-visible {
+  background: var(--ctl-quiet-bg-hover);
+}
+
+.tasks-row .schedule-tv-id--tag:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
+}
+
+/* AND WHEN THE FILTER IS ON, the chip says so — a pill with a fill and a
+   hairline, the pressed state of the control that did the narrowing. It has to
+   be legible at rest, not on hover: without it the only trace of an active
+   project filter was the toolbar's little "1", four hundred pixels from the
+   rows it was acting on, and the chip itself had disappeared (every row now
+   agreeing about its folder is exactly when `spansProjects` used to drop it).
+
+   The fill is the app's quiet-control fill rather than the accent: this marks a
+   state, and the accent on this page belongs to what is RUNNING. The name goes
+   to full strength — it is the answer to "what am I looking at" now, not a
+   footnote on a row. */
+.tasks-row .schedule-tv-id--tag.is-on {
+  background: var(--ctl-quiet-bg-hover);
+  box-shadow: inset 0 0 0 1px var(--ctl-quiet-border);
+}
+
+.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name,
+.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-folder-icon {
+  color: var(--fg);
+  opacity: 1;
+}
+
 /* The folder chip is `flex: 0 1 auto` where schedule.css defines it, because on a
    board card it is the thing that must shrink. On a task ROW it is not: the title
    is, and a chip that shrank alongside it would ellipsise a folder name while the

@@ -199,6 +199,19 @@
   --task-c4: #fbbf24;
   --task-c5: #fb923c;
   --task-c6: #f472b6;
+  /* THE SCRIM SET, and the one set that is deliberately identical in both
+     palettes: these paint controls that sit on ARBITRARY PIXELS — a generated
+     image, a photo, a map tile — where the surface underneath is not ours and
+     the app's theme says nothing about it. White-on-dark-wash is legible over
+     anything; a token that flipped with the theme would put light ink on a
+     light photo half the time. Named tokens rather than literals so the rule
+     "every colour comes from the palette" stays a rule with no exceptions to
+     remember (they are what test_theme.py checks for). */
+  --scrim-fg: #ffffff;
+  --scrim-bg: rgba(0, 0, 0, 0.55);
+  --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+  --scrim-border: rgba(255, 255, 255, 0.25);
+  --scrim-border-hover: rgba(255, 255, 255, 0.5);
   --task-c7: #a78bfa;
 }
 
@@ -304,5 +317,12 @@
   --task-c5: #c2410c;
   --task-c6: #be185d;
   --task-c7: #6d28d9;
+  /* Identical to the dark palette on purpose — see the scrim set above. The
+     surface under these is a photograph, not the page. */
+  --scrim-fg: #ffffff;
+  --scrim-bg: rgba(0, 0, 0, 0.55);
+  --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+  --scrim-border: rgba(255, 255, 255, 0.25);
+  --scrim-border-hover: rgba(255, 255, 255, 0.5);
 }
 

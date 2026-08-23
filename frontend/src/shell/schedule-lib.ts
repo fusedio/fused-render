@@ -783,6 +783,15 @@ export function taskChips(
     const seen = new Set<string>();
     for (const m of messages) {
       if (m.kind !== "scheduled") continue;
+      // A message that was never PLANNED for its time draws nothing here
+      // (Akshil, 2026-08-23). A task typed into the List or the Board with the
+      // when-row untouched runs now because "now" is what the form defaults to
+      // — the user asked for it immediately, they did not put it on a Tuesday.
+      // Drawing it made the grid a log of everything anyone ever typed, which
+      // is the one thing a calendar must not be. The server marks it at
+      // creation (`immediate`), so the reading survives a reload rather than
+      // being guessed from a due date that says "now" for both kinds.
+      if (m.immediate) continue;
       if (seen.has(m.message_id)) continue;
       const t = new Date(m.at * 1000);
       if (Number.isNaN(t.getTime())) continue;

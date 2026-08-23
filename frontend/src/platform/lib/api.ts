@@ -1978,6 +1978,12 @@ export interface TaskMessage {
   // "Ran" so this page and that card describe one outcome with one word.
   turn: "done" | "idle" | "unknown" | "cancelled" | "";
   anchor: string; // transcript record uuid, for scroll-to; "" if unknown
+  // "Run this now", not "run this at a time I picked": set by the New task form
+  // when the card was opened from the List or the Board and nobody touched the
+  // when-row. It is what keeps the calendar a PLAN — see schedule-lib.taskChips,
+  // which skips these — and it says nothing about when the message ran. Absent on
+  // a chat message and on anything an older server sent.
+  immediate?: boolean;
 }
 
 export interface Task {
@@ -2251,11 +2257,31 @@ export interface AiModelRepo {
    * the network.
    */
   added: number | null;
-  /** What the model is for ("text generation", "image generation"), or null. */
+  /** What the model is for ("text generation", "text to image"), or null. */
   task: string | null;
+  /** The Hugging Face `pipeline_tag` behind that label — the key a glossary
+   *  lookup, a search filter and a link to the Hub all join on. Null when
+   *  nothing said what the model is. */
+  taskTag: string | null;
   /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
    *  architecture is our reading of one, and the UI distinguishes them. */
   taskSource: string | null;
+  /** Whether this KIND of model runs here, in three states (server-side
+   *  `ai/tasks.py`):
+   *
+   *  - `supported` — a runner serves it, and `capability` says which.
+   *  - `no-runner` — a task we recognise and do not serve (video generation,
+   *    speech synthesis, a robot policy). `supportReason` is the sentence.
+   *  - `unknown` — a tag this build has never heard of, or no evidence at all.
+   *
+   *  `capability` is non-null exactly when this is `supported`; the other two
+   *  states exist so a card can EXPLAIN the null rather than showing a gap
+   *  where a Load button would be. Optional: an older server omits it. */
+  support?: "supported" | "no-runner" | "unknown";
+  /** Why this app does not run this kind of model, when it does not. Empty
+   *  string for a supported task and for one we cannot identify — an excuse we
+   *  have not earned is worse than none. */
+  supportReason?: string;
   /** One sentence on what the task MEANS (what goes in, what comes out), for
    *  the hover — the labels are the Hub's vocabulary, which is jargon until
    *  someone explains it. Null for a tag we have no sentence for. */
@@ -2342,6 +2368,16 @@ export interface AiModelRepo {
    * among the recommendations.
    */
   partial: boolean;
+  /** Bytes of this repo that actually ARRIVED — `size` for anything finished, and
+   *  much less than it mid-fetch (D440).
+   *
+   *  The distinction exists because our fetcher PREALLOCATES a part file to the
+   *  full length of the file it is fetching: a repo 15% into a 1.6GB download
+   *  measures 1.6GB on disk, so a card drawing "how much of this is here" from
+   *  `size` read as nearly finished while the job row beside it said 243 MB.
+   *  `size` is still the number the page PRINTS — allocated bytes are what the
+   *  folder costs — and this is the one the fraction is drawn from. */
+  fetchedBytes: number;
 }
 
 export interface AiModelsResult {
@@ -2689,8 +2725,40 @@ export interface AiCatalogCapability {
   models: AiCatalogModel[];
 }
 
-export function getAiCatalog(): Promise<{ capabilities: AiCatalogCapability[] }> {
-  return getJson<{ capabilities: AiCatalogCapability[] }>("/api/ai/catalog");
+/** A model on this disk that NO capability can load, and why.
+ *
+ *  Deliberately NOT a row in `capabilities[].models` — every app reading that
+ *  payload maps it and offers what it finds, so a row in there is a row
+ *  something will try to load. This is a separate list a picker opts into
+ *  showing, and the Playground shows it because "you downloaded this and it
+ *  cannot run here" is a better answer than the model quietly not being in the
+ *  sidebar at all. */
+export interface AiUnsupportedModel {
+  id: string;
+  /** The repo's own name, without the owner. */
+  label: string;
+  size_gb: number | null;
+  /** What the model does, in the Hub's vocabulary ("text to speech", "depth
+   *  estimation"), or null when nothing on the repo said. */
+  task: string | null;
+  /** `no-runner` (a task we recognise and do not serve) or `unknown` (a
+   *  pipeline tag this build has never heard of, or no evidence at all). Never
+   *  `supported`: that has a capability and is in `capabilities[]`. */
+  support: "no-runner" | "unknown";
+  /** The sentence to print. Empty for `unknown` — an explanation we have not
+   *  earned is worse than none. */
+  reason: string;
+}
+
+export function getAiCatalog(): Promise<{
+  capabilities: AiCatalogCapability[];
+  /** Optional: an older server does not send it. */
+  unsupported?: AiUnsupportedModel[];
+}> {
+  return getJson<{
+    capabilities: AiCatalogCapability[];
+    unsupported?: AiUnsupportedModel[];
+  }>("/api/ai/catalog");
 }
 
 export interface AiLoadStarted {
@@ -2946,6 +3014,12 @@ export interface ScheduledMessage {
   // copies to each occurrence, so every run resumes the same conversation.
   // Ticking this copies "" instead, so each run starts its own.
   new_task_each_run?: boolean;
+  // Created to RUN, not to be planned: the New task form sets this when the card
+  // was opened from the List or the Board and the when-row was never touched, so
+  // `due` is only the form's own default of "now". The scheduler ignores it
+  // entirely; the calendar reads it, and draws nothing for a task nobody
+  // scheduled. Never true on a repeating entry.
+  immediate?: boolean;
 }
 
 export interface ScheduleResult {
@@ -2991,6 +3065,11 @@ export function scheduleMessage(body: {
   // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
   // split apart.
   new_task_each_run?: boolean;
+  // "The user never picked a time" — sent only by the New task form, and only
+  // for a one-off opened from the List or the Board with the when-row untouched.
+  // `due` is still sent (it is "now"); this is what tells the calendar the time
+  // was a default rather than a plan. See ScheduledMessage.immediate.
+  immediate?: boolean;
   // The id of the entry this one REPLACES — set only by an edit, which is
   // cancel + re-create and therefore mints a brand new entry id. A task that has
   // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without

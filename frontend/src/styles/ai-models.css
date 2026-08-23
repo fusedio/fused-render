@@ -527,7 +527,12 @@
 .am-card-engine {
   padding: 1px 6px;
   font-size: 11px;
-  color: var(--accent-soft);
+  /* Muted is the FALLBACK, for an engine family this build has no hue for
+     (engines.engineHue). The accent used to live here, on every card, which was
+     two problems in one declaration: the accent is now spoken for on the same
+     card (the filled Downloaded pill), and one colour for eight backends made
+     the card's most load-bearing tag the one fact colour could not separate. */
+  color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: 4px;
   white-space: nowrap;
@@ -536,6 +541,28 @@
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* -- one hue per engine ------------------------------------------------------
+   `--am-eng` is set inline per card from `engines.engineHue`, which maps each
+   engine FAMILY to one of the calendar's categorical hues (--task-c0…c7). The
+   weight is deliberately between the two things it is not: not muted text,
+   because which backend owns a repo is the card's load-bearing fact and the
+   three Whisper formats are mutually unloadable; not a filled pill, because that
+   weight belongs to the two STATE badges (Loaded, Downloaded) and a card with
+   three filled pills on it has no hierarchy left.
+
+   So: text at the hue, a border at 40% of it, a 10% wash. Colour is never the
+   only channel — the tag says the engine's name, which is the actual answer;
+   the hue is what makes "all the MLX LM ones" findable by sweeping a row.
+
+   The `var(--am-eng, …)` fallbacks matter: this class is applied whenever the
+   engine is AVAILABLE, including for a family with no hue assigned, and without
+   them that tag would inherit whatever `--am-eng` an ancestor happened to set. */
+.am-card-engine-family {
+  color: var(--am-eng, var(--fg-muted));
+  border-color: color-mix(in srgb, var(--am-eng, var(--border)) 40%, transparent);
+  background: color-mix(in srgb, var(--am-eng, transparent) 10%, transparent);
 }
 
 /* "This is a Mac's model, on a PC" — or a model whose engine runs here fine
@@ -1086,10 +1113,101 @@
    Read: a filled BADGE beside the name, in the same green as the sidebar's live
    dot (--success-bright). One colour means "running" across this app rather
    than one colour per surface. */
+/* ONE wash for both states, and the difference is the BORDER and the RAIL. Two
+   strengths of the same green was the wrong instrument: read side by side the
+   pair looked like two shades of one thing rather than two things, and a reader
+   comparing cards was being asked to judge a 3% difference in a tint. The rail
+   and the tinted border are categorical — either the card has an edge or it does
+   not — so they carry the distinction, and the surface just says "this model is
+   on this machine". */
+.am-card-have,
+.am-card-loaded {
+  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
+}
+
 .am-card-loaded {
   border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
-  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
   box-shadow: inset 3px 0 0 var(--success-bright);
+}
+
+/* -- on this disk, and how much of it (D436) ---------------------------------
+   The card's own surface answers the question the grid is read for. Three of
+   this page's four states are facts about the disk and the background stated
+   exactly one of them; these are the other two.
+
+   BACKGROUND ONLY — no border, no rail, no radius, no padding. A card changing
+   state must not change size: these sit in a horizontal carousel, and a
+   finished download that nudged its card's box would shift every card to the
+   right of it mid-scroll.
+
+   Downloaded shares loaded's wash exactly (declared with it above) and differs
+   in the two channels that are categorical rather than a matter of degree: the
+   tinted border and the 3px rail, which only a resident model wears. */
+
+/* Partly downloaded, drawn as the FRACTION that is here: a hard-stop gradient at
+   `--am-part` (set inline; see `aiModelGroups.partialFraction`). A wash at 14%
+   rather than a fill, because text sits on top of it — and hard stops rather
+   than a blend, because the boundary IS the information. */
+.am-card-part {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--warning) 14%, var(--bg-alt)) 0 var(--am-part, 100%),
+    var(--bg-alt) var(--am-part, 100%) 100%
+  );
+}
+
+/* -- arriving, i.e. a download in flight (D439) ----------------------------------------------------------------
+   A download IN FLIGHT, drawn as the same boundary in the colour of where it is
+   going: green fills up to `--am-part` and the rest is the plain card. Worn by
+   all three cards that can be downloading — a recommendation, a search result
+   and a partly downloaded repo — because "this is filling up" is one fact and
+   the 3px bar in the progress row is not enough of it to read from across a
+   carousel.
+
+   Green rather than the amber a paused partial wears, and that pair is the point:
+   amber is a boundary that has STOPPED moving and green is one that has not, which
+   is the distinction the `partly downloaded` tag cannot draw, since a partial repo
+   wears that tag while it is being resumed too.
+
+   Never worn together with the amber classes — each card picks exactly one of
+   the two, in TSX, because a card cannot be both stopped and running. */
+.am-card-arriving {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--success-bright) 14%, var(--bg-alt)) 0 var(--am-part, 0%),
+    var(--bg-alt) var(--am-part, 0%) 100%
+  );
+}
+
+/* …and the same state with no denominator anywhere on this page: a flat wash
+   across the whole card. "Some of this is here and we cannot say how much" is a
+   different sentence from "2% of this is here", and a gradient stopped at an
+   invented number would tell the reader the second one. */
+.am-card-part-unknown {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-alt));
+}
+
+/* The chip that says it, in the footer rather than the head — state, then the
+   action it enables. It IS `.am-suggest-have`, the "✓ downloaded" chip a Hub
+   search result has always worn, rather than a second pill that means the same
+   thing: one fact, one drawing, whichever card the reader is looking at.
+   What is left here is the two things a FOOTER needs and the head row did not.
+
+   `align-items: center` on the row is the alignment fix: `.cc-mdcard-actions` is
+   a flex row with no cross-axis rule, so its default `stretch` pulled this chip
+   to the height of the 26px icon buttons beside it and left the text sitting
+   high inside an over-tall pill. Scoped to `.am-card` because that row is a
+   shared class — every other user of it holds buttons only, which stretch
+   harmlessly. */
+.am-card .cc-mdcard-actions {
+  align-items: center;
+}
+
+.am-card-have-chip {
+  flex: 0 0 auto;
+  /* The row's own gap is 2px, which is right between two icon buttons and too
+     tight between a filled chip and the word next to it. */
+  margin-right: 4px;
 }
 
 .am-loaded-badge {
@@ -1169,6 +1287,20 @@
    own job, back when the resting state below it was muted. */
 .am-card-power-on {
   border-color: var(--accent);
+}
+
+/* The dead end's way out (D437): the primary control on a partly downloaded repo
+   whose fetch cannot be resumed. Error-coloured TEXT on the ordinary button
+   shell, not a filled danger button — it destroys nothing on its own (the
+   confirm dialog does the deleting), and the loudest thing on a card should not
+   be the card nobody wants. */
+.am-card-power-discard {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+}
+
+.am-card-power-discard:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
 }
 
 .am-card-power:focus-visible {

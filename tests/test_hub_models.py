@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.ai import registry
+from fused_render.ai import tasks as ai_tasks
 from fused_render.server import create_app
 from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.server.routers import hub_models as hub
@@ -247,7 +248,7 @@ def test_a_task_reads_the_same_here_as_on_the_local_cards(client, hub_cache, mon
         {"id": "org/vlm", "pipeline_tag": "image-text-to-text"}]))
     row = _search(client).json()["models"][0]
     assert row["task"] == "image + text to text"
-    assert row["taskHelp"] == ai_models_mod._TASK_HELP["image + text to text"]
+    assert row["taskHelp"] == ai_tasks.help_for("image-text-to-text")
 
 
 def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
@@ -588,7 +589,7 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     # Every offered tag resolves to a capability something here serves. Asked of
     # the registry, which is the same authority the Load button uses.
     for tag in offered:
-        assert registry.capability_for_task(hub._friendly_task(tag)) is not None, tag
+        assert ai_tasks.classify(tag).supported, tag
     # And the ones that made the complaint are gone, by name.
     for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
                    "text-classification", "summarization", "image-classification"):
@@ -598,23 +599,22 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     # through `feature-extraction`: the dual encoders the embedding runners load
     # carry the former, and the sentence-transformers checkpoints that carry the
     # latter are exactly what the `absent` list above keeps out (see
-    # `registry.NO_RUNNER_YET`'s note on those two labels).
-    assert {registry.capability_for_task(hub._friendly_task(t)) for t in offered} == {
+    # `ai/tasks.py`'s note on those two rows).
+    assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
         registry.EMBEDDINGS}
 
 
-def test_the_menu_follows_the_registry_rather_than_a_second_list(client, monkeypatch):
+def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monkeypatch):
     """A runner appearing or disappearing must move this menu on its own.
 
-    The tags are Hub vocabulary and live in `hub_models`; WHICH of them is
-    offered is the registry's answer. Two hand-maintained lists would drift, and
-    the drift is invisible until someone downloads 8GB of something that then
-    refuses to load.
+    The tags and the answer now live in ONE table (`ai/tasks.py`): a row gains a
+    `capability` and the filter appears, loses it and the filter goes. This
+    module keeps no list of its own — it used to, and the copy had already gone
+    stale (it still offered `text2text-generation`, a tag the Hub retired).
     """
     monkeypatch.setattr(
-        hub, "capability_for_task",
-        lambda task: registry.TEXT_GENERATION if task == "summarization" else None)
+        ai_tasks, "supported_tags", lambda: ("summarization",))
     assert [t["tag"] for t in client.get("/api/ai-models/hub/tasks").json()["tasks"]] == [
         "summarization"]
 
