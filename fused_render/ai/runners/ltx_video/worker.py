@@ -26,14 +26,28 @@ touches), two `ltx-2.3-22b-distilled-lora-384*.safetensors` (fused into the
 NON-distilled two-stage pipeline only — `distilled.py`'s own `load()` loads
 the distilled checkpoint directly, no LoRA fusion), and a `spatial_upscaler_
 x1_5_v1_0*` / `temporal_upscaler_x2_v1_0*` pair (read by pipelines this build
-does not offer). `_ALLOW_PATTERNS` is exactly the file set read by
+does not offer). `_curated_file_set` names exactly the files read by
 `DistilledPipeline.load()`, `_load_vae_encoder`/`_load_decoders` and
 `_load_upsampler` (verified by reading `ltx_pipelines_mlx/_base.py`,
 `distilled.py` and `ti2vid_two_stages.py` at the pinned commit) — fetching the
 rest would be silent waste, the same trade `h3_video/worker.py`'s own
 `FL2VA/*`-only download makes against the FL2VA/Ref2VA split.
+
+**Exactly ONE transformer file, chosen from the repo's own LISTING, not a
+glob.** `dgrauet/ltx-2.3-mlx-q4` ships BOTH `transformer-distilled.
+safetensors` (11.3 GB) AND `transformer-distilled-1.1.safetensors` (the same
+11.3 GB again) — `_base.py::_resolve_safetensors` prefers the versioned one,
+alphabetically latest, and never opens the other. A pattern like
+`"transformer-distilled*.safetensors"` matches BOTH names and `huggingface_
+hub` would fetch both — 11.3 GB (q4) to 20.6 GB (q8) of dead weight this
+runner would never load. `_resolve_versioned_name` mirrors `_resolve_
+safetensors`'s own rule against the Hub's file LISTING instead of a local
+directory, so `download` asks for the one file the loader will actually
+open — the same reasoning `h3_video/worker.py`'s own `download` already
+applies to check the repo's shape before a byte moves, one step further.
 """
 
+import fnmatch
 import glob
 import os
 import sys
@@ -60,39 +74,71 @@ _loaded = {}
 #: runner targets (Task 6) do not carry one.
 _GEMMA_MODEL_ID = "mlx-community/gemma-3-12b-it-4bit"
 
-#: What `DistilledPipeline` (and the shared VAE/upsampler blocks it composes)
-#: actually opens out of the weights repo — see the module docstring for how
-#: this list was derived and what it deliberately excludes.
-#:
-#: `transformer-distilled*.safetensors` (a glob, not the plain name) because
-#: `_base.py::_resolve_safetensors` prefers a versioned file
-#: (`transformer-distilled-1.1.safetensors`) over the unversioned one when
-#: both exist, taking the alphabetically latest — `dgrauet/ltx-2.3-mlx-q4`
-#: ships both today, and a pattern naming only one would silently fetch the
-#: file the loader is NOT going to prefer. Same reasoning for the spatial
-#: upscaler's two possible stems.
-_ALLOW_PATTERNS = [
+#: The file names that carry no version ambiguity — read by `DistilledPipeline.
+#: load()`, `_load_vae_encoder`/`_load_decoders`, or `LTXModelConfig.from_
+#: checkpoint_dir` (verified by reading `_base.py`, `distilled.py` and
+#: `_orchestration.py` at the pinned commit) and present under exactly one
+#: name on every curated repo. The transformer and the spatial upscaler are
+#: NOT here — see `_distilled_transformer_filename` and `_spatial_upscaler_
+#: filename`, which pick a single winning name out of the repo's own listing
+#: rather than a glob that could match more than one real file.
+_FIXED_FILES = (
     "config.json",
     "embedded_config.json",
     "connector.safetensors",
-    "transformer-distilled*.safetensors",
     "vae_encoder.safetensors",
     "vae_decoder.safetensors",
     "audio_vae.safetensors",
     "vocoder.safetensors",
-    "spatial_upscaler_x2_v1_1*.safetensors",
-    "spatial_upscaler_x2_v1_1*.json",
-    "ltx-2.3-spatial-upscaler-x2*.safetensors",
-    "ltx-2.3-spatial-upscaler-x2*.json",
-]
+)
 
-#: What a `DistilledPipeline`-readable snapshot always has: a distilled
-#: transformer, under either name `_resolve_safetensors` accepts. Checked by
-#: NAME before construction, the same "refuse by name before touching the
-#: library" trade `mflux_image.load` and `h3_video.load` both make — the
-#: alternative is a `FileNotFoundError` deep inside `DistilledPipeline.load()`
-#: on the FIRST render, minutes into a job, rather than at Download/Load time.
+
+def _resolve_versioned_name(names, stem):
+    """Mirrors `_base.py::_resolve_safetensors`'s own rule — prefer a
+    versioned `{stem}-*.safetensors`, alphabetically latest; else the plain
+    `{stem}.safetensors` — against a Hub file LISTING rather than a local
+    directory, so `download` can ask for the one file the loader will
+    actually open instead of every name that could conceivably match.
+    Returns None when neither form is present in `names`.
+    """
+    versioned = sorted(name for name in names
+                       if fnmatch.fnmatch(name, f"{stem}-*.safetensors"))
+    if versioned:
+        return versioned[-1]
+    plain = f"{stem}.safetensors"
+    return plain if plain in names else None
+
+
+def _distilled_transformer_filename(names):
+    """The one transformer file `DistilledPipeline.load()` would actually
+    open: `transformer.safetensors` if present (no curated repo ships this
+    name today, but upstream tries it FIRST), else the versioned-preferred
+    `transformer-distilled*` — `_resolve_versioned_name`'s own rule. `None`
+    when the repo has neither, which `download` treats as a refusal."""
+    if "transformer.safetensors" in names:
+        return "transformer.safetensors"
+    return _resolve_versioned_name(names, "transformer-distilled")
+
+
+#: Checked by NAME before construction, the same "refuse by name before
+#: touching the library" trade `mflux_image.load` and `h3_video.load` both
+#: make — the alternative is a `FileNotFoundError` deep inside `DistilledPipeline.
+#: load()` on the FIRST render, minutes into a job, rather than at Download time.
 _DISTILLED_TRANSFORMER_GLOB = "transformer-distilled*.safetensors"
+
+
+def _spatial_upscaler_filename(names):
+    """The one stage-2 upscaler file `_load_upsampler` would actually open —
+    `ti2vid_two_stages.py`'s own stem preference order, `ltx-2.3-spatial-
+    upscaler-x2` before `spatial_upscaler_x2_v1_1`, each resolved the same
+    versioned-preferred way. `None` when the repo has neither (refused by
+    `_load_upsampler` itself at render time with its own clear message —
+    this function does not duplicate that refusal, only its file choice)."""
+    for stem in ("ltx-2.3-spatial-upscaler-x2", "spatial_upscaler_x2_v1_1"):
+        resolved = _resolve_versioned_name(names, stem)
+        if resolved is not None:
+            return resolved
+    return None
 
 
 def download(model_id):
@@ -103,8 +149,43 @@ def download(model_id):
     mid-fetch) and that propagates here uncaught: a render that cannot encode
     a single prompt is not a render this runner can offer, unlike the VAD
     detector `mlx_whisper/worker.py` shrugs off.
+
+    The listing call is the same trade `h3_video/worker.py`'s own `download`
+    makes before a single byte moves: cheap, and it is what lets this
+    function refuse a repo with no distilled transformer — or build a
+    patterns list that names exactly one real file per group — before
+    spending any of a user's bandwidth on files nobody is going to open.
     """
-    fetched = worker_base.download_snapshot(model_id, allow_patterns=_ALLOW_PATTERNS)
+    import huggingface_hub
+
+    try:
+        names = huggingface_hub.list_repo_files(model_id)
+    except Exception as error:  # noqa: BLE001 - a Hub lookup failure is a fact
+                                 # about the id/network, not a bug in this runner
+        raise RuntimeError(
+            f"could not read {model_id}'s file listing: {error}") from error
+
+    transformer_name = _distilled_transformer_filename(names)
+    if transformer_name is None:
+        raise RuntimeError(
+            f"{model_id} has no transformer-distilled*.safetensors — this "
+            "runner loads ltx-2-mlx's DistilledPipeline, which reads an "
+            "LTX-2.3 checkpoint converted by mlx-forge in this exact layout. "
+            "A Diffusers or torch LTX repo will not load here.")
+
+    patterns = list(_FIXED_FILES) + [transformer_name]
+    upscaler_name = _spatial_upscaler_filename(names)
+    if upscaler_name is not None:
+        patterns.append(upscaler_name)
+        # `Path(...).stem` rather than a plain suffix strip: the upstream
+        # naming convention (`_load_upsampler`'s own `f"{weights_path.stem}_
+        # config.json"`) is stem-based, and this keeps the two in lockstep
+        # regardless of which stem won above.
+        import pathlib
+
+        patterns.append(f"{pathlib.Path(upscaler_name).stem}_config.json")
+
+    fetched = worker_base.download_snapshot(model_id, allow_patterns=patterns)
     worker_base.download_snapshot(_GEMMA_MODEL_ID)
     return fetched
 

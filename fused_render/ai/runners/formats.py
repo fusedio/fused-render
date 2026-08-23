@@ -94,6 +94,18 @@ MFLUX_COMPONENTS = ("transformer", "text_encoder", "vae")
 #: it is still the ordinary, complete case here.
 H3_COMPONENT = "FL2VA"
 
+#: `dgrauet/ltx-2.3-mlx-q4`'s own manifest file (mlx-forge's split-conversion
+#: bookkeeping, not something any pipeline reads) — VERIFIED present at the
+#: root of both curated LTX-2.3 repos (2026-08-23) beside the transformer
+#: files `has_ltx_split_layout` also checks for. Paired with a
+#: `transformer-*` safetensors name rather than trusted alone: a directory of
+#: safetensors otherwise says nothing about the modality (this file's own
+#: rule for why `mlx-text` is not in `DECISIVE`), and a manifest name alone
+#: is a thinner claim than this codebase usually accepts for "this repo IS a
+#: specific thing" — see `is_mlx_whisper_snapshot`'s own two-signal shape for
+#: the same argument made about a different format.
+LTX_SPLIT_MANIFEST = "split_model.json"
+
 #: Repo id -> the mflux VARIANT class that loads it and the model config that
 #: describes it. mflux has no `AutoPipeline`, and the variant and its config are
 #: two arguments nothing can guess, so an unknown repo is refused with a
@@ -832,7 +844,8 @@ UNLOADABLE_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "compressed-tensors
 #: the config names an ASR class nothing else in this app can read — it is
 #: just decisive about matching NOTHING, which the early return in `loaders()`
 #: enforces directly rather than through this table.
-DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "h3-video", "diffusers-image",
+DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video", "h3-video",
+            "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
             # diffusion pipeline whichever wheel opens it — and not about a
@@ -969,6 +982,25 @@ def has_h3_components(dirnames) -> bool:
     return H3_COMPONENT in dirnames
 
 
+def has_ltx_split_layout(names) -> bool:
+    """Is this an mlx-forge split conversion of LTX-2.3 — `ltx_video`'s own
+    curated layout? `names` is the snapshot's TOP-LEVEL FILES (`loaders`'s
+    own parameter, unlike `has_h3_components`'s `dirnames` — this format has
+    no component subfolders at all, everything sits at the root).
+
+    Two signals, both required: the manifest `LTX_SPLIT_MANIFEST` names, and
+    at least one `transformer-*.safetensors` beside it (the dev transformer,
+    the distilled one, or both — `ltx_video/worker.py`'s own
+    `_distilled_transformer_filename` is stricter about WHICH one it wants to
+    fetch; this check only asks whether the repo is shaped like one of these
+    conversions at all).
+    """
+    if LTX_SPLIT_MANIFEST not in names:
+        return False
+    return any(name.startswith("transformer-") and name.endswith(".safetensors")
+               for name in names)
+
+
 def missing_mflux_components(snapshot_dir: str) -> list[str]:
     """The component folders an mflux load needs and this snapshot lacks."""
     return [name for name in MFLUX_COMPONENTS
@@ -1040,6 +1072,14 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # speech model as a chat model. (The `weights.safetensors` era had the
         # same leak — `.safetensors` counts as torch weights — fixed by the
         # same return.)
+        return tuple(found)
+    if has_ltx_split_layout(names):
+        found.append("ltx-video")
+        # …and NOTHING else, for the `mlx-text` branch's reason further
+        # down: this snapshot IS a directory of safetensors (nothing here
+        # gives it component subfolders), so without this return the
+        # fallthrough at the bottom of this function would ALSO claim it
+        # and offer to load an LTX-2.3 checkpoint as a chat model.
         return tuple(found)
     if has_h3_components(dirnames):
         found.append("h3-video")

@@ -24,6 +24,24 @@ WORKER_PATH = os.path.join(
 MODEL = "dgrauet/ltx-2.3-mlx-q4"
 GEMMA = "mlx-community/gemma-3-12b-it-4bit"
 
+#: The real `dgrauet/ltx-2.3-mlx-q4` file listing (Hub API, 2026-08-23) —
+#: used as the default fake Hub listing so `download` tests exercise the
+#: actual ambiguity (`transformer-distilled.safetensors` AND `transformer-
+#: distilled-1.1.safetensors` both present) rather than a listing shaped to
+#: make the test easy.
+REAL_Q4_LISTING = [
+    ".gitattributes", "LICENSE", "README.md", "audio_vae.safetensors",
+    "config.json", "connector.safetensors", "embedded_config.json",
+    "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
+    "ltx-2.3-22b-distilled-lora-384.safetensors", "quantize_config.json",
+    "spatial_upscaler_x1_5_v1_0.safetensors", "spatial_upscaler_x1_5_v1_0_config.json",
+    "spatial_upscaler_x2_v1_1.safetensors", "spatial_upscaler_x2_v1_1_config.json",
+    "split_model.json", "temporal_upscaler_x2_v1_0.safetensors",
+    "temporal_upscaler_x2_v1_0_config.json", "transformer-dev.safetensors",
+    "transformer-distilled-1.1.safetensors", "transformer-distilled.safetensors",
+    "vae_decoder.safetensors", "vae_encoder.safetensors", "vocoder.safetensors",
+]
+
 
 class FakeBase:
     """A stand-in for `worker_base`, recording every tick and every download."""
@@ -98,8 +116,27 @@ class FakeMlxCore(types.ModuleType):
         return 0
 
 
+class FakeHfHub(types.ModuleType):
+    """`huggingface_hub`, from the outside — only `list_repo_files` here.
+
+    `worker_base` itself carries `download_snapshot` in the fake used
+    everywhere else in this file; this is the SECOND, direct import
+    `download` makes to read a repo's listing before choosing patterns.
+    """
+
+    def __init__(self, listing=REAL_Q4_LISTING, on_list=None):
+        super().__init__("huggingface_hub")
+        self.listing = listing
+        self.on_list = on_list
+
+    def list_repo_files(self, model_id):
+        if self.on_list is not None:
+            self.on_list(model_id)
+        return list(self.listing)
+
+
 def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
-                with_samplers_tqdm=True):
+                with_samplers_tqdm=True, hf_hub=None):
     """A fresh import of the ltx_video worker against the fakes.
 
     `monkeypatch.setitem` rather than a save/restore, because this runner
@@ -110,6 +147,7 @@ def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
     made = pipeline if pipeline is not None else FakePipeline()
 
     monkeypatch.setitem(sys.modules, "worker_base", base)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hf_hub or FakeHfHub())
 
     distilled_mod = types.ModuleType("ltx_pipelines_mlx.distilled")
 
@@ -179,6 +217,10 @@ def _request(tmp_path, **over):
 
 
 def test_download_fetches_the_weights_repo_with_the_curated_pattern_set(monkeypatch, base):
+    """Against the REAL `dgrauet/ltx-2.3-mlx-q4` listing, which carries the
+    exact ambiguity this worker has to resolve: two distilled-transformer
+    names side by side, a dev transformer, two LoRAs, and a temporal/x1.5
+    upscaler pair this build never opens."""
     worker, _ = load_worker(monkeypatch, base)
 
     fetched = worker.download(MODEL)
@@ -186,15 +228,56 @@ def test_download_fetches_the_weights_repo_with_the_curated_pattern_set(monkeypa
     assert fetched == f"/snapshots/{MODEL.replace('/', '_')}"
     ids = [model_id for model_id, _kwargs in base.downloads]
     assert MODEL in ids
-    weights_kwargs = dict(base.downloads[ids.index(MODEL)][1])
-    assert weights_kwargs["allow_patterns"] == worker._ALLOW_PATTERNS
-    # The patterns cover exactly what `DistilledPipeline` opens — this is the
-    # premise the module docstring documents deriving, pinned so a future
-    # edit to the list is a deliberate one.
-    assert "transformer-dev.safetensors" not in worker._ALLOW_PATTERNS
-    assert not any("lora" in p.lower() for p in worker._ALLOW_PATTERNS)
-    assert not any("temporal" in p.lower() for p in worker._ALLOW_PATTERNS)
-    assert not any("x1_5" in p for p in worker._ALLOW_PATTERNS)
+    patterns = dict(base.downloads[ids.index(MODEL)][1])["allow_patterns"]
+    # Exactly ONE transformer file — the versioned one `_resolve_safetensors`
+    # actually prefers — never both, which is the bug a bare glob had.
+    assert "transformer-distilled-1.1.safetensors" in patterns
+    assert "transformer-distilled.safetensors" not in patterns
+    assert "transformer-dev.safetensors" not in patterns
+    assert not any("lora" in p.lower() for p in patterns)
+    assert not any("temporal" in p.lower() for p in patterns)
+    assert not any("x1_5" in p for p in patterns)
+    # The one upscaler file this repo actually ships, plus its config.
+    assert "spatial_upscaler_x2_v1_1.safetensors" in patterns
+    assert "spatial_upscaler_x2_v1_1_config.json" in patterns
+
+
+def test_download_fetches_a_single_unversioned_transformer_when_that_is_all_there_is(
+        monkeypatch, base):
+    """No versioned file at all — the plain name must still be requested;
+    `_resolve_versioned_name`'s fallback, exercised against a listing with
+    only one candidate."""
+    listing = [n for n in REAL_Q4_LISTING if "transformer-distilled-1.1" not in n]
+    worker, _ = load_worker(monkeypatch, base, hf_hub=FakeHfHub(listing=listing))
+
+    worker.download(MODEL)
+
+    patterns = dict(base.downloads[0][1])["allow_patterns"]
+    assert "transformer-distilled.safetensors" in patterns
+
+
+def test_download_refuses_a_repo_with_no_distilled_transformer_at_all(monkeypatch, base):
+    listing = [n for n in REAL_Q4_LISTING if "transformer-distilled" not in n]
+    worker, _ = load_worker(monkeypatch, base, hf_hub=FakeHfHub(listing=listing))
+
+    with pytest.raises(RuntimeError, match="transformer-distilled"):
+        worker.download(MODEL)
+
+    # Refused BEFORE either repo is fetched — a listing lookup is cheap, and
+    # spending a user's bandwidth on a repo this runner cannot load anyway
+    # would be the download equivalent of the worse mistake.
+    assert base.downloads == []
+
+
+def test_download_reports_a_hub_listing_failure_with_the_model_id(monkeypatch, base):
+    class FailingHub(FakeHfHub):
+        def list_repo_files(self, model_id):
+            raise RuntimeError("network is down")
+
+    worker, _ = load_worker(monkeypatch, base, hf_hub=FailingHub())
+
+    with pytest.raises(RuntimeError, match="network is down"):
+        worker.download(MODEL)
 
 
 def test_download_also_fetches_the_gemma_text_encoder_UNPATTERNED(monkeypatch, base):

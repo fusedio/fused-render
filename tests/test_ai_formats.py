@@ -107,6 +107,10 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames={formats.H3_COMPONENT},
         config={}, torch_weights=False))
+    seen |= set(formats.loaders(
+        repo_id="x/y",
+        names={formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"},
+        dirnames=set(), config={}, torch_weights=True))
     # `mlx-embed`/`transformers-embed` short-circuit too (see `loaders()`'s own
     # comment on the branch), so — like the MLX whisper and Parakeet cases
     # above — a code reachable only from below it would otherwise look absent.
@@ -244,6 +248,40 @@ def test_a_NON_asr_nemo_target_falls_through_to_the_text_runners():
         config={"target": "nemo.collections.tts.models.FastPitchModel"},
         torch_weights=True)
     assert set(codes) == _TEXT
+
+
+def test_an_ltx_split_snapshot_claims_ltx_video_and_nothing_else():
+    """An mlx-forge split conversion of LTX-2.3 (`split_model.json` beside a
+    `transformer-*.safetensors`) is a directory of plain safetensors — the
+    SAME shape `mlx-text` reads — so without `loaders()`'s early return the
+    fallthrough at the bottom would ALSO claim it, offering an LTX checkpoint
+    as a chat model."""
+    codes = formats.loaders(
+        repo_id="dgrauet/ltx-2.3-mlx-q4",
+        names={formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors",
+              "transformer-dev.safetensors", "connector.safetensors"},
+        dirnames=set(), config={}, torch_weights=True)
+    assert set(codes) == {"ltx-video"}
+
+
+def test_an_ordinary_mlx_text_snapshot_is_untouched_by_the_ltx_check():
+    """The negative case `has_ltx_split_layout` exists to keep safe: a
+    perfectly ordinary MLX text checkpoint (no `split_model.json`, no
+    `transformer-*` naming) must still resolve to `mlx-text` alone."""
+    codes = formats.loaders(
+        repo_id="org/some-mlx-model", names={"model.safetensors", "config.json"},
+        dirnames=set(), config={}, torch_weights=True)
+    assert set(codes) == _TEXT
+
+
+def test_has_ltx_split_layout_needs_both_signals():
+    """Neither the manifest alone nor a `transformer-*` name alone is
+    enough — see `has_ltx_split_layout`'s own docstring for why a single
+    signal is a thinner claim than this codebase accepts here."""
+    assert not formats.has_ltx_split_layout({formats.LTX_SPLIT_MANIFEST})
+    assert not formats.has_ltx_split_layout({"transformer-dev.safetensors"})
+    assert formats.has_ltx_split_layout(
+        {formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"})
 
 
 def test_a_parakeet_repo_is_no_longer_in_DECISIVE():

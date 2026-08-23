@@ -256,19 +256,14 @@ def test_h3_bin_resolves_the_packaged_app_bundle(monkeypatch, tmp_path):
 
 
 def test_catalog_defaults_to_the_ltx_entry_on_apple_silicon(monkeypatch, tmp_path):
-    """`ltx-video`'s folder is complete as of Task 3 (`pyproject.toml` +
-    `worker.py`), so `Runner.available()` now reports it buildable and
-    `_first_available` resolves it ahead of `h3-video` — the whole point of
-    Task 1's ordering. The capability stays `available` either way; naming
+    """`ltx-video` resolves ahead of `h3-video` on Apple Silicon (Task 1's
+    ordering, buildable since Task 3) and now has its own curated shortlist
+    (Task 6), so a bare `fused.ai.video()` on such a machine defaults to the
+    smallest LTX-2.3 tier rather than H3's 144GB checkpoint. Naming
     `MiniMaxAI/MiniMax-H3` explicitly still reaches H3 unchanged (see
-    `test_ai_runtime.py`'s per-runner request-shaping tests, Task 5).
-
-    `default` itself is `None` here rather than an ltx-video id: `catalog.
-    default_for` reads the curated `SUGGESTIONS` table for the resolved
-    runner, and that table gains an `ltx-video` entry only in Task 6. This
-    test therefore pins the RUNNER that resolves, and
-    `test_ai_catalog.py`'s Task-6 tests pin the id once the shortlist
-    exists."""
+    `test_ai_runtime.py`'s per-runner request-shaping tests, Task 5, and
+    `test_a_video_off_apple_silicon_says_so`-style tests that pin `_RUNNERS`
+    to h3-video directly)."""
     _mac_arm(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
     from fused_render.ai import catalog
@@ -277,6 +272,7 @@ def test_catalog_defaults_to_the_ltx_entry_on_apple_silicon(monkeypatch, tmp_pat
     rows = {row["capability"]: row for row in catalog.describe()}
     video = rows[registry.VIDEO_GENERATION]
     assert video["available"]
+    assert video["default"] == "dgrauet/ltx-2.3-mlx-q4"
 
 
 def test_catalog_default_is_null_when_unavailable(monkeypatch):
