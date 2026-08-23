@@ -1995,10 +1995,13 @@
         cleanup();
         if (opts.signal && opts.signal.aborted) throw err;
         if (controller._supersededByKey) return new Promise(() => {});
-        // Server unreachable (fetch rejects with a TypeError, never an HTTP
-        // status): degrade to per-call runPython. HTTP errors are not TypeErrors,
-        // so they propagate as themselves.
-        if (err && err.name === "TypeError") return runPython(pyPath, params, opts);
+        // Degrade to per-call runPython when the WORKER couldn't serve the call:
+        // server unreachable (TypeError), or an engine-level failure (venv not
+        // built, worker won't spawn, proxy error — all typed engine_error). A
+        // script error (data.ok:false) carries the Python exception type, not
+        // engine_error, so it propagates instead of being silently re-run.
+        if (err && (err.name === "TypeError" || err.type === "engine_error"))
+          return runPython(pyPath, params, opts);
         throw err;
       }
     );
