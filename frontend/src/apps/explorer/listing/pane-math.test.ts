@@ -11,7 +11,7 @@
 //
 // There is no parse here either, because there is nothing stored to parse: a
 // dragged width lives in memory for the session — shared with the file
-// sidebar since D443 (`lib/side-store.ts`), in pixels, and no longer in a
+// sidebar since D460 (`lib/side-store.ts`), in pixels, and no longer in a
 // fraction of its own (`pane-store.ts`, deleted) or in the per-folder
 // viewstate before that.
 import { describe, expect, test } from "bun:test";
@@ -164,7 +164,7 @@ describe("dragPaneFrac", () => {
 });
 
 // -------------------------------------------------------- the shared-width seam
-// D443: the pane's stored width is the SAME pixel number the file sidebar
+// D460: the pane's stored width is the SAME pixel number the file sidebar
 // drags (`lib/side-store.ts`), re-clamped into this pane's own (narrower)
 // floors on every read rather than the file sidebar's.
 describe("paneFracFromSharedWidth", () => {
@@ -204,7 +204,7 @@ describe("paneFracFromSharedWidth", () => {
 
   // -------------------------------------------------- the imported-width ceiling
   // Two real failure modes once the pixel number can arrive from elsewhere
-  // (D443's own follow-up): a width dragged wide on the FILE SIDEBAR of a
+  // (D460's own follow-up): a width dragged wide on the FILE SIDEBAR of a
   // much bigger monitor, and this container merely SHRINKING under a width
   // that no longer moves with it (the whole point of storing pixels rather
   // than a proportion — see pane-math.ts's header).

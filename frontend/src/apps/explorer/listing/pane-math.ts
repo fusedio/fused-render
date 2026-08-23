@@ -8,7 +8,7 @@
 // needed validating on the way in (legacy pixel values, a whole-container 1).
 // Nothing is stored per-folder any more — see the next paragraph for what is.
 //
-// **THE STORED WIDTH IS PIXELS, SHARED WITH THE FILE SIDEBAR** (D443,
+// **THE STORED WIDTH IS PIXELS, SHARED WITH THE FILE SIDEBAR** (D460,
 // `lib/side-store.ts`) — a change from this pane's own history, where a
 // dragged FRACTION lived in `listing/pane-store.ts` (now deleted) independently
 // of the file view's pixel-based sidebar. `paneFracFromSharedWidth` below is
@@ -93,7 +93,7 @@ export function clampPaneWidth(containerW: number, width: number): number {
 // container), which was believed enough for a drag performed ON this
 // container, where the cursor is visibly the thing choosing the number. It
 // is not: the pixel number can now arrive from SOMEWHERE ELSE too (the file
-// sidebar's own drag, D443) — the file sidebar's ceiling is `containerW -
+// sidebar's own drag, D460) — the file sidebar's ceiling is `containerW -
 // CONTENT_MIN_W` on whatever monitor it was dragged on, which can be a much
 // bigger pixel count than this container has ever seen, and reading it back
 // through the pixel floors alone would open this listing at its 60px sliver
@@ -143,7 +143,7 @@ export function clampSharedPaneWidth(containerW: number, px: number): number {
   return Math.max(PANE_MIN_W, Math.min(upper, px));
 }
 
-// THE SHARED-WIDTH SEAM (D443): the fraction THIS container should render,
+// THE SHARED-WIDTH SEAM (D460): the fraction THIS container should render,
 // given the pixel width dragged either here or on the file sidebar
 // (`lib/side-store.ts` holds one number for both) and this container's own
 // measured width. `sharedPx: null` (nothing dragged yet, in either surface,

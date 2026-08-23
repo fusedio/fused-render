@@ -120,11 +120,38 @@ _EMBED_TEXTS = (
     "SELECT count(*) FROM read_parquet('s3://bucket/*.parquet')",
 )
 
-#: One entry per capability constant in `registry`. A capability with no entry
-#: would render a Run button that measures nothing defined, so
+#: Capabilities the registry knows that have no fixed workload here YET — an
+#: explicit, narrow exemption from the guard below, not a loosening of it.
+#: `test_ai_benchmark_store.py::test_every_capability_has_a_workload` skips
+#: exactly these, and `test_the_no_workload_exemption_is_narrow_and_still_true`
+#: keeps the list honest in both directions: an entry that already has a
+#: workload, or that names a capability the registry no longer has, is a
+#: decision nobody re-checked rather than protection.
+#:
+#: **`text-to-video` is the one entry, and the reason is COST, not oversight
+#: (SPEC §40's LTX-2.3 plan, which added the capability).** Every workload
+#: below runs in seconds to a couple of minutes on ordinary hardware; a
+#: comparable video render needs a resident model that is itself 20-140GB
+#: depending on engine (`registry.VIDEO_TRAITS`, `catalog.SUGGESTIONS[
+#: "ltx-video"]`/`["h3-video"]`) and minutes of denoising even once loaded.
+#: Wiring this capability into `_MEASURE` the way the other four are would
+#: make a "Run" press on this tab silently commit a user to tens of gigabytes
+#: and several minutes on a cold model — a materially different cost than
+#: every other button here, and a product decision (does the Benchmark tab
+#: offer that trade at all, and on what fixed prompt/canvas/frame-count) that
+#: belongs to a person, not to a regression fix. `run()`'s own `ValueError`
+#: for a capability missing from both `WORKLOADS` and `_MEASURE` already
+#: degrades this to a clean 4xx rather than a crash or a silently-broken Run
+#: button (see that function's docstring) — the gap is safe, just incomplete.
+NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION})
+
+#: One entry per capability constant in `registry`, `NO_WORKLOAD_YET` excepted.
+#: A capability with neither an entry here nor an exemption above would render
+#: a Run button that measures nothing defined, so
 #: `test_ai_benchmark_store.py` pins this table against `registry.capabilities()`
-#: in BOTH directions — a fifth capability cannot be added without a workload,
-#: and a workload cannot name a capability that does not exist.
+#: in BOTH directions — a fifth capability cannot be added without a workload
+#: or a documented exemption, and a workload cannot name a capability that does
+#: not exist.
 WORKLOADS: Mapping[str, Workload] = MappingProxyType({
     registry.TEXT_GENERATION: Workload(
         name="text-128-tokens",

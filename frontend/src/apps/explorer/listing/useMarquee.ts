@@ -29,7 +29,7 @@
 // drag entirely (row-drag.ts's header).
 //
 // A press that never travels MARQUEE_DRAG_SLOP is neither gesture: it is the
-// plain click that selects one row (and, on release, opens it — D443). ONE
+// plain click that selects one row (and, on release, opens it — D460). ONE
 // threshold decides all three, so no arbitration afterwards and no timer.
 //
 // COORDINATES are the scroller's CONTENT space (viewport offset + scrollTop),
@@ -161,7 +161,7 @@ export function useMarquee({
       // not on the pointerdown. Capture retargets every later event — including
       // pointerup — to the scroller instead of the row, so capturing on the
       // press would route a plain click's release away from the row's own
-      // onPointerUp and silently kill open-on-click (D443) for every press this
+      // onPointerUp and silently kill open-on-click (D460) for every press this
       // branch sees (every press on an unselected row starts here). A press
       // that never moves past the slop keeps its native event flow; the sweep
       // only needs capture once it is live (to survive the pointer leaving the

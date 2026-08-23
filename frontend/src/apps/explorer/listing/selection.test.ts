@@ -168,7 +168,7 @@ describe("rangeBetween", () => {
 });
 
 // ONE press model for the whole explorer: a press selects, and a plain
-// release that never left the row opens it (D443). The pure half of it is
+// release that never left the row opens it (D460). The pure half of it is
 // which SELECTION a press means; the opening is Listing's onRowPointerUp and
 // is gated on the SAME `select`/`defer` answer plus the drag-slop test, so
 // nothing here needs a separate decision.
@@ -317,7 +317,7 @@ describe("cameFromSelParam", () => {
 // The unified model, pinned at the source: neither half may be conditioned on
 // the preview pane again. A single click used to OPEN when the pane was off
 // and merely SELECT when it was on — two click models in one view, decided by
-// a layout state the user no longer even controls (listing/pane.ts). D443
+// a layout state the user no longer even controls (listing/pane.ts). D460
 // deleted double-click entirely: a plain click both selects (on the press)
 // and opens (on the release), unconditionally, in every listing.
 describe("the listing rows wire both halves of the model", () => {

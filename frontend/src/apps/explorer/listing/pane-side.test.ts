@@ -420,7 +420,7 @@ describe("activePaneSide", () => {
   });
 });
 
-// The pane's REMOUNT identity. D443 made every mode folder-bound — the
+// The pane's REMOUNT identity. D460 made every mode folder-bound — the
 // selection does not enter into any of them any more — so the key is just
 // the mode and the folder, full stop.
 describe("paneKey", () => {

@@ -7,6 +7,19 @@
 import { useState, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
+/** A titled group inside VideoStage's own settings rail — predates the rail's
+ *  removal from the other four stages (D429) and outlived it, since Video
+ *  still draws a main-column + rail shape (`pg-work-video`, ai-playground.css)
+ *  rather than the shared Config fold. */
+export function RailSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="pg-rail-section">
+      <h5 className="pg-rail-title">{title}</h5>
+      {children}
+    </section>
+  );
+}
+
 /** The fold everything uncommon goes behind. Closed by default on purpose:
  *  the panel's job is to make the surface above it read as a simple call. */
 export function AdvancedPanel({ children }: { children: ReactNode }) {

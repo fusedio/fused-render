@@ -28,6 +28,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
+import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
@@ -434,7 +435,7 @@ export default function PlaygroundTab() {
                 // one recommended entry per list, and a test pins that) — this
                 // line is what the failure looks like if it ever slips.
                 <p className="pg-group-off">
-                  Nothing to try here yet — the Discover tab is where a first model comes from.
+                  Nothing to try here yet — the Local tab is where a first model comes from.
                 </p>
               )}
               {/* Curated first, then the uncurated repos this disk happens to
@@ -629,6 +630,13 @@ export default function PlaygroundTab() {
                 key={selected.model.id}
                 model={selected.model.id}
                 entry={selected.model}
+              />
+            ) : selected.row.capability === "text-to-video" ? (
+              <VideoStage
+                key={selected.model.id}
+                model={selected.model.id}
+                entry={selected.model}
+                traits={selected.row.videoTraits}
               />
             ) : selected.row.capability === "automatic-speech-recognition" ? (
               <TranscribeStage key={selected.model.id} model={selected.model.id} />

@@ -8,13 +8,13 @@ the pane's `_file` moved to the new row — and the old conversation
 re-attached, streaming, under whichever folder was clicked (found by
 duplicating an app folder and switching between the two).
 
-That reproduction is no longer reachable at all: since D443 the pane's `_file`
+That reproduction is no longer reachable at all: since D460 the pane's `_file`
 is unconditionally the OPEN FOLDER on every mode — a row click never moves it,
 so there is no retarget for `run` to survive across (the belt that used to
 live in `listing/chat-params.ts`, tracking the target and stripping the params
 on a change, is deleted along with the mechanism that made it necessary). What
 these tests still cover is the SECOND half, which is not selection-shaped and
-so is untouched by D443: the agent refuses an attach outright when the
+so is untouched by D460: the agent refuses an attach outright when the
 caller's target provably is not the run's, whatever put a stale `run` on the
 url in the first place (a bookmark, a shared link, a bug not yet imagined).
 """

@@ -31,7 +31,7 @@ selects nothing at all. With no row selected `paneSideTarget` fell back to the
 folder, which is the ground the session has — so the behaviour the guard bought
 became simply how the listing worked, for every arrival and not just this one.
 
-D443 went a step further and deleted the READING, not merely the auto-select
+D460 went a step further and deleted the READING, not merely the auto-select
 that used to feed it a wrong answer: the pane no longer has a per-row target at
 all — `paneSideTarget`/`isFolderBoundSide` are gone, and every mode's `_file` is
 `folder`, full stop (`listing/pane-side.ts`'s `paneKey`, `ListingPreviewPane.tsx`'s
@@ -39,7 +39,7 @@ companion iframe). So what this link depends on is no longer "no folder
 auto-select happens to leave the selection empty" — it is "the pane's target is
 never a function of the selection in the first place", which is what is pinned
 below now: the absence of the OLD auto-select machinery (still real — D278 is a
-separate decision from D443 and either regressing would break this link its own
+separate decision from D460 and either regressing would break this link its own
 way) AND the absence of any row-shaped target left in pane-side.ts to steal.
 
 The link itself is checked by running the page's REAL handler under node (the
@@ -192,7 +192,7 @@ def test_the_id_is_read_by_the_chat_itself_not_the_shell():
 
 
 def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
-    """The load-bearing half, and since D443 it is a STRUCTURAL guarantee rather
+    """The load-bearing half, and since D460 it is a STRUCTURAL guarantee rather
     than a conditionally-maintained one.
 
     Two eras, both pinned here so either regressing breaks this test:
@@ -204,7 +204,7 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     this link is not a query), so this pins the ABSENCE of the folder-arrival
     machinery specifically, not "no auto-select of any kind".
 
-    Era 2 (D443): even if a row WERE somehow selected on arrival, it would not
+    Era 2 (D460): even if a row WERE somehow selected on arrival, it would not
     matter any more — the pane stopped reading the selection at all.
     `paneSideTarget`/`isFolderBoundSide` are deleted, and every mode's `_file`
     target is unconditionally `folder` (`listing/pane-side.ts`'s `paneKey`,
@@ -222,13 +222,13 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     # Checked as DEFINITIONS/USES, not bare substrings: pane-side.ts's own header
     # comment names both deleted functions in prose (explaining why they are
     # gone), and a bare `"paneSideTarget" not in text` check would fail on that
-    # history the moment this test tried to match D443's own account of itself.
+    # history the moment this test tried to match D460's own account of itself.
     pane_side = _read(_PANE_SIDE)
     assert not re.search(r"function paneSideTarget\s*\(", pane_side), (
         "paneSideTarget is back: a per-row pane target can steal the arriving chat again")
     assert not re.search(r"function isFolderBoundSide\s*\(", pane_side), (
         "isFolderBoundSide is back: it only ever existed to split a row-target "
-        "from a folder-target, and D443 deleted the row-target side entirely")
+        "from a folder-target, and D460 deleted the row-target side entirely")
     assert not re.search(r"rowPath\s*:", pane_side), (
         "a row parameter is back on a pane-side.ts function signature: the "
         "pane's target must not read the selection at all")

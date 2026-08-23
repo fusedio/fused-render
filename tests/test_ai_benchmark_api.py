@@ -95,6 +95,16 @@ def test_history_returns_the_stored_runs_oldest_first(client, monkeypatch):
     assert [r["id"] for r in client.get("/api/ai/benchmark").json()["runs"]] == ["a", "b"]
 
 
+def test_history_names_exactly_the_workload_covered_capabilities(client):
+    """`workloadCapabilities` is what lets the Benchmark tab gate its own Run
+    button on the server's own answer (`benchmark.NO_WORKLOAD_YET`) rather
+    than hardcoding the gap — `text-to-video` is registered but has no fixed
+    workload, so it must be ABSENT here even though the registry knows it."""
+    body = client.get("/api/ai/benchmark").json()
+    assert set(body["workloadCapabilities"]) == set(benchmark.WORKLOADS)
+    assert ai_registry.VIDEO_GENERATION not in body["workloadCapabilities"]
+
+
 # -- POST -----------------------------------------------------------------------
 
 

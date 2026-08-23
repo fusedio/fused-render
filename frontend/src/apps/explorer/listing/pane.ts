@@ -24,7 +24,7 @@
 // ordinary navigation — out of a folder you had dragged, into one you had not,
 // and the pane snapped between your width and the default.
 //
-// **THE STORED WIDTH IS NOW THE FILE SIDEBAR'S** (D443): one pixel number, in
+// **THE STORED WIDTH IS NOW THE FILE SIDEBAR'S** (D460): one pixel number, in
 // `lib/side-store.ts`, shared by both surfaces for the life of the document — a
 // drag on either carries over to the other. It used to be its own fraction, kept
 // in `listing/pane-store.ts` (deleted), independently of the file view's pixel
@@ -59,7 +59,7 @@ import { dragPaneFrac, paneDragCloses, paneFracFromSharedWidth } from "@apps/exp
 //   `panew`  the per-folder fraction, whose per-folder-ness was the bug (see
 //            the header). It went session-wide first (its own module,
 //            `listing/pane-store.ts`) and from there into the file sidebar's
-//            shared pixel store (D443, `lib/side-store.ts`) — left in this old
+//            shared pixel store (D460, `lib/side-store.ts`) — left in this old
 //            per-path storage it would do nothing except wait to be misread by
 //            a later reader.
 //   `pane`   the OFF choice from the model before that, which the old
@@ -112,7 +112,7 @@ export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
 // listing is, it never grows a pane of its own — no nesting.
 export function usePreviewPane(enabled = true, onDragClose?: () => void) {
   // The PIXEL width the user chose — dragged somewhere in this session, on
-  // this pane OR on the file sidebar (`lib/side-store.ts`, D443). `null` is
+  // this pane OR on the file sidebar (`lib/side-store.ts`, D460). `null` is
   // not a missing number but a real state, "no choice yet", and it is still
   // worth distinguishing now that the alternative is a constant: the store
   // must record a width only when a drag produced one, so that a refresh
@@ -204,7 +204,7 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
       // The first move is already a choice: from here the pane leaves the
       // shared default and renders what the cursor says. Rendered here as the
       // equivalent PIXEL width for this container: `chosenPx` is what both this
-      // pane and the file sidebar now read (D443), so it has to be a number the
+      // pane and the file sidebar now read (D460), so it has to be a number the
       // sidebar's own floors can make sense of too, not this pane's fraction.
       const nextPx = Math.round(next * rect.width);
       setChosenPx((prev) => (prev === nextPx ? prev : nextPx));

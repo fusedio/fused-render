@@ -1,6 +1,6 @@
 // The preview SIDEBAR's dragged width, for the lifetime of the DOCUMENT: one
 // PIXEL number, held in a module variable and written to no storage at all —
-// and, since D443, shared by BOTH companion columns the app has: the file
+// and, since D460, shared by BOTH companion columns the app has: the file
 // view's sidebar (PreviewSidebar.tsx, this module's original and still its
 // only direct writer of `SideCloseButton`-adjacent UI) and the folder
 // listing's preview pane (`listing/pane.ts`'s `usePreviewPane`). A drag on
@@ -26,7 +26,7 @@
 // divider springs back to the default share the moment you arrow onto the next
 // file. The listing pane never had that problem because its width had already been
 // lifted out of the component; this is the file half catching up (D326), and the
-// two surfaces now behave identically under navigation — and, since D443, share
+// two surfaces now behave identically under navigation — and, since D460, share
 // the very same number rather than two independently-remembered ones.
 //
 // MEMORY ONLY, DELIBERATELY — not a missing feature:
@@ -43,12 +43,12 @@
 // sessionStorage would survive the refresh and localStorage the browser, so both
 // would take the escape hatch away. Neither is an option here.
 //
-// WHY THIS IS PIXELS, AND WHY IT IS NOW THE ONLY STORE. Until D443 the listing
+// WHY THIS IS PIXELS, AND WHY IT IS NOW THE ONLY STORE. Until D460 the listing
 // pane kept its own store (`listing/pane-store.ts`, deleted) holding a FRACTION
 // of its container (0…1), on the reasoning that a conversion between the two
 // units needs a container width neither module wanted to depend on — so they
 // shared only the undragged DEFAULT (`companionFrac`, D283) and remembered a
-// drag independently. D443 decided that reasoning was solving the wrong
+// drag independently. D460 decided that reasoning was solving the wrong
 // problem: the CONTAINER WIDTH IS ALWAYS AVAILABLE AT THE POINT OF USE (the
 // folder pane already measures its own split container for the default share;
 // see `listing/pane.ts`'s `useSplitWidth`), so the conversion this module used

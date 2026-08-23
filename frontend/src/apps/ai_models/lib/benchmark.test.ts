@@ -3,6 +3,7 @@ import type { AiBenchmarkRun } from "@platform/lib/api";
 import {
   DASH,
   availableMetrics,
+  benchmarkableCapabilities,
   chartAxisTicks,
   chartSeries,
   commonDevice,
@@ -336,6 +337,30 @@ describe("chartSeries", () => {
 });
 
 // -- sections -----------------------------------------------------------------
+
+describe("benchmarkableCapabilities", () => {
+  it("keeps only capabilities the server can actually measure", () => {
+    expect(
+      benchmarkableCapabilities(
+        ["text-generation", "text-to-video", "embeddings"],
+        ["text-generation", "embeddings"],
+      ),
+    ).toEqual(["text-generation", "embeddings"]);
+  });
+
+  it("drops video generation specifically — the real gap this closes", () => {
+    // A downloaded video model would otherwise join `all` in BenchmarkTab.tsx
+    // (the union with `repos.map(...)`) and render a Run button whose only
+    // outcome is the server's own 400 (`benchmark.NO_WORKLOAD_YET`).
+    expect(benchmarkableCapabilities(["text-to-video"], ["text-generation"])).toEqual([]);
+  });
+
+  it("is not fooled by a capability appearing in workloadCapabilities out of order", () => {
+    expect(
+      benchmarkableCapabilities(["a", "b", "c"], ["c", "a"]),
+    ).toEqual(["a", "c"]);
+  });
+});
 
 describe("orderCapabilities", () => {
   it("sorts the four into the same order the rest of the page uses", () => {

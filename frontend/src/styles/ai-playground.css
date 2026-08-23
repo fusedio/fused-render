@@ -828,6 +828,25 @@ a.pg-hero-repo:hover {
   padding: 4px 16px 24px;
 }
 
+/* `.pg-empty-title`/`.pg-empty-sub`: dropped in the merge that restored this
+   file's other playground-stage rules (`.pg-seed`, `.pg-image-strip`,
+   `.pg-rail*`) for VideoStage. VideoStage.tsx is their only remaining
+   consumer — ImageStage/TextStage's own `.pg-empty-stage` renders only
+   `StarterPrompts`, with no title/sub pair inside it at all — so the
+   omission rendered VideoStage's empty state as two unstyled `<p>`s. */
+.pg-empty-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pg-empty-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  max-width: 46ch;
+}
+
 .pg-starter {
   margin-top: 14px;
   display: flex;
@@ -1146,6 +1165,151 @@ a.pg-hero-repo:hover {
   font-size: 12px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* `.pg-seed` and `.pg-image-strip` outlived ImageStage's own gallery (D429
+   dropped it there), but VideoStage still draws a strip of past clips plus
+   the seed-reuse caption button, so these stay. */
+.pg-seed {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.pg-seed:hover {
+  color: var(--fg);
+}
+
+.pg-image-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.pg-image-strip img {
+  height: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pg-image-strip img:hover {
+  opacity: 1;
+}
+
+.pg-image-strip img.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.pg-image-strip video {
+  height: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pg-image-strip video:hover {
+  opacity: 1;
+}
+
+.pg-image-strip video.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+/* A render in flight: picking a past clip would silently drop the
+   in-flight Stop button and its progress (VideoStage.tsx). */
+.pg-image-strip video.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* VideoStage predates the other four stages' rail removal (D429) and keeps
+   its own main-column + settings-rail shape — scoped under `.pg-work-video`
+   so it does not fight the shared `.pg-work` (now a centered single column)
+   the other four stages draw. */
+.pg-work.pg-work-video {
+  width: min(1100px, calc(100% - 64px));
+  flex-direction: row;
+  gap: 20px;
+  align-items: stretch;
+}
+
+.pg-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pg-rail {
+  flex: 0 0 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.02);
+  align-self: flex-start;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.pg-rail-toggle {
+  display: none;
+}
+
+.pg-rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pg-rail-section + .pg-rail-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.pg-rail-title {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+@media (max-width: 1100px) {
+  .pg-work-video {
+    flex-direction: column;
+  }
+
+  .pg-rail {
+    display: none;
+    flex: none;
+    width: 100%;
+    max-height: none;
+  }
+
+  .pg-work.rail-open .pg-rail {
+    display: flex;
+  }
+
+  .pg-rail-toggle {
+    display: inline-block;
+  }
 }
 
 /* -- transcription ------------------------------------------------------------------ */

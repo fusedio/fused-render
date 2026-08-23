@@ -3,7 +3,7 @@
 // working tree) and `mcp` (its MCP tools) — never the selection.
 // listing/pane-side.ts owns the list and the `_side` param that records which.
 //
-// **THE PANE NO LONGER FOLLOWS THE SELECTION AT ALL** (D443, superseding
+// **THE PANE NO LONGER FOLLOWS THE SELECTION AT ALL** (D460, superseding
 // D280/D281/D284's whole arc). It used to be selection-driven: a selected row's
 // own template (`Preview`), Claude's target following whichever row was
 // selected, a selected folder previewed as an embedded listing. All of that
@@ -61,7 +61,7 @@ export default function ListingPreviewPane({
   // rendered under it, and would respawn `agent.py` on the remount when the
   // probe landed.
   undecided?: boolean;
-  // The OPEN folder — every mode's subject now (D443).
+  // The OPEN folder — every mode's subject now (D460).
   folder: string;
   // Which of the three the pane is showing. Already resolved against what this
   // folder offers (pane-side's activePaneSide, in Listing), so it is always a
@@ -94,7 +94,7 @@ export default function ListingPreviewPane({
   // (paneSideMenu), rather than dropped — a menu that shrinks to one row hides
   // itself, which once left a mount-backed folder's pane header a lone chevron.
   //
-  // Unlike before D443 this list HOLDS STILL as the selection moves, because
+  // Unlike before D460 this list HOLDS STILL as the selection moves, because
   // nothing here ever read the selection: walking from a repository into a
   // folder outside one still dims the Git row exactly as it always did, but no
   // row-driven `preview` mode ever widened or narrowed the pill to make room
@@ -153,7 +153,7 @@ export default function ListingPreviewPane({
 
   // --- Claude, Git and MCP: the companions -----------------------------------
   // All of them render straight from the FOLDER's entry — `_file` is always
-  // `folder` (D443; it used to be the selected row for `claude`, folder for
+  // `folder` (D460; it used to be the selected row for `claude`, folder for
   // the other two — paneSideTarget, deleted, made that distinction and no
   // longer needs to).
   const sideEntry = side === "preview" ? null : sideEntries[side];
@@ -181,7 +181,7 @@ export default function ListingPreviewPane({
   // --- the fallback: no companion is offered ----------------------------------
   // A mount-backed folder, where all three gates refuse (claude, git AND
   // mcp — paneSideList only falls back here once every one of them has
-  // answered no). The pane must still show something, and since D443 that
+  // answered no). The pane must still show something, and since D460 that
   // something is a plain folder-scoped hint — there is no selected row left
   // to resolve a template or a metadata card for. The switcher above still
   // draws all three companions, disabled and explained (paneSideMenu), which

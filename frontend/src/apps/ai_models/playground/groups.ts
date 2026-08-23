@@ -36,6 +36,15 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: "Transcription",
     blurb: "Turn speech into written words.",
   },
+  // Second to last: Apple Silicon only, with no fallback anywhere else — the
+  // one card here that can be genuinely unusable on the machine looking at
+  // it, which is a reason to let a narrow window drop it before the three
+  // above, not a reason to hide it outright (the tab itself explains why).
+  {
+    capability: "text-to-video",
+    label: "Video",
+    blurb: "Turn a description into a short video with sound.",
+  },
   // Last on purpose: Home renders `slice(0, shown)`, so the array's tail is
   // what a narrow window drops — and this is the card chosen to go first.
   {

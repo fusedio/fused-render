@@ -40,6 +40,7 @@ from fused_render.ai.registry import (
     IMAGE_GENERATION,
     SPEECH_TO_TEXT,
     TEXT_GENERATION,
+    VIDEO_GENERATION,
 )
 
 #: A task this machine can serve: some runner's capability covers it.
@@ -93,8 +94,8 @@ def _t(tag, label, modality, capability=None, help="", note="") -> Task:
 #: tab's filter menu is this table filtered, and a menu ordered by an enum's
 #: accident reads as random.
 #:
-#: **Four rows carry a capability and the other fifty-three do not**, which is
-#: the honest shape of a desktop app with four runners. The interesting ones are
+#: **Five rows carry a capability and the other fifty-two do not**, which is
+#: the honest shape of a desktop app with five runners. The interesting ones are
 #: commented; the rest are ordinary "no runner for this" rows.
 _TASKS: tuple[Task, ...] = (
     # ---------------------------------------------------------------- text
@@ -208,10 +209,11 @@ _TASKS: tuple[Task, ...] = (
        "Generates a 3D object from a picture."),
 
     # ------------------------------------------------------------------- video
-    _t("text-to-video", "video generation", "multimodal", None,
-       "Generates video frames, usually from a description or a still image.",
-       "Video generation needs far more memory and time than the image runners here are "
-       "built for; no runner ships for it."),
+    # `h3-video` (MiniMax H3 on `antirez/h3.c`, D457) serves this one — PROMPT
+    # only, no reference image, so its two image-conditioned siblings just
+    # below stay unmapped rather than folding onto the same capability.
+    _t("text-to-video", "video generation", "multimodal", VIDEO_GENERATION,
+       "Generates video frames, usually from a description or a still image."),
     _t("image-to-video", "image to video", "cv", None,
        "Animates a still picture into a clip.",
        "Video generation needs far more memory and time than the image runners here are "
