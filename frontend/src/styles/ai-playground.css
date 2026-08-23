@@ -604,12 +604,56 @@ a.pg-hero-repo:hover {
  * spent most of it on words ("Fetching weights…") that the download icon says
  * in 14px. */
 .pg-hero-dl {
+  /* ONE CELL, TWO DRAWINGS — the counting progress and the Cancel that replaces
+     it under the pointer. Stacked in a single grid area rather than swapped in
+     flow, so the box measures the wider and the taller of the two at rest and
+     the hover changes nothing but which one is painted; a slot that resized
+     would shove the buttons beside it sideways at the moment the pointer
+     arrived. */
+  display: grid;
+  align-self: center;
+  justify-items: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.pg-hero-dl > * {
+  grid-area: 1 / 1;
+  align-self: center;
+}
+
+.pg-hero-dl-live {
   display: flex;
   align-items: center;
   gap: 8px;
-  align-self: center;
-  font-size: 12px;
-  color: var(--fg-muted);
+}
+
+/* The swap. Opacity and not `display`, for two reasons: a display-toggled
+   button cannot be focused, so `:focus-within` would never fire and the way out
+   of a download would be pointer-only; and a box that stops laying out its
+   child stops reserving its size, which is the reflow this grid exists to
+   prevent. `pointer-events` is what keeps the invisible half from swallowing
+   clicks meant for the visible one. */
+.pg-hero-dl-live,
+.pg-hero-dl-stop {
+  transition: opacity 120ms ease;
+}
+
+.pg-hero-dl-stop {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pg-hero-dl:hover .pg-hero-dl-live,
+.pg-hero-dl:focus-within .pg-hero-dl-live {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pg-hero-dl:hover .pg-hero-dl-stop,
+.pg-hero-dl:focus-within .pg-hero-dl-stop {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .pg-hero-dl-icon {

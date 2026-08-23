@@ -42,7 +42,7 @@ import { PlaygroundApps } from "./PlaygroundApps";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
-import { fetchJobs, type Job } from "@platform/lib/jobs";
+import { cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -311,6 +311,20 @@ export default function PlaygroundTab() {
     if (!selected) return;
     return runDownloadFor(selected.model.id, selected.row.capability);
   };
+  // The download manager's ✕, on the card the download is being watched from. A
+  // REQUEST and not a state change: the job row stays until the worker honours
+  // it, and the next tick (one second — the poll is running because the runtime
+  // is busy) brings "Cancelling…" from the row itself rather than from a local
+  // guess about it. Same call the Local tab's cards make.
+  const runCancelDownload = async (job: Job) => {
+    setActionError(null);
+    try {
+      await cancelJob(job.id);
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+    refreshAiRuntime();
+  };
   const runLoad = async () => {
     if (!selected) return;
     setActionError(null);
@@ -382,6 +396,18 @@ export default function PlaygroundTab() {
   // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
   // 0, which React renders as a literal "0".
   const downloadedFraction = downloadFraction(jobForSelected);
+  // Whether the pull can be STOPPED, by the download manager's own rule rather
+  // than a looser one (`CancelButton` states it): a job its reporter never
+  // marked cancellable, or one already asked to stop, offers nothing — the
+  // progress then simply stays put under the pointer.
+  const stoppable =
+    jobForSelected &&
+    isRunning(jobForSelected) &&
+    jobForSelected.cancellable &&
+    !jobForSelected.cancel_requested &&
+    !jobForSelected.stalled
+      ? jobForSelected
+      : null;
   const downloadedBytes = !!(
     jobForSelected && jobForSelected.unit === "bytes" && jobForSelected.total &&
     jobForSelected.done !== null
@@ -700,15 +726,46 @@ export default function PlaygroundTab() {
                           Here the icon says which kind of work this is without
                           a word, and a ring says how far in the space the
                           sentence wanted. */}
-                      <span className="pg-hero-dl-icon" aria-hidden="true">
-                        {MenuIcons.download}
-                      </span>
-                      <DownloadRing job={jobForSelected} />
-                      {downloadedBytes && (
-                        <span className="pg-hero-dl-bytes">
-                          {formatSize(jobForSelected?.done as number)} /{" "}
-                          {formatSize(jobForSelected?.total as number)}
+                      <span className="pg-hero-dl-live">
+                        <span className="pg-hero-dl-icon" aria-hidden="true">
+                          {MenuIcons.download}
                         </span>
+                        <DownloadRing job={jobForSelected} />
+                        {downloadedBytes && (
+                          <span className="pg-hero-dl-bytes">
+                            {formatSize(jobForSelected?.done as number)} /{" "}
+                            {formatSize(jobForSelected?.total as number)}
+                          </span>
+                        )}
+                      </span>
+                      {/* POINT AT THE PROGRESS, GET THE WAY OUT. A download is
+                          the one thing on this card a reader changes their mind
+                          about, and the figures are what they look at while
+                          doing it — so the way to stop it lives under the
+                          pointer that is already there, rather than as a fourth
+                          button in a row that is only ever read while a
+                          download is NOT running.
+
+                          Both drawings share one grid cell, so the box is as
+                          wide and as tall as the wider of the two at rest and
+                          NOTHING MOVES on hover: a control that reflows the row
+                          it appears in is a control the pointer slides off
+                          (D452's argument about the recent-chats row, in one
+                          box instead of one row).
+
+                          Revealed by `:hover` and by `:focus-within`, and the
+                          button stays in the DOM and focusable while invisible
+                          — which is what makes the second of those fire, so the
+                          way out is reachable by tab and not only by pointer. */}
+                      {stoppable && (
+                        <button
+                          type="button"
+                          className="btn btn-secondary pg-hero-dl-stop"
+                          title={`Stop downloading ${selected.model.id}`}
+                          onClick={() => void runCancelDownload(stoppable)}
+                        >
+                          Cancel
+                        </button>
                       )}
                     </div>
                   )}
