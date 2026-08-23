@@ -386,33 +386,36 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     <div className="am-bench">
       <ErrorBanner>{error}</ErrorBanner>
       {stopped && <p className="am-bench-stopped">{stopped}</p>}
-      {/* THE CAPABILITY SELECTOR. A native `<select>` with a plain label, the
-          same "boring control, name it and get out of the way" rule
-          `EnginesTab` uses for its own per-capability selects. This is the
-          one selector that stays in the page-level toolbar rather than
+      {/* THE CAPABILITY SELECTOR. A native `<select>`, unlabelled ON SCREEN — the
+          reader asked for the redundant "Capability" caption gone, since the
+          option text (a capability's own name, e.g. "Text generation")
+          already says what the control is. `aria-label` keeps it an
+          accessible control without reintroducing the visible chrome. This is
+          the one selector that stays in the page-level toolbar rather than
           inside the card below — it chooses WHICH section you are looking
           at, which is a page-level question, unlike Metric (now inside
           `CapabilitySection`, right beside the instruments it actually
-          governs — see that component's own comment). No run count in the
-          option labels any more — the reader asked for it gone, and
-          `capabilityCounts` still drives `resolveCapability`'s default pick,
-          it just no longer prints itself. */}
+          governs, and still captioned "Metric" there — that select sits next
+          to a card's `<h3>`, not on its own line in an empty toolbar, so the
+          two are not read side by side and dropping only this one does not
+          leave them looking inconsistent). No run count in the option labels
+          any more — the reader asked for that gone too, and `capabilityCounts`
+          still drives `resolveCapability`'s default pick, it just no longer
+          prints itself. */}
       <div className="am-bench-controls">
-        <div className="am-bench-capsel">
-          <label htmlFor="am-bench-cap">Capability</label>
-          <select
-            id="am-bench-cap"
-            className="field-control am-bench-capsel-input"
-            value={selected ?? ""}
-            onChange={(e) => setFocus(e.target.value)}
-          >
-            {all.map((capability) => (
-              <option key={capability} value={capability}>
-                {capabilityLabel(capability)}
-              </option>
-            ))}
-          </select>
-        </div>
+        <select
+          id="am-bench-cap"
+          aria-label="Capability"
+          className="field-control am-bench-capsel-input"
+          value={selected ?? ""}
+          onChange={(e) => setFocus(e.target.value)}
+        >
+          {all.map((capability) => (
+            <option key={capability} value={capability}>
+              {capabilityLabel(capability)}
+            </option>
+          ))}
+        </select>
       </div>
       {selected && (
         <CapabilitySection
