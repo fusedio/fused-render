@@ -42,7 +42,7 @@ def test_every_runner_code_named_here_is_a_registered_runner():
     option it cannot honour would be accepted and quietly ignored.
 
     Was trivially true while the table was empty (D406 withdrew the last row
-    that populated it); D428 gave it three real rows (the diffusers image
+    that populated it); D432 gave it three real rows (the diffusers image
     family's `image` refusal), so this is now exercised for real rather than
     kept warm for a hypothetical."""
     codes = {runner.code for runner in registry.all_runners()}

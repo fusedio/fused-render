@@ -66,10 +66,36 @@ walk takes the same posture when git is missing):
 
   * root inside a repo -> ONE oracle at the repo toplevel; `git -C toplevel
     check-ignore` cascades every nested .gitignore below it by itself.
-  * root outside any repo -> an oracle at each corpus directory that holds a
-    `.gitignore`, the OUTERMOST marker claiming each entry; the oracle's
-    work-tree graft cascades the nested ones below it. A repo whose rules
-    live only in .git/info/exclude (no .gitignore anywhere) goes unfiltered.
+  * root outside any repo -> the OUTERMOST marker claiming each entry, one
+    graft per entry's marker set — UNLESS the caller supplied `oracle_rels`
+    (see `filter_corpus`), in which case every entry decided under some
+    marker is answered by ONE oracle grafted at `root` itself instead of one
+    per marker. That collapse is only sound because `oracle_rels` came from
+    somewhere that already enumerated every `.gitignore` UNDER `root` — a
+    marker this module could not otherwise see is impossible by
+    construction, so a single graft at `root` cascades exactly the same
+    rules a graft at each individual marker would have, no more and no less.
+    Grafted at `root` and nowhere wider: a caller's `root` can itself be a
+    narrower folder than the configured scan root (an in-folder rank
+    search), and `oracle_rels` is only ever complete for what lies UNDER
+    `root` — a graft any higher could cascade a plain `.gitignore` between
+    `root` and the wider root that neither this discovery nor the live walk
+    (which computes its own repo boundary from the browsed folder, never
+    from a wider ancestor) would ever have honored. That would be
+    over-filtering, the one direction this module refuses to move in.
+
+    One behavioural difference IS real and deliberate: a marker directory
+    that is ITSELF a git repository (has its own `.git`) used to get its own
+    plain `git -C` oracle in the per-marker path, which incidentally reads
+    that repo's `.git/info/exclude` too. A `root`-grafted oracle is a
+    synthetic work-tree (no real `.git` at `root`), so it never reads any
+    nested repo's `info/exclude` the way a per-marker oracle rooted AT that
+    nested repo did. This can only ever show a file that used to be hidden,
+    never the reverse — the same direction as the header's other admission
+    that a repo whose rules live only in `.git/info/exclude` (no
+    `.gitignore` anywhere) goes unfiltered; consolidation just makes that
+    admission true uniformly instead of true only for a root that happens
+    to have no `.gitignore` of its own.
 
 Mount-backed roots never get here: the index refuses to scan them, so they
 are never `covered` — no check-ignore (kernel I/O) can be aimed at a mount.
@@ -325,7 +351,14 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
 
     _sweep_t0 = time.monotonic()
     try:
-        fresh = _ignored(root, entries, top, deciders, want)
+        # `oracle_rels is not None` is the WHOLE gate: it means the caller
+        # (index/query.py, for the ranked search) enumerated every
+        # `.gitignore` under `root` from the index itself, not from this
+        # possibly-narrowed payload — see the module header and
+        # `_ignored`'s `consolidate` parameter for why that is what makes
+        # collapsing to one oracle safe.
+        fresh = _ignored(root, entries, top, deciders, want,
+                         consolidate=oracle_rels is not None)
     finally:
         with _cache_lock:
             if _inflight.get(base) is mine:
@@ -574,8 +607,20 @@ def _deciders(root: str, entries: list, prefix: str,
     return None, out
 
 
-def _ignored(root: str, entries: list, top, deciders: list, want: set) -> set:
-    """The indexes in `want` that git calls ignored."""
+def _ignored(root: str, entries: list, top, deciders: list, want: set,
+            consolidate: bool = False) -> set:
+    """The indexes in `want` that git calls ignored.
+
+    `consolidate` is `_pooled_verdicts`'s translation of "the caller supplied
+    `oracle_rels`" — see the module header. When true, every index in `want`
+    is already known (via `_deciders`) to sit under SOME outermost marker at
+    or below `root`, so ONE oracle grafted at `root` cascades every one of
+    those markers in a single co-process. Grafted at `root` specifically, not
+    at whatever wider index root `filter_corpus` is pooling under: `root` is
+    the only thing `oracle_rels` is proven complete for, and a graft any
+    higher could cascade a `.gitignore` between `root` and that wider root
+    that nothing here ever discovered — over-filtering, which this module
+    does not do."""
     if top is not None:
         base = os.path.relpath(root, top).replace(os.sep, "/")
         prefix = "" if base in (".", "") else base + "/"
@@ -584,6 +629,19 @@ def _ignored(root: str, entries: list, top, deciders: list, want: set) -> set:
         idxs = sorted(want)
         queries = [prefix + entries[i]["rel"] for i in idxs]
         oracle = _IgnoreOracle(top)
+        try:
+            verdicts = oracle.ignored(queries)
+        finally:
+            oracle.close()
+        if not verdicts:
+            return set()
+        return {i for i, q in zip(idxs, queries) if q in verdicts}
+    if not want:
+        return set()
+    if consolidate:
+        idxs = sorted(want)
+        queries = [entries[i]["rel"] for i in idxs]
+        oracle = _IgnoreOracle(root)
         try:
             verdicts = oracle.ignored(queries)
         finally:

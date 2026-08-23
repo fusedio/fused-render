@@ -29,6 +29,8 @@ module-scope import of it would pass unnoticed here.
 `test_ai_worker_base.py::test_worker_base_imports_nothing_but_the_stdlib` is what
 enforces the rule, by reading the module's own imports out of its source.
 """
+import email.message
+import email.utils
 import hashlib
 import http.server
 import importlib.util
@@ -39,6 +41,7 @@ import socketserver
 import threading
 import time
 import types
+import urllib.error
 
 import pytest
 
@@ -211,7 +214,20 @@ def _start_server(payload, **flags):
              # that needs to observe OTHER chunks being asked for while one is
              # still open, not merely infer it from timing.
              "hold_first_real": False, "release": threading.Event(),
-             "_held": False}
+             "_held": False,
+             # `throttle_first`: the first N real requests answer 429 (or
+             # `throttle_status`, for the 503-with-a-Retry-After shape), each
+             # carrying `retry_after` as the header verbatim when it is not
+             # None. A rate limit is the one CDN misbehaviour that is not a
+             # fault — the server is asking us to wait — so it needs its own
+             # flag rather than riding on `unauthorized`, whose whole answer is
+             # to re-resolve.
+             # `ratelimit`: the IETF `RateLimit` header verbatim, which is what
+             # the Hub actually answers a 429 with — `Retry-After` is the shape
+             # other hosts use, so both are here and a test can send either,
+             # both, or neither.
+             "throttle_first": 0, "throttled": 0, "retry_after": None,
+             "ratelimit": None, "throttle_status": 429}
     state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -224,6 +240,7 @@ def _start_server(payload, **flags):
             header = self.headers.get("Range")
             probe = header == "bytes=0-0"
             failed_probe = expired = hold = False  # bound on every branch
+            throttled = False
             # `whole` is what THIS path serves, and `status` a status to answer
             # with instead of a body. Without `routes` every path serves the one
             # `payload`, exactly as before.
@@ -252,6 +269,9 @@ def _start_server(payload, **flags):
                                              or state["real"] in state["unauthorized_on"])
                     if state["unauthorized"] > 0 and not plain:
                         state["unauthorized"] -= 1
+                    if not plain and state["throttled"] < state["throttle_first"]:
+                        state["throttled"] += 1
+                        throttled = True
                     if state["hold_first_real"] and not state["_held"] and not plain:
                         state["_held"] = True
                         hold = True
@@ -268,6 +288,15 @@ def _start_server(payload, **flags):
                 return
             if failed_probe:
                 self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not probe and throttled:
+                self.send_response(state["throttle_status"])
+                if state["retry_after"] is not None:
+                    self.send_header("Retry-After", str(state["retry_after"]))
+                if state["ratelimit"] is not None:
+                    self.send_header("RateLimit", state["ratelimit"])
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -1107,6 +1136,147 @@ def test_a_large_file_splits_into_many_fixed_size_chunks_not_four(
 
     assert len(_ranges(state["log"])) == 18, (
         "a big file was still capped at a handful of segments")
+
+
+# -- the chunk PLAN, at sizes no test can afford to allocate ---------------------
+#
+# `_chunks` is arithmetic over one integer, so these drive it directly at real
+# repo sizes — `Comfy-Org/MiniMax-H3` is 30 files and 471GB with single files up
+# to 66.3GB, which is where an uncapped plan put nearly two thousand cursors in
+# one sidecar and rewrote all of them every second for hours.
+
+
+def _plan(base, size):
+    """The plan for `size`, with nothing allocated: no server, no file, no bytes."""
+    return base._chunks(size)
+
+
+def _tiles(pieces, size):
+    """Do these pieces cover [0, size) exactly once — no gap, no overlap?"""
+    if pieces[0]["start"] != 0 or pieces[-1]["end"] != size - 1:
+        return False
+    return all(later["start"] == earlier["end"] + 1
+               for earlier, later in zip(pieces, pieces[1:]))
+
+
+#: The point where the floor and the ceiling meet: `MAX_CHUNKS_PER_FILE` pieces
+#: of exactly `CHUNK_BYTES`. Derived, never written out — a literal here would
+#: pass while disagreeing with the constants it is supposed to be about.
+def _meeting_point(base):
+    return base.MAX_CHUNKS_PER_FILE * base.CHUNK_BYTES
+
+
+@pytest.mark.parametrize("size", [
+    32 * 1024 * 1024,          # exactly SEGMENT_MIN_BYTES: the first split file
+    int(4.6e9),                # a shard from today's catalog
+    int(10.4e9),               # the largest file in MiniMaxAI/MiniMax-H3
+    int(66.3e9),               # the largest file in Comfy-Org/MiniMax-H3
+    471 * 10 ** 9,             # that whole repo as one hypothetical file
+])
+def test_no_file_is_ever_split_into_more_than_the_cap(base, size):
+    """The bound, at every size worth naming. Uncapped, the 66.3GB file planned
+    1,976 pieces — and every one of them is a dict in a sidecar rewritten whole
+    on a one-second timer for the length of a multi-hour download."""
+    pieces = _plan(base, size)
+    assert len(pieces) <= base.MAX_CHUNKS_PER_FILE, size
+    assert _tiles(pieces, size), "the plan stopped covering the file"
+
+
+def test_below_the_meeting_point_the_FLOOR_still_decides(base):
+    """The cap must be invisible to every file smaller than it, which is every
+    model in today's catalog and every file of the 280-file MiniMax repo. A
+    10.4GB file is still exactly 32MB pieces — 311 of them, well under the
+    ceiling, so nothing about it changes."""
+    size = int(10.4e9)
+    pieces = _plan(base, size)
+    assert {piece["end"] - piece["start"] + 1 for piece in pieces[:-1]} == \
+        {base.CHUNK_BYTES}
+    # Derived, not a literal: what matters is that it is the count the floor
+    # alone produces, and that it is comfortably under the ceiling.
+    uncapped = -(-size // base.CHUNK_BYTES)
+    assert len(pieces) == uncapped < base.MAX_CHUNKS_PER_FILE
+
+
+def test_at_the_meeting_point_both_bounds_agree(base):
+    """`MAX_CHUNKS_PER_FILE` pieces of exactly `CHUNK_BYTES`, from either
+    direction — and one chunk either side of it still tiles the file, which is
+    the arithmetic most likely to be off by a byte."""
+    meeting = _meeting_point(base)
+    exact = _plan(base, meeting)
+    assert len(exact) == base.MAX_CHUNKS_PER_FILE
+    assert {piece["end"] - piece["start"] + 1 for piece in exact} == {base.CHUNK_BYTES}
+
+    for size in (meeting - base.CHUNK_BYTES, meeting - 1, meeting + 1,
+                 meeting + base.CHUNK_BYTES):
+        pieces = _plan(base, size)
+        assert len(pieces) <= base.MAX_CHUNKS_PER_FILE, size
+        assert _tiles(pieces, size), size
+
+
+def test_a_capped_file_is_exactly_the_cap_with_a_short_last_piece(base):
+    """The 66.3GB shape, spelled out: 500 pieces of ~133MB, the last one shorter
+    than the rest, nothing missing and nothing counted twice."""
+    size = int(66.3e9)
+    pieces = _plan(base, size)
+
+    assert len(pieces) == base.MAX_CHUNKS_PER_FILE
+    spans = [piece["end"] - piece["start"] + 1 for piece in pieces]
+    assert len(set(spans[:-1])) == 1, "the pieces before the last are not uniform"
+    assert spans[-1] <= spans[0]
+    assert spans[0] > base.CHUNK_BYTES, "the ceiling did not engage"
+    assert sum(spans) == size
+    assert _tiles(pieces, size)
+
+
+@pytest.mark.parametrize("size", [int(4.6e9), int(66.3e9), 471 * 10 ** 9])
+def test_the_plan_for_one_size_is_always_the_same_plan(base, size):
+    """THE resume property, and the reason the cap is per FILE rather than per
+    repo. `_chunks` is deterministic in `size` alone, so a resume re-derives the
+    boundaries the bytes were fetched into without persisting the piece count
+    anywhere (`plan`, `_restore`). A repo-wide budget would make this depend on
+    the file SET, and a resume after any change to it — a scoped download, an
+    `allow_patterns` fetch, a repo that gained a file — would re-plan a file
+    whose own bytes never moved and discard recorded progress to do it."""
+    assert _plan(base, size) == _plan(base, size)
+    assert _plan(base, size) == _fresh_base()._chunks(size)
+
+
+def test_a_sidecar_from_before_the_chunk_CAP_is_rejected_like_a_missing_one(
+        base, tmp_path):
+    """`SIDECAR_VERSION` had to move for this change, and this is why.
+
+    A version-2 sidecar for a 66.3GB file describes 1,976 pieces at every 32MB;
+    this build derives 500 at every ~133MB for the same file. Etag and size still
+    match, and each layout is internally consistent on its own terms — the exact
+    input that turns a resume into a silently wrong blob rather than an obviously
+    failed one. So the VERSION is what rejects it, before any of the geometry is
+    looked at (`_saved`).
+
+    Driven through `_saved` at the real size with nothing allocated: the version
+    check returns before the part file is ever consulted, which is precisely the
+    property being asserted. That today's number is ACCEPTED is covered
+    end-to-end by the resume tests above.
+    """
+    assert base.SIDECAR_VERSION >= 3, "the cap changed the layout without a bump"
+    size = int(66.3e9)
+    folder = str(tmp_path / "models--org--m")
+    os.makedirs(os.path.join(folder, "blobs"))
+    fetch = base._FileFetch(
+        folder, "org/m", "model.safetensors", "main",
+        {"url": "http://127.0.0.1/x", "location": "http://127.0.0.1/x",
+         "etag": "e7ag", "commit": "c0m", "size": size},
+        None, threading.Event())
+    # The layout an older build really would have left: `CHUNK_BYTES` pieces all
+    # the way up, all of them complete, and a first stretch of the file this
+    # build would consider one third of a single chunk.
+    with open(fetch.sidecar, "w") as handle:
+        json.dump({"version": 2, "etag": "e7ag", "size": size, "segments": [
+            {"start": at, "end": min(at + base.CHUNK_BYTES, size) - 1,
+             "done": min(base.CHUNK_BYTES, size - at)}
+            for at in range(0, 3 * base.CHUNK_BYTES, base.CHUNK_BYTES)]}, handle)
+
+    assert fetch._saved() is None, \
+        "a pre-cap sidecar was read as a layout to resume into"
 
 
 def test_a_slow_chunk_does_not_block_other_chunks_from_starting(base, monkeypatch,
@@ -2575,6 +2745,454 @@ def test_a_zero_byte_file_in_a_manifest_is_fetched_and_filed(base, monkeypatch,
 
     assert open(os.path.join(snapshot, "empty.txt"), "rb").read() == b""
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+# -- a rate limit is a WAIT, not a failure ---------------------------------------
+#
+# A 429 from the Hub used to be indistinguishable from a broken link: it landed
+# in the generic `HTTP <code>` branch, burned the segment's whole retry budget
+# in about seven seconds of backoff, and handed the repo to hf's own
+# `snapshot_download` — a slower download, and one nothing explained. These
+# tests pin the three halves of the fix: the wait is honoured, the budget is not
+# spent, and the row says what is happening (including the sign-in that raises
+# the limit, and only when there is no token).
+
+
+def _no_waiting(base, monkeypatch):
+    """Record every throttle wait instead of serving it.
+
+    The notice is captured WITH each wait, which is the only moment it is
+    guaranteed to be readable: it is cleared the instant a segment makes
+    progress, so a fetch that succeeded has (correctly) left nothing behind.
+    """
+    waits = []
+
+    def recorded(stop, seconds):
+        waits.append((seconds, base._throttle_detail()))
+
+    monkeypatch.setattr(base, "_throttle_sleep", recorded)
+    return waits
+
+
+def _one_segment(base, monkeypatch, tmp_path, url, payload, **flags):
+    """Wire a fetch that is exactly ONE segment, so the retry arithmetic is
+    deterministic — with four chunks in flight, two throttles can land on two
+    different segments and neither counter reaches two."""
+    return _wire(base, monkeypatch, tmp_path, url, len(payload),
+                 segment_min=len(payload) + 1, **flags)
+
+
+def test_a_throttled_segment_waits_the_time_the_server_asked_for(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """`Retry-After: 2` is a two-second wait, then the download carries on."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [2.0]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_retry_after_that_is_a_date_is_parsed_as_one(base, monkeypatch, tmp_path,
+                                                       payload):
+    """The other form the RFC permits, and one the Hub really serves."""
+    url, _state = _start_server(
+        payload, throttle_first=1,
+        retry_after=email.utils.formatdate(time.time() + 5, usegmt=True))
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    # Roughly, not exactly: the header carries whole seconds and the clock moves
+    # between formatting it and reading it back.
+    assert len(waits) == 1 and 3.0 <= waits[0][0] <= 6.0, waits
+
+
+def test_a_throttle_with_no_retry_after_still_waits_and_retries(base, monkeypatch,
+                                                                tmp_path, payload):
+    """Nothing to honour is not nothing to do: it backs off on its own, doubling,
+    rather than hammering a host that has just said it is over its limit."""
+    url, _state = _start_server(payload, throttle_first=2, retry_after=None)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [base.RETRY_BACKOFF_S,
+                                                       base.RETRY_BACKOFF_S * 2]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_server_named_wait_far_above_the_ceiling_is_clamped(base, monkeypatch,
+                                                              tmp_path, payload):
+    """An hour is a legal `Retry-After` and must not become an hour of silence —
+    nor a `time.sleep` the ✕ cannot get through (`THROTTLE_WAIT_MAX_S`)."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=3600)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [base.THROTTLE_WAIT_MAX_S]
+
+
+def test_a_long_run_of_throttles_does_not_fall_back(base, monkeypatch, tmp_path,
+                                                    payload):
+    """THE regression this change exists to prevent.
+
+    `SEGMENT_ATTEMPTS` is a claim about a file being unreachable, and a 429 is
+    not that claim. Sharing the budget with it meant a throttled download gave
+    up after five attempts and fell into `snapshot_download` — slower, and with
+    the resumable state deleted on the way.
+
+    A one-second reset each time, which is what the Hub names at the end of a
+    window, so twenty of them is twenty seconds of intended wait — well inside
+    `THROTTLE_TOTAL_MAX_S`, which is the bound that actually governs.
+    """
+    throttles = base.SEGMENT_ATTEMPTS * 4
+    url, _state = _start_server(payload, throttle_first=throttles,
+                               ratelimit='"resolvers";r=0;t=1')
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert len(waits) == throttles and set(w for w, _ in waits) == {1.0}
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_host_that_throttles_forever_still_gives_up_eventually(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """The allowance is generous, not infinite: a segment parked on a 429 for the
+    life of the process holds a pool slot no other chunk can use."""
+    url, _state = _start_server(payload, throttle_first=999, retry_after=1)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "THROTTLE_ATTEMPTS", 3)
+    waits = _no_waiting(base, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert len(waits) == 3, "the attempt bound stopped bounding the requests"
+
+
+def test_the_TOTAL_time_spent_throttled_is_what_is_bounded(base, monkeypatch,
+                                                           tmp_path, payload):
+    """The real guarantee, and the review finding that produced it: 60 attempts
+    at a 60-second ceiling is an hour of one segment sitting still, which is
+    precisely what the ceiling exists to prevent. The clock bounds it, and the
+    last wait is trimmed to what is left of the budget rather than overshooting
+    it."""
+    url, _state = _start_server(payload, throttle_first=999,
+                               ratelimit='"resolvers";r=0;t=60')
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "THROTTLE_TOTAL_MAX_S", 200.0)
+    waits = _no_waiting(base, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    spent = sum(seconds for seconds, _detail in waits)
+    assert spent == 200.0, waits
+    assert len(waits) == 4  # 60 + 60 + 60 + the 20 that was left
+
+
+def _headers(**fields):
+    """Response headers shaped like a real one — `email.message.Message`, which
+    is what `urllib` hands back and which looks up case-insensitively."""
+    message = email.message.Message()
+    for name, value in fields.items():
+        message[name.replace("_", "-")] = str(value)
+    return message
+
+
+def _throttle_error(status=429, **fields):
+    """The exception a throttled `urllib` request raises."""
+    return urllib.error.HTTPError("https://huggingface.co/org/m/resolve/main/f",
+                                  status, "Too Many Requests", _headers(**fields), None)
+
+
+class _RequestsShapedError(Exception):
+    """What `huggingface_hub` raises: the response beside the error, not in it.
+
+    Not a `urllib.error.HTTPError`, and that is the point — the throttle logic
+    has to read a status and headers off both shapes, and this file cannot import
+    `requests` to build the real thing (nor should `worker_base` be able to).
+    """
+
+    def __init__(self, status, **fields):
+        super().__init__(f"HTTP {status}")
+        self.response = types.SimpleNamespace(status_code=status,
+                                             headers=_headers(**fields))
+
+
+def test_the_hubs_own_RateLimit_header_is_what_is_honoured(base):
+    """The Hub does not send `Retry-After` at all. It rate-limits by request
+    count over five-minute fixed windows and answers a 429 with
+    `RateLimit: "resolvers";r=0;t=N` — `t` being the exact seconds left. Reading
+    only `Retry-After` meant guessing a backoff while the real answer sat unread
+    in the response, worse informed than hf's own fallback client."""
+    assert base._throttle_wait_s(
+        _throttle_error(RateLimit='"resolvers";r=0;t=42'), 1) == 42.0
+
+
+def test_the_RateLimit_reset_wins_over_a_Retry_After(base):
+    """Both present is not a conflict to split — the Hub's own header is the
+    precise one, and `Retry-After` is the shape other hosts use."""
+    assert base._throttle_wait_s(
+        _throttle_error(RateLimit='"resolvers";r=0;t=30', Retry_After=5), 1) == 30.0
+
+
+def test_the_bucket_that_is_actually_EXHAUSTED_names_the_wait(base):
+    """Several buckets arrive in one header and only one of them is why we are
+    being refused: `r=0`. Taking the wrong entry's `t` is a wait that has nothing
+    to do with the limit that was hit."""
+    header = '"api";r=100;t=280, "resolvers";r=0;t=17'
+    assert base._throttle_wait_s(_throttle_error(RateLimit=header), 1) == 17.0
+
+
+def test_a_RateLimit_header_it_cannot_read_falls_through(base):
+    """Tolerant, not clever: a structured field whose parameters this does not
+    understand must fall through to the next source rather than raise or invent a
+    zero. Each of these has a `Retry-After` behind it, and each must reach it."""
+    for header in ('"resolvers";r=0;t=abc', '"resolvers";r=0', '', 'nonsense',
+                   '"resolvers";r=0;t=-5'):
+        assert base._throttle_wait_s(
+            _throttle_error(RateLimit=header, Retry_After=7), 1) == 7.0, header
+
+
+def test_a_stated_wait_of_zero_still_waits(base):
+    """`t=0` means "the window resets about now", and taken literally it turned
+    the allowance into an immediate re-request loop against a host that had just
+    said it was over its limit. Both spellings of zero fall through to the
+    backoff, which is the floor."""
+    assert base._throttle_wait_s(_throttle_error(RateLimit='"resolvers";r=0;t=0'),
+                                 1) == base.RETRY_BACKOFF_S
+    assert base._throttle_wait_s(_throttle_error(Retry_After=0), 3) == \
+        base.RETRY_BACKOFF_S * 4
+
+
+def test_a_throttle_is_recognised_however_the_client_raised_it(base):
+    """The Hub calls go through `huggingface_hub`, which raises `requests`-shaped
+    errors; our own requests go through `urllib`. One server, one 429, and the
+    throttle logic reads both rather than existing twice."""
+    assert base._is_throttled(_RequestsShapedError(429)) is True
+    assert base._throttle_wait_s(
+        _RequestsShapedError(429, RateLimit='"resolvers";r=0;t=12'), 1) == 12.0
+    assert base._is_throttled(_RequestsShapedError(404)) is False
+    # And anything carrying no status at all is not a throttle, which is what
+    # lets `_throttled_retry` ask this of an arbitrary exception.
+    assert base._is_throttled(OSError("connection reset")) is False
+
+
+def test_progress_gives_the_throttle_allowance_back(base, monkeypatch):
+    """A long download over a busy link is throttled in BURSTS, and the allowance
+    is a claim about one burst.
+
+    Without the reset, the 61st 429 of a healthy multi-hour download — an hour
+    and several gigabytes after the 60th — became an ordinary fault and spent the
+    segment's retry budget falling into the fallback. `tries` has always reset on
+    the cursor moving; this is that rule one level up, and `_Throttle` is where
+    both halves of it live.
+    """
+    monkeypatch.setattr(base, "THROTTLE_ATTEMPTS", 2)
+    monkeypatch.setattr(base, "_throttle_sleep", lambda stop, seconds: None)
+    error = _throttle_error(Retry_After=1)
+    throttle = base._Throttle(hub=True)
+
+    assert throttle.wait(error) and throttle.wait(error)
+    assert throttle.wait(error) is False, "the burst allowance is not bounded"
+
+    throttle.progressed()
+
+    assert throttle.wait(error) is True, "bytes moved and the allowance stayed spent"
+
+
+def test_a_rate_limited_METADATA_call_is_waited_out_too(base, monkeypatch,
+                                                        tmp_path, payload):
+    """Where a Hub 429 realistically lands.
+
+    The Hub meters URLs containing a `/resolve/` segment; the ranged GETs go to
+    the presigned CDN location, which has none. So the metadata call is the
+    throttled one — and a 429 there raised straight out of `_segmented_fetch`,
+    taking the whole repo into the fallback with none of this waiting or any of
+    the disclosure, however patient the chunk loop was.
+    """
+    url, _state = _start_server(payload)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+    real = base._hub_file_meta
+    calls = []
+
+    def limited(repo_id, filename, revision):
+        calls.append(filename)
+        if len(calls) < 3:
+            raise _RequestsShapedError(429, RateLimit='"resolvers";r=0;t=9')
+        return real(repo_id, filename, revision)
+
+    monkeypatch.setattr(base, "_hub_file_meta", limited)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [9.0, 9.0]
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+
+
+def test_a_metadata_failure_that_is_NOT_a_throttle_is_not_retried(base, monkeypatch,
+                                                                  tmp_path, payload):
+    """The wrapper waits out rate limits and nothing else: a repo that is gone, a
+    socket that broke, a manifest that will not parse all have their own
+    handlers, and swallowing them into a retry loop would hide a real failure
+    behind a minute of "waiting"."""
+    url, _state = _start_server(payload)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+    monkeypatch.setattr(base, "_hub_file_meta", lambda *a: (_ for _ in ()).throw(
+        _RequestsShapedError(404)))
+
+    with pytest.raises(Exception, match="HTTP 404"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert waits == []
+
+
+def test_a_503_is_only_a_throttle_when_it_carries_a_retry_after(base, monkeypatch,
+                                                                tmp_path, payload):
+    """A bare 503 is an overloaded or broken host, which is what the ordinary
+    budget is for; one that names a wait is the server asking for it."""
+    url, _state = _start_server(payload, throttle_first=1, throttle_status=503,
+                                retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [seconds for seconds, _detail in waits] == [2.0]
+
+    bare = _fresh_base()
+    url, _state = _start_server(payload, throttle_first=999, throttle_status=503)
+    _one_segment(bare, monkeypatch, tmp_path / "bare", url, payload)
+    monkeypatch.setattr(bare, "RETRY_BACKOFF_S", 0)
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        bare._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+
+def test_the_row_says_the_hub_is_limiting_the_download(base, monkeypatch, tmp_path,
+                                                       payload):
+    """Signed in, so there is no login to suggest: the row states the fact and
+    the wait, and nothing else."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret_token")
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert [detail for _seconds, detail in waits] == [
+        "Hugging Face is limiting this download — waiting 2s"]
+
+
+def test_the_row_offers_the_sign_in_only_when_there_is_no_token(base, monkeypatch,
+                                                                tmp_path, payload):
+    """The one action that raises the limit, said where the limit is felt — and
+    with no part of any token in it."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "_hf_token", lambda: None)
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    detail = waits[0][1]
+    # "Preferences → AI" verbatim, the same place `hub_models.py` and
+    # `discoverView.ts` send a rate-limited or refused reader: a message naming a
+    # screen that does not hold the setting is a message that wastes a click.
+    assert detail == ("Hugging Face is limiting this download — sign in to "
+                      "Hugging Face in Preferences → AI for a higher limit")
+
+
+def test_an_off_hub_throttle_names_neither_the_hub_nor_a_sign_in(base, monkeypatch,
+                                                                 tmp_path, payload):
+    """A 429 from whatever `FUSED_MODEL_MIRROR` names is not the Hub throttling
+    the user, and "sign in to Hugging Face" would be advice about a host that is
+    not involved. It is still a rate limit and still worth saying."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=2)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+    monkeypatch.setattr(base, "_hf_token", lambda: None)
+    monkeypatch.setattr(base, "_hub_file_meta", lambda *a: (_ for _ in ()).throw(
+        AssertionError("the Hub was consulted for a mirrored file")))
+    meta, _calls = _provider(url, len(payload))
+    waits = _no_waiting(base, monkeypatch)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m", meta=meta)
+
+    detail = waits[0][1]
+    assert "Hugging Face" not in detail and "sign in" not in detail
+    assert "rate-limited" in detail and "waiting 2s" in detail
+
+
+def test_the_notice_is_retired_once_bytes_move_again(base, monkeypatch, tmp_path,
+                                                     payload):
+    """A row that goes on saying "waiting" over a download that is running is the
+    same defect as one that never said it, wearing the other sign."""
+    url, _state = _start_server(payload, throttle_first=1, retry_after=0)
+    _one_segment(base, monkeypatch, tmp_path, url, payload)
+
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
+
+    assert base._throttle_detail() is None
+
+
+def test_the_job_row_prefers_the_throttle_notice_over_the_plain_detail(base,
+                                                                      monkeypatch):
+    """`fetch_with_progress`'s tick is the only channel to the row, and the
+    segment threads cannot reach it. Without this the row said "Fetching
+    weights…" through a wait it was never told about."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: ticks.append(fields))
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret_token")
+
+    def call():
+        base._note_throttle(4.0, hub=True)
+        time.sleep(1.2)  # past the one-second tick, so a poll sees the notice
+        return "/snap"
+
+    base.fetch_with_progress("org/m", call, total=1024, detail="Fetching weights…")
+
+    assert any(tick.get("detail") == "Hugging Face is limiting this download — waiting 4s"
+               for tick in ticks), ticks
+    base._clear_throttle()
+
+
+def test_a_fetch_does_not_inherit_the_previous_fetch_s_notice(base, monkeypatch):
+    """A resident worker fetches component models during requests, so the
+    process global really can outlive the download that set it."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret_token")
+    base._note_throttle(4.0, hub=True)
+
+    base.fetch_with_progress("org/m", lambda: "/snap", total=1024)
+
+    assert base._throttle_detail() is None
+
+
+def test_a_stop_during_a_throttle_wait_aborts_promptly(base):
+    """The ✕ reaches a parked segment only through `stop`, and a single
+    `time.sleep` of a minute would blunt it into a minute of "cancelling…"."""
+    stop = threading.Event()
+    threading.Timer(0.1, stop.set).start()
+
+    started = time.monotonic()
+    base._throttle_sleep(stop, 30.0)
+
+    assert time.monotonic() - started < 5.0
 
 
 # -- the guard above, asserted rather than assumed -------------------------------

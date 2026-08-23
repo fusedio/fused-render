@@ -10,7 +10,7 @@ transducer with no text to condition on. D406 withdrew that engine —
 maintenance cost not justified by use — and the table went with it, but the
 MECHANISM stayed: the day another engine refuses an option, this is where the
 refusal is declared. That day came for `fused.ai.image`'s own `image` option
-(D428) — every diffusers image code refuses it, mflux is the only engine that
+(D432) — every diffusers image code refuses it, mflux is the only engine that
 honours it — so the table is no longer empty, and the mechanism is now proven
 across BOTH job-backed AI calls, not just the one it was written for.
 **Refused, never ignored** — accepting an option and quietly doing something
@@ -86,7 +86,7 @@ TRANSCRIBE = "transcribe"
 #: __call__` takes `image` first, `list[PIL.Image.Image] | PIL.Image.Image |
 #: None = None`, with `image is None` the plain text-to-image path — read
 #: off the installed 0.39.0 source) but whether it RENDERS a correct edit is
-#: not, on any machine this app has run on (D428's "out of scope" note), and
+#: not, on any machine this app has run on (D432's "out of scope" note), and
 #: a wrong guess there would be a broken engine that passes every test. All
 #: three carry the SAME sentence because the fact is about the LIBRARY, not
 #: about the wheel — `diffusers-image-cuda` and `diffusers-image-rocm` read

@@ -207,7 +207,7 @@ el.dataset.seed = img.seed;
 
 Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that will actually happen, not the one you asked for.
 
-### Editing a base image: `{image}` — mflux only (D428)
+### Editing a base image: `{image}` — mflux only (D432)
 
 ```js
 const edited = await fused.ai.image({
@@ -223,7 +223,7 @@ const edited = await fused.ai.image({
 - **There is no `strength` option, and none is planned as an "unexercised knob".** The edit mechanism this app drives does not use image strength at all — it is instruction-following editing, not img2img blending — so there is nothing to defer.
 - **On mflux, "make that one again" (below) means the same recorded seed, not the same pixels** — see that bullet for why, and note it holds for a plain render on this engine too, not only for an edit.
 
-- **`seed` comes back whether or not you passed one**, so a page can always ask for the SAME SEED again. **On mflux, that is not the same as asking for the same PICTURE again.** Two bare mflux renders with an identical seed, prompt, step count and guidance came back different PNGs on the hardware D428 was verified on — a fact about that engine as it ships today, present for a plain render exactly as much as for an edit, and neither caused nor fixed by the `image` option. Treat a repeated `seed` on mflux as "the request you asked for again", not "the picture you got again"; this codebase has not verified either way whether the Diffusers engine reproduces byte-identically, so do not assume it does either — check for yourself before building a "regenerate identically" feature on any engine.
+- **`seed` comes back whether or not you passed one**, so a page can always ask for the SAME SEED again. **On mflux, that is not the same as asking for the same PICTURE again.** Two bare mflux renders with an identical seed, prompt, step count and guidance came back different PNGs on the hardware D432 was verified on — a fact about that engine as it ships today, present for a plain render exactly as much as for an edit, and neither caused nor fixed by the `image` option. Treat a repeated `seed` on mflux as "the request you asked for again", not "the picture you got again"; this codebase has not verified either way whether the Diffusers engine reproduces byte-identically, so do not assume it does either — check for yourself before building a "regenerate identically" feature on any engine.
 - **The server owns where the PNG goes**: `<home>/ai/images/<YYYYmmdd-HHMMSS>-<uid>.png` under `~/.fused-render`, never beside the page (which may be read-only), time-ordered so the folder sorts chronologically. **It outlives the tab** — a page that navigated away mid-render can still open `path`. Nothing cleans these up, so a page that renders in a loop fills a directory the user browses.
 - **One row and one file per render.** Two calls get two `jobId`s and two paths; nothing overwrites.
 
