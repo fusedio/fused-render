@@ -6571,13 +6571,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   repo, or null): the task vocabulary and the capability vocabulary both live
   there, and a page deciding for itself needs a second copy of the mapping — the
   first version of it guessed text generation for every cached repo and offered
-  to load a dataset as a chat model. **Every task label is CLASSIFIED, never
-  merely absent**: it maps to a capability or it is listed as served by nothing
-  yet. A label nobody has thought about and a label that has been ruled out both
-  answer null, so they are indistinguishable from the page — which is how
-  "image + text to text" lost its Load button while Discover went on
-  recommending `gemma-3-12b-it-4bit`, a model carrying exactly that label, as a
-  chat model. (A vision-language checkpoint IS the causal LM the text runner
+  to load a dataset as a chat model. **Every task is CLASSIFIED, never merely
+  absent, and the answer has THREE states** (D433, `ai/tasks.py`): `supported`
+  (a capability serves it), `no-runner` (a task we recognise and do not serve —
+  video generation, speech synthesis, a robot policy — carrying a written
+  sentence the card prints), or `unknown` (a `pipeline_tag` this build has never
+  heard of, or no evidence at all). The vocabulary is the Hub's own, CLOSED and
+  vendored from `@huggingface/tasks`, and every evidence path emits a TAG rather
+  than prose so the card, the glossary and the Discover filter cannot come to
+  spell one concept two ways. Two states collapsed into one null is how "image +
+  text to text" lost its Load button while Discover went on recommending
+  `gemma-3-12b-it-4bit`, a model carrying exactly that label, as a chat model —
+  and, in the other direction, how a `reinforcement-learning` policy and a
+  cached diffusers VIDEO pipeline were rescued by format evidence into the text
+  and image capabilities respectively. **A format may only answer where the task
+  is `unknown`**: a task we have ruled out is never overruled by what the weight
+  files look like. (A vision-language checkpoint IS the causal LM the text runner
   loads when you only give it text; the image half goes unused until a runner
   wants it.) A **dot on the sidebar
   entry** whenever anything is resident, naming it on hover: gigabytes held by

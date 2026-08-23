@@ -37,6 +37,7 @@ function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
     lastUsed: null,
     added: null,
     task: null,
+    taskTag: null,
     taskSource: null,
     taskHelp: null,
     library: null,
@@ -632,6 +633,32 @@ describe("the three surfaces on a no-engine card agree", () => {
   // Flattening both cards onto one sentence would lose it.
   it("does not tell a Qwen checkpoint that its model type is not supported", () => {
     expect(noEngineReason(QWEN_NO_ENGINE)).not.toContain("not supported");
+  });
+
+  // The server classifies the TASK now and writes the sentence beside the
+  // classification, so a card can say which unsupported thing it is looking at.
+  // "The model type is not supported" was true of a TTS model, a video pipeline
+  // and a repo carrying a tag nobody has heard of, and told a reader nothing
+  // about which one they had downloaded.
+  it("prefers the server's own sentence for a task nothing here runs", () => {
+    const tts = repo({
+      id: "org/voice",
+      task: "text to speech",
+      taskTag: "text-to-speech",
+      support: "no-runner",
+      supportReason: "Speech synthesis is a separate capability from transcription.",
+    });
+    expect(noEngineReason(tts)).toBe(
+      "Speech synthesis is a separate capability from transcription.",
+    );
+  });
+
+  // …and falls back where there is nothing to say: an older server sends no
+  // `support` at all, and an unidentifiable repo has earned no explanation.
+  it("keeps the flat note when the server offers no reason", () => {
+    const mystery = repo({ id: "org/mystery", support: "unknown", supportReason: "" });
+    expect(noEngineReason(mystery)).toBe(noEngineReason(WESPEAKER));
+    expect(noEngineReason(repo({ id: "org/old-server" }))).toBe(noEngineReason(WESPEAKER));
   });
 });
 
