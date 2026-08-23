@@ -397,12 +397,16 @@
   overflow-y: auto;
 }
 
-/* The stage header as a card, centered with wide side margins — the model
-   introducing itself before the stage below it. `width: min(...)` rather than
-   max-width + auto margins alone so the side breathing room survives narrow
-   windows too. */
+/* The stage header as a banner — the model introducing itself before the work
+   below it. Wider than the 680px column it heads, and on a 16px gutter rather
+   than 32px, because it is a header rather than part of the API surface. Its
+   max is exactly the pair below at its widest (column + gap + settings card),
+   so the banner spans everything the stage can ever put under it and its own
+   edges never move when the cog is clicked — the model's name stays a fixed
+   landmark while the column slides. Still a min(), not a bare max-width: the
+   gutter has to survive a narrow stage too. */
 .pg-hero {
-  width: min(680px, calc(100% - 64px));
+  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
   /* Extra room below: the stage's own gap reads too tight under a card this
      heavy, and the work column needs to start as its own thing. */
   margin: 0 auto 16px;
@@ -589,11 +593,11 @@ a.pg-hero-repo:hover {
 }
 
 /* The settings, as a narrow card of their own. A card and not a bare band
-   because at anything but a phone width it sits BESIDE the column in the right
-   gutter, and a floating stack of sliders with no edge would read as loose
-   page furniture. Styled outside the container query below, so the narrow-
-   window fallback — the same card, full column width, in flow under the input
-   — is one dialect with it. */
+   because at anything but a phone width it sits BESIDE the column — the two
+   centered together — and a floating stack of sliders with no edge would read
+   as loose page furniture. Styled outside the container query below, so the
+   narrow-window fallback — the same card, full column width, in flow under the
+   input — is one dialect with it.
    The <aside> is only the RAIL the card travels in — the visuals are on the
    inner box, which is what sticks. In the fallback the rail is a plain
    in-flow div and the inner box is simply the card. */
@@ -629,27 +633,37 @@ a.pg-hero-repo:hover {
   gap: 14px;
 }
 
-/* Wide enough for a 240px card in the gutter: below this the card stays in
-   flow under the input, where D449 put it.
-   680 + 16 gap + 240 card + 2×12 edge = the width at which the column stops
-   giving up anything at all (~1216cqw). */
-@container (min-width: 820px) {
+/* The two numbers the placement below is built from, declared OUT here on the
+   container itself: a `@container` rule can never target its own container —
+   the query would resolve against .pg-stage's ANCESTOR — so a var declared on
+   .pg-stage inside the block would simply never land, and every calc() that
+   read it would fall over. */
+.pg-stage {
+  --pg-card: 240px;
+  --pg-gap: 16px;
+}
+
+/* Wide enough for the whole PAIR — column plus card — to sit centered with the
+   stage's own 32px edges: 680 + 16 gap + 240 card + 2×32 = 1000cqw. Below this
+   the card stays in flow under the input, where D449 put it. That band used to
+   keep the card beside the column by letting the column give up width; it no
+   longer does, which is the price of never resizing the input. */
+@container (min-width: 1000px) {
+  /* The work column slides left by HALF the card's footprint: what the pair
+     gives up on the right it takes back on the left, so the PAIR is centered on
+     the stage while the column stays the same 680px it was before the cog was
+     clicked — it slides, it does not narrow. ((100cqw - 680)/2 - (gap + card)/2
+     is (100cqw - (680 + gap + card))/2, the pair's own centered left edge.)
+     The hero banner above does NOT move with it: it is a full-width header, so
+     it has no column edge to keep in line with. */
   .pg-work.has-config {
-    --pg-card: 240px;
-    /* The column's left edge does NOT move when the cog is clicked: it stays
-       on the hero card's own gutter. The card is added to the right of it,
-       taking the right gutter first and only borrowing column width once the
-       gutter runs out — so a wide window reflows nothing, and a narrow one
-       narrows the input instead of covering it. The trailing 12px keeps the
-       card off the stage's own edge. */
-    margin-left: calc((100cqw - 680px) / 2);
+    margin-left: calc((100cqw - 680px) / 2 - (var(--pg-gap) + var(--pg-card)) / 2);
     margin-right: 0;
-    width: min(
-      calc(680px + 16px + var(--pg-card)),
-      calc(680px + (100cqw - 680px) / 2 - 12px)
-    );
+    /* Fixed, not a min(): the threshold above already guarantees it fits, and
+       the point of this layout is that this number never moves. */
+    width: calc(680px + var(--pg-gap) + var(--pg-card));
     grid-template-columns: minmax(0, 1fr) var(--pg-card);
-    column-gap: 16px;
+    column-gap: var(--pg-gap);
     /* So the rail below can take its grid area as a containing block. */
     position: relative;
   }
