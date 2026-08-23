@@ -2534,6 +2534,62 @@ def test_eviction_still_starts_the_new_worker_when_terminating_the_old_one_raise
         monkeypatch.setattr(supervisor, "_terminate", real_terminate)
 
 
+def test_unload_all_waits_for_an_in_progress_eviction_to_finish_draining(
+        fake_runner, monkeypatch):
+    """The lock-release fix (B1) pops the evicted worker from `_workers`
+    before its ~9s `_terminate` runs, so for that window it exists nowhere
+    `unload_all` (walking `_workers` at shutdown) would find it — quitting
+    the app in that window used to leave the old process running with
+    nothing left tracking it, the same orphan-holding-gigabytes failure
+    `unload_all`'s own docstring exists to prevent for weights-only fetches.
+    `_draining` closes that: `unload_all` must wait for it to clear rather
+    than declaring shutdown complete while a worker is still going down."""
+    supervisor.load("org/first", registry.TEXT_GENERATION)
+    first = _wait_ready("org/first")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.load, args=("org/second", registry.TEXT_GENERATION)
+    )
+    t.start()
+    try:
+        assert started.wait(timeout=5), "eviction never reached _terminate"
+        assert supervisor._draining, "the evicted worker must be visible while it drains"
+
+        done = threading.Event()
+
+        def run_unload_all():
+            supervisor.unload_all()
+            done.set()
+
+        u = threading.Thread(target=run_unload_all)
+        u.start()
+        try:
+            assert not done.wait(timeout=0.3), (
+                "unload_all() returned while an eviction was still draining"
+            )
+            release.set()
+            assert done.wait(timeout=5), "unload_all() never returned once draining finished"
+        finally:
+            u.join(timeout=5)
+
+        assert not supervisor._draining
+        assert not supervisor._alive(first)
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
     first = supervisor.load("org/same", registry.TEXT_GENERATION)
     worker = _wait_ready("org/same")

@@ -274,6 +274,20 @@ _fetch_workers: dict[str, Worker] = {}
 #: worker they belong to stops.
 _worker_tokens: set[str] = set()
 
+#: An evicted worker, for as long as `_start_resident` is tearing it down
+#: outside `_lock` (see that function). Popped from `_workers` the instant its
+#: replacement is published, so for the ~9s worst case `_terminate` can take,
+#: it exists nowhere `unload_all()` (walking `_workers` at shutdown) would ever
+#: find it — quitting the app in that window used to leave the OLD process
+#: running with nothing left tracking it to stop, the same orphan-holding-
+#: gigabytes failure `unload_all`'s own docstring exists to prevent for
+#: weights-only fetches. Added under the SAME lock hold that pops the worker
+#: from `_workers`, removed under `_lock` once its `_terminate` call returns
+#: (successfully or not); `unload_all` waits on it rather than re-terminating
+#: it itself, since two threads calling `_terminate` on the same `Worker`
+#: concurrently is its own hazard.
+_draining: dict[str, Worker] = {}
+
 #: `envinstall` key -> how many bring-ups are currently WAITING on that install.
 #:
 #: The one fact that decides whether an install may be killed, and it cannot be
@@ -1179,6 +1193,10 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # correctness one.
             current.stopping = True
             _workers.pop(capability, None)
+            # Made visible to `unload_all` here — the SAME lock hold that pops
+            # it from `_workers` — so there is no instant where the old worker
+            # exists in neither table (see `_draining`'s own comment).
+            _draining[current.token] = current
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24))
@@ -1205,6 +1223,9 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # as well as it can be; a failure in that best-effort cleanup
             # must not also break the NEW load it was clearing room for.
             logger.exception("failed to terminate evicted worker %r", current.model)
+        finally:
+            with _lock:
+                _draining.pop(current.token, None)
 
     _report(job, title=model, state="running", kind="download", cancellable=True,
             detail="Preparing…", done=None, total=None)
@@ -1678,6 +1699,35 @@ def start_reaper() -> None:
     _reaper_thread.start()
 
 
+#: How long `unload_all` waits for an in-progress eviction's `_terminate` to
+#: clear `_draining` before giving up on it. Generous over the ~9s worst case
+#: (a 2s `/quit`, SIGTERM + 3s wait, SIGKILL + 3s wait, `proc.wait` + 1s) —
+#: this only ever fires during the narrow shutdown-during-eviction race, and a
+#: shutdown that gives up a little late is a much smaller failure than one
+#: that walks away from a worker mid-teardown.
+_DRAIN_WAIT_TIMEOUT_S = 15.0
+
+
+def _wait_for_draining(timeout: float = _DRAIN_WAIT_TIMEOUT_S) -> None:
+    """Block until no `_start_resident` eviction is mid-teardown.
+
+    An evicted worker is popped from `_workers` (so a new load for its
+    capability never joins it) before its `_terminate` call, which can take
+    ~9s, runs OUTSIDE `_lock` — so for that window it exists in neither
+    `_workers` nor anywhere else `unload_all` would find it, unless it is
+    made visible here (see `_draining`'s own comment). Polling rather than
+    re-terminating what it finds: the thread already mid-eviction is already
+    calling `_terminate` on that exact `Worker`, and a second, concurrent
+    call from here racing the first is its own hazard, not a fix.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _lock:
+            if not _draining:
+                return
+        time.sleep(0.05)
+
+
 def unload_all() -> None:
     """Server shutdown: nothing may outlive the app.
 
@@ -1690,7 +1740,15 @@ def unload_all() -> None:
     Its thread notices `stopping` within its half-second poll and reports the
     row cancelled, but shutdown does not wait for that: `_terminate` is what
     makes the process actually go, and the row is about to be forgotten anyway.
+
+    Waits for `_draining` to clear FIRST: a worker mid-eviction is invisible to
+    `unload()`'s `_workers` walk (it was already popped so its replacement
+    could take the slot), so shutting down inside that ~9s window used to leave
+    the outgoing process running with nothing left tracking it — the same
+    orphan-holding-gigabytes failure this function's own weights-only-fetch
+    handling below exists to prevent.
     """
+    _wait_for_draining()
     unload()
     with _lock:
         fetching = list(_fetch_workers.values())
@@ -2225,3 +2283,7 @@ def reset() -> None:
         # A stray count would silently disable the next cancel — `_release_install`
         # would think somebody was still waiting on a key nobody holds.
         _install_waiters.clear()
+        # A stray entry here would make the NEXT test's `unload_all` (or any
+        # direct `_wait_for_draining` call) block for the full drain timeout
+        # waiting on a `Worker` that no longer exists.
+        _draining.clear()
