@@ -141,6 +141,39 @@ export default function PlaygroundTab() {
   // model that silently is not in it reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
+  // The RAIL's reading order, which this tab now sets for itself: images lead.
+  // It diverges from `CAPABILITY_ORDER` (lib/aiModelGroups.ts) deliberately.
+  // That list is the order of the tabs that INVENTORY — Models and Benchmark
+  // draw one section per capability and must agree with each other — and its
+  // reasoning is about where a capability sits in a catalogue. This tab is not
+  // a catalogue: it is four things you can DO, and the picture is the one whose
+  // result you can judge at a glance, which is what earns it the top of the
+  // rail. Text is not demoted for being lesser; it is the one everybody
+  // already knows they can have.
+  //
+  // A capability missing from this list still draws — it sorts after these, in
+  // the order the server sent it — so a capability added server-side needs no
+  // edit here.
+  //
+  // The SIDEBAR only. `pickPlaygroundModel` still reads `capabilities` in the
+  // server's order, because its no-`?model` fallback is "the first usable row"
+  // (pick.ts) — handing it this array would make a bare visit to
+  // /ai-models/playground open the image stage, which is a different decision
+  // from where the sections sit, and not one this comment gets to make.
+  const railRows = useMemo(() => {
+    const order = [
+      "text-to-image",
+      "text-generation",
+      "automatic-speech-recognition",
+      "embeddings",
+    ];
+    const rank = (c: string) => {
+      const i = order.indexOf(c);
+      return i === -1 ? order.length : i;
+    };
+    return [...capabilities].sort((a, b) => rank(a.capability) - rank(b.capability));
+  }, [capabilities]);
+
   // The selection lives in the URL. An unknown or absent id falls back to the
   // first capability's default silently (PT-9's posture: a stale link opens
   // the page, not an error) — and the fallback is `default`, never models[0],
@@ -258,7 +291,7 @@ export default function PlaygroundTab() {
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
-        {capabilities.map((row) => {
+        {railRows.map((row) => {
           // The catalog's curated half, in its own smallest-first order — but
           // the RECOMMENDED subset of it (D425), because this tab is where
           // someone types a sentence rather than shops for a download: see
