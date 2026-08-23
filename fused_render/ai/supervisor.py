@@ -990,7 +990,12 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
-            time.sleep(0.5)
+            # 0.1s: `_health` is a local loopback GET, not a real network
+            # call, so tightening this costs nothing — and `benchmark.py`'s
+            # own `_LOAD_POLL_S` wait sits on top of this one, so the two used
+            # to stack into up to a full second of extra latency per load at
+            # the old 0.5s each.
+            time.sleep(0.1)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see below
         # EVERYTHING, not just SupervisorError. This is the top of a thread, so
         # an exception that escapes it is not raised to anyone — it kills the

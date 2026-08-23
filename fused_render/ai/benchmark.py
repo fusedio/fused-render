@@ -239,7 +239,12 @@ _ERROR_GRACE_POLLS = 4
 #: benchmark that gave up sooner would report a load failure for a download that
 #: was going to finish. Module-level so a test can shrink both.
 _LOAD_TIMEOUT_S = supervisor.LOAD_WAIT_TIMEOUT_S
-_LOAD_POLL_S = 0.5
+# 0.1s, not the supervisor's own bring-up loop's old cadence (also 0.5s, also
+# now 0.1s) — the two used to stack, so a model that finished loading was
+# noticed up to a full second late on every single load: this loop's own
+# poll plus the supervisor's before it. Cheap to tighten: both loops read a
+# local loopback HTTP status endpoint, not a real network call.
+_LOAD_POLL_S = 0.1
 
 #: Indirection so tests can script a timeline instead of sleeping through one.
 #: `time.monotonic`, not `time.time`: a clock the user can drag backwards would
