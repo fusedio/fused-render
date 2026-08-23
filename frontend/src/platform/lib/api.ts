@@ -2783,12 +2783,6 @@ export interface AiBenchmarkMetrics {
   // automatic-speech-recognition
   realtimeFactor?: number | null;
   audioSeconds?: number | null;
-  /** Word error rate of the transcript against a fixed reference passage — a
-   *  RATIO (0.042, not 4.2), null when a run could not be scored. Can
-   *  genuinely exceed 1 (a hallucinating model emitting more words than the
-   *  reference has), which is a real outcome, not a bug — nothing in this
-   *  codebase clamps it. */
-  wordErrorRate?: number | null;
   // embeddings
   textsPerSecond?: number | null;
   dim?: number | null;
