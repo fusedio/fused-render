@@ -40,17 +40,13 @@ const LIMITS = {
   max_tokens: [1, 32768],
 } as const;
 
-// A standing system prompt by default, not a blank: small local models drift
-// into rambling or page-long <think> blocks without one, and the person this
-// tab exists for should meet the model at its best. Kept short and generic —
-// it steers verbosity and reasoning length, never persona — and fully
-// editable/clearable in the advanced panel (a cleared prompt round-trips as
-// `system=`). It also asks for <thinking>, which splitThink lifts into the fold.
-const DEFAULT_SYSTEM =
-  "You are a helpful assistant answering a single one-off prompt. Answer directly " +
-  "in Markdown and keep it short — expand only when asked for detail. If you need " +
-  "to reason first, put that reasoning inside a <thinking>...</thinking> tag " +
-  "before the answer, and keep it brief.";
+// No system prompt by default. This stage's job is to show what THIS model does
+// on a bare `fused.ai` call, and a standing prompt of ours — however short — is
+// a second author in every reply: verbosity, formatting and reasoning length all
+// come out steered, and nothing on screen says by whom. The panel's field is
+// there for anyone who wants one, and `system=` still rides the URL when it is
+// set. A model that rambles or thinks out loud without one is telling the reader
+// something true about itself, which is what they came to find out.
 
 // Eight authored examples — two pages of four (D452). Each is a real ask with
 // its constraints spelled out, not a topic: what to write, how long, what to
@@ -121,8 +117,9 @@ const STARTERS: Starter[] = [
 
 /** Split one reply into the deliberation and the answer. A block still open
  *  (mid-stream) is all deliberation. Both spellings: <think> from
- *  reasoning-tuned models, <thinking> from the default system prompt — longer
- *  tag first, or "<thinking>" parses as "<think>" plus stray text. */
+ *  reasoning-tuned models, <thinking> from whatever a hand-written system
+ *  prompt asks for — longer tag first, or "<thinking>" parses as "<think>" plus
+ *  stray text. */
 function splitThink(text: string): { think: string | null; answer: string; thinking: boolean } {
   for (const tag of ["thinking", "think"]) {
     const open = text.indexOf(`<${tag}>`);
@@ -173,9 +170,7 @@ export function TextStage({
   const [maxTokens, setMaxTokens] = useState(() =>
     numParam("maxtok", DEFAULTS.max_tokens, ...LIMITS.max_tokens),
   );
-  // `??`, not `||`: an EMPTY `system=` param is the user having cleared the
-  // default on purpose, and must stay cleared on reload.
-  const [system, setSystem] = useState(() => readParam("system") ?? DEFAULT_SYSTEM);
+  const [system, setSystem] = useState(() => readParam("system") ?? "");
   useEffect(() => {
     const timer = window.setTimeout(() => {
       writeParams({
@@ -183,7 +178,8 @@ export function TextStage({
         temp: temperature !== DEFAULTS.temperature ? String(temperature) : null,
         topp: topP !== DEFAULTS.top_p ? String(topP) : null,
         maxtok: maxTokens !== DEFAULTS.max_tokens ? String(maxTokens) : null,
-        system: system !== DEFAULT_SYSTEM ? system : null,
+        // Empty is the default now, so the param appears only when there IS one.
+        system: system.trim() ? system : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
@@ -383,9 +379,12 @@ export function TextStage({
         <label className="pg-ctl">
           <span className="pg-ctl-head">
             <span className="pg-ctl-label">System prompt</span>
-            {system !== DEFAULT_SYSTEM && (
-              <button type="button" className="pg-ctl-reset" onClick={() => setSystem(DEFAULT_SYSTEM)}>
-                reset
+            {/* "clear", not the other controls' "reset": resetting this one IS
+                emptying it, and a button that says reset beside a prompt the
+                user wrote reads like it would restore one of ours. */}
+            {system !== "" && (
+              <button type="button" className="pg-ctl-reset" onClick={() => setSystem("")}>
+                clear
               </button>
             )}
           </span>
@@ -396,7 +395,10 @@ export function TextStage({
             placeholder="Who the model should be"
             onChange={(e) => setSystem(e.target.value)}
           />
-          <span className="pg-ctl-hint">Standing instructions, applied to every run.</span>
+          <span className="pg-ctl-hint">
+            Standing instructions, applied to every run. Empty by default — the
+            reply is whatever this model does on its own.
+          </span>
         </label>
         <RailSlider
           label="Top-p"
