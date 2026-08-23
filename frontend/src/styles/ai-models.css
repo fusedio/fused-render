@@ -1883,11 +1883,24 @@
   color: var(--fg-muted);
 }
 
+/* **`flex-wrap: wrap` is the actual fix for a real overlap bug**, not a
+   defensive extra: every child here (`.am-bench-headline`, the delta, the
+   Details expander) is `flex: 0 0 auto` and none of them can shrink, so at a
+   narrow enough width (~650px total window — well within a real reader's
+   split-pane, and this row's own value strings got longer this round: "1384.6
+   × realtime · 281 MB") their combined width used to exceed this cell's
+   shrunk grid track. Nothing here clipped that overflow, so it painted PAST
+   the cell — the Details expander vanishing behind the Run button, reading as
+   a missing control rather than a layout bug. Wrapping lets the row grow
+   taller instead: the button's own grid column is unaffected (a separate
+   track), so it never overlaps regardless of how many lines this cell wraps
+   to. */
 .am-bench-latest {
   min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 4px 10px;
   font-size: 12px;
 }
 
