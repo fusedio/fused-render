@@ -148,11 +148,10 @@ const STARTERS: Starter[] = [
 // app ships three, one per kind of restyle worth showing (a painted animation
 // still, a wash over a night photograph, a drawing of an object).
 //
-// Shown only on a model that can be handed an image, in place of the first
-// three prompt-only samples rather than in addition to them: the row is eight
-// authored and four shown (D452), and eleven would be a third page nobody
-// rotates to. The photos are Unsplash's, re-encoded and credited in
-// `static/samples/CREDITS.md`.
+// Mixed into the prompt-only eight rather than fronting them, so the row's
+// first page is not three photo pills in a block — eleven authored, four shown,
+// which is three rotate pages (D452). The photos are Unsplash's, re-encoded and
+// credited in `static/samples/CREDITS.md`.
 const EDIT_STARTERS: Starter[] = [
   {
     name: "Ghibli coast",
@@ -179,6 +178,26 @@ const EDIT_STARTERS: Starter[] = [
       "chalk highlights on the rim, the background left as bare paper.",
   },
 ];
+
+// One pool, shuffled ONCE per page load: the eleven above interleaved, so a
+// reader does not meet the three photo examples as a block at the head of the
+// row and the pill they see first is not the same pill every session. Once, at
+// module scope, and never per render — a row that reorders itself under the
+// cursor is a slot machine (D452's own "no shuffle" note was about exactly
+// that, and stands: this order is fixed for as long as the tab is open, and
+// rotate steps through it in the same order both ways).
+const ALL_STARTERS: Starter[] = shuffleOnce([...STARTERS, ...EDIT_STARTERS]);
+
+/** Fisher-Yates, over a copy. */
+function shuffleOnce(samples: Starter[]): Starter[] {
+  const order = [...samples];
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
+
 
 // The three formats the SERVER can read a size out of — `_image_pixel_size`
 // parses PNG, JPEG and WebP headers and nothing else (there is no Pillow in
@@ -255,6 +274,9 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   // after a failure to decode.
   const [natural, setNatural] = useState<Size | null>(null);
   const [attaching, setAttaching] = useState(false);
+  // Is the attached picture open at full size? A thumbnail 28px on a side is a
+  // reminder of WHICH picture, not a look at it.
+  const [showBase, setShowBase] = useState(false);
   const [camera, setCamera] = useState(false);
 
   useEffect(() => {
@@ -329,6 +351,15 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     };
   }, [base?.path]);
 
+  // Escape closes the preview, which is what every overlay in this app answers
+  // to and the one keystroke somebody will reach for before the ✕.
+  useEffect(() => {
+    if (!showBase) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowBase(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showBase]);
+
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
@@ -371,7 +402,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
    *  nobody can tell from a generated one. Both levels are mkdir'd, because
    *  `/api/fs/mkdir` creates ONE directory by design (a typo must not spawn a
    *  tree) and on a fresh machine neither exists. */
-  const save = async (data: Blob, name: string, stamped = true) => {
+  const save = async (data: Blob, name: string, stamped = true): Promise<AttachedImage | null> => {
     setError(null);
     setAttaching(true);
     try {
@@ -388,36 +419,38 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         : "sample-";
       const path = `${dir}/${stamp}${name}`;
       await uploadFile(path, data, name);
-      if (!aliveRef.current) return;
-      attach({ path, name });
+      if (!aliveRef.current) return null;
+      const landed = { path, name };
+      attach(landed);
+      // Handed back as well as put in state: a caller that wants to RUN on this
+      // picture cannot read the state it just set, and passing the attachment
+      // is honest where a `setTimeout` would be a guess.
+      return landed;
     } catch (e) {
       if (aliveRef.current) setError((e as Error).message);
+      return null;
     } finally {
       if (aliveRef.current) setAttaching(false);
     }
   };
 
-  /** Take a sample: its photo attached, its prompt in the box, nothing run.
+  /** Take a sample: its prompt in the box, its photo attached, and RUN — the
+   *  same one click a prompt-only sample is.
    *
    *  The bytes are the app's own, served from `/static/samples`, and they still
-   *  have to be COPIED to a path — `/api/ai/image` reads a file off the disk
-   *  and cannot be handed a URL inside the app's bundle (which on the packaged
-   *  Mac is inside a signed .app). The cache dir is where that copy belongs.
+   *  have to be copied to a path: `/api/ai/image` reads a file off the disk and
+   *  cannot be handed a URL inside the app's bundle (which on the packaged Mac
+   *  is inside a signed .app). The cache dir is where that copy belongs.
    *
-   *  Deliberately does NOT generate, unlike a prompt-only sample: an edit is
-   *  minutes of work on a picture the user has not seen yet, and the point of
-   *  these three is to arrive at a loaded composer — press Generate, or edit the
-   *  sentence first. */
+   *  Everything the render needs is passed to `generate` rather than left to
+   *  state, for the ordinary React reason — `setAttachment` in this same click
+   *  is not readable yet — and the picture is measured HERE, off the blob, so
+   *  the first edit is fitted to its shape (fitToImage) instead of falling
+   *  through to the server's slower 1024. */
   const takeSample = async (sample: Starter) => {
     if (!sample.image) {
       void generate(sample.prompt);
       return;
-    }
-    setPrompt(sample.prompt);
-    const box = boxRef.current;
-    if (box) {
-      box.style.height = "auto";
-      grow();
     }
     setError(null);
     setAttaching(true);
@@ -425,8 +458,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       const res = await fetch(sample.image);
       if (!res.ok) throw new Error(`could not read the sample picture (${res.status})`);
       const blob = await res.blob();
+      const measured = await measure(blob);
       if (!aliveRef.current) return;
-      await save(blob, sample.image.split("/").pop() || "sample.jpg", false);
+      const landed = await save(blob, sample.image.split("/").pop() || "sample.jpg", false);
+      if (!landed || !aliveRef.current) return;
+      void generate(sample.prompt, {
+        base: landed,
+        fitted: measured ? fitToImage(measured) : null,
+      });
     } catch (e) {
       if (aliveRef.current) {
         setError((e as Error).message);
@@ -434,6 +473,26 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       }
     }
   };
+
+  /** A blob's pixel size, or null if the browser could not decode it. */
+  const measure = (data: Blob): Promise<Size | null> =>
+    new Promise((resolve) => {
+      const url = URL.createObjectURL(data);
+      const probe = new Image();
+      probe.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(
+          probe.naturalWidth && probe.naturalHeight
+            ? { width: probe.naturalWidth, height: probe.naturalHeight }
+            : null,
+        );
+      };
+      probe.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      probe.src = url;
+    });
 
   const attach = (picked: AttachedImage) => {
     setAttachment(picked);
@@ -499,7 +558,12 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   // when the server's own 1024 derivation stands in.
   const fitted = sizeIsTheImages && natural ? fitToImage(natural) : null;
 
-  const generate = async (asked?: string) => {
+  const generate = async (
+    asked?: string,
+    // What to edit, when the caller knows it and this component's state does
+    // not yet — a sample pill attaching a photo and running in one click.
+    using?: { base: AttachedImage; fitted: Size | null },
+  ) => {
     const wanted = (asked ?? prompt).trim();
     if (!wanted || (run && !run.done)) return;
     if (asked) setPrompt(asked);
@@ -523,7 +587,9 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         // the base image's own size is the better default than any of this
         // stage's, and the controls say so instead of showing a number that
         // will not be used.
-        ...imageFields(base, sizeFromImage, fitted, width, height),
+        ...(using
+          ? imageFields(using.base, true, using.fitted, width, height)
+          : imageFields(base, sizeFromImage, fitted, width, height)),
         steps,
         guidance,
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
@@ -551,13 +617,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     }
   };
 
-  // Back to empty. Settings stay put — this clears the prompt and its result,
-  // not the setup.
+  // Back to empty: the prompt, the result AND the attached picture, which is
+  // part of the request rather than part of the setup. Settings stay put.
   const clear = () => {
     setPrompt("");
     setRun(null);
     setError(null);
     setPreviewLive(false);
+    setAttachment(null);
     const box = boxRef.current;
     if (box) {
       box.style.height = "auto";
@@ -660,7 +727,15 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               caption on a control nobody had asked a question about. */}
           {base && (
             <span className="pg-attach">
-              <img src={rawUrl(base.path)} alt="" title={base.path} />
+              <button
+                type="button"
+                className="pg-attach-open"
+                title="See this picture"
+                aria-label="See this picture"
+                onClick={() => setShowBase(true)}
+              >
+                <img src={rawUrl(base.path)} alt="" />
+              </button>
               <button
                 type="button"
                 className="pg-attach-drop"
@@ -726,11 +801,38 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         </div>
       </div>
 
+      {/* The attached picture at full size. Deliberately the whole modal: an
+          image and a way out, no title bar, no filename, no actions — the ✕ on
+          the row below already removes it, and this is only here because a
+          28px thumbnail cannot be looked at. Click the backdrop or press
+          Escape to close, the two things anybody tries. */}
+      {base && showBase && (
+        <div
+          className="pg-lightbox"
+          role="dialog"
+          aria-label="The attached picture"
+          onClick={() => setShowBase(false)}
+        >
+          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
+          <button
+            type="button"
+            className="pg-lightbox-close"
+            title="Close"
+            aria-label="Close"
+            onClick={() => setShowBase(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Examples first, under the box they fill; hidden once a picture is on
           screen, which is what that space is then for. */}
       {!run && (
         <StarterCards
-          samples={editable ? [...EDIT_STARTERS, ...STARTERS.slice(3)] : STARTERS}
+          // The photo examples are only offered where a photo can be sent;
+          // elsewhere the same shuffled order stands with them filtered out.
+          samples={editable ? ALL_STARTERS : ALL_STARTERS.filter((sample) => !sample.image)}
           onPick={(s) => void takeSample(s)}
         />
       )}
