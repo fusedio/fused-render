@@ -104,11 +104,21 @@ import {
 } from "@apps/ai_models/lib/benchmark";
 import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
 import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import {
+  advanceQueue,
+  queueableModels,
+  queueStatus,
+  queueTally,
+  requestQueueStop,
+  startQueue,
+  type BenchmarkQueue,
+} from "@apps/ai_models/lib/benchmarkQueue";
 import { navigateUrl } from "@platform/lib/router";
 import {
   deleteAiBenchmarks,
   getAiBenchmarks,
   runAiBenchmark,
+  unloadAiModel,
   type AiBenchmarkRun,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -179,7 +189,11 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     };
   }, [scanEpoch]);
 
-  const start = async (model: string, capability: string) => {
+  // Returns whether a comparable measurement came out of it — a real `run`
+  // with `ok: true`. `runAllFor` below is the one caller that reads this
+  // return value (to feed `advanceQueue`); a plain single-button click
+  // ignores it exactly as it always has.
+  const start = async (model: string, capability: string): Promise<{ ok: boolean }> => {
     setError(null);
     setStopped(null);
     // Optimistic only about the BUTTON, never about a result. Functional
@@ -207,8 +221,10 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
       // A benchmark loads a model either way, so the runtime's idea of what is
       // resident has changed — the Local tab's Loaded badges are reading it.
       refreshAiRuntime();
+      return { ok: run?.ok === true };
     } catch (e) {
       setError((e as Error).message);
+      return { ok: false };
     } finally {
       setInFlight((prev) => {
         const next = { ...prev };
@@ -216,6 +232,50 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
         return next;
       });
     }
+  };
+
+  // One queue per capability, the same scoping `inFlight` already uses and
+  // for the identical reason: the server serialises per capability, so a
+  // "Run all" over text-generation and one over embeddings are two
+  // independent, legitimately-parallel queues.
+  const [queues, setQueues] = useState<Record<string, BenchmarkQueue>>({});
+
+  // Drives `benchmarkQueue.ts`'s pure state machine with the REAL requests —
+  // this is the one place that awaits `start` in a loop rather than firing
+  // it once. Deliberately lives here, not inside `CapabilitySection`: a
+  // capability's queue must keep running even if the reader switches to a
+  // DIFFERENT capability's card (`CapabilitySection` is remounted per
+  // `selected`, via its own `key`), the same way a single in-flight run
+  // already survives a capability switch. Switching the METRIC selector
+  // never touches this at all — metric is a display choice, the queue does
+  // not read it.
+  const runAllFor = async (capability: string, models: string[]) => {
+    if (models.length === 0) return;
+    let queue = startQueue(capability, models);
+    setQueues((prev) => ({ ...prev, [capability]: queue }));
+    while (queue.current) {
+      const model = queue.current;
+      const { ok } = await start(model, capability);
+      queue = advanceQueue(queue, { model, ok });
+      setQueues((prev) => ({ ...prev, [capability]: queue }));
+    }
+  };
+
+  // Stop: mark the queue so it will not start another model once the
+  // in-flight one settles (`requestQueueStop`, pure), AND separately
+  // interrupt that in-flight request — through the SAME mechanism a single
+  // run's own cancellation already uses elsewhere in the app
+  // (`unloadAiModel`; see `stoppedNote` and benchmarkQueue.ts's own header
+  // for why no second cancel idiom is invented here). The unload resolves
+  // the held-open benchmark request with `cancelled: true`, which `start`
+  // already turns into a `stoppedNote` and an `ok: false` for the queue.
+  const stopAllFor = (capability: string) => {
+    setQueues((prev) => {
+      const queue = prev[capability];
+      return queue ? { ...prev, [capability]: requestQueueStop(queue) } : prev;
+    });
+    const current = queues[capability]?.current;
+    if (current) unloadAiModel(current).catch(() => {});
   };
 
   const forget = async (id: string) => {
@@ -370,6 +430,9 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           inFlight={inFlight}
           onRun={start}
           onForget={forget}
+          queue={queues[selected]}
+          onRunAll={runAllFor}
+          onStopAll={stopAllFor}
         />
       )}
     </div>
@@ -390,6 +453,9 @@ function CapabilitySection({
   inFlight,
   onRun,
   onForget,
+  queue,
+  onRunAll,
+  onStopAll,
 }: {
   capability: string;
   /** The reader's SELECTED metric — not necessarily the primary — resolved by
@@ -426,6 +492,12 @@ function CapabilitySection({
   inFlight: RunsInFlight;
   onRun: (model: string, capability: string) => void;
   onForget: (id: string) => void;
+  /** This capability's own "Run all" queue, or undefined before one has ever
+   *  been started here. Persists across a capability switch (owned by
+   *  `BenchmarkTab`, keyed by capability) — this component only reads it. */
+  queue: BenchmarkQueue | undefined;
+  onRunAll: (capability: string, models: string[]) => void;
+  onStopAll: (capability: string) => void;
 }) {
   // The trend instrument's shape — `trendKind` (lib/benchmark.ts) decides
   // "none" / "single" / "trend" from how many of `trendRuns` actually
@@ -438,6 +510,19 @@ function CapabilitySection({
   // The comparison chart's own data — every model with a real value, ranked
   // best-first, direction included (`comparisonBars`, lib/benchmark.ts).
   const bars = comparisonBars(ranked, metric);
+  // Every model "Run all" would attempt — everything in `ranked` except the
+  // `gone` ones (no weights, no button to press). Recomputed on every render
+  // rather than cached in state: it has to reflect whatever is on disk RIGHT
+  // NOW at the moment the button is pressed, not whatever it was when the
+  // queue started (a model deleted mid-queue is skipped the same way a
+  // single Run press already can't reach it).
+  const runnable = queueableModels(ranked, gone);
+  const status = queue ? queueStatus(queue) : null;
+  // Blocked by ANY in-flight run on this capability, not just a queue's own —
+  // a manual single "Run again" press sets the identical `inFlight` slot a
+  // queue's own `start()` calls do, and the server allows only one resident
+  // model per capability either way.
+  const busy = inFlight[capability] !== undefined;
   // The device most of THIS section's models last ran on — the hardware
   // doesn't change per model, so a row's own detail line (`BenchmarkRow`
   // below, via `rowDetail`) drops it whenever it MATCHES this, and keeps it
@@ -540,6 +625,79 @@ function CapabilitySection({
             <p className="am-group-note">
               No {(metric?.label ?? "runs").toLowerCase()} recorded for any {capabilityLabel(capability).toLowerCase()} model yet — press Run on one below.
             </p>
+          )}
+          {/* RUN ALL — benchmarks every runnable model in this section, one
+              after another, reusing the exact same `start()` a single "Run"
+              press does (`BenchmarkTab`'s `runAllFor`), so a queued run and a
+              manual one are indistinguishable to the server and to the
+              history. Sits between the two chart instruments and the ledger
+              rows it drives, since it acts on exactly that list.
+
+              **The label states the true cost up front** — "Run all 6
+              models" — rather than reading like a single cheap click; each
+              one is a COLD load (the benchmark unloads whatever it loaded),
+              so six Whisper models is many minutes and several GB of
+              repeated downloads-from-disk. `runnable.length === 0` hides the
+              button entirely rather than disabling it — there is nothing
+              honest for a Run All button to say when every model is
+              already `gone`. */}
+          {runnable.length > 0 && (
+            <div className="am-bench-runall">
+              {status === "running" && queue ? (
+                <>
+                  <span className="am-bench-runall-progress" role="status">
+                    <span className="am-runtime-dot" />
+                    Running {queue.started} of {queue.models.length} —{" "}
+                    {shortModelName(queue.current!)}
+                  </span>
+                  <button type="button" className="cc-btn" onClick={() => onStopAll(capability)}>
+                    Stop
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="cc-btn"
+                    disabled={busy}
+                    title={
+                      busy
+                        ? `Waiting for the ${inFlight[capability]} benchmark to finish`
+                        : `Benchmark all ${runnable.length} models in this section, one after another — each is a cold load and this can take a while`
+                    }
+                    onClick={() => onRunAll(capability, runnable)}
+                  >
+                    Run all {runnable.length} models
+                  </button>
+                  {/* The one category Run All silently leaves out — say so,
+                      rather than a count that quietly excludes it with no
+                      explanation. Each `gone` row already states its own
+                      reason ("not on this machine any more"); this is the
+                      same fact stated once for the button that skips all of
+                      them at once. */}
+                  {gone.size > 0 && (
+                    <span className="am-bench-runall-note">
+                      {gone.size} not on this machine — skipped
+                    </span>
+                  )}
+                  {/* The tally from the LAST completed or stopped run, until
+                      the next one starts (a fresh `startQueue` clears
+                      `results`, which flips `status` back to "running" before
+                      this branch is ever reached again). Says WHICH ended it
+                      — a stop reads differently from simply finishing. */}
+                  {status && queue && (
+                    <span className="am-bench-runall-tally">
+                      {(() => {
+                        const tally = queueTally(queue);
+                        const parts = [`${tally.succeeded} succeeded`, `${tally.failed} failed`];
+                        if (status === "stopped") parts.push(`${tally.remaining} not run — stopped`);
+                        return parts.join(", ");
+                      })()}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
           )}
           {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
               with the action (Run, Details) the chart above has no room for.

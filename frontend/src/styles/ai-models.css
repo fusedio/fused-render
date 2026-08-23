@@ -1815,6 +1815,35 @@
   transform: translateX(-100%);
 }
 
+/* -- Run all: one queue per capability, driven by BenchmarkTab's runAllFor --
+   Sits between the two chart instruments and the ledger rows it drives —
+   right above `.am-bench-rows`, since that is exactly the list it acts on. */
+.am-bench-runall {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+.am-bench-runall-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* Reuses `.am-runtime-dot`'s own animation (defined alongside
+   `.am-bench-busy`) — the same "something is happening" signal a single
+   in-flight row's own spinner already gives, not a second one invented for
+   the queue. */
+
+.am-bench-runall-tally,
+.am-bench-runall-note {
+  color: var(--fg-muted);
+}
+
 .am-bench-rows {
   display: flex;
   flex-direction: column;
