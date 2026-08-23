@@ -10,6 +10,7 @@ import {
   defaultCapability,
   defaultModel,
   failureReason,
+  formatDuration,
   formatLoad,
   formatMemory,
   formatMetricSpecValue,
@@ -65,6 +66,14 @@ const MEMORY: MetricSpec = {
   unit: "",
   higherIsBetter: false,
   digits: 0,
+};
+
+const DECODE_TIME: MetricSpec = {
+  key: "totalSeconds",
+  label: "Decode time",
+  unit: "s",
+  higherIsBetter: false,
+  digits: 1,
 };
 
 function run(over: Partial<AiBenchmarkRun> = {}): AiBenchmarkRun {
@@ -604,6 +613,14 @@ describe("yAxisTicks", () => {
     const ticks = yAxisTicks(900 * 1024 * 1024, MEMORY, 4);
     expect(ticks.map((t) => t.label)).toEqual(["0 B", "225 MB", "450 MB", "675 MB", "900 MB"]);
   });
+
+  // The trend chart's own equal-division axis has the identical bug for a
+  // sub-second duration domain — a padded 0.042-second max divided into 4
+  // used to print "0.0" (trimmed to "0") on every tick.
+  it("formats a sub-second duration metric's ticks in milliseconds, not '0'", () => {
+    const ticks = yAxisTicks(0.042, DECODE_TIME, 4);
+    expect(ticks.map((t) => t.label)).toEqual(["0 ms", "11 ms", "21 ms", "32 ms", "42 ms"]);
+  });
 });
 
 describe("formatRunDate", () => {
@@ -1054,6 +1071,48 @@ describe("formatMetricSpecValue", () => {
   it("is a dash for null, regardless of which metric", () => {
     expect(formatMetricSpecValue(null, primaryMetric("text-generation")!)).toBe(DASH);
   });
+
+  // The reported bug: whisper-tiny.en-8bit's totalSeconds is genuinely
+  // 0.022–0.035 across five runs — a fast model doing a fast job, not a
+  // missing measurement — but at this metric's one decimal place that used
+  // to round to "0.0", trimmed to a bare, misleading "0". A duration under
+  // one second now reports in milliseconds instead.
+  it("reports a sub-second duration in milliseconds, not a misleading '0'", () => {
+    const asrRun = run({
+      capability: "automatic-speech-recognition",
+      metrics: { realtimeFactor: 1410.4, totalSeconds: 0.022 },
+    });
+    const decode = availableMetrics("automatic-speech-recognition", [asrRun]).find(
+      (s) => s.key === "totalSeconds",
+    )!;
+    expect(formatMetricSpecValue(0.022, decode)).toBe("22 ms");
+  });
+
+  it("keeps an at-or-above-one-second duration in seconds, unchanged", () => {
+    const load = availableMetrics("text-generation", [run()]).find((s) => s.key === "loadSeconds")!;
+    expect(formatMetricSpecValue(24.6, load)).toBe("24.6 s");
+    expect(formatMetricSpecValue(1, load)).toBe("1 s");
+  });
+});
+
+describe("formatDuration", () => {
+  it("reports a sub-second value in whole milliseconds", () => {
+    expect(formatDuration(0.022, 1)).toBe("22 ms");
+  });
+
+  it("reports zero as milliseconds too — the same side of the one-second boundary", () => {
+    expect(formatDuration(0, 1)).toBe("0 ms");
+  });
+
+  it("reports a one-second-or-above value in seconds, at the metric's own precision", () => {
+    expect(formatDuration(24.6, 1)).toBe("24.6 s");
+    expect(formatDuration(1, 1)).toBe("1 s");
+  });
+
+  it("spans four orders of magnitude without either printing '0s' or six decimals", () => {
+    expect(formatDuration(0.0221, 1)).toBe("22 ms");
+    expect(formatDuration(24.63, 1)).toBe("24.6 s");
+  });
 });
 
 describe("resolveMetric", () => {
@@ -1199,6 +1258,17 @@ describe("niceAxisTicks", () => {
     const ticks = niceAxisTicks(peak, MEMORY, 4);
     expect(ticks.map((t) => t.value)).toEqual([0, 1, 2, 3, 4].map((n) => n * 1024 ** 3));
     expect(ticks[ticks.length - 1]!.value).toBeGreaterThanOrEqual(peak);
+  });
+
+  // The reported bug: a nice-tick algorithm run directly on a 0.0349-second
+  // domain (whisper-tiny.en-8bit's real totalSeconds peak) degenerates —
+  // every tick rounds to "0" at the metric's one decimal place. Stepping in
+  // MILLISECONDS below one second (`secondsStepDivisor`) is what keeps the
+  // steps round AND legible once formatted.
+  it("steps a sub-second duration peak in milliseconds, not degenerate zero ticks", () => {
+    const ticks = niceAxisTicks(0.0349, DECODE_TIME, 4);
+    expect(ticks.map((t) => t.label)).toEqual(["0 ms", "10 ms", "20 ms", "30 ms", "40 ms"]);
+    expect(ticks[ticks.length - 1]!.value).toBeGreaterThanOrEqual(0.0349);
   });
 });
 

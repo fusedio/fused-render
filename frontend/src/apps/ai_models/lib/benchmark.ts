@@ -200,7 +200,42 @@ export function formatNumber(value: number, digits: number): string {
 /** `value` with its unit, or a dash. Explicit `null` check, NEVER a falsy one:
  *  a measured 0 is a real (and interesting) result. */
 function withUnit(value: number | null, unit: string, digits: number): string {
-  return value === null ? DASH : `${formatNumber(value, digits)} ${unit}`;
+  if (value === null) return DASH;
+  // Seconds are the one unit whose OWN magnitude can put a real measurement
+  // at zero decimal places away from disappearing — see `formatDuration`.
+  if (unit === "s") return formatDuration(value, digits);
+  return `${formatNumber(value, digits)} ${unit}`;
+}
+
+/** A duration in SECONDS, formatted so a genuinely sub-second measurement
+ *  stays legible rather than rounding to "0s".
+ *
+ *  **The bug this fixes**: `whisper-tiny.en-8bit`'s `totalSeconds` is a real
+ *  0.022–0.035 across five runs — a fast model doing a fast job, not a
+ *  missing measurement — but at this capability's one decimal place
+ *  (`digits`), `formatNumber` rounds every one of them to "0.0", trimmed to
+ *  the bare, misleading "0" (`formatNumber`'s own trailing-zero trim, correct
+ *  everywhere else, is what turns "0.0" into "0" here). A reader sees "0s"
+ *  and reasonably reads it as "not measured" or "instant", neither of which
+ *  is true.
+ *
+ *  Below one second, this reports MILLISECONDS instead, at whole-number
+ *  precision — `digits` (built for the second-scale range) does not apply
+ *  there; a sub-second value is precise enough in whole ms that a fraction of
+ *  one would be false precision anyway. At or above one second it is
+ *  unchanged: `formatNumber(seconds, digits)` at the metric's own precision,
+ *  exactly as before — `loadSeconds`' own 1.0–24.6 s range never crosses the
+ *  ms threshold and reads exactly as it always has.
+ *
+ *  One function behind `withUnit`, so every caller — the leaderboard
+ *  headline, a bar's own end-value label, the Details line, and both charts'
+ *  axis ticks (`axisTickLabel` reuses it below) — reports the same number the
+ *  same way; a second copy is how one of them comes to still print "0s" the
+ *  day this one is fixed.
+ */
+export function formatDuration(seconds: number, digits: number): string {
+  if (Math.abs(seconds) < 1) return `${formatNumber(seconds * 1000, 0)} ms`;
+  return `${formatNumber(seconds, digits)} s`;
 }
 
 /** `value` as `spec` reports it — "42.1 tok/s", "5.2 GB", or a dash.
@@ -543,6 +578,12 @@ export interface AxisTick {
  */
 function axisTickLabel(value: number, metric: MetricSpec): string {
   if (metric.key === "peakResidentBytes") return formatSize(value);
+  // A seconds-valued tick goes through the SAME ms/s switch every other
+  // duration reading does (`formatDuration`) — a nice round step on a
+  // sub-second domain (0.022 s peak, say) is a nice round number of
+  // MILLISECONDS, and a bare "0" tick repeated four times is the exact bug
+  // this whole file exists to prevent, just on an axis instead of a row.
+  if (metric.unit === "s") return formatDuration(value, metric.digits);
   return formatNumber(value, metric.digits);
 }
 
@@ -1045,6 +1086,17 @@ function byteStepDivisor(peak: number): number {
   return 1;
 }
 
+/** The same idea as `byteStepDivisor`, for a seconds-valued metric: below one
+ *  second, a nice STEP has to be a nice round number of MILLISECONDS
+ *  (`formatDuration`'s own threshold) — stepping in raw seconds on a
+ *  0.0349-second domain produces a step so small `niceStep`'s own magnitude
+ *  math degenerates, and every resulting tick still formats as "0 ms". At or
+ *  above one second the metric's stored unit already IS the display unit, so
+ *  no scaling is needed. */
+function secondsStepDivisor(peak: number): number {
+  return peak < 1 ? 0.001 : 1;
+}
+
 /** The COMPARISON chart's own axis ticks: ROUND numbers derived from `peak`'s
  *  magnitude — 0/250/500/750/1000 style — never an even division of the raw
  *  peak (`yAxisTicks`'s job, for a chart that DOES need headroom past its
@@ -1061,17 +1113,24 @@ function byteStepDivisor(peak: number): number {
  *  `>= peak` without ever being a padded fraction of it.
  *
  *  `metric` decides the unit the rounding happens WITHIN — a byte-valued
- *  metric rounds in KB/MB/GB/TB (`byteStepDivisor`), matching what
- *  `formatSize` would print for a value near the peak, so "round" and
- *  "reads clean once formatted" are the same claim; every other metric rounds
- *  directly in its own stored unit, since that unit IS what a tick already
- *  reads in. Every label goes through `axisTickLabel`, the same formatter
- *  `yAxisTicks` uses — one function, so a byte-valued metric added later gets
- *  the fix for free rather than needing its own axis to remember it.
+ *  metric rounds in KB/MB/GB/TB (`byteStepDivisor`) and a seconds-valued one
+ *  rounds in ms below one second (`secondsStepDivisor`), each matching what
+ *  its own formatter (`formatSize`, `formatDuration`) would print for a value
+ *  near the peak, so "round" and "reads clean once formatted" are the same
+ *  claim; every other metric rounds directly in its own stored unit, since
+ *  that unit IS what a tick already reads in. Every label goes through
+ *  `axisTickLabel`, the same formatter `yAxisTicks` uses — one function, so a
+ *  metric with either kind of auto-scaling unit added later gets the fix for
+ *  free rather than needing its own axis to remember it.
  */
 export function niceAxisTicks(peak: number, metric: MetricSpec, count = 4): AxisTick[] {
   if (peak <= 0) return [];
-  const divisor = metric.key === "peakResidentBytes" ? byteStepDivisor(peak) : 1;
+  const divisor =
+    metric.key === "peakResidentBytes"
+      ? byteStepDivisor(peak)
+      : metric.unit === "s"
+        ? secondsStepDivisor(peak)
+        : 1;
   const step = niceStep(peak / divisor / count) * divisor;
   if (step <= 0) return [];
   const ticks: AxisTick[] = [];
