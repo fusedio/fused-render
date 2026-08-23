@@ -1915,6 +1915,127 @@
       );
   }
 
+  // ---- warm workers (fused.engine, docs/ENGINE_HOST_APPS_DESIGN.md) ---------
+  // fused.engine(py) is the warm variant of runPython: the server keeps the
+  // script's worker process ALIVE between calls, so module imports run once and
+  // module globals persist. Same wire body ({py, html, params}) and same result
+  // + error shape as runPython — the only visible difference is speed. Opt-in:
+  // a page reaches it only by calling this. It shares runPython's latest-wins
+  // stale-cancel channel (keyed by the .py path), the same attribution/guard
+  // headers, and the same never-settle-on-supersede semantics.
+  //
+  // Hosted/exported fallback (design §8): a warm worker is pure optimization —
+  // the same main() also runs per-call — so where there is no local :1777
+  // server, a call transparently delegates to runPython. In THIS (local)
+  // runtime that only happens if the server becomes unreachable mid-session (a
+  // fetch network error); the separate hosted runtime stub defines fused.engine
+  // to delegate to runPython unconditionally, since it has no server to warm.
+  function engineCall(pyPath, params, opts) {
+    opts = opts || {};
+    const key = opts.key === undefined ? pyPath : opts.key;
+    const keyed = key !== null;
+    const controller = new AbortController();
+    controller._callId = newCallId();
+    if (keyed) {
+      const prev = inflightByKey.get(key);
+      if (prev) {
+        prev._supersededByKey = true;
+        reportSuperseded(prev._callId);
+        prev.abort();
+      }
+      inflightByKey.set(key, controller);
+    }
+    let detachSignal = null;
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else {
+        const onAbort = () => controller.abort();
+        opts.signal.addEventListener("abort", onAbort);
+        detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
+      }
+    }
+    const cleanup = () => {
+      if (detachSignal) detachSignal();
+      if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
+    };
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+
+    const attempt = () =>
+      fetch("/api/engine", {
+        method: "POST",
+        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
+                             controller._callId),
+        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
+        signal: controller.signal,
+      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
+
+    const run = attempt().then(({ data, httpOk }) => {
+      // A script that ran may have written anything, anywhere — tell the shell
+      // unconditionally, exactly as runPython does (even on a failed run).
+      noteFsChanged();
+      if (data && data.stdout) console.log("[python]", data.stdout);
+      // Watch the executed file for auto-reload, even on failure (LR-2); the
+      // warm worker returns resolved_py just like /api/run.
+      if (data && data.resolved_py) watchPath(data.resolved_py);
+      if (!httpOk) {
+        // A server-level error ({"error": "..."}), e.g. the worker could not be
+        // started or the venv is not built yet — not a script error envelope.
+        const err = new Error(
+          (data && typeof data.error === "string" && data.error) ||
+          "engine request failed");
+        err.type = "engine_error";
+        throw err;
+      }
+      if (!data.ok) {
+        const err = new Error(data.error && data.error.message);
+        err.type = data.error && data.error.type;
+        err.traceback = data.error && data.error.traceback;
+        err.stdout = data.stdout;
+        throw err;
+      }
+      return data.result;
+    });
+
+    return run.then(
+      (result) => {
+        cleanup();
+        if (controller._supersededByKey) return new Promise(() => {});
+        return result;
+      },
+      (err) => {
+        cleanup();
+        if (opts.signal && opts.signal.aborted) throw err;
+        if (controller._supersededByKey) return new Promise(() => {});
+        // No local server reachable (fetch rejects with a TypeError, never an
+        // HTTP status): degrade to per-call runPython so the page keeps working,
+        // correct-but-not-warm. A real HTTP error carries `httpOk`/an envelope
+        // above and is NOT a TypeError, so it propagates as itself.
+        if (err && err.name === "TypeError") return runPython(pyPath, params, opts);
+        throw err;
+      }
+    );
+  }
+
+  function engineForget(pyPath) {
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    return fetch("/api/engine/forget", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify({ py: pyPath, html: ownPath }),
+    })
+      .then((res) => res.json())
+      .catch(() => ({ ok: true })); // best-effort teardown; never reject the page
+  }
+
+  function engine(pyPath, opts) {
+    opts = opts || {};
+    return {
+      call: (params, callOpts) =>
+        engineCall(pyPath, params, Object.assign({}, opts, callOpts || {})),
+      forget: () => engineForget(pyPath),
+    };
+  }
+
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
   // src, "open raw" links, etc. A RELATIVE path is resolved page-relative
   // (SPEC RH-1): we pass the page's own absolute path as `base` and the server
@@ -4084,6 +4205,7 @@
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
     env: "local",
     runPython,
+    engine,
     rawUrl,
     stat,
     readFile,
