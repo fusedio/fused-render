@@ -81,6 +81,13 @@ SUMMARY_MAX_FEATURES = int(
 MVT_EXTENT = 4096
 MVT_BUFFER = 64
 SIMPLIFY_TOLERANCE = 2.0
+# A detail tile that is mostly features smaller than a screen pixel wastes both
+# encode time and payload drawing specks that land on the same pixel. Features
+# whose footprint is under COALESCE_PIXELS px are collapsed to one (the largest)
+# per cell of that size; larger features — long lines, big polygons — are always
+# kept, so only visually-coincident geometry is dropped. 0 disables it.
+COALESCE_PIXELS = float(os.environ.get("MAP_VIEWER_VECTOR_COALESCE_PX", "0.75"))
+TILE_PIXELS = 256
 WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
 ENGINE_VERSION = "native-mvt-v2"
@@ -1235,6 +1242,38 @@ class VectorEngine:
             return "wkb_geometry"
         return table.column_names[-1]
 
+    def _coalesce_rows(self, geometries, drawable):
+        """Row indices to draw for a detail tile, dropping sub-pixel features that
+        collapse onto a pixel another already fills. ``geometries`` are in tile
+        units; only features smaller than the coalesce cell in both dimensions are
+        candidates, so extended geometry (long lines, large polygons) is always
+        kept. The largest feature in each occupied cell wins."""
+        import numpy as np
+        import shapely
+
+        rows = np.flatnonzero(drawable)
+        cell = MVT_EXTENT / TILE_PIXELS * COALESCE_PIXELS
+        if COALESCE_PIXELS <= 0 or rows.size <= 256:
+            return rows
+        bounds = shapely.bounds(geometries)
+        width = bounds[:, 2] - bounds[:, 0]
+        height = bounds[:, 3] - bounds[:, 1]
+        small = drawable & (width < cell) & (height < cell)
+        small_rows = np.flatnonzero(small)
+        if small_rows.size <= 256:
+            return rows
+        cx = (bounds[small_rows, 0] + bounds[small_rows, 2]) * 0.5
+        cy = (bounds[small_rows, 1] + bounds[small_rows, 3]) * 0.5
+        col = np.floor((cx + MVT_BUFFER) / cell).astype(np.int64)
+        srow = np.floor((cy + MVT_BUFFER) / cell).astype(np.int64)
+        cell_id = col * (1 << 20) + srow
+        areas = shapely.area(geometries)[small_rows]
+        order = np.argsort(-areas, kind="stable")
+        _, keep = np.unique(cell_id[order], return_index=True)
+        kept_small = small_rows[order[keep]]
+        large_rows = np.flatnonzero(drawable & ~small)
+        return np.sort(np.concatenate([large_rows, kept_small]))
+
     def _detail_tile(
         self,
         source: VectorSource,
@@ -1271,13 +1310,14 @@ class VectorEngine:
         )
         type_ids = shapely.get_type_id(geometries)
         drawable = ~(shapely.is_missing(geometries) | shapely.is_empty(geometries))
+        rows = self._coalesce_rows(geometries, drawable)
         columns = {
             name: table.column(name).to_pylist()
             for name in table.column_names
             if name != geometry_name
         }
         writer = LayerWriter("layer", MVT_EXTENT)
-        for row in np.flatnonzero(drawable):
+        for row in rows:
             properties = {name: values[row] for name, values in columns.items()}
             for geometry_type, commands in _mvt_features(
                 geometries[row], int(type_ids[row])
