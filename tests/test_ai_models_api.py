@@ -1690,25 +1690,32 @@ def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, mo
 
 @requires_symlinks
 def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub, monkeypatch):
-    """The video-pipeline bug, and the other half of the same gate.
+    """The general gate, exercised against a still-ruled-out video task.
 
-    A diffusers VIDEO pipeline is a `model_index.json` repo, and the diffusers
-    runners are DECISIVE about that format — so `_engine`'s "let the format
-    answer" branch used to hand it the image capability, and the card offered
-    Load for a model nothing here can run. The branch exists for a real case
-    (a CT2 conversion carries no tag, an MLX one carries no config, and both are
-    speech models beyond doubt), so the fix is not to remove it: it fires only
-    where the task is UNKNOWN. `text-to-video` is not unknown — it is refused,
-    with a sentence.
+    `text-to-video` stopped being an example of a ruled-out task once
+    `h3-video` and `ltx-video` shipped (SPEC §40's LTX-2.3 plan) — every
+    diffusers class name containing "video" maps to that tag
+    (`_diffusers_task`), and it is genuinely SUPPORTED now (see the test
+    right below this one for that new, correct shape). `image-to-video` is
+    still ruled out — no runner here is image-conditioned — so it is the
+    example now: h3-video's own `FL2VA/` layout is DECISIVE about the
+    format, and without this guard `_engine`'s "let the format answer"
+    branch would resurrect the ruled-out task into video generation just
+    because a decisive format happens to sit beside it. The branch itself is
+    not removed — it fires for a real case (a CT2 conversion carries no tag,
+    an MLX one carries no config, and both are speech models beyond doubt) —
+    this pins that it fires ONLY where the task is UNKNOWN, never where it
+    is refused with a sentence.
     """
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
     repo = _repo(hub, "models--org--vid", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(repo, "c1", "model_index.json",
-                   json.dumps({"_class_name": "StableVideoDiffusionPipeline"}))
+    _snapshot_file(repo, "c1", "README.md",
+                   "---\npipeline_tag: image-to-video\n---\n")
+    _snapshot_file(repo, "c1", "FL2VA/model.safetensors", b"x")
     row = _repo_row(client, "org/vid")
-    assert row["task"] == "video generation"
+    assert row["task"] == "image to video"
     assert row["support"] == "no-runner"
     assert row["capability"] is None
     # No engine row either: `_engine` returns nothing once the capability is
@@ -1717,6 +1724,39 @@ def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub,
     # …and the same repo read by the LOAD route agrees, which is the invariant
     # that stops a card offering what a load then refuses.
     assert ai_models_mod.cached_capability("org/vid").capability is None
+
+
+@requires_symlinks
+def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, monkeypatch):
+    """The NEW, correct shape for a diffusers video pipeline, now that
+    `text-to-video` genuinely has runners (`h3-video`, `ltx-video`).
+
+    A `StableVideoDiffusionPipeline` snapshot's `_class_name` maps to
+    `text-to-video` (`_diffusers_task`) — a real, SUPPORTED task, unlike the
+    ruled-out case above. But `meta.loaders` for a `model_index.json` repo is
+    `DIFFUSERS_RUNNERS` (image generation), and neither video runner reads
+    THAT format at all (`has_h3_components`/`has_ltx_split_layout` each check
+    for a layout this repo does not have) — so `_engine` finds no
+    VIDEO_GENERATION candidate among the format's own readers and correctly
+    returns no engine. This is `_engine`'s own "task supported, format
+    unreadable" trap (its docstring's `openai/whisper-large-v3` example),
+    reachable through video for the first time: the card must say "video
+    generation" without offering a Load button pointed at a runner that will
+    refuse the file.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--org--svd", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "StableVideoDiffusionPipeline"}))
+    row = _repo_row(client, "org/svd")
+    assert row["task"] == "video generation"
+    assert row["support"] == "supported"
+    assert row["capability"] == _ai_registry.VIDEO_GENERATION
+    assert row["engine"] is None
+    assert (ai_models_mod.cached_capability("org/svd").capability
+            == _ai_registry.VIDEO_GENERATION)
 
 
 @requires_symlinks
