@@ -265,9 +265,9 @@ export default function Listing({
   // (D282 left nothing else in it), so one flag takes the slot, the divider, the
   // closing chevron on the pane's header, the reopening SideToggleButton in the
   // search row and the two `useDirMode` companion probes with it. Nothing about the
-  // ROWS changes: a pane's listing still selects, arrow-keys, and opens on
-  // double-click/Enter —
-  // opening a file in a pane replaces that pane's document, which is the point.
+  // ROWS changes: a pane's listing still selects, arrow-keys, and opens on a
+  // single click/Enter — opening a file in a pane replaces that pane's
+  // document, which is the point.
   const paneEnabled = !embedded && !IS_SNAPSHOT && !IS_PANEL_PANE;
   // Drag-to-close hands off to the same `_side=off` the pane header's close
   // button writes (`closeSide`, below) — one vocabulary for "the pane is shut",
@@ -1022,19 +1022,24 @@ export default function Listing({
     else toggleSelected(path);
   };
 
-  // SINGLE CLICK OPENS — in an EMBEDDED listing only, i.e. in the preview
-  // pane's `_listing` mode (ListingPreviewPane). That listing is not a place to
-  // build a selection: it is a look INSIDE the folder the middle panel has
-  // selected, and the one thing to do with a row there is go to it. The middle
-  // panel keeps the unified select-on-press / open-on-double-click model, which
-  // is why the gate is `embedded` and not the pane's presence (see the note on
-  // onRowDoubleClick, and listing/selection's source test).
+  // SINGLE CLICK OPENS — in every listing, at every window width (D443). A
+  // plain press SELECTS (onRowPointerDown above); the matching RELEASE OPENS,
+  // provided the press never left the row (no drag, no sweep). Only a PLAIN
+  // press opens: Shift and Mod still mean range and toggle, never navigation,
+  // so a modified click keeps building a selection instead of taking the user
+  // somewhere.
   //
-  // Only a PLAIN press opens. Shift and Mod still mean range and toggle even
-  // here, so the pane's own multi-selection (its context menu, its file ops)
-  // stays reachable; those two actions are exactly what this excludes.
+  // This used to be gated to an EMBEDDED listing only (the preview pane's own
+  // `_listing` mode) while every other listing waited for a double-click. The
+  // gate existed because a plain click had a second job to protect: the pane
+  // used to follow the SELECTION, so a click that navigated away would have
+  // made a row's own preview unreachable, and a folder was worst hit of all
+  // (FS-11's old text). D443 removed that coupling — the pane now shows the
+  // open folder's own companions and never the selection — so there is nothing
+  // left to protect, and the single-click model that already worked in the
+  // pane extends to every listing.
   const openOnRelease = (action: RowPressAction) =>
-    embedded && (action === "select" || action === "defer");
+    action === "select" || action === "defer";
 
   // The deferred half: a plain press inside a multi-selection collapses onto
   // the pressed row when the button comes up, and ONLY if the press stayed
@@ -1047,7 +1052,7 @@ export default function Listing({
   // so this mostly does not run in that case; the slop covers the rest,
   // including a drag the user cancelled.
   //
-  // The release is also where an EMBEDDED listing OPENS on a single click
+  // The release is also where every listing OPENS on a single click
   // (openOnRelease above). Both halves want the same two facts — same row, press
   // stayed still — so they share the one handler and the one slop test.
   const onRowPointerUp = (e: React.PointerEvent, path: string) => {
@@ -1060,20 +1065,6 @@ export default function Listing({
       const row = rowCtxByPath.get(path);
       if (row) navigate(row.path, { isDir: row.isDir });
     }
-  };
-
-  // Double-click OPENS. Unconditionally: the same gesture in the same folder
-  // has to mean the same thing whether or not the window happens to be wide
-  // enough for the preview pane (listing/selection documents the model). Enter
-  // opens the same target from the keyboard.
-  // No single/double-click delay timer: the first click of a double-click
-  // selects, which is harmless — any pane fetch it starts is superseded or
-  // unmounted by the navigation the second click triggers. In an EMBEDDED
-  // listing that first click has already OPENED (openOnRelease), so this rarely
-  // gets to run there; it stays wired anyway, because a gesture that opens must
-  // not become a no-op in the one surface whose release beat it to it.
-  const onRowDoubleClick = (row: RowCtx) => {
-    navigate(row.path, { isDir: row.isDir });
   };
 
   // Kill the browser's own text selection for a Shift/Mod press.
@@ -1273,14 +1264,6 @@ export default function Listing({
                 }
                 onPointerDown={(e) => onRowPointerDown(e, childPath)}
                 onPointerUp={(e) => onRowPointerUp(e, childPath)}
-                onDoubleClick={() =>
-                  onRowDoubleClick({
-                    path: childPath,
-                    name: entry.rel.split("/").pop() ?? entry.rel,
-                    isDir: entry.is_dir,
-                    parentDir: dirname(childPath),
-                  })
-                }
                 onContextMenu={(e) =>
                   openRowMenu(e, {
                     path: childPath,
@@ -1416,14 +1399,6 @@ export default function Listing({
           }
           onPointerDown={(e) => onRowPointerDown(e, childPath)}
           onPointerUp={(e) => onRowPointerUp(e, childPath)}
-          onDoubleClick={() =>
-            onRowDoubleClick({
-              path: childPath,
-              name: entry.name,
-              isDir: entry.is_dir,
-              parentDir: base,
-            })
-          }
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,
@@ -1745,7 +1720,7 @@ export default function Listing({
                   action a few pixels apart, which reads as a rendering fault.
 
                   Same `navigate(path, { isDir: false })` as the row's own
-                  double-click (onRowDoubleClick), reused rather than reinvented: no
+                  open-on-click (onRowPointerUp), reused rather than reinvented: no
                   new view and no `_mode`, just the file. */}
               {!paneOpen && appEntryPath && (
                 <button

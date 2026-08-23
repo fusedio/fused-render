@@ -29,9 +29,8 @@
 // drag entirely (row-drag.ts's header).
 //
 // A press that never travels MARQUEE_DRAG_SLOP is neither gesture: it is the
-// plain click that selects one row. ONE threshold decides all three, so no
-// arbitration afterwards and no timer, and single-click-select and
-// double-click-open are untouched.
+// plain click that selects one row (and, on release, opens it — D443). ONE
+// threshold decides all three, so no arbitration afterwards and no timer.
 //
 // COORDINATES are the scroller's CONTENT space (viewport offset + scrollTop),
 // not the viewport's. That is what lets the listing scroll under a live sweep
@@ -159,13 +158,14 @@ export function useMarquee({
       // a click should cost nothing at all.
       d.bands = measureBands(scroller, rowsRef.current);
       // Capture is taken HERE, at the moment the press proves itself a sweep,
-      // not on the pointerdown. Capture retargets every later event — pointerup,
-      // click, and crucially DBLCLICK — to the scroller, so capturing on the
-      // press meant a double-click on an unselected row (whose first press
-      // lands in this branch) delivered its dblclick to the scroller instead of
-      // the row, and open-on-double-click silently died. A press that never
-      // moves past the slop keeps its native event flow; the sweep only needs
-      // capture once it is live (to survive the pointer leaving the scroller).
+      // not on the pointerdown. Capture retargets every later event — including
+      // pointerup — to the scroller instead of the row, so capturing on the
+      // press would route a plain click's release away from the row's own
+      // onPointerUp and silently kill open-on-click (D443) for every press this
+      // branch sees (every press on an unselected row starts here). A press
+      // that never moves past the slop keeps its native event flow; the sweep
+      // only needs capture once it is live (to survive the pointer leaving the
+      // scroller).
       //
       // It throws for a pointer id the browser has no active pointer for —
       // which a synthetic event is — and the drag works without it, so a
@@ -228,8 +228,8 @@ export function useMarquee({
     //
     // NO setPointerCapture here either — that happens in sweepTo, once the
     // press has moved past the slop and is definitely a sweep (see the comment
-    // there: capturing on the press retargeted the dblclick away from rows and
-    // killed open-on-double-click). Pre-slop movement is by definition inside
+    // there: capturing on the press retargeted the pointerup away from rows and
+    // killed open-on-click). Pre-slop movement is by definition inside
     // the scroller, and the move/up listeners below are on the scroller, so
     // nothing is missed before capture is taken.
     drag.current = {
