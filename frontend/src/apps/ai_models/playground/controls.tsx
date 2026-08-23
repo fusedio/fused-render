@@ -255,6 +255,13 @@ export interface Starter {
    *  prompt is a three-word query, and the interesting half of that sample is
    *  what the query is searched AGAINST. */
   detail?: string;
+  /** A picture the sample brings WITH it, as a URL the app serves
+   *  (`/static/samples/…`). The image stage's edit examples carry one: an edit
+   *  prompt with no photo to edit demonstrates nothing, and hunting for a
+   *  suitable file is the step that stops somebody trying it at all. The stage
+   *  decides what to do with it — this row only carries it, the way `detail`
+   *  does. */
+  image?: string;
 }
 
 /** How many pills a page WANTS. Four fills the 680px column as one row, and

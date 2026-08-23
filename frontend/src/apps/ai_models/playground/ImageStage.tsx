@@ -141,6 +141,45 @@ const STARTERS: Starter[] = [
   },
 ];
 
+// Three examples that bring their own PHOTO (D454): the pill attaches the
+// picture and fills in the prompt, and Generate is the only thing left to
+// press. An edit prompt with nothing to edit demonstrates nothing, and finding
+// a suitable file is the step that stops somebody trying this at all — so the
+// app ships three, one per kind of restyle worth showing (a painted animation
+// still, a wash over a night photograph, a drawing of an object).
+//
+// Shown only on a model that can be handed an image, in place of the first
+// three prompt-only samples rather than in addition to them: the row is eight
+// authored and four shown (D452), and eleven would be a third page nobody
+// rotates to. The photos are Unsplash's, re-encoded and credited in
+// `static/samples/CREDITS.md`.
+const EDIT_STARTERS: Starter[] = [
+  {
+    name: "Ghibli coast",
+    icon: StarterIcons.sparkle,
+    image: "/static/samples/coast.jpg",
+    prompt:
+      "Redraw this photograph as a frame from a hand-painted animated film: soft gouache sky, " +
+      "clean ink outlines, saturated greens, a few drifting cumulus clouds, warm afternoon light.",
+  },
+  {
+    name: "Watercolour bridge",
+    icon: StarterIcons.pen,
+    image: "/static/samples/bridge.jpg",
+    prompt:
+      "Turn this night photograph into a loose watercolour: wet-on-wet washes in the sky, ink " +
+      "lines on the cables and towers, warm lamplight bleeding into the water, paper texture.",
+  },
+  {
+    name: "Pencil study",
+    icon: StarterIcons.bowl,
+    image: "/static/samples/mug.jpg",
+    prompt:
+      "Redraw this as a graphite pencil study on toned paper: cross-hatched shadows, white " +
+      "chalk highlights on the rim, the background left as bare paper.",
+  },
+];
+
 // The three formats the SERVER can read a size out of — `_image_pixel_size`
 // parses PNG, JPEG and WebP headers and nothing else (there is no Pillow in
 // the app process). A HEIC (what a Mac's Photos hands out by default) would
@@ -332,7 +371,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
    *  nobody can tell from a generated one. Both levels are mkdir'd, because
    *  `/api/fs/mkdir` creates ONE directory by design (a typo must not spawn a
    *  tree) and on a fresh machine neither exists. */
-  const save = async (data: Blob, name: string) => {
+  const save = async (data: Blob, name: string, stamped = true) => {
     setError(null);
     setAttaching(true);
     try {
@@ -340,8 +379,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       await mkdir(config.cache_dir).catch(() => {});
       const dir = `${config.cache_dir}/image-playground`;
       await mkdir(dir).catch(() => {});
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const path = `${dir}/${stamp}-${name}`;
+      // A capture is stamped — every one is a different picture and losing the
+      // last one would be a surprise. A shipped SAMPLE is not: the same bytes
+      // land at the same path however many times the pill is clicked, so the
+      // examples cannot slowly fill the cache with copies of themselves.
+      const stamp = stamped
+        ? new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + "-"
+        : "sample-";
+      const path = `${dir}/${stamp}${name}`;
       await uploadFile(path, data, name);
       if (!aliveRef.current) return;
       attach({ path, name });
@@ -349,6 +394,44 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       if (aliveRef.current) setError((e as Error).message);
     } finally {
       if (aliveRef.current) setAttaching(false);
+    }
+  };
+
+  /** Take a sample: its photo attached, its prompt in the box, nothing run.
+   *
+   *  The bytes are the app's own, served from `/static/samples`, and they still
+   *  have to be COPIED to a path — `/api/ai/image` reads a file off the disk
+   *  and cannot be handed a URL inside the app's bundle (which on the packaged
+   *  Mac is inside a signed .app). The cache dir is where that copy belongs.
+   *
+   *  Deliberately does NOT generate, unlike a prompt-only sample: an edit is
+   *  minutes of work on a picture the user has not seen yet, and the point of
+   *  these three is to arrive at a loaded composer — press Generate, or edit the
+   *  sentence first. */
+  const takeSample = async (sample: Starter) => {
+    if (!sample.image) {
+      void generate(sample.prompt);
+      return;
+    }
+    setPrompt(sample.prompt);
+    const box = boxRef.current;
+    if (box) {
+      box.style.height = "auto";
+      grow();
+    }
+    setError(null);
+    setAttaching(true);
+    try {
+      const res = await fetch(sample.image);
+      if (!res.ok) throw new Error(`could not read the sample picture (${res.status})`);
+      const blob = await res.blob();
+      if (!aliveRef.current) return;
+      await save(blob, sample.image.split("/").pop() || "sample.jpg", false);
+    } catch (e) {
+      if (aliveRef.current) {
+        setError((e as Error).message);
+        setAttaching(false);
+      }
     }
   };
 
@@ -645,7 +728,12 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {/* Examples first, under the box they fill; hidden once a picture is on
           screen, which is what that space is then for. */}
-      {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
+      {!run && (
+        <StarterCards
+          samples={editable ? [...EDIT_STARTERS, ...STARTERS.slice(3)] : STARTERS}
+          onPick={(s) => void takeSample(s)}
+        />
+      )}
 
       {/* Chips lead the panel; sliders and the seed follow. */}
       <ConfigPanel open={configOpen}>
