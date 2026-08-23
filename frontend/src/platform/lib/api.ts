@@ -1041,8 +1041,16 @@ export function writeFile(path: string, content = "", create = false): Promise<S
  *  path (`/api/ai/image`'s `image`) is otherwise only reachable by uploading a
  *  copy of a file this machine already has. Throws on 409 (a dialog is already
  *  up), 501 (this machine has no dialog — `Config.native_dir_picker` says so up
- *  front) and 500. */
-export function pickFile(opts: { start?: string; title?: string } = {}): Promise<string | null> {
+ *  front) and 500.
+ *
+ *  `types` narrows the dialog to those extensions (bare, no dot) — a caller that
+ *  can read three formats should not be offered a fourth. It is the dialog's
+ *  half of the job and NOT the check: a drag-drop never sees the dialog, and the
+ *  Linux backends can only suggest, so a caller still refuses what it cannot
+ *  read in its own words. */
+export function pickFile(
+  opts: { start?: string; title?: string; types?: string[] } = {},
+): Promise<string | null> {
   return postJson<{ path: string | null }>("/api/fs/pick-file", opts).then((r) => r.path);
 }
 

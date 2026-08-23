@@ -202,12 +202,17 @@ function shuffleOnce(samples: Starter[]): Starter[] {
 // The three formats the SERVER can read a size out of — `_image_pixel_size`
 // parses PNG, JPEG and WebP headers and nothing else (there is no Pillow in
 // the app process). A HEIC (what a Mac's Photos hands out by default) would
-// fall through to the generic 1024² and stretch whatever renders, so it is
-// refused HERE with the reason rather than filtered out of the OS dialog:
-// `/api/fs/pick-file` carries no type filter, because a greyed-out file cannot
-// explain itself and the three dialog backends express filters three
-// incompatible ways.
+// fall through to the generic 1024² and stretch whatever renders.
+//
+// Both a filter and a check, from this one list. The OS dialog is narrowed to
+// these (`pickFile`'s `types`), because a file that cannot work should not be
+// offered in the first place — and the extension is still checked after the
+// pick, because the filter does not reach a DRAG-DROP, a typed filename, or the
+// Linux backends, which can only suggest. A refusal names the three formats.
 const ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
+// Bare, no dot: what the dialog backends want, derived rather than written
+// twice so the filter cannot drift from what the check accepts.
+const ATTACH_TYPES = ATTACH_EXTENSIONS.map((e) => e.slice(1));
 
 interface Run {
   started: ImageStarted;
@@ -374,10 +379,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     setError(null);
     setAttaching(true);
     try {
-      const path = await pickFile({ title: "Choose a picture to edit" });
+      const path = await pickFile({
+        title: "Choose a picture to edit",
+        types: ATTACH_TYPES,
+      });
       // A cancel is an answer: nothing changes and nothing is said about it.
       if (path === null || !aliveRef.current) return;
       const name = path.split("/").pop() || path;
+      // Still checked, filter or no filter — see ATTACH_EXTENSIONS.
       if (!ATTACH_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))) {
         setError(
           `${name} is not a PNG, JPEG or WebP — those are the three the renderer ` +

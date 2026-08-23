@@ -567,10 +567,18 @@ def _float_panel_over_everything(panel) -> None:
 
 def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
                           directories: bool, start: str | None = None,
-                          create_directories: bool = False) -> str | None:
+                          create_directories: bool = False,
+                          types: list[str] | None = None) -> str | None:
     """Run an NSOpenPanel to completion. MAIN THREAD ONLY.
 
     Returns the chosen path, or None when the user cancelled.
+
+    `types` is a list of bare extensions the panel will let the user choose;
+    anything else is shown greyed out. `setAllowedFileTypes_` is soft-deprecated
+    (macOS 12 prefers `allowedContentTypes`, which is UTTypes) but is still
+    honoured on every macOS this app runs on, and it takes exactly the list of
+    extensions the caller already has — a UTType hop would mean importing
+    UniformTypeIdentifiers to say the same thing.
     """
     _prepare_app_for_modal()
     panel = NSOpenPanel.openPanel()
@@ -578,6 +586,8 @@ def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
     panel.setCanChooseDirectories_(directories)
     panel.setAllowsMultipleSelection_(False)
     panel.setCanCreateDirectories_(create_directories)
+    if types:
+        panel.setAllowedFileTypes_(list(types))
     panel.setTitle_(title)
     panel.setPrompt_(prompt)
     # A starting directory that does not exist would leave the panel wherever it
@@ -602,7 +612,8 @@ def _run_directory_panel(start: str | None, title: str, prompt: str) -> str | No
         start=start, create_directories=True)
 
 
-def _run_file_panel(start: str | None, title: str, prompt: str) -> str | None:
+def _run_file_panel(start: str | None, title: str, prompt: str,
+                    types: list[str] | None = None) -> str | None:
     """Files only. MAIN THREAD ONLY — see `choose_file`.
 
     No `canCreateDirectories`, unlike `_run_directory_panel`: this panel picks
@@ -611,7 +622,7 @@ def _run_file_panel(start: str | None, title: str, prompt: str) -> str | None:
     """
     return _run_open_panel_modal(
         title=title, prompt=prompt, files=True, directories=False,
-        start=start, create_directories=False)
+        start=start, create_directories=False, types=types)
 
 
 class PanelNotAnswered(TimeoutError):
@@ -663,15 +674,20 @@ def choose_directory(start: str | None = None, title: str = "Choose a folder",
 
 
 def choose_file(start: str | None = None, title: str = "Choose a file",
-                prompt: str = "Choose", timeout: float = 300.0) -> str | None:
+                prompt: str = "Choose", types: list[str] | None = None,
+                timeout: float = 300.0) -> str | None:
     """A file-only NSOpenPanel, callable from ANY thread. Blocks the caller.
 
     Everything `choose_directory` says applies unchanged — the main-thread hop,
     the cancel, the timeout carrying the panel's own Event — because both go
     through `_on_the_main_thread`; only which panel runs differs.
+
+    `types` narrows the panel to those extensions (see `_run_open_panel_modal`).
+    Ahead of `timeout` in the signature because every caller in this app passes
+    it by keyword, and it is a property of the dialog rather than of the wait.
     """
     return _on_the_main_thread(
-        lambda: _run_file_panel(start, title, prompt),
+        lambda: _run_file_panel(start, title, prompt, types),
         timeout, "the file chooser was not answered in time")
 
 

@@ -53,6 +53,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Sequence
 from pathlib import PureWindowsPath
 
 from fused_render._view_url_codec import _is_drive_path, canonical_fs_path
@@ -165,12 +166,17 @@ def available() -> bool:
 # ------------------------------------------------------------- macOS: AppKit
 
 
-def _pick_appkit(start, title, *, files=False):
+def _pick_appkit(start, title, *, files=False, types=None):
     from fused_render import menubar_pin
 
     try:
-        chooser = menubar_pin.choose_file if files else menubar_pin.choose_directory
-        return chooser(start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
+        # Not one `chooser` variable any more: only the file panel takes `types`,
+        # and a folder panel handed one would be a keyword it has no meaning for.
+        if not files:
+            return menubar_pin.choose_directory(
+                start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
+        return menubar_pin.choose_file(
+            start=start, title=title, types=types, timeout=_DIALOG_TIMEOUT_S)
     except menubar_pin.PanelNotAnswered as exc:
         # The panel belongs to the AppKit main thread and there is nothing here
         # that could dismiss it, so this is not "the dialog failed" — it is "the
@@ -188,22 +194,32 @@ def _as_applescript_string(text: str) -> str:
     return f'"{escaped}"'
 
 
-def _osascript_script(start, title, *, files=False) -> str:
+def _osascript_script(start, title, *, files=False, types=None) -> str:
     """The `choose folder` / `choose file` one-liner. Separate from running it so
     a test can swap in a script that needs no human and still exercise the real
     subprocess.
 
     `choose file`'s own `default location` is a FOLDER either way — the verb is
-    what changes, not the seed — so the two scripts differ by one word."""
+    what changes, not the seed — so the two scripts differ by one word.
+
+    `of type` is `choose file`'s only filter and takes a list of extensions (or
+    UTIs), written immediately after the prompt. `choose folder` has no such
+    clause, so it is emitted only for a file pick that was given types. Every
+    item goes through the same escaper as the title: an extension arrives off
+    the wire, and one holding a quote would otherwise close the list early."""
     verb = "choose file" if files else "choose folder"
     parts = [verb + " with prompt ", _as_applescript_string(title)]
+    if files and types:
+        parts += [" of type {",
+                  ", ".join(_as_applescript_string(t) for t in types),
+                  "}"]
     if start:
         parts += [" default location POSIX file ", _as_applescript_string(start)]
     return "POSIX path of (" + "".join(parts) + ")"
 
 
-def _pick_osascript(start, title, *, files=False):
-    script = (_osascript_script(start, title, files=True) if files
+def _pick_osascript(start, title, *, files=False, types=None):
+    script = (_osascript_script(start, title, files=True, types=types) if files
               else _osascript_script(start, title))
     try:
         proc = subprocess.run(
@@ -234,7 +250,7 @@ def _pick_osascript(start, title, *, files=False):
 # own. They raise OSError for "the dialog broke" and return None for a cancel.
 
 
-def _pick_linux(start, title, *, files=False):
+def _pick_linux(start, title, *, files=False, types=None):
     from fused_render.supervisor._linux.ui import pick_directory, pick_file
 
     if files:
@@ -246,11 +262,14 @@ def _pick_linux(start, title, *, files=False):
         # so a Linux file pick reads a failure as a cancel. The FOLDER path
         # below keeps the distinction, which is what `/api/fs/pick-folder`'s
         # in-page fallback needs and a file pick has no fallback to need.
-        return pick_file()
+        # `types` is the one thing it did grow, because a filter is a hint the
+        # dialog shows rather than a second set of flags to keep right — and the
+        # tray's own call passes none, so it is unchanged.
+        return pick_file(types=types)
     return pick_directory(title=title, start=start)
 
 
-def _pick_win32(start, title, *, files=False):
+def _pick_win32(start, title, *, files=False, types=None):
     """The Windows shell dialog, on its own STA thread.
 
     `IFileDialog` pumps its own message loop and shell extensions need a
@@ -271,8 +290,10 @@ def _pick_win32(start, title, *, files=False):
         try:
             # `pick_file` is the tray's own GetOpenFileNameW dialog and takes
             # neither a title nor a start — see `_pick_linux` for the same
-            # trade, made for the same reason.
-            cell["path"] = pick_file() if files else pick_directory(title=title, start=start)
+            # trade, made for the same reason. It does take `types`: that is one
+            # `Filter` string, not a dialog's worth of options.
+            cell["path"] = (pick_file(types=types) if files
+                            else pick_directory(title=title, start=start))
         except BaseException as exc:  # noqa: BLE001 - carried to the caller below
             cell["error"] = exc
         finally:
@@ -406,13 +427,17 @@ def _canonical_absolute(chosen: str) -> str:
     return canonical
 
 
-def _pick(start: str | None, title: str, *, files: bool) -> str | None:
+def _pick(start: str | None, title: str, *, files: bool,
+          types: Sequence[str] | None = None) -> str | None:
     """One dialog, folders or files, and everything that is the same either way.
 
     The claim, the abandoned-dialog handling, the cancel-is-an-answer rule and
     the canonicalisation are properties of raising a modal from this process,
     not of what the modal chooses — so `pick_directory` and `pick_file` are two
     words of difference over one body rather than two copies of it.
+
+    `types` is a list of bare extensions ("png", "jpg") and only means anything
+    to a FILE pick — a folder has no extension to match.
     """
     noun = "file chooser" if files else "folder chooser"
     backend = _backend()
@@ -422,12 +447,12 @@ def _pick(start: str | None, title: str, *, files: bool) -> str | None:
     claim = _claim()
     still_up = None
     try:
-        # `files` is passed only when it is True, so a folder pick calls every
-        # backend with exactly the two arguments it has always taken — the
-        # signature this module's own tests stub, and one they should not have
-        # to learn a third argument for to keep stubbing.
-        chosen = (_BACKENDS[backend](start, title, files=True) if files
-                  else _BACKENDS[backend](start, title))
+        # `files` and `types` are passed only on a FILE pick, so a folder pick
+        # calls every backend with exactly the two arguments it has always taken
+        # — the signature this module's own tests stub, and one they should not
+        # have to learn further arguments for to keep stubbing.
+        chosen = (_BACKENDS[backend](start, title, files=True, types=types)
+                  if files else _BACKENDS[backend](start, title))
     except DialogAbandoned as exc:
         # The dialog is still on screen. Hand it the claim (see _unclaim) so the
         # next request is refused while it is up and served once it closes.
@@ -461,7 +486,8 @@ def pick_directory(start: str | None = None,
 
 
 def pick_file(start: str | None = None,
-              title: str = "Choose a file") -> str | None:
+              title: str = "Choose a file",
+              types: Sequence[str] | None = None) -> str | None:
     """Raise the OS FILE dialog and return the chosen absolute path.
 
     Same contract as `pick_directory` above, and the same reason for existing:
@@ -472,9 +498,15 @@ def pick_file(start: str | None = None,
     disk. This is the dialog raised by the process that already has filesystem
     authority, and the path never leaves it.
 
-    No type filter, deliberately: the caller checks the extension it cares
-    about and says so in its own words, which is a better message than a dialog
-    that greys out a file for reasons it cannot explain — and the three backends
-    below express filters three incompatible ways.
+    `types` narrows the dialog to a list of bare extensions ("png", "jpg"): a
+    caller that can read three formats should not be able to be handed a fourth
+    in the first place. Each backend below expresses that its own way, which is
+    why it is a list of extensions here rather than a filter string — this
+    module owns the translation, not its callers.
+
+    The filter is the dialog's half of the job and NOT the check: it does not
+    reach a drag-drop, a typed filename, or the Linux backends that can only
+    suggest. A caller still refuses what it cannot read, in its own words.
+    None (the default) leaves the dialog showing everything, as it always has.
     """
-    return _pick(start, title, files=True)
+    return _pick(start, title, files=True, types=types)

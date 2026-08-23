@@ -85,14 +85,38 @@ def report_open_rejected(path: str) -> None:
     alert(f"FusedRender could not open:\n\n{path}")
 
 
-def pick_file() -> str | None:
+def pick_file(types: list[str] | None = None) -> str | None:
+    """Show the file chooser; return the chosen path, or None on a cancel OR a
+    broken dialog (the two are not distinguishable here — see
+    `server/dirpicker._pick_linux`, which names that cost).
+
+    `types` is a list of bare extensions ("png", "jpg") to narrow the dialog to.
+    All three tools express that as a `*.ext` glob set, which is what
+    `_glob_filter` below builds; none of them ENFORCES it — a filename can still
+    be typed — so a caller that cannot read every format still checks the one it
+    was handed. The tray's own "open a file" passes nothing and is unchanged.
+    """
     tool = _dialog_tool()
+    globs = _glob_filter(types)
     if tool == "zenity":
-        result = _run(["zenity", "--file-selection", "--title", "Open file"])
+        argv = ["zenity", "--file-selection", "--title", "Open file"]
+        if globs:
+            # Two filters, in this order: the narrow one is what the dialog opens
+            # on, and "All files" stays reachable rather than making a format the
+            # caller CAN read but was not listed unpickable.
+            argv += ["--file-filter", "Allowed files | " + " ".join(globs),
+                     "--file-filter", "All files | *"]
+        result = _run(argv)
     elif tool == "kdialog":
-        result = _run(["kdialog", "--title", "Open file", "--getopenfilename"])
+        # kdialog takes the filter as a positional after the start dir, which is
+        # why "" appears at all: there is no way to give the second without the
+        # first, and an empty one means "wherever you were".
+        argv = ["kdialog", "--title", "Open file", "--getopenfilename"]
+        if globs:
+            argv += ["", " ".join(globs) + "|Allowed files\n*|All files"]
+        result = _run(argv)
     else:
-        return _tk_pick_file()
+        return _tk_pick_file(types)
     if result is None or result.returncode != 0:
         return None
     chosen = result.stdout.strip()
@@ -192,15 +216,29 @@ def _tk_message(kind: str, title: str, message: str):
         return None
 
 
-def _tk_pick_file() -> str | None:
+def _glob_filter(types) -> list[str]:
+    """`["png", ".jpg"]` → `["*.png", "*.jpg"]`. One place, because all three
+    tools below want the same globs and only differ in how they are strung
+    together. A leading dot is tolerated: this list arrives off the wire."""
+    return ["*." + str(t).lstrip(".") for t in (types or []) if str(t).strip(".")]
+
+
+def _tk_pick_file(types: list[str] | None = None) -> str | None:
     try:
         import tkinter
         from tkinter import filedialog
 
         root = tkinter.Tk()
         root.withdraw()
+        globs = _glob_filter(types)
+        # `filetypes` is a list of (label, patterns) pairs; Tk shows the first as
+        # the active one and lets the user switch to All files, matching what
+        # zenity and kdialog are given above.
+        filetypes = ([("Allowed files", " ".join(globs)), ("All files", "*")]
+                     if globs else [])
         try:
-            chosen = filedialog.askopenfilename(title="Open file")
+            chosen = filedialog.askopenfilename(title="Open file",
+                                                filetypes=filetypes)
         finally:
             root.destroy()
         return chosen or None
