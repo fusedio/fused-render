@@ -420,7 +420,7 @@ def load(model_id, gguf_path):
     type gets the same sentence it would have got before the download,
     because the user's mistake is identical and only the timing differs.
     """
-    _key, recipe = _resolve_model_id(model_id)
+    key, _recipe = _resolve_model_id(model_id)
 
     pooling = formats.gguf_pooling_type(gguf_path)
     filename = os.path.basename(gguf_path)
@@ -473,11 +473,17 @@ def load(model_id, gguf_path):
 
     _loaded["llm"] = llm
     # The prompt convention travels with the loaded model rather than being
-    # re-derived per request: it is a property of these weights, `generate`
-    # is on the hot path of a 64-item batch, and re-reading it per call would
-    # let a curated id and its own recipe drift apart between two requests.
-    _loaded["scheme"] = recipe.get("scheme") or formats.text_embed_scheme(
-        model_id, filename)
+    # re-derived per request: it is a property of these weights, and
+    # `generate` is on the hot path of a 64-item batch.
+    #
+    # Keyed on the RESOLVED key and the ACTUAL filename, not on `model_id` and
+    # the recipe's. For a curated model the two are the same and
+    # `text_embed_scheme` reads the table, which is authoritative. For an
+    # uncurated repo they can differ: `_resolve_uncurated_repo` picks a
+    # filename from the Hub listing or the cache, while `gguf_path` is the
+    # file that actually got loaded, and the filename heuristic should run
+    # over the bytes in memory rather than over the pick that led to them.
+    _loaded["scheme"] = formats.text_embed_scheme(key, filename)
 
     # Reported through the same field every other runner uses, so a page
     # reading it needs no special case for this engine.
