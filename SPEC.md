@@ -7948,6 +7948,209 @@ an AI Models page that could say what was on disk but not what was *running*.
   correctness**, since an auto-unloaded model's next call raises
   `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
   existing `model_loading` handling already covers it.
+- **AI-14** **A local model can be BENCHMARKED on demand: a fixed workload per
+  capability, run against one model, recorded forever with its throughput, its
+  memory, its load time and the machine it ran on** (D443, D444, D445). The AI
+  Models page's Benchmark tab (`/ai-models/benchmark`) draws one section per
+  capability listing that capability's downloaded models with a Run button;
+  `fused_render/ai/benchmark.py` performs the run and
+  `fused_render/ai/bench_store.py` keeps it at
+  `<home>/ai_benchmarks.json`. Three routes: `GET /api/ai/benchmark` (the
+  history plus this machine, unguarded like every read), `POST /api/ai/benchmark`
+  and `POST /api/ai/benchmark/delete` (both behind the D3 X-Fused guard — one
+  spends minutes of GPU time, the other destroys measurements that cannot be
+  recomputed for an app version that has moved on).
+  - **AI-14a** **The workload is FIXED per capability and is not a parameter.**
+    One frozen entry per capability constant in `WORKLOADS` — a 128-token decode
+    of one prompt, a 512² image, a 30-second decode, a batch of eight texts —
+    because the only thing that makes two numbers comparable is that the work was
+    identical. This is the deliberate opposite of AI-12's passive counters, which
+    summarise whatever real calls happened to pass through and therefore cannot
+    compare two models at all. The cost is equally deliberate: **a number exists
+    only where somebody pressed the button.**
+  - **AI-14b** **Every workload carries an integer `revision`, and bumping it
+    breaks comparability ON PURPOSE.** The revision is stored on every run, and
+    the page refuses to draw a delta across two different revisions rather than
+    quietly reporting a change that is the workload's and not the model's.
+    Changing any `params` value REQUIRES bumping the revision beside it.
+  - **AI-14c** **A metric that was not measured is `null`, never zero and never
+    derived.** Token counts are the worker's own (AI-3), so a runner that does not
+    report them leaves `tokensPerSecond` null rather than a rate computed from the
+    returned text — that would be a different tokenizer's answer wearing this
+    model's label. `loadSeconds` is null for an already-resident model, because
+    nothing was loaded and a zero would read as an impossibly fast load. The same
+    rule governs the machine block: `totalMemoryBytes` is null on Windows, where
+    the stdlib will not say. A consumer must render null as "—" and must never
+    treat a real `0` as an absence.
+  - **AI-14d** **The primary metric is per capability, and one of the four runs
+    the other way.** Text generation reports `tokensPerSecond` (with `ttftMs`
+    beside it, because a slow prefill and a slow decode feel completely different
+    and one figure hides the other); speech to text reports `realtimeFactor`;
+    embeddings report `textsPerSecond`; image generation reports
+    **`secondsPerStep`, where SMALLER is faster** — the step count is per-model by
+    design (`catalog.py`'s `defaults: {"steps": 4}` exists because a distilled
+    model runs at 4 where another needs 28), so a shared step count would be
+    either unfair or an out-of-memory, and the per-step figure is the only
+    comparable one. The step count is recorded on the run so the wall clock can be
+    reconstructed.
+  - **AI-14e** **Memory is `resident_bytes()` sampled from the worker after the
+    run, not a peak this app computes.** That figure already reconciles RSS
+    against a runner's own allocator and is GPU-pool aware on Apple Silicon.
+    Stated cost: a transient spike mid-generation is missed, because continuous
+    sampling would be new cross-platform machinery — and a polling thread reaching
+    into a worker mid-generation is a request waiting on a GPU call — for a
+    second-order number.
+  - **AI-14f** **Speech to text benchmarks a synthesized tone, generated per run
+    with the stdlib `wave` module, at `revision=1`.** Realtime factor is a
+    decode-throughput measure and does not need intelligible speech, and this
+    commits no binary asset to the repo. Stated risk: a model with
+    speech-dependent early-exit behaviour could look faster on a tone than on
+    real audio. **D447 replaced this with a real 30-second clip fetched from
+    our own mirror plus a word-error-rate accuracy metric, and was reverted
+    the same day**: the clip asset was never published, so every machine
+    failed every speech run with `SpeechClipUnavailable` — a live outage
+    worse than the risk the tone accepted. The clip design and the WER DP are
+    unchanged in D447's own text and ready to re-land (a `git revert` of the
+    revert) once a human publishes the asset; until then this is the accurate
+    description of what runs.
+  - **AI-14g** **One benchmark at a time per capability, enforced server-side,
+    and the request is held open for the whole run.** The supervisor holds one
+    resident model per capability, so a second concurrent run's load would evict
+    the first's model mid-measurement — the hazard `generate_transcript`'s
+    ordering comment already documents — and it is refused with a readable 409
+    rather than allowed to corrupt a figure somebody waited minutes for. Holding
+    the request open matches `POST /api/ai/image` and `POST /api/ai/transcribe`
+    rather than inventing a poll-a-benchmark-job protocol for a third long call;
+    progress still flows to a job row, so the page is not blind. A run also
+    refuses a capability with no workload (400) and a model this machine does not
+    hold (404): a button press must not become a silent multi-GB download.
+    **"Hold" is verified against the DISK, not against the curation** — the
+    catalog is consulted only to recognise `llamacpp-text`'s filename-shaped ids
+    (AI-5m), which resolve through `hub_cache.is_downloaded`, and a partly
+    downloaded repo is already absent from `cached_models()` (D424), so nothing
+    here can resume a stopped fetch inside a held-open request. The concurrency
+    guard is per capability and the UI reflects exactly that: a run on one
+    capability leaves the other three pressable.
+  - **AI-14h** **A run that FAILED is a result, and it is stored — a run that was
+    CANCELLED is neither stored NOR returned.** "This model OOMs on this laptop"
+    is exactly what somebody benchmarks to find out, so a raising runner is
+    recorded as `ok: false` with the message and appears in the history beside the
+    successful runs; its `metrics` is empty rather than a dict of nulls, and the
+    HTTP status describes the request while `ok` describes the model (a failed run
+    is a 200). But a cancel measured nothing, so it is a **distinct answer on the
+    wire** — `200 {"cancelled": true}` carrying no `run` at all, which the page
+    detects by the ABSENCE of `run` and never by matching an error string.
+    Reporting it as an `ok:false` record instead put a phantom
+    "Failed — cancelled" row in the page's history that became the model's latest
+    (so the delta and the summary compared against it) until a reload; and a 4xx
+    would have been wrong in the other direction, since the request was well
+    formed and reached a model. **Nobody pressed a ✕** — a benchmark has no cancel
+    control (AI-14j) — so the tab TELLS the user, in a muted note naming the
+    likely cause and saying nothing was recorded: several minutes of waiting
+    ending in silence is worse than either a result or an error.
+    An interpreter-level exit
+    (`KeyboardInterrupt`/`SystemExit` arriving on the threadpool thread) is
+    likewise not recorded, and is additionally re-raised rather than swallowed so
+    a Ctrl-C still stops the process. A generation the WORKER reports as cancelled
+    (`cancelled: true` on its own terminal frame, `ok: true` beside it — what
+    `fused.ai.cancel()` from any page produces on the shared worker) is the same
+    case: not a measurement, however many tokens it produced first.
+  - **AI-14i** **Bounded by a hard run cap, not by a ring, and the store hands
+    the page nothing it cannot render.** Unlike AI-12c's fixed bucket ring, runs
+    are individually meaningful and cannot be merged, so the store keeps the
+    newest `MAX_RUNS` (500) and drops the OLDEST on append — never the run whose
+    button was just pressed. A corrupt or absent file reads as no runs, never a
+    raise; so does an individual record lacking `id`, `metrics` or `workload`,
+    the three keys every reader dereferences. That check lives in `read()` rather
+    than in each consumer because a hand-edited file must not be able to take the
+    AI Models page down, and a per-reader guard is a rule the next reader has to
+    be told about. It is deliberately NOT a schema check — a metric added
+    server-side must never start deleting the runs recorded before it.
+  - **AI-14j** **A benchmark deliberately OPENS no download-manager job row,
+    returns no job id, and offers no ✕.** The tab shows its own in-tab spinner
+    for the duration, and that is the whole progress story.
+
+    "Opens none" rather than "has none", because there is one row it can
+    INHERIT and the difference is worth stating precisely. A speech benchmark
+    queued behind a real transcription goes through
+    `supervisor._await_turn`, whose queue report carries a title — so a row
+    genuinely is created under the private job id, and once it exists the
+    worker's otherwise-refused titleless ticks start landing on it. Two
+    mitigations, both inside the benchmark so that `ai/supervisor.py` is not
+    touched: the synthesized audio is named `fused-benchmark-tone.wav`, since that
+    basename is what titles the row and "benchmark.wav" could be a file the user
+    dropped in; and every long call ends with a TITLELESS terminal report, which
+    closes a row that exists and — because `jobs.upsert` refuses a first report
+    with no title — cannot bring one into being. **That report says what actually
+    happened**: `cancelled`, or `error` with the reason, or `done`, the shape
+    `supervisor.start_transcribe` uses. Reporting `done` unconditionally answered
+    the ✕ the user had just pressed with a green success (clearing
+    `cancel_requested` on the way, since `upsert` treats `done` as terminal) and
+    marked a dead worker's run as finished. So no benchmark leaves a row running,
+    none leaves one lying, and the ordinary path still creates none.
+
+    The reason is a namespace conflict, and it is worth stating in full because
+    it took three attempts to see: **server job rows are keyed by TITLE.** A
+    page's only route to one is `useCacheScan.ts`'s map of `job.title -> job`,
+    keyed that way deliberately — re-deriving the sanitised job id in TypeScript
+    would be a second copy of a Python rule — and `supervisor.load` already owns
+    the row titled exactly `model`. So both spellings of a benchmark row are
+    broken, in opposite directions:
+
+    * a DECORATED title ("Benchmark: <model>") is a row that exists, reports
+      correctly, and can be found by nobody — the tab's progress component
+      renders with no job for the whole multi-minute run, with no error anywhere;
+    * the BARE model id SHADOWS the load row (duplicate titles are
+      last-write-wins over an oldest-first list), which is strictly worse: the
+      download manager's ✕ then targets the LOAD, so the only cancel a user can
+      see stops the wrong thing, and the benchmark's own wait — which polls
+      nothing — runs to `_LOAD_TIMEOUT_S` (an hour) and records a phantom
+      `ok:false, "did not finish loading in time"`. The Playground, which takes
+      the first title match, also starts showing the benchmark's detail instead
+      of the load's byte counts.
+
+    A benchmark cannot own a row for a model that already has one, and this is a
+    design conflict rather than a bug to patch — three rounds of patching it
+    produced three new defects. **Nothing is lost by having none:** through the
+    expensive phase of a COLD run the load's own row is in the manager with real
+    byte counts, reported by the supervisor, and its ✕ cancels the load, which is
+    the honest thing for it to do. Do not re-add a benchmark row without first
+    changing how job rows are addressed.
+
+    Two consequences follow and are deliberate. The supervisor calls that require
+    a job id positionally are given a private one that names no row — non-empty,
+    because `worker_base.report`'s `job or JOB_ID` fallback would otherwise paint
+    benchmark ticks onto the model's load row, and minted through
+    `jobs.SERVER_ID_PREFIX` rather than by assembling the reserved prefix here.
+    And a benchmark has no cancel control of its own, so a run reported as
+    cancelled was stopped from OUTSIDE: `fused.ai.cancel()` from any page reaches
+    the same resident worker (one model per capability is shared), and so does the
+    ✕ on the load's own download row or on an inherited queue row. The client
+    cannot tell those apart, so the tab's muted note gives an EXAMPLE cause
+    rather than asserting one, and states that nothing was recorded — several
+    minutes of waiting must not end in silence.
+
+    **The wait watches the load's own record, not only whether it became ready.**
+    `_bring_up` answers both a failure and a ✕ by stamping `state="error"` on the
+    pending worker and deleting it from the table, so a readiness-only poll saw
+    nothing change and ran the full hour-long timeout — holding the request open,
+    holding the per-capability claim so every other benchmark of that capability
+    was refused for the hour, and then recording
+    `ok:false, "did not finish loading in time"`. A failed load is now the
+    loader's own sentence, immediately, and recorded (it IS a fact about this
+    model on this machine); a cancelled one is `Cancelled` and recorded nowhere;
+    an eviction says it was unloaded. The timeout remains only as the backstop for
+    a bring-up that neither succeeds nor reports.
+
+  - **AI-14k** **A benchmark that had to cold-load the model UNLOADS it when the
+    run ends** (D446) — success, a failed workload, a timeout, or an exception
+    mid-measurement alike, via a `try`/`finally` around the measure-and-read
+    phase — **and never unloads a model that was already resident.** The signal
+    is `_load_to_ready`'s own return value (`None` for warm, a float for cold),
+    reused rather than duplicated into a second flag. Placed AFTER
+    `_memory_and_device` reads the live worker, and `supervisor.unload`'s own
+    exception is logged and swallowed so a failed teardown cannot mask a
+    measurement's real error.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

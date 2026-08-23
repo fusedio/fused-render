@@ -1732,3 +1732,775 @@
   border-radius: 999px;
   vertical-align: 1px;
 }
+
+/* -- Benchmark (the Benchmark tab, SPEC AI-14) --------------------------------
+   Laid out in the Local tab's vocabulary — .am-section per capability, the
+   .am-section-head / .am-section-title pair for the heading — so a capability
+   means the same thing on either tab. What is here is only what those classes
+   have no answer for: a model row that carries a measurement, a line chart, and
+   the run archive under it.
+
+   Every colour is a global token (tokens.css), so both themes come for free the
+   way the rest of this file gets them — including the chart's lines, which is
+   what `--series-1..6` was added to that palette for: a categorical scale is
+   the one thing the status tokens could not stand in for. */
+
+.am-bench {
+  /* One capability's numbers are read against another's; a wide measure would
+     put a model name and its throughput at opposite ends of the window. */
+  max-width: 1000px;
+}
+
+/* Each capability is now a distinct PANEL, not just a heading with a rule
+   under it — the four capabilities used to blur into one scroll of sections
+   that differed only by their headings. The card face is the same one
+   `.am-card` uses elsewhere on this page, so a reader who already knows what
+   a card means on the Local tab does not have to learn a second visual
+   vocabulary for this one. Scoped to `.am-bench .am-section` rather than
+   changing `.am-section` itself, which the rest of the page's own sections
+   (not panels) still use. */
+.am-bench .am-section {
+  padding: 16px 20px 20px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* The border-bottom rule `.am-section-head` normally draws would sit oddly
+   flush against this panel's own border a few pixels below it; a plain gap
+   reads as separation just as well inside a panel that already has an edge. */
+.am-bench .am-section-head {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+/* Narrow enough that the heading and the Metric select (added here so it sits
+   beside the instruments it actually governs — see BenchmarkTab.tsx) can
+   genuinely run out of room side by side; wrapping the select to its own line
+   under the heading reads better than either one clipping. */
+.am-bench-section-head {
+  flex-wrap: wrap;
+}
+
+/* The Metric select's own row — a smaller, quieter sibling of the page-level
+   capability select (same select skin via `.am-bench-capsel-input`, reused
+   rather than redeclared), visually subordinate to the `<h3>` beside it
+   because IT chooses within a section the heading already named, not a
+   sibling heading in its own right. Unlike the capability select, this one
+   keeps a visible "Metric" caption — it sits beside a card's `<h3>`, not
+   alone in the page-level toolbar, so the two are not read as a matched pair
+   and the caption stays legible chrome here rather than redundant chrome. */
+.am-bench-metricsel {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The unit, and — for exactly the metrics where the ordinary "longer bar /
+   bigger number wins" habit reads backwards — the word that says so
+   (`metricUnitAndCue`, lib/benchmark.ts). A small badge rather than plain
+   text: it is metadata about the current selection, not a second heading, and
+   a pill face says so at a glance. Never the metric's own NAME — the select
+   right beside it already shows that. */
+.am-bench-metric {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-group-note a {
+  color: var(--accent-soft);
+}
+
+/* -- the comparison chart: the tab's hero instrument -------------------------
+   One horizontal bar per BENCHMARKED model, ranked best-first (SPEC AI-14).
+   Plain CSS flex, not SVG — a horizontal bar's length is `width: N%` on a
+   flex child and its value label is simply the next flex sibling, so there is
+   no stretched-viewBox distortion to work around (ModelTrendChart.tsx needs
+   that machinery for a line chart; a bar chart does not). Sits ABOVE the
+   leaderboard rows in the DOM (BenchmarkTab's `CapabilitySection`) — it
+   answers the question a reader arrives with, and unlike the per-model trend
+   chart below it renders whenever more than one model has been benchmarked,
+   which is the normal case. */
+.am-bench-compare {
+  margin-bottom: var(--am-gap-head);
+}
+
+.am-bench-compare-body {
+  display: flex;
+  gap: 10px;
+}
+
+/* Shared by the name column AND the empty spacer in the axis row below it —
+   ONE class for both widths, so the plot area and the tick row explaining it
+   can never drift out of alignment from editing one without the other. */
+.am-bench-compare-namecol {
+  flex: 0 0 26ch;
+  min-width: 0;
+}
+
+.am-bench-compare-names {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.am-bench-compare-name {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.am-bench-compare-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.am-bench-compare-axis-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* The gridlines above zero — lighter and dashed, the same treatment
+   `.am-bench-gridline` gives the trend chart's own axis, so the two
+   instruments read as one visual system. */
+.am-bench-compare-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--border);
+  opacity: 0.6;
+}
+
+.am-bench-compare-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.am-bench-compare-row {
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+
+/* The bar's own colour matches the trend chart's line (`--accent`) — one
+   instrument's worth of colour vocabulary shared across both, rather than a
+   second palette decision for a chart that is showing the same underlying
+   numbers a different way. */
+.am-bench-compare-bar {
+  height: 10px;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.am-bench-compare-value {
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.am-bench-compare-foot {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.am-bench-compare-axis {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 14px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-bench-compare-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* The first tick (0) and the last would otherwise hang off the plot's own
+   edges under `translateX(-50%)` — nudge them back onto the axis rather than
+   letting either spill past the chart's own box. */
+.am-bench-compare-axis span:first-child {
+  transform: translateX(0);
+}
+
+.am-bench-compare-axis span:last-child {
+  transform: translateX(-100%);
+}
+
+/* -- Run all: one queue per capability, driven by BenchmarkTab's runAllFor --
+   Sits between the two chart instruments and the ledger rows it drives —
+   right above `.am-bench-rows`, since that is exactly the list it acts on. */
+.am-bench-runall {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+.am-bench-runall-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* Reuses `.am-runtime-dot`'s own animation (defined alongside
+   `.am-bench-busy`) — the same "something is happening" signal a single
+   in-flight row's own spinner already gives, not a second one invented for
+   the queue. */
+
+.am-bench-runall-tally,
+.am-bench-runall-note {
+  color: var(--fg-muted);
+}
+
+.am-bench-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--am-gap-head);
+}
+
+/* One model, one line: who, the bar, the number, the button. Compacted from a
+   two-line row (a headline plus a full sentence of detail) specifically so a
+   failed run's error paragraph — which used to dump straight into this row —
+   cannot dominate the section; it lives behind `.am-bench-rowdetail` now. */
+.am-bench-row {
+  display: grid;
+  /* Wide enough that two repos differing only in a variant suffix
+     ("whisper-large-v3-mlx" vs. "-turbo") both fit whole — the old 16ch
+     column truncated both to the identical "whisper-large-v3…", which
+     defeats a LEADERBOARD: two rows a reader cannot tell apart. There was
+     also just unused space here (the middle column already flexes), so
+     widening this one costs nothing. */
+  grid-template-columns: minmax(0, 30ch) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  /* A `role="button"` div now (BenchmarkTab.tsx) — it picks the trend chart's
+     model — so it needs its own focus ring and pointer affordance, the two
+     things a native `<button>` gives away for free and a bare div does not. */
+  cursor: pointer;
+}
+
+.am-bench-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The row whose history the trend chart above is currently showing. Border
+   plus a light accent wash rather than either alone — the same idiom
+   `.bar-menu-item.active` (explorer.css) uses for its own "which one is this"
+   state, kept stronger than a hover tint so the two never blur. */
+.am-bench-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+}
+
+.am-bench-model {
+  min-width: 0;
+  font-size: 12px;
+  /* `middleEllipsis` (lib/benchmark.ts) does the truncating now, to a budget
+     matching this column's width — the middle, not the tail, is what it
+     elides, because two names sharing a long prefix differ at the END. This
+     overflow/nowrap pair is a safety net for the rare id that still exceeds
+     the budget's character count in a wider glyph, not the primary mechanism.
+     The full id is the row's `title`. */
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* A model whose weights are gone but whose runs are not. Not an error colour —
+   nothing failed; the history simply outlived its subject. Its own line under
+   the name, since the name column is now too narrow to fit both. */
+.am-bench-gone {
+  display: block;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* **`flex-wrap: wrap` is the actual fix for a real overlap bug**, not a
+   defensive extra: every child here (`.am-bench-headline`, the delta, the
+   Details expander) is `flex: 0 0 auto` and none of them can shrink, so at a
+   narrow enough width (~650px total window — well within a real reader's
+   split-pane, and this row's own value strings got longer this round: "1384.6
+   × realtime · 281 MB") their combined width used to exceed this cell's
+   shrunk grid track. Nothing here clipped that overflow, so it painted PAST
+   the cell — the Details expander vanishing behind the Run button, reading as
+   a missing control rather than a layout bug. Wrapping lets the row grow
+   taller instead: the button's own grid column is unaffected (a separate
+   track), so it never overlaps regardless of how many lines this cell wraps
+   to. */
+.am-bench-latest {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+/* No `white-space: nowrap` here (there used to be one) — below roughly
+   600px this row's own value string ("1384.6 × realtime · 281 MB") is wider
+   than the whole flexible column on its own, so `.am-bench-latest`'s
+   `flex-wrap` (which moves the DELTA and Details onto their own line) is not
+   enough by itself: the headline was still one unbreakable unit, still wide
+   enough to overflow past the button's column at that width. Letting it wrap
+   internally is the same fix at one layer deeper — nothing here FORCES a
+   wrap at any width that already fits it on one line, since flex items
+   without a fixed width still lay out on one line while there is room. */
+.am-bench-headline {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Never benchmarked" — the absence of a measurement, said quietly. It is the
+   normal state of a fresh machine, not a warning. */
+.am-bench-never {
+  color: var(--fg-muted);
+}
+
+/* A run in flight. A plain spinner line, NOT `.am-card-runtime`/ModelProgress:
+   that draws a job row's detail and byte counts, and a benchmark deliberately
+   has no job row (see BenchmarkTab.tsx). There is genuinely nothing to report
+   until the held-open request returns, and an invented percentage is what makes
+   live work read as frozen. The reused `.am-runtime-dot` is the one honest
+   signal — something is happening. */
+.am-bench-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* The detail tucked behind "Details"/"Failed — details" — TTFT, load time,
+   device, or a failed run's full error text. Collapsed by default for the
+   same reason the run archive below is: it is evidence for a row whose
+   headline already gave the answer, not something every reader needs open. */
+.am-bench-rowdetail {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.am-bench-rowdetail > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+}
+
+.am-bench-rowdetail > summary:hover {
+  color: var(--fg);
+}
+
+.am-bench-rowdetail > p {
+  margin: 4px 0 0;
+  max-width: 60ch;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+
+/* A run stopped from outside — `fused.ai.cancel()` from another page reaching
+   the shared worker. Muted, not `--error`: nothing failed and the model is not
+   at fault, so it reads as an explanation rather than as a fault. Deliberately
+   not the ErrorBanner for the same reason. */
+.am-bench-stopped {
+  margin: 0 0 var(--am-gap-head);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The change against the last comparable run. Colour comes from `better`, never
+   from the sign: on an image section a negative change is the improvement, so a
+   green-for-plus rule would be wrong on one section in four. */
+.am-bench-delta {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.am-bench-delta.better {
+  color: var(--success-bright);
+}
+
+.am-bench-delta.worse {
+  color: var(--warning-soft);
+}
+
+/* -- the selectors: capability, and which metric to read it by ----------------
+   The page-level toolbar now holds one bare `<select>` — Capability — with no
+   visible caption of its own (an option's text already names the capability,
+   e.g. "Text generation", so a "Capability" label beside it repeated that);
+   `aria-label` on the element (BenchmarkTab.tsx) keeps it named for assistive
+   tech. Metric moved into each capability's own card below and keeps its
+   caption there (`.am-bench-metricsel`) — see BenchmarkTab.tsx for why native
+   selects rather than a segmented control: this count of options does not
+   earn a second control vocabulary on this page, and a THIRD control for the
+   model picker is avoided entirely — a leaderboard row IS the model picker,
+   by click. `flex-wrap` survives from when this row held two selects; kept in
+   case a page-level control joins Capability here again. */
+.am-bench-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: var(--am-gap-head);
+}
+
+/* `.field-control` carries the app's canonical select skin (styles/fields.css)
+   — its own chevron, its own metrics — so this looks like every other select
+   in the app rather than the platform's bare one. What's left here is a floor
+   on the width: a bare native select sizes to whichever option happens to be
+   showing, so picking a short label ("Embeddings") would visibly narrow the
+   control the reader is about to click again. */
+.am-bench-capsel-input {
+  min-width: 220px;
+}
+
+/* -- the trend instrument, and its two possible shapes -----------------------
+   Chart-first: this sits ABOVE the leaderboard rows in the DOM (BenchmarkTab's
+   `CapabilitySection`), because the trend is the first question this tab
+   answers and the ranked list — which doubles as its model picker — is the
+   second. */
+
+/* The trend instrument's own title: the MODEL alone now — no metric badge
+   here any more. The section head above already names the metric, right
+   beside the `<select>` that chose it (`.am-bench-metricsel`, unit and
+   direction cue included), and this heading used to repeat it a few lines
+   down; that was the duplicated ink moving the select into the card was
+   meant to end. */
+/* Separated from the leaderboard rows above it by MORE than the ordinary
+   `--am-gap-head` used everywhere else on this page — deliberately, this is
+   the boundary between the second instrument and the third, the same rank of
+   break as the one between the comparison chart and the rows (that pair
+   already spends TWO `--am-gap-head`s, one as the chart's own
+   `margin-bottom`, one as the rows' own `margin-top`), and it was reading as
+   a caption on the last row rather than a break at all — so this one goes
+   further still, plus a rule: the rows above are each their own bordered
+   card, and the comparison chart above THAT has a gridlined plot box, so a
+   heading with no border of its own had nothing marking it as a new
+   instrument. */
+.am-bench-trend-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: calc(var(--am-gap-head) * 2);
+  padding-top: var(--am-gap-head);
+  border-top: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.am-bench-trend-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.am-bench-chart {
+  margin-bottom: var(--am-gap-head);
+}
+
+/* The ONE-RUN state: no trend to draw (a single point has no before to read
+   it against), so no ~400px frame either — the actual bug this exists to fix
+   was a lone dot in an otherwise empty chart, reading as the page being
+   broken rather than as "here is the one number we have". A fraction of the
+   chart's own height, the value stated as plainly as the leaderboard states
+   it, with the fix in the same breath. */
+.am-bench-trend-single {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: var(--am-gap-head);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-trend-value {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-trend-note {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The y-axis label column plus the plot, side by side. Both children share the
+   plot's own fixed height (`--am-bench-plot-h`) so a tick label's `top: N%` and
+   the gridline it names land on the same pixel. */
+.am-bench-chartbody {
+  --am-bench-plot-h: 220px;
+  display: flex;
+  align-items: stretch;
+  /* Tight on purpose: the tick labels are meant to read as PART of the axis
+     they name, not a separate column floating beside it — a wider gap here
+     is what made the y-axis numbers look detached from the plot's left edge. */
+  gap: 3px;
+}
+
+.am-bench-yaxis {
+  position: relative;
+  flex: 0 0 auto;
+  width: 36px;
+  height: var(--am-bench-plot-h);
+}
+
+.am-bench-ytick {
+  position: absolute;
+  right: 0;
+  left: 0;
+  /* Centred on its gridline rather than sitting above it, so the label reads
+     as "this line" and not "the line below me". */
+  transform: translateY(-50%);
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-bench-plotwrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
+   plot fills whatever width the column has without the component measuring
+   anything (see ModelTrendChart.tsx). */
+.am-bench-plot {
+  display: block;
+  width: 100%;
+  height: var(--am-bench-plot-h);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-axis-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  /* The viewBox is stretched horizontally, which would scale a stroke with it. */
+  vector-effect: non-scaling-stroke;
+}
+
+/* The gridlines above zero — lighter than the baseline, since the baseline is
+   the one that carries the domain's promise (the axis starts at zero) and the
+   others are just its equal-step siblings. */
+.am-bench-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+/* `color` set once here rather than on a per-series wrapper: the trend chart
+   (ModelTrendChart.tsx) is scoped to ONE model now, so there is no longer a
+   categorical palette to pick from — `--series-1..6` (tokens.css) stays
+   reserved for wherever a page next needs to tell several lines apart by hue.
+   The line, its dots and its value label all inherit this ONE declaration,
+   the same reason `currentColor` was used when there were several: a label
+   whose colour were declared separately from its line could disagree with
+   the chart. */
+.am-bench-line,
+.am-bench-dot,
+.am-bench-endlabel {
+  color: var(--accent);
+}
+
+.am-bench-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.am-bench-dot {
+  fill: currentColor;
+  stroke: var(--bg);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The latest run's own value, anchored to its point — see ModelTrendChart's
+   comment on why this is HTML positioned by percentage rather than SVG
+   `<text>`, and on why it shows the VALUE rather than the model name (the
+   section heading above already names it).
+   No `transform` here — ModelTrendChart.tsx sets it inline, flipping the
+   anchor near an edge (right-aligning / dropping below the point) so a label
+   near the panel's border or its top gridline extends INTO the plot instead
+   of overflowing it. A single CSS rule cannot do that: it would need to know
+   where on the chart THIS particular point landed. */
+.am-bench-endlabel {
+  position: absolute;
+  white-space: nowrap;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* The date ticks, in a row UNDER the plot rather than as <text> inside a
+   stretched viewBox — the same reason UsageChart puts its axis in a sibling
+   div. Left-aligned first tick, right-aligned last, so each date sits under
+   the edge of the plot it actually names; a middle tick (3 runs or more) reads
+   fine centred between them. */
+.am-bench-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-left: 39px; /* clears the y-axis label column (36px + 3px gap) */
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* The single date every time tick shares (`chartAxisTicks`'s `dateCaption`) —
+   present only when the axis switched from dates to times because every run
+   landed the same day. Its own line under the ticks, not squeezed into the
+   flex row above: that row's `space-between` already spaces exactly three
+   things, and a fourth would either crowd the middle tick or (if excluded
+   from the distribution) sit at an arbitrary offset from it. */
+.am-bench-axis-caption {
+  margin-top: 2px;
+  padding-left: 39px;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* -- the run archive -------------------------------------------------------- */
+
+/* Collapsed by default. The rows above are the answer and this is the evidence,
+   so it opens on request — the summary says how many runs are folded, which is
+   what keeps "collapsed" from meaning "hidden". */
+.am-bench-history {
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+.am-bench-history > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px 0;
+}
+
+/* The table is wider than a narrow window on purpose (eight columns of facts),
+   so it scrolls INSIDE this box rather than making the page scroll sideways. */
+.am-bench-tablewrap {
+  overflow-x: auto;
+  margin-top: 6px;
+}
+
+.am-bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.am-bench-table th,
+.am-bench-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Numbers right-aligned and tabular, so a column of them can be compared by
+   eye — which is the entire reason this table exists. */
+.am-bench-table th.num,
+.am-bench-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-table thead th {
+  padding: 0;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+/* The whole header cell is the sort control, so the hit target is the column
+   heading rather than a few pixels of text inside it. */
+.am-bench-sort {
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.am-bench-sort:hover {
+  color: var(--fg);
+}
+
+.am-bench-sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A run that failed. Tinted rather than hidden: "this model OOMs on this
+   laptop" is a result, and it has to be legible as one. */
+.am-bench-table tr.failed td {
+  color: var(--error);
+}
+
+/* A run measured under a different workload version — the comparability seam.
+   Marked so a reader knows why no delta is drawn across it. */
+.am-bench-rev {
+  color: var(--warning-soft);
+  font-size: 11px;
+}
+
+.am-bench-forget {
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.am-bench-forget:hover {
+  color: var(--error);
+  border-color: var(--border);
+}
+
+.am-bench-forget:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
