@@ -239,6 +239,17 @@
   min-width: 0;
 }
 
+/* NOT ON THIS DISK: the name greys to the weight of the figures beside it.
+ * A downloaded model's name is the only full-contrast thing on its card, so
+ * dropping the contrast is what makes "you have this one" visible at a glance
+ * down the rail — the download glyph says the same thing, but only to a reader
+ * who has already stopped on the row. Deliberately NOT the dashed treatment
+ * `.pg-model-off` gives an unsupported card: that one cannot be played at all,
+ * and this one is a click and a wait away. */
+.pg-model-absent .pg-model-name {
+  color: var(--fg-muted);
+}
+
 .pg-model-name {
   flex: 1;
   font-weight: 600;
@@ -299,7 +310,8 @@
   white-space: nowrap;
 }
 
-/* The CTA, now a glyph on the name line, left of the chip and the size.
+/* The CTA, now a glyph and last on the name line, right of the chip and the
+ * size.
  * `flex: none` for the same reason those two have it: the name is the only
  * thing on this row allowed to give up space.
  *
