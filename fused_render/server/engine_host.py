@@ -119,6 +119,14 @@ SPAWN_KWARGS = (
 
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
+#: Called with a Child right after it is terminated, so consumers (the proxy's
+#: per-child connection pool) can release resources tied to that child.
+_terminate_hooks: list = []
+
+
+def register_terminate_hook(fn) -> None:
+    _terminate_hooks.append(fn)
+
 
 def _validate_interpreter(python: str) -> None:
     """The interpreter must be one of ours: this app's own `sys.executable`, or a
@@ -219,6 +227,11 @@ def _terminate(child: Child) -> None:
             child.proc.wait(timeout=3.0)
         except (subprocess.TimeoutExpired, OSError):
             pass
+    for hook in _terminate_hooks:
+        try:
+            hook(child)
+        except Exception:  # noqa: BLE001 — a hook must not block reaping
+            logger.exception("engine terminate hook failed")
 
 
 def _tail(path: str, limit: int = 2000) -> str:

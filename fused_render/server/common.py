@@ -84,6 +84,21 @@ def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
 
 
+def resolve_py(py, html):
+    """Resolve a request's `py` (absolute, or relative to its `html`) into a path.
+    Shared by /api/run and /api/engine so both resolve identically. Returns
+    (resolved, None) or (None, error-Response)."""
+    if not py:
+        return None, _error("request body must include 'py': a path to a Python file")
+    if os.path.isabs(py):
+        return py, None
+    if not html:
+        return None, _error(
+            "'py' is a relative path but 'html' was not provided; either send an "
+            "absolute 'py' path or include 'html' so it can be resolved")
+    return os.path.normpath(os.path.join(os.path.dirname(html), py)), None
+
+
 def _is_file_mount_safe(path: str) -> bool:
     """os.path.isfile, but NEVER a kernel stat on a mount-backed path — a cold
     os.path.isfile there is the GETATTR that lists the whole parent prefix and

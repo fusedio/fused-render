@@ -5,7 +5,7 @@ from urllib.parse import parse_qsl, urlsplit
 from fastapi import APIRouter, Body, Header, Request, Response
 
 from fused_render import calls as shell_calls
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import _require_fused, resolve_py
 from fused_render.executor import dumps_result, run_python
 from fused_render.shell import prefetch as shell_prefetch
 from fused_render.shell import prefs as shell_prefs
@@ -52,18 +52,9 @@ async def api_run(request: Request, body: dict = Body(...),
                 if direct:
                     params = dict(params, source_url=direct)
 
-    if not py:
-        return _error("request body must include 'py': a path to a Python file")
-
-    if os.path.isabs(py):
-        resolved = py
-    else:
-        if not html:
-            return _error(
-                "'py' is a relative path but 'html' was not provided; "
-                "either send an absolute 'py' path or include 'html' so it can be resolved"
-            )
-        resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
+    resolved, resolve_error = resolve_py(py, html)
+    if resolve_error is not None:
+        return resolve_error
 
     # Engine dispatch (D69/§20): both paths return the same wire shape
     # ({ok, result, error:{type,message,traceback}, stdout} — the fused

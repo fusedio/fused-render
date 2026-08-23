@@ -16,29 +16,16 @@ from fastapi.responses import Response
 
 from fused_render import projectenv
 from fused_render.server import engine_host
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import _error, _require_fused, resolve_py
 from fused_render.server.routers.engines import _forward
 
 router = APIRouter()
 
 
 def _resolve_py(py, html) -> tuple[str | None, Response | None]:
-    """Resolve `py` (absolute, or relative to `html`) the way run.py does.
-
-    Returns (resolved, None) on success or (None, error-response).
-    """
-    if not py:
-        return None, _error("request body must include 'py': a path to a Python file")
-    if os.path.isabs(py):
-        resolved = py
-    else:
-        if not html:
-            return None, _error(
-                "'py' is a relative path but 'html' was not provided; "
-                "either send an absolute 'py' path or include 'html' so it can "
-                "be resolved")
-        resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
-    return os.path.abspath(resolved), None
+    """resolve_py (shared with run.py), returning an absolute path."""
+    resolved, error = resolve_py(py, html)
+    return (os.path.abspath(resolved), None) if error is None else (None, error)
 
 
 @router.post("/api/engine")

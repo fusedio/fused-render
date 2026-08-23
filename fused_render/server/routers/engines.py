@@ -17,6 +17,7 @@ import contextlib
 import http.client
 import json
 import socket
+import threading
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Header, Request
@@ -39,6 +40,42 @@ _PROXY_HEADERS = ("content-type", "cache-control")
 
 #: The browser abandoned the request mid-proxy; there is nobody to answer.
 _GONE = object()
+
+# Per-child idle-connection pool. Children speak HTTP/1.1 keep-alive, so a
+# connection is reused across calls instead of a fresh TCP connect+teardown per
+# request. Keyed by child.uid (unique per spawn); _drop_pool, registered as an
+# engine_host terminate hook, closes a dead child's connections so they don't
+# leak on restart/idle-retire. A connection is returned to the pool only after a
+# clean full read; a hung-up or errored one is discarded.
+_POOL_MAX = 6
+_idle_pools: dict[str, list] = {}
+_pool_lock = threading.Lock()
+
+
+def _checkout(uid: str):
+    with _pool_lock:
+        pool = _idle_pools.get(uid)
+        return pool.pop() if pool else None
+
+
+def _checkin(uid: str, conn) -> None:
+    with _pool_lock:
+        pool = _idle_pools.setdefault(uid, [])
+        if len(pool) < _POOL_MAX:
+            pool.append(conn)
+            return
+    conn.close()  # pool full: don't hoard connections
+
+
+def _drop_pool(child) -> None:
+    with _pool_lock:
+        pool = _idle_pools.pop(child.uid, None)
+    for conn in pool or ():
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
+engine_host.register_terminate_hook(_drop_pool)
 
 
 async def _client_hangup(request: Request) -> None:
@@ -65,50 +102,65 @@ async def _proxy(child, request: Request, path: str, body: bytes):
     request — a viewport of those saturated the browser's six connections per
     origin and blocked every other tab."""
     timeout = POST_TIMEOUT_S if request.method == "POST" else GET_TIMEOUT_S
-    connection = http.client.HTTPConnection("127.0.0.1", child.port, timeout=timeout)
     separator = "&" if "?" in path else "?"
     target = f"{path}{separator}t={quote(child.token, safe='')}"
 
-    def fetch():
-        headers = {}
-        rng = request.headers.get("range")
-        if rng:
-            headers["Range"] = rng
-        content_type = request.headers.get("content-type")
-        if content_type:
-            headers["Content-Type"] = content_type
-        payload = body if request.method == "POST" else None
-        connection.request(request.method, target, body=payload, headers=headers)
-        answer = connection.getresponse()
-        return answer, answer.read()
+    # Try a pooled connection first; if a reused one fails (a keep-alive the
+    # child dropped), retry once on a fresh one before declaring the child gone.
+    for reused in (True, False):
+        connection = _checkout(child.uid) if reused else None
+        if connection is None:
+            if reused:
+                continue  # nothing pooled — fall through to the fresh attempt
+            connection = http.client.HTTPConnection("127.0.0.1", child.port,
+                                                     timeout=timeout)
 
-    fetch_task = asyncio.ensure_future(asyncio.to_thread(fetch))
-    hangup_task = asyncio.ensure_future(_client_hangup(request))
-    try:
-        await asyncio.wait(
-            {fetch_task, hangup_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if not fetch_task.done():
-            # shutdown(), not close(): the response's makefile() holds an io
-            # ref, so close() defers the real closesocket and the blocked
-            # recv (and the daemon's socket) would live on to the bitter end.
-            sock = connection.sock
-            if sock is not None:
-                with contextlib.suppress(OSError):
-                    sock.shutdown(socket.SHUT_RDWR)
+        def fetch(connection=connection):
+            if connection.sock is not None:
+                connection.sock.settimeout(timeout)  # a reused conn may carry another
+            headers = {}
+            rng = request.headers.get("range")
+            if rng:
+                headers["Range"] = rng
+            content_type = request.headers.get("content-type")
+            if content_type:
+                headers["Content-Type"] = content_type
+            payload = body if request.method == "POST" else None
+            connection.request(request.method, target, body=payload, headers=headers)
+            answer = connection.getresponse()
+            return answer, answer.read()
+
+        fetch_task = asyncio.ensure_future(asyncio.to_thread(fetch))
+        hangup_task = asyncio.ensure_future(_client_hangup(request))
+        try:
+            await asyncio.wait(
+                {fetch_task, hangup_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not fetch_task.done():
+                # shutdown(), not close(): the response's makefile() holds an io
+                # ref, so close() defers the real closesocket and the blocked
+                # recv (and the daemon's socket) would live on to the bitter end.
+                sock = connection.sock
+                if sock is not None:
+                    with contextlib.suppress(OSError):
+                        sock.shutdown(socket.SHUT_RDWR)
+                connection.close()
+                with contextlib.suppress(Exception):
+                    await fetch_task
+                return _GONE
+            answer, payload = fetch_task.result()
+        except (OSError, http.client.HTTPException):
             connection.close()
-            with contextlib.suppress(Exception):
-                await fetch_task
-            return _GONE
-        answer, payload = fetch_task.result()
-    except OSError:
-        return None
-    finally:
-        hangup_task.cancel()
-        connection.close()
-    out = {k: v for k, v in answer.headers.items()
-           if k.lower() in _PROXY_HEADERS}
-    return Response(content=payload, status_code=answer.status, headers=out)
+            if reused:
+                continue  # stale pooled connection — retry with a fresh one
+            return None
+        finally:
+            hangup_task.cancel()
+        _checkin(child.uid, connection)  # clean read: keep it warm for the next call
+        out = {k: v for k, v in answer.headers.items()
+               if k.lower() in _PROXY_HEADERS}
+        return Response(content=payload, status_code=answer.status, headers=out)
+    return None
 
 
 async def _forward(engine_id: str, request: Request, path: str, body: bytes):
