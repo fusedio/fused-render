@@ -10,15 +10,18 @@
 // how wide anything is.
 //
 // There is no parse here either, because there is nothing stored to parse: a
-// dragged width lives in memory for the session (pane-store.ts) and no longer
-// goes to the per-folder viewstate.
+// dragged width lives in memory for the session — shared with the file
+// sidebar since D443 (`lib/side-store.ts`), in pixels, and no longer in a
+// fraction of its own (`pane-store.ts`, deleted) or in the per-folder
+// viewstate before that.
 import { describe, expect, test } from "bun:test";
-import { COMPANION_FRAC } from "@apps/explorer/lib/side-width";
+import { COMPANION_FRAC, companionFrac } from "@apps/explorer/lib/side-width";
 import {
   PANE_DEFAULT_FRAC,
   clampPaneWidth,
   dragPaneFrac,
   paneDragCloses,
+  paneFracFromSharedWidth,
 } from "./pane-math";
 // The whole module, to assert what it no longer offers.
 import * as paneMath from "./pane-math";
@@ -112,6 +115,44 @@ describe("dragPaneFrac", () => {
     // The caller keeps the fraction it had rather than dividing by zero.
     expect(dragPaneFrac(0, 300)).toBeNull();
     expect(dragPaneFrac(Number.NaN, 300)).toBeNull();
+  });
+});
+
+// -------------------------------------------------------- the shared-width seam
+// D443: the pane's stored width is the SAME pixel number the file sidebar
+// drags (`lib/side-store.ts`), re-clamped into this pane's own (narrower)
+// floors on every read rather than the file sidebar's.
+describe("paneFracFromSharedWidth", () => {
+  test("nothing dragged yet (in either surface) is the plain companion share", () => {
+    expect(paneFracFromSharedWidth(null, 1200)).toBe(companionFrac(1200));
+    expect(paneFracFromSharedWidth(null, 900)).toBe(companionFrac(900));
+  });
+
+  test("a comfortable shared width converts straight through", () => {
+    expect(paneFracFromSharedWidth(400, 1200)).toBeCloseTo(400 / 1200, 10);
+  });
+
+  test("a width dragged wide on the FILE sidebar is still re-clamped here", () => {
+    // The file sidebar's own floor is 380px, comfortably inside this pane's
+    // range too, so an ordinary file-sidebar drag needs no clamping — the
+    // point is that it CAN be, not that this case triggers it.
+    expect(paneFracFromSharedWidth(600, 1200)).toBeCloseTo(600 / 1200, 10);
+  });
+
+  test("a shared width narrower than either surface's own floor is clamped up", () => {
+    // 100px is below both this pane's 220px floor and the file sidebar's
+    // 380px one, so no ordinary drag on either surface produces it — the
+    // clamp still has to hold for whatever arrives.
+    expect(paneFracFromSharedWidth(100, 1200)).toBeCloseTo(220 / 1200, 10);
+  });
+
+  test("a shared width wider than this container's list floor allows is clamped down", () => {
+    expect(paneFracFromSharedWidth(1190, 1200)).toBeCloseTo(1140 / 1200, 10);
+  });
+
+  test("an unmeasured container answers the companion share, not a division by zero", () => {
+    expect(paneFracFromSharedWidth(400, 0)).toBe(companionFrac(0));
+    expect(paneFracFromSharedWidth(400, Number.NaN)).toBe(companionFrac(Number.NaN));
   });
 });
 

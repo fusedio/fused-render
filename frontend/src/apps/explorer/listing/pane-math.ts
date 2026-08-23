@@ -1,13 +1,25 @@
 // The preview pane's width arithmetic, as pure functions: the split threshold,
 // the undragged breakpoints, the pixel clamps, and the divider drag's
 // px→fraction step. The stateful half — the hook and the drag — lives in
-// pane.ts, and the width a drag produces in pane-store.ts.
+// pane.ts.
 //
 // There is no parse of a stored width here, and there was: a dragged fraction
 // used to be serialised into the per-folder viewstate and read back, so it
 // needed validating on the way in (legacy pixel values, a whole-container 1).
-// Nothing is stored any more — the width is a module variable for the session —
-// so every value this module sees comes straight from its own clamps.
+// Nothing is stored per-folder any more — see the next paragraph for what is.
+//
+// **THE STORED WIDTH IS PIXELS, SHARED WITH THE FILE SIDEBAR** (D443,
+// `lib/side-store.ts`) — a change from this pane's own history, where a
+// dragged FRACTION lived in `listing/pane-store.ts` (now deleted) independently
+// of the file view's pixel-based sidebar. `paneFracFromSharedWidth` below is
+// the seam: it takes the shared pixel number and this pane's OWN floors
+// (`clampPaneWidth`, narrower than the file sidebar's — a listing column
+// tolerates less room than a chat composer) and answers the fraction THIS
+// container should render, so the two surfaces can share one stored number
+// while keeping different floors. Everywhere else in this module, width is
+// still a FRACTION of the split container: that is what keeps the pane
+// proportional when the window resizes (see pane.ts), and pixels appear only
+// as the floors, the shared stored value, and the duration of a drag.
 //
 // It is a separate module for a testability reason, not a tidiness one:
 // pane.ts imports @platform/lib/router, which reads `location` at MODULE INIT
@@ -16,10 +28,7 @@
 // deferring the router's read would make a genuinely load-time constant lazy
 // for every caller in the app to suit a test, whereas this arithmetic never
 // wanted the router in the first place.
-//
-// Width is a FRACTION of the split container, never a pixel count: that is
-// what keeps the pane proportional when the window resizes (see pane.ts).
-// Pixels appear here only as the floors, and only for the duration of a drag.
+import { companionFrac } from "@apps/explorer/lib/side-width";
 
 const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
@@ -72,6 +81,27 @@ export {
 // deliberately proportional and knows nothing about pixels.
 export function clampPaneWidth(containerW: number, width: number): number {
   return Math.max(PANE_MIN_W, Math.min(containerW - LIST_MIN_W, width));
+}
+
+// THE SHARED-WIDTH SEAM (D443): the fraction THIS container should render,
+// given the pixel width dragged either here or on the file sidebar
+// (`lib/side-store.ts` holds one number for both) and this container's own
+// measured width. `sharedPx: null` (nothing dragged yet, in either surface,
+// this session) answers the plain companion share.
+//
+// The shared number is clamped into THIS pane's OWN floors before it is
+// turned into a fraction — never the file sidebar's wider ones — which is
+// what lets the two surfaces share one stored pixel value while keeping
+// different minimums: a width dragged comfortable for a chat composer (the
+// file sidebar's 380px floor) is still valid input here, just re-clamped
+// against this pane's narrower 220px one, and vice versa.
+//
+// An unmeasured container (0, NaN) answers the companion share too —
+// `companionFrac` already treats that as "not small" — rather than dividing
+// by a width that cannot back a fraction.
+export function paneFracFromSharedWidth(sharedPx: number | null, containerW: number): number {
+  if (sharedPx === null || !(containerW > 0)) return companionFrac(containerW);
+  return clampPaneWidth(containerW, sharedPx) / containerW;
 }
 
 // The divider drag, in one pure step: the cursor's distance from the

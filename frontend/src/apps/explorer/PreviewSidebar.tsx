@@ -81,6 +81,9 @@ export function PreviewSideSlot() {
 // the life of the document: nothing is written to storage of any kind, so a drag
 // holds across the shell's navigation (this component remounts per file) and a
 // refresh gets the layout's answer again. That module's header argues the policy.
+// **Since D443 that store is also the FOLDER LISTING'S preview pane's** — a drag
+// here carries over to it, and vice versa, within the session; the folder pane
+// re-clamps the shared number into its own (narrower) floors rather than these.
 
 export interface SidebarEntry {
   mode: string;
