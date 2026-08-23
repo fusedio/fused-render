@@ -18,7 +18,7 @@
 // hover. Query and lines are session state, never URL state — they are the
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
-import { embedTexts, ModelLoading, watchJob } from "./client";
+import { embedTexts, withModelReady } from "./client";
 import { ConfigPanel, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
@@ -196,29 +196,13 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
     abortRef.current = controller;
     const ask = () => embedTexts(model, [asked, ...items]);
     try {
-      let result;
-      try {
-        result = await ask();
-      } catch (e) {
-        if (!(e instanceof ModelLoading)) throw e;
-        // The run STARTED the load — watch it, then ask again, once (the same
-        // dance the chat stage does on AI-5's 409).
-        setStatus(
-          downloaded
-            ? "Loading the model into memory — the first run pays for this once…"
-            : "Downloading the model — the first run pays for this once…",
-        );
-        if (e.jobId) {
-          const outcome = await watchJob(e.jobId, controller.signal, (job) =>
-            setStatus(job.detail || "Loading the model…"),
-          );
-          // Stopped from the Activity panel — asking again only earns a second
-          // 409 (the same reasoning as the chat stage's dance).
-          if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
-        }
-        setStatus(null);
-        result = await ask();
-      }
+      // The same bounded wait the text stage uses (AI-5) — one place, because
+      // this dance drifted the moment either copy learned anything.
+      const result = await withModelReady(ask, {
+        signal: controller.signal,
+        downloaded,
+        onStatus: setStatus,
+      });
       const [queryVector, ...itemVectors] = result.vectors;
       const scored = items.map((text, at) => ({
         text,

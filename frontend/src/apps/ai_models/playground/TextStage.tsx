@@ -15,9 +15,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelGeneration,
-  ModelLoading,
   streamChat,
-  watchJob,
+  withModelReady,
   type ChatSettings,
   type ChatUsage,
 } from "./client";
@@ -210,29 +209,13 @@ export function TextStage({
       });
 
     try {
-      let result;
-      try {
-        result = await run();
-      } catch (e) {
-        if (!(e instanceof ModelLoading)) throw e;
-        // The run STARTED the load (AI-5); watch it, then ask again — once.
-        setStatus(
-          downloaded
-            ? "Loading the model into memory — the first run pays for this once…"
-            : "Downloading the model — the first run pays for this once…",
-        );
-        if (e.jobId) {
-          const outcome = await watchJob(e.jobId, controller.signal, (job) =>
-            setStatus(job.detail || "Loading the model…"),
-          );
-          // Someone stopped the load from the Activity panel. Retrying would
-          // just earn a second 409 and surface it as a stream error, so say
-          // what actually happened.
-          if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
-        }
-        setStatus(null);
-        result = await run();
-      }
+      // AI-5's dance, and the wait is bounded rather than one retry — see
+      // `withModelReady`, which owns it for this stage and the embedding one.
+      const result = await withModelReady(run, {
+        signal: controller.signal,
+        downloaded,
+        onStatus: setStatus,
+      });
       setReply((r) => (r ? { ...r, pending: false, usage: result.usage ?? null } : r));
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
