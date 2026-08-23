@@ -2079,3 +2079,144 @@ def test_cached_models_does_not_offer_half_a_snapshot(client, hub):
     (repo / "blobs" / "shard2.fusedpart").write_bytes(b"x" * 32)
 
     assert "org/chat" not in {m.repo_id for m in ai_models_mod.cached_models()}
+
+
+# -- the empty shell a stopped fetch leaves behind (D437) ----------------------
+# The state a user hit: a cancelled download whose folder held one 40-byte
+# `refs/main` and not a single blob. The listing has to call that partial (no
+# snapshot IS the evidence), so the page drew a "partly downloaded" card under
+# Unrecognised offering to resume a download with nothing to resume from. The
+# fetch thread tidies it on its way out now; these pin what it may and may not
+# take with it.
+
+
+def test_a_refs_only_shell_is_discarded(client, hub):
+    repo = _repo(hub, "models--org--never-started", refs={"main": "c1"})
+    # …and the folder really is the state the field reported: partial, tiny, and
+    # filed with no capability of its own.
+    row = _repo_row(client, "org/never-started")
+    assert row["partial"] is True
+    assert row["capability"] is None
+
+    assert ai_models_mod.discard_empty_shell("org/never-started") is True
+    assert not repo.exists()
+
+
+def test_a_stopped_fetch_with_bytes_on_disk_is_KEPT(client, hub):
+    """The rule this must not break (D275/AI-5i). A part file is exactly what a
+    resume picks up, so a folder holding one is a download in progress as far as
+    this app is concerned — not litter."""
+    repo = _repo(hub, "models--org--half")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 4096)
+
+    assert ai_models_mod.discard_empty_shell("org/half") is False
+    assert repo.exists()
+
+
+@requires_symlinks
+def test_a_finished_download_is_never_discarded(client, hub):
+    """Called on every fetch's way out, including the successful ones — so the
+    successful ones have to be a no-op. Read off the FOLDER, never off the job's
+    outcome."""
+    repo = _repo(hub, "models--org--done", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    assert ai_models_mod.discard_empty_shell("org/done") is False
+    assert repo.exists()
+
+
+def test_discarding_a_shell_that_is_not_there_is_not_an_error(client, hub):
+    """The ordinary case: nothing was ever created, or a previous pass already
+    tidied it. This runs in a `finally` and must never raise."""
+    assert ai_models_mod.discard_empty_shell("org/nothing") is False
+
+
+def test_a_shell_named_by_a_path_is_refused(client, hub):
+    """Same discipline as every other destructive path here: a repo id is turned
+    into ONE folder name, and anything that is not one is not looked at."""
+    assert ai_models_mod.discard_empty_shell("../../etc") is False
+
+
+# -- bytes that ARRIVED, vs blocks reserved for them (D440) --------------------
+# Our fetcher preallocates a part file to the full length of the file it is
+# fetching, so a repo 15% into a 1.6GB download measures 1.6GB on disk. `size`
+# is right about the disk and wrong about the download, and a card drawing "how
+# much of this is here" from it read as nearly finished.
+
+
+def _sidecar(repo, blob, size, done_per_segment, segment=32 * 1024 * 1024):
+    """A part file's sidecar in the shape `worker_base._FileFetch.flush` writes."""
+    segments = []
+    start = 0
+    for done in done_per_segment:
+        end = min(start + segment, size) - 1
+        segments.append({"start": start, "end": end, "done": done})
+        start = end + 1
+    (repo / "blobs" / f"{blob}.fusedpart.json").write_text(
+        json.dumps({"version": 3, "etag": blob, "size": size, "segments": segments})
+    )
+
+
+def test_fetched_bytes_reads_the_sidecar_not_the_part_files_length(client, hub):
+    repo = _repo(hub, "models--org--pulling")
+    # Preallocated to 96MB; only 40MB of it is durable.
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * (96 * 1024 * 1024))
+    _sidecar(repo, "w", 96 * 1024 * 1024,
+             [32 * 1024 * 1024, 8 * 1024 * 1024, 0])
+
+    row = _repo_row(client, "org/pulling")
+
+    # `size` still counts the part file's whole length (plus its little sidecar):
+    # that is what the folder holds, and it is what the page PRINTS.
+    assert row["size"] > 96 * 1024 * 1024
+    # …and this is what arrived: two full segments and a third of a third one.
+    assert row["fetchedBytes"] == 40 * 1024 * 1024
+
+
+def test_a_part_file_with_no_sidecar_counts_nothing(client, hub):
+    """No sidecar means nothing has SAID any of those bytes are durable, and the
+    file may be pure preallocation — so it contributes zero rather than its
+    length. Same posture as `_unfinished_fetch`: positive evidence only."""
+    repo = _repo(hub, "models--org--bare")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+
+    assert _repo_row(client, "org/bare")["fetchedBytes"] == 0
+
+
+def test_a_torn_sidecar_counts_nothing_rather_than_raising(client, hub):
+    repo = _repo(hub, "models--org--torn")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+    (repo / "blobs" / "w.fusedpart.json").write_text("{not json")
+
+    assert _repo_row(client, "org/torn")["fetchedBytes"] == 0
+
+
+def test_a_sidecar_claiming_more_than_its_segment_is_clamped(client, hub):
+    """A sidecar is written by another process; a `done` past the segment's own
+    width must not inflate the total."""
+    repo = _repo(hub, "models--org--liar")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 1024)
+    _sidecar(repo, "w", 1024, [999_999_999], segment=1024)
+
+    assert _repo_row(client, "org/liar")["fetchedBytes"] == 1024
+
+
+def test_hf_incomplete_files_count_their_length(client, hub):
+    """`huggingface_hub` APPENDS, so for its part files the length IS the
+    progress — the opposite of ours, which is why the two are read differently."""
+    repo = _repo(hub, "models--org--hf", blobs={"done": 100})
+    (repo / "blobs" / "abc.incomplete").write_bytes(b"x" * 900)
+
+    assert _repo_row(client, "org/hf")["fetchedBytes"] == 1000
+
+
+@requires_symlinks
+def test_a_finished_repo_reports_every_byte_as_fetched(client, hub):
+    """The ordinary case, and the one the fraction never draws: nothing is
+    outstanding, so the two numbers agree."""
+    _repo(hub, "models--org--done", blobs={"w": 4096},
+          snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    row = _repo_row(client, "org/done")
+
+    assert row["fetchedBytes"] == row["size"]

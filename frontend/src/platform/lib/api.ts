@@ -2348,6 +2348,16 @@ export interface AiModelRepo {
    * among the recommendations.
    */
   partial: boolean;
+  /** Bytes of this repo that actually ARRIVED — `size` for anything finished, and
+   *  much less than it mid-fetch (D440).
+   *
+   *  The distinction exists because our fetcher PREALLOCATES a part file to the
+   *  full length of the file it is fetching: a repo 15% into a 1.6GB download
+   *  measures 1.6GB on disk, so a card drawing "how much of this is here" from
+   *  `size` read as nearly finished while the job row beside it said 243 MB.
+   *  `size` is still the number the page PRINTS — allocated bytes are what the
+   *  folder costs — and this is the one the fraction is drawn from. */
+  fetchedBytes: number;
 }
 
 export interface AiModelsResult {
