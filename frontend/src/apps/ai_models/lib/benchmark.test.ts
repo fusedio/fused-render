@@ -589,4 +589,17 @@ describe("resolveCapability", () => {
   it("is null only when there is truly nothing to select", () => {
     expect(resolveCapability([], "text-generation", {})).toBeNull();
   });
+
+  it("preserves an explicit ?cap= through the render BEFORE the history has answered", () => {
+    // The scenario behind a real bug: BenchmarkTab.tsx computes `selected`
+    // (and syncs it to the URL) on every render, including the very first one,
+    // where `runs` is still `null` and `runCountsByCapability` therefore hands
+    // this function an EMPTY count map — indistinguishable, from resolveCapability's
+    // side, from "nothing has ever run". If an unanswered history silently
+    // overrode a landing `?cap=` with the empty-counts default, a link to
+    // `?cap=embeddings` would flash to whatever sorts first in registry order
+    // and then jump back once the real counts arrived. It must not: an
+    // explicit, valid param always wins, counts or no counts.
+    expect(resolveCapability(CAPS, "embeddings", {})).toBe("embeddings");
+  });
 });

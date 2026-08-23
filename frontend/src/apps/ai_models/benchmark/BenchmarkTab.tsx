@@ -187,7 +187,13 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     }
   };
 
-  if (!data && runs === null) return <SkeletonLines rows={6} label="Loading benchmarks" />;
+  // Whether the history has answered at all — the same predicate the early
+  // return below used to gate on. Named here because the sync effect right
+  // after it needs to know the SAME thing: don't write a resolved default
+  // into `?cap=` while `runs` is still `null` and `all` therefore reflects no
+  // recorded run yet, which could clobber an explicit `?cap=` with a
+  // premature guess the moment the real counts land one render later.
+  const loading = !data && runs === null;
 
   // Which capabilities the selector offers: every one this machine has a
   // downloaded model for, UNION every one with a recorded run. The union is
@@ -220,9 +226,21 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // updates it — via `replaceState` (`writeParams`), never a navigation: a
   // selector change is not a page to go Back to. Runs after render rather than
   // during it, since writing history is a side effect.
+  //
+  // **This hook must run on EVERY render, loading or not** — React throws
+  // ("Rendered more hooks than during the previous render") the moment a hook
+  // sits below a conditional return, because the loading render then calls one
+  // fewer hook than the render after it. The `loading` guard therefore lives
+  // INSIDE the effect, on the WRITE, not on the hook: skipping the call while
+  // `runs` is still `null` is what stops a not-yet-known history from
+  // clobbering an explicit `?cap=` with a premature "first in registry order"
+  // guess one render before the real counts arrive.
   useEffect(() => {
+    if (loading) return;
     writeParams({ cap: selected });
-  }, [selected]);
+  }, [loading, selected]);
+
+  if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
   return (
     <div className="am-bench">
