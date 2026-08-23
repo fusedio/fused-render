@@ -1190,14 +1190,22 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | Non
     runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
     if capability is None and not reading.ruled_out:
         # **Only for a task we could not identify.** A RULED-OUT task is not
-        # rescued by the format, and that guard is the fix for a cached
-        # diffusers VIDEO pipeline: its `_class_name` says `text-to-video`,
-        # nothing here generates video, and yet the diffusers runners are
-        # DECISIVE about the format — so this branch used to answer
-        # "text-to-image" and put a Load button on it. The mflux/CT2 cases the
-        # branch exists for are unaffected, because `_format_task` has already
-        # overruled their misleading labels by the time we get here, making the
-        # reading SUPPORTED rather than ruled out.
+        # rescued by the format — the bug this guard fixes was a cached
+        # diffusers VIDEO pipeline whose `_class_name` said `text-to-video`
+        # while nothing here generated video at all, and the diffusers
+        # runners are DECISIVE about the format regardless — so this branch
+        # used to answer "text-to-image" and put a Load button on it.
+        # `text-to-video` itself stopped being an example of a ruled-out
+        # task once `h3-video`/`ltx-video` shipped (SPEC §40's LTX-2.3 plan;
+        # `ai/tasks.py` maps it to `VIDEO_GENERATION` now, genuinely
+        # SUPPORTED), but the guard is unchanged and still needed: `image-
+        # to-video` is a still-ruled-out sibling tag (no runner here is
+        # image-conditioned) that a decisive format could resurrect the
+        # identical way — see `test_ai_models_api.py`'s own test for that
+        # exact case. The mflux/CT2 cases the branch exists for are
+        # unaffected either way, because `_format_task` has already
+        # overruled their misleading labels by the time we get here, making
+        # the reading SUPPORTED rather than ruled out.
         decisive = [r for r in runners if r.code in formats.DECISIVE]
         capability = decisive[0].capability if decisive else None
     if capability is None:
