@@ -47,6 +47,7 @@ gate it enforces.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import socket
@@ -55,7 +56,31 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-import appenv
+
+def _load_sibling_appenv():
+    """Load THIS file's own `appenv.py`, by path — not `import appenv`.
+
+    The shared dir is APPENDED to a user module's `sys.path` (`_child.py`/
+    `engine.py`'s wrapper), deliberately, so a user's own same-named module
+    still wins for the module a user script would `import` by name. That is
+    exactly wrong for `fused_ai.py`'s OWN dependency on `appenv.py`: a user
+    who happens to have their own `appenv.py` beside their script would
+    otherwise shadow the shipped one the instant `sys.path` puts the user's
+    module dir first, and this module would break calling `appenv.origin()`
+    against whatever the user's stand-in does or does not define — the
+    `AttributeError` a user should never see from a dependency they don't
+    know exists. Loading by the file's own location sidesteps `sys.path`
+    order entirely, so this module always gets ITS sibling regardless of
+    what else is importable under the name `appenv`.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "appenv.py")
+    spec = importlib.util.spec_from_file_location("_fused_ai_appenv", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+appenv = _load_sibling_appenv()
 
 # Connect-probe timeout for a `server.json` origin: short, because a live
 # server answers a TCP handshake in microseconds and a dead one should not
@@ -284,18 +309,41 @@ def _parse_ndjson(chunks):
 # ---------------------------------------------------------------- job waiting
 
 
+#: `_wait_job`'s tolerance for a missing row, once one has been seen at least
+#: once — matching `runtime.js`'s `watchJob`, which resolves null only after
+#: 5 CONSECUTIVE misses. Not paranoia: `jobs.py::_sweep`'s own comments say a
+#: finished SERVER row is evicted on the very next `list_jobs()` once the
+#: registry is over `MAX_JOBS` (64) — the designed transcription-queue case,
+#: SPEC AI-10a — so a single missed poll right as a big batch finishes is
+#: ordinary, not a sign the job vanished.
+_JOB_MISS_TOLERANCE = 5
+
+#: How long a `stalled` row (`jobs.py::is_stalled`, which flips at
+#: `STALE_AFTER_S` == 30s of reporter silence) must stay stalled before this
+#: module gives up on it. `is_stalled` only means "no update in 30s" — a
+#: phase that legitimately ticks less often (a slow denoise step, a worker
+#: between reports) trips it while the work continues, and the registry
+#: itself keeps a running-but-stalled row alive for ten minutes
+#: (`STALE_DROP_S`) precisely because it is a label, not a verdict. Not
+#: reading `jobs.STALE_AFTER_S` directly — this module must not import
+#: `fused_render` (SPEC PY-15) — so the grace period is restated here as an
+#: independent constant, comfortably inside `STALE_DROP_S`.
+_JOB_STALL_GRACE_S = 60.0
+
+
 def _wait_job(job_id: str, on_progress=None, timeout: float | None = None,
              poll_interval: float = _JOB_POLL_INTERVAL_S) -> dict:
     """Poll `GET /api/jobs` for `job_id` until it reaches a terminal state
     (`jobs.py`'s `TERMINAL_STATES`: done/error/cancelled) and return that row.
 
-    A `stalled` row (the reporter died — `jobs.py::is_stalled`) is refused
-    immediately rather than polled forever: `state` stays `"running"` for up
-    to ten minutes after the last real update (`STALE_DROP_S`), and a caller
-    waiting that long for a reporter that is never coming back is a hang this
-    module can detect and refuses to reproduce.
+    A row that has gone missing, or that reports `stalled`, is not treated as
+    fatal on the FIRST observation — see `_JOB_MISS_TOLERANCE` and
+    `_JOB_STALL_GRACE_S` above for why each needs to persist first.
     """
     started = time.monotonic()
+    seen = False
+    misses = 0
+    stalled_since: float | None = None
     while True:
         if timeout is not None and (time.monotonic() - started) > timeout:
             raise AiError("timeout",
@@ -304,12 +352,26 @@ def _wait_job(job_id: str, on_progress=None, timeout: float | None = None,
         jobs = payload.get("jobs") or []
         record = next((j for j in jobs if j.get("id") == job_id), None)
         if record is None:
-            raise AiError("error", f"job {job_id!r} is no longer being reported")
+            if seen:
+                misses += 1
+                if misses >= _JOB_MISS_TOLERANCE:
+                    raise AiError(
+                        "error", f"job {job_id!r} is no longer being reported")
+            time.sleep(poll_interval)
+            continue
+        seen = True
+        misses = 0
         if callable(on_progress):
             on_progress(record)
         if record.get("stalled"):
-            raise AiError("stalled",
-                          f"job {job_id!r} stopped reporting progress")
+            now = time.monotonic()
+            if stalled_since is None:
+                stalled_since = now
+            elif (now - stalled_since) > _JOB_STALL_GRACE_S:
+                raise AiError("stalled",
+                              f"job {job_id!r} stopped reporting progress")
+        else:
+            stalled_since = None
         if record.get("state") != "running":
             return record
         time.sleep(poll_interval)
@@ -416,7 +478,8 @@ def transcribe(path: str, model: str | None = None, language: str | None = None,
     reply = _post_json("/api/ai/transcribe", body)
     if not wait:
         return reply
-    job = _wait_job(reply["jobId"], on_progress=on_progress, timeout=timeout)
+    job = _wait_job(_require_job_id(reply, "/api/ai/transcribe"),
+                    on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
     return reply
 
@@ -447,7 +510,8 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
     reply = _post_json("/api/ai/image", body)
     if not wait:
         return reply
-    job = _wait_job(reply["jobId"], on_progress=on_progress, timeout=timeout)
+    job = _wait_job(_require_job_id(reply, "/api/ai/image"),
+                    on_progress=on_progress, timeout=timeout)
     _raise_for_terminal_job(job)
     return reply
 
@@ -477,6 +541,29 @@ def embed(texts: list | None = None, paths: list | None = None,
 # ------------------------------------------------------------------- models
 
 
+#: `supervisor.py`'s OWN worker-state vocabulary (`Worker.state`) — NOT
+#: `jobs.py`'s registry states. `POST /api/ai/runtime/load`'s reply carries
+#: one of these (`_start_resident`), and only these four mean "still on its
+#: way up". The "joining an in-flight bring-up" branch answers `state:
+#: "ready"` (or, in principle, a stale "error") with NO accompanying
+#: `_report()` call when the model was already resident — so the `sys:`
+#: job row may be long swept (`jobs.FINISHED_TTL_S` == 30s) by the time a
+#: caller asks a second time, and polling for it at all is the bug: the
+#: reply's own state already answers the question.
+_MODEL_LOADING_STATES = frozenset({"starting", "venv", "downloading", "loading"})
+
+
+def _require_job_id(reply: dict, endpoint: str) -> str:
+    """`reply["jobId"]`, or `AiError` instead of a bare `KeyError` — a 200
+    whose body doesn't match the shape this module expects (an unexpected
+    server change, a proxy mangling the response) must still surface through
+    the one exception type callers are told to catch."""
+    job_id = reply.get("jobId")
+    if not isinstance(job_id, str) or not job_id:
+        raise AiError("bad_response", f"{endpoint} replied with no 'jobId'")
+    return job_id
+
+
 class _Models:
     """`fused.ai.models` mirrored: list/catalog are plain reads;
     load/download are job-backed (block by default, like `transcribe`);
@@ -497,9 +584,10 @@ class _Models:
         if capability is not None:
             body["capability"] = capability
         reply = _post_json("/api/ai/runtime/load", body)
-        if not wait:
+        if not wait or reply.get("state") not in _MODEL_LOADING_STATES:
             return reply
-        job = _wait_job(reply["jobId"], on_progress=on_progress, timeout=timeout)
+        job = _wait_job(_require_job_id(reply, "/api/ai/runtime/load"),
+                        on_progress=on_progress, timeout=timeout)
         _raise_for_terminal_job(job)
         return reply
 
@@ -510,9 +598,10 @@ class _Models:
         if capability is not None:
             body["capability"] = capability
         reply = _post_json("/api/ai/runtime/download", body)
-        if not wait:
+        if not wait or reply.get("state") not in _MODEL_LOADING_STATES:
             return reply
-        job = _wait_job(reply["jobId"], on_progress=on_progress, timeout=timeout)
+        job = _wait_job(_require_job_id(reply, "/api/ai/runtime/download"),
+                        on_progress=on_progress, timeout=timeout)
         _raise_for_terminal_job(job)
         return reply
 

@@ -1,5 +1,5 @@
 """Tests for `fused_render/templates/shared/fused_ai.py` — the stdlib-only
-Python client for `fused.ai` (SPEC PY-16, D448-D450).
+Python client for `fused.ai` (SPEC PY-19, D448-D450).
 
 Loaded the way production loads it: the shared dir goes on `sys.path` (what
 both engines' path-seeding does) and then `import fused_ai` — not exec'd
@@ -233,10 +233,22 @@ def test_wait_job_returns_on_terminal_state(monkeypatch):
     assert record["state"] == "done"
 
 
-def test_wait_job_raises_on_stalled(monkeypatch):
+def test_wait_job_raises_on_a_persisted_stall(monkeypatch):
+    """Superseded by the review fix: a stall must PERSIST past
+    `_JOB_STALL_GRACE_S` before this raises (see
+    `test_wait_job_does_not_raise_on_a_single_stalled_tick` and
+    `test_wait_job_raises_once_stalled_persists_past_the_grace_period` for
+    the two halves) — a fake clock is required here too, or this busy-loops
+    real wall-clock seconds waiting out the grace period."""
+    ticks = iter([0.0, 0.0, 200.0])
+
+    def fake_monotonic():
+        return next(ticks, 200.0)
+
     def fake_get_json(path, timeout=None):
         return _jobs_payload({"id": "sys:x", "state": "running", "stalled": True})
 
+    monkeypatch.setattr(fused_ai.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(fused_ai, "_get_json", fake_get_json)
     monkeypatch.setattr(fused_ai.time, "sleep", lambda s: None)
     with pytest.raises(fused_ai.AiError) as exc:
@@ -380,3 +392,161 @@ def test_the_ai_object_mirrors_the_js_surface():
     assert callable(fused_ai.ai.models.load)
     assert callable(fused_ai.ai.models.download)
     assert callable(fused_ai.ai.models.unload)
+
+
+# ------------------------------------------- job-registry robustness (review)
+
+
+def test_wait_job_tolerates_up_to_five_consecutive_misses(monkeypatch):
+    """Mirrors runtime.js's watchJob: `_sweep` can drop a finished SERVER row
+    on the very next `list_jobs()` above MAX_JOBS (SPEC AI-10a's queue case),
+    so a single missing poll must not be fatal."""
+    replies = iter([
+        _jobs_payload({"id": "sys:x", "state": "running", "stalled": False}),
+        _jobs_payload(),  # miss 1
+        _jobs_payload(),  # miss 2
+        _jobs_payload({"id": "sys:x", "state": "done", "stalled": False}),
+    ])
+
+    def fake_get_json(path, timeout=None):
+        return next(replies)
+
+    monkeypatch.setattr(fused_ai, "_get_json", fake_get_json)
+    monkeypatch.setattr(fused_ai.time, "sleep", lambda s: None)
+    record = fused_ai._wait_job("sys:x")
+    assert record["state"] == "done"
+
+
+def test_wait_job_raises_after_five_consecutive_misses_once_seen(monkeypatch):
+    calls = {"n": 0}
+
+    def flow(path, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _jobs_payload({"id": "sys:x", "state": "running", "stalled": False})
+        return _jobs_payload()
+
+    monkeypatch.setattr(fused_ai, "_get_json", flow)
+    monkeypatch.setattr(fused_ai.time, "sleep", lambda s: None)
+    with pytest.raises(fused_ai.AiError) as exc:
+        fused_ai._wait_job("sys:x")
+    assert exc.value.type == "error"
+    # first poll (seen) + 5 misses = 6 calls total
+    assert calls["n"] == 6
+
+
+def test_wait_job_a_miss_before_ever_being_seen_does_not_count(monkeypatch):
+    """The row may not exist yet on the very first poll right after the POST
+    (upsert is synchronous server-side, but this is defence in depth) —
+    misses only count once the row has been observed at least once."""
+    calls = {"n": 0}
+
+    def flow(path, timeout=None):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            return _jobs_payload()  # not there yet
+        return _jobs_payload({"id": "sys:x", "state": "done", "stalled": False})
+
+    monkeypatch.setattr(fused_ai, "_get_json", flow)
+    monkeypatch.setattr(fused_ai.time, "sleep", lambda s: None)
+    record = fused_ai._wait_job("sys:x")
+    assert record["state"] == "done"
+
+
+def test_wait_job_does_not_raise_on_a_single_stalled_tick(monkeypatch):
+    """A phase that ticks less often than STALE_AFTER_S (30s) marks the row
+    stalled while the work continues — one stalled observation must not be
+    fatal, only a PERSISTED one."""
+    calls = {"n": 0}
+
+    def flow(path, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _jobs_payload({"id": "sys:x", "state": "running", "stalled": True})
+        return _jobs_payload({"id": "sys:x", "state": "done", "stalled": False})
+
+    monkeypatch.setattr(fused_ai, "_get_json", flow)
+    monkeypatch.setattr(fused_ai.time, "sleep", lambda s: None)
+    record = fused_ai._wait_job("sys:x")
+    assert record["state"] == "done"
+
+
+def test_wait_job_raises_once_stalled_persists_past_the_grace_period(monkeypatch):
+    ticks = iter([0.0, 10.0, 20.0, 100.0, 100.0])
+
+    def fake_monotonic():
+        return next(ticks, 200.0)
+
+    def flow(path, timeout=None):
+        return _jobs_payload({"id": "sys:x", "state": "running", "stalled": True})
+
+    monkeypatch.setattr(fused_ai.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(fused_ai, "_get_json", flow)
+    monkeypatch.setattr(fused_ai.time, "sleep", lambda s: None)
+    with pytest.raises(fused_ai.AiError) as exc:
+        fused_ai._wait_job("sys:x")
+    assert exc.value.type == "stalled"
+
+
+def test_models_load_short_circuits_on_an_already_ready_reply(monkeypatch):
+    """`_start_resident`'s join branch answers `{"jobId", "model", "state":
+    "ready"}` with NO `_report` call when the model is already resident and
+    serving — the `sys:` job row may already be swept (FINISHED_TTL_S=30s),
+    so waiting on it at all is the bug: the reply's own state must be
+    trusted first."""
+    reply = {"jobId": "sys:ai-model:org/name", "model": "org/name", "state": "ready"}
+    monkeypatch.setattr(fused_ai, "_post_json", lambda p, b, timeout=None: reply)
+
+    def boom(*a, **kw):
+        raise AssertionError("must not poll /api/jobs for an already-ready model")
+
+    monkeypatch.setattr(fused_ai, "_wait_job", boom)
+    assert fused_ai.models.load("org/name") == reply
+
+
+def test_models_load_still_waits_when_the_reply_says_its_loading(monkeypatch):
+    reply = {"jobId": "sys:ai-model:org/name", "model": "org/name", "state": "downloading"}
+    monkeypatch.setattr(fused_ai, "_post_json", lambda p, b, timeout=None: reply)
+    monkeypatch.setattr(
+        fused_ai, "_wait_job",
+        lambda job_id, on_progress=None, timeout=None: {"state": "done"})
+    assert fused_ai.models.load("org/name") == reply
+
+
+def test_models_download_short_circuits_on_an_already_ready_reply(monkeypatch):
+    reply = {"jobId": "sys:ai-model:org/name", "model": "org/name", "state": "ready"}
+    monkeypatch.setattr(fused_ai, "_post_json", lambda p, b, timeout=None: reply)
+
+    def boom(*a, **kw):
+        raise AssertionError("must not poll /api/jobs for an already-ready model")
+
+    monkeypatch.setattr(fused_ai, "_wait_job", boom)
+    assert fused_ai.models.download("org/name") == reply
+
+
+# ------------------------------------------------- appenv shadowing (review)
+
+
+def test_fused_ai_loads_its_own_appenv_even_when_a_user_appenv_shadows_it(tmp_path, monkeypatch):
+    """The shared dir is APPENDED to sys.path (by design — a user's own
+    same-named module wins for user code), so `import appenv` from inside
+    fused_ai.py must not resolve to a user-authored appenv.py placed earlier
+    on sys.path — fused_ai.py must always load ITS OWN sibling."""
+    user_appenv = tmp_path / "appenv.py"
+    user_appenv.write_text("MARKER = 'user-owned'\n")  # no origin(), no home_dir()
+    monkeypatch.syspath_prepend(str(tmp_path))
+    # This test file already `import appenv`'d the real one at module scope,
+    # which cached it in sys.modules under that bare name — a plain `import
+    # appenv` below would just return the cached module regardless of
+    # sys.path, proving nothing. Evict it so the import actually re-resolves.
+    monkeypatch.delitem(sys.modules, "appenv", raising=False)
+    try:
+        import appenv as shadowing_appenv
+        assert shadowing_appenv.__file__ == str(user_appenv)
+        # The module under test must still resolve origin() etc. through its
+        # OWN appenv, not raise AttributeError against the user's stand-in.
+        assert fused_ai.appenv.origin is not None
+        assert callable(fused_ai.appenv.origin)
+        assert not hasattr(shadowing_appenv, "origin")
+    finally:
+        sys.modules.pop("appenv", None)
