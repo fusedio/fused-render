@@ -1097,6 +1097,17 @@ a.pg-hero-repo:hover {
   background: var(--bg-alt);
 }
 
+/* The `watchJob` "gone means done" fallback failing its own artefact check
+   (ImageStage's `Run.readFailed`) — same muted-note treatment as the
+   transcript stage's `.pg-transcript-empty`. */
+.pg-image-readfailed {
+  margin: 0;
+  padding: 24px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
 /* Fixed scrim, not theme colours: this sits on arbitrary photo pixels, so the
    values are the same in both palettes by design. They are TOKENS all the same
    (`--scrim-*`, tokens.css) — "every colour comes from the palette" is a rule

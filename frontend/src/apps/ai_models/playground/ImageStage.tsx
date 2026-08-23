@@ -62,6 +62,14 @@ interface Run {
   started: ImageStarted;
   job: Job | null;
   done: boolean;
+  // Set by the final <img>'s onError. `done` alone is not proof the file
+  // exists — `watchJob`'s `gone` outcome (the row vanished between polls) is
+  // deliberately read as `done` here (see client.ts's WatchOutcome), and
+  // while the miss tolerance that guards that mostly rules out a genuinely
+  // stopped render slipping through as `gone`, this is the belt-and-suspenders
+  // check TranscribeStage already does by reading its artefact back — this
+  // stage's artefact IS the image, so its own <img> tag is that read-back.
+  readFailed: boolean;
 }
 
 export function ImageStage({ model, entry }: { model: string; entry: AiCatalogModel }) {
@@ -160,7 +168,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         guidance,
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
       });
-      setRun({ started, job: null, done: false });
+      setRun({ started, job: null, done: false, readFailed: false });
       try {
         const outcome = await watchJob(started.jobId, controller.signal, (job) =>
           setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, job } : r)),
@@ -365,9 +373,28 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           <div className="pg-answer-block">
           <p className="pg-answer-label">Result</p>
           <figure className="pg-image-result">
-            {run.done ? (
+            {run.done && run.readFailed ? (
+              // `watchJob` said done (including a `gone` it reads as done —
+              // see the `Run.readFailed` comment) but the file this <img>
+              // asked for does not actually exist. Say that plainly rather
+              // than leaving a broken-image icon and a save link to nothing.
               <div className="pg-image-frame" style={shot}>
-                <img src={rawUrl(run.started.path) + "&t=" + run.started.jobId} alt={run.started.prompt} />
+                <p className="pg-image-readfailed">
+                  The image could not be read back — the render may have been
+                  interrupted.
+                </p>
+              </div>
+            ) : run.done ? (
+              <div className="pg-image-frame" style={shot}>
+                <img
+                  src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
+                  alt={run.started.prompt}
+                  onError={() =>
+                    setRun((r) =>
+                      r && r.started.jobId === run.started.jobId ? { ...r, readFailed: true } : r,
+                    )
+                  }
+                />
                 {/* A download link, not a clipboard write: ClipboardItem takes
                     image/png only and the render's format is unknown here. */}
                 <a

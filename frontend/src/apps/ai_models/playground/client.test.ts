@@ -96,11 +96,35 @@ test("a cancelled row is NOT a finished one", async () => {
   expect(outcome.state).toBe("cancelled");
 });
 
-test("a vanished row resolves gone", async () => {
-  // FINISHED_TTL_S is 30s against a 1s poll, so this is the manager retiring a
-  // row we took too long to read — the ordinary end of a finished load.
+test("a vanished row resolves gone after enough consecutive misses", async () => {
+  // FINISHED_TTL_S is a few seconds against a 1s poll, so the manager
+  // retiring a row we took too long to read is still the ordinary case here
+  // — it just takes a run of misses, not one, to conclude that is what
+  // happened (see GONE_MISS_TOLERANCE).
   const { outcome } = await watch(["absent"]);
   expect(outcome).toEqual({ state: "gone" });
+});
+
+test("a single missed poll is not read as gone", async () => {
+  // The regression this tolerance exists to close: one slow tick used to
+  // resolve `gone`, which every caller (ImageStage, TranscribeStage,
+  // TextStage, EmbedStage) reads as "done, no artefact to distrust" — so a
+  // render that was still in flight got filed as a finished one with a path
+  // that held nothing.
+  const { outcome, seen } = await watch(["running", "absent", "done"]);
+  expect(outcome).toEqual({ state: "done", job: { ...JOB, state: "done" } });
+  expect(seen).toEqual(["running", "done"]);
+});
+
+test("misses only count while consecutive — a sighting resets the count", async () => {
+  const script: (string | Error)[] = ["running"];
+  for (let i = 0; i < 8; i++) {
+    script.push("absent");
+    script.push("running"); // resets the streak before it reaches tolerance
+  }
+  script.push("done");
+  const { outcome } = await watch(script);
+  expect(outcome).toEqual({ state: "done", job: { ...JOB, state: "done" } });
 });
 
 test("an error row throws its own message", async () => {
