@@ -1986,10 +1986,24 @@
    the Capability `<select>` above THAT. `.am-bench-metric` (the unit badge)
    is reused here rather than duplicated — one declaration for what a badge in
    this tab looks like, wherever it appears. */
+/* Separated from the leaderboard rows above it by MORE than the ordinary
+   `--am-gap-head` used everywhere else on this page — deliberately, this is
+   the boundary between the second instrument and the third, the same rank of
+   break as the one between the comparison chart and the rows (that pair
+   already spends TWO `--am-gap-head`s, one as the chart's own
+   `margin-bottom`, one as the rows' own `margin-top`), and it was reading as
+   a caption on the last row rather than a break at all — so this one goes
+   further still, plus a rule: the rows above are each their own bordered
+   card, and the comparison chart above THAT has a gridlined plot box, so a
+   heading with no border of its own had nothing marking it as a new
+   instrument. */
 .am-bench-trend-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  margin-top: calc(var(--am-gap-head) * 2);
+  padding-top: var(--am-gap-head);
+  border-top: 1px solid var(--border);
   margin-bottom: 6px;
 }
 
