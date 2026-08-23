@@ -1672,7 +1672,13 @@
    cannot dominate the section; it lives behind `.am-bench-rowdetail` now. */
 .am-bench-row {
   display: grid;
-  grid-template-columns: minmax(0, 16ch) minmax(0, 1fr) auto;
+  /* Wide enough that two repos differing only in a variant suffix
+     ("whisper-large-v3-mlx" vs. "-turbo") both fit whole — the old 16ch
+     column truncated both to the identical "whisper-large-v3…", which
+     defeats a LEADERBOARD: two rows a reader cannot tell apart. There was
+     also just unused space here (the middle column already flexes), so
+     widening this one costs nothing. */
+  grid-template-columns: minmax(0, 30ch) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
@@ -1684,12 +1690,14 @@
 .am-bench-model {
   min-width: 0;
   font-size: 12px;
-  /* The short name still doesn't always fit an org+repo id in 16ch; truncate
-     rather than wrap, since a wrapped row breaks the one-line promise this
-     redesign exists to keep. The full id is the row's `title`. */
+  /* `middleEllipsis` (lib/benchmark.ts) does the truncating now, to a budget
+     matching this column's width — the middle, not the tail, is what it
+     elides, because two names sharing a long prefix differ at the END. This
+     overflow/nowrap pair is a safety net for the rare id that still exceeds
+     the budget's character count in a wider glyph, not the primary mechanism.
+     The full id is the row's `title`. */
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* A model whose weights are gone but whose runs are not. Not an error colour —
@@ -1845,13 +1853,16 @@
   --am-bench-plot-h: 220px;
   display: flex;
   align-items: stretch;
-  gap: 6px;
+  /* Tight on purpose: the tick labels are meant to read as PART of the axis
+     they name, not a separate column floating beside it — a wider gap here
+     is what made the y-axis numbers look detached from the plot's left edge. */
+  gap: 3px;
 }
 
 .am-bench-yaxis {
   position: relative;
   flex: 0 0 auto;
-  width: 40px;
+  width: 36px;
   height: var(--am-bench-plot-h);
 }
 
@@ -1953,9 +1964,13 @@
    BenchmarkChart's comment on why this is HTML positioned by percentage
    rather than SVG `<text>`. Replaces the old separate legend row: a label that
    already names its model needs no key beside the chart to decode it. */
+/* No `transform` here — BenchmarkChart.tsx sets it inline, per label, flipping
+   the anchor near an edge (right-aligning / dropping below the point) so a
+   label near the panel's border or its top gridline extends INTO the plot
+   instead of overflowing it. A single CSS rule cannot do that: it would need
+   to know where on the chart THIS particular point landed. */
 .am-bench-endlabel {
   position: absolute;
-  transform: translate(-50%, -135%);
   white-space: nowrap;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
@@ -1973,9 +1988,22 @@
   justify-content: space-between;
   gap: 12px;
   margin-top: 4px;
-  padding-left: 46px; /* clears the y-axis label column */
+  padding-left: 39px; /* clears the y-axis label column (36px + 3px gap) */
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* The single date every time tick shares (`chartAxisTicks`'s `dateCaption`) —
+   present only when the axis switched from dates to times because every run
+   landed the same day. Its own line under the ticks, not squeezed into the
+   flex row above: that row's `space-between` already spaces exactly three
+   things, and a fourth would either crowd the middle tick or (if excluded
+   from the distribution) sit at an arbitrary offset from it. */
+.am-bench-axis-caption {
+  margin-top: 2px;
+  padding-left: 39px;
+  font-size: 10px;
   color: var(--fg-muted);
 }
 

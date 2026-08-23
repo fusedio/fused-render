@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { AiBenchmarkRun } from "@platform/lib/api";
 import {
   DASH,
+  chartAxisTicks,
   chartSeries,
   defaultCapability,
   failureReason,
@@ -9,8 +10,10 @@ import {
   formatMemory,
   formatPrimary,
   formatRunDate,
+  formatRunTime,
   latestByModel,
   leaderboard,
+  middleEllipsis,
   orderCapabilities,
   primaryMetric,
   primaryValue,
@@ -601,5 +604,105 @@ describe("resolveCapability", () => {
     // and then jump back once the real counts arrived. It must not: an
     // explicit, valid param always wins, counts or no counts.
     expect(resolveCapability(CAPS, "embeddings", {})).toBe("embeddings");
+  });
+});
+
+// -- the chart's x axis: dates, or times when a date would just repeat -------
+
+describe("formatRunTime", () => {
+  it("is a short hour:minute label — not a date, not seconds", () => {
+    // Locale-dependent wording (12h vs 24h), so this pins the SHAPE, the same
+    // way formatRunDate's own test avoids a fixed string a CI timezone would
+    // break.
+    expect(formatRunTime(1_700_000_000)).toMatch(/^\d{1,2}:\d{2}(\s?[AP]M)?$/i);
+  });
+});
+
+describe("chartAxisTicks", () => {
+  const DAY = 24 * 60 * 60;
+
+  it("uses dates when the runs span multiple days", () => {
+    const runs = [
+      run({ startedAt: 1_700_000_000 }),
+      run({ startedAt: 1_700_000_000 + 3 * DAY }),
+    ];
+    const { ticks, dateCaption } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.label)).toEqual([
+      formatRunDate(runs[0]!.startedAt),
+      formatRunDate(runs[1]!.startedAt),
+    ]);
+    // The ticks already carry the date — repeating it a third time in a
+    // caption says nothing new.
+    expect(dateCaption).toBeNull();
+  });
+
+  it("switches to times, with the date stated ONCE, when every run lands the same day", () => {
+    // The bug this exists to fix: four runs inside one day rendered
+    // "22 Aug / 22 Aug / 22 Aug" — three identical labels telling the reader
+    // nothing about when, within that day, each run happened.
+    const base = 1_700_000_000;
+    const runs = [
+      run({ startedAt: base }),
+      run({ startedAt: base + 2000 }),
+      run({ startedAt: base + 5000 }),
+      run({ startedAt: base + 7000 }),
+    ];
+    const { ticks, dateCaption } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.label)).toEqual([
+      formatRunTime(runs[0]!.startedAt),
+      formatRunTime(runs[1]!.startedAt), // the middle of 4 runs, index 1
+      formatRunTime(runs[3]!.startedAt),
+    ]);
+    expect(dateCaption).toBe(formatRunDate(runs[0]!.startedAt));
+  });
+
+  it("picks first, middle and last for four or more runs", () => {
+    const runs = [1, 2, 3, 4, 5].map((n) => run({ startedAt: n }));
+    const { ticks } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.x)).toEqual([0, 2, 4]);
+  });
+
+  it("picks just the two ends for exactly two runs", () => {
+    const runs = [run({ startedAt: 1 }), run({ startedAt: 2 })];
+    const { ticks } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.x)).toEqual([0, 1]);
+  });
+
+  it("is a single DATE tick for one run — a lone time has no day to anchor it", () => {
+    const runs = [run({ startedAt: 1_700_000_000 })];
+    const { ticks, dateCaption } = chartAxisTicks(runs);
+    expect(ticks).toEqual([{ x: 0, label: formatRunDate(1_700_000_000) }]);
+    expect(dateCaption).toBeNull();
+  });
+
+  it("is empty over no runs", () => {
+    expect(chartAxisTicks([])).toEqual({ ticks: [], dateCaption: null });
+  });
+});
+
+// -- the leaderboard's name: truncate where the DIFFERENCE survives ----------
+
+describe("middleEllipsis", () => {
+  it("returns the name unchanged when it already fits", () => {
+    expect(middleEllipsis("whisper-tiny", 20)).toBe("whisper-tiny");
+  });
+
+  it("keeps the head AND the tail, eliding the middle — where tail-truncation would eat the difference", () => {
+    // The bug this exists to fix: "whisper-large-v3-mlx" and
+    // "whisper-large-v3-turbo" share their first 17 characters and differ
+    // only in the last few — exactly what a trailing "…" throws away first.
+    const a = middleEllipsis("whisper-large-v3-mlx", 16);
+    const b = middleEllipsis("whisper-large-v3-turbo", 16);
+    expect(a).not.toBe(b);
+    expect(a).toContain("…");
+    expect(a.length).toBe(16);
+    // Both ends survive: the shared prefix AND each name's own distinct tail.
+    expect(a.startsWith("whisper")).toBe(true);
+    expect(a.endsWith("mlx")).toBe(true);
+    expect(b.endsWith("turbo")).toBe(true);
+  });
+
+  it("is a no-op for a budget too small to hold head, tail and the ellipsis usefully", () => {
+    expect(middleEllipsis("whisper-large-v3-mlx", 0)).toBe("whisper-large-v3-mlx");
   });
 });

@@ -24,7 +24,7 @@
 // its top gridline IS the peak (`yAxisTicks` divides the domain equally, so
 // the last tick lands exactly on `yMax`) — which is why there is no separate
 // "peak N unit" caption any more: the axis already says it.
-import { chartSeries, formatNumber, formatRunDate, primaryMetric, shortModelName, yAxisTicks } from "@apps/ai_models/lib/benchmark";
+import { chartAxisTicks, chartSeries, formatNumber, primaryMetric, shortModelName, yAxisTicks } from "@apps/ai_models/lib/benchmark";
 import type { AiBenchmarkRun } from "@platform/lib/api";
 
 // The plot's own coordinate space. Taller than the old 160px box — this chart
@@ -70,23 +70,12 @@ export function BenchmarkChart({
 
   const ticks = yAxisTicks(yMax, metric.digits, 3);
 
-  // Three date ticks at most — first run, the middle one, last run — never a
+  // Three x ticks at most — first run, the middle one, last run — never a
   // claim of even spacing the runs don't have (see the file header on why the
-  // old axis said only "oldest"/"newest"). Two runs get just the ends; one run
-  // gets its own single date rather than repeating it.
-  const dateTicks: { x: number; label: string }[] =
-    runs.length === 1
-      ? [{ x: 0, label: formatRunDate(runs[0]!.startedAt) }]
-      : [
-          { x: 0, label: formatRunDate(runs[0]!.startedAt) },
-          ...(runs.length > 2
-            ? (() => {
-                const mid = Math.floor((runs.length - 1) / 2);
-                return [{ x: mid, label: formatRunDate(runs[mid]!.startedAt) }];
-              })()
-            : []),
-          { x: runs.length - 1, label: formatRunDate(runs[runs.length - 1]!.startedAt) },
-        ];
+  // old axis said only "oldest"/"newest"). `chartAxisTicks` (lib/benchmark.ts)
+  // decides dates vs. times: a same-day span draws times, with the shared
+  // date stated once in `dateCaption` rather than on every tick.
+  const { ticks: dateTicks, dateCaption } = chartAxisTicks(runs);
 
   return (
     <div className="am-bench-chart">
@@ -152,14 +141,34 @@ export function BenchmarkChart({
               hasn't been re-run in a while still ends its own line where it
               last measured. HTML, not SVG `<text>`, and positioned by the same
               percentage math as everything else here, for the reason in the
-              file header. */}
+              file header.
+
+              **The anchor flips near an edge, rather than always centring on
+              the point.** A label centred on a point within ~12% of the right
+              edge overflows the panel — `whisper-large-v3-turbo 46.2` used to
+              clip mid-number against the border, because nothing reserved
+              room for it — so past that threshold the label right-aligns
+              instead and grows LEFTWARD into the plot; the mirror case near
+              the left edge left-aligns rather than spilling off it. The same
+              fix applies vertically: a point on the TOP gridline used to draw
+              its label above the plot's own frame, reading as detached from
+              the chart it names, so a point within ~12% of the top draws its
+              label BELOW itself instead. */}
           {series.map((line, i) => {
             const last = line.points[line.points.length - 1]!;
+            const xPct = pxPct(last.x);
+            const yPct = pyPct(last.y);
+            const translateX = xPct > 80 ? "-100%" : xPct < 12 ? "0%" : "-50%";
+            const translateY = yPct < 12 ? "40%" : "-135%";
             return (
               <span
                 key={line.model}
                 className={`am-bench-endlabel c${i % COLOURS}`}
-                style={{ left: `${pxPct(last.x)}%`, top: `${pyPct(last.y)}%` }}
+                style={{
+                  left: `${xPct}%`,
+                  top: `${yPct}%`,
+                  transform: `translate(${translateX}, ${translateY})`,
+                }}
                 title={line.model}
               >
                 {shortModelName(line.model)} {formatNumber(last.y, metric.digits)}
@@ -173,6 +182,10 @@ export function BenchmarkChart({
           <span key={tick.x}>{tick.label}</span>
         ))}
       </div>
+      {/* The date every time tick above shares, stated ONCE — only present
+          when `chartAxisTicks` switched to times (a same-day span), since a
+          row of dates needs no caption repeating one of them a third time. */}
+      {dateCaption && <div className="am-bench-axis-caption">{dateCaption}</div>}
     </div>
   );
 }

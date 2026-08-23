@@ -50,6 +50,7 @@ import {
   formatPrimary,
   latestByModel,
   leaderboard,
+  middleEllipsis,
   orderCapabilities,
   primaryMetric,
   primaryValue,
@@ -423,7 +424,12 @@ function BenchmarkRow({
   return (
     <div className="am-bench-row">
       <div className="am-bench-model" title={model}>
-        <span className="cc-mono">{shortModelName(model)}</span>
+        {/* Budget (28) is a hair under the column's own 30ch so the CSS
+            `overflow: hidden` safety net (ai-models.css) never has to fire
+            for a monospace glyph at this size — see `middleEllipsis`'s own
+            comment for why the ellipsis goes in the MIDDLE rather than the
+            tail. */}
+        <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
         {gone && <span className="am-bench-gone">not on this machine any more</span>}
       </div>
       <div className="am-bench-latest">

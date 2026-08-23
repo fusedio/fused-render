@@ -388,6 +388,89 @@ export function formatRunDate(epochSeconds: number): string {
   });
 }
 
+/** A run's time of day — "14:22" — for the chart's x axis when a DATE tick
+ *  would say the same thing three times over (see `chartAxisTicks`). No
+ *  seconds: this is "roughly when in the day", not a precise timestamp — the
+ *  archive table's `toLocaleString()` is where a reader who wants the exact
+ *  second should look. */
+export function formatRunTime(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export interface ChartAxisTicks {
+  ticks: { x: number; label: string }[];
+  /** The single date every TIME tick shares, or null when the ticks are
+   *  already dates and repeating one in a caption would say nothing new. */
+  dateCaption: string | null;
+}
+
+/** The chart's x-axis ticks — first run, the middle one, the last (never a
+ *  claim of even spacing the runs don't have, see `BenchmarkChart`) — as
+ *  DATES when they span more than a day, or as TIMES with the shared date
+ *  stated once in `dateCaption` when they don't.
+ *
+ *  **This is the fix for a real bug**: four runs taken minutes apart within
+ *  one day used to draw three identical "22 Aug" ticks, which tells a reader
+ *  nothing about when, within that day, each run happened — the axis is
+ *  supposed to distinguish points, and three copies of one date distinguishes
+ *  none of them. The threshold is the runs' OWN span (oldest to newest, under
+ *  24 hours), not a fixed rule, because "the same day" is a fact about the
+ *  data, not a property of the chart.
+ *
+ *  A single run still gets a DATE, never a time: a lone time of day with no
+ *  date on screen anywhere names a moment with nothing to anchor it to, which
+ *  is a worse answer than the date alone already was.
+ */
+export function chartAxisTicks(runs: AiBenchmarkRun[]): ChartAxisTicks {
+  if (runs.length === 0) return { ticks: [], dateCaption: null };
+
+  const indices =
+    runs.length === 1
+      ? [0]
+      : runs.length === 2
+        ? [0, 1]
+        : [0, Math.floor((runs.length - 1) / 2), runs.length - 1];
+
+  const span = runs[runs.length - 1]!.startedAt - runs[0]!.startedAt;
+  const useTime = runs.length > 1 && span < 24 * 60 * 60;
+
+  const ticks = indices.map((i) => ({
+    x: i,
+    label: useTime ? formatRunTime(runs[i]!.startedAt) : formatRunDate(runs[i]!.startedAt),
+  }));
+
+  return { ticks, dateCaption: useTime ? formatRunDate(runs[0]!.startedAt) : null };
+}
+
+/** Truncate `text` to at most `maxLength` characters, eliding the MIDDLE
+ *  rather than the tail — "whisper-lar…v3-mlx" instead of "whisper-large-v3…".
+ *
+ *  **Tail-ellipsis is wrong here specifically because model names that share
+ *  a long common prefix differ at the END**: `whisper-large-v3-mlx` and
+ *  `whisper-large-v3-turbo` are identical for their first 17 characters, so a
+ *  trailing "…" throws away exactly the four-or-so characters that tell them
+ *  apart, and a leaderboard whose rows read the same is a leaderboard that
+ *  answers nothing. Keeping both ends costs the finer detail in the MIDDLE of
+ *  a name instead, which is `-large-v3-` here — legible from context (the
+ *  head names the family, the tail names the variant) in a way an eaten
+ *  variant suffix is not.
+ *
+ *  A no-op when the text already fits, or when `maxLength` is too small to
+ *  hold a head, a tail and the ellipsis character usefully (2 or fewer) —
+ *  returning the untruncated text is a more honest failure than a string that
+ *  is mostly ellipsis.
+ */
+export function middleEllipsis(text: string, maxLength: number): string {
+  if (text.length <= maxLength || maxLength <= 2) return text;
+  const keep = maxLength - 1; // one character spent on the ellipsis itself
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return text.slice(0, head) + "…" + text.slice(text.length - tail);
+}
+
 /** The page's reading order for a set of capabilities.
  *
  *  `CAPABILITY_ORDER` is imported from the Local tab's grouping rather than
