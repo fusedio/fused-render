@@ -121,7 +121,7 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import tasks as ai_tasks
-from fused_render.ai.registry import for_capability
+from fused_render.ai.registry import TEXT_EMBEDDINGS, for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
@@ -499,13 +499,29 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         # The one runner-specific branch in this module (see the docstring's
         # last section) — `pick_gguf_file` is a GGUF-specific function, and
         # `hub_filter_tags` names the FILTER TAG generically but not the
-        # picker that goes with it, since llama.cpp's is the only format
-        # that needs one today. A future second format-specific runner would
-        # need its own branch here, not a new item in `hub_filter_tags`.
+        # picker that goes with it. That comment used to end "a future second
+        # format-specific runner would need its own branch here, not a new
+        # item in `hub_filter_tags`", and `TEXT_EMBEDDINGS` is that runner —
+        # so here is the branch.
+        #
+        # **The two pickers are not interchangeable and picking the wrong one
+        # is wrong twice over.** `pick_gguf_file` ranks `Q4_K_M` first and
+        # excludes F16/BF16/F32 and sub-Q4 outright, because a chat model's
+        # download is the binding cost. `pick_embedding_gguf_file` inverts
+        # that (see its docstring: quantization error lands straight in the
+        # vector, and these files are tens of megabytes). Using the chat
+        # picker here would DROP an embedding repo that publishes only
+        # `…-f16.gguf` and `…-f32.gguf` — ordinary `convert_hf_to_gguf.py`
+        # output for a small encoder — and, where both do answer, would print
+        # a `file` naming a different quantization from the one
+        # `llama_embed.download` actually fetches.
         siblings = raw.get("siblings")
         names = ([s.get("rfilename") for s in siblings if isinstance(s, dict)]
                  if isinstance(siblings, list) else [])
-        file = formats.pick_gguf_file(names)
+        pick = (formats.pick_embedding_gguf_file
+                if capability == TEXT_EMBEDDINGS
+                else formats.pick_gguf_file)
+        file = pick(names)
         if file is None:
             return None
     safetensors = raw.get("safetensors")

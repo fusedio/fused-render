@@ -112,6 +112,17 @@ const METRICS: Record<string, MetricSpec[]> = {
     { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
     { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
   ],
+  // The same three, because `_measure_text_embed` reports the same three
+  // (ai/benchmark.py) — one measurer serves both capabilities. Written out
+  // rather than aliased to the row above: this table is keyed by the server's
+  // capability constants, and sharing one array would make the day either
+  // capability grows a fourth metric an edit that silently claims it for the
+  // other one too.
+  "text-embeddings": [
+    { key: "textsPerSecond", label: "Throughput", unit: "texts/s", higherIsBetter: true, digits: 1 },
+    { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
+    { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
+  ],
 };
 
 /** The primary metric for a capability, or null when this frontend does not

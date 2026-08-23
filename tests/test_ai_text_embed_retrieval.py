@@ -22,12 +22,26 @@ llama.cpp, so it skips where it cannot run rather than being deleted — see
 
 -------------------------------------------------------------------------------
 
-**HOW MUCH OF THIS HAS BEEN RUN, and by what.** The corpus was validated with
-REAL weights on 2026-08-23 — `BAAI/bge-small-en-v1.5` and
-`BAAI/bge-base-en-v1.5` through transformers, CLS-pooled and L2-normalized,
-which is the same arithmetic llama.cpp performs for a GGUF declaring
-`pooling_type = CLS`. Both scored 5/5 top-1; word-overlap scored 2/5. So the
-corpus is known-good and the threshold below is not a guess.
+**HOW MUCH OF THIS HAS BEEN RUN, AND ON WHAT — the second half matters.** The
+corpus was validated with REAL weights on 2026-08-23, but with
+`BAAI/bge-small-en-v1.5` and `BAAI/bge-base-en-v1.5` through transformers
+(CLS-pooled, L2-normalized, bge's own query instruction) — **not with this
+file's default model.** `nomic-embed-text-v1.5` is mean-pooled and uses
+`search_query:`/`search_document:`, so it is a different configuration
+reached through a different runtime.
+
+What that validation does establish is the property the corpus was built for
+and the only one the 5/5 threshold rests on: these five paraphrases are
+findable by a competent general-purpose retrieval encoder, and are not
+findable by word overlap. Both bge models scored 5/5; word overlap scored
+2/5. nomic-embed-text-v1.5 is a stronger retrieval model than either on
+every public benchmark, so 5/5 is a floor it should clear comfortably rather
+than a number tuned to it.
+
+**If it does not**, the honest reading is that this threshold was set from a
+neighbouring model and should be re-derived, not that the runner is broken —
+check `promptScheme` on the reply first, since a wrong prefix is the failure
+mode that looks exactly like a weak model.
 
 **The llama.cpp path itself was NOT executed there.** The machine this was
 written on cannot run the pinned `llama-cpp-python` wheel at all — every
@@ -186,10 +200,12 @@ def test_a_paraphrase_finds_its_passage(_llm):
     testing the symmetric path would leave the asymmetric one, the one the
     endpoint exists to offer, unexercised.
 
-    5/5 rather than a softer threshold because 5/5 is what real weights
-    scored when this corpus was validated (see the module docstring). A
-    threshold below what the thing actually does is a threshold that lets a
-    regression through.
+    5/5 rather than a softer threshold: it is what real weights scored when
+    this corpus was validated, and a threshold below what the thing actually
+    does is a threshold that lets a regression through. Read the module
+    docstring for WHICH weights — the validation used bge through
+    transformers, not this file's default model, and the argument for
+    carrying the number across is there rather than assumed here.
     """
     documents = _embed(_llm, CORPUS, "document")
     queries = _embed(_llm, [q for q, _w in QUERIES], "query")

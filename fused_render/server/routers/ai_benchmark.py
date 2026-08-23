@@ -131,7 +131,15 @@ def _benchmarkable_models(capability: str) -> set[str]:
         # already in `admitted` if it is here, and if it is not, it is not
         # benchmarkable. Guarding on the recipe keeps that explicit rather than
         # resting on `is_downloaded` happening to agree.
-        if entry_id in formats.GGUF_RECIPES and is_downloaded(entry_id, cached):
+        #
+        # `formats.gguf_recipe`, not `formats.GGUF_RECIPES` — there are TWO
+        # filename-keyed recipe tables now (chat and text embedding), and this
+        # was the last site still reading only the first. The failure was
+        # silent and total for the newer capability: all three of its curated
+        # ids are filenames, none ever appears as a cached `repo_id`, so none
+        # was admitted and `POST /api/ai/benchmark` 404'd for every text
+        # embedding model even with the weights on disk.
+        if formats.gguf_recipe(entry_id) and is_downloaded(entry_id, cached):
             admitted.add(entry_id)
     return admitted
 

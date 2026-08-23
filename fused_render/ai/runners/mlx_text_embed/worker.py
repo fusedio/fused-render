@@ -96,10 +96,18 @@ _STREAMS_LOCK = threading.Lock()
 #: hard per-item limit that has to be allocated up front. Here the tokenizer
 #: truncates and the encoder runs on whatever is left, so a smaller number is
 #: a shorter read rather than a failure — and a LARGER one on a
-#: 512-position BERT would index past its position embeddings. Sizing this
-#: from the config is a reasonable later change; a fixed 512 is the one value
-#: that is correct-or-conservative for every architecture named in
-#: `formats.MLX_TEXT_EMBED_MODEL_TYPES`.
+#: 512-position BERT would index past its position embeddings.
+#:
+#: **Correct for the encoders, LOSSY for the decoders, and that is the honest
+#: description.** `formats.MLX_TEXT_ENCODER_MODEL_TYPES` — bert, modernbert,
+#: xlm-roberta — trained at 512, so this is their own maximum and nothing is
+#: lost. `formats.MLX_TEXT_EMBED_DECODER_MODEL_TYPES` — qwen3, gemma3_text,
+#: lfm2 — support far more, so a long passage is TRUNCATED here where the
+#: llama.cpp runner would read it whole (that one sizes `n_ctx` off the
+#: checkpoint, `llama_embed._MAX_N_CTX`). Sizing this from the config the
+#: same way is the obvious improvement and is deliberately not attempted from
+#: a machine that cannot run the code; 512 is the value that is correct or
+#: conservative for every architecture rather than wrong for some.
 _MAX_LENGTH = 512
 
 #: The field on `mlx_embeddings`' `BaseModelOutput` that carries the pooled,

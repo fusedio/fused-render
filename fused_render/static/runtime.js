@@ -3178,11 +3178,15 @@
   // surface this — so this does not go through the generic `aiPost` (whose
   // blanket "409 -> unavailable" would drop the job id on the floor). It reads
   // the same `{ok, result|error:{type,message,jobId}}` wire shape `fused.ai`
-  // itself does, and `fail()` below is that function's own error mapping,
-  // copied rather than shared for the reason `mlx_embed/worker.py`'s
-  // `_pin_stream` is: the two live in different modules with no import between
-  // them, HTTP is the only contract, and duplicating five lines is cheaper
-  // than inventing one.
+  // itself does, mapped in the shared `embedPost` below.
+  //
+  // That mapping began here as a copy of `fused.ai`'s own `fail()`, on the
+  // argument `mlx_embed/worker.py`'s `_pin_stream` makes: two modules, no
+  // import between them, HTTP the only contract, five lines cheaper than a
+  // seam. It moved into `embedPost` when `aiEmbedText` arrived — see the note
+  // there for why a THIRD copy inside one scope does not survive that
+  // argument. `fused.ai`'s own copy stays put; that one really is across a
+  // module boundary.
   function aiEmbed(opts) {
     opts = opts || {};
     const hasTexts = Array.isArray(opts.texts) && opts.texts.length > 0;

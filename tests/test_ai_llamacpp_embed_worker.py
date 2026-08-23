@@ -578,6 +578,56 @@ def test_the_recipes_and_the_catalog_cannot_drift(worker):
         entry["id"] for entry in catalog.SUGGESTIONS["llamacpp-embed"]}
 
 
+def test_a_downloaded_embedding_gguf_still_has_a_capability(worker):
+    """**The Load button, and the bug that took it away.**
+
+    `worker_base.download_file` fetches the ONE `.gguf` and nothing else, so a
+    curated model's snapshot has no README and no config — `_format_task`
+    returns None for it, and the capability a cached card shows comes instead
+    from `hub_cache._engine`, which intersects `meta.loaders` with
+    `formats.DECISIVE`.
+
+    The first cut of this change added the new codes to `loaders()` and NOT to
+    `DECISIVE`, so that intersection was empty: a model the user had just
+    downloaded rendered with no task, no engine tag and no Load button, while
+    `cached_capability` recovered it through its own `meta.loaders` fallback —
+    card and load route disagreeing, which is the exact split `_engine`'s
+    docstring says cannot happen. Chat GGUFs were unaffected, so nothing else
+    noticed.
+    """
+    from fused_render.ai.runners import formats
+
+    loaders = formats.loaders(
+        repo_id="nomic-ai/nomic-embed-text-v1.5-GGUF",
+        names={"nomic-embed-text-v1.5.Q8_0.gguf"}, dirnames=set(), config={},
+        torch_weights=False, gguf_architecture="nomic-bert",
+        gguf_pooling_type=formats.GGUF_POOLING_MEAN)
+    assert set(loaders) & set(formats.DECISIVE) == set(loaders), (
+        f"{sorted(set(loaders) - set(formats.DECISIVE))} are runners "
+        f"`loaders()` names for a GGUF snapshot but `DECISIVE` does not, so a "
+        f"cached repo they load gets no capability and no Load button")
+
+
+def test_the_embedding_picker_takes_files_the_chat_picker_refuses(worker):
+    """Why hub search needs its own branch rather than reusing
+    `pick_gguf_file` now that a second capability declares
+    `hub_filter_tags=("gguf",)`.
+
+    `_gguf_rank` excludes F16/BF16/F32 outright — correct for a chat model,
+    where full precision is a download nobody wants — and `pick_gguf_file`
+    falls back only when there is exactly one candidate. A small encoder
+    converted with stock `convert_hf_to_gguf.py` publishes precisely
+    `…-f16.gguf` and `…-f32.gguf` and nothing else, so the chat picker drops
+    the repo from Discover entirely while the embedding picker ranks both.
+    """
+    from fused_render.ai.runners import formats
+
+    names = ["model-f16.gguf", "model-f32.gguf", "README.md"]
+    assert formats.pick_gguf_file(names) is None
+    # F16 over F32: twice the bytes for weights trained in half precision.
+    assert formats.pick_embedding_gguf_file(names) == "model-f16.gguf"
+
+
 def test_the_two_recipe_tables_share_no_key(worker):
     """`formats.gguf_recipe` consults the chat table FIRST, so a shared key
     would silently resolve an embedding id to a chat model's repo and

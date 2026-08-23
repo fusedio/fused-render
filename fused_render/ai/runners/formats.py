@@ -422,8 +422,12 @@ def _gguf_uint_by_suffix(path: str, suffix: str) -> int | None:
     is "cannot tell", never a crash and never a guess. That last case matters
     more than it looks — the peek is a fixed `_GGUF_HEADER_PEEK_BYTES` window
     and a GGUF's tokenizer arrays are megabytes wide, so a key that sorts
-    after them is simply not visible from here and reads as None. Both keys
-    this is used for sit in the architecture block, ahead of the tokenizer.
+    after them is simply not visible from here and reads as None. Every key
+    this is used for — `block_count`, `expert_count`, `pooling_type` and
+    `context_length` — sits in the architecture block, ahead of the
+    tokenizer. Checked directly for the last two against four published
+    embedding GGUFs, including a 151k-vocabulary Qwen3-Embedding whose
+    header does overflow the window.
     """
     return gguf_uint_by_suffix_in(_gguf_peek(path), suffix)
 
@@ -431,8 +435,8 @@ def _gguf_uint_by_suffix(path: str, suffix: str) -> int | None:
 def _gguf_peek(path: str) -> bytes:
     """The first `_GGUF_HEADER_PEEK_BYTES` of `path`, or `b""` if unreadable.
 
-    The one place the local read happens, so the four public readers above
-    and below differ only in which key they look for. `b""` for an
+    The one place the local read happens, so the public readers above and
+    below differ only in which key they look for. `b""` for an
     unreadable file rather than a raise: every caller's contract is already
     "None means cannot tell", and empty bytes reach that answer through the
     same code path a truncated or non-GGUF file does.
@@ -924,7 +928,11 @@ def gguf_recipe(model_id: str) -> dict | None:
     bare repo id cannot address the one this app curates), and at least four
     places in the server have to translate a filename id back to its repo:
     `hub_cache.is_downloaded`, `catalog.mirror_id`,
-    `ai_runtime._catalog_with_downloads` and the Benchmark tab's own guard.
+    `ai_runtime._catalog_with_downloads` and
+    `ai_benchmark._benchmarkable_ids`. All four now call this; the last of
+    them did not until a review caught it, and the symptom was the one
+    described below — a curated text-embedding model that was on disk and
+    still could not be benchmarked.
 
     Each of those was written against `GGUF_RECIPES` alone, and each fails
     QUIETLY for an id the other table owns rather than raising — a curated
@@ -1191,8 +1199,15 @@ GGUF_EMBED_SUFFIX_PRIORITY = (
 def _embedding_gguf_rank(filename: str) -> int | None:
     """`filename`'s position in `GGUF_EMBED_SUFFIX_PRIORITY`, or None.
 
-    A plain longest-suffix match on the stem rather than
-    `_GGUF_QUANT_TOKEN_RE`'s structured parse, because the two lists have
+    A plain `endswith` scan in PRIORITY ORDER — first hit wins, which is not
+    the same as the longest match: `…-BF16.gguf` is caught by the `F16`
+    entry before the scan reaches `BF16`. That costs nothing here, because
+    the two rank adjacently and a repo publishing BF16 almost never also
+    publishes F16, but a reordering of the list would change which entry
+    claims it — so keep near-duplicates adjacent.
+
+    Deliberately not `_GGUF_QUANT_TOKEN_RE`'s structured parse, because the
+    two lists have
     different jobs: that regex exists to recognise families and unsloth's
     `UD-` dynamic quants across a chat ecosystem that publishes two dozen
     tiers per repo, and an embedding repo publishes four. Every suffix an
@@ -1342,7 +1357,35 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
             # `DIFFUSERS_RUNNERS`' reason — membership is a statement about the
             # FORMAT, and a config saying `siglip` says the same thing whichever
             # of the two engines opens it.
-            "mlx-embed", "transformers-embed")
+            "mlx-embed", "transformers-embed",
+            # The text-embedding rows, decisive for a reason this table has not
+            # needed before — worth stating, because the obvious reading ("a
+            # root `.gguf` is already covered two entries up") is wrong, and
+            # leaving them out costs a Load button.
+            #
+            # `_format_task` (`hub_cache.py`) returns None for a GGUF snapshot:
+            # `download_file` fetches the ONE `.gguf` and nothing else, so
+            # there is no README and no config for a `pipeline_tag` to be read
+            # out of. A cached repo's capability therefore comes from
+            # `_engine`, which intersects `meta.loaders` with THIS tuple — so a
+            # code missing here leaves `decisive` empty, `_engine` answers
+            # `(None, None)`, and the Local tab draws a curated model the user
+            # has just downloaded with no task, no engine tag and no Load
+            # button. `cached_capability` still recovers it through its own
+            # `meta.loaders` fallback, so the card and the load route disagree,
+            # which is exactly the split `_engine`'s docstring says must be
+            # impossible.
+            #
+            # Both llama.cpp builds, for the reason every pair above is listed
+            # whole: membership is a statement about the FORMAT.
+            # `mlx-text-embed` joins them and is the one entry here that is not
+            # decisive from a file EXTENSION — a text encoder is a directory of
+            # safetensors, the very case `mlx-text` is excluded for. It is
+            # decisive all the same, because `loaders()` names it only after
+            # finding an encoder-only `model_type` or a sentence-transformers
+            # sidecar. This tuple reads that branch's answer, not the
+            # extension.
+            "llamacpp-embed", "llamacpp-embed-vulkan", "mlx-text-embed")
 
 
 def unloadable_quant(config: dict) -> str | None:
