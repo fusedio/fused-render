@@ -78,14 +78,14 @@
 
 /* Immediately right of the title, not flushed to the rail's far edge: the
  * caret belongs to the word it opens, and parked 200px away it read as a
- * control for the whole column. Smaller with it — at 7px next to 12px text it
- * was the heavier of the two marks. */
+ * control for the whole column. Smaller with it — the old 7px square was the
+ * heavier of the two marks on the line. */
 .pg-group-head::after {
   content: "";
   flex: none;
   margin-left: -2px;
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-right: 1.25px solid var(--fg-muted);
   border-bottom: 1.25px solid var(--fg-muted);
   transform: rotate(-45deg);
@@ -105,11 +105,20 @@
   flex: none;
 }
 
+/* Bigger than capabilityIcon's own 16px, in CSS rather than by an argument —
+ * the same override the stage header does below. These are the rail's only
+ * headings now that the labels are no longer tracked-out caps, so the glyph
+ * carries part of the weight the letter-spacing used to. */
+.pg-group-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* The label as written — "Text", "Transcription", "Not supported" — instead of
  * tracked-out caps. The words are already the section's own nouns, and shouting
  * them made four small headings compete with the cards under them. */
 .pg-group-title {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
 }
 
