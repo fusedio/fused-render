@@ -1345,10 +1345,16 @@ _RUNNERS: tuple[Runner, ...] = (
     # **`h3-video` stays exactly as it was, one row down.** MiniMax H3's 144.1
     # GB checkpoint and 64 GB-class RAM floor make it the wrong "just try
     # video" default on most of the Apple Silicon fleet, but it remains
-    # reachable — naming `MiniMaxAI/MiniMax-H3` explicitly still resolves
-    # here, unchanged — for whoever wants its ceiling instead of `ltx-video`'s
-    # floor. One row, gated on BOTH Apple Silicon and a resolvable binary
-    # (`_h3_available`), so off a Mac — or on a Mac whose build never staged
+    # reachable for whoever wants its ceiling instead of `ltx-video`'s floor —
+    # through the ENGINE PREFERENCE (the Engines tab), not by naming
+    # `MiniMaxAI/MiniMax-H3` in a request. Resolution here is by capability
+    # plus stored preference (`resolve()`, below), never by `model` — a
+    # request that names H3's repo while the preference (or the ordering,
+    # absent one) resolves to `ltx-video` reaches the ltx-video worker
+    # instead and is refused, by `server/routers/ai_runtime.py`'s own
+    # cached-format check, before a byte moves. One row, gated on BOTH Apple
+    # Silicon and a resolvable binary (`_h3_available`), so off a Mac — or
+    # on a Mac whose build never staged
     # the binary — the capability falls through to `ltx-video`'s own gate
     # instead of disappearing outright, which is the change from before: only
     # a machine that is not Apple Silicon at all now sees `default: null`

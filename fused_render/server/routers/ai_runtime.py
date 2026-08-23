@@ -1260,6 +1260,36 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
     traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
 
+    # **Naming a model explicitly does NOT pick its runner.** Resolution is
+    # by CAPABILITY plus stored preference (`registry.resolve`), never by
+    # `model` — `start_video`'s own `_runner_or_raise` never reads it either.
+    # So on an Apple Silicon Mac with `ltx-video` resolved and NO engine
+    # preference set, `{"model": "MiniMaxAI/MiniMax-H3"}` would build and
+    # start the ltx-video worker against the H3 repo, which raises deep
+    # inside `load()` after a (cheap, listing-only) Hub round trip — a
+    # confusing failure for someone who deliberately named the model they
+    # already have 144GB of. Refused here instead, naming the one other
+    # place this repo IS reachable: the Engines tab, which is exactly the
+    # switch `registry.resolve` already honours (see that module's own
+    # docstring). Silent for anything not already cached — there is no
+    # format evidence to refuse on without a network call this route has
+    # never made, and an uncached id is the ordinary "let the runner's own
+    # `load()` refusal explain it" path every other capability already
+    # relies on.
+    if serving_runner is not None:
+        reading = cached_capability(model)
+        if (reading.cached and reading.capability == registry.VIDEO_GENERATION
+                and reading.runner_code is not None
+                and reading.runner_code != serving_runner.code):
+            other = registry.by_code(reading.runner_code)
+            other_name = other.short if other is not None else reading.runner_code
+            return _error(
+                f"{model} is an {other_name} model, and video generation is "
+                f"set to {serving_runner.short}, which does not read this "
+                f"format — switch the video engine to {other_name} on the "
+                f"Engines tab, or name a model {serving_runner.short} reads.",
+                status=409)
+
     try:
         steps = max(_MIN_VIDEO_STEPS,
                     min(_MAX_VIDEO_STEPS, int(body.get("steps") or traits.default_steps)))

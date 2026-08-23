@@ -5008,6 +5008,79 @@ def test_ltx_video_request_shape_follows_its_own_traits(client, fake_ltx_video_r
     _wait_job(reply["jobId"])
 
 
+def test_naming_the_OTHER_video_engines_cached_model_is_refused_not_started(
+        client, hub, monkeypatch, tmp_path):
+    """Naming a model explicitly does NOT pick its runner — resolution is by
+    CAPABILITY plus stored preference (`registry.py`'s own module docstring),
+    and `start_video`'s `_runner_or_raise` never reads `model` either. So on
+    a machine where `ltx-video` resolves (first in `_RUNNERS`, no preference
+    set) and the caller names a repo already cached in H3's own `FL2VA/`
+    layout, this used to build and start the ltx-video worker against that
+    repo — which would raise deep inside `load()` after a Hub listing round
+    trip, a confusing failure for someone who deliberately named a model
+    they already have on disk. The route now catches this itself, off the
+    SAME cached-format evidence the AI Models page's own card already reads
+    (`hub_cache.cached_capability`), before any job opens.
+
+    Two FAKE runners rather than the real `ltx-video`/`h3-video` folders:
+    what is under test is the ROUTE's own refusal, not either runner's
+    actual format check, and the codes have to be literally `ltx-video`/
+    `h3-video` because `formats.has_ltx_split_layout`/`has_h3_components`
+    key off those names, not off whichever runner happens to be registered.
+    """
+    def fake_runner(code):
+        folder = tmp_path / f"fake_{code.replace('-', '_')}"
+        folder.mkdir()
+        (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+        return registry.Runner(
+            code=code, capability=registry.VIDEO_GENERATION,
+            folder=str(folder), label=f"Fake {code}", short_label=code,
+        )
+
+    ltx = fake_runner("ltx-video")
+    h3 = fake_runner("h3-video")
+    # ltx-video FIRST, matching production ordering — the whole point is that
+    # it is the one that WOULD resolve here.
+    monkeypatch.setattr(registry, "_RUNNERS", (ltx, h3))
+    monkeypatch.setitem(catalog.SUGGESTIONS, "ltx-video", [
+        {"id": "org/ltx", "label": "Fake ltx", "size_gb": None, "note": ""}])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+
+    _cached_repo(hub, "MiniMaxAI/MiniMax-H3", dirs=("FL2VA",))
+
+    response = client.post(
+        "/api/ai/video", json={"prompt": "x", "model": "MiniMaxAI/MiniMax-H3"},
+        headers={"X-Fused": "1"})
+
+    assert response.status_code == 409
+    message = response.json()["error"]
+    assert "MiniMaxAI/MiniMax-H3" in message
+    assert "h3-video" in message
+    assert "Engines tab" in message
+    # No job opened for work that was never going to start — the same
+    # invariant `test_a_video_on_a_machine_with_no_video_runner_says_why`
+    # checks for the "nothing can serve this at all" 409.
+    assert not [j for j in jobs.list_jobs()
+               if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_naming_an_UNCACHED_model_is_not_refused_by_the_route(
+        client, fake_ltx_video_runner, monkeypatch):
+    """The refusal above needs EVIDENCE — an uncached id has none without a
+    network call this route has never made, so it reaches the runner's own
+    `load()` refusal instead, exactly as every other capability's route
+    already does for a model nothing here recognises. This is the negative
+    case that keeps the guard from becoming "the route silently accepts
+    only ids it has curated"."""
+    response = client.post(
+        "/api/ai/video",
+        json={"prompt": "x", "model": "someone/unrelated-repo-not-cached"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    _wait_job(response.json()["jobId"])
+
+
 def test_video_seed_is_invented_when_not_given_and_echoed_when_it_is(client, fake_video_runner):
     one = client.post("/api/ai/video", json={"prompt": "a"}, headers={"X-Fused": "1"}).json()
     two = client.post("/api/ai/video", json={"prompt": "b", "seed": 1234},
