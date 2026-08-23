@@ -52,6 +52,7 @@ class _FakeHTTPResponse:
     def __init__(self, body: bytes, chunks: list[bytes] | None = None):
         self._body = body
         self._chunks = list(chunks) if chunks is not None else None
+        self.closed = False
 
     def read(self, n=None):
         if n is None:
@@ -61,6 +62,9 @@ class _FakeHTTPResponse:
         if not self._chunks:
             return b""
         return self._chunks.pop(0)
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeHTTPError(urllib.error.HTTPError):
@@ -174,6 +178,38 @@ def test_parse_ndjson_handles_a_chunk_split_mid_line():
     ]
 
 
+def test_parse_ndjson_raises_aierror_not_a_bare_json_error_on_a_truncated_line():
+    """A connection that dies mid-line must surface through the exception
+    contract callers are told to catch (AiError/ServerNotRunning), not as a
+    bare json.JSONDecodeError."""
+    chunks = [b'{"type": "chunk", "tex']  # truncated, never closed
+    with pytest.raises(fused_ai.AiError) as exc:
+        list(fused_ai._parse_ndjson(chunks))
+    assert exc.value.type == "bad_response"
+
+
+def test_get_json_raises_aierror_not_a_bare_oserror_on_a_read_failure(monkeypatch):
+    class _DyingResponse:
+        def read(self, n=None):
+            raise TimeoutError("timed out")
+
+    monkeypatch.setattr(fused_ai, "_request", lambda *a, **kw: _DyingResponse())
+    with pytest.raises(fused_ai.AiError) as exc:
+        fused_ai._get_json("/api/jobs")
+    assert exc.value.type == "network_error"
+
+
+def test_post_json_raises_aierror_not_a_bare_oserror_on_a_read_failure(monkeypatch):
+    class _DyingResponse:
+        def read(self, n=None):
+            raise OSError("connection reset")
+
+    monkeypatch.setattr(fused_ai, "_request", lambda *a, **kw: _DyingResponse())
+    with pytest.raises(fused_ai.AiError) as exc:
+        fused_ai._post_json("/api/ai", {"prompt": "hi"})
+    assert exc.value.type == "network_error"
+
+
 def test_stream_yields_chunks_and_stops_on_done(monkeypatch):
     lines = [
         json.dumps({"type": "chunk", "text": "a"}),
@@ -181,15 +217,67 @@ def test_stream_yields_chunks_and_stops_on_done(monkeypatch):
         json.dumps({"type": "done", "ok": True, "result": {"text": "ab"}}),
     ]
     raw = ("\n".join(lines) + "\n").encode("utf-8")
+    resp = _FakeHTTPResponse(b"", chunks=[raw[:10], raw[10:20], raw[20:]])
 
     def fake_urlopen(req, timeout=None):
         assert json.loads(req.data)["stream"] is True
-        return _FakeHTTPResponse(b"", chunks=[raw[:10], raw[10:20], raw[20:]])
+        return resp
 
     monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
     monkeypatch.setattr(fused_ai.urllib.request, "urlopen", fake_urlopen)
     got = list(fused_ai.stream("hi"))
     assert got == ["a", "b"]
+
+
+def test_stream_closes_the_response_on_a_normal_done_frame(monkeypatch):
+    lines = [
+        json.dumps({"type": "chunk", "text": "a"}),
+        json.dumps({"type": "done", "ok": True, "result": {"text": "a"}}),
+    ]
+    raw = ("\n".join(lines) + "\n").encode("utf-8")
+    resp = _FakeHTTPResponse(b"", chunks=[raw])
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen",
+                       lambda req, timeout=None: resp)
+    list(fused_ai.stream("hi"))
+    assert resp.closed is True
+
+
+def test_stream_closes_the_response_on_an_ok_false_done_frame(monkeypatch):
+    lines = [
+        json.dumps({"type": "done", "ok": False,
+                   "error": {"type": "ai_error", "message": "boom"}}),
+    ]
+    raw = ("\n".join(lines) + "\n").encode("utf-8")
+    resp = _FakeHTTPResponse(b"", chunks=[raw])
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen",
+                       lambda req, timeout=None: resp)
+    gen = fused_ai.stream("hi")
+    with pytest.raises(fused_ai.AiError):
+        next(gen)
+    assert resp.closed is True
+
+
+def test_stream_closes_the_response_when_the_caller_abandons_it_early(monkeypatch):
+    """Not closing here is worse than a leaked socket: the server's own
+    `finally` (server/ai.py's _ai_relay) only cancels the in-flight
+    generation once the client actually disconnects — an open-but-unread
+    response keeps burning tokens server-side for a stream nobody reads."""
+    lines = [
+        json.dumps({"type": "chunk", "text": "a"}),
+        json.dumps({"type": "chunk", "text": "b"}),
+        json.dumps({"type": "done", "ok": True, "result": {"text": "ab"}}),
+    ]
+    raw = ("\n".join(lines) + "\n").encode("utf-8")
+    resp = _FakeHTTPResponse(b"", chunks=[raw])
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen",
+                       lambda req, timeout=None: resp)
+    gen = fused_ai.stream("hi")
+    assert next(gen) == "a"
+    gen.close()  # the caller broke out of a `for c in stream(...): break`
+    assert resp.closed is True
 
 
 def test_stream_raises_on_an_ok_false_done_frame(monkeypatch):
@@ -211,6 +299,23 @@ def test_stream_raises_on_an_ok_false_done_frame(monkeypatch):
         next(gen)
     assert exc.value.type == "ai_error"
     assert exc.value.message == "died mid-stream"
+
+
+def test_stream_raises_aierror_not_a_bare_error_on_a_socket_failure_mid_read(monkeypatch):
+    class _DyingResponse:
+        def read(self, n=None):
+            raise TimeoutError("timed out mid-stream")
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(fused_ai.urllib.request, "urlopen",
+                       lambda req, timeout=None: _DyingResponse())
+    gen = fused_ai.stream("hi")
+    with pytest.raises(fused_ai.AiError) as exc:
+        next(gen)
+    assert exc.value.type == "network_error"
 
 
 # ----------------------------------------------------------------- job wait

@@ -274,15 +274,37 @@ def _request(method: str, path: str, body: dict | None = None,
         raise AiError("network_error", str(e.reason)) from None
 
 
+def _read_body(resp) -> bytes:
+    """`resp.read()`, with a socket-level failure mapped onto `AiError`
+    instead of a bare `OSError`/`TimeoutError` — callers are told to catch
+    `AiError`/`ServerNotRunning`, and a connection that dies mid-body (the
+    request succeeded, the body did not finish arriving) must not escape
+    that contract."""
+    try:
+        return resp.read()
+    except (OSError, TimeoutError) as e:
+        raise AiError("network_error", str(e)) from None
+
+
+def _read_stream_chunk(resp, size: int = 4096) -> bytes:
+    """`resp.read(size)` for the NDJSON reader, same mapping as `_read_body`
+    — a socket failure mid-stream is exactly as fatal as one mid-body, and
+    must surface the same way."""
+    try:
+        return resp.read(size)
+    except (OSError, TimeoutError) as e:
+        raise AiError("network_error", str(e)) from None
+
+
 def _get_json(path: str, timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
     resp = _request("GET", path, timeout=timeout)
-    payload = _read_json_body(resp.read())
+    payload = _read_json_body(_read_body(resp))
     return payload if isinstance(payload, dict) else {}
 
 
 def _post_json(path: str, body: dict, timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
     resp = _request("POST", path, body=body, timeout=timeout)
-    payload = _read_json_body(resp.read())
+    payload = _read_json_body(_read_body(resp))
     return payload if isinstance(payload, dict) else {}
 
 
@@ -294,16 +316,27 @@ def _parse_ndjson(chunks):
     line can be split anywhere — including mid-line across two chunks, or
     several lines landing in one chunk. Both are handled by buffering
     everything and only ever cutting on `\\n`.
+
+    A malformed or truncated line (the connection died mid-frame) raises
+    `AiError` rather than a bare `json.JSONDecodeError` — same contract as
+    `_read_body`/`_read_stream_chunk`.
     """
+    def _load(raw: bytes):
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise AiError("bad_response",
+                          f"malformed NDJSON frame from the server: {e}") from None
+
     buffer = b""
     for chunk in chunks:
         buffer += chunk
         while b"\n" in buffer:
             line, buffer = buffer.split(b"\n", 1)
             if line.strip():
-                yield json.loads(line.decode("utf-8"))
+                yield _load(line)
     if buffer.strip():
-        yield json.loads(buffer.decode("utf-8"))
+        yield _load(buffer)
 
 
 # ---------------------------------------------------------------- job waiting
@@ -429,21 +462,33 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
 
     def _chunks():
         while True:
-            piece = resp.read(4096)
+            piece = _read_stream_chunk(resp)
             if not piece:
                 return
             yield piece
 
-    for frame in _parse_ndjson(_chunks()):
-        ftype = frame.get("type")
-        if ftype == "chunk":
-            yield frame.get("text") or ""
-        elif ftype == "done":
-            if not frame.get("ok"):
-                err = frame.get("error") or {}
-                raise AiError(err.get("type") or "ai_error",
-                              err.get("message") or "", job_id=err.get("jobId"))
-            return
+    # `try/finally` around the whole body, not just the happy path: the
+    # server's own generator (`_ai_relay`'s `ndjson()`) only discards a
+    # mid-turn instance once it sees the CLIENT actually disconnect — an
+    # open-but-unread response leaves the in-flight generation running and
+    # burning tokens for a stream nobody is reading any more. This covers
+    # every exit: the ordinary `done` frame, an `AiError` raised on an
+    # `ok: false` done frame, and a caller abandoning the generator early
+    # (`for c in stream(p): break` throws `GeneratorExit` in here via
+    # `.close()`, which still runs this `finally`).
+    try:
+        for frame in _parse_ndjson(_chunks()):
+            ftype = frame.get("type")
+            if ftype == "chunk":
+                yield frame.get("text") or ""
+            elif ftype == "done":
+                if not frame.get("ok"):
+                    err = frame.get("error") or {}
+                    raise AiError(err.get("type") or "ai_error",
+                                  err.get("message") or "", job_id=err.get("jobId"))
+                return
+    finally:
+        resp.close()
 
 
 # --------------------------------------------------------------- transcribe
