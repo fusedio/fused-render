@@ -604,22 +604,28 @@ a.pg-hero-repo:hover {
  * spent most of it on words ("Fetching weights…") that the download icon says
  * in 14px. */
 .pg-hero-dl {
-  /* ONE CELL, TWO DRAWINGS — the counting progress and the Cancel that replaces
-     it under the pointer. Stacked in a single grid area rather than swapped in
-     flow, so the box measures the wider and the taller of the two at rest and
-     the hover changes nothing but which one is painted; a slot that resized
-     would shove the buttons beside it sideways at the moment the pointer
-     arrived. */
-  display: grid;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   align-self: center;
-  justify-items: center;
   font-size: 12px;
   color: var(--fg-muted);
 }
 
-.pg-hero-dl > * {
+/* ONE CELL, TWO DRAWINGS — the progress (ring + figures) and the Cancel that
+   replaces it under the pointer. Stacked in a single grid area rather than
+   swapped in flow, so the box measures the wider of the two at rest and the
+   hover changes nothing but which one is painted; a slot that resized would
+   shove the buttons beside it sideways at the moment the pointer arrived. The
+   download icon sits OUTSIDE this box, because it does not take part. */
+.pg-hero-dl-swap {
+  display: grid;
+  align-items: center;
+  justify-items: start;
+}
+
+.pg-hero-dl-swap > * {
   grid-area: 1 / 1;
-  align-self: center;
 }
 
 .pg-hero-dl-live {
@@ -639,9 +645,27 @@ a.pg-hero-repo:hover {
   transition: opacity 120ms ease;
 }
 
+/* A word the size of the figures it stands in for, in the error hue at 85% so
+   it reads as pale rather than as an alarm — this is an offer, not a failure.
+   No border, no padding, no background: it replaces 12px of muted text in the
+   corner of a card, and a bordered control there would out-shout everything
+   including the download it stops. The underline is what says it is
+   pressable. */
 .pg-hero-dl-stop {
   opacity: 0;
   pointer-events: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: rgba(var(--error-rgb), 0.85);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.pg-hero-dl-stop:hover {
+  color: var(--error);
 }
 
 .pg-hero-dl:hover .pg-hero-dl-live,

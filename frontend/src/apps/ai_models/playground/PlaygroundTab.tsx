@@ -726,18 +726,24 @@ export default function PlaygroundTab() {
                           Here the icon says which kind of work this is without
                           a word, and a ring says how far in the space the
                           sentence wanted. */}
-                      <span className="pg-hero-dl-live">
-                        <span className="pg-hero-dl-icon" aria-hidden="true">
-                          {MenuIcons.download}
-                        </span>
-                        <DownloadRing job={jobForSelected} />
-                        {downloadedBytes && (
-                          <span className="pg-hero-dl-bytes">
-                            {formatSize(jobForSelected?.done as number)} /{" "}
-                            {formatSize(jobForSelected?.total as number)}
-                          </span>
-                        )}
+                      {/* The icon does NOT take part in the swap: it is what
+                          says which kind of work this slot is about, and that is
+                          as true while the pointer is over it as before. Only
+                          the two things that are about PROGRESS — the ring and
+                          the figures — give way. */}
+                      <span className="pg-hero-dl-icon" aria-hidden="true">
+                        {MenuIcons.download}
                       </span>
+                      <span className="pg-hero-dl-swap">
+                        <span className="pg-hero-dl-live">
+                          <DownloadRing job={jobForSelected} />
+                          {downloadedBytes && (
+                            <span className="pg-hero-dl-bytes">
+                              {formatSize(jobForSelected?.done as number)} /{" "}
+                              {formatSize(jobForSelected?.total as number)}
+                            </span>
+                          )}
+                        </span>
                       {/* POINT AT THE PROGRESS, GET THE WAY OUT. A download is
                           the one thing on this card a reader changes their mind
                           about, and the figures are what they look at while
@@ -756,17 +762,26 @@ export default function PlaygroundTab() {
                           Revealed by `:hover` and by `:focus-within`, and the
                           button stays in the DOM and focusable while invisible
                           — which is what makes the second of those fire, so the
-                          way out is reachable by tab and not only by pointer. */}
-                      {stoppable && (
-                        <button
-                          type="button"
-                          className="btn btn-secondary pg-hero-dl-stop"
-                          title={`Stop downloading ${selected.model.id}`}
-                          onClick={() => void runCancelDownload(stoppable)}
-                        >
-                          Cancel
-                        </button>
-                      )}
+                          way out is reachable by tab and not only by pointer.
+
+                          A WORD, at the figures' own size, and not a button: it
+                          stands in for a byte count in a corner of a card, and
+                          a bordered control there would be the loudest thing on
+                          the card while the download it stops is the quietest.
+                          Pale red and underlined is enough — the colour says
+                          which direction it goes, the underline says it is
+                          pressable. */}
+                        {stoppable && (
+                          <button
+                            type="button"
+                            className="pg-hero-dl-stop"
+                            title={`Stop downloading ${selected.model.id}`}
+                            onClick={() => void runCancelDownload(stoppable)}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </span>
                     </div>
                   )}
                   {selected.model.downloaded && !selectedResident && (
