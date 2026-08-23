@@ -12,8 +12,8 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
  *  row. The cog lives up here rather than under the input because the title
  *  row is the stage's own header — the settings belong to the stage, not to
  *  the prompt — and a toggle at the end of the heading is where a settings
- *  affordance is looked for. The open state belongs to the STAGE: the panel it
- *  reveals is a sibling further down the column, not a child of this row. */
+ *  affordance is looked for. The open state belongs to the STAGE: the card it
+ *  reveals is a sibling beside the column, not a child of this row. */
 export function StageHeader({
   title,
   configOpen,
@@ -53,13 +53,24 @@ export function StageHeader({
   );
 }
 
-/** Where the uncommon parameters live, revealed by the cog above. Closed by
- *  default on purpose: the surface it hides behind has to read as a simple
- *  call. Unmounted while closed, not hidden — every control inside is driven
- *  by stage state, so nothing is lost by not rendering it. */
+/** Where the uncommon parameters live, revealed by the cog above — a narrow
+ *  card BESIDE the column rather than a band across it, so the settings sit in
+ *  the stage's right gutter and the input/result column keeps reading top to
+ *  bottom. Wide enough windows give the card the whole gutter and the column
+ *  does not move at all; narrower ones let it borrow some column width (see
+ *  `.pg-work.has-config`, ai-playground.css) rather than cover anything.
+ *
+ *  Closed by default on purpose: the surface it hides behind has to read as a
+ *  simple call. Unmounted while closed, not hidden — every control inside is
+ *  driven by stage state, so nothing is lost by not rendering it. */
 export function ConfigPanel({ open, children }: { open: boolean; children: ReactNode }) {
   if (!open) return null;
-  return <div className="pg-config-body">{children}</div>;
+  return (
+    <aside className="pg-config-card" aria-label="Settings">
+      <p className="pg-config-head">Settings</p>
+      <div className="pg-config-body">{children}</div>
+    </aside>
+  );
 }
 
 /** Copy, as an icon in a result card's top-right corner. */

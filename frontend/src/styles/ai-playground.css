@@ -6,9 +6,9 @@
  *
  * Every stage is the SAME shape: one centered column on the hero card's
  * gutter (min(680px, 100% - 64px)) reading as an API surface — input, Run,
- * the result of that run. Common parameters sit inline under the composer;
- * everything else is behind a closed-by-default Advanced <details>. The old
- * right rail, the chat transcript and the image gallery died in this
+ * the result of that run. Every parameter is behind the cog in the stage's
+ * title row, which opens a narrow settings card in the column's right gutter.
+ * The old right rail, the chat transcript and the image gallery died in this
  * unification. The model sidebar stacks below ~760px. */
 
 /* On the playground the page's own <main> stops scrolling and becomes a flex
@@ -254,6 +254,11 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* The settings card's placement is a question about THIS box's width — how
+     much gutter is left beside the 680px column — and the viewport is a poor
+     proxy for it: the model sidebar and the page chrome take ~630px before the
+     stage gets any. A container query asks the real box. */
+  container-type: inline-size;
   /* The stage is the scroller now — a one-shot column has no inner log to
      scroll, so the hero rides along with the content. */
   overflow-y: auto;
@@ -397,8 +402,12 @@ a.pg-hero-repo:hover {
 .pg-work {
   width: min(680px, calc(100% - 64px));
   margin: 0 auto;
-  display: flex;
-  flex-direction: column;
+  /* A grid rather than a flex column: the settings card takes a second column
+     spanning the whole stack (grid-row: 1 / -1) while every other child stays
+     in the first. One column — the closed state — lays out exactly as the flex
+     column did. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -446,11 +455,75 @@ a.pg-hero-repo:hover {
   background: rgba(var(--accent-rgb), 0.1);
 }
 
-/* No margin-top: the work column's own gap spaces it from the row above. */
+/* The settings, as a narrow card of their own. A card and not a bare band
+   because at anything but a phone width it sits BESIDE the column in the right
+   gutter, and a floating stack of sliders with no edge would read as loose
+   page furniture. Styled outside the container query below, so the narrow-
+   window fallback — the same card, full column width, in flow under the input
+   — is one dialect with it. */
+.pg-config-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+/* Names the card, because in the gutter it is no longer obviously the thing
+   the cog just opened. */
+.pg-config-head {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
 .pg-config-body {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* Wide enough for a 240px card in the gutter: below this the card stays in
+   flow under the input, where D448 put it.
+   680 + 16 gap + 240 card + 2×12 edge = the width at which the column stops
+   giving up anything at all (~1216cqw). */
+@container (min-width: 820px) {
+  .pg-work.has-config {
+    --pg-card: 240px;
+    /* The column's left edge does NOT move when the cog is clicked: it stays
+       on the hero card's own gutter. The card is added to the right of it,
+       taking the right gutter first and only borrowing column width once the
+       gutter runs out — so a wide window reflows nothing, and a narrow one
+       narrows the input instead of covering it. The trailing 12px keeps the
+       card off the stage's own edge. */
+    margin-left: calc((100cqw - 680px) / 2);
+    margin-right: 0;
+    width: min(
+      calc(680px + 16px + var(--pg-card)),
+      calc(680px + (100cqw - 680px) / 2 - 12px)
+    );
+    grid-template-columns: minmax(0, 1fr) var(--pg-card);
+    column-gap: 16px;
+  }
+
+  .pg-work.has-config > * {
+    grid-column: 1;
+  }
+
+  .pg-work.has-config > .pg-config-card {
+    grid-column: 2;
+    /* The card's grid area is every row of the column, so `sticky` keeps the
+       settings on screen while a long result scrolls past them. */
+    grid-row: 1 / -1;
+    align-self: start;
+    position: sticky;
+    top: 0;
+  }
 }
 
 /* Chip rows lead the fold, tighter than the slider stack below them. */

@@ -118,7 +118,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
   const best = ranked?.length ? Math.max(ranked[0].score, 1e-6) : 1;
 
   return (
-    <div className="pg-work pg-embed">
+    <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader

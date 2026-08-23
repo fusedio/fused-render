@@ -224,7 +224,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     : undefined;
 
   return (
-    <div className="pg-work">
+    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
