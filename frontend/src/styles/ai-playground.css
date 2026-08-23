@@ -702,6 +702,25 @@ a.pg-hero-repo:hover {
   padding: 4px 16px 24px;
 }
 
+/* `.pg-empty-title`/`.pg-empty-sub`: dropped in the merge that restored this
+   file's other playground-stage rules (`.pg-seed`, `.pg-image-strip`,
+   `.pg-rail*`) for VideoStage. VideoStage.tsx is their only remaining
+   consumer — ImageStage/TextStage's own `.pg-empty-stage` renders only
+   `StarterPrompts`, with no title/sub pair inside it at all — so the
+   omission rendered VideoStage's empty state as two unstyled `<p>`s. */
+.pg-empty-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pg-empty-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  max-width: 46ch;
+}
+
 .pg-starter {
   margin-top: 14px;
   display: flex;
