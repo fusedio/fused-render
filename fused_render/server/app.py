@@ -310,8 +310,8 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.unload_all()
 
-    # Every managed engine dies with the app by the same mechanism — template
-    # daemons and the /api/engine warm app workers alike (stop_all clears both).
+    # Every managed engine dies with the app: template daemons and /api/engine
+    # warm workers alike (stop_all clears both).
     @app.on_event("shutdown")
     async def _shutdown_engines():
         from fused_render.server import engine_host
@@ -528,11 +528,7 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(render_router)
     app.include_router(run_router)
     # The warm variant of /api/run (routers/engine.py): POST /api/engine keeps
-    # the script's worker process alive between calls (a "warm worker") so
-    # module imports run once and globals persist, re-invoking main(**params) in
-    # the already-warm process. Opt-in via fused.engine(); /api/run is unchanged.
-    # Its workers are engine_host children, so the _shutdown_engines hook below
-    # already kills them at shutdown.
+    # the script's worker alive between calls. Opt-in via fused.engine().
     app.include_router(engine_router)
     # The script-venv install loader (routers/env.py): /api/env/install,
     # /api/env/progress, /api/env/cancel — what the page shell drives after

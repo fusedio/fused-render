@@ -1917,19 +1917,11 @@
 
   // ---- warm workers (fused.engine, docs/ENGINE_HOST_APPS_DESIGN.md) ---------
   // fused.engine(py) is the warm variant of runPython: the server keeps the
-  // script's worker process ALIVE between calls, so module imports run once and
-  // module globals persist. Same wire body ({py, html, params}) and same result
-  // + error shape as runPython — the only visible difference is speed. Opt-in:
-  // a page reaches it only by calling this. It shares runPython's latest-wins
-  // stale-cancel channel (keyed by the .py path), the same attribution/guard
-  // headers, and the same never-settle-on-supersede semantics.
-  //
-  // Hosted/exported fallback (design §8): a warm worker is pure optimization —
-  // the same main() also runs per-call — so where there is no local :1777
-  // server, a call transparently delegates to runPython. In THIS (local)
-  // runtime that only happens if the server becomes unreachable mid-session (a
-  // fetch network error); the separate hosted runtime stub defines fused.engine
-  // to delegate to runPython unconditionally, since it has no server to warm.
+  // script's worker alive between calls. Same wire body and result/error shape,
+  // and it shares runPython's latest-wins stale-cancel channel (keyed by the .py
+  // path), headers, and never-settle-on-supersede semantics. The hosted runtime
+  // aliases fused.engine to runPython; this local one falls back on a network
+  // error (see below), since a warm worker is only an optimization.
   function engineCall(pyPath, params, opts) {
     opts = opts || {};
     const key = opts.key === undefined ? pyPath : opts.key;
@@ -1970,16 +1962,13 @@
       }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
 
     const run = attempt().then(({ data, httpOk }) => {
-      // A script that ran may have written anything, anywhere — tell the shell
-      // unconditionally, exactly as runPython does (even on a failed run).
+      // The script may have written anything; tell the shell even on failure.
       noteFsChanged();
       if (data && data.stdout) console.log("[python]", data.stdout);
-      // Watch the executed file for auto-reload, even on failure (LR-2); the
-      // warm worker returns resolved_py just like /api/run.
+      // Watch the executed file for auto-reload, even on failure (LR-2).
       if (data && data.resolved_py) watchPath(data.resolved_py);
       if (!httpOk) {
-        // A server-level error ({"error": "..."}), e.g. the worker could not be
-        // started or the venv is not built yet — not a script error envelope.
+        // A server-level error ({"error": "..."}), not a script error envelope.
         const err = new Error(
           (data && typeof data.error === "string" && data.error) ||
           "engine request failed");
@@ -2006,10 +1995,9 @@
         cleanup();
         if (opts.signal && opts.signal.aborted) throw err;
         if (controller._supersededByKey) return new Promise(() => {});
-        // No local server reachable (fetch rejects with a TypeError, never an
-        // HTTP status): degrade to per-call runPython so the page keeps working,
-        // correct-but-not-warm. A real HTTP error carries `httpOk`/an envelope
-        // above and is NOT a TypeError, so it propagates as itself.
+        // Server unreachable (fetch rejects with a TypeError, never an HTTP
+        // status): degrade to per-call runPython. HTTP errors are not TypeErrors,
+        // so they propagate as themselves.
         if (err && err.name === "TypeError") return runPython(pyPath, params, opts);
         throw err;
       }

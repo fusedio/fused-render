@@ -58,27 +58,18 @@ REINIT_LIMIT = 64
 _ENGINE_ID = re.compile(r"^[a-z0-9_]+$")
 
 # --- warm app workers (/api/engine, docs/ENGINE_HOST_APPS_DESIGN.md) ----------
-#: The standard warm worker every app bring-up spawns — a fixed shipped path,
-#: NOT under a templates root, so the template daemon-path allowlist in
-#: `_validate` never applies to it. It runs the app's OWN resolved `.py`, on the
-#: interpreter projectenv chooses, the same trust as `/api/run`.
+#: The standard warm worker every app bring-up spawns. A fixed shipped path, not
+#: under a templates root, so `_validate`'s daemon-path allowlist never applies.
 APP_WORKER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                           "engine_worker.py")
-#: engine_id prefix for a warm app worker. The rest is a hash of the resolved
-#: `.py` path (see `app_engine_id`), so the id is a bare identifier `_ENGINE_ID`
-#: accepts and two pages naming the same file share one warm worker.
+#: engine_id prefix for a warm app worker; the rest is a path hash (app_engine_id).
 _APP_ENGINE_PREFIX = "app_"
-#: Bumped whenever engine_worker.py's contract changes, so a running worker from
-#: an older app version is retired rather than reused. Version mismatch already
-#: forces a respawn through `_matches`/`_ping`.
+#: Bumped when engine_worker.py's contract changes, so an older worker is retired
+#: rather than reused (via `_matches`).
 APP_WORKER_VERSION = "1"
-#: Reap a warm app worker after this long with no call, so a session that opened
-#: an app it is no longer using does not hold a live process (design §5). The
-#: first call after retirement simply re-warms. Phase-2 TODO: a per-origin LRU
-#: cap on top of this (design §5/§6).
+#: Reap a warm app worker after this long with no call; the next call re-warms.
 APP_IDLE_RETIRE_S = 15 * 60.0
-#: How often the idle sweeper wakes. Coarse on purpose — idle-retire is a
-#: courtesy, not a deadline.
+#: How often the idle sweeper wakes.
 _APP_REAP_INTERVAL_S = 60.0
 
 
@@ -93,9 +84,8 @@ class Child:
     daemon: str
     cache: str
     version: str
-    #: The target module for a warm app worker (engine_worker.py); "" for a
-    #: template daemon, which serves its own routes and needs no module argument.
-    #: When set, `_spawn` passes `--module <this>` on the argv.
+    #: The module a warm app worker serves; "" for a template daemon. When set,
+    #: `_spawn` passes `--module <this>`.
     module: str = ""
     #: Unique per spawn so two bring-ups never share a status file (the same
     #: overlap the AI workers hit — see ai/supervisor.Worker.uid).
@@ -103,8 +93,8 @@ class Child:
     port: int = 0
     token: str = ""
     pid: int = 0
-    #: Last time a call was routed to this child (monotonic). Only the warm app
-    #: workers are idle-retired on it; a template daemon is reaped at shutdown.
+    #: Last call routed to this child (monotonic); drives idle-retire of warm app
+    #: workers only.
     last_used: float = field(default_factory=time.monotonic)
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
@@ -132,12 +122,9 @@ _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 def _validate_interpreter(python: str) -> None:
     """The interpreter must be one of ours: this app's own `sys.executable`, or a
-    python from the home venv store. The fused engine runs a render entry point
-    in the template's project venv; the builtin executor owns no venv machinery
-    and runs it on this app's own interpreter. Both are ours; anything else is
-    refused. Shared by the template path (`_validate`) and the warm app path
-    (`ensure_app`) — in both the server RESOLVES the interpreter, never the
-    caller, so this is an invariant check rather than a trust boundary."""
+    python from the home venv store; anything else is refused. Shared by the
+    template path (`_validate`) and the warm app path (`ensure_app`); the server
+    resolves it in both, so this is an invariant check, not a trust boundary."""
     from fused_render.shell.storage import home_dir
 
     venvs = os.path.realpath(os.path.join(home_dir(), "venvs"))
@@ -252,8 +239,7 @@ def _spawn(child: Child) -> None:
         env.pop(name, None)
     argv = [child.python, child.daemon,
             "--status", status, "--cache", child.cache, "--version", child.version]
-    # A warm app worker (engine_worker.py) is told which module to serve; a
-    # template daemon serves its own routes and takes no --module.
+    # A warm app worker is told which module to serve; a template daemon isn't.
     if child.module:
         argv += ["--module", child.module]
     proc = subprocess.Popen(
@@ -383,20 +369,16 @@ def ensure(engine_id: str, python: str, daemon: str, cache: str,
 
 
 def app_engine_id(resolved_py: str) -> str:
-    """The warm-worker engine id for a resolved `.py` path.
-
-    A hash of the absolute path, prefixed so it stays a bare identifier
-    `_ENGINE_ID` accepts and can never collide with a template's id. The path is
-    keyed AS GIVEN (abspath, not realpath), matching projectenv's identity rule —
-    two pages that resolve the same file share one warm worker, per interpreter
-    (a different interpreter changes `_matches`, forcing a respawn)."""
+    """The warm-worker engine id for a resolved `.py` path: a prefixed hash of the
+    abspath, so it stays a bare `_ENGINE_ID` and two pages naming the same file
+    share one worker. Keyed by abspath (not realpath), matching projectenv."""
     digest = hashlib.sha256(os.path.abspath(resolved_py).encode("utf-8")).hexdigest()
     return _APP_ENGINE_PREFIX + digest[:16]
 
 
 def _app_cache_dir(engine_id: str) -> str:
-    """Where a warm app worker's status/log files live — under the home dir, like
-    every other derived state (MD-7), never beside the user's code."""
+    """Where a warm app worker's status/log files live: under the home dir, never
+    beside the user's code (MD-7)."""
     from fused_render.shell.storage import home_dir
 
     return os.path.join(home_dir(), "cache", "engine-workers", engine_id)
@@ -406,12 +388,10 @@ def ensure_app(resolved_py: str, python: str,
                version: str = APP_WORKER_VERSION) -> Child:
     """A live warm worker for *resolved_py*, spawning it on first use.
 
-    The zero-config bring-up (design §4): keyed by the resolved `.py` path,
-    spawning the standard `engine_worker.py` (not a template daemon) on the
-    app's resolved *interpreter*. No templates-root check runs — this path is
-    validated by interpreter only, exactly the trust `/api/run` has over the same
-    file. Reuses `_spawn`/`_ping`/heal via the shared machinery below; every call
-    refreshes `last_used` so the idle sweeper only reaps genuinely idle workers.
+    Zero-config bring-up: keyed by the resolved `.py`, spawning `engine_worker.py`
+    on the app's resolved interpreter. Validated by interpreter only (no
+    templates-root check), the same trust `/api/run` has over the file. Reuses
+    `_spawn`/`_ping`/heal; every call refreshes `last_used` for idle-retire.
     """
     if not os.path.isfile(resolved_py):
         raise EngineError(f"no such Python file: {resolved_py}")
@@ -446,8 +426,7 @@ def ensure_app(resolved_py: str, python: str,
         return child
 
 
-#: Started once, on the first warm app bring-up. A daemon thread so it dies with
-#: the process; app shutdown also calls stop_all().
+#: Set once the first bring-up starts the (daemon) idle sweeper thread.
 _reaper_started = threading.Event()
 
 
@@ -472,9 +451,9 @@ def _reap_loop() -> None:
 
 
 def reap_idle_app_workers(now: float | None = None) -> int:
-    """Terminate every warm app worker idle past APP_IDLE_RETIRE_S. Returns the
-    count reaped. Only app workers (module set) are eligible; a template daemon
-    lives until shutdown. Exposed (not just the loop) so a test can drive it."""
+    """Terminate every warm app worker idle past APP_IDLE_RETIRE_S, returning the
+    count reaped. Only app workers (module set) are eligible. Exposed so a test
+    can drive it directly."""
     now = time.monotonic() if now is None else now
     with _lock:
         stale = [c for c in _children.values()
