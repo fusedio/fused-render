@@ -6,8 +6,10 @@ does not run the download, does not know which process is doing it, and cannot
 tell "finished" from "the page that was reporting got closed" — so the tests
 below are mostly about the states that distinction produces: stalled vs
 running, a cancel that is a REQUEST rather than a kill, a dismissed row that
-must not come back, and an error that outlives the 30s every other outcome
-gets.
+must not come back, a finished row whose retention clock starts at first READ
+rather than at completion (so a row born and finished with nobody watching is
+not swept before anyone could see it), and an error that outlives every other
+outcome's retention entirely.
 """
 import json
 import os
@@ -244,9 +246,16 @@ def test_clear_takes_the_finished_rows_and_leaves_the_running_ones(client):
 # ---------------------------------------------------------------- the sweeper
 
 
-def test_a_finished_row_ages_out_but_an_error_waits_to_be_read():
+def test_a_read_row_ages_out_but_an_error_never_does():
+    """The retention clock starts at first READ (`list_jobs`), not at
+    completion — so the first read below has to establish that clock without
+    ALSO being the read that sweeps the row (see `list_jobs`'s own comment on
+    ordering)."""
     jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
     jobs.upsert({"id": "bad", "title": "b", "state": "error", "message": "boom"}, now=1000.0)
+
+    first_read = {r["id"] for r in jobs.list_jobs(now=1000.0)}
+    assert first_read == {"ok", "bad"}, "a row must not be swept on the read that first reveals it"
 
     still_there = {r["id"] for r in jobs.list_jobs(now=1000.0 + jobs.FINISHED_TTL_S - 1)}
     assert still_there == {"ok", "bad"}
@@ -255,6 +264,40 @@ def test_a_finished_row_ages_out_but_an_error_waits_to_be_read():
     # until dismissed — the persistent-error toast's rule.
     later = {r["id"] for r in jobs.list_jobs(now=1000.0 + jobs.FINISHED_TTL_S + 1)}
     assert later == {"bad"}
+
+
+def test_an_unread_finished_row_survives_indefinitely_until_the_backstop():
+    """Nobody has ever called `list_jobs` for this row, so `FINISHED_TTL_S`
+    has not started counting — only `FINISHED_UNREAD_DROP_S`, the backstop for
+    a headless server or a browser tab that never comes back."""
+    jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
+
+    # Long past FINISHED_TTL_S, but never read — still there.
+    still_there = jobs.list_jobs(now=1000.0 + jobs.FINISHED_TTL_S * 100)
+    assert [r["id"] for r in still_there] == ["ok"]
+
+    # That very call was the first read, so its OWN retention clock now
+    # starts from here — not from the original `finished_at` of 1000.0.
+    read_at = 1000.0 + jobs.FINISHED_TTL_S * 100
+    assert jobs.list_jobs(now=read_at + jobs.FINISHED_TTL_S - 1) != []
+    assert jobs.list_jobs(now=read_at + jobs.FINISHED_TTL_S + 1) == []
+
+
+def test_a_never_read_row_is_still_bounded_by_the_unread_backstop():
+    """`MAX_JOBS` is capacity pressure, not a statement that work is over
+    (`_sweep`'s own docstring) — a lone unread row well under the cap needs a
+    DIFFERENT ceiling, or a headless process would carry it forever."""
+    jobs.upsert({"id": "ok", "title": "a", "state": "done"}, now=1000.0)
+    assert jobs.list_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) == []
+
+
+def test_an_unread_error_outlives_even_the_unread_backstop():
+    """`error`'s exemption is unconditional — `_sweep` `continue`s on it before
+    either the read-gated clock or the unread backstop is even considered — so
+    an error nobody has read yet must survive well past `FINISHED_UNREAD_DROP_S`
+    too, not just past `FINISHED_TTL_S`."""
+    jobs.upsert({"id": "bad", "title": "b", "state": "error", "message": "boom"}, now=1000.0)
+    assert jobs.list_jobs(now=1000.0 + jobs.FINISHED_UNREAD_DROP_S + 1) != []
 
 
 def test_a_reporter_that_went_quiet_reads_as_stalled_then_disappears():
@@ -277,11 +320,15 @@ def test_a_reporter_posting_full_status_cannot_re_raise_a_row_it_aged_out_of():
     documented direct-HTTP path: a detached worker POSTing its whole status each
     tick) would otherwise re-create the record the moment it aged out, and again
     every FINISHED_TTL_S after that: a finished download blinking back onto the
-    screen every 30 seconds for as long as the worker kept posting.
+    screen every few seconds for as long as the worker kept posting.
     """
     jobs.upsert({"id": "w", "title": "Model", "state": "running"}, now=1000.0)
     jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=1001.0)
-    aged = 1001.0 + jobs.FINISHED_TTL_S + 1
+    # The row has to be READ before FINISHED_TTL_S starts counting against it
+    # — this call is that read, and establishes the clock at `read_at`.
+    read_at = 1001.0
+    assert jobs.list_jobs(now=read_at) != []
+    aged = read_at + jobs.FINISHED_TTL_S + 1
     assert jobs.list_jobs(now=aged) == []
 
     jobs.upsert({"id": "w", "title": "Model", "state": "done"}, now=aged + 0.1)
