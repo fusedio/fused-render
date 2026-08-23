@@ -35,18 +35,38 @@ Expect **~65 passed, 3 skipped**. The three skips are
 `test_ai_text_embed_retrieval.py`'s model-backed tests, which need real
 weights — section 4 turns them on.
 
-The tests this change also touched, all of which should be green:
+The neighbouring modules this change touches, all of which should be green:
 
 ```bash
 ./.venv/Scripts/python.exe -m pytest \
   tests/test_ai_formats.py tests/test_ai_registry.py tests/test_ai_tasks.py \
-  tests/test_ai_runtime.py tests/test_hub_models.py \
-  tests/test_ai_runtime_embed.py tests/test_ai_runner_deps.py -q
+  tests/test_ai_runtime.py tests/test_hub_models.py tests/test_ai_runtime_embed.py \
+  tests/test_ai_catalog_embeddings.py tests/test_ai_embed_common.py \
+  tests/test_ai_benchmark.py tests/test_ai_benchmark_store.py \
+  tests/test_ai_benchmark_api.py tests/test_ai_runner_deps.py \
+  tests/test_ai_llamacpp_worker.py tests/test_ai_mlx_embed_worker.py \
+  tests/test_ai_transformers_embed_worker.py \
+  tests/test_supervisor_core.py tests/test_server_ai.py -q
 ```
 
-> **Known unrelated failures.** `tests/test_ai_models_api.py` fails 4 tests on
-> Windows without Developer Mode (`OSError: WinError 1314` — the fixture
-> creates symlinks). Those fail on `origin/main` too; verified by stashing.
+And the frontend, which gained three capability-table entries:
+
+```bash
+cd frontend && bun test src/apps/ai_models/lib/     # 333 pass
+```
+
+> **Do not run the whole `tests/` directory to judge this branch.** Ten tests
+> fail on `a014e786` — the branch point — for reasons that have nothing to do
+> with it, so a full run is noise. Baselined by stashing onto the pristine
+> tree:
+>
+> * `tests/test_ai_models_api.py` — 4 failures, and `tests/test_ai_worker_base.py`
+>   — 5 failures: all `OSError: WinError 1314`, the fixtures create symlinks and
+>   Windows refuses without Developer Mode.
+> * `tests/test_ai_metrics.py::test_a_missing_claude_binary_is_counted` — 1
+>   failure, expects `ai_unavailable` and gets `ai_error`.
+>
+> None of the ten is in a module this change edits.
 
 ---
 
