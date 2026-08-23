@@ -1642,9 +1642,33 @@
   padding-bottom: 0;
 }
 
-/* The unit, stated once per section in the heading's right-hand slot, as a
-   small badge rather than plain text — it is metadata about the section, not
-   a second heading, and a pill face says so at a glance. */
+/* Narrow enough that the heading and the Metric select (added here so it sits
+   beside the instruments it actually governs — see BenchmarkTab.tsx) can
+   genuinely run out of room side by side; wrapping the select to its own line
+   under the heading reads better than either one clipping. */
+.am-bench-section-head {
+  flex-wrap: wrap;
+}
+
+/* The Metric select's own row — a smaller, quieter sibling of the page-level
+   `.am-bench-capsel` (same select skin via `.am-bench-capsel-input`, reused
+   rather than redeclared), visually subordinate to the `<h3>` beside it
+   because IT chooses within a section the heading already named, not a
+   sibling heading in its own right. */
+.am-bench-metricsel {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The unit, and — for exactly the metrics where the ordinary "longer bar /
+   bigger number wins" habit reads backwards — the word that says so
+   (`metricUnitAndCue`, lib/benchmark.ts). A small badge rather than plain
+   text: it is metadata about the current selection, not a second heading, and
+   a pill face says so at a glance. Never the metric's own NAME — the select
+   right beside it already shows that. */
 .am-bench-metric {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -1981,11 +2005,12 @@
    answers and the ranked list — which doubles as its model picker — is the
    second. */
 
-/* The trend instrument's own title: the model and the selected metric, since
-   the capability itself is already stated by the section heading above and
-   the Capability `<select>` above THAT. `.am-bench-metric` (the unit badge)
-   is reused here rather than duplicated — one declaration for what a badge in
-   this tab looks like, wherever it appears. */
+/* The trend instrument's own title: the MODEL alone now — no metric badge
+   here any more. The section head above already names the metric, right
+   beside the `<select>` that chose it (`.am-bench-metricsel`, unit and
+   direction cue included), and this heading used to repeat it a few lines
+   down; that was the duplicated ink moving the select into the card was
+   meant to end. */
 /* Separated from the leaderboard rows above it by MORE than the ordinary
    `--am-gap-head` used everywhere else on this page — deliberately, this is
    the boundary between the second instrument and the third, the same rank of

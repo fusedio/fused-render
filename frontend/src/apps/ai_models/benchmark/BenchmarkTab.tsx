@@ -79,6 +79,7 @@ import {
   formatPrimary,
   latestByModel,
   leaderboard,
+  metricUnitAndCue,
   middleEllipsis,
   orderCapabilities,
   primaryMetric,
@@ -325,12 +326,17 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     <div className="am-bench">
       <ErrorBanner>{error}</ErrorBanner>
       {stopped && <p className="am-bench-stopped">{stopped}</p>}
-      {/* THE SELECTORS. Native `<select>`s with plain labels, the same "boring
-          control, name it and get out of the way" rule `EnginesTab` uses for
-          its own per-capability selects — this count of options is not enough
-          to earn a bespoke segmented control, and a third control vocabulary
-          on one page (beyond the leaderboard rows, which double as the model
-          picker by click) is a cost with no reader benefit. */}
+      {/* THE CAPABILITY SELECTOR. A native `<select>` with a plain label, the
+          same "boring control, name it and get out of the way" rule
+          `EnginesTab` uses for its own per-capability selects. This is the
+          one selector that stays in the page-level toolbar rather than
+          inside the card below — it chooses WHICH section you are looking
+          at, which is a page-level question, unlike Metric (now inside
+          `CapabilitySection`, right beside the instruments it actually
+          governs — see that component's own comment). No run count in the
+          option labels any more — the reader asked for it gone, and
+          `capabilityCounts` still drives `resolveCapability`'s default pick,
+          it just no longer prints itself. */}
       <div className="am-bench-controls">
         <div className="am-bench-capsel">
           <label htmlFor="am-bench-cap">Capability</label>
@@ -340,44 +346,21 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
             value={selected ?? ""}
             onChange={(e) => setFocus(e.target.value)}
           >
-            {all.map((capability) => {
-              const count = capabilityCounts[capability] ?? 0;
-              return (
-                <option key={capability} value={capability}>
-                  {capabilityLabel(capability)}
-                  {count > 0 ? ` (${count})` : ""}
-                </option>
-              );
-            })}
+            {all.map((capability) => (
+              <option key={capability} value={capability}>
+                {capabilityLabel(capability)}
+              </option>
+            ))}
           </select>
         </div>
-        {/* Hidden rather than disabled when there is nothing to pick from (an
-            unknown capability, or one with no declared metrics) — a select
-            with zero options renders as an empty, clickable-looking box, and
-            there is nothing honest for it to say. */}
-        {metricSpecs.length > 0 && (
-          <div className="am-bench-capsel">
-            <label htmlFor="am-bench-metric">Metric</label>
-            <select
-              id="am-bench-metric"
-              className="field-control am-bench-capsel-input"
-              value={selectedMetric?.key ?? ""}
-              onChange={(e) => setMetricParam(e.target.value)}
-            >
-              {metricSpecs.map((spec) => (
-                <option key={spec.key} value={spec.key}>
-                  {spec.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
       </div>
       {selected && (
         <CapabilitySection
           key={selected}
           capability={selected}
           metric={selectedMetric}
+          metricSpecs={metricSpecs}
+          onSelectMetric={setMetricParam}
           runs={capabilityRuns}
           ranked={ranked}
           gone={gone}
@@ -396,6 +379,8 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
 function CapabilitySection({
   capability,
   metric,
+  metricSpecs,
+  onSelectMetric,
   runs,
   ranked,
   gone,
@@ -410,6 +395,14 @@ function CapabilitySection({
   /** The reader's SELECTED metric — not necessarily the primary — resolved by
    *  `BenchmarkTab`. Null only for a capability this frontend does not know. */
   metric: MetricSpec | null;
+  /** The Metric `<select>`'s own options — every metric this capability
+   *  offers that at least one run has actually measured (`availableMetrics`,
+   *  lib/benchmark.ts). Lives here, not in the page-level toolbar: the metric
+   *  changes what the chart plots and what the rows rank by, both of which
+   *  are inside this card, unlike Capability (still in the toolbar — it
+   *  picks WHICH card). Empty for a capability with nothing to select. */
+  metricSpecs: MetricSpec[];
+  onSelectMetric: (key: string) => void;
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
   /** Every model this capability knows about, ranked best-first — computed by
@@ -455,22 +448,54 @@ function CapabilitySection({
 
   return (
     <section className="am-section">
-      {/* Plain heading now, no unit badge — that lived here when this was
-          the section's only place to say what a number meant. It is now
-          stated TWICE more: once by the Capability/Metric selects above (the
-          reader chose it, it is not news), and once by the trend
-          instrument's own heading below, which is the one that actually
-          needs it (every leaderboard row already carries its own unit
-          inline, e.g. "859.7 × realtime"). A `{metric.label} · {metric.unit}`
-          pill repeated ~40px below an identical one was the actual bug this
-          removes. The `<h3>` itself STAYS: this `<section>` also frames the
+      {/* The heading STAYS a plain `<h3>` — this `<section>` also frames the
           leaderboard (every model, not just the selected one) and the run
           archive below, and a landmark section needs its own accessible
-          name rather than borrowing a sibling `<select>`'s current value —
-          the select's value changes on click, the heading should not blink
-          with it. */}
-      <div className="am-section-head">
+          name rather than borrowing a sibling `<select>`'s current value, the
+          select's value changes on click, the heading should not blink with
+          it.
+
+          **The Metric select lives HERE now, not in the page-level toolbar
+          above** — it changes what the comparison chart plots and what the
+          leaderboard rows rank by, and both of those are inside this card;
+          Capability (still in the toolbar) picks WHICH card, a page-level
+          question. Hidden rather than disabled when there is nothing to pick
+          from — a select with zero options renders as an empty,
+          clickable-looking box, and there is nothing honest for it to say.
+
+          The badge beside it is unit + DIRECTION only, never the metric's own
+          name (the select already shows that) — `metricUnitAndCue`
+          (lib/benchmark.ts) states "lower is better" for exactly the metrics
+          where the ordinary "longer bar / bigger number wins" habit reads
+          backwards (Peak memory, Load time, …), and says nothing extra for
+          the metrics where that habit already reads right — labelling both
+          directions everywhere would bury the one case actually worth
+          flagging. One badge, read by both instruments below (the comparison
+          chart's shorter-is-better bars and the trend chart's downward-is-
+          better line invert the same way), not a copy drawn twice — the old
+          per-model-name-plus-unit pill that used to live on the trend
+          heading below is GONE; a reader who has just picked a metric from
+          this select does not need it restated a few lines down. */}
+      <div className="am-section-head am-bench-section-head">
         <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+        {metricSpecs.length > 0 && (
+          <div className="am-bench-metricsel">
+            <label htmlFor={`am-bench-metric-${capability}`}>Metric</label>
+            <select
+              id={`am-bench-metric-${capability}`}
+              className="field-control am-bench-capsel-input"
+              value={metric?.key ?? ""}
+              onChange={(e) => onSelectMetric(e.target.value)}
+            >
+              {metricSpecs.map((spec) => (
+                <option key={spec.key} value={spec.key}>
+                  {spec.label}
+                </option>
+              ))}
+            </select>
+            {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
+          </div>
+        )}
       </div>
 
       {runs === null ? (
@@ -550,16 +575,17 @@ function CapabilitySection({
               actually re-run a model; until then it says so plainly rather
               than drawing an empty frame (see `trendKind` below).
 
-              **Titled by what it shows** — the model and the selected
-              metric — rather than repeating the capability name the section
-              heading above and the Capability `<select>` above THAT already
-              both say. A model with a card gone from disk (`gone`) still
-              gets a title here: its history is still what this instrument is
-              showing. */}
+              **Titled by the MODEL alone now** — no metric badge here any
+              more. The section head above already names the metric, right
+              beside the `<select>` that chose it (unit and direction cue
+              included, via `metricUnitAndCue`), and repeating it a few lines
+              down was the exact "drawn twice" duplication that select's own
+              move into this card was meant to end. A model with a card gone
+              from disk (`gone`) still gets a title here: its history is
+              still what this instrument is showing. */}
           {metric && selectedModel && (
             <div className="am-bench-trend-head">
               <h4 className="am-bench-trend-title">{shortModelName(selectedModel)}</h4>
-              <span className="am-bench-metric">{metric.label} · {metric.unit}</span>
             </div>
           )}
           {/* Three shapes, not two. A single measured point is NOT a trend:
