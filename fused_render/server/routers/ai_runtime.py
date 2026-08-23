@@ -55,7 +55,7 @@ from fused_render.server.common import _error, _require_fused
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
 from fused_render.ai.hub_cache import (
-    CachedModel, cached_capability, cached_models,
+    CachedModel, cached_capability, cached_models, is_downloaded,
 )
 
 router = APIRouter()
@@ -473,6 +473,49 @@ def _cached_order(model: CachedModel):
     return (model.size <= 0, model.size, model.repo_id)
 
 
+def _unsupported_downloads() -> list[dict]:
+    """Model repos on this disk that NO capability can load, with the reason.
+
+    **The listing exists because dropping them was the wrong silence.** Every
+    picker reads `capabilities[]`, and a repo with no capability is in none of
+    those lists — so a user who downloaded a text-to-speech model, a depth
+    estimator or a symbolic-music policy watched it vanish from the Playground
+    with nothing said. "You have this, and here is why there is no button" is a
+    sentence only this side can write (`ai/tasks.py` writes it per task), and a
+    page that omits the row answers the reader's actual next question — where
+    did my download go — with nothing at all.
+
+    NOT in `capabilities[]` as a fake group, and that is deliberate: every app
+    reading this payload maps `models[]` and offers what it finds, so a row in
+    there is a row something will try to load. This is a separate key, which an
+    older client ignores and a picker has to opt into showing.
+
+    Sorted like the cached tail everywhere else — smallest first, unmeasurable
+    last. Components, datasets, Spaces and half-finished fetches never reach
+    here; `cached_models` has already dropped them, and none of them is a model
+    somebody chose.
+    """
+    return [
+        {
+            "id": model.repo_id,
+            "label": _cached_label(model.repo_id),
+            "size_gb": _cached_size_gb(model.size),
+            # What it IS, when anything said — the label a card prints beside
+            # the reason. None for a repo nothing could identify, where the
+            # reason is empty too and the row says only "on this disk,
+            # unrunnable", which is the honest whole of what we know.
+            "task": model.task,
+            # "no-runner" or "unknown" — never "supported", by construction:
+            # a supported task with a readable format has a capability and is
+            # in `capabilities[]` instead.
+            "support": model.support,
+            "reason": model.reason,
+        }
+        for model in sorted(cached_models(), key=_cached_order)
+        if model.capability is None
+    ]
+
+
 def _catalog_with_downloads() -> list[dict]:
     """`catalog.describe()`, plus the models this disk actually has.
 
@@ -547,17 +590,18 @@ def _catalog_with_downloads() -> list[dict]:
     downloaded `Qwen3.5-9B-Q4_K_M.gguf` showed "Download" forever, while the
     same bytes appeared a SECOND time as a plain "cached" row keyed by
     `unsloth/Qwen3.5-9B-GGUF`, whose Load button then failed (that repo id is
-    not itself a `GGUF_RECIPES` key). `_downloaded` below resolves a
+    not itself a `GGUF_RECIPES` key). `hub_cache.is_downloaded` resolves a
     filename-keyed entry through the recipe's `(repo, file)` pair and
-    `CachedModel.files` (the snapshot's own filenames) instead of `on_disk`
-    alone; `curated_repo_ids` then removes the SAME repo from the "cached"
+    `CachedModel.files` (the snapshot's own filenames) instead of a set of repo
+    ids alone — and it lives THERE rather than here because the Benchmark tab's
+    "is this model on this machine" guard needs the identical answer, and the
+    copy it wrote instead admitted every curated id;
+    `curated_repo_ids` then removes the SAME repo from the "cached"
     tail below whenever any of ITS curated entries resolved as downloaded, so
     the two halves cannot show the one download twice under two different ids.
     """
     rows = catalog.describe()
     cached = cached_models()
-    on_disk = {model.repo_id for model in cached}
-    models_by_repo = {model.repo_id: model for model in cached}
     resident = supervisor.resident_models()
     by_capability: dict[str, list] = {}
     for model in cached:
@@ -569,11 +613,11 @@ def _catalog_with_downloads() -> list[dict]:
         by_capability.setdefault(model.capability, []).append(model)
 
     def _downloaded(entry_id: str) -> bool:
-        recipe = formats.GGUF_RECIPES.get(entry_id)
-        if recipe is None:
-            return entry_id in on_disk
-        model = models_by_repo.get(recipe["repo"])
-        return model is not None and recipe["file"] in model.files
+        # `hub_cache.is_downloaded`, not a local reading of the same two facts:
+        # the Benchmark tab's server side needs the identical answer, and the
+        # copy it wrote instead got the curated half wrong (see that function).
+        # `cached` is passed so a row of twenty entries pays for the scan once.
+        return is_downloaded(entry_id, cached)
 
     for row in rows:
         curated = [
@@ -697,7 +741,10 @@ def api_ai_catalog():
     Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
     belongs in the threadpool rather than on the event loop.
     """
-    return {"capabilities": _catalog_with_downloads(), "ramGb": _machine_ram_gb()}
+    return {"capabilities": _catalog_with_downloads(),
+            # Everything else on this disk, with the reason it is not above.
+            "unsupported": _unsupported_downloads(),
+            "ramGb": _machine_ram_gb()}
 
 
 @router.post("/api/ai/runtime/load")

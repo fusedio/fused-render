@@ -1082,6 +1082,21 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
             _downloads.pop(model, None)
             _fetch_workers.pop(model, None)
         _cleanup_files(stub)
+        # A fetch that stopped before its first file leaves a cache folder with
+        # nothing in it but bookkeeping, and the AI Models page then has to draw
+        # that folder as a partly downloaded model (D437) — it cannot tell "no snapshot
+        # yet" from "no snapshot ever" any other way (D424). So the thread that
+        # made the folder tidies it on its way out. Reads the FOLDER, never this
+        # function's outcome: a successful fetch has a snapshot and the call is a
+        # no-op, and a cancel with real bytes in it keeps every one of them
+        # because that is what a resume picks up (D275).
+        #
+        # Imported at call time, the same way `hub_cache` imports THIS module
+        # inside `_require_not_in_use`: the two modules ask each other one
+        # question apiece, and neither may need the other to be importable.
+        from fused_render.ai import hub_cache
+
+        hub_cache.discard_empty_shell(model)
 
 
 def _runner_or_raise(capability: str) -> registry.Runner:

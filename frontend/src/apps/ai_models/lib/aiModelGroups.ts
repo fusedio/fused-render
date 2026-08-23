@@ -38,8 +38,14 @@ export const UNRECOGNISED = "unrecognised";
  *  text, an image and a transcript. Listed rather than left to fall through,
  *  because a first-class capability that sorted itself by the accident of
  *  listing order would land in a different place on two machines.
+ *
+ *  **Exported for the Benchmark tab**, which draws one section per capability
+ *  and has to draw them in the same order this tab does — a page whose two tabs
+ *  disagree about where Embeddings goes reads as two pages. Imported there
+ *  rather than re-declared, because two copies of a reading order are two
+ *  reading orders one edit apart.
  */
-const CAPABILITY_ORDER = [
+export const CAPABILITY_ORDER = [
   "text-generation",
   "text-to-image",
   "automatic-speech-recognition",
@@ -94,6 +100,18 @@ export const PARTIAL_TAG = "partly downloaded";
  *  where the old `no engine` tag left them: correct, and stuck.
  */
 export function partialNote(repo: AiModelRepo): string {
+  // The SHELL says something different, because the sentence below is false of
+  // it: there are no bytes to pick up, so "Download picks it up from the bytes
+  // already here" describes a resume that cannot happen and sends the reader to
+  // a button that is disabled for exactly that reason. What is true of a folder
+  // holding one ref file is that it is litter.
+  if (emptyShell(repo)) {
+    return (
+      `${repo.id} is a download that stopped before any of the model arrived — ` +
+      "the folder holds bookkeeping and no weights, so there is nothing to " +
+      "resume from. Delete it and download the model again."
+    );
+  }
   return (
     `${repo.id} is a download that did not finish. Download picks it up from the ` +
     "bytes already here rather than starting over; the trash discards them."
@@ -113,6 +131,103 @@ export function partialNote(repo: AiModelRepo): string {
  */
 export function resumable(repo: AiModelRepo): boolean {
   return repo.partial && !repo.component && repo.kind === "model";
+}
+
+/** The empty shell: partly downloaded, and holding nothing to resume FROM.
+ *
+ *  The state a user hit in the wild — a repo folder containing one 40-byte
+ *  `refs/main` and nothing else, filed under Unrecognised with "partly
+ *  downloaded" on it and a disabled Download beside it, which is a card that
+ *  describes an unfinished download and offers no way to finish OR end it. The
+ *  only working control was the unlabelled trash, third of four glyphs.
+ *
+ *  Read from what the page already knows rather than from a new server field:
+ *  no revision means no snapshot directory, and no snapshot plus no bytes worth
+ *  naming means the fetch never got a file down. `resumeCapability` being null is
+ *  the other half — nothing here can even say WHAT to resume — and it is the
+ *  caller's, since it consults the catalog. So this answers the half that is a
+ *  fact about the folder, and the card ands them (D437).
+ */
+export function emptyShell(repo: AiModelRepo): boolean {
+  return resumable(repo) && repo.revisions === 0;
+}
+
+/** How much of a partly downloaded repo is here, as 0…1 — or null when nothing
+ *  on this page can say (D436).
+ *
+ *  The card paints this as the fraction of its own background that is
+ *  warning-tinted, so the answer has to be honest about not knowing: a made-up
+ *  denominator would draw a precise-looking bar over a guess. Two sources, in
+ *  the order the page trusts them:
+ *
+ *  1. **The live job**, whose `done`/`total` is the fetcher's own accounting of
+ *     the bytes it is moving right now — the only exact answer that exists.
+ *  2. **The catalog's weight estimate** for that repo id, against the bytes on
+ *     disk. Same precedence `hubSizeLabel` uses, and the same caveat: an
+ *     estimate is not a measurement, which is why the clamp below never lets it
+ *     read as finished.
+ *
+ *  Clamped to 2%…95%. Not 0, because a state drawn as nothing is not drawn — the
+ *  40-byte shell above is exactly that case and it must still look unfinished;
+ *  not 100, because this repo by definition is not.
+ */
+/** How far a LIVE download has got, as 0…1 — or null when the job cannot say (D439).
+ *
+ *  Split out from `partialFraction` because it answers for a card that is not a
+ *  partial at all: a recommendation or a search result, with nothing on this disk
+ *  yet, whose only account of itself is the job row. Bytes only — a venv build
+ *  and a weight load report no total, and an invented percentage on those is what
+ *  makes live work read as frozen (the same rule `ModelProgress` follows).
+ */
+export function jobFraction(
+  job: { done: number | null; total: number | null; unit?: string | null } | undefined,
+): number | null {
+  if (!job || job.unit !== "bytes" || !job.total || job.done === null) return null;
+  return clampFraction(job.done / job.total);
+}
+
+/** 2%…95%, and never NaN. Not 0, because a state drawn as nothing is not drawn —
+ *  the 40-byte shell is exactly that case and must still look unfinished; not
+ *  100, because a card wearing this is by definition not finished. */
+function clampFraction(value: number): number {
+  if (Number.isNaN(value)) return 0.02;
+  return Math.min(0.95, Math.max(0.02, value));
+}
+
+export function partialFraction(
+  repo: AiModelRepo,
+  job: { done: number | null; total: number | null; unit?: string | null } | undefined,
+  estimate: number | null | undefined,
+): number | null {
+  const live = jobFraction(job);
+  // `> 0` on the denominator, not just non-null: a zero would be an Infinity the
+  // clamp happily turns into 95%. The job's OWN total is preferred over the
+  // curated estimate when there is one — it is the size of this download rather
+  // than a round number somebody wrote down, and `size_gb` covers every repo a
+  // multi-repo model touches, which makes one repo's share read low.
+  // `unit === "bytes"` GATES this, not just `total > 0`: a step-counted stage
+  // ("3 of 4 stages") has a perfectly good total that is not a number of bytes,
+  // and dividing disk bytes by it produced a full card from a four-step job.
+  const jobTotal = job?.unit === "bytes" && job.total && job.total > 0 ? job.total : null;
+  const total = jobTotal ?? estimate;
+  // `fetchedBytes`, NOT `size` (D440). A part file is preallocated to the length
+  // of the file being fetched, so `size` says 1.6GB the moment a 1.6GB download
+  // starts — which drew a nearly-full card over a fetch 15% of the way in, and
+  // made this reading disagree with the job row on the same card. The server's
+  // `fetchedBytes` is the durable-byte accounting a resume itself trusts, which
+  // is the same thing the job counts: the two readings below are finally
+  // measuring one quantity, which is what makes taking the larger of them sound.
+  const disk = total && total > 0 ? clampFraction(repo.fetchedBytes / total) : null;
+  if (live === null) return disk;
+  if (disk === null) return live;
+  // **The MAX, and this is the fix for a bar that jumped backwards.** The two
+  // readings are not commensurable: the disk knows every byte present, including
+  // an earlier attempt's, while the job counts what THIS run has moved — so
+  // pressing Download on a 90%-fetched repo replaced "90%" with the new run's
+  // "5%" and the fill visibly collapsed. Both are lower bounds on how much of
+  // the model is here, so the larger one is the true statement, and taking it
+  // means a resume can only ever move the boundary forward.
+  return Math.max(live, disk);
 }
 
 function totalSize(repos: AiModelRepo[]): number {
@@ -487,6 +602,19 @@ export function mergeSections(
  */
 export function noEngineReason(repo: AiModelRepo): string {
   if (repo.capability === null) {
+    // **The server's own sentence when it has one.** A null capability is three
+    // different facts (`AiModelRepo.support`), and this page used to print one
+    // line for all of them: a text-to-speech model, a video pipeline and a repo
+    // carrying a tag we have never heard of each read "the model type is not
+    // supported", which is true and tells a reader nothing about which of those
+    // they are looking at. `supportReason` is written per task, server-side,
+    // beside the classification it explains.
+    //
+    // The flat note stays as the fallback: an older server sends no `support`,
+    // and a repo whose task we genuinely cannot identify has no sentence to
+    // offer — that is what "unknown" means, and inventing one would be a claim
+    // we have not earned.
+    if (repo.supportReason) return repo.supportReason;
     // Agrees with the Unrecognised heading above the card, which is the only
     // other place on the page that has an opinion about this repo.
     return UNRECOGNISED_NOTE;
