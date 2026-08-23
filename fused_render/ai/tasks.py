@@ -209,7 +209,7 @@ _TASKS: tuple[Task, ...] = (
        "Generates a 3D object from a picture."),
 
     # ------------------------------------------------------------------- video
-    # `h3-video` (MiniMax H3 on `antirez/h3.c`, D448) serves this one — PROMPT
+    # `h3-video` (MiniMax H3 on `antirez/h3.c`, D457) serves this one — PROMPT
     # only, no reference image, so its two image-conditioned siblings just
     # below stay unmapped rather than folding onto the same capability.
     _t("text-to-video", "video generation", "multimodal", VIDEO_GENERATION,

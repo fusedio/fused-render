@@ -630,7 +630,7 @@ jobs:
   macos-desktop:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
-    # macos-15, not macos-14: h3.c (bundled by build_dmg.sh, D448) uses Metal 4
+    # macos-15, not macos-14: h3.c (bundled by build_dmg.sh, D457) uses Metal 4
     # APIs (MTLGPUFamilyMetal4, MPSGraph's scaledDotProductAttention...,
     # MTLMathModeSafe) that only exist in the macOS 26 SDK. macos-14's image
     # tops out at Xcode 16.2 (macOS 15 SDK) with no macOS 26 SDK anywhere on

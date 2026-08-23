@@ -8167,7 +8167,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   takes no such parameter, so one is refused as an unknown option rather
   than silently accepted) and minus a live preview (none exists in this
   cut), plus `frames`: h3's own valid grid is `5 + 17n` (VERIFIED against
-  the built binary's `h3_align_frame_count`/`h3_valid_params`, see D449),
+  the built binary's `h3_align_frame_count`/`h3_valid_params`, see D458),
   so a requested count is rounded UP to the next grid point rather than
   merely clamped, and `steps`/canvas floors and ceilings ([2, 1000] steps,
   32-multiple canvas up to 768×1344 pixels) are the binary's own hard
@@ -8177,7 +8177,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   this capability for the first time, and every call answers 409 with the
   reason rather than ever reaching a render.
 - **AI-15a** **ffmpeg reaches the subprocess through the runner's OWN venv,
-  never through the app or the system PATH** (D450). h3 needs a real
+  never through the app or the system PATH** (D459). h3 needs a real
   ffmpeg EXECUTABLE to mux the rendered frames and the generated audio
   into one mp4 — dropping the mux step (`--frames-dir`, raw PPM frames)
   drops the audio, which is H3's headline feature — and `imageio-ffmpeg`'s
