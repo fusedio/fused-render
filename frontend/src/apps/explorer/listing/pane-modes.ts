@@ -1,19 +1,21 @@
-// The preview pane's mode list and its default, as pure functions over a
-// SELECTED ROW's own template list.
+// What is left of the preview pane's row-mode machinery, now that
+// `ListingPreviewPane` no longer previews a selected row's own templates at
+// all (D443) — it shows the OPEN FOLDER's companions (`claude`/`git`/`mcp`)
+// or a plain fallback hint instead, neither of which is a question this
+// module ever answered.
 //
-// **`ListingPreviewPane` no longer calls any of this** (D443): the pane
-// stopped previewing the selected row's own templates at all — it shows the
-// OPEN FOLDER's companions (`claude`/`git`/`mcp`) or a plain fallback hint,
-// neither of which is a question this module answers. What is left is a
-// pure, registry-shaped computation ("given this template list, this gate
-// state and this isDir, what modes are on offer and which leads") that is
-// still real and still worth guarding on its own terms — `mode-labels.test.ts`
-// uses `paneModeList` to check that no registry key can offer two
-// indistinguishably-named modes side by side, a question that has nothing to
-// do with whether any live component still calls it. `pane-modes.test.ts`
-// pins the functions themselves for the same reason a deleted caller does not
-// retire a unit test. `paneChatOnly` is the one function still wired into the
-// running app (ListingPreviewPane's companion-iframe branch).
+// `paneModeList` SURVIVES, not as a relic but as a still-real, still-used
+// computation: `mode-labels.test.ts` calls it to check that no registry key
+// can offer two indistinguishably-named modes side by side (a question about
+// the REGISTRY, which has nothing to do with whether any live component still
+// calls the function that answers it). `activePaneMode`, `paneOpenTarget`/
+// `PaneOpenTarget` and `paneOpenAction`/`PaneOpenAction` — the row-mode
+// default and the pane's expand button, both genuinely dead once the row is
+// gone — are deleted outright, with their `pane-modes.test.ts` coverage,
+// rather than kept pinning behaviour nothing exercises any more.
+//
+// `paneChatOnly` is the one function still wired into the running app
+// (ListingPreviewPane's companion-iframe branch).
 import type { TemplateEntry } from "@platform/lib/api";
 import { isModeVisible } from "@platform/lib/mode-visibility";
 
@@ -86,78 +88,16 @@ export function paneChatOnly(mode: string): boolean {
   return mode === "claude";
 }
 
-// The mode the pane shows: the user's override (from the switcher, seeded from
-// the `_panelMode` URL param) while that mode is still offered, else the first
-// mode in pane priority order. `null` means the target offers nothing at all
-// (an empty list — a file that maps to no template, or one whose every
-// template is gate-denied), which the pane answers with its metadata card.
-//
-// Deliberately `modes[0]` and not `mode-visibility`'s `defaultMode` (first
-// UNCONDITIONAL entry, PT-8/PT-9): the pane never
-// reaches here with verdicts in flight — the component holds a skeleton until
-// they land — so "unconditional" carries no render-now-don't-wait meaning here
-// the way it does on the preview route.
-export function activePaneMode(modes: string[], modeOverride: string | null): string | null {
-  if (modeOverride !== null && modes.includes(modeOverride)) return modeOverride;
-  return modes[0] ?? null;
-}
+// `activePaneMode`, `paneOpenTarget`/`PaneOpenTarget` and `paneOpenAction`/
+// `PaneOpenAction` used to live here: the ROW-mode default resolution and the
+// pane's expand button, both about a SELECTED ROW's own template. D443
+// deleted the selected-row branch of `ListingPreviewPane` entirely — the pane
+// never previews a row any more, so there is no default to resolve and no
+// expand button pointing at a row-mode target — and by the time of this pass
+// none of the three had any caller left anywhere but their own tests
+// (confirmed by grep: `mode-visibility.test.ts` names `activePaneMode` in a
+// comment, never imports it). Deleted along with their `pane-modes.test.ts`
+// describe blocks. `paneModeList` above stays: `mode-labels.test.ts` uses it
+// as a real registry-collision guard, independent of whether the live
+// component still calls it — see this module's header.
 
-// Where the pane's expand button goes: the previewed row, opened full-screen IN
-// THE MODE THE PANE IS SHOWING. Without the mode the expand icon silently threw
-// away the template the user had switched to and reopened the target in its
-// default — the one thing "make this the whole view" must not do.
-//
-// It takes the RESOLVED active mode, never the raw `_panelMode` param: when the
-// param names a mode this selection does not offer, the pane has already fallen
-// back to its default, and the open has to match what is on screen.
-//
-// This answers for FILES; a folder never reaches it (see paneOpenAction).
-//
-// Two values are not `_mode` values and are dropped rather than passed on:
-//
-//   `_listing`  — a folder full-screen IS its listing; `_mode=_listing` would
-//                 be the destination's own default written out longhand, and
-//                 Preview strips it again the moment the user switches modes.
-//   null        — the target offers nothing at all (the pane is showing its
-//                 metadata card), so there is no mode to carry.
-export interface PaneOpenTarget {
-  path: string;
-  isDir: boolean;
-  // Absent = open the destination's own default view.
-  mode?: string;
-}
-
-export function paneOpenTarget(
-  row: { path: string; isDir: boolean },
-  activeMode: string | null
-): PaneOpenTarget {
-  if (activeMode === null || activeMode === "_listing") {
-    return { path: row.path, isDir: row.isDir };
-  }
-  return { path: row.path, isDir: row.isDir, mode: activeMode };
-}
-
-// WHICH control the pane's header offers for the previewed row — the half
-// paneOpenTarget deliberately does not answer, because for a folder the honest
-// answer is "none of them".
-//
-//   file    → `expand`. "Make this preview the whole view", in the mode the
-//             pane is showing (paneOpenTarget above).
-//   folder  → `none`. Expanding a folder means opening its listing — and its
-//             listing is what the LEFT HALF of this very split already is. The
-//             button offered to replace a two-pane view of a folder with a
-//             one-pane view of the same folder, which is not an action so much
-//             as a step backwards. Its one honest use, "get into this folder",
-//             is what a click and Enter on the row already do.
-//
-// A folder holding a lone page used to get a second, LABELLED button here —
-// "Open as app" — which is gone with the app concept (D264).
-export type PaneOpenAction = { kind: "expand"; target: PaneOpenTarget } | { kind: "none" };
-
-export function paneOpenAction(
-  row: { path: string; isDir: boolean },
-  activeMode: string | null
-): PaneOpenAction {
-  if (!row.isDir) return { kind: "expand", target: paneOpenTarget(row, activeMode) };
-  return { kind: "none" };
-}
