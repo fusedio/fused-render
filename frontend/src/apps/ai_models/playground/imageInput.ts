@@ -39,22 +39,64 @@ export function usableBase(
   return canEdit(acceptsImage) ? attachment : null;
 }
 
+/** A pixel size, both sides. */
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/** How long the longest side of an EDIT may be by default.
+ *
+ *  The server's own derivation is 1024 (AI-9f), which is the right default for
+ *  a page calling `fused.ai.image` and the wrong one here: a 1024-wide edit is
+ *  ~4.5x the pixels of this stage's own fresh-render default (480x272) and it
+ *  showed — a screenshot dropped in took minutes, where the whole promise of
+ *  this stage is a picture back quickly. 640 is ~2.5x cheaper than 1024 and
+ *  still big enough to judge an edit by, and the sliders go to 2048 for
+ *  anybody who wants the full-size one. */
+export const EDIT_LONGEST_SIDE = 640;
+
+/** The render size for an edit of a `natural`-sized picture: its own SHAPE, at
+ *  a size this stage is willing to wait for.
+ *
+ *  Fit the longest side to `cap`, keep the aspect, snap both sides DOWN to a
+ *  multiple of 16 (the pipelines require it and the route floors to it anyway,
+ *  so snapping here is what keeps the number on screen the number that runs),
+ *  and never go below 256 or above the picture's own size — upscaling a small
+ *  photo would spend the time this whole function exists to save. */
+export function fitToImage(natural: Size, cap = EDIT_LONGEST_SIDE): Size {
+  const longest = Math.max(natural.width, natural.height);
+  if (!longest || !Number.isFinite(longest)) return { width: cap, height: cap };
+  // No upscaling: a 300px avatar is edited at 300px, not blown up to 640.
+  const scale = Math.min(1, cap / longest);
+  const snap = (side: number) => {
+    const scaled = Math.floor(side * scale);
+    return Math.max(256, scaled - (scaled % 16));
+  };
+  return { width: snap(natural.width), height: snap(natural.height) };
+}
+
 /** The `image`/`width`/`height` fields of one render request.
  *
- *  With a base image the SERVER derives the size from that image — fit the
- *  longest side to 1024, keep the shape (AI-9f) — which is a better default
- *  than any of this stage's, so the pair is left OFF rather than sent. Leaving
- *  it off is not just a nicety: sending the stage's own 480x272 would resize a
- *  photograph down to a thumbnail on the way through the edit. The moment
- *  somebody picks a size themselves (`sizeFromImage` false), theirs is sent
- *  and the derivation is out of the way. */
+ *  Four cases, and the third is the point of the whole function:
+ *
+ *  - no base image      -> this stage's own size, as any fresh render.
+ *  - a size picked BY HAND (`sizeFromImage` false) -> theirs, unchanged.
+ *  - the picture's shape at `EDIT_LONGEST_SIDE` -> sent EXPLICITLY, so the
+ *    numbers the settings panel shows are the numbers that run.
+ *  - the shape wanted but not KNOWN (`fitted` null: the probe has not answered,
+ *    or the browser could not decode the file) -> the pair is left off and the
+ *    server derives it from the file's own header (AI-9f). Slower, since that
+ *    derivation caps at 1024, but never the wrong shape — where sending this
+ *    stage's 480x272 as a fallback would squash a portrait flat. */
 export function imageFields(
   base: AttachedImage | null,
   sizeFromImage: boolean,
+  fitted: Size | null,
   width: number,
   height: number,
 ): { image?: string; width?: number; height?: number } {
   if (!base) return { width, height };
-  if (sizeFromImage) return { image: base.path };
-  return { image: base.path, width, height };
+  if (!sizeFromImage) return { image: base.path, width, height };
+  return fitted ? { image: base.path, ...fitted } : { image: base.path };
 }

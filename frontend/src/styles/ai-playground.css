@@ -962,10 +962,19 @@ a.pg-hero-repo:hover {
    its in-flow life are undone here. */
 .pg-clear-corner {
   position: absolute;
-  top: 8px;
-  right: 10px;
+  top: 5px;
+  right: 5px;
   height: auto;
   margin: 0;
+  /* Padding rather than offset: the word needs room around it (flush to the
+     box's rounded corner it read as cropped), and giving the padding to the
+     button means the hit area grows with it instead of just the gap. */
+  padding: 3px 7px;
+  border-radius: 6px;
+}
+
+.pg-clear-corner:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
 }
 
 /* Everything on this line lives in the bottom-RIGHT corner: attach, webcam,

@@ -34,7 +34,15 @@ import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
-import { canEdit, imageFields, usableBase, type AttachedImage } from "./imageInput";
+import {
+  canEdit,
+  fitToImage,
+  imageFields,
+  usableBase,
+  EDIT_LONGEST_SIDE,
+  type AttachedImage,
+  type Size,
+} from "./imageInput";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
@@ -197,6 +205,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   // showing 480x272 next to a render that will come back 1024x688. Touching
   // any of them takes the size back, explicitly.
   const [sizeFromImage, setSizeFromImage] = useState(true);
+  // The base image this render will actually edit — the same rule the request
+  // below applies, read from one place (imageInput.ts) rather than restated in
+  // the JSX: an attachment kept across a switch to a render-only model must
+  // not be drawn there, or every request from that stage is a 400.
+  const base = usableBase(entry.acceptsImage, attachment);
+  // The attached picture's OWN pixel size, read off the decoded image. Needed
+  // to render an edit at that picture's shape without asking the server to
+  // derive it at 1024 — see `fitToImage`. Null until the probe answers, and
+  // after a failure to decode.
+  const [natural, setNatural] = useState<Size | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [camera, setCamera] = useState(false);
 
@@ -249,6 +267,28 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     video.srcObject = stream;
     void video.play().catch(() => {});
   }, [camera]);
+
+  // The picture's own dimensions, off a decode in the browser rather than a new
+  // endpoint: the shell can already read this file through `/api/fs/raw` (the
+  // thumbnail on the composer's floor IS this image), and the server's own
+  // header parser answers at 1024 by contract. Re-probed rather than persisted,
+  // since the attachment survives a model switch through the URL and a size in
+  // the URL would be a second thing to keep true.
+  useEffect(() => {
+    setNatural(null);
+    if (!base) return;
+    let alive = true;
+    const probe = new Image();
+    probe.onload = () => {
+      if (alive && probe.naturalWidth && probe.naturalHeight) {
+        setNatural({ width: probe.naturalWidth, height: probe.naturalHeight });
+      }
+    };
+    probe.src = rawUrl(base.path);
+    return () => {
+      alive = false;
+    };
+  }, [base?.path]);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -367,14 +407,13 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   const aspect = ASPECTS.find((a) => a.width === width && a.height === height)?.value ?? null;
   const speed = speedChips?.find((c) => c.steps === steps)?.value ?? null;
-  // The base image this render will actually edit — the same rule the request
-  // below applies, read from one place (imageInput.ts) rather than restated in
-  // the JSX: an attachment kept across a switch to a render-only model must
-  // not be drawn there, or every request from that stage is a 400.
-  const base = usableBase(entry.acceptsImage, attachment);
-  // Is the SERVER deciding the size? Only with a base image, and only until
-  // somebody picks a size themselves.
+  // Is the size the PICTURE's? Only with a base image, and only until somebody
+  // picks one themselves.
   const sizeIsTheImages = base !== null && sizeFromImage;
+  // …and what that comes to in pixels: the picture's shape, scaled down to
+  // something this stage is willing to wait for. Null while the probe is out,
+  // when the server's own 1024 derivation stands in.
+  const fitted = sizeIsTheImages && natural ? fitToImage(natural) : null;
 
   const generate = async (asked?: string) => {
     const wanted = (asked ?? prompt).trim();
@@ -400,7 +439,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         // the base image's own size is the better default than any of this
         // stage's, and the controls say so instead of showing a number that
         // will not be used.
-        ...imageFields(base, sizeFromImage, width, height),
+        ...imageFields(base, sizeFromImage, fitted, width, height),
         steps,
         guidance,
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
@@ -651,9 +690,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 Set a size
               </button>
             </span>
-            <span className="pg-ctl-value">Matches the attached image</span>
+            <span className="pg-ctl-value">
+              {fitted
+                ? `${fitted.width} × ${fitted.height} — the picture's shape`
+                : "Read from the attached picture"}
+            </span>
             <span className="pg-ctl-hint">
-              The longest side is fitted to 1024 without upscaling, and the shape is kept.
+              {fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
+                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
+                  "size takes minutes. Set a size to render it bigger."
+                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`}
             </span>
           </div>
         ) : (
