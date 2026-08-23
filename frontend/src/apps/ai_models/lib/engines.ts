@@ -31,6 +31,12 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "text-to-image": "Image generation",
   "automatic-speech-recognition": "Speech to text",
   "embeddings": "Embeddings",
+  // "Text embeddings" against the plain "Embeddings" above, and the extra word
+  // carries the whole distinction a reader needs on this tab: that capability
+  // loads a DUAL ENCODER (text and images into one space), this one loads a
+  // text encoder. Without it the two read as one feature that somehow grew a
+  // second engine picker.
+  "text-embeddings": "Text embeddings",
 };
 
 export function capabilityLabel(capability: string): string {

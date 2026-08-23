@@ -50,6 +50,14 @@ export const CAPABILITY_ORDER = [
   "text-to-image",
   "automatic-speech-recognition",
   "embeddings",
+  // Beside Embeddings and after it: neither produces something a reader looks
+  // at, which is the argument that put Embeddings last of the four, and the
+  // dual encoder is the more general of the two so it keeps the earlier slot.
+  // LISTED rather than left to fall through, per the paragraph above — the
+  // fall-through is the safety net for a capability nobody has considered,
+  // not the home for a first-class one, whose position would otherwise be an
+  // accident of the order the server happened to send.
+  "text-embeddings",
 ];
 
 export interface RepoGroup {
