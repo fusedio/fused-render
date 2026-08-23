@@ -496,7 +496,11 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               <button type="button" className="btn btn-primary" onClick={capture}>
                 Capture
               </button>
-              <button type="button" className="pg-ghost-btn" onClick={stopCamera}>
+              <button
+                type="button"
+                className="pg-ghost-btn pg-camera-cancel"
+                onClick={stopCamera}
+              >
                 Cancel
               </button>
             </div>

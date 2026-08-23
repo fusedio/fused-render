@@ -1082,8 +1082,26 @@ a.pg-hero-repo:hover {
   flex: none;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  /* Stretch, not flex-end: Cancel is CENTRED under Capture, and it can only be
+     centred on the button above it if it is as wide as the column Capture set. */
+  align-items: stretch;
   gap: 8px;
+}
+
+/* Closing the viewfinder without taking a picture — the one destructive-ish
+   action in this box, so it reads in the error colour rather than as a second
+   grey label. No border, no underline, no fill: it is a word under a button,
+   and the extra top margin is what keeps it from reading as part of Capture. */
+.pg-camera-cancel {
+  margin-top: 4px;
+  text-align: center;
+  color: var(--error);
+  text-decoration: none;
+}
+
+.pg-camera-cancel:hover:not(:disabled) {
+  color: var(--error);
+  opacity: 0.75;
 }
 
 /* A settings row whose value is a sentence rather than a number — the size
