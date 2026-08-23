@@ -1355,7 +1355,13 @@ a.pg-hero-repo:hover {
  * end under its own `.pg-apps-` prefix: the rest of this sheet is under
  * concurrent redesign (#760) and this block must merge clean. ---- */
 .pg-apps {
-  margin-top: 28px;
+  /* Pinned to the bottom of the stage's viewport when the content above is
+   * short (`auto` soaks up the spare space — .pg-stage is a flex column),
+   * and pushed below the fold when it isn't: .pg-stage is the scroller, so
+   * tall stage content simply scrolls down to the strip. The padding is the
+   * floor spacing `auto` would otherwise collapse to zero. */
+  margin-top: auto;
+  padding-top: 28px;
 }
 .pg-apps-head {
   margin: 0 0 12px;
