@@ -1,4 +1,4 @@
-"""A Python client for the local fused-render AI API (SPEC PY-19, D457-D459).
+"""A Python client for the local fused-render AI API (SPEC PY-19, D461-D463).
 
 Mirrors `fused.ai` from `fused_render/static/runtime.js` — same names, same
 option names, same closed-envelope rejection (D413) — for Python code that

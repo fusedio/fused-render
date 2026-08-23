@@ -452,7 +452,7 @@ Those four strings are the capability vocabulary — what `unload({capability})`
 
 ## Calling from Python: `fused_ai`
 
-Everything above is also reachable **without a browser**. `fused_render/templates/shared/fused_ai.py` is a stdlib-only Python client mirroring `fused.ai` 1:1 — same names, same option names, same closed-envelope rejections (D413) — so a `.py` data file or an external process never has to reinvent the model layer (SPEC PY-19, D457-D459).
+Everything above is also reachable **without a browser**. `fused_render/templates/shared/fused_ai.py` is a stdlib-only Python client mirroring `fused.ai` 1:1 — same names, same option names, same closed-envelope rejections (D413) — so a `.py` data file or an external process never has to reinvent the model layer (SPEC PY-19, D461-D463).
 
 ### `import fused_ai` — no install, no path setup
 
