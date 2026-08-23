@@ -606,7 +606,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
            new_task_each_run=None, session_learned=None,
-           create_target: bool = False) -> dict:
+           immediate=None, create_target: bool = False) -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -789,6 +789,21 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # same shape and the form reads it back the same way — a one-shot has
         # one run, so there is nothing for it to mean there.
         "new_task_each_run": _flag(new_task_each_run),
+        # "RUN THIS NOW", not "run this at a time I chose". The New task form
+        # sets it when the card was opened from the List or the Board and the
+        # user never touched the when-row: the message is due now because now is
+        # what the form defaults to, not because anybody planned it for now.
+        #
+        # It changes nothing about WHEN this runs — the scheduler still reads
+        # `due` and only `due`. It exists so the CALENDAR can tell the two apart:
+        # a grid of everything anyone ever typed into the Tasks page is not a
+        # plan, and a task nobody scheduled has no business drawing a chip on it
+        # (Akshil, 2026-08-23). See `_scheduled_message` in the tasks router,
+        # which carries it onto the message the calendar reads.
+        #
+        # Only ever true on a one-off: touching the repeat tick IS choosing a
+        # time, so the form never sends it alongside a rule.
+        "immediate": _flag(immediate) and not (repeats or spec is not None),
         "state": RECURRING if (repeats or spec is not None) else PENDING,
         # "" on a one-shot; the cron line on a template. An OCCURRENCE never
         # carries it — the link runs the other way, through `template_id`.

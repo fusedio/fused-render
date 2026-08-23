@@ -33,10 +33,39 @@ test("an unknown sub-path falls back instead of erroring", () => {
   expect(tabFromPath("/ai-models/local/deeper")).toBe(DEFAULT_TAB);
 });
 
-test("the strip is Playground / Local / Engines / Usage, and Discover is gone", () => {
+test("the strip is Playground / Local / Benchmark / Engines / Usage, and Discover is gone", () => {
   // The order IS the strip's order and the first entry IS the default, so this
   // pins the one list that decides both.
-  expect([...AI_MODELS_TABS]).toEqual(["playground", "local", "engines", "usage"]);
+  expect([...AI_MODELS_TABS]).toEqual(["playground", "local", "benchmark", "engines", "usage"]);
+});
+
+test("Benchmark sits directly after Local", () => {
+  // Position is the argument: Benchmark is about the models the Local tab
+  // lists, so it reads as the next question about them ("how fast are these")
+  // rather than as a sibling of Engines (which is about backends) or of Usage
+  // (which is about what this process happened to do).
+  const strip = [...AI_MODELS_TABS];
+  expect(strip.indexOf("benchmark")).toBe(strip.indexOf("local") + 1);
+  // And it is not the default: an empty machine still lands on the playground,
+  // because a benchmark needs a model that is already downloaded.
+  expect(DEFAULT_TAB).not.toBe("benchmark");
+});
+
+test("/ai-models/benchmark resolves to the tab instead of falling back", () => {
+  // The failure this guards is silent: an unrouted path falls back to the
+  // default, so a tab added to the strip but not to the union renders the
+  // playground under a Benchmark-looking URL rather than erroring.
+  expect(tabFromPath("/ai-models/benchmark")).toBe("benchmark");
+  expect(tabFromPath("/ai-models/benchmark")).not.toBe(DEFAULT_TAB);
+});
+
+test("the benchmark tab keeps the query string across a switch", () => {
+  // `?cap=` is the Benchmark tab's own focus filter as well as the
+  // playground's seed, so it has to survive a switch in both directions.
+  expect(tabHref("benchmark", "?cap=text-to-image")).toBe(
+    "/ai-models/benchmark?cap=text-to-image",
+  );
+  expect(tabHref("benchmark", "")).toBe("/ai-models/benchmark");
 });
 
 test("the retired discover path lands on the default like any stale link", () => {

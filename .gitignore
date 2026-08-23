@@ -62,3 +62,6 @@ cmux-assets/
 # dev.sh's core_apps reload poke (scripts/dev.sh core_apps watcher)
 core_apps/.dev-reload-trigger.py
 docs/superpowers/plans/
+
+# Windows dev.ps1 isolated home
+.dev-home/

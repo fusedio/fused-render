@@ -1459,110 +1459,14 @@ def video_traits_for(code: str | None) -> VideoTraits:
     return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["h3-video"])
 
 
-#: Friendly task label (the vocabulary `ai_models` produces) -> the capability
-#: that can actually RUN it.
-#:
-#: **A vision-language checkpoint is a text model when you only give it text**,
-#: and that is not a technicality — it is now the NORMAL case rather than an
-#: exception. Every model in this app's own MLX catalog is labelled "image +
-#: text to text", because Qwen3.5 and gemma-4 ship as one checkpoint with a
-#: vision tower (and, for gemma-4, an audio one) attached to the language
-#: model. Leaving the label out of this table took the Load button off the
-#: models the app was suggesting on the next tab over. mlx-lm loads such a
-#: checkpoint through its text config; the other towers simply go unused until
-#: an `mlx-vlm` runner exists to use them.
-_TASK_CAPABILITIES = {
-    "text generation": TEXT_GENERATION,
-    "image + text to text": TEXT_GENERATION,
-    "text to image": IMAGE_GENERATION,
-    "image generation": IMAGE_GENERATION,
-    "speech recognition": SPEECH_TO_TEXT,
-    # **"zero-shot image classification" IS the embedding capability**, and that
-    # is the pairing a reader is most likely to think is a mistake. It is the tag
-    # every SigLIP, SigLIP2 and CLIP repo carries — including both entries in
-    # this app's own embedding catalog — and what it describes is a DUAL ENCODER:
-    # the "classification" is done by embedding the labels, embedding the image
-    # and comparing, which is exactly the two calls the embedding runners
-    # expose. A repo with that tag is therefore loadable here, and leaving the
-    # label in `NO_RUNNER_YET` (where it sat until the capability existed) would
-    # have taken the Load button off the very models the Discover tab suggests —
-    # the gemma bug that table's own comment describes, in a new modality.
-    "zero-shot image classification": EMBEDDINGS,
-    # A diffusers text-to-video (or image-to-video) pipeline's `_class_name`
-    # folds onto this label (`hub_cache.py::_diffusers_task`), the same way
-    # its image sibling folds onto "image generation" above.
-    "video generation": VIDEO_GENERATION,
-}
-
-#: The other half of the same decision: labels nothing here serves, listed
-#: rather than merely absent.
-#:
-#: Absence is how the gemma bug happened — a label that nobody had thought about
-#: and a label that had been ruled out looked identical, so the vocabulary grew
-#: and the table silently did not. `test_every_task_label_is_classified` requires
-#: every label the listing can produce to appear in one of these two, which turns
-#: "we forgot" into a failing test instead of a missing button.
-NO_RUNNER_YET = frozenset({
-    # Nothing here classifies or segments — these are real jobs with no local
-    # runner in this cut. ("zero-shot image classification" was here until the
-    # embedding runners shipped; it is in the table above now, which is the
-    # direction this list is meant to shrink in.)
-    "fill mask", "text classification",
-    "token classification", "question answering", "summarization", "translation",
-    "image classification",
-    # **The two labels the embedding capability does NOT claim, despite being
-    # the capability's own name.** "embeddings" is the Hub's
-    # `feature-extraction` and "sentence embeddings" its `sentence-similarity`,
-    # and what wears those tags is overwhelmingly a sentence-transformers
-    # checkpoint: a plain text encoder plus a pooling configuration, with no
-    # vision tower and no `get_text_features`/`get_image_features` for the
-    # embedding runners to call. Mapping them would put a Load button on
-    # `sentence-transformers/all-MiniLM-L6-v2` — a download that then refuses,
-    # which is the gemma bug this table's own comment describes, and which
-    # `test_a_result_is_never_something_this_app_cannot_run` pins by that exact
-    # repo id. The tag that actually rides on a dual encoder is
-    # `zero-shot-image-classification`, and that is the one mapped above.
-    # Mean-pooling a text-only encoder is a different load path and a different
-    # catalog; when it ships, these two move.
-    "embeddings", "sentence embeddings",
-    "zero-shot text classification", "image segmentation", "object detection",
-    "depth estimation", "image to image", "image to text", "audio classification",
-    # An audio-language model: a recording and a prompt in, text out. It is
-    # NOT speech recognition — it is asked questions about the audio rather
-    # than asked to transcribe it — and mlx-lm has no module for one, so
-    # neither the text runners nor the whisper runners can serve it. Listed
-    # here rather than left out, because an absent label and a ruled-out label
-    # look identical from a card (see the table above).
-    "audio + text to text",
-    # Speech OUT, as opposed to speech in. Deliberately not folded into the
-    # transcription capability as a direction flag: one capability holds one
-    # resident model, so a shared "audio" capability would have a synthesis
-    # model evict a Whisper model and back again on every alternation.
-    "text to speech", "audio generation",
-    # An encoder-decoder (T5-shaped). Not the causal-LM path mlx-lm serves, so
-    # it is not text generation however much the name suggests it.
-    "text-to-text generation",
-    # A model that takes and returns several modalities at once. Which one a
-    # caller wants is not a thing this table can decide.
-    "any input to any output",
-})
-
-
-def capability_for_task(task: str | None) -> str | None:
-    """Which capability, if any, could load a model doing `task`.
-
-    Here rather than in the page, because the page would then hold a second copy
-    of the mapping between the task vocabulary and the capability vocabulary —
-    and a page that guesses "text-generation" for everything will happily try to
-    load a diffusion model as a chat model.
-
-    None for a label in `NO_RUNNER_YET`, and None for a label in NEITHER table —
-    the answers are the same but the second one is a bug, which is what the
-    classification test exists to catch.
-    """
-    if not task:
-        return None
-    return _TASK_CAPABILITIES.get(task)
+# The task vocabulary — which `pipeline_tag` means what, and which of them a
+# runner here serves — lives in `ai/tasks.py`, keyed by the Hub's own tag. It
+# was three tables in two modules (a tag-to-prose map, this capability map, and
+# a ruled-out list), and the seam between them is what let an unclassified tag
+# through: see that module's docstring. This module keeps the CAPABILITY
+# constants above, which is the half `tasks.py` imports — VIDEO_GENERATION
+# included, so `tasks.py`'s "text-to-video" row maps to it rather than sitting
+# in NO_RUNNER now that `h3-video` actually serves it.
 
 
 def all_runners() -> tuple[Runner, ...]:

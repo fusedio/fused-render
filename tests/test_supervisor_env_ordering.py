@@ -23,7 +23,8 @@ def test_desktop_env_applied_before_supervisor_imports():
         "print(os.environ['FUSED_RENDER_BRANCH'] == '' and _branch.branch_ref() == '')\n"
     )
     with tempfile.TemporaryDirectory() as tmp_path:
-        env = {**os.environ, "FUSED_RENDER_BRANCH": "feature-x", "LOCALAPPDATA": tmp_path}
+        env = {**os.environ, "FUSED_RENDER_BRANCH": "feature-x",
+               "LOCALAPPDATA": tmp_path, "USERPROFILE": tmp_path}
         out = subprocess.run(
             [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30
         )

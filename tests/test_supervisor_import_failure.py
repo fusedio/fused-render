@@ -30,9 +30,14 @@ def test_broken_supervisor_import_shows_messagebox_and_exits_1():
         "print(False)\n"
     )
     with tempfile.TemporaryDirectory() as tmp_path:
-        env = {**os.environ, "LOCALAPPDATA": tmp_path}
+        # USERPROFILE steers Path.home(), which is where DesktopPaths roots its
+        # state — without it the failure path logs into the real ~/.fused-render.
+        env = {**os.environ, "LOCALAPPDATA": tmp_path, "USERPROFILE": tmp_path}
         out = subprocess.run(
             [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30
         )
-    assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "True"
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "True"
+        assert os.path.isfile(
+            os.path.join(tmp_path, ".fused-render", "logs", "supervisor.log")
+        ), "the import-failure log must land in the redirected home, not the real one"

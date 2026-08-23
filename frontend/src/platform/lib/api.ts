@@ -1978,6 +1978,12 @@ export interface TaskMessage {
   // "Ran" so this page and that card describe one outcome with one word.
   turn: "done" | "idle" | "unknown" | "cancelled" | "";
   anchor: string; // transcript record uuid, for scroll-to; "" if unknown
+  // "Run this now", not "run this at a time I picked": set by the New task form
+  // when the card was opened from the List or the Board and nobody touched the
+  // when-row. It is what keeps the calendar a PLAN — see schedule-lib.taskChips,
+  // which skips these — and it says nothing about when the message ran. Absent on
+  // a chat message and on anything an older server sent.
+  immediate?: boolean;
 }
 
 export interface Task {
@@ -2251,11 +2257,31 @@ export interface AiModelRepo {
    * the network.
    */
   added: number | null;
-  /** What the model is for ("text generation", "image generation"), or null. */
+  /** What the model is for ("text generation", "text to image"), or null. */
   task: string | null;
+  /** The Hugging Face `pipeline_tag` behind that label — the key a glossary
+   *  lookup, a search filter and a link to the Hub all join on. Null when
+   *  nothing said what the model is. */
+  taskTag: string | null;
   /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
    *  architecture is our reading of one, and the UI distinguishes them. */
   taskSource: string | null;
+  /** Whether this KIND of model runs here, in three states (server-side
+   *  `ai/tasks.py`):
+   *
+   *  - `supported` — a runner serves it, and `capability` says which.
+   *  - `no-runner` — a task we recognise and do not serve (video generation,
+   *    speech synthesis, a robot policy). `supportReason` is the sentence.
+   *  - `unknown` — a tag this build has never heard of, or no evidence at all.
+   *
+   *  `capability` is non-null exactly when this is `supported`; the other two
+   *  states exist so a card can EXPLAIN the null rather than showing a gap
+   *  where a Load button would be. Optional: an older server omits it. */
+  support?: "supported" | "no-runner" | "unknown";
+  /** Why this app does not run this kind of model, when it does not. Empty
+   *  string for a supported task and for one we cannot identify — an excuse we
+   *  have not earned is worse than none. */
+  supportReason?: string;
   /** One sentence on what the task MEANS (what goes in, what comes out), for
    *  the hover — the labels are the Hub's vocabulary, which is jargon until
    *  someone explains it. Null for a tag we have no sentence for. */
@@ -2342,6 +2368,16 @@ export interface AiModelRepo {
    * among the recommendations.
    */
   partial: boolean;
+  /** Bytes of this repo that actually ARRIVED — `size` for anything finished, and
+   *  much less than it mid-fetch (D440).
+   *
+   *  The distinction exists because our fetcher PREALLOCATES a part file to the
+   *  full length of the file it is fetching: a repo 15% into a 1.6GB download
+   *  measures 1.6GB on disk, so a card drawing "how much of this is here" from
+   *  `size` read as nearly finished while the job row beside it said 243 MB.
+   *  `size` is still the number the page PRINTS — allocated bytes are what the
+   *  folder costs — and this is the one the fraction is drawn from. */
+  fetchedBytes: number;
 }
 
 export interface AiModelsResult {
@@ -2612,6 +2648,14 @@ export interface AiCatalogModel {
    *  stripped copy of it (catalog.py states why); absent on a cached entry,
    *  where the fallback is `label`. */
   nickname?: string | null;
+  /** Parameter count as the publisher states it ("4B", "8B (~1B active)") —
+   *  a curated string, never parsed out of the repo id (catalog.py's AI-2c
+   *  rule). Absent on cached entries and anywhere nobody wrote one. */
+  params?: string | null;
+  /** The quantization scheme by its own name ("OptiQ 4-bit", "GGUF Q4_K_M").
+   *  Absent where no honest short name exists — the header omits the line
+   *  rather than inventing one. */
+  quantization?: string | null;
   /** Curated per-model generation hints (catalog.py) — today only `steps`, the
    *  denoise count a distilled image model was benchmarked at. Absent on
    *  cached entries and on models nobody has measured; the consumer keeps the
@@ -2681,8 +2725,40 @@ export interface AiCatalogCapability {
   models: AiCatalogModel[];
 }
 
-export function getAiCatalog(): Promise<{ capabilities: AiCatalogCapability[] }> {
-  return getJson<{ capabilities: AiCatalogCapability[] }>("/api/ai/catalog");
+/** A model on this disk that NO capability can load, and why.
+ *
+ *  Deliberately NOT a row in `capabilities[].models` — every app reading that
+ *  payload maps it and offers what it finds, so a row in there is a row
+ *  something will try to load. This is a separate list a picker opts into
+ *  showing, and the Playground shows it because "you downloaded this and it
+ *  cannot run here" is a better answer than the model quietly not being in the
+ *  sidebar at all. */
+export interface AiUnsupportedModel {
+  id: string;
+  /** The repo's own name, without the owner. */
+  label: string;
+  size_gb: number | null;
+  /** What the model does, in the Hub's vocabulary ("text to speech", "depth
+   *  estimation"), or null when nothing on the repo said. */
+  task: string | null;
+  /** `no-runner` (a task we recognise and do not serve) or `unknown` (a
+   *  pipeline tag this build has never heard of, or no evidence at all). Never
+   *  `supported`: that has a capability and is in `capabilities[]`. */
+  support: "no-runner" | "unknown";
+  /** The sentence to print. Empty for `unknown` — an explanation we have not
+   *  earned is worse than none. */
+  reason: string;
+}
+
+export function getAiCatalog(): Promise<{
+  capabilities: AiCatalogCapability[];
+  /** Optional: an older server does not send it. */
+  unsupported?: AiUnsupportedModel[];
+}> {
+  return getJson<{
+    capabilities: AiCatalogCapability[];
+    unsupported?: AiUnsupportedModel[];
+  }>("/api/ai/catalog");
 }
 
 export interface AiLoadStarted {
@@ -2701,6 +2777,169 @@ export function downloadAiModel(model: string, capability?: string): Promise<AiL
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
+/** Stop the generation in flight on `capability`'s resident worker, WITHOUT
+ *  unloading it — the weights stay, so whatever asked for this can start
+ *  answering again immediately. Distinct from `unloadAiModel`, which
+ *  terminates the worker process instead: that is right for "get this out of
+ *  memory" but wrong for "stop what it's doing", because killing the process
+ *  mid-stream does not resolve the in-flight request with a clean, readable
+ *  outcome — it drops the connection, and whatever was waiting on it sees a
+ *  socket error rather than a cooperative `cancelled: true`. False from the
+ *  server means there was nothing to stop, which is not an error: a Stop
+ *  pressed just as the last token (or the last step, or the one embed call)
+ *  settled should be a no-op.
+ *
+ *  `playground/client.ts` wraps the same route for its own Stop button
+ *  (`cancelGeneration`) — kept here too, rather than importing that module
+ *  from a sibling feature, because this is the platform-level HTTP surface
+ *  every other AI wrapper on this page (`unloadAiModel`, `runAiBenchmark`, …)
+ *  already lives beside. */
+export function cancelAiGeneration(capability?: string): Promise<{ cancelled: boolean }> {
+  return postJson<{ cancelled: boolean }>("/api/ai/cancel", capability ? { capability } : {});
+}
+
+// -- AI benchmarks (/api/ai/benchmark, SPEC AI-14) ----------------------------
+// One recorded benchmark run per entry, kept forever on disk — the deliberate
+// opposite of the in-memory usage counters below. Where those summarise the real
+// calls that happened to pass through, these are a FIXED workload somebody ran
+// on purpose so that two models, or one model across two app versions, are
+// legitimately comparable.
+//
+// **Every metric here can be null, and null means NOT MEASURED.** A runner that
+// does not count its own tokens leaves `tokensPerSecond` null rather than a
+// number derived from the text; a platform whose RAM the stdlib will not report
+// leaves `totalMemoryBytes` null. Nothing in this payload is ever a zero
+// standing in for an absence, so nothing that renders it may treat one as such.
+
+/** The machine a run was taken on — why a number is not portable. */
+export interface AiBenchmarkMachine {
+  platform: string;
+  arch: string;
+  cpuCount: number | null;
+  totalMemoryBytes: number | null;
+}
+
+/** Which fixed workload produced a run, and which VERSION of it.
+ *
+ *  `revision` is a comparability seam: if the prompt, token budget or canvas
+ *  ever changes the server bumps it, and runs either side of the bump are not
+ *  comparable. A consumer must not draw a delta across two different revisions
+ *  — see `latestWithDelta` in apps/ai_models/lib/benchmark.ts.
+ */
+export interface AiBenchmarkWorkload {
+  name: string;
+  revision: number;
+  /** The frozen parameters, verbatim from the server. Shape varies by
+   *  capability, so it is opaque here — the run's `metrics` is what a page
+   *  renders, and this is provenance to show on demand. */
+  params: Record<string, unknown>;
+}
+
+/** The measured numbers. Which keys are present depends on the capability, and
+ *  a present key can still be null (not measured). The PRIMARY metric per
+ *  capability is decided in one place — `primaryMetric` in
+ *  apps/ai_models/lib/benchmark.ts — never inferred from which keys exist. */
+export interface AiBenchmarkMetrics {
+  // text-generation
+  tokensPerSecond?: number | null;
+  ttftMs?: number | null;
+  promptTokensPerSecond?: number | null;
+  outputTokens?: number | null;
+  // text-to-image
+  secondsPerStep?: number | null;
+  totalSeconds?: number | null;
+  steps?: number | null;
+  width?: number | null;
+  height?: number | null;
+  // automatic-speech-recognition
+  realtimeFactor?: number | null;
+  audioSeconds?: number | null;
+  // embeddings
+  textsPerSecond?: number | null;
+  dim?: number | null;
+  batch?: number | null;
+}
+
+export interface AiBenchmarkRun {
+  /** uuid4 hex — what `deleteAiBenchmarks` names. */
+  id: string;
+  /** Epoch SECONDS (the server's clock), not ms. */
+  startedAt: number;
+  capability: string;
+  model: string;
+  /** Which backend measured it, e.g. "mlx-text" — null when resolution failed,
+   *  which is one of the ways a run can be `ok: false`. */
+  runner: string | null;
+  /** What the weights landed on ("mps" | "cuda" | "cpu" | …), or null from a
+   *  runner that does not report one. Never guessed from the platform. */
+  device: string | null;
+  /** The app version this was measured under. The app is part of what is being
+   *  measured, so a runner upgrade that halves throughput is visible here. */
+  appVersion: string;
+  /** False for a run that FAILED — an OOM, a dead worker, a machine with no
+   *  runner. Those are kept and shown: "this model OOMs on this laptop" is a
+   *  result. `metrics` is then empty rather than a dict of nulls. */
+  ok: boolean;
+  error: string | null;
+  /** Seconds to make the model resident, or null when it already was. Null is
+   *  not zero: a warm run did not load anything. */
+  loadSeconds: number | null;
+  /** Resident bytes sampled from the worker AFTER the run — a resident figure,
+   *  not a continuously-sampled peak (see ai/benchmark.py). Null from a runner
+   *  that does not report memory. */
+  peakResidentBytes: number | null;
+  machine: AiBenchmarkMachine;
+  workload: AiBenchmarkWorkload;
+  metrics: AiBenchmarkMetrics;
+}
+
+export interface AiBenchmarkHistory {
+  /** Oldest first — append order IS the chart's x axis. */
+  runs: AiBenchmarkRun[];
+  /** THIS machine, as it is now. Travels with the history rather than only on
+   *  each run, because the page has to caption the comparison before it has
+   *  drawn a single run. */
+  machine: AiBenchmarkMachine;
+}
+
+export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {
+  return getJson<AiBenchmarkHistory>("/api/ai/benchmark", opts);
+}
+
+/** Run one benchmark. **Resolves in MINUTES** — the request is held open for
+ *  the whole run, exactly as `/api/ai/image` is.
+ *
+ *  **There is no job id and no download-manager row**, deliberately: a
+ *  benchmark's row would share the title-keyed job namespace with the load row
+ *  `supervisor.load` already opens for the same model and shadow it. Show your
+ *  own in-progress state for the duration; through a COLD run the load's own row
+ *  appears in the manager with real byte counts, which is the progress that was
+ *  always worth watching.
+ *
+ *  A run that failed still resolves, with `run.ok === false` — that is a result
+ *  and belongs in the history. A run STOPPED from outside resolves with **no
+ *  `run`** and `cancelled: true`: nothing was measured, so there is nothing to
+ *  add. Read `run` for presence; never pattern-match on
+ *  `run.error === "cancelled"`, which is what drew a phantom "Failed — cancelled"
+ *  entry that outlived the click. Only a rejected REQUEST rejects. */
+export function runAiBenchmark(
+  model: string,
+  capability: string,
+): Promise<{ run?: AiBenchmarkRun; cancelled?: boolean }> {
+  return postJson<{ run?: AiBenchmarkRun; cancelled?: boolean }>(
+    "/api/ai/benchmark",
+    { model, capability },
+  );
+}
+
+/** Forget runs by id, answering with the fresh history so the caller swaps in
+ *  state it just re-read rather than patching rows it hopes are still true. */
+export function deleteAiBenchmarks(
+  ids: string[],
+): Promise<AiBenchmarkHistory & { removed: number }> {
+  return postJson<AiBenchmarkHistory & { removed: number }>("/api/ai/benchmark/delete", { ids });
 }
 
 // -- AI usage (GET /api/ai/metrics, SPEC AI-12) -------------------------------
@@ -2938,6 +3177,12 @@ export interface ScheduledMessage {
   // copies to each occurrence, so every run resumes the same conversation.
   // Ticking this copies "" instead, so each run starts its own.
   new_task_each_run?: boolean;
+  // Created to RUN, not to be planned: the New task form sets this when the card
+  // was opened from the List or the Board and the when-row was never touched, so
+  // `due` is only the form's own default of "now". The scheduler ignores it
+  // entirely; the calendar reads it, and draws nothing for a task nobody
+  // scheduled. Never true on a repeating entry.
+  immediate?: boolean;
 }
 
 export interface ScheduleResult {
@@ -2983,6 +3228,11 @@ export function scheduleMessage(body: {
   // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
   // split apart.
   new_task_each_run?: boolean;
+  // "The user never picked a time" — sent only by the New task form, and only
+  // for a one-off opened from the List or the Board with the when-row untouched.
+  // `due` is still sent (it is "now"); this is what tells the calendar the time
+  // was a default rather than a plan. See ScheduledMessage.immediate.
+  immediate?: boolean;
   // The id of the entry this one REPLACES — set only by an edit, which is
   // cancel + re-create and therefore mints a brand new entry id. A task that has
   // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without

@@ -46,8 +46,11 @@ ALLOWED = {
 
 def _py_files():
     for dirpath, dirnames, filenames in os.walk(TEMPLATES):
+        # tests/ never runs as a template child — pytest imports it with the
+        # package on sys.path — and the server-side suites there (map's engine
+        # and router tests) test fused_render itself.
         dirnames[:] = [d for d in dirnames
-                       if d not in ("__pycache__", "vendor", "node_modules")]
+                       if d not in ("__pycache__", "vendor", "node_modules", "tests")]
         for name in sorted(filenames):
             if name.endswith(".py"):
                 yield os.path.relpath(os.path.join(dirpath, name), TEMPLATES)

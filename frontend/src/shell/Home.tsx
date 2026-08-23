@@ -21,7 +21,7 @@ import { runCommunity } from "@platform/lib/community";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
-import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
 import { tabHref } from "@apps/ai_models/routes";

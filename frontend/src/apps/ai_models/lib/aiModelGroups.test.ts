@@ -9,6 +9,9 @@ import {
   UNRECOGNISED,
   type DiskCard,
   diskCards,
+  emptyShell,
+  jobFraction,
+  partialFraction,
   resultDisk,
   runnersByCapability,
   groupRepos,
@@ -21,6 +24,10 @@ import {
 
 function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
   return {
+    // Defaults to `size`, which is true of every repo whose download finished —
+    // the two only diverge mid-fetch, where a part file is preallocated to its
+    // full length (D440), so a test about that case sets it explicitly.
+    fetchedBytes: over.size ?? 1000,
     dir: "models--" + over.id.replace("/", "--"),
     kind: "model",
     path: "/cache/" + over.id,
@@ -30,6 +37,7 @@ function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
     lastUsed: null,
     added: null,
     task: null,
+    taskTag: null,
     taskSource: null,
     taskHelp: null,
     library: null,
@@ -695,6 +703,32 @@ describe("the three surfaces on a no-engine card agree", () => {
   it("does not tell a Qwen checkpoint that its model type is not supported", () => {
     expect(noEngineReason(QWEN_NO_ENGINE)).not.toContain("not supported");
   });
+
+  // The server classifies the TASK now and writes the sentence beside the
+  // classification, so a card can say which unsupported thing it is looking at.
+  // "The model type is not supported" was true of a TTS model, a video pipeline
+  // and a repo carrying a tag nobody has heard of, and told a reader nothing
+  // about which one they had downloaded.
+  it("prefers the server's own sentence for a task nothing here runs", () => {
+    const tts = repo({
+      id: "org/voice",
+      task: "text to speech",
+      taskTag: "text-to-speech",
+      support: "no-runner",
+      supportReason: "Speech synthesis is a separate capability from transcription.",
+    });
+    expect(noEngineReason(tts)).toBe(
+      "Speech synthesis is a separate capability from transcription.",
+    );
+  });
+
+  // …and falls back where there is nothing to say: an older server sends no
+  // `support` at all, and an unidentifiable repo has earned no explanation.
+  it("keeps the flat note when the server offers no reason", () => {
+    const mystery = repo({ id: "org/mystery", support: "unknown", supportReason: "" });
+    expect(noEngineReason(mystery)).toBe(noEngineReason(WESPEAKER));
+    expect(noEngineReason(repo({ id: "org/old-server" }))).toBe(noEngineReason(WESPEAKER));
+  });
 });
 
 // A download that stopped halfway (D424). The page reads "on disk" TWICE, and
@@ -896,5 +930,171 @@ describe("runnersByCapability", () => {
       new Map(),
     )[0];
     expect(section.runner).toEqual(runnersByCapability(cat).get("text-generation") ?? null);
+  });
+});
+
+describe("emptyShell", () => {
+  it("is the folder a fetch left with no snapshot in it", () => {
+    // The state from the field: one 40-byte refs/main and nothing else. It has
+    // to read as "nothing to resume", because the card swaps its primary
+    // control for a Delete on the strength of it.
+    expect(emptyShell(repo({ id: "mlx-community/Kimi", partial: true, revisions: 0, size: 40 })))
+      .toBe(true);
+  });
+
+  it("is not a partial download that has bytes on disk", () => {
+    // A snapshot exists, so a resume has something to pick up (D275) — and the
+    // card must keep offering it.
+    expect(emptyShell(repo({ id: "mlx-community/Kimi", partial: true, revisions: 1 }))).toBe(false);
+  });
+
+  it("is not a complete repo, however few revisions it has", () => {
+    expect(emptyShell(repo({ id: "org/done", partial: false, revisions: 1 }))).toBe(false);
+  });
+});
+
+describe("partialFraction", () => {
+  const half = repo({ id: "org/half", partial: true, size: 2_000 });
+
+  it("reports the live job once it passes what is on disk", () => {
+    // 300 of 1000 fetched this run, against 2000 bytes on disk measured against
+    // the job's own total — the disk reading is capped at 95%, so it wins here,
+    // which is the monotonic rule below doing its job.
+    expect(
+      partialFraction(half, { done: 300, total: 1_000, unit: "bytes" }, 8_000),
+    ).toBe(0.95);
+    // With the disk behind the job, the job is what shows.
+    const barely = repo({ id: "org/barely", partial: true, size: 50 });
+    expect(
+      partialFraction(barely, { done: 300, total: 1_000, unit: "bytes" }, 8_000),
+    ).toBeCloseTo(0.3);
+  });
+
+  it("NEVER moves the boundary backwards when a download resumes", () => {
+    // The reported bug: a repo showing ~90% (bytes on disk over its total) had
+    // its fill collapse the moment Download was pressed, because the new job's
+    // `done` starts from what THIS run has moved rather than from what is here.
+    // The two readings are both lower bounds, so the larger is the true one.
+    const nearly = repo({ id: "org/nearly", partial: true, size: 900 });
+    const idle = partialFraction(nearly, undefined, 1_000);
+    const resuming = partialFraction(
+      nearly,
+      { done: 20, total: 1_000, unit: "bytes" },
+      1_000,
+    );
+    expect(idle).toBeCloseTo(0.9);
+    expect(resuming).toBe(idle);
+  });
+
+  it("prefers the JOB's total over the curated estimate as the denominator", () => {
+    // `size_gb` is a round number covering every repo a model touches, so one
+    // repo's share reads low against it; the job knows the size of this
+    // download. 500 of 1000 on disk is half, not an eighth.
+    expect(
+      partialFraction(
+        repo({ id: "org/x", partial: true, size: 500 }),
+        { done: 1, total: 1_000, unit: "bytes" },
+        8_000,
+      ),
+    ).toBeCloseTo(0.5);
+  });
+
+  it("falls back to bytes on disk over the curated estimate", () => {
+    expect(partialFraction(half, undefined, 10_000)).toBeCloseTo(0.2);
+  });
+
+  it("is the same 2-95% clamp whichever reading answered", () => {
+    // A job past its own total (a resumed fetch double-counting) must not draw a
+    // finished card, and neither must a disk reading past the estimate.
+    expect(
+      partialFraction(half, { done: 1_200, total: 1_000, unit: "bytes" }, 1_000),
+    ).toBe(0.95);
+  });
+
+  it("ignores a job that is not counting bytes", () => {
+    // A venv build reports no total, and a load reports a different unit;
+    // neither is a fraction of this download.
+    expect(partialFraction(half, { done: null, total: null }, 10_000)).toBeCloseTo(0.2);
+    expect(
+      partialFraction(half, { done: 1, total: 4, unit: "steps" }, 10_000),
+    ).toBeCloseTo(0.2);
+  });
+
+  it("says nothing rather than guess a denominator", () => {
+    // The card draws a flat wash for null. A made-up total would draw a
+    // precise-looking boundary over a guess.
+    expect(partialFraction(half, undefined, null)).toBeNull();
+    expect(partialFraction(half, undefined, undefined)).toBeNull();
+    // Zero would be an Infinity the clamp below would happily render as 95%.
+    expect(partialFraction(half, undefined, 0)).toBeNull();
+  });
+
+  it("never draws as empty or as finished", () => {
+    // The 40-byte shell is the floor case: 0.002% of a 4GB model, which is
+    // visually nothing — and a state drawn as nothing is not drawn.
+    const shell = repo({ id: "org/shell", partial: true, size: 40, revisions: 0 });
+    expect(partialFraction(shell, undefined, 4 * 1024 ** 3)).toBe(0.02);
+    // And the ceiling: an estimate smaller than the bytes already here (a
+    // multi-repo download's curated total is for ALL of them) must not read as
+    // a finished download, because this repo by definition is not one.
+    expect(partialFraction(half, undefined, 1_000)).toBe(0.95);
+  });
+});
+
+describe("jobFraction", () => {
+  it("answers for a card with nothing on this disk yet", () => {
+    // The recommended and search-result cards have no folder to measure: the
+    // job row is their only account of themselves, and this is what fills them.
+    expect(jobFraction({ done: 250, total: 1_000, unit: "bytes" })).toBeCloseTo(0.25);
+  });
+
+  it("says nothing for a stage that reports no byte total", () => {
+    // A venv build and a weight load have no denominator, and a boundary drawn
+    // at an invented one reads as stalled work rather than as live work.
+    expect(jobFraction(undefined)).toBeNull();
+    expect(jobFraction({ done: 2, total: null })).toBeNull();
+    expect(jobFraction({ done: null, total: 100, unit: "bytes" })).toBeNull();
+    expect(jobFraction({ done: 1, total: 4, unit: "steps" })).toBeNull();
+  });
+
+  it("never draws as empty or as finished", () => {
+    expect(jobFraction({ done: 0, total: 1_000, unit: "bytes" })).toBe(0.02);
+    expect(jobFraction({ done: 1_000, total: 1_000, unit: "bytes" })).toBe(0.95);
+  });
+});
+
+describe("partialFraction over a PREALLOCATED part file", () => {
+  it("reads the bytes that arrived, not the blocks reserved for them", () => {
+    // The reported bug, with the real numbers off the reporter's disk: a 1.61GB
+    // whisper download 243MB in. `size` is already the full 1.61GB because the
+    // fetcher preallocates, so the old reading drew a card 95% full over a fetch
+    // 15% of the way through — and disagreed with the job row beside it.
+    const pulling = repo({
+      id: "mlx-community/whisper-large-v3-turbo",
+      partial: true,
+      size: 1_613_977_612,
+      fetchedBytes: 243_000_000,
+    });
+    expect(partialFraction(pulling, undefined, 1_613_977_612)).toBeCloseTo(0.15, 2);
+  });
+
+  it("agrees with the live job now that both count durable bytes", () => {
+    // Which is what makes taking the larger of the two sound: they are finally
+    // answers to one question, so the max is a monotonic guard rather than a
+    // choice between two different measurements.
+    const pulling = repo({
+      id: "org/half",
+      partial: true,
+      size: 1_000_000,
+      fetchedBytes: 250_000,
+    });
+    const idle = partialFraction(pulling, undefined, 1_000_000);
+    const live = partialFraction(
+      pulling,
+      { done: 250_000, total: 1_000_000, unit: "bytes" },
+      1_000_000,
+    );
+    expect(idle).toBeCloseTo(0.25);
+    expect(live).toBeCloseTo(0.25);
   });
 });

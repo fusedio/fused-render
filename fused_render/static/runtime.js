@@ -2682,7 +2682,7 @@
     // the option it does not have, not about the field it also got wrong —
     // "add a prompt" would "fix" the error and land the caller right back
     // in the silent-drop illusion this whole change exists to end.
-    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed"];
+    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed", "image"];
     const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress"], "fused.ai.image");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -2695,6 +2695,16 @@
     for (const key of imageKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
+    // `image`, when given, is page-relative exactly as `aiTranscribe`'s `path`
+    // is (RH-1): the page's own `?path=` becomes `body.base`, so
+    // "photo.png" means "beside this page" rather than "beside wherever the
+    // server was launched from". Sent unconditionally, same as there — a
+    // call with no `image` sends an unused `base` the server simply never
+    // reads, rather than this bridge having to know which calls need it.
+    // Decision 4: `image` is a single string here already, forwarded as-is —
+    // there is no array to normalise, on purpose.
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/image", body).then((started) => {
       const watcher = watchJob(started.jobId);
       // `step` is the cache-buster and nothing more: the preview file is ONE

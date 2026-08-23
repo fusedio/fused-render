@@ -6571,13 +6571,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   repo, or null): the task vocabulary and the capability vocabulary both live
   there, and a page deciding for itself needs a second copy of the mapping — the
   first version of it guessed text generation for every cached repo and offered
-  to load a dataset as a chat model. **Every task label is CLASSIFIED, never
-  merely absent**: it maps to a capability or it is listed as served by nothing
-  yet. A label nobody has thought about and a label that has been ruled out both
-  answer null, so they are indistinguishable from the page — which is how
-  "image + text to text" lost its Load button while Discover went on
-  recommending `gemma-3-12b-it-4bit`, a model carrying exactly that label, as a
-  chat model. (A vision-language checkpoint IS the causal LM the text runner
+  to load a dataset as a chat model. **Every task is CLASSIFIED, never merely
+  absent, and the answer has THREE states** (D433, `ai/tasks.py`): `supported`
+  (a capability serves it), `no-runner` (a task we recognise and do not serve —
+  video generation, speech synthesis, a robot policy — carrying a written
+  sentence the card prints), or `unknown` (a `pipeline_tag` this build has never
+  heard of, or no evidence at all). The vocabulary is the Hub's own, CLOSED and
+  vendored from `@huggingface/tasks`, and every evidence path emits a TAG rather
+  than prose so the card, the glossary and the Discover filter cannot come to
+  spell one concept two ways. Two states collapsed into one null is how "image +
+  text to text" lost its Load button while Discover went on recommending
+  `gemma-3-12b-it-4bit`, a model carrying exactly that label, as a chat model —
+  and, in the other direction, how a `reinforcement-learning` policy and a
+  cached diffusers VIDEO pipeline were rescued by format evidence into the text
+  and image capabilities respectively. **A format may only answer where the task
+  is `unknown`**: a task we have ruled out is never overruled by what the weight
+  files look like. (A vision-language checkpoint IS the causal LM the text runner
   loads when you only give it text; the image half goes unused until a runner
   wants it.) A **dot on the sidebar
   entry** whenever anything is resident, naming it on hover: gigabytes held by
@@ -6692,6 +6701,68 @@ an AI Models page that could say what was on disk but not what was *running*.
   cancel, a crash or a quit RESUMES instead of restarting, and it could not have
   fixed the state anyway — a quit mid-download produces the identical card with no
   cancel anywhere in it.
+- **AI-7g** **A partly downloaded repo with nothing to resume from is a card with
+  a Delete on it, and a folder the fetcher tidies after itself** (D437). Reported
+  from the field: a cancelled download left `models--…/refs/main`, one 40-byte
+  file, and not a blob. Every reading the page made of that was correct —
+  `partial` (no snapshot is exactly AI-7f's evidence), `40 B` (the folder), and
+  Unrecognised (no files, so no task, so no capability) — and the card was still a
+  dead end: its primary control was a DISABLED Download whose hover said to delete
+  it, and the delete was an unlabelled trash glyph third in a row of four. The
+  user deleted the folder in Finder.
+  So: where a resume is impossible — the repo's own `capability` is null AND the
+  curation cannot place the id either — the card's primary control becomes a
+  **labelled Delete** (the same target and the same confirm dialog as the trash: a
+  door to it, not a second way of deleting), and the partial tag's hover says the
+  folder holds bookkeeping rather than weights. And a weights-only fetch calls
+  `hub_cache.discard_empty_shell` on its way out, which removes the repo folder
+  **only** when it holds no snapshot AND no blob of any kind. That guard is what
+  keeps AI-5i intact: a part file is bytes a resume picks up, so a folder holding
+  one is never touched. It reads the FOLDER rather than the job's outcome, so the
+  call is a no-op after a successful fetch and the next attempt tidies a crash.
+- **AI-7h** **The card's own surface states the disk facts, and one hue per engine
+  states the identity** (D436). A complete repo wears the green wash and the search
+  results' own **✓ downloaded** chip in its footer — the SAME wash a loaded card
+  wears, which is set apart by its tinted border and 3px rail rather than by a
+  stronger tint, since a card either has an edge or it does not and that is a
+  distinction a reader can make without judging a shade; a partly downloaded one wears a
+  warning wash drawn as a hard-stop gradient at the fraction fetched — the live
+  job's `done/total` where there is one, else bytes-on-disk over the curation's
+  `size_gb`, clamped to 2–95%, and a FLAT wash where neither exists, because "some
+  of this is here and we cannot say how much" is a different sentence from "2% of
+  it is". Loaded keeps the border tint, the 3px rail and the badge, since memory
+  being spent right now must outrank disk being spent at some point.
+  A download **in flight** takes the same boundary in GREEN, at the job's own
+  progress, on all three cards that can be downloading — amber is a boundary that
+  has stopped moving and green is one that has not (D439). The partial fraction is
+  the **larger** of the two readings (`fetchedBytes` over the total, and the job's
+  `done/total`) — a monotonic guard, so the boundary cannot jump backwards when a
+  resume starts.
+  **The numerator is `fetchedBytes`, never `size`** (D440). A part file is
+  preallocated to the full length of the file being fetched, so `size` reports the
+  whole download the moment it starts; `fetchedBytes` is the scan total corrected
+  per part file from the sidecar cursors `flush()` writes only after fsyncing the
+  data — the accounting a resume itself trusts. A part file with no sidecar counts
+  zero, not its length (positive evidence only); hf's `.incomplete` is not
+  corrected, since that writer appends and its length already is its progress; and
+  a sidecar's own bytes are excluded, because a fraction made of bookkeeping is not
+  a fraction. `size` remains the figure the page PRINTS — allocated bytes are what
+  the folder costs.
+  A card whose pull is RUNNING also carries the download manager's ✕, on all three
+  card kinds: while a fetch holds files open the primary button is a disabled
+  "Downloading…" and the trash is disabled too, so without it a multi-GB download
+  started by mistake could not be stopped from the card that started it. The job's own total is the denominator
+  wherever there is one, and only when the job counts BYTES.
+  All of it is **background only** — no border, no rail, no radius, no padding —
+  because these cards sit in a horizontal carousel and a card that changed size on
+  a state change would shift its neighbours mid-scroll.
+  The engine tag gives up the accent (spoken for by the ✓ chip) for one
+  of the eight categorical hues (`--task-c0…c7`) per engine FAMILY, assigned by a
+  named table so the lime one is spent deliberately; a hardware-qualified label
+  resolves to its family's hue, and an unregistered family stays muted rather than
+  taking a colour this app cannot justify. Colour is never the only channel — the
+  tag says the engine's name, and the UNAVAILABLE state keeps its dashed border and
+  warning hue, where the state outranks the identity.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second
@@ -6880,6 +6951,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   timer: the directory grows only when renders happen, the caller is about to
   wait minutes anyway, and a live preview is rewritten every step so its age is
   what tells the two apart. The image itself is never swept at any age.
+- **AI-9f** **`fused.ai.image({image})` edits a base image instead of
+  rendering from the prompt alone — mflux-only, and the diffusers image
+  engine refuses the option rather than answering best-effort** (D432).
+  `image` is a page-relative PATH, resolved exactly as `/api/ai/transcribe`'s
+  `path` is (RH-1): the bridge injects `base` from the page's own `?path=`,
+  and the server 400s a missing or non-file result before a job row opens.
+  **One image, a single string** — an array or any other type is a 400, not
+  a guess: the underlying library's own argument is a list
+  (`image_paths=[...]`), but reading that as license to accept several here
+  would ship untested multi-reference conditioning inside an envelope that
+  was closed for exactly this reason (D413). **No `strength` option, and
+  none is coming as an "unexercised knob"**: the edit mechanism does not use
+  strength at all, so there is nothing to defer. **The reply's width and
+  height default from the BASE IMAGE**, not from the ordinary 1024² — fit the
+  longest side to 1024 without upscaling, snap down to a multiple of 16,
+  floor 256, aspect preserved — read off a small stdlib PNG/JPEG/WebP header
+  parser in `ai_runtime.py` (no Pillow in the app process), since the route
+  answers before the render and the reply has to describe the render that
+  will actually happen, same as every other field on this endpoint. **The
+  256 floor overrides "aspect preserved" on an extreme ratio** — a
+  4000x200 base (20:1) floors its short side to 256 and comes back
+  1024x256 (4:1) — a real, accepted consequence of the arithmetic as
+  written and confirmed by the gate run, not an oversight. An
+  edit's `steps`/`guidance` also default differently from a plain render (4
+  and 1.0, not 28 and 4.0) for the identical reason — an edit inheriting the
+  generate defaults silently would be a real quality regression. **Residency
+  is keyed by `(model_id, mode)`, inside one worker process**: the mflux
+  runner's edit class does not subclass its plain one (two independent
+  classes over the same snapshot, same weights, same latent space), and
+  cannot render with no reference image at all — it crashes inside the
+  denoiser rather than falling back — so the worker swaps between them
+  lazily, re-using the already-downloaded snapshot, only when a request's
+  mode differs from the one already resident. A caller who never passes
+  `image` stays on the untouched plain-generate path for the life of the
+  process. **mflux renders are not byte-reproducible at a fixed seed** —
+  true of the engine as it ships today, not a fact this feature introduces
+  — so nothing here, in a test or in D432, claims otherwise; any check on an
+  edit's output is visual, never a byte or hash comparison.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows
@@ -7839,7 +7948,210 @@ an AI Models page that could say what was on disk but not what was *running*.
   correctness**, since an auto-unloaded model's next call raises
   `ModelNotReady` and kicks a fresh load exactly like a cold first call, so the
   existing `model_loading` handling already covers it.
-- **AI-14** **A fifth capability, `text-to-video`, and the first with no
+- **AI-14** **A local model can be BENCHMARKED on demand: a fixed workload per
+  capability, run against one model, recorded forever with its throughput, its
+  memory, its load time and the machine it ran on** (D443, D444, D445). The AI
+  Models page's Benchmark tab (`/ai-models/benchmark`) draws one section per
+  capability listing that capability's downloaded models with a Run button;
+  `fused_render/ai/benchmark.py` performs the run and
+  `fused_render/ai/bench_store.py` keeps it at
+  `<home>/ai_benchmarks.json`. Three routes: `GET /api/ai/benchmark` (the
+  history plus this machine, unguarded like every read), `POST /api/ai/benchmark`
+  and `POST /api/ai/benchmark/delete` (both behind the D3 X-Fused guard — one
+  spends minutes of GPU time, the other destroys measurements that cannot be
+  recomputed for an app version that has moved on).
+  - **AI-14a** **The workload is FIXED per capability and is not a parameter.**
+    One frozen entry per capability constant in `WORKLOADS` — a 128-token decode
+    of one prompt, a 512² image, a 30-second decode, a batch of eight texts —
+    because the only thing that makes two numbers comparable is that the work was
+    identical. This is the deliberate opposite of AI-12's passive counters, which
+    summarise whatever real calls happened to pass through and therefore cannot
+    compare two models at all. The cost is equally deliberate: **a number exists
+    only where somebody pressed the button.**
+  - **AI-14b** **Every workload carries an integer `revision`, and bumping it
+    breaks comparability ON PURPOSE.** The revision is stored on every run, and
+    the page refuses to draw a delta across two different revisions rather than
+    quietly reporting a change that is the workload's and not the model's.
+    Changing any `params` value REQUIRES bumping the revision beside it.
+  - **AI-14c** **A metric that was not measured is `null`, never zero and never
+    derived.** Token counts are the worker's own (AI-3), so a runner that does not
+    report them leaves `tokensPerSecond` null rather than a rate computed from the
+    returned text — that would be a different tokenizer's answer wearing this
+    model's label. `loadSeconds` is null for an already-resident model, because
+    nothing was loaded and a zero would read as an impossibly fast load. The same
+    rule governs the machine block: `totalMemoryBytes` is null on Windows, where
+    the stdlib will not say. A consumer must render null as "—" and must never
+    treat a real `0` as an absence.
+  - **AI-14d** **The primary metric is per capability, and one of the four runs
+    the other way.** Text generation reports `tokensPerSecond` (with `ttftMs`
+    beside it, because a slow prefill and a slow decode feel completely different
+    and one figure hides the other); speech to text reports `realtimeFactor`;
+    embeddings report `textsPerSecond`; image generation reports
+    **`secondsPerStep`, where SMALLER is faster** — the step count is per-model by
+    design (`catalog.py`'s `defaults: {"steps": 4}` exists because a distilled
+    model runs at 4 where another needs 28), so a shared step count would be
+    either unfair or an out-of-memory, and the per-step figure is the only
+    comparable one. The step count is recorded on the run so the wall clock can be
+    reconstructed.
+  - **AI-14e** **Memory is `resident_bytes()` sampled from the worker after the
+    run, not a peak this app computes.** That figure already reconciles RSS
+    against a runner's own allocator and is GPU-pool aware on Apple Silicon.
+    Stated cost: a transient spike mid-generation is missed, because continuous
+    sampling would be new cross-platform machinery — and a polling thread reaching
+    into a worker mid-generation is a request waiting on a GPU call — for a
+    second-order number.
+  - **AI-14f** **Speech to text benchmarks a synthesized tone, generated per run
+    with the stdlib `wave` module, at `revision=1`.** Realtime factor is a
+    decode-throughput measure and does not need intelligible speech, and this
+    commits no binary asset to the repo. Stated risk: a model with
+    speech-dependent early-exit behaviour could look faster on a tone than on
+    real audio. **D447 replaced this with a real 30-second clip fetched from
+    our own mirror plus a word-error-rate accuracy metric, and was reverted
+    the same day**: the clip asset was never published, so every machine
+    failed every speech run with `SpeechClipUnavailable` — a live outage
+    worse than the risk the tone accepted. The clip design and the WER DP are
+    unchanged in D447's own text and ready to re-land (a `git revert` of the
+    revert) once a human publishes the asset; until then this is the accurate
+    description of what runs.
+  - **AI-14g** **One benchmark at a time per capability, enforced server-side,
+    and the request is held open for the whole run.** The supervisor holds one
+    resident model per capability, so a second concurrent run's load would evict
+    the first's model mid-measurement — the hazard `generate_transcript`'s
+    ordering comment already documents — and it is refused with a readable 409
+    rather than allowed to corrupt a figure somebody waited minutes for. Holding
+    the request open matches `POST /api/ai/image` and `POST /api/ai/transcribe`
+    rather than inventing a poll-a-benchmark-job protocol for a third long call;
+    progress still flows to a job row, so the page is not blind. A run also
+    refuses a capability with no workload (400) and a model this machine does not
+    hold (404): a button press must not become a silent multi-GB download.
+    **"Hold" is verified against the DISK, not against the curation** — the
+    catalog is consulted only to recognise `llamacpp-text`'s filename-shaped ids
+    (AI-5m), which resolve through `hub_cache.is_downloaded`, and a partly
+    downloaded repo is already absent from `cached_models()` (D424), so nothing
+    here can resume a stopped fetch inside a held-open request. The concurrency
+    guard is per capability and the UI reflects exactly that: a run on one
+    capability leaves the other three pressable.
+  - **AI-14h** **A run that FAILED is a result, and it is stored — a run that was
+    CANCELLED is neither stored NOR returned.** "This model OOMs on this laptop"
+    is exactly what somebody benchmarks to find out, so a raising runner is
+    recorded as `ok: false` with the message and appears in the history beside the
+    successful runs; its `metrics` is empty rather than a dict of nulls, and the
+    HTTP status describes the request while `ok` describes the model (a failed run
+    is a 200). But a cancel measured nothing, so it is a **distinct answer on the
+    wire** — `200 {"cancelled": true}` carrying no `run` at all, which the page
+    detects by the ABSENCE of `run` and never by matching an error string.
+    Reporting it as an `ok:false` record instead put a phantom
+    "Failed — cancelled" row in the page's history that became the model's latest
+    (so the delta and the summary compared against it) until a reload; and a 4xx
+    would have been wrong in the other direction, since the request was well
+    formed and reached a model. **Nobody pressed a ✕** — a benchmark has no cancel
+    control (AI-14j) — so the tab TELLS the user, in a muted note naming the
+    likely cause and saying nothing was recorded: several minutes of waiting
+    ending in silence is worse than either a result or an error.
+    An interpreter-level exit
+    (`KeyboardInterrupt`/`SystemExit` arriving on the threadpool thread) is
+    likewise not recorded, and is additionally re-raised rather than swallowed so
+    a Ctrl-C still stops the process. A generation the WORKER reports as cancelled
+    (`cancelled: true` on its own terminal frame, `ok: true` beside it — what
+    `fused.ai.cancel()` from any page produces on the shared worker) is the same
+    case: not a measurement, however many tokens it produced first.
+  - **AI-14i** **Bounded by a hard run cap, not by a ring, and the store hands
+    the page nothing it cannot render.** Unlike AI-12c's fixed bucket ring, runs
+    are individually meaningful and cannot be merged, so the store keeps the
+    newest `MAX_RUNS` (500) and drops the OLDEST on append — never the run whose
+    button was just pressed. A corrupt or absent file reads as no runs, never a
+    raise; so does an individual record lacking `id`, `metrics` or `workload`,
+    the three keys every reader dereferences. That check lives in `read()` rather
+    than in each consumer because a hand-edited file must not be able to take the
+    AI Models page down, and a per-reader guard is a rule the next reader has to
+    be told about. It is deliberately NOT a schema check — a metric added
+    server-side must never start deleting the runs recorded before it.
+  - **AI-14j** **A benchmark deliberately OPENS no download-manager job row,
+    returns no job id, and offers no ✕.** The tab shows its own in-tab spinner
+    for the duration, and that is the whole progress story.
+
+    "Opens none" rather than "has none", because there is one row it can
+    INHERIT and the difference is worth stating precisely. A speech benchmark
+    queued behind a real transcription goes through
+    `supervisor._await_turn`, whose queue report carries a title — so a row
+    genuinely is created under the private job id, and once it exists the
+    worker's otherwise-refused titleless ticks start landing on it. Two
+    mitigations, both inside the benchmark so that `ai/supervisor.py` is not
+    touched: the synthesized audio is named `fused-benchmark-tone.wav`, since that
+    basename is what titles the row and "benchmark.wav" could be a file the user
+    dropped in; and every long call ends with a TITLELESS terminal report, which
+    closes a row that exists and — because `jobs.upsert` refuses a first report
+    with no title — cannot bring one into being. **That report says what actually
+    happened**: `cancelled`, or `error` with the reason, or `done`, the shape
+    `supervisor.start_transcribe` uses. Reporting `done` unconditionally answered
+    the ✕ the user had just pressed with a green success (clearing
+    `cancel_requested` on the way, since `upsert` treats `done` as terminal) and
+    marked a dead worker's run as finished. So no benchmark leaves a row running,
+    none leaves one lying, and the ordinary path still creates none.
+
+    The reason is a namespace conflict, and it is worth stating in full because
+    it took three attempts to see: **server job rows are keyed by TITLE.** A
+    page's only route to one is `useCacheScan.ts`'s map of `job.title -> job`,
+    keyed that way deliberately — re-deriving the sanitised job id in TypeScript
+    would be a second copy of a Python rule — and `supervisor.load` already owns
+    the row titled exactly `model`. So both spellings of a benchmark row are
+    broken, in opposite directions:
+
+    * a DECORATED title ("Benchmark: <model>") is a row that exists, reports
+      correctly, and can be found by nobody — the tab's progress component
+      renders with no job for the whole multi-minute run, with no error anywhere;
+    * the BARE model id SHADOWS the load row (duplicate titles are
+      last-write-wins over an oldest-first list), which is strictly worse: the
+      download manager's ✕ then targets the LOAD, so the only cancel a user can
+      see stops the wrong thing, and the benchmark's own wait — which polls
+      nothing — runs to `_LOAD_TIMEOUT_S` (an hour) and records a phantom
+      `ok:false, "did not finish loading in time"`. The Playground, which takes
+      the first title match, also starts showing the benchmark's detail instead
+      of the load's byte counts.
+
+    A benchmark cannot own a row for a model that already has one, and this is a
+    design conflict rather than a bug to patch — three rounds of patching it
+    produced three new defects. **Nothing is lost by having none:** through the
+    expensive phase of a COLD run the load's own row is in the manager with real
+    byte counts, reported by the supervisor, and its ✕ cancels the load, which is
+    the honest thing for it to do. Do not re-add a benchmark row without first
+    changing how job rows are addressed.
+
+    Two consequences follow and are deliberate. The supervisor calls that require
+    a job id positionally are given a private one that names no row — non-empty,
+    because `worker_base.report`'s `job or JOB_ID` fallback would otherwise paint
+    benchmark ticks onto the model's load row, and minted through
+    `jobs.SERVER_ID_PREFIX` rather than by assembling the reserved prefix here.
+    And a benchmark has no cancel control of its own, so a run reported as
+    cancelled was stopped from OUTSIDE: `fused.ai.cancel()` from any page reaches
+    the same resident worker (one model per capability is shared), and so does the
+    ✕ on the load's own download row or on an inherited queue row. The client
+    cannot tell those apart, so the tab's muted note gives an EXAMPLE cause
+    rather than asserting one, and states that nothing was recorded — several
+    minutes of waiting must not end in silence.
+
+    **The wait watches the load's own record, not only whether it became ready.**
+    `_bring_up` answers both a failure and a ✕ by stamping `state="error"` on the
+    pending worker and deleting it from the table, so a readiness-only poll saw
+    nothing change and ran the full hour-long timeout — holding the request open,
+    holding the per-capability claim so every other benchmark of that capability
+    was refused for the hour, and then recording
+    `ok:false, "did not finish loading in time"`. A failed load is now the
+    loader's own sentence, immediately, and recorded (it IS a fact about this
+    model on this machine); a cancelled one is `Cancelled` and recorded nowhere;
+    an eviction says it was unloaded. The timeout remains only as the backstop for
+    a bring-up that neither succeeds nor reports.
+
+  - **AI-14k** **A benchmark that had to cold-load the model UNLOADS it when the
+    run ends** (D446) — success, a failed workload, a timeout, or an exception
+    mid-measurement alike, via a `try`/`finally` around the measure-and-read
+    phase — **and never unloads a model that was already resident.** The signal
+    is `_load_to_ready`'s own return value (`None` for warm, a float for cold),
+    reused rather than duplicated into a second flag. Placed AFTER
+    `_memory_and_device` reads the live worker, and `supervisor.unload`'s own
+    exception is logged and swallowed so a failed teardown cannot mask a
+    measurement's real error.
+- **AI-15** **A fifth capability, `text-to-video`, and the first with no
   "everywhere" runner.** `fused.ai.video({prompt, ...})` renders text to a
   short mp4 with audio through MiniMax H3, on `antirez/h3.c` — a standalone
   Metal binary this app bundles the way it bundles rclone (D103's pattern;
@@ -7855,7 +8167,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   takes no such parameter, so one is refused as an unknown option rather
   than silently accepted) and minus a live preview (none exists in this
   cut), plus `frames`: h3's own valid grid is `5 + 17n` (VERIFIED against
-  the built binary's `h3_align_frame_count`/`h3_valid_params`, see D429),
+  the built binary's `h3_align_frame_count`/`h3_valid_params`, see D449),
   so a requested count is rounded UP to the next grid point rather than
   merely clamped, and `steps`/canvas floors and ceilings ([2, 1000] steps,
   32-multiple canvas up to 768×1344 pixels) are the binary's own hard
@@ -7864,8 +8176,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   build never staged the binary) `catalog()` reports `default: null` for
   this capability for the first time, and every call answers 409 with the
   reason rather than ever reaching a render.
-- **AI-14a** **ffmpeg reaches the subprocess through the runner's OWN venv,
-  never through the app or the system PATH** (D430). h3 needs a real
+- **AI-15a** **ffmpeg reaches the subprocess through the runner's OWN venv,
+  never through the app or the system PATH** (D450). h3 needs a real
   ffmpeg EXECUTABLE to mux the rendered frames and the generated audio
   into one mp4 — dropping the mux step (`--frames-dir`, raw PPM frames)
   drops the audio, which is H3's headline feature — and `imageio-ffmpeg`'s
@@ -7873,7 +8185,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   at `imageio_ffmpeg.get_ffmpeg_exe()` before spawning h3, so the
   subprocess never has to find one on a PATH a supervisor child may not
   even have.
-- **AI-14b** **The curated catalog entry is metadata only, and stays that
+- **AI-15b** **The curated catalog entry is metadata only, and stays that
   way through every test in this build.** The real repo,
   `MiniMaxAI/MiniMax-H3` (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist — a
   401), is 498.5GB WHOLE: it carries both the FL2VA and Ref2VA checkpoints

@@ -208,6 +208,19 @@ class Worker:
     #: actually doing, and quitting the app during a first-ever runner build left
     #: gigabytes downloading with nothing left to cancel them.
     install_key: str = ""
+    #: Whether THIS worker is the one that claimed the install named above, as
+    #: opposed to one that joined an install already running. Set from
+    #: `envinstall.start`'s own `claimed`, never inferred, and always set and
+    #: cleared together with `install_key`.
+    #:
+    #: It words the ROW and nothing else (`_JOINED_INSTALL_DETAIL`). Whether the
+    #: install may be cancelled is NOT this question and must not be answered
+    #: from here: see `_install_waiters`. Ownership was tried as the condition
+    #: and is wrong in both directions — a joiner cancelling on the key tore
+    #: down a build others were waiting on, and an OWNER cancelling it killed
+    #: the joiners just as dead, because `envinstall.cancel` writes its error
+    #: into the shared record that every joiner is polling.
+    install_owned: bool = False
     state: str = "starting"  # starting | venv | downloading | loading | ready | error
     detail: str = ""
     error: str = ""
@@ -272,6 +285,29 @@ _fetch_workers: dict[str, Worker] = {}
 #: environment, presented back in a header. Tokens are dropped the moment the
 #: worker they belong to stops.
 _worker_tokens: set[str] = set()
+
+#: `envinstall` key -> how many bring-ups are currently WAITING on that install.
+#:
+#: The one fact that decides whether an install may be killed, and it cannot be
+#: read off any single worker. `envinstall.start` is single-flight per key: one
+#: caller spawns the detached `uv sync` and every later caller joins and polls
+#: the same record. `envinstall.cancel` kills that process AND writes
+#: `error: "the install was cancelled"` into the shared record — so a cancel
+#: issued by ANY worker, owner or joiner, is a cancel of every worker joined to
+#: it: the others' next poll reads the error and raises past the retry loop.
+#:
+#: Hence a refcount rather than an ownership flag. The install dies when the
+#: LAST worker waiting on it stops waiting, whatever the reason (a ✕, an
+#: eviction, `unload_all` at shutdown) — which keeps the property this
+#: cancellation exists for (nothing multi-GB outlives the app, and an install
+#: nobody is waiting for is not left running) without ever taking down work
+#: somebody else is still waiting on.
+#:
+#: A worker's share is held exactly while its `install_key` is set, so the key
+#: is both the state and the token: `_hold_install` takes the share, and
+#: `_release_install` gives it back once per worker however many times it is
+#: called. Read and written under `_lock`.
+_install_waiters: dict[str, int] = {}
 
 
 def is_worker_token(token: str) -> bool:
@@ -468,6 +504,84 @@ def _cleanup_files(worker: Worker) -> None:
             pass
 
 
+def _hold_install(worker: Worker, key: str, owned: bool) -> None:
+    """Record that `worker` is waiting on the install `key` names.
+
+    Under one lock with the key itself: the share and the record of holding it
+    are the same fact, and a `_terminate` from another thread landing between
+    two statements would either cancel an install with a waiter or leave a count
+    nobody ever gives back.
+    """
+    with _lock:
+        worker.install_key = key
+        worker.install_owned = owned
+        _install_waiters[key] = _install_waiters.get(key, 0) + 1
+
+
+def _release_install(worker: Worker, cancel: bool = True) -> None:
+    """`worker` stops waiting on its install; cancel it if nobody else is.
+
+    Idempotent, because two threads legitimately release the same worker: its
+    own bring-up thread on the way out of `_ensure_venv`, and `_terminate` from
+    an eviction or `unload_all`. The key is the token — cleared inside the lock,
+    so the second caller finds nothing to give back.
+
+    `cancel=False` is for leaving an install that is already OVER, built or
+    failed: there is no detached process to stop, and the record carries a
+    resolver error somebody has to read. (`envinstall.cancel` refuses a `done`
+    record anyway — it has no live pid to signal — so this is saying it rather
+    than relying on it.) Every other exit walks away from an install that is
+    still running, which is the case this whole mechanism is about.
+    """
+    with _lock:
+        key = worker.install_key
+        if not key:
+            return
+        worker.install_key = ""
+        worker.install_owned = False
+        left = _install_waiters.get(key, 1) - 1
+        if left > 0:
+            _install_waiters[key] = left
+            # Somebody else is still waiting on this install, so it lives —
+            # whatever happened to this worker. Cancelling here is what killed
+            # every joiner of a cancelled owner: `envinstall.cancel` writes its
+            # error into the record they are all polling.
+            return
+        _install_waiters.pop(key, None)
+    if not cancel:
+        return
+    from fused_render import envinstall
+
+    # Re-checked in a SECOND lock hold rather than folded into the one above,
+    # because `envinstall.cancel` signals a pid and writes a small file, and
+    # this module never holds `_lock` across I/O (see `ready_worker`,
+    # `_claim_for_removal`) — doing so here would serialise every table
+    # operation behind one process's local disk write.
+    #
+    # The gap that leaves is real: `_install_waiters.pop` above can be
+    # followed by an entirely fresh `_hold_install` for this same key — a
+    # `load()` that raced our departure, ran `envinstall.start()`, found the
+    # install still alive, and joined it — all before we reach the line
+    # below. `envinstall.cancel` has no way to tell that apart from an install
+    # nobody wants any more (see its docstring: it only refuses an already-
+    # DONE record), so calling it unconditionally is what let a cancel-then-
+    # reload kill the very install the reload just joined.
+    #
+    # `key in _install_waiters` is that check: `_hold_install` re-adds `key`
+    # the instant it registers a new waiter, so its presence here means a
+    # fresh claim already exists and this worker's departure is no longer the
+    # last word on the install's fate — cancelling would be undoing someone
+    # else's join, exactly the bug this closes. This does not shrink the
+    # window to zero (a rehold landing in the few bytecodes between releasing
+    # the lock above and re-acquiring it here would still slip through), but
+    # it closes the one that mattered in practice: an entire `envinstall.start`
+    # round trip's worth of time, not a handful of instructions.
+    with _lock:
+        if key in _install_waiters:
+            return
+    envinstall.cancel(key)
+
+
 def _terminate(worker: Worker) -> None:
     """Ask the worker to quit, then make sure of it.
 
@@ -479,11 +593,13 @@ def _terminate(worker: Worker) -> None:
     # thing this worker is doing: there is no process of ours to kill yet, and
     # the `uv sync` pulling several GB is detached, so it survives both the
     # thread and the app unless it is cancelled by name.
-    if worker.install_key:
-        from fused_render import envinstall
-
-        envinstall.cancel(worker.install_key)
-        worker.install_key = ""
+    # Cancelled only once nothing is waiting on it any more (see
+    # `_install_waiters`): this used to cancel whatever key was recorded, so
+    # shutting one worker down killed a build another worker of the same runner
+    # was joined to. `unload_all` terminates every worker, so the last one
+    # through here still ends the install — which is the property that matters at
+    # shutdown.
+    _release_install(worker)
     if worker.port:
         try:
             _worker_request(worker, "/quit", body={}, timeout=2.0).close()
@@ -791,23 +907,46 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         # exists to hand the caller the right one — this is that caller.
         started = envinstall.start(runner.folder)
         key = started.get("key") or envinstall.venv_key_for(runner.folder)
-        # Published on the worker so `_terminate` can cancel it. During this
-        # phase the install IS the work, and it belongs to a detached process
-        # that outlives us unless something says otherwise.
-        worker.install_key = key
-        while True:
-            if worker.stopping or _cancel_requested(job):
-                envinstall.cancel(key)
-                raise SupervisorError("cancelled")
-            record = envinstall.progress(key) or {}
-            if record.get("done"):
-                if record.get("error"):
-                    raise SupervisorError(str(record["error"]))
-                break
-            _report(job,
-                    detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
-            time.sleep(0.5)
-        worker.install_key = ""
+        # Published on the worker — and counted — so that stopping this bring-up
+        # can stop the install when it is the only thing left waiting on it, and
+        # cannot when it is not (`_install_waiters`). During this phase the
+        # install IS the work, and it belongs to a detached process that outlives
+        # us unless something says otherwise.
+        _hold_install(worker, key, bool(started.get("claimed")))
+        # Whether the install is still going when this worker walks away from
+        # it, which decides whether walking away means cancelling it. An
+        # install that has finished — built OR failed — has nothing to stop.
+        still_running = True
+        try:
+            while True:
+                if worker.stopping or _cancel_requested(job):
+                    # This row stops, and the install stops only if nobody else
+                    # is waiting on it — `finally` below, so a raise from
+                    # anywhere in this loop settles the count exactly once.
+                    raise SupervisorError("cancelled")
+                record = envinstall.progress(key) or {}
+                if record.get("done"):
+                    still_running = False
+                    if record.get("error"):
+                        # A GENUINE build failure — a resolver error, a missing
+                        # wheel — and it is reported verbatim rather than
+                        # retried, which is the whole point of PY-18. It can no
+                        # longer be a cancellation somebody else's ✕ wrote into
+                        # this shared record, because a cancel now only happens
+                        # once this is the last waiter (`_release_install`).
+                        raise SupervisorError(str(record["error"]))
+                    break
+                # Two different things happen in this loop and they have to READ
+                # differently: the owner is building the environment, the joiner
+                # is parked behind somebody else's build. See
+                # `_JOINED_INSTALL_DETAIL`.
+                _report(job, detail=(
+                    f"Preparing {runner.short} — {record.get('stage') or 'installing'}…"
+                    if worker.install_owned
+                    else _JOINED_INSTALL_DETAIL.format(short=runner.short)))
+                time.sleep(0.5)
+        finally:
+            _release_install(worker, cancel=still_running)
         if envinstall.is_installed(runner.folder):
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")
@@ -965,6 +1104,21 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
             _downloads.pop(model, None)
             _fetch_workers.pop(model, None)
         _cleanup_files(stub)
+        # A fetch that stopped before its first file leaves a cache folder with
+        # nothing in it but bookkeeping, and the AI Models page then has to draw
+        # that folder as a partly downloaded model (D437) — it cannot tell "no snapshot
+        # yet" from "no snapshot ever" any other way (D424). So the thread that
+        # made the folder tidies it on its way out. Reads the FOLDER, never this
+        # function's outcome: a successful fetch has a snapshot and the call is a
+        # no-op, and a cancel with real bytes in it keeps every one of them
+        # because that is what a resume picks up (D275).
+        #
+        # Imported at call time, the same way `hub_cache` imports THIS module
+        # inside `_require_not_in_use`: the two modules ask each other one
+        # question apiece, and neither may need the other to be importable.
+        from fused_render.ai import hub_cache
+
+        hub_cache.discard_empty_shell(model)
 
 
 def _runner_or_raise(capability: str) -> registry.Runner:
@@ -1130,6 +1284,17 @@ def start_image(model: str, request: dict, job: str) -> None:
 
 #: What a queued transcription's row says while it waits.
 _QUEUED_DETAIL = "Queued behind another transcription…"
+
+#: What a download's row says while it waits for a runner environment ANOTHER
+#: download is building (`_ensure_venv`, and only for a joiner —
+#: `Worker.install_owned` is False). Same argument as `_QUEUED_DETAIL` above: a
+#: wait a person can see is a wait the row has to name. Both rows used to read
+#: "Preparing <runner> — <stage>…", so a download parked behind someone else's
+#: multi-GB `uv sync` looked exactly like the one doing the work — and exactly
+#: like one that had died. There is deliberately no percentage with it: nothing
+#: here knows how far another worker's install has got, and inventing a number
+#: is what `ModelProgress` refuses to do for precisely this phase.
+_JOINED_INSTALL_DETAIL = "Waiting for the {short} environment — another download is building it…"
 
 
 def transcribe_row_fields(title: str) -> dict:
@@ -2095,3 +2260,6 @@ def reset() -> None:
     with _lock:
         _workers.clear()
         _downloads.clear()
+        # A stray count would silently disable the next cancel — `_release_install`
+        # would think somebody was still waiting on a key nobody holds.
+        _install_waiters.clear()

@@ -87,6 +87,26 @@
   --warning-soft: #dfb054;
   --warning-strong: #e0a33e;
 
+  /* Categorical series colours, for a chart that plots several things at once
+     (the AI Models Benchmark tab's one line per model, AI-14). The first
+     palette here that is not a STATUS: --success/--warning/--error say what
+     something means, and a chart line means nothing but "this one, not that
+     one". So these are chosen for hue separation at hairline width rather than
+     for sentiment — blue/orange before red/green, so the two commonest lines
+     stay distinguishable under the commonest colour-vision deficiencies — and
+     a consumer must never read meaning into which index a series got.
+
+     Six is the count, and it is a judgement rather than a limit of the palette:
+     past about six a reader stops matching a line to a legend by colour, so a
+     seventh series is better served by reusing a hue (the legend still names
+     it) than by a hue nobody can tell from its neighbour. */
+  --series-1: #6aa8ff;
+  --series-2: #e0a33e;
+  --series-3: #3fca6b;
+  --series-4: #cf8bf3;
+  --series-5: #4fd1c5;
+  --series-6: #ff8f8f;
+
   /* Full-page failure card (.status-message.error). */
   --error-page-bg: rgba(30, 5, 5, 0.9);
   --error-page-border: #c0392b;
@@ -199,6 +219,19 @@
   --task-c4: #fbbf24;
   --task-c5: #fb923c;
   --task-c6: #f472b6;
+  /* THE SCRIM SET, and the one set that is deliberately identical in both
+     palettes: these paint controls that sit on ARBITRARY PIXELS — a generated
+     image, a photo, a map tile — where the surface underneath is not ours and
+     the app's theme says nothing about it. White-on-dark-wash is legible over
+     anything; a token that flipped with the theme would put light ink on a
+     light photo half the time. Named tokens rather than literals so the rule
+     "every colour comes from the palette" stays a rule with no exceptions to
+     remember (they are what test_theme.py checks for). */
+  --scrim-fg: #ffffff;
+  --scrim-bg: rgba(0, 0, 0, 0.55);
+  --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+  --scrim-border: rgba(255, 255, 255, 0.25);
+  --scrim-border-hover: rgba(255, 255, 255, 0.5);
   --task-c7: #a78bfa;
 }
 
@@ -254,6 +287,17 @@
   --warning-soft: #8a6410;
   --warning-strong: #9a6a10;
 
+  /* The same six hues, darkened to clear contrast against white as a 2px
+     hairline and as a 10px legend label. Same hue ORDER, so a chart does not
+     re-colour its lines when the theme flips — a reader who learned "the blue
+     one is the 4-bit model" keeps that. */
+  --series-1: #1f5fbf;
+  --series-2: #8a5a00;
+  --series-3: #1a7f37;
+  --series-4: #7a3fa8;
+  --series-5: #0f7c74;
+  --series-6: #b03030;
+
   --error-page-bg: rgba(255, 236, 236, 0.95);
   --error-page-border: #c0392b;
   --error-page-fg: #7f1d1d;
@@ -304,5 +348,12 @@
   --task-c5: #c2410c;
   --task-c6: #be185d;
   --task-c7: #6d28d9;
+  /* Identical to the dark palette on purpose — see the scrim set above. The
+     surface under these is a photograph, not the page. */
+  --scrim-fg: #ffffff;
+  --scrim-bg: rgba(0, 0, 0, 0.55);
+  --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+  --scrim-border: rgba(255, 255, 255, 0.25);
+  --scrim-border-hover: rgba(255, 255, 255, 0.5);
 }
 

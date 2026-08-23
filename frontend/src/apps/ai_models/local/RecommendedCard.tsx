@@ -27,9 +27,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { hubModelUrl } from "./hub";
 import {
   PARTIAL_TAG,
+  jobFraction,
   type ResultDisk,
   type SectionRunner,
 } from "@apps/ai_models/lib/aiModelGroups";
+import { engineHueStyle } from "@apps/ai_models/lib/engines";
 import { gateChrome } from "@apps/ai_models/lib/hubSearchView";
 import {
   hubSizeLabel,
@@ -37,10 +39,12 @@ import {
   knownTotalSize,
   lookupTotalSize,
 } from "@apps/ai_models/lib/hubSize";
+import { CancelButton } from "@apps/ai_models/shared/CancelButton";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
+import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { type AiCatalogModel, type HubModel } from "@platform/lib/api";
 import { timeAgo } from "@platform/lib/format";
-import { isRunning, type Job } from "@platform/lib/jobs";
+import { type Job } from "@platform/lib/jobs";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 
 /** The card every model on this page that is not a cache repo is drawn as.
@@ -52,6 +56,7 @@ import { navigate, urlForFsPath } from "@platform/lib/router";
  */
 function ModelCard({
   variant,
+  style,
   hoverNote,
   cardRef,
   name,
@@ -62,8 +67,14 @@ function ModelCard({
   meta,
   actions,
 }: {
-  /** The one class that differs — `.am-reccard` or `.am-hubcard`. */
+  /** The classes that differ — `.am-reccard` or `.am-hubcard`, plus whatever
+   *  DISK state the caller is drawing (`am-card-have`, `am-card-part`), which is
+   *  the same wash the Local view's own cards wear (D436). */
   variant: string;
+  /** Inline custom properties for the classes above — today only `--am-part`,
+   *  the fraction a download-in-flight wash is drawn to, which is a per-card
+   *  NUMBER and so the one thing about these states a stylesheet cannot know. */
+  style?: Record<string, string>;
   /** The card's own hover, where there is one thing to say about the whole of
    *  it. Rendered as a title rather than as text because these cards sit in a
    *  scrolling row: a sentence per card would set every card's height from the
@@ -86,7 +97,12 @@ function ModelCard({
   actions?: ReactNode;
 }) {
   return (
-    <div className={`cc-mdcard am-card ${variant}`} title={hoverNote} ref={cardRef}>
+    <div
+      className={`cc-mdcard am-card ${variant}`}
+      style={style}
+      title={hoverNote}
+      ref={cardRef}
+    >
       <div className="cc-mdcard-head">
         <a
           className="cc-mdcard-name am-card-name"
@@ -141,7 +157,14 @@ function EngineTag({
   if (!runner?.shortLabel) return null;
   return (
     <span
-      className={"am-card-engine" + (runner.available ? "" : " am-card-engine-off")}
+      className={
+        "am-card-engine" + (runner.available ? " am-card-engine-family" : " am-card-engine-off")
+      }
+      /* Same hue table as the disk card's tag (D436), resolved from the SHORT
+         label here because that is all a card for a model nobody has downloaded
+         has — `engineHue` matches the family prefix inside it. One engine, one
+         colour, whichever card the reader is looking at. */
+      style={engineHueStyle(runner.shortLabel)}
       tabIndex={runner.available ? undefined : 0}
       aria-label={
         runner.available
@@ -158,37 +181,6 @@ function EngineTag({
     >
       {runner.shortLabel}
     </span>
-  );
-}
-
-/** The download manager's own ✕, or nothing.
- *
- *  Its rule and not a looser one: a running job its reporter never marked
- *  cancellable gets no ✕ rather than a dead one, and a cancel already asked for
- *  is not asked again.
- */
-function CancelButton({
-  id,
-  job,
-  onCancel,
-}: {
-  id: string;
-  job: Job | undefined;
-  onCancel: (job: Job) => void;
-}) {
-  const cancellable =
-    job && isRunning(job) && job.cancellable && !job.cancel_requested && !job.stalled ? job : null;
-  if (!cancellable) return null;
-  return (
-    <button
-      type="button"
-      className="cc-iconbtn"
-      title={`Stop downloading ${id}`}
-      aria-label={`Stop downloading ${id}`}
-      onClick={() => onCancel(cancellable)}
-    >
-      ✕
-    </button>
   );
 }
 
@@ -212,9 +204,24 @@ export function RecommendedCard({
   onDownload: () => void;
   onCancel: (job: Job) => void;
 }) {
+  // One figure wherever this card names a size, and it never understates: the
+  // catalog's approximate constant, or the running pull's own total once that
+  // total is LARGER (see `shared/modelSize` for why larger and not merely
+  // newer). A card showing both at once — `~64 GB` beside `68 GB / 68 GB` — read
+  // as a download overrunning its own size.
+  const size = modelSizeHint(model.size_gb, job);
+  // How far the pull has got, or null when there is nothing to draw a boundary
+  // at — no job yet, or a stage that reports no byte total.
+  const arriving = jobFraction(job);
   return (
     <ModelCard
-      variant="am-reccard"
+      /* The green wash tracks the download while it runs — the same drawing a
+         partly downloaded repo card wears, and the reason this card needs it is
+         the same: the bar in the progress row is 3px of a card the reader is
+         watching from across a carousel. Nothing when the job reports no total
+         (a venv build), where an invented boundary would read as stalled. */
+      variant={"am-reccard" + (arriving === null ? "" : " am-card-arriving")}
+      style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
       /* The curation's "why this one", on the card rather than in it. */
       hoverNote={model.note ?? undefined}
       name={{
@@ -227,13 +234,18 @@ export function RecommendedCard({
       }}
       size={{
         /* Same slot, same figure, one difference: this one is what the download
-           WILL cost, and an unmeasured size is a dash rather than a guess —
-           nobody plans a multi-GB fetch around a number somebody invented. */
-        text: model.size_gb === null ? "—" : `${model.size_gb} GB`,
+           WILL cost — the catalog's approximate constant, or the fetcher's own
+           total once the pull reports one bigger than it, which is a number the
+           progress row below is counting towards. An unmeasured size is a dash
+           rather than a guess: nobody plans a multi-GB fetch around an invented
+           number. */
+        text: modelSizeLabel(model.size_gb, job),
         title:
-          model.size_gb === null
+          size === null
             ? "Nobody has recorded this one's download size yet."
-            : `About ${model.size_gb} GB to download`,
+            : size.approx
+              ? `About ${size.text} to download`
+              : `${size.text} — the size this download itself is reporting, which is more than the recorded estimate`,
       }}
       /* A recommendation for a capability nothing can serve is still worth
          showing (hiding it leaves somebody hunting for a feature that never
@@ -258,7 +270,9 @@ export function RecommendedCard({
             disabled={!runner?.available}
             title={
               runner?.available
-                ? `Download ${model.id}${model.size_gb === null ? "" : ` (~${model.size_gb} GB)`}`
+                ? `Download ${model.id}${
+                    size === null ? "" : ` (${size.approx ? "~" : ""}${size.text})`
+                  }`
                 : `${model.id} cannot be loaded here: ${runner?.reason ?? "no engine serves this capability on this machine"}.`
             }
             aria-label={
@@ -383,6 +397,14 @@ export function HubResultCard({
     };
   }, [model.id, wantsTotal]);
 
+  // The Hub's own measurement, and deliberately NOT replaced by a running
+  // pull's own total the way a recommended card's is (`shared/modelSize`). The
+  // size SORT ranks these cards by `hubSizeBytes`, which is defined to match
+  // exactly what this cell shows — "the number beside a name is the only
+  // evidence a reader has that a size sort worked" (`hubSize.ts`) — so a card
+  // that swapped in a different figure mid-download would sit visibly out of
+  // order in a size-sorted grid. One measurement per column beats a
+  // more-accurate one on the row that happens to be busy.
   const size = hubSizeLabel(model, total);
   // What the Hub asks before it will hand this one over, when it asks anything.
   // Never on a copy we already hold: a gate is a condition on GETTING the model.
@@ -400,10 +422,30 @@ export function HubResultCard({
   // a reason that is not about the model. A runner it names as UNAVAILABLE is a
   // refusal, for the recommended card's reason exactly.
   const loadable = !runner || runner.available;
+  // Same wash as the recommended card and the disk card: a download in flight
+  // fills the card it is filling.
+  const arriving = jobFraction(job);
 
   return (
     <ModelCard
-      variant="am-hubcard"
+      /* The same two washes the Local view's cards wear, for the same two
+         states (D436) — a search result IS a card about this disk once the
+         model is on it, and two colour grammars for one fact would be two
+         answers to "do I have this". No fraction on this side: the search reply
+         says "partial" and nothing more, and this card has no folder to
+         measure, so the wash is flat — which is the honest drawing of "some of
+         it is here, we cannot say how much". */
+      variant={
+        "am-hubcard" +
+        (arriving !== null
+          ? " am-card-arriving"
+          : disk.state === "downloaded"
+            ? " am-card-have"
+            : disk.state === "partial"
+              ? " am-card-part am-card-part-unknown"
+              : "")
+      }
+      style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
       cardRef={card}
       name={{
         href: model.url,

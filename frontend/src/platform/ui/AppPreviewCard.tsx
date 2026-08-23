@@ -39,8 +39,14 @@ import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
-import { embedUrlForFsPath, withPreviewFlag } from "@platform/lib/router";
-import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
+import { embedUrlForFsPath, navigateUrl, withPreviewFlag } from "@platform/lib/router";
+import {
+  appRecency,
+  hrefFor,
+  isBrowserHandledClick,
+  onAppCardClick,
+  openTargetFor,
+} from "@platform/lib/appEntry";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
 import { timeAgo } from "@platform/lib/format";
@@ -69,6 +75,7 @@ export function AppPreviewCard({
   app,
   onContextMenu,
   badge,
+  href,
 }: {
   app: AppInfo;
   // Right-click: the card only forwards the event and its own app — the menu
@@ -77,6 +84,12 @@ export function AppPreviewCard({
   // Extra word in the meta row (e.g. "cloned" on a showcase app the user has
   // copied into Fused/local). Decoration only — the card behaves the same.
   badge?: string;
+  // Overrides where the card LANDS — an entry-page URL that carries a query
+  // string (the Playground's model handoff, D442). hrefFor deliberately
+  // carries none, so a caller with params to hand over supplies the whole
+  // URL; left-click then goes through navigateUrl instead of openApp, and
+  // the browser gestures use the same href, so the two still can't disagree.
+  href?: string;
 }) {
   const title = app.title || app.name;
   // The same timestamp the grid SORTS by (last opened, modified standing in) —
@@ -156,8 +169,13 @@ export function AppPreviewCard({
   return (
     <a
       className="app-pcard"
-      href={hrefFor(app)}
-      onClick={(e) => onAppCardClick(e, app)}
+      href={href ?? hrefFor(app)}
+      onClick={(e) => {
+        if (!href) return onAppCardClick(e, app);
+        if (e.defaultPrevented || isBrowserHandledClick(e)) return;
+        e.preventDefault();
+        navigateUrl(href, { isDir: false });
+      }}
       // On the <a>, not on the body: the thumbnail's pointer-events shield sits
       // INSIDE this element, so a right-click over the preview bubbles up here
       // (the iframe itself never sees it) and one handler covers the whole card.

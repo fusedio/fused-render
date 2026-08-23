@@ -166,8 +166,16 @@ class FakeModel:
         return self.image
 
 
-def make_mflux(model=None):
-    """The `mflux` package tree the worker imports, as modules in sys.modules."""
+def make_mflux(model=None, edit_model=None):
+    """The `mflux` package tree the worker imports, as modules in sys.modules.
+
+    `edit_model` is optional and builds the SECOND tree the worker reads for
+    `Flux2KleinEdit` — a separate module, `mflux.models.flux2.variants.edit.
+    flux2_klein_edit`, matching Gate A's finding that the edit class is not a
+    subclass and lives one level deeper than the plain one. Most tests never
+    touch an edit request, so leaving this out (the default) does not stub a
+    class those tests have no use for.
+    """
     made = model if model is not None else FakeModel()
 
     class Flux2Klein:
@@ -191,7 +199,25 @@ def make_mflux(model=None):
 
     config_mod = types.ModuleType("mflux.models.common.config")
     config_mod.ModelConfig = ModelConfig
-    return made, variants, config_mod
+
+    edit_module = None
+    if edit_model is not None:
+        class Flux2KleinEdit:
+            def __init__(self, model_config=None, model_path=None, **kwargs):
+                edit_model.built = {"model_config": model_config,
+                                    "model_path": model_path, **kwargs}
+                self.__dict__.update(edit_model.__dict__)
+                self._real = edit_model
+                edit_model.instance = self
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        edit_module = types.ModuleType(
+            "mflux.models.flux2.variants.edit.flux2_klein_edit")
+        edit_module.Flux2KleinEdit = Flux2KleinEdit
+
+    return made, variants, config_mod, edit_module
 
 
 class FakeMlxCore(types.ModuleType):
@@ -234,17 +260,23 @@ class FakeMlxCore(types.ModuleType):
         return 0
 
 
-def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None):
+def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None,
+                edit_model=None):
     """A fresh import of the mflux worker against the fakes.
 
     `monkeypatch.setitem` rather than a save/restore, because this runner
     imports mflux INSIDE the functions that need it — a stub withdrawn after the
     import would be gone by the time anything looked for it.
+
+    `edit_model`, passed through to `make_mflux`, registers the edit variant's
+    OWN submodule tree (`mflux.models.flux2.variants.edit.flux2_klein_edit`) —
+    a real deeper import path, not a string-derived one, matching what
+    `formats.MFLUX_EDIT_VARIANTS` actually names.
     """
     made = None
     monkeypatch.setitem(sys.modules, "worker_base", base)
     if with_mflux:
-        made, variants, config_mod = make_mflux(model)
+        made, variants, config_mod, edit_module = make_mflux(model, edit_model)
         for name, module in (
             ("mflux", types.ModuleType("mflux")),
             ("mflux.models", types.ModuleType("mflux.models")),
@@ -254,6 +286,13 @@ def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None):
             ("mflux.models.common.config", config_mod),
         ):
             monkeypatch.setitem(sys.modules, name, module)
+        if edit_module is not None:
+            for name, module in (
+                ("mflux.models.flux2.variants.edit",
+                 types.ModuleType("mflux.models.flux2.variants.edit")),
+                ("mflux.models.flux2.variants.edit.flux2_klein_edit", edit_module),
+            ):
+                monkeypatch.setitem(sys.modules, name, module)
     # `mlx.core` is no longer only `memory()`'s business: `load` and `generate`
     # both pin this process's shared streams (`_pin_stream`), so a render test
     # that left it out would be testing an import that cannot happen in
@@ -354,6 +393,204 @@ def test_generating_with_no_model_loaded_says_so(monkeypatch, base, tmp_path):
     worker, _ = load_worker(monkeypatch, base)
     with pytest.raises(RuntimeError):
         worker.generate(_request(tmp_path))
+
+
+# -- editing: a second variant class, keyed by mode (Decision 3/4) --------------
+
+
+def test_an_image_REQUEST_reaches_the_edit_variant_as_image_paths(
+        monkeypatch, base, tmp_path):
+    """The library's own shape (Gate A/D): `Flux2KleinEdit.generate_image`
+    takes `image_paths`, a LIST, even though `fused.ai.image({image})` only
+    ever carries one path. `image_path`/`image_strength` — the PLAIN
+    variant's inert img2img argument — must never appear."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path, image="/base/photo.png"))
+
+    assert edit_model.calls[0]["image_paths"] == ["/base/photo.png"]
+    assert "image_path" not in edit_model.calls[0]
+    assert "image_strength" not in edit_model.calls[0]
+    # The plain variant's own `generate_image` was never called at all.
+    assert model.calls == []
+
+
+def test_a_request_with_NO_image_never_touches_the_edit_variant(
+        monkeypatch, base, tmp_path):
+    """Decision 3's other half: a caller who never passes `image` must get
+    the untouched `Flux2Klein` path, not merely the same PIXELS — this pins
+    that the edit class is never even built for an ordinary render."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))
+
+    assert model.calls, "the plain variant should have rendered"
+    assert edit_model.calls == []
+    # `Flux2KleinEdit` was never even CONSTRUCTED — `built` is set only by
+    # its `__init__` (see `make_mflux`) — not merely never called.
+    assert not hasattr(edit_model, "built")
+
+
+def test_a_MODE_ALTERNATION_swaps_the_resident_model_exactly_once_each_way(
+        monkeypatch, base, tmp_path):
+    """Gate B: one process cannot serve both modes off one model object, so a
+    request whose mode differs from the resident one triggers exactly one
+    rebuild — and going back is the same swap in the other direction, not a
+    special case."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))                       # generate
+    worker.generate(_request(tmp_path, image="/base/a.png"))  # -> edit
+    worker.generate(_request(tmp_path, image="/base/b.png"))  # stays edit
+    worker.generate(_request(tmp_path))                       # -> generate
+
+    # Each variant class was CONSTRUCTED exactly twice: once at `load()` /
+    # the first swap into it, and once for the swap back — never once per
+    # request, which is what "exactly one rebuild per alternation" means.
+    assert len(model.calls) == 2      # the two plain-mode requests
+    assert len(edit_model.calls) == 2  # the two edit-mode requests
+    # A mode swap must be INVISIBLE to `fused.ai.models.list()` — it must
+    # not read as the model being unloaded and replaced. `_ensure_mode`
+    # calls neither `worker_base.set_state` nor anything else `base` would
+    # record, so the only state this fake ever saw is `load()`'s own.
+    assert base.state == {"device": "mps"}
+
+
+def test_a_mode_swap_never_touches_the_network(monkeypatch, base, tmp_path):
+    """`_build_variant` reuses the SAME snapshot directory `load()` already
+    downloaded — a mode swap must not re-run `download()`, since the bytes
+    are already on disk and a second fetch would be an unreported download
+    the user watches as a stalled render."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    snap = snapshot(tmp_path)
+    worker.load(MODEL, snap)
+
+    worker.generate(_request(tmp_path, image="/base/photo.png"))
+
+    assert edit_model.built["model_path"] == snap
+
+
+def test_omitting_image_paths_would_be_the_library_crash_gate_B_found(
+        monkeypatch, base, tmp_path):
+    """Documents WHY residency is mode-keyed rather than "just build the edit
+    class and pass nothing" — Gate B: `Flux2KleinEdit.generate_image` with no
+    `image_paths` crashes inside mflux's own denoiser (`image_latents=None`
+    reaching `mx.concatenate`). This runner never calls it that way — `image`
+    absent means `mode == "generate"`, the plain variant — which is the
+    contract this file's other edit tests already pin; this test exists so
+    the reason is written down beside them rather than only in the handoff."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))  # no `image` -> never reaches the edit class
+
+    assert edit_model.calls == []
+
+
+def test_editing_an_UNKNOWN_edit_model_is_refused_with_a_sentence(
+        monkeypatch, base, tmp_path):
+    """A model present in `_VARIANTS` (so plain generate loaded fine) but
+    absent from `formats.MFLUX_EDIT_VARIANTS` must not crash into an
+    unrelated `AttributeError` — every model this build knows about today
+    has both rows, but a future one might not, and the failure mode should
+    read like every other "this runner doesn't know how" sentence."""
+    worker, model = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    # `monkeypatch.delitem`, not a bare `.clear()` — the real, PROCESS-WIDE
+    # `formats` module worker.py imports off `sys.path` (see the module's own
+    # docstring), so a bare mutation here would leak into every other test
+    # that imports it in this session, this file's own edit tests included.
+    monkeypatch.delitem(worker.formats.MFLUX_EDIT_VARIANTS, MODEL)
+
+    with pytest.raises(RuntimeError, match="edit an image with"):
+        worker.generate(_request(tmp_path, image="/base/photo.png"))
+
+
+def test_a_failed_edit_swap_leaves_the_resident_model_INTACT(
+        monkeypatch, base, tmp_path):
+    """A model absent from the edit table is refused BEFORE anything is
+    dropped (`_ensure_mode`'s own validate-before-drop ordering) — a
+    request that turns out to be refused must not be licence to break the
+    next one. The worker must still answer a PLAIN generate afterward,
+    exactly as if the refused request had never arrived."""
+    worker, model = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    monkeypatch.delitem(worker.formats.MFLUX_EDIT_VARIANTS, MODEL)
+
+    with pytest.raises(RuntimeError, match="edit an image with"):
+        worker.generate(_request(tmp_path, image="/base/photo.png"))
+
+    worker.generate(_request(tmp_path))
+    assert model.calls, "the plain variant should still be resident and usable"
+
+
+def test_a_mode_swap_drops_the_OLD_model_before_building_the_new_one(
+        monkeypatch, base, tmp_path):
+    """Peak memory during a swap must never hold both variants at once —
+    `_build_variant` constructs every weight tensor of the incoming variant
+    before `_ensure_mode` assigns it anywhere, so `_loaded["model"]` has to
+    already be `None` by the time that construction starts, or this process
+    holds both resident on exactly the 16GB Macs this runner targets."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    seen_at_build = []
+    real_build = worker._build_variant
+
+    def spy(model_id, fetched, mode):
+        seen_at_build.append(worker._loaded.get("model"))
+        return real_build(model_id, fetched, mode)
+
+    monkeypatch.setattr(worker, "_build_variant", spy)
+
+    worker.generate(_request(tmp_path, image="/base/a.png"))
+
+    assert seen_at_build == [None], (
+        "the outgoing model must be dropped before the incoming one is built")
+
+
+def test_a_mode_swap_reports_on_the_job_row(monkeypatch, base, tmp_path):
+    """No tick, no detail during a full variant rebuild is exactly the
+    "user watches a stalled render" failure the mode-keyed swap exists to
+    keep from happening anywhere else — a swap must show up on the row
+    it is happening under."""
+    edit_model = FakeModel()
+    worker, model = load_worker(monkeypatch, base, edit_model=edit_model)
+    worker.load(MODEL, snapshot(tmp_path))
+    base.ticks.clear()
+
+    worker.generate(_request(tmp_path, image="/base/a.png",
+                             job="sys:ai-image:xyz"))
+
+    switching = [t for t in base.ticks if "Switching" in str(t.get("detail"))]
+    assert switching, base.ticks
+    assert switching[0]["job"] == "sys:ai-image:xyz"
+    assert switching[0]["state"] == "running"
+
+
+def test_a_swap_BACK_to_the_resident_mode_reports_NOTHING(
+        monkeypatch, base, tmp_path):
+    """`_ensure_mode` returns on its first line when the resident mode
+    already matches — a caller who never alternates modes must see no
+    "Switching" tick at all, ever, on the plain-generate path Decision 3
+    promises stays untouched."""
+    worker, model = load_worker(monkeypatch, base)
+    worker.load(MODEL, snapshot(tmp_path))
+    base.ticks.clear()
+
+    worker.generate(_request(tmp_path))
+
+    switching = [t for t in base.ticks if "Switching" in str(t.get("detail"))]
+    assert switching == []
 
 
 # -- progress and the ✕ ----------------------------------------------------------

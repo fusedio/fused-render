@@ -55,10 +55,12 @@ from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_show import router as git_show_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
+from fused_render.server.routers.engines import router as engines_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
+from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
@@ -308,6 +310,13 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.unload_all()
 
+    # Every managed template engine dies with the app by the same mechanism.
+    @app.on_event("shutdown")
+    async def _shutdown_engines():
+        from fused_render.server import engine_host
+
+        engine_host.stop_all()
+
     # Reclaim project venvs whose source folder is gone (SPEC PY-16). Keying a
     # venv on the folder's path means moving or renaming a project orphans its
     # environment BY DESIGN — a moved project starts clean — so without this the
@@ -406,6 +415,11 @@ def create_app(start_dir: str) -> FastAPI:
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.
     app.include_router(update_router)
+    # Managed template engines (routers/engines.py): a template's daemon rides
+    # this stable origin instead of its ephemeral port, and the routes heal a
+    # dead child under the URLs the page holds (engine_host.py). The map
+    # template's tile daemon is the first user.
+    app.include_router(engines_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
@@ -461,6 +475,13 @@ def create_app(start_dir: str) -> FastAPI:
     # that change that. Reads unguarded; the three POSTs start processes and
     # write gigabytes, so they carry the D3 X-Fused guard.
     app.include_router(ai_runtime_router)
+    # The AI Models page's Benchmark tab (routers/ai_benchmark.py, SPEC AI-14):
+    # run a fixed per-capability workload against a local model and keep the
+    # throughput/memory/load figures forever. The read is unguarded; the run and
+    # the delete carry the D3 X-Fused guard — the first spends minutes of GPU
+    # time, the second destroys measurements that cannot be recomputed for an
+    # app version that has moved on.
+    app.include_router(ai_benchmark_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability

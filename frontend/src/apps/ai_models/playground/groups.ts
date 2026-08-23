@@ -18,7 +18,7 @@ export type PlaygroundGroup = {
 export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
   {
     capability: "text-generation",
-    label: "Chat",
+    label: "Text",
     blurb: "Ask questions, write and rewrite text.",
   },
   {
@@ -44,7 +44,7 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
   // what a narrow window drops — and this is the card chosen to go first.
   {
     capability: "embeddings",
-    label: "Search by meaning",
+    label: "Embeddings",
     blurb: "Find text that matches by meaning, not wording.",
   },
 ];
