@@ -6567,8 +6567,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   and a pulse, **no bar**: weights going into memory is one opaque step and an
   invented percentage reads as frozen), loaded (with its resident memory), or
   failed (with the reason). **Loaded is said loudly**: a filled badge beside the
-  name and a colour change over the whole card, in the same green as the
-  sidebar's live dot. A small bullet was the wrong instrument — a grid is read by
+  name, plus a wash, a tinted border and a 3px rail over the whole card, all four
+  in the same green as the sidebar's live dot. **The green wash is the loaded
+  card's alone** — every state that is only about the disk washes NEUTRAL (AI-7h,
+  D461), so this green means "running" and nothing
+  else. A small bullet was the wrong instrument — a grid is read by
   sweeping before it is read by reading, and the one state that costs gigabytes
   continuously has to survive the sweep. **Load / Unload** is a word rather than a glyph and
   is always visible: it is the one control on the page that spends MEMORY rather
@@ -6728,10 +6731,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   one is never touched. It reads the FOLDER rather than the job's outcome, so the
   call is a no-op after a successful fetch and the next attempt tidies a crash.
 - **AI-7h** **The card's own surface states the disk facts, and one hue per engine
-  states the identity** (D436). A complete repo wears the green wash — the SAME wash
-  a loaded card wears, which is set apart by its tinted border and 3px rail rather
-  than by a stronger tint, since a card either has an edge or it does not and that
-  is a distinction a reader can make without judging a shade. **The wash is the
+  states the identity** (D436). **Have and not-have are one NEUTRAL axis with two
+  ends** (D461): a complete repo wears a grey wash mixed toward `--fg-muted`, a
+  model with nothing of it on this disk wears one mixed toward `--bg`, and the
+  page's plain card sits between them — so the direction holds in both palettes
+  (toward the ink is brighter on dark and darker on light; toward the page recedes
+  in both) and a reader sweeping a row gets have/not-have from surface weight
+  alone. **A loaded card sits OUTSIDE that axis**, in green, and differs from a
+  downloaded one in every channel there is — surface, border and rail. It is not
+  a further step along the grey scale, because "this is running" is a different
+  KIND of fact from "how much of this is here", and the state that costs gigabytes
+  of memory continuously is the one card in a row worth finding without reading
+  (AI-7a). **The wash is the
   whole marking**: the footer chip that also said it was removed at D448, since
   almost every card in a capability row is downloaded and a badge on nearly all of
   them marks nothing. A partly downloaded one wears a
@@ -6739,8 +6750,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   job's `done/total` where there is one, else bytes-on-disk over the curation's
   `size_gb`, clamped to 2–95%, and a FLAT wash where neither exists, because "some
   of this is here and we cannot say how much" is a different sentence from "2% of
-  it is". Loaded keeps the border tint, the 3px rail and the badge, since memory
-  being spent right now must outrank disk being spent at some point.
+  it is". Loaded keeps the green wash, the border tint, the 3px rail and the
+  badge, since memory being spent right now must outrank disk being spent at some
+  point.
   A download **in flight** takes the same boundary in GREEN, at the job's own
   progress, on all three cards that can be downloading — amber is a boundary that
   has stopped moving and green is one that has not (D439). The partial fraction is
@@ -6775,6 +6787,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   taking a colour this app cannot justify. Colour is never the only channel — the
   tag says the engine's name, and the UNAVAILABLE state keeps its dashed border and
   warning hue, where the state outranks the identity.
+  **"Try" is the card's one FILLED control** — accent background, `--on-accent`
+  ink, and a `--fg` focus ring because an accent ring on an accent plate is no
+  ring at all (D461). A deliberate exception to the house rule that accent is for
+  focus and selection and a primary button fills with `--fg`: the card's other
+  three controls are quiet `.cc-iconbtn` glyphs, and "use this model now" is the
+  one thing a reader opened the card to do. One filled control per card is a card
+  with an obvious next step; two would be a card with none.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second
