@@ -27,9 +27,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { hubModelUrl } from "./hub";
 import {
   PARTIAL_TAG,
+  jobFraction,
   type ResultDisk,
   type SectionRunner,
 } from "@apps/ai_models/lib/aiModelGroups";
+import { engineHueStyle } from "@apps/ai_models/lib/engines";
 import { gateChrome } from "@apps/ai_models/lib/hubSearchView";
 import {
   hubSizeLabel,
@@ -53,6 +55,7 @@ import { navigate, urlForFsPath } from "@platform/lib/router";
  */
 function ModelCard({
   variant,
+  style,
   hoverNote,
   cardRef,
   name,
@@ -63,8 +66,14 @@ function ModelCard({
   meta,
   actions,
 }: {
-  /** The one class that differs — `.am-reccard` or `.am-hubcard`. */
+  /** The classes that differ — `.am-reccard` or `.am-hubcard`, plus whatever
+   *  DISK state the caller is drawing (`am-card-have`, `am-card-part`), which is
+   *  the same wash the Local view's own cards wear (D436). */
   variant: string;
+  /** Inline custom properties for the classes above — today only `--am-part`,
+   *  the fraction a download-in-flight wash is drawn to, which is a per-card
+   *  NUMBER and so the one thing about these states a stylesheet cannot know. */
+  style?: Record<string, string>;
   /** The card's own hover, where there is one thing to say about the whole of
    *  it. Rendered as a title rather than as text because these cards sit in a
    *  scrolling row: a sentence per card would set every card's height from the
@@ -87,7 +96,12 @@ function ModelCard({
   actions?: ReactNode;
 }) {
   return (
-    <div className={`cc-mdcard am-card ${variant}`} title={hoverNote} ref={cardRef}>
+    <div
+      className={`cc-mdcard am-card ${variant}`}
+      style={style}
+      title={hoverNote}
+      ref={cardRef}
+    >
       <div className="cc-mdcard-head">
         <a
           className="cc-mdcard-name am-card-name"
@@ -142,7 +156,14 @@ function EngineTag({
   if (!runner?.shortLabel) return null;
   return (
     <span
-      className={"am-card-engine" + (runner.available ? "" : " am-card-engine-off")}
+      className={
+        "am-card-engine" + (runner.available ? " am-card-engine-family" : " am-card-engine-off")
+      }
+      /* Same hue table as the disk card's tag (D436), resolved from the SHORT
+         label here because that is all a card for a model nobody has downloaded
+         has — `engineHue` matches the family prefix inside it. One engine, one
+         colour, whichever card the reader is looking at. */
+      style={engineHueStyle(runner.shortLabel)}
       tabIndex={runner.available ? undefined : 0}
       aria-label={
         runner.available
@@ -219,9 +240,18 @@ export function RecommendedCard({
   // newer). A card showing both at once — `~64 GB` beside `68 GB / 68 GB` — read
   // as a download overrunning its own size.
   const size = modelSizeHint(model.size_gb, job);
+  // How far the pull has got, or null when there is nothing to draw a boundary
+  // at — no job yet, or a stage that reports no byte total.
+  const arriving = jobFraction(job);
   return (
     <ModelCard
-      variant="am-reccard"
+      /* The green wash tracks the download while it runs — the same drawing a
+         partly downloaded repo card wears, and the reason this card needs it is
+         the same: the bar in the progress row is 3px of a card the reader is
+         watching from across a carousel. Nothing when the job reports no total
+         (a venv build), where an invented boundary would read as stalled. */
+      variant={"am-reccard" + (arriving === null ? "" : " am-card-arriving")}
+      style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
       /* The curation's "why this one", on the card rather than in it. */
       hoverNote={model.note ?? undefined}
       name={{
@@ -422,10 +452,30 @@ export function HubResultCard({
   // a reason that is not about the model. A runner it names as UNAVAILABLE is a
   // refusal, for the recommended card's reason exactly.
   const loadable = !runner || runner.available;
+  // Same wash as the recommended card and the disk card: a download in flight
+  // fills the card it is filling.
+  const arriving = jobFraction(job);
 
   return (
     <ModelCard
-      variant="am-hubcard"
+      /* The same two washes the Local view's cards wear, for the same two
+         states (D436) — a search result IS a card about this disk once the
+         model is on it, and two colour grammars for one fact would be two
+         answers to "do I have this". No fraction on this side: the search reply
+         says "partial" and nothing more, and this card has no folder to
+         measure, so the wash is flat — which is the honest drawing of "some of
+         it is here, we cannot say how much". */
+      variant={
+        "am-hubcard" +
+        (arriving !== null
+          ? " am-card-arriving"
+          : disk.state === "downloaded"
+            ? " am-card-have"
+            : disk.state === "partial"
+              ? " am-card-part am-card-part-unknown"
+              : "")
+      }
+      style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
       cardRef={card}
       name={{
         href: model.url,

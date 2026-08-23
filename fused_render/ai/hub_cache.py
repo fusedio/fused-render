@@ -1624,6 +1624,55 @@ def _delete_repo(repo_dir: str) -> int:
     return freed
 
 
+def discard_empty_shell(repo_id: str) -> bool:
+    """Remove `repo_id`'s cache folder when a stopped fetch left NOTHING in it (D437).
+
+    The state a user hit in the wild: a cancelled download whose folder held one
+    40-byte `refs/main` and not a single blob. The listing has to call that
+    partial — no snapshot is exactly the evidence `_unfinished_fetch` reads — so
+    the page drew a "partly downloaded" card, under Unrecognised (no files, so no
+    task, so no capability), offering a resume of a download with nothing to
+    resume from. The card has a way out of that now; this stops it being drawn.
+
+    **Two positive conditions, both about emptiness, and no others.** No snapshot
+    directory AND no blob of any kind — not even a part file. That is the whole
+    of it: a folder in that state cannot resume, cannot load, and cannot tell
+    anybody what it was going to be, so the bytes it is protecting do not exist.
+    Notably NOT deleted:
+
+    * a folder with part files in it — those bytes are exactly what a resume
+      picks up (D275/AI-5i), and throwing them away is the behaviour that
+      argument rejected;
+    * a folder with a snapshot — some of the model is materialised and readable;
+    * anything on the strength of a MISSING marker or of the fetch having failed.
+      Emptiness is read off the folder, never inferred from the job's outcome, so
+      calling this after a SUCCESSFUL fetch is a no-op rather than a hazard.
+
+    Returns whether anything was removed. Never raises: this runs on a fetch
+    thread's way out, and a cache folder it could not tidy is not a reason to
+    turn a cancelled download into an error.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return False
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    try:
+        if not os.path.isdir(repo_dir) or os.path.islink(repo_dir):
+            return False
+        if _snapshot_dirs(os.path.join(repo_dir, "snapshots")):
+            return False
+        try:
+            blobs = list(os.scandir(os.path.join(repo_dir, "blobs")))
+        except OSError:
+            blobs = []  # no blobs/ at all, which is the emptiest case of all
+        if blobs:
+            return False
+        _delete_repo(repo_dir)
+        return True
+    except OSError:
+        return False
+
+
 def _delete_revision(repo_dir: str, revision: object) -> int:
     """Remove one revision: its snapshot directory, the blobs only it
     references, and any ref pointing at it. Returns the bytes freed."""

@@ -2079,3 +2079,59 @@ def test_cached_models_does_not_offer_half_a_snapshot(client, hub):
     (repo / "blobs" / "shard2.fusedpart").write_bytes(b"x" * 32)
 
     assert "org/chat" not in {m.repo_id for m in ai_models_mod.cached_models()}
+
+
+# -- the empty shell a stopped fetch leaves behind (D437) ----------------------
+# The state a user hit: a cancelled download whose folder held one 40-byte
+# `refs/main` and not a single blob. The listing has to call that partial (no
+# snapshot IS the evidence), so the page drew a "partly downloaded" card under
+# Unrecognised offering to resume a download with nothing to resume from. The
+# fetch thread tidies it on its way out now; these pin what it may and may not
+# take with it.
+
+
+def test_a_refs_only_shell_is_discarded(client, hub):
+    repo = _repo(hub, "models--org--never-started", refs={"main": "c1"})
+    # …and the folder really is the state the field reported: partial, tiny, and
+    # filed with no capability of its own.
+    row = _repo_row(client, "org/never-started")
+    assert row["partial"] is True
+    assert row["capability"] is None
+
+    assert ai_models_mod.discard_empty_shell("org/never-started") is True
+    assert not repo.exists()
+
+
+def test_a_stopped_fetch_with_bytes_on_disk_is_KEPT(client, hub):
+    """The rule this must not break (D275/AI-5i). A part file is exactly what a
+    resume picks up, so a folder holding one is a download in progress as far as
+    this app is concerned — not litter."""
+    repo = _repo(hub, "models--org--half")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 4096)
+
+    assert ai_models_mod.discard_empty_shell("org/half") is False
+    assert repo.exists()
+
+
+@requires_symlinks
+def test_a_finished_download_is_never_discarded(client, hub):
+    """Called on every fetch's way out, including the successful ones — so the
+    successful ones have to be a no-op. Read off the FOLDER, never off the job's
+    outcome."""
+    repo = _repo(hub, "models--org--done", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    assert ai_models_mod.discard_empty_shell("org/done") is False
+    assert repo.exists()
+
+
+def test_discarding_a_shell_that_is_not_there_is_not_an_error(client, hub):
+    """The ordinary case: nothing was ever created, or a previous pass already
+    tidied it. This runs in a `finally` and must never raise."""
+    assert ai_models_mod.discard_empty_shell("org/nothing") is False
+
+
+def test_a_shell_named_by_a_path_is_refused(client, hub):
+    """Same discipline as every other destructive path here: a repo id is turned
+    into ONE folder name, and anything that is not one is not looked at."""
+    assert ai_models_mod.discard_empty_shell("../../etc") is False

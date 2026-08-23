@@ -10,7 +10,7 @@
 import { Revisions } from "./Revisions";
 import { hubUrl } from "./hub";
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
-import { unloadCountdown } from "@apps/ai_models/lib/engines";
+import { engineHueStyle, unloadCountdown } from "@apps/ai_models/lib/engines";
 import {
   type AiLoadedModel,
   type AiModelRepo,
@@ -21,7 +21,10 @@ import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/li
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
   PARTIAL_TAG,
+  emptyShell,
+  jobFraction,
   noEngineReason,
+  partialFraction,
   partialNote,
   resumable,
 } from "@apps/ai_models/lib/aiModelGroups";
@@ -147,6 +150,7 @@ export function RepoCard({
   fetching,
   refusal,
   resumeCapability,
+  estimate,
   onToggle,
   onDeleteRepo,
   onDeleteRevision,
@@ -171,9 +175,16 @@ export function RepoCard({
   /** For a `repo.partial` card: which capability a RESUME would be filed under,
    *  or null when nothing on this page can say. A half-fetched snapshot's own
    *  `capability` is read off the files that happened to land, so the curation
-   *  answers for every model this app recommends — and a repo neither can place
-   *  gets a disabled Download with that as its reason, never a missing one. */
+   *  answers for every model this app recommends. A repo NEITHER can place has
+   *  no resume to offer, and the card swaps its primary control for the one act
+   *  that works on it — see the Delete branch in the footer (D437). */
   resumeCapability: string | null;
+  /** What the CURATION says this model's whole download weighs, in bytes, or
+   *  null for a repo it never named. Only a partly downloaded card reads it, as
+   *  the denominator of the fraction it paints (`partialFraction`) — and only
+   *  when no live job is reporting real byte counts, which is the better
+   *  answer. */
+  estimate: number | null;
   onToggle: () => void;
   onDeleteRepo: () => void;
   onDeleteRevision: (revision: AiModelRevision) => void;
@@ -210,8 +221,45 @@ export function RepoCard({
       : fetching
         ? "being downloaded"
         : "";
+  // -- what the card's own SURFACE says (D436) ------------------------------
+  // Three of the four states this page has are facts about the disk, and until
+  // now the card's background stated exactly one of them (loaded). The two it
+  // did not are the two a reader most often wants by sweeping: which of these
+  // do I already have, and which one stopped halfway.
+  // While a pull is RUNNING the wash is green and tracks the job; idle, it is
+  // amber and reports the disk. Same boundary, two meanings — "arriving" and
+  // "stopped" — which is the distinction the tag beside it cannot draw, since a
+  // partial repo wears `partly downloaded` in both states.
+  const pulling = jobFraction(job) !== null;
+  const part = pulling || resumable(repo) ? partialFraction(repo, job, estimate) : null;
+  // "Complete, on this disk, and not resident." NOT gated on `loaded` — a model
+  // whose weights are going INTO memory is still a model this machine has, and
+  // dropping the wash for the seconds a load takes would flash the one card the
+  // reader is watching. It ends when `am-card-loaded` takes over, which says
+  // more.
+  const have = !live && !resumable(repo);
+  // A partial repo with an unknown denominator gets a flat wash instead of a
+  // fraction: some of it is here and nothing on this page can say how much,
+  // which is a different sentence from "2% of it is here".
+  const partClass = pulling
+    ? " am-card-arriving"
+    : !resumable(repo)
+      ? ""
+      : part === null
+        ? " am-card-part am-card-part-unknown"
+        : " am-card-part";
   return (
-    <div className={"cc-mdcard am-card" + (live ? " am-card-loaded" : "")}>
+    <div
+      className={
+        "cc-mdcard am-card" + (live ? " am-card-loaded" : have ? " am-card-have" : "") + partClass
+      }
+      /* The fraction as a custom property, read by a hard-stop gradient in
+         ai-models.css. Inline because it is a per-card NUMBER — the only thing
+         about these states a stylesheet cannot know — and it is a background
+         only: no size, no border, no radius, so a card changing state never
+         reflows the carousel row it sits in. */
+      style={part === null ? undefined : { ["--am-part" as string]: `${part * 100}%` }}
+    >
       <div className="cc-mdcard-head">
         {/* The NAME goes to the HUB. A repo id is a Hub address, and the page
             it names is where the licence, the full model card, the discussions
@@ -303,8 +351,24 @@ export function RepoCard({
           (repo.engine ? (
             <span
               className={
-                "am-card-engine" + (repo.engine.available ? "" : " am-card-engine-off")
+                "am-card-engine" +
+                (repo.engine.available ? " am-card-engine-family" : " am-card-engine-off")
               }
+              /* ONE HUE PER ENGINE FAMILY, and it replaces the accent this tag
+                 used to wear (D436). Two things were wrong with the accent: it
+                 is now spoken for on the same card — the Downloaded pill is
+                 filled accent — and it was the SAME green on every card, so the
+                 tag that carries the card's most load-bearing fact ("these
+                 weights belong to that backend, and the three Whisper formats
+                 are mutually unloadable") was the one fact a reader could not
+                 pick out by colour. The hues are the calendar's categorical
+                 palette; `engineHue` names the assignments. Unknown family →
+                 undefined → the stylesheet's muted fallback, because a colour
+                 invented for a name we cannot place is a claim we cannot back.
+                 The UNAVAILABLE tag is deliberately excluded: there the STATE
+                 outranks the identity, and its warning hue plus dashed border
+                 is the two-channel signal that says so. */
+              style={engineHueStyle(repo.engine.familyLabel)}
               /* Focusable only in the state that has something to say. The
                  unavailable tag reads the same as the available one now, so
                  its reason is carried by the hover — and a hover on a span
@@ -444,6 +508,25 @@ export function RepoCard({
           {when ? `used ${when}` : ""}
         </span>
         <span className="cc-mdcard-actions">
+          {/* "This one is already here." The card's background says it too, and
+              deliberately: the wash is what a SWEEP reads and this chip is what
+              a READ confirms — the same two-channel argument the Loaded badge
+              rests on, one step down in loudness.
+              **The same chip a Hub search result wears** (`.am-suggest-have`),
+              down to the ✓ and the lowercase word, because it states the same
+              fact about the same disk; a second pill saying it in a second style
+              would be two vocabularies for one answer. The Loaded badge outranks
+              it, and the two never appear together — `have` stands down the
+              moment a model is resident, where the badge says strictly more.
+              Before Load, so the footer reads state-then-action. */}
+          {have && (
+            <span
+              className="am-suggest-have am-card-have-chip"
+              title={`${repo.id} is downloaded — ${formatSize(repo.size)} on this machine`}
+            >
+              ✓ downloaded
+            </span>
+          )}
           {/* Load / Unload — the one control on this page that costs MEMORY
               rather than disk.
 
@@ -474,6 +557,35 @@ export function RepoCard({
             >
               Unload
             </button>
+          ) : resumable(repo) && !resumeCapability ? (
+            /* THE DEAD END, given a way out (D437). A user hit this in the
+               wild: a folder holding one 40-byte `refs/main` and nothing else,
+               filed under Unrecognised, tagged "partly downloaded", with a
+               DISABLED Download beside it whose hover said to delete it. Every
+               word of that was true and the card still had no working control on
+               it — the trash was an unlabelled glyph third in a row of four, and
+               the user went to Finder and deleted the folder by hand.
+               So when the resume is impossible, the primary control becomes the
+               act that IS possible. Same trash target, same confirm dialog: this
+               is the labelled door to it, not a second way of deleting. */
+            <button
+              type="button"
+              className="am-card-power am-card-power-discard"
+              disabled={busy || !!inUse}
+              title={
+                inUse
+                  ? `Cannot delete ${repo.id}: ${inUse}`
+                  : `Delete ${repo.id} — ${
+                      emptyShell(repo)
+                        ? "this download stopped before any of the model arrived, so there is nothing to resume"
+                        : "Fused Render cannot tell what this is, so the download cannot be resumed"
+                    }`
+              }
+              aria-label={`Delete ${repo.id} — this unfinished download cannot be resumed`}
+              onClick={onDeleteRepo}
+            >
+              Delete
+            </button>
           ) : resumable(repo) ? (
             /* The one card state whose control is a DOWNLOAD rather than a Load
                (D424). There is nothing to load — the snapshot is incomplete —
@@ -487,17 +599,9 @@ export function RepoCard({
             <button
               type="button"
               className="am-card-power"
-              disabled={busy || fetching || !!job || !resumeCapability}
-              title={
-                resumeCapability
-                  ? `Finish downloading ${repo.id} — it resumes from the ${formatSize(repo.size)} already here`
-                  : `Fused Render cannot tell what ${repo.id} is, so it cannot resume this download. Delete it and download the model again.`
-              }
-              aria-label={
-                resumeCapability
-                  ? `Download ${repo.id} — resume the unfinished download`
-                  : `Download ${repo.id} — unavailable: this download cannot be resumed, delete it and start again`
-              }
+              disabled={busy || fetching || !!job}
+              title={`Finish downloading ${repo.id} — it resumes from the ${formatSize(repo.size)} already here`}
+              aria-label={`Download ${repo.id} — resume the unfinished download`}
               onClick={onDownload}
             >
               {fetching || job ? "Downloading…" : "Download"}

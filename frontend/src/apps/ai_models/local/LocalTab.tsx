@@ -323,6 +323,23 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     ),
   );
 
+  // What the curation says a model's whole download WEIGHS, in bytes — the
+  // denominator a partly downloaded card paints its fraction against when no
+  // live job is reporting real byte counts (`partialFraction`).
+  //
+  // Two approximations are baked in and both are acceptable for a wash rather
+  // than for a figure: `size_gb` is a curated round number, and for a model
+  // whose download touches several repos it covers ALL of them (catalog.py), so
+  // one repo's share reads low. Binary GB to match `formatSize`, which is what
+  // the same card prints beside it.
+  const estimateById = new Map<string, number>(
+    (catalog ?? []).flatMap((entry) =>
+      entry.models.flatMap((m) =>
+        m.size_gb ? [[m.id, m.size_gb * 1024 ** 3] as const] : [],
+      ),
+    ),
+  );
+
   // Derived on every render rather than memoised: it is one pass over a list
   // whose length is the number of repos in a cache, and `repos` is a fresh array
   // each render anyway — a memo keyed on it would recompute every time and cost
@@ -377,6 +394,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         fetching={downloading.has(r.id)}
         refusal={loadRefusal(r)}
         resumeCapability={resumeCapability}
+        estimate={estimateById.get(r.id) ?? null}
         onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
         onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
         onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}

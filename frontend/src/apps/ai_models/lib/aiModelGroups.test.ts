@@ -9,6 +9,9 @@ import {
   UNRECOGNISED,
   type DiskCard,
   diskCards,
+  emptyShell,
+  jobFraction,
+  partialFraction,
   resultDisk,
   runnersByCapability,
   groupRepos,
@@ -827,5 +830,135 @@ describe("runnersByCapability", () => {
       new Map(),
     )[0];
     expect(section.runner).toEqual(runnersByCapability(cat).get("text-generation") ?? null);
+  });
+});
+
+describe("emptyShell", () => {
+  it("is the folder a fetch left with no snapshot in it", () => {
+    // The state from the field: one 40-byte refs/main and nothing else. It has
+    // to read as "nothing to resume", because the card swaps its primary
+    // control for a Delete on the strength of it.
+    expect(emptyShell(repo({ id: "mlx-community/Kimi", partial: true, revisions: 0, size: 40 })))
+      .toBe(true);
+  });
+
+  it("is not a partial download that has bytes on disk", () => {
+    // A snapshot exists, so a resume has something to pick up (D275) — and the
+    // card must keep offering it.
+    expect(emptyShell(repo({ id: "mlx-community/Kimi", partial: true, revisions: 1 }))).toBe(false);
+  });
+
+  it("is not a complete repo, however few revisions it has", () => {
+    expect(emptyShell(repo({ id: "org/done", partial: false, revisions: 1 }))).toBe(false);
+  });
+});
+
+describe("partialFraction", () => {
+  const half = repo({ id: "org/half", partial: true, size: 2_000 });
+
+  it("reports the live job once it passes what is on disk", () => {
+    // 300 of 1000 fetched this run, against 2000 bytes on disk measured against
+    // the job's own total — the disk reading is capped at 95%, so it wins here,
+    // which is the monotonic rule below doing its job.
+    expect(
+      partialFraction(half, { done: 300, total: 1_000, unit: "bytes" }, 8_000),
+    ).toBe(0.95);
+    // With the disk behind the job, the job is what shows.
+    const barely = repo({ id: "org/barely", partial: true, size: 50 });
+    expect(
+      partialFraction(barely, { done: 300, total: 1_000, unit: "bytes" }, 8_000),
+    ).toBeCloseTo(0.3);
+  });
+
+  it("NEVER moves the boundary backwards when a download resumes", () => {
+    // The reported bug: a repo showing ~90% (bytes on disk over its total) had
+    // its fill collapse the moment Download was pressed, because the new job's
+    // `done` starts from what THIS run has moved rather than from what is here.
+    // The two readings are both lower bounds, so the larger is the true one.
+    const nearly = repo({ id: "org/nearly", partial: true, size: 900 });
+    const idle = partialFraction(nearly, undefined, 1_000);
+    const resuming = partialFraction(
+      nearly,
+      { done: 20, total: 1_000, unit: "bytes" },
+      1_000,
+    );
+    expect(idle).toBeCloseTo(0.9);
+    expect(resuming).toBe(idle);
+  });
+
+  it("prefers the JOB's total over the curated estimate as the denominator", () => {
+    // `size_gb` is a round number covering every repo a model touches, so one
+    // repo's share reads low against it; the job knows the size of this
+    // download. 500 of 1000 on disk is half, not an eighth.
+    expect(
+      partialFraction(
+        repo({ id: "org/x", partial: true, size: 500 }),
+        { done: 1, total: 1_000, unit: "bytes" },
+        8_000,
+      ),
+    ).toBeCloseTo(0.5);
+  });
+
+  it("falls back to bytes on disk over the curated estimate", () => {
+    expect(partialFraction(half, undefined, 10_000)).toBeCloseTo(0.2);
+  });
+
+  it("is the same 2-95% clamp whichever reading answered", () => {
+    // A job past its own total (a resumed fetch double-counting) must not draw a
+    // finished card, and neither must a disk reading past the estimate.
+    expect(
+      partialFraction(half, { done: 1_200, total: 1_000, unit: "bytes" }, 1_000),
+    ).toBe(0.95);
+  });
+
+  it("ignores a job that is not counting bytes", () => {
+    // A venv build reports no total, and a load reports a different unit;
+    // neither is a fraction of this download.
+    expect(partialFraction(half, { done: null, total: null }, 10_000)).toBeCloseTo(0.2);
+    expect(
+      partialFraction(half, { done: 1, total: 4, unit: "steps" }, 10_000),
+    ).toBeCloseTo(0.2);
+  });
+
+  it("says nothing rather than guess a denominator", () => {
+    // The card draws a flat wash for null. A made-up total would draw a
+    // precise-looking boundary over a guess.
+    expect(partialFraction(half, undefined, null)).toBeNull();
+    expect(partialFraction(half, undefined, undefined)).toBeNull();
+    // Zero would be an Infinity the clamp below would happily render as 95%.
+    expect(partialFraction(half, undefined, 0)).toBeNull();
+  });
+
+  it("never draws as empty or as finished", () => {
+    // The 40-byte shell is the floor case: 0.002% of a 4GB model, which is
+    // visually nothing — and a state drawn as nothing is not drawn.
+    const shell = repo({ id: "org/shell", partial: true, size: 40, revisions: 0 });
+    expect(partialFraction(shell, undefined, 4 * 1024 ** 3)).toBe(0.02);
+    // And the ceiling: an estimate smaller than the bytes already here (a
+    // multi-repo download's curated total is for ALL of them) must not read as
+    // a finished download, because this repo by definition is not one.
+    expect(partialFraction(half, undefined, 1_000)).toBe(0.95);
+  });
+});
+
+describe("jobFraction", () => {
+  it("answers for a card with nothing on this disk yet", () => {
+    // The recommended and search-result cards have no folder to measure: the
+    // job row is their only account of themselves, and this is what fills them.
+    expect(jobFraction({ done: 250, total: 1_000, unit: "bytes" })).toBeCloseTo(0.25);
+  });
+
+  it("says nothing for a stage that reports no byte total", () => {
+    // A venv build and a weight load have no denominator, and a boundary drawn
+    // at an invented one reads as stalled work rather than as live work.
+    expect(jobFraction(undefined)).toBeNull();
+    expect(jobFraction({ done: 2, total: null })).toBeNull();
+    expect(jobFraction({ done: null, total: 100, unit: "bytes" })).toBeNull();
+    expect(jobFraction({ done: 1, total: 4, unit: "steps" })).toBeNull();
+  });
+
+  it("never draws as empty or as finished", () => {
+    expect(jobFraction({ done: 0, total: 1_000, unit: "bytes" })).toBe(0.02);
+    expect(jobFraction({ done: 1_000, total: 1_000, unit: "bytes" })).toBe(0.95);
   });
 });
