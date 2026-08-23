@@ -506,6 +506,21 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             </div>
           </div>
         )}
+        {/* Clear, floating in the box's top-right corner: it appears only once
+            there is a picture to throw away, and in this stacked composer a
+            slot of its own would have cost the box a permanent 40px of height
+            (D453's stack is right where the prompt and the buttons share ONE
+            row — here they do not). Absolute, so it adds none. */}
+        {!busy && run && (
+          <button
+            type="button"
+            className="pg-ghost-btn pg-clear pg-clear-corner"
+            title="Clear the prompt and the picture"
+            onClick={clear}
+          >
+            Clear
+          </button>
+        )}
         {/* The composer's floor: the two ways to attach a picture, then the
             Clear/Generate column — one cluster in the bottom-right corner,
             attach beside Generate rather than across the box from it. The
@@ -559,20 +574,12 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               {attaching && <span className="pg-attach-note">Working…</span>}
             </div>
           )}
-          {/* Clear tops this column and Generate sits at its foot — see the
-              same block in TextStage: inline, Clear stole the prompt's width as
-              it appeared and left the grown height a line short. */}
+          {/* Generate alone in this column here: Clear floats in the box's
+              top-right corner instead (see above), because on a STACKED
+              composer the two stacked vertically made the floor 40px taller —
+              a whole row of height for a button that appears only once there
+              is something to clear. */}
           <div className="pg-composer-side">
-            {!busy && run && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Clear the prompt and the picture"
-                onClick={clear}
-              >
-                Clear
-              </button>
-            )}
             {busy ? (
               <button
                 type="button"

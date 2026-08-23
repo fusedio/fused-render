@@ -950,6 +950,22 @@ a.pg-hero-repo:hover {
 .pg-composer-stack {
   flex-direction: column;
   align-items: stretch;
+  /* The containing block for the floating Clear below. */
+  position: relative;
+}
+
+/* Clear in the box's top-right corner, out of flow: in a stacked composer the
+   button column is one button tall, and putting Clear back into it would add
+   its 32px plus the gap to the composer's height for good — a row of chrome for
+   a control that only exists once there is a result. Absolute costs nothing, and
+   the corner is where a dismiss is looked for. The margins `.pg-clear` sets for
+   its in-flow life are undone here. */
+.pg-clear-corner {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  height: auto;
+  margin: 0;
 }
 
 /* Everything on this line lives in the bottom-RIGHT corner: attach, webcam,
@@ -992,9 +1008,12 @@ a.pg-hero-repo:hover {
   background: var(--bg);
 }
 
+/* 28px, so the chip (border + 3px of padding around it) comes out at the 32px
+   height of the Generate button it shares the floor with — a taller thumbnail
+   set the whole row's height and pushed the box down. */
 .pg-attach img {
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   border-radius: 5px;
   object-fit: cover;
   /* A checker-free flat ground: a transparent PNG over the composer's own fill
