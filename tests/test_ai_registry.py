@@ -232,11 +232,12 @@ def test_catalog_defaults_to_the_ltx_entry_on_apple_silicon(monkeypatch, tmp_pat
     """`ltx-video` resolves ahead of `h3-video` on Apple Silicon (Task 1's
     ordering, buildable since Task 3) and now has its own curated shortlist
     (Task 6), so a bare `fused.ai.video()` on such a machine defaults to the
-    smallest LTX-2.3 tier rather than H3's 144GB checkpoint. Naming
-    `MiniMaxAI/MiniMax-H3` explicitly still reaches H3 unchanged (see
-    `test_ai_runtime.py`'s per-runner request-shaping tests, Task 5, and
-    `test_a_video_off_apple_silicon_says_so`-style tests that pin `_RUNNERS`
-    to h3-video directly)."""
+    smallest LTX-2.3 tier rather than H3's 144GB checkpoint. Reaching H3
+    itself needs the ENGINE PREFERENCE (the Engines tab) — naming
+    `MiniMaxAI/MiniMax-H3` explicitly is refused instead
+    (`test_ai_runtime.py::test_naming_the_OTHER_video_engines_cached_model_
+    is_refused_not_started`), since resolution is by capability plus stored
+    preference and never by `model`."""
     _mac_arm(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
     from fused_render.ai import catalog
@@ -246,6 +247,45 @@ def test_catalog_defaults_to_the_ltx_entry_on_apple_silicon(monkeypatch, tmp_pat
     video = rows[registry.VIDEO_GENERATION]
     assert video["available"]
     assert video["default"] == "dgrauet/ltx-2.3-mlx-q4"
+
+
+def test_catalog_video_traits_follow_the_resolved_engine(monkeypatch, tmp_path):
+    """The payload the Playground's frame/canvas/step sliders read
+    (`catalog.py`'s `videoTraits`, the fix for Task 5 leaving the CLIENT
+    hardcoded to H3's grid) — present only for video generation, and only
+    the resolved engine's own numbers, never a mix of the two rows."""
+    from fused_render.ai import catalog
+
+    _mac_arm(monkeypatch)
+    _with_h3_binary(monkeypatch, tmp_path)
+    rows = {row["capability"]: row for row in catalog.describe()}
+    assert rows[registry.TEXT_GENERATION]["videoTraits"] is None
+    video = rows[registry.VIDEO_GENERATION]["videoTraits"]
+    assert video == {
+        "framesBase": 1, "framesStep": 8, "minFrames": 9, "maxFrames": 169,
+        "defaultFrames": 97, "defaultWidth": 704, "defaultHeight": 480,
+        "defaultSteps": 8,
+    }
+
+    # Pin `_RUNNERS` to h3-video alone (the same trick `test_ai_runtime.py`'s
+    # own video fixtures use) to check the OTHER engine's numbers reach the
+    # same field — proving this is read off whichever runner resolves, not
+    # hardcoded to ltx-video now that ltx-video is the common case.
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("h3-video"),))
+    rows = {row["capability"]: row for row in catalog.describe()}
+    video = rows[registry.VIDEO_GENERATION]["videoTraits"]
+    assert video == {
+        "framesBase": 5, "framesStep": 17, "minFrames": 22, "maxFrames": 362,
+        "defaultFrames": 90, "defaultWidth": 864, "defaultHeight": 480,
+        "defaultSteps": 20,
+    }
+
+
+def test_video_frame_bounds_matches_the_apps_own_n_window():
+    ltx = registry.video_traits_for("ltx-video")
+    assert registry.video_frame_bounds(ltx) == (9, 169)  # 1+8*1, 1+8*21
+    h3 = registry.video_traits_for("h3-video")
+    assert registry.video_frame_bounds(h3) == (22, 362)  # 5+17*1, 5+17*21
 
 
 def test_catalog_default_is_null_when_unavailable(monkeypatch):

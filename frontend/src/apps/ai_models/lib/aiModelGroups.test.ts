@@ -257,6 +257,7 @@ function capability(
     reason: null,
     default: "mlx-lm",
     models,
+    videoTraits: null,
     ...over,
   };
 }

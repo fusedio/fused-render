@@ -92,7 +92,11 @@ _IMAGE_OPTIONS = frozenset({
 _MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
 _MAX_VIDEO_PIXELS = 768 * 1344
 #: `n` ranges 1..21 on EVERY engine's own grid — an app-chosen bound, not a
-#: per-engine fact, so it stays here rather than in `registry.VideoTraits`.
+#: per-engine fact. `registry.MIN_VIDEO_FRAMES_N`/`MAX_VIDEO_FRAMES_N`, not a
+#: private pair here, because `catalog.py`'s video-traits payload for the
+#: Playground's frame slider needs the identical window — a slider computed
+#: from one and a server clamped by the other would disagree with itself
+#: exactly the way Task 5 left the client disagreeing with H3's grid.
 #: Originally VERIFIED against h3's built binary (`h3_align_frame_count`/
 #: `h3_valid_params`: `n=0` — 5 frames, one VAE chunk with no decoder
 #: history — is refused at generation time with "generation requires at
@@ -102,7 +106,7 @@ _MAX_VIDEO_PIXELS = 768 * 1344
 #: is carried over as the app's own bound on its grid too (1 + 8*21 = 169
 #: frames, ~7s at 24fps), rather than inventing an unrelated ceiling with no
 #: measurement behind it.
-_MIN_FRAMES_N, _MAX_FRAMES_N = 1, 21
+_MIN_FRAMES_N, _MAX_FRAMES_N = registry.MIN_VIDEO_FRAMES_N, registry.MAX_VIDEO_FRAMES_N
 #: [2, 1000] is h3's own hard floor/ceiling ("denoising steps must be in
 #: [2, 1000]", h3.c `h3_valid_params`) — 1 step is not merely slow, it is a
 #: request the binary refuses outright. LTX has no such floor (`stage1_steps`

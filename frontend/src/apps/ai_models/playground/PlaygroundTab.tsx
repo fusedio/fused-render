@@ -561,6 +561,7 @@ export default function PlaygroundTab() {
                 key={selected.model.id}
                 model={selected.model.id}
                 entry={selected.model}
+                traits={selected.row.videoTraits}
               />
             ) : selected.row.capability === "automatic-speech-recognition" ? (
               <TranscribeStage key={selected.model.id} model={selected.model.id} />

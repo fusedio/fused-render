@@ -1465,6 +1465,29 @@ def video_traits_for(code: str | None) -> VideoTraits:
     return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["h3-video"])
 
 
+#: `n` ranges over this window on EVERY video runner's own grid — an
+#: app-chosen safety rail, not a fact about either engine's weights (see
+#: `VideoTraits`'s own docstring for that distinction), so it lives here as
+#: a public constant rather than duplicated as a private one in every place
+#: that needs the ACTUAL min/max frame count a runner's grid offers:
+#: `server/routers/ai_runtime.py`'s `_snap_frames` and `catalog.py`'s own
+#: video-traits payload for the Playground (SPEC §40's LTX-2.3 plan, the
+#: fix for Task 5 leaving the client hardcoded to H3's grid).
+MIN_VIDEO_FRAMES_N = 1
+MAX_VIDEO_FRAMES_N = 21
+
+
+def video_frame_bounds(traits: VideoTraits) -> tuple[int, int]:
+    """`(min, max)` actual frame counts `traits`' grid offers, at the app's
+    own `[MIN_VIDEO_FRAMES_N, MAX_VIDEO_FRAMES_N]` window — the two absolute
+    numbers a caller outside this module (a route clamping a request, a
+    payload describing a slider's range) needs, so neither has to re-derive
+    `frames_base + frames_step * n` itself.
+    """
+    return (traits.frames_base + traits.frames_step * MIN_VIDEO_FRAMES_N,
+            traits.frames_base + traits.frames_step * MAX_VIDEO_FRAMES_N)
+
+
 # The task vocabulary — which `pipeline_tag` means what, and which of them a
 # runner here serves — lives in `ai/tasks.py`, keyed by the Hub's own tag. It
 # was three tables in two modules (a tag-to-prose map, this capability map, and

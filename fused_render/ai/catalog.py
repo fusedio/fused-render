@@ -1100,6 +1100,44 @@ def describe() -> list[dict]:
                 "default": for_capability(capability)[0]["id"]
                 if status.ok and for_capability(capability) else None,
                 "models": for_capability(capability),
+                # Absent for every capability but video generation — the
+                # same "absent rather than empty" shape `registry.VIDEO_
+                # TRAITS` itself uses. Video is the first (only) capability
+                # whose REQUEST SHAPE varies by which runner resolved (the
+                # frame grid, canvas and step defaults — `registry.
+                # VideoTraits`), and the Playground's own frame/canvas/step
+                # sliders need those numbers to draw a control that agrees
+                # with what the server will actually do — Task 5 of the
+                # LTX-2.3 plan de-hardcoded the SERVER's copy of H3's grid
+                # and left the client statically wired to it, which is the
+                # defect this field exists to close.
+                "videoTraits": (
+                    _video_traits_payload(runner.code)
+                    if capability == registry.VIDEO_GENERATION and runner is not None
+                    else None
+                ),
             }
         )
     return rows
+
+
+def _video_traits_payload(runner_code: str) -> dict:
+    """`registry.VideoTraits`, in the shape `describe()`'s payload wants —
+    absolute frame bounds rather than the `(base, step, n)` the server's own
+    grid math uses internally, because a slider draws a min/max/step/value,
+    not an `n` window it would have to re-derive the same arithmetic to get.
+    """
+    traits = registry.video_traits_for(runner_code)
+    min_frames, max_frames = registry.video_frame_bounds(traits)
+    default_frames = (traits.frames_base
+                      + traits.frames_step * traits.default_frames_n)
+    return {
+        "framesBase": traits.frames_base,
+        "framesStep": traits.frames_step,
+        "minFrames": min_frames,
+        "maxFrames": max_frames,
+        "defaultFrames": default_frames,
+        "defaultWidth": traits.default_width,
+        "defaultHeight": traits.default_height,
+        "defaultSteps": traits.default_steps,
+    }
