@@ -1187,29 +1187,6 @@
   background: color-mix(in srgb, var(--warning) 10%, var(--bg-alt));
 }
 
-/* The chip that says it, in the footer rather than the head — state, then the
-   action it enables. It IS `.am-suggest-have`, the "✓ downloaded" chip a Hub
-   search result has always worn, rather than a second pill that means the same
-   thing: one fact, one drawing, whichever card the reader is looking at.
-   What is left here is the two things a FOOTER needs and the head row did not.
-
-   `align-items: center` on the row is the alignment fix: `.cc-mdcard-actions` is
-   a flex row with no cross-axis rule, so its default `stretch` pulled this chip
-   to the height of the 26px icon buttons beside it and left the text sitting
-   high inside an over-tall pill. Scoped to `.am-card` because that row is a
-   shared class — every other user of it holds buttons only, which stretch
-   harmlessly. */
-.am-card .cc-mdcard-actions {
-  align-items: center;
-}
-
-.am-card-have-chip {
-  flex: 0 0 auto;
-  /* The row's own gap is 2px, which is right between two icon buttons and too
-     tight between a filled chip and the word next to it. */
-  margin-right: 4px;
-}
-
 .am-loaded-badge {
   flex: 0 0 auto;
   padding: 2px 8px;

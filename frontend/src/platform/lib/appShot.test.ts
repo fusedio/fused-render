@@ -15,7 +15,10 @@ import { expect, test } from "bun:test";
 const read = (...p: string[]) => readFileSync(join(import.meta.dir, ...p), "utf8");
 
 const SHOT = read("appShot.ts");
-const CARD = read("..", "..", "apps", "builder", "AppPreviewCard.tsx");
+// platform/ui, not apps/builder: the card moved there when a third app began
+// drawing it (#765) and this path did not move with it, so the read threw
+// ENOENT and took the whole file down with it before a single test ran.
+const CARD = read("..", "ui", "AppPreviewCard.tsx");
 const APPS = read("..", "..", "apps", "builder", "Apps.tsx");
 const PREVIEW = read("..", "..", "apps", "explorer", "Preview.tsx");
 
