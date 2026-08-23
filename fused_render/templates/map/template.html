@@ -2871,7 +2871,12 @@ function setBasemap(name) {
   baseName = name; P.set("base", name);
   qs("basemap-seg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.b === name));
   styleReady = false;
-  map.setStyle(BASEMAPS[name]);   // overlay is a control → survives setStyle
+  // diff:false forces a full style reload. The default diff keeps the map from
+  // firing "style.load", yet still drops our runtime-added tile layers (they
+  // aren't in the incoming basemap style) — so they vanished with no event to
+  // re-add them. A full reload removes them too but fires "style.load", where
+  // they are rebuilt. The overlay is a control, so it survives either way.
+  map.setStyle(BASEMAPS[name], { diff: false });
 }
 map.on("style.load", () => {
   styleReady = true;
@@ -2880,6 +2885,7 @@ map.on("style.load", () => {
   for (const L of state.layers.values()) L._tileUrl = null;
   rebuildRasterTiles();
   rebuildVectorTiles();
+  rebuildDeck();
 });
 
 /* geocode (Photon) */
