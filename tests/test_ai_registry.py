@@ -255,22 +255,28 @@ def test_h3_bin_resolves_the_packaged_app_bundle(monkeypatch, tmp_path):
     assert registry.h3_bin() == str(bundled)
 
 
-def test_catalog_defaults_to_the_fl2va_entry_on_apple_silicon(monkeypatch, tmp_path):
-    """Registering `ltx-video` (Task 1) does not move this yet: `Runner.
-    available()` requires the folder to have a `worker.py` (its own
-    docstring), and `ltx_video/worker.py` does not exist until Task 3. Until
-    then `ltx-video` is a real, gated row that simply is not BUILT here, so
-    resolution still falls through to `h3-video` exactly as before — see
-    `test_ai_catalog.py`'s ltx-video curation tests (Task 6) for the point
-    where the default actually moves."""
+def test_catalog_defaults_to_the_ltx_entry_on_apple_silicon(monkeypatch, tmp_path):
+    """`ltx-video`'s folder is complete as of Task 3 (`pyproject.toml` +
+    `worker.py`), so `Runner.available()` now reports it buildable and
+    `_first_available` resolves it ahead of `h3-video` — the whole point of
+    Task 1's ordering. The capability stays `available` either way; naming
+    `MiniMaxAI/MiniMax-H3` explicitly still reaches H3 unchanged (see
+    `test_ai_runtime.py`'s per-runner request-shaping tests, Task 5).
+
+    `default` itself is `None` here rather than an ltx-video id: `catalog.
+    default_for` reads the curated `SUGGESTIONS` table for the resolved
+    runner, and that table gains an `ltx-video` entry only in Task 6. This
+    test therefore pins the RUNNER that resolves, and
+    `test_ai_catalog.py`'s Task-6 tests pin the id once the shortlist
+    exists."""
     _mac_arm(monkeypatch)
     _with_h3_binary(monkeypatch, tmp_path)
     from fused_render.ai import catalog
 
+    assert registry.for_capability(registry.VIDEO_GENERATION).code == "ltx-video"
     rows = {row["capability"]: row for row in catalog.describe()}
     video = rows[registry.VIDEO_GENERATION]
     assert video["available"]
-    assert video["default"] == "MiniMaxAI/MiniMax-H3"
 
 
 def test_catalog_default_is_null_when_unavailable(monkeypatch):
