@@ -295,11 +295,11 @@ export default function PlaygroundTab() {
             const active = selected?.model.id === model.id;
             const downloading = runtime.downloading.some((d) => d.model === model.id);
             const name = modelName(model);
-            // The full name under the nickname — the label, or for a cached
-            // entry (where the label IS the display name) the repo id, so the
-            // second line never just repeats the first.
+            // The full name lives in the tooltip now — the row is one line, and
+            // for a cached entry (where the label IS the display name) the
+            // tooltip shows the repo id so it never just repeats the row.
             const fullName = model.label !== name ? model.label : model.id !== name ? model.id : null;
-            // The card is a div-as-button, not a <button>: the Download CTA
+            // The row is a div-as-button, not a <button>: the Download CTA
             // lives inside it, and a button inside a button is markup browsers
             // are free to mangle.
             // The advertised figure, or a running pull's own total when that
@@ -320,7 +320,7 @@ export default function PlaygroundTab() {
                     select(model.id);
                   }
                 }}
-                title={model.label}
+                title={fullName ?? model.label}
               >
                 <span className="pg-model-name">
                   {/* Live from the supervisor, not the catalog's `loaded`
@@ -330,36 +330,33 @@ export default function PlaygroundTab() {
                   )}
                   {name}
                 </span>
-                {fullName && <span className="pg-model-full">{fullName}</span>}
-                <span className="pg-model-foot">
-                  <span
-                    className="pg-model-size"
-                    title={
-                      size
-                        ? `${size.text} download — judged against this machine's memory`
-                        : undefined
-                    }
-                  >
-                    {modelSizeLabel(model.size_gb, job)}
-                  </span>
-                  {/* On disk = nothing to say: the CTA exists only while there
-                      is an action to take. */}
-                  {!model.downloaded && (
-                    <button
-                      type="button"
-                      className="pg-model-dl"
-                      disabled={downloading}
-                      onClick={(e) => {
-                        // Selecting too is fine; a second click must not be.
-                        e.stopPropagation();
-                        select(model.id);
-                        void runDownloadFor(model.id, row.capability);
-                      }}
-                    >
-                      {downloading ? "Downloading…" : "Download"}
-                    </button>
-                  )}
+                <span
+                  className="pg-model-size"
+                  title={
+                    size
+                      ? `${size.text} download — judged against this machine's memory`
+                      : undefined
+                  }
+                >
+                  {modelSizeLabel(model.size_gb, job)}
                 </span>
+                {/* On disk = nothing to say: the CTA exists only while there
+                    is an action to take. */}
+                {!model.downloaded && (
+                  <button
+                    type="button"
+                    className="pg-model-dl"
+                    disabled={downloading}
+                    onClick={(e) => {
+                      // Selecting too is fine; a second click must not be.
+                      e.stopPropagation();
+                      select(model.id);
+                      void runDownloadFor(model.id, row.capability);
+                    }}
+                  >
+                    {downloading ? "Downloading…" : "Download"}
+                  </button>
+                )}
               </div>
             );
           };
@@ -488,26 +485,20 @@ export default function PlaygroundTab() {
               {(selected.model.params ||
                 selected.model.quantization ||
                 selected.model.size_gb != null) && (
-                <dl className="pg-hero-facts">
-                  {selected.model.params && (
-                    <div className="pg-hero-fact">
-                      <dt>Parameters</dt>
-                      <dd>{selected.model.params}</dd>
-                    </div>
-                  )}
-                  {selected.model.quantization && (
-                    <div className="pg-hero-fact">
-                      <dt>Quantization</dt>
-                      <dd>{selected.model.quantization}</dd>
-                    </div>
-                  )}
-                  {selected.model.size_gb != null && (
-                    <div className="pg-hero-fact">
-                      <dt>Download</dt>
-                      <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
-                    </div>
-                  )}
-                </dl>
+                // One quiet line, not a labelled table: these three read fine
+                // bare ("1.2B · MLX 4-bit · 668 MB") and the table treatment
+                // outweighed the composer below it.
+                <p className="pg-hero-meta">
+                  {[
+                    selected.model.params,
+                    selected.model.quantization,
+                    selected.model.size_gb != null
+                      ? modelSizeLabel(selected.model.size_gb, jobForSelected)
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
               )}
               {/* The curator's sentence, in full — the sidebar clamps it.
                   For the zero-jargon reader this is the model introducing

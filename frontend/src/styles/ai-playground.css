@@ -117,17 +117,16 @@
   color: var(--fg-muted);
 }
 
-/* A CARD now, reversing the old "row, not a card" call (D428): spacious,
- * bordered, four facts and nothing else — nickname, full name, size, and the
- * Download CTA. The active one is carried by an accent border + wash. */
+/* A flat ROW again, reversing D428's card call (D433): one line — nickname,
+ * size, and the Download CTA when there is one — with the full name in the
+ * tooltip. The cards' borders were most of the sidebar's noise; the active row
+ * is carried by an accent wash alone. */
 .pg-model {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-alt);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -136,12 +135,11 @@
 }
 
 .pg-model:hover {
-  border-color: var(--ctl-quiet-border-hover);
+  background: rgba(var(--tint), 0.05);
 }
 
 .pg-model.active {
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.06);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 
 .pg-model:focus-visible {
@@ -150,7 +148,8 @@
 }
 
 .pg-model-name {
-  font-weight: 600;
+  flex: 1;
+  font-weight: 500;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -168,33 +167,19 @@
   vertical-align: 1px;
 }
 
-/* The full name, quiet under the nickname; a cached row shows its repo id
- * here instead so the two lines never repeat each other. */
-.pg-model-full {
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pg-model-foot {
-  margin-top: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 20px;
+.pg-model-size {
+  flex: none;
   font-size: 11.5px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .pg-model-dl {
+  flex: none;
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 3px 10px;
+  padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
@@ -226,45 +211,41 @@
   overflow-y: auto;
 }
 
-/* The stage header as a card, centered with wide side margins — the model
-   introducing itself before the stage below it. `width: min(...)` rather than
-   max-width + auto margins alone so the side breathing room survives narrow
-   windows too. */
+/* The stage header, centered on the work column's gutter — the model
+   introducing itself before the stage below it. FLAT since D433: the hero,
+   the composer and the answer were three boxes in a stack, and unboxing the
+   header leaves the composer as the page's one focal card. `width: min(...)`
+   rather than max-width + auto margins alone so the side breathing room
+   survives narrow windows too. */
 .pg-hero {
   width: min(680px, calc(100% - 64px));
-  /* Extra room below: the stage's own gap reads too tight under a card this
-     heavy, and the work column needs to start as its own thing. */
+  /* Extra room below: the work column needs to start as its own thing. */
   margin: 0 auto 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 18px 22px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  gap: 6px;
+  padding: 8px 0 0;
 }
 
 .pg-hero-head {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* capabilityIcon draws at 16px; CSS wins over the SVG's width/height
-   attributes, so the hero scales it without a second icon set. */
+   attributes, so the hero scales it without a second icon set. A bare glyph
+   beside the name now, not a 40px tile — the tile was card furniture. */
 .pg-hero-icon {
   flex: none;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
+  height: 24px;
   color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
 }
 .pg-hero-icon svg {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
 }
 
 .pg-hero-names {
@@ -290,23 +271,12 @@ a.pg-hero-repo:hover {
   text-decoration: underline;
 }
 
-.pg-hero-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
+/* The three facts as one quiet dotted line — "1.2B · MLX 4-bit · 668 MB". */
+.pg-hero-meta {
   margin: 0;
-}
-
-.pg-hero-fact dt {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 12px;
   color: var(--fg-muted);
-}
-
-.pg-hero-fact dd {
-  margin: 1px 0 0;
-  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 
 .pg-stage-title {
@@ -369,12 +339,14 @@ a.pg-hero-repo:hover {
   gap: 12px;
 }
 
-/* One line naming the action — the hero card above carries the model. */
+/* One line naming the action — the hero above carries the model. Quiet since
+   D433: with the hero unboxed it sat at the same visual weight as the model
+   name one line up. */
 .pg-work-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  color: var(--fg-muted);
 }
 
 /* Closed by default, and deliberately flat — no card, no background. */
