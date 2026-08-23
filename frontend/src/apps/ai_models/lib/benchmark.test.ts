@@ -3,6 +3,7 @@ import type { AiBenchmarkRun } from "@platform/lib/api";
 import {
   DASH,
   chartSeries,
+  defaultCapability,
   failureReason,
   formatLoad,
   formatMemory,
@@ -13,9 +14,11 @@ import {
   orderCapabilities,
   primaryMetric,
   primaryValue,
+  resolveCapability,
   rowDetail,
   rowHeadline,
   runButtonState,
+  runCountsByCapability,
   runsFor,
   shortModelName,
   stoppedNote,
@@ -515,5 +518,75 @@ describe("leaderboard", () => {
       { model: "b", row: null },
     ]);
     expect(rows.every((r) => r.barFraction === null)).toBe(true);
+  });
+});
+
+// -- the capability selector: default pick and the ?cap= round-trip ----------
+
+describe("runCountsByCapability", () => {
+  it("counts recorded runs per capability", () => {
+    const counts = runCountsByCapability([
+      run({ capability: "text-generation", startedAt: 1 }),
+      run({ capability: "text-generation", startedAt: 2 }),
+      run({ capability: "embeddings", startedAt: 3 }),
+    ]);
+    expect(counts).toEqual({ "text-generation": 2, embeddings: 1 });
+  });
+
+  it("is empty over no runs — there is nothing to count", () => {
+    expect(runCountsByCapability([])).toEqual({});
+  });
+});
+
+describe("defaultCapability", () => {
+  it("picks the capability with the most recorded runs", () => {
+    expect(
+      defaultCapability(
+        ["text-generation", "text-to-image", "automatic-speech-recognition", "embeddings"],
+        { "text-generation": 2, embeddings: 5 },
+      ),
+    ).toBe("embeddings");
+  });
+
+  it("breaks a tie by registry order — the earlier one in the list wins", () => {
+    expect(
+      defaultCapability(["text-generation", "embeddings"], {
+        "text-generation": 3,
+        embeddings: 3,
+      }),
+    ).toBe("text-generation");
+  });
+
+  it("falls back to the first capability in registry order when nothing has ever run", () => {
+    expect(
+      defaultCapability(["text-generation", "text-to-image", "embeddings"], {}),
+    ).toBe("text-generation");
+  });
+
+  it("is null when there are no capabilities to choose from", () => {
+    expect(defaultCapability([], {})).toBeNull();
+  });
+});
+
+describe("resolveCapability", () => {
+  const CAPS = ["text-generation", "text-to-image", "automatic-speech-recognition", "embeddings"];
+
+  it("keeps the URL's ?cap= when it names a real capability", () => {
+    expect(resolveCapability(CAPS, "embeddings", {})).toBe("embeddings");
+  });
+
+  it("falls back to the default pick when ?cap= is absent", () => {
+    expect(resolveCapability(CAPS, null, { embeddings: 4 })).toBe("embeddings");
+  });
+
+  it("falls back to the default pick when ?cap= names an unknown capability", () => {
+    // A stale or foreign link (`?cap=telepathy`), the same forgiving posture
+    // `orderCapabilities`/`tabFromPath` take toward an unrecognised value —
+    // never an empty page over a param that travelled here from somewhere else.
+    expect(resolveCapability(CAPS, "telepathy", { embeddings: 4 })).toBe("embeddings");
+  });
+
+  it("is null only when there is truly nothing to select", () => {
+    expect(resolveCapability([], "text-generation", {})).toBeNull();
   });
 });

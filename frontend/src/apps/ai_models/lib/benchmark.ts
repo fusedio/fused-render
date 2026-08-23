@@ -575,3 +575,62 @@ export function leaderboard(
     ...never.map((entry) => ({ ...entry, barFraction: null })),
   ];
 }
+
+/** How many recorded runs each capability has, across the WHOLE history — not
+ *  just the runs for one section, since the selector needs every capability's
+ *  count at once to pick a default and to print a count beside every option.
+ */
+export function runCountsByCapability(runs: AiBenchmarkRun[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const run of runs) counts[run.capability] = (counts[run.capability] ?? 0) + 1;
+  return counts;
+}
+
+/** Which capability the selector opens on, absent an explicit `?cap=`: the one
+ *  with the most recorded runs, ties broken by `capabilities`' OWN order —
+ *  which is registry order, since callers pass it through `orderCapabilities`
+ *  first. Ties are broken by scanning left to right and only replacing the
+ *  leader on a STRICTLY greater count, so the earlier capability in the list
+ *  wins a tie rather than the later one that happened to match it.
+ *
+ *  Falls through to the very first capability when nothing has ever run —
+ *  every count is 0, so the same left-to-right scan keeps its initial pick —
+ *  which is the same "first in registry order" default the tab used before it
+ *  had a selector at all.
+ */
+export function defaultCapability(
+  capabilities: string[],
+  counts: Record<string, number>,
+): string | null {
+  if (capabilities.length === 0) return null;
+  let best = capabilities[0]!;
+  let bestCount = counts[best] ?? 0;
+  for (const capability of capabilities.slice(1)) {
+    const count = counts[capability] ?? 0;
+    if (count > bestCount) {
+      best = capability;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/** The selector's actual state: the URL's `?cap=` when it names a real
+ *  capability, `defaultCapability`'s pick otherwise.
+ *
+ *  A `param` naming nothing in `capabilities` is treated exactly like an
+ *  ABSENT one — a stale link, a value meant for a different reading of this
+ *  page, or a capability this frontend has never heard of all fall through to
+ *  the same default rather than rendering an empty selector on a param that
+ *  travelled here from somewhere else. This is the same forgiving posture
+ *  `orderCapabilities` and `routes.ts`'s `tabFromPath` already take toward an
+ *  unrecognised value.
+ */
+export function resolveCapability(
+  capabilities: string[],
+  param: string | null,
+  counts: Record<string, number>,
+): string | null {
+  if (param && capabilities.includes(param)) return param;
+  return defaultCapability(capabilities, counts);
+}
