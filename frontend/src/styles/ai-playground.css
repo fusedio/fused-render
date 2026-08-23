@@ -1201,13 +1201,6 @@ a.pg-hero-repo:hover {
   color: var(--fg);
 }
 
-.pg-under {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  min-height: 20px;
-}
-
 .pg-ghost-btn {
   border: 0;
   background: transparent;
@@ -1576,7 +1569,11 @@ a.pg-hero-repo:hover {
   line-height: 0;
 }
 
-.pg-image-result img {
+/* `video` alongside `img`: the video stage draws the same framed result, and
+   a `<video controls>` left unstyled sizes to its own intrinsic pixels rather
+   than to the frame the aspect-ratio box just set. */
+.pg-image-result img,
+.pg-image-result video {
   display: block;
   width: 100%;
   height: 100%;
@@ -1701,152 +1698,6 @@ a.pg-hero-repo:hover {
   cursor: not-allowed;
   opacity: 0.4;
   pointer-events: none;
-}
-
-/* VideoStage predates the other four stages' rail removal (D429) and keeps
-   its own main-column + settings-rail shape — scoped under `.pg-work-video`
-   so it does not fight the shared `.pg-work` (now a centered single column)
-   the other four stages draw. */
-.pg-work.pg-work-video {
-  width: min(1100px, calc(100% - 64px));
-  flex-direction: row;
-  gap: 20px;
-  align-items: stretch;
-}
-
-.pg-main {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pg-rail {
-  flex: 0 0 248px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(var(--tint), 0.02);
-  align-self: flex-start;
-  max-height: 100%;
-  overflow-y: auto;
-}
-
-.pg-rail-toggle {
-  display: none;
-}
-
-.pg-rail-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.pg-rail-section + .pg-rail-section {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
-}
-
-.pg-rail-title {
-  margin: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-/* VideoStage's empty state, and only VideoStage's — the four cog stages (D464)
-   invite with `StarterCards` inside their own composer instead, so nothing
-   else draws this centered title/sub/chips column any more. */
-
-.pg-empty-stage {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 6px;
-  padding: 4px 16px 24px;
-}
-
-.pg-empty-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.pg-empty-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  max-width: 46ch;
-}
-
-.pg-starter {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.pg-starter-title {
-  margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-.pg-starter-chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  max-width: 560px;
-}
-
-.pg-starter-chip {
-  font: inherit;
-  font-size: 12.5px;
-  padding: 7px 13px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg);
-  cursor: pointer;
-  text-align: left;
-}
-
-.pg-starter-chip:hover {
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
-}
-
-@media (max-width: 1100px) {
-  .pg-work-video {
-    flex-direction: column;
-  }
-
-  .pg-rail {
-    display: none;
-    flex: none;
-    width: 100%;
-    max-height: none;
-  }
-
-  .pg-work.rail-open .pg-rail {
-    display: flex;
-  }
-
-  .pg-rail-toggle {
-    display: inline-block;
-  }
 }
 
 /* -- transcription ------------------------------------------------------------------ */

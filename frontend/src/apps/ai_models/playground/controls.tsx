@@ -8,48 +8,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
-/** A titled group inside VideoStage's own settings rail — predates the rail's
- *  removal from the other four stages (D429) and outlived it, since Video
- *  still draws a main-column + rail shape (`pg-work-video`, ai-playground.css)
- *  rather than the shared Config fold, and so never grew the cog (D464).
- *  Video is the ONLY consumer left; the other four read their settings out of
- *  `ConfigPanel` below. */
-export function RailSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="pg-rail-section">
-      <h5 className="pg-rail-title">{title}</h5>
-      {children}
-    </section>
-  );
-}
-
-/** The empty state's starter prompts, as a wrapped row of text-only chips —
- *  VideoStage's, and only VideoStage's. The other four stages moved to
- *  `StarterCards` (icon + name pills, measured to fit) when the rail went
- *  away; Video kept its rail, so it kept these. */
-export function StarterPrompts({
-  title,
-  prompts,
-  onPick,
-}: {
-  title: string;
-  prompts: string[];
-  onPick: (prompt: string) => void;
-}) {
-  return (
-    <div className="pg-starter">
-      <p className="pg-starter-title">{title}</p>
-      <div className="pg-starter-chips">
-        {prompts.map((prompt) => (
-          <button key={prompt} type="button" className="pg-starter-chip" onClick={() => onPick(prompt)}>
-            {prompt}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 /** A composer textarea that grows with its own text, so a Shift+Enter newline
  *  is visible. Returns the ref to hand the textarea and the `grow` to call on
  *  change.
