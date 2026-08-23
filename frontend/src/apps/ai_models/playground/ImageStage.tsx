@@ -24,7 +24,7 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { AdvancedPanel, RailChips, RailSlider, StarterPrompts } from "./controls";
+import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
@@ -92,6 +92,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const [error, setError] = useState<string | null>(null);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewLive, setPreviewLive] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -215,8 +216,13 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   return (
     <div className="pg-work">
-      {/* The action only: the hero card above names the model and its state. */}
-      <h2 className="pg-work-title">Describe a picture</h2>
+      {/* The action, and the way to the settings. The hero card above names
+          the model and its state. */}
+      <StageHeader
+        title="Describe a picture"
+        configOpen={configOpen}
+        onToggleConfig={() => setConfigOpen((open) => !open)}
+      />
 
       <div className="pg-composer">
           <textarea
@@ -266,8 +272,12 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           )}
       </div>
 
-      {/* Chips lead the fold; sliders and the seed follow. */}
-      <AdvancedPanel>
+      {/* Examples first, under the box they fill; hidden once a picture is on
+          screen, which is what that space is then for. */}
+      {!run && <StarterPrompts prompts={STARTERS} onPick={(p) => void generate(p)} />}
+
+      {/* Chips lead the panel; sliders and the seed follow. */}
+      <ConfigPanel open={configOpen}>
         <div className="pg-config-chips">
           <RailChips
             options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
@@ -351,15 +361,9 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             Same seed + same prompt + same settings = the same picture.
           </span>
         </label>
-      </AdvancedPanel>
+      </ConfigPanel>
 
       {error && <p className="pg-error">{error}</p>}
-
-      {!run && (
-          <div className="pg-empty-stage">
-            <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void generate(p)} />
-          </div>
-        )}
 
         {run && (
           <div className="pg-answer-block">

@@ -402,6 +402,15 @@ a.pg-hero-repo:hover {
   gap: 12px;
 }
 
+/* The stage's title row: the action on the left, the settings cog at the far
+   right end of the same line. */
+.pg-work-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 /* One line naming the action — the hero card above carries the model. */
 .pg-work-title {
   margin: 0;
@@ -410,43 +419,35 @@ a.pg-hero-repo:hover {
   letter-spacing: -0.01em;
 }
 
-/* Closed by default, and deliberately flat — no card, no background. */
-.pg-config > summary {
+/* Quiet until wanted: a muted glyph that lights on hover and stays lit while
+   the panel it opened is on screen. */
+.pg-cog {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  font-weight: 600;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  user-select: none;
-  list-style: none;
 }
 
-.pg-config > summary::-webkit-details-marker {
-  display: none;
-}
-
-.pg-config > summary::after {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-right: 1.5px solid var(--fg-muted);
-  border-bottom: 1.5px solid var(--fg-muted);
-  transform: rotate(-45deg);
-  transition: transform 0.15s ease;
-}
-
-.pg-config[open] > summary::after {
-  transform: rotate(45deg);
-}
-
-.pg-config > summary:hover {
+.pg-cog:hover {
   color: var(--fg);
+  background: rgba(var(--tint), 0.07);
 }
 
+.pg-cog.active {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+/* No margin-top: the work column's own gap spaces it from the row above. */
 .pg-config-body {
-  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -691,54 +692,46 @@ a.pg-hero-repo:hover {
   }
 }
 
-/* Empty states: a real invitation, not a blank box. */
+/* Example prompts: one horizontal row under the input, not a centered empty
+   state. It scrolls sideways rather than wrapping — wrapping a row of full
+   sentences would push the result below the fold on every stage. */
 
-.pg-empty-stage {
+.pg-starter-row {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 6px;
-  padding: 4px 16px 24px;
-}
-
-.pg-starter {
-  margin-top: 14px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  flex-wrap: nowrap;
   gap: 8px;
+  overflow-x: auto;
+  /* Room for the chip's focus ring. */
+  padding: 2px;
+  /* No scrollbar: it is a one-line row of examples, and a bar under it reads
+     as chrome on a control. The chips themselves show there is more. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
-.pg-starter-title {
-  margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-.pg-starter-chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  max-width: 560px;
+.pg-starter-row::-webkit-scrollbar {
+  display: none;
 }
 
 .pg-starter-chip {
+  flex: none;
+  max-width: 260px;
   font: inherit;
   font-size: 12.5px;
-  padding: 7px 13px;
+  padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: transparent;
-  color: var(--fg);
+  color: var(--fg-muted);
   cursor: pointer;
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pg-starter-chip:hover {
+  color: var(--fg);
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.08);
 }

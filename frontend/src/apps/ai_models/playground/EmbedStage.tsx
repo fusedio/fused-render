@@ -19,7 +19,7 @@
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, ModelLoading, watchJob } from "./client";
-import { AdvancedPanel } from "./controls";
+import { ConfigPanel, StageHeader } from "./controls";
 
 // The prefill: a query about food against lines where the matches say
 // "delicious" and "bakery", not "food" — a keyword search finds nothing here,
@@ -49,6 +49,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ranked, setRanked] = useState<Ranked[] | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
 
   // The run itself is one quick POST, but the cold-start watch loop is not —
   // leaving the stage must stop it, same as the chat stage's rule.
@@ -118,11 +119,16 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
 
   return (
     <div className="pg-work pg-embed">
-        {/* The action only: the hero card above names the model and its state. */}
-        <h2 className="pg-work-title">Search lines by meaning</h2>
+        {/* The action, and the way to the settings. The hero card above names
+            the model and its state. */}
+        <StageHeader
+          title="Search lines by meaning"
+          configOpen={configOpen}
+          onToggleConfig={() => setConfigOpen((open) => !open)}
+        />
         <p className="pg-embed-intro">
           Lines are ranked by how close their meaning is to the search, even when they share no
-          words with it. Run the example, then swap the lines in Config for your own.
+          words with it. Run the example, then swap in your own lines from the settings cog above.
         </p>
 
         <div className="pg-composer">
@@ -156,7 +162,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
           </button>
         </div>
 
-        <AdvancedPanel>
+        <ConfigPanel open={configOpen}>
           <label className="pg-ctl">
             <span className="pg-ctl-head">
               <span className="pg-ctl-label">Lines to search</span>
@@ -170,7 +176,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
             />
             <span className="pg-ctl-hint">One line per entry, up to {MAX_LINES}.</span>
           </label>
-        </AdvancedPanel>
+        </ConfigPanel>
 
         {status && <p className="pg-status">{status}</p>}
         {error && <p className="pg-error">{error}</p>}

@@ -1,21 +1,65 @@
 // The Playground's parameter vocabulary, shared by the stages.
 //
 // Every stage is one centered column reading as an API surface: input, Run,
-// result — with all four capabilities' parameters behind the Config fold
-// (D430, D431). Each control is a slider+number pair with a one-line hint,
-// defaults baked in and a per-control reset once a value moves.
+// result — with all four capabilities' parameters hidden until the cog in the
+// stage's title row asks for them (D430, D431, reshaped). Each control is a
+// slider+number pair with a one-line hint, defaults baked in and a
+// per-control reset once a value moves.
 import { useState, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 
-/** The fold everything uncommon goes behind. Closed by default on purpose:
- *  the panel's job is to make the surface above it read as a simple call. */
-export function AdvancedPanel({ children }: { children: ReactNode }) {
+/** The stage's one-line title, with the config cog right-aligned on the same
+ *  row. The cog lives up here rather than under the input because the title
+ *  row is the stage's own header — the settings belong to the stage, not to
+ *  the prompt — and a toggle at the end of the heading is where a settings
+ *  affordance is looked for. The open state belongs to the STAGE: the panel it
+ *  reveals is a sibling further down the column, not a child of this row. */
+export function StageHeader({
+  title,
+  configOpen,
+  onToggleConfig,
+}: {
+  title: string;
+  configOpen: boolean;
+  onToggleConfig: () => void;
+}) {
   return (
-    <details className="pg-config">
-      <summary>Config</summary>
-      <div className="pg-config-body">{children}</div>
-    </details>
+    <div className="pg-work-head">
+      <h2 className="pg-work-title">{title}</h2>
+      <button
+        type="button"
+        className={"pg-cog" + (configOpen ? " active" : "")}
+        aria-expanded={configOpen}
+        aria-label={configOpen ? "Hide the settings" : "Show the settings"}
+        title={configOpen ? "Hide the settings" : "Show the settings"}
+        onClick={onToggleConfig}
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.6 1.6 0 0 0 .33 1.77l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.6 1.6 0 0 0-1.77-.33 1.6 1.6 0 0 0-.97 1.47V21a2 2 0 1 1-4 0v-.11a1.6 1.6 0 0 0-1.05-1.47 1.6 1.6 0 0 0-1.77.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.6 1.6 0 0 0 .33-1.77 1.6 1.6 0 0 0-1.47-.97H3a2 2 0 1 1 0-4h.11a1.6 1.6 0 0 0 1.47-1.05 1.6 1.6 0 0 0-.33-1.77l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.6 1.6 0 0 0 1.77.33H9a1.6 1.6 0 0 0 .97-1.47V3a2 2 0 1 1 4 0v.11a1.6 1.6 0 0 0 .97 1.47 1.6 1.6 0 0 0 1.77-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.6 1.6 0 0 0-.33 1.77V9a1.6 1.6 0 0 0 1.47.97H21a2 2 0 1 1 0 4h-.11a1.6 1.6 0 0 0-1.47.97Z" />
+        </svg>
+      </button>
+    </div>
   );
+}
+
+/** Where the uncommon parameters live, revealed by the cog above. Closed by
+ *  default on purpose: the surface it hides behind has to read as a simple
+ *  call. Unmounted while closed, not hidden — every control inside is driven
+ *  by stage state, so nothing is lost by not rendering it. */
+export function ConfigPanel({ open, children }: { open: boolean; children: ReactNode }) {
+  if (!open) return null;
+  return <div className="pg-config-body">{children}</div>;
 }
 
 /** Copy, as an icon in a result card's top-right corner. */
@@ -147,28 +191,33 @@ export function RailChips<T extends string>({
   );
 }
 
-/** The empty state's starter prompts: research's one consistent finding on
- *  empty states (Open WebUI chips, AI Studio gallery, Replicate pre-fills) —
- *  a blank box gives no value; a clickable example gives immediate value. */
+/** Example prompts, as one horizontal row of chips directly under the input.
+ *  Research's one consistent finding on empty inputs (Open WebUI chips, AI
+ *  Studio gallery, Replicate pre-fills): a blank box gives no value, a
+ *  clickable example gives immediate value. They sit under the box rather than
+ *  in a centered empty state because that is where the thing they fill is —
+ *  one glance from the cursor, and the row scrolls sideways rather than
+ *  growing the column. */
 export function StarterPrompts({
-  title,
   prompts,
   onPick,
 }: {
-  title: string;
   prompts: string[];
   onPick: (prompt: string) => void;
 }) {
   return (
-    <div className="pg-starter">
-      <p className="pg-starter-title">{title}</p>
-      <div className="pg-starter-chips">
-        {prompts.map((prompt) => (
-          <button key={prompt} type="button" className="pg-starter-chip" onClick={() => onPick(prompt)}>
-            {prompt}
-          </button>
-        ))}
-      </div>
+    <div className="pg-starter-row">
+      {prompts.map((prompt) => (
+        <button
+          key={prompt}
+          type="button"
+          className="pg-starter-chip"
+          title={prompt}
+          onClick={() => onPick(prompt)}
+        >
+          {prompt}
+        </button>
+      ))}
     </div>
   );
 }

@@ -23,7 +23,7 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { AdvancedPanel, CopyButton } from "./controls";
+import { ConfigPanel, CopyButton, StageHeader } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -55,6 +55,7 @@ export function TranscribeStage({ model }: { model: string }) {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
 
   const [task, setTask] = useState<"transcribe" | "translate">(() =>
     readParam("task") === "translate" ? "translate" : "transcribe",
@@ -296,8 +297,13 @@ export function TranscribeStage({ model }: { model: string }) {
 
   return (
     <div className="pg-work">
-        {/* The action only: the hero card above names the model and its state. */}
-        <h2 className="pg-work-title">Transcribe a recording</h2>
+        {/* The action, and the way to the settings. The hero card above names
+            the model and its state. */}
+        <StageHeader
+          title="Transcribe a recording"
+          configOpen={configOpen}
+          onToggleConfig={() => setConfigOpen((open) => !open)}
+        />
 
         {phase.step === "recording" ? (
           <div className="pg-recording">
@@ -383,7 +389,7 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
 
-        <AdvancedPanel>
+        <ConfigPanel open={configOpen}>
           <label className="pg-ctl">
             <span className="pg-ctl-head">
               <span className="pg-ctl-label">Task</span>
@@ -424,7 +430,7 @@ export function TranscribeStage({ model }: { model: string }) {
               <span className="pg-ctl-hint">Per-word timings in the saved transcript. Slower.</span>
             </span>
           </label>
-        </AdvancedPanel>
+        </ConfigPanel>
 
         {error && <p className="pg-error">{error}</p>}
 

@@ -22,7 +22,7 @@ import {
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
-import { AdvancedPanel, CopyButton, RailSlider, StarterPrompts } from "./controls";
+import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterPrompts } from "./controls";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
@@ -103,6 +103,7 @@ export function TextStage({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
 
   const [temperature, setTemperature] = useState(() =>
     numParam("temp", DEFAULTS.temperature, ...LIMITS.temperature),
@@ -237,8 +238,13 @@ export function TextStage({
 
   return (
     <div className="pg-work">
-      {/* The action only: the hero card above names the model and its state. */}
-      <h2 className="pg-work-title">Try a prompt</h2>
+      {/* The action, and the way to the settings. The hero card above names
+          the model and its state. */}
+      <StageHeader
+        title="Try a prompt"
+        configOpen={configOpen}
+        onToggleConfig={() => setConfigOpen((open) => !open)}
+      />
 
       <div className="pg-composer">
         <textarea
@@ -284,8 +290,12 @@ export function TextStage({
         )}
       </div>
 
-      {/* Every knob is behind the fold; the surface above is prompt and Run. */}
-      <AdvancedPanel>
+      {/* Examples first, under the box they fill; hidden once there is a
+          reply to read, which is what that space is then for. */}
+      {!reply && !status && <StarterPrompts prompts={STARTERS} onPick={(p) => void send(p)} />}
+
+      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
+      <ConfigPanel open={configOpen}>
         <RailSlider
           label="Temperature"
           hint="Lower is focused and repeatable; higher is varied and creative."
@@ -334,16 +344,10 @@ export function TextStage({
           fallback={DEFAULTS.top_p}
           onChange={setTopP}
         />
-      </AdvancedPanel>
+      </ConfigPanel>
 
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
-
-      {!reply && !status && (
-        <div className="pg-empty-stage">
-          <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void send(p)} />
-        </div>
-      )}
 
       {reply && shown && (
         <div className="pg-answer-block">
