@@ -37,6 +37,8 @@ stub callables standing in for the model.
 import argparse
 import concurrent.futures
 import contextlib
+import datetime
+import email.utils
 import fnmatch
 import hashlib
 import http.client
@@ -413,6 +415,12 @@ SEGMENT_MIN_BYTES = 32 * 1024 * 1024
 #: big each piece is once splitting happens, and nothing says a future tuning
 #: pass changes them together.
 #:
+#: **A FLOOR, not the size — see `MAX_CHUNKS_PER_FILE`.** Every piece is exactly
+#: this big up to a file of `500 × CHUNK_BYTES` (16,777,216,000 bytes, ~16.8GB);
+#: above that the piece grows so that the COUNT stops. Everything below is about
+#: why a fixed size rather than `size / N`, and it holds unchanged: the point was
+#: never 32MB specifically, it was many more units of work than connections.
+#:
 #: **Fixed size, not `size / N` — this is the fix for the download's tail.**
 #: A big shard used to become a handful of EQUAL shares (see the retired
 #: `MAX_SEGMENTS_PER_FILE` below): four connections at four different real
@@ -448,6 +456,47 @@ SEGMENT_MIN_BYTES = 32 * 1024 * 1024
 #: left as a real option for whoever next has a reason to prefer it, not
 #: implemented speculatively here.
 CHUNK_BYTES = 32 * 1024 * 1024
+#: The most pieces ONE file may be split into, whatever its size. Together with
+#: the floor above:
+#:
+#:     chunk = max(CHUNK_BYTES, ceil(size / MAX_CHUNKS_PER_FILE))
+#:
+#: so a file grows its piece SIZE once it would otherwise grow its piece COUNT
+#: past this. The floor and the ceiling meet at exactly `500 × CHUNK_BYTES` —
+#: 16,777,216,000 bytes, ~16.8GB — and every file below that is chunked exactly
+#: as it was before this cap existed, which is every model in today's catalog
+#: and every file of the 280-file `MiniMaxAI/MiniMax-H3` (its largest plans 311
+#: pieces, so the cap never engages there at all).
+#:
+#: **The cost this removes is SIDECAR BOOKKEEPING, and nothing else.** Every
+#: segment's cursor lives in the sidecar, which is rewritten whole every
+#: `FLUSH_EVERY_S` (one second) for the life of the download. `Comfy-Org/MiniMax-H3`
+#: — 30 files, 471GB, with single files up to 66.3GB — planned 1,976 segments in
+#: one file and 14,057 across the repo: serialising ~2,000 dicts on a 1Hz timer
+#: for the several hours such a download runs, per file in flight. Capped, that
+#: same 66.3GB file is 500 × 133MB.
+#:
+#: **It is NOT a rate-limit measure and must not be read as one.** The Hub meters
+#: URLs carrying a `/resolve/` segment; our ranged GETs go to the presigned CDN
+#: location, which carries none, so chunk count consumes no quota at all. The
+#: metered cost of a download is about one metadata resolve per FILE (280 for the
+#: largest MiniMax repo, against 3,000 per five minutes anonymously), which no
+#: chunking decision changes. What protects against rate limits is the Hub token,
+#: the `RateLimit` parse in `_throttle_wait_s`, and `_resolved_meta`.
+#:
+#: **Why this does not reintroduce `_RETIRED_MAX_SEGMENTS_PER_FILE`'s tail
+#: problem.** That cap was 4 — at or below `MAX_CONNECTIONS = 8`, so a big file
+#: became a handful of static shares and a worker that finished early had nothing
+#: to steal. 500 units against 8 connections is still sixty times more work than
+#: workers, which is the property the tail fix actually needed; a queue that deep
+#: hands off exactly as well as an uncapped one.
+#:
+#: **The accepted cost:** a failed chunk re-fetches a whole chunk, so at the
+#: 66.3GB extreme that is up to 133MB rather than 32MB. It only applies above
+#: ~16.8GB, where 133MB is two tenths of a percent of the file, and the retry
+#: loop's own budget (`SEGMENT_ATTEMPTS`) already makes exactly this trade one
+#: size down.
+MAX_CHUNKS_PER_FILE = 500
 #: Across everything — the ONE number that bounds how many sockets a download
 #: opens. A pool per file would multiply the caps together.
 MAX_CONNECTIONS = 8
@@ -499,6 +548,38 @@ HASH_BLOCK_BYTES = 1024 * 1024
 HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
+#: A rate limit is not a fault, and `SEGMENT_ATTEMPTS` is a claim about faults:
+#: it exists to decide "this file is unreachable, hand the repo to hf". A 429
+#: says the opposite — the server is reachable and is asking us to wait — so it
+#: gets an allowance of its own, counted separately. With the shared budget, a
+#: throttled download gave up after five attempts and about seven seconds of
+#: backoff and fell into `snapshot_download`, which is SLOWER: the user saw a
+#: download crawl for no stated reason, having been throttled and never told.
+#:
+#: **THE REAL GUARANTEE IS THE TIME, NOT THE COUNT.** `THROTTLE_TOTAL_MAX_S` is
+#: the bound worth reasoning about — the most wall clock one stretch of being
+#: rate-limited may cost before this gives up and lets the ordinary failure path
+#: hand the repo to hf. The attempt count bounds the REQUESTS instead, for the
+#: pathological case the time budget cannot see: a server naming a wait of a
+#: millisecond, over and over. The pair of them without the total was the review
+#: finding — 60 attempts × a 60s ceiling is an hour, which is exactly what the
+#: ceiling below says it exists to prevent.
+#:
+#: Ten minutes spans two of the Hub's five-minute fixed windows, so a genuinely
+#: exhausted quota is waited out twice over before this concludes the wait is
+#: not the answer.
+THROTTLE_ATTEMPTS = 60
+THROTTLE_TOTAL_MAX_S = 600.0
+#: The longest SINGLE wait a throttle may impose, however long the server asked
+#: for. A `Retry-After` of an hour is a legal answer, and the whole download
+#: sitting still for it is not: coming back early costs a handful of extra
+#: requests (a fixed window resets when it resets, whatever we do in the
+#: meantime) and buys a row that keeps saying something true and a total budget
+#: that stays accountable in minute-sized pieces. The wait is slept in
+#: `THROTTLE_SLICE_S` slices on top of that, because `time.sleep(60)` cannot be
+#: interrupted and `self.stop` is how a ✕ reaches a parked segment.
+THROTTLE_WAIT_MAX_S = 60.0
+THROTTLE_SLICE_S = 0.5
 FLUSH_EVERY_S = 1.0
 #: The revision both paths use, named rather than implied. It is hf's own
 #: `snapshot_download` default, which is what keeps the fast path and the
@@ -506,10 +587,20 @@ FLUSH_EVERY_S = 1.0
 DEFAULT_REVISION = "main"
 
 #: The sidecar's own format number. Bumped whenever what a sidecar MEANS
-#: changes shape — the chunk queue is exactly such a change: a segment used to
-#: be one of `size / N` equal shares, and is now one of many fixed-size
-#: `CHUNK_BYTES` pieces, so a sidecar an older build left behind describes
-#: boundaries this build would derive differently for the same file. Identity
+#: changes shape — twice so far, and both times for the same reason.
+#:
+#: **3: `MAX_CHUNKS_PER_FILE`.** A file above `500 × CHUNK_BYTES` (~16.8GB) is
+#: now split into 500 larger pieces rather than into `CHUNK_BYTES` ones, so a
+#: version-2 sidecar for such a file lists boundaries this build would never
+#: derive — and lists MORE of them, at every 32MB rather than every
+#: `ceil(size/500)`. Every SMALLER file is planned identically, so nothing but
+#: the version number distinguishes a stale sidecar from a current one, which is
+#: exactly the dangerous shape described below.
+#:
+#: **2: the chunk queue.** A segment used to be one of `size / N` equal shares,
+#: and became one of many fixed-size `CHUNK_BYTES` pieces, so a sidecar an older
+#: build left behind describes boundaries this build would derive differently for
+#: the same file. Identity
 #: (etag, size) still matches such a sidecar, and the layout even often looks
 #: internally consistent — which is exactly the shape of input that turns a
 #: resume into a silently wrong blob rather than an obviously failed one, so
@@ -518,7 +609,7 @@ DEFAULT_REVISION = "main"
 #: field existed reads as missing — is treated exactly like no sidecar at all:
 #: the safe reading, since a fresh download from a clean chunk plan is always
 #: correct, merely slower than a resume would have been.
-SIDECAR_VERSION = 2
+SIDECAR_VERSION = 3
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
 _RANGE_START = re.compile(r"^bytes\s+(\d+)-")
@@ -889,13 +980,13 @@ def _file_size(path):
 
 
 def _chunks(size):
-    """Split [0, size) into fixed `CHUNK_BYTES` pieces. `done` is the cursor.
+    """Split [0, size) into `CHUNK_BYTES`-or-larger pieces. `done` is the cursor.
 
     Below `SEGMENT_MIN_BYTES` the file is one piece covering the whole thing —
     unchanged from before the chunk queue, and still the right answer: there
     is nothing to gain from splitting a file too small to matter.
 
-    At or above it, every piece but the last is exactly `CHUNK_BYTES` — fixed
+    At or above it, every piece but the last is exactly one chunk — fixed
     size, not `size / N`. A fixed size is what turns a big file into MANY
     units of work rather than a HANDFUL: the whole point, since a queue with
     only as many items as connections gives a slow one nothing to hand off
@@ -903,17 +994,30 @@ def _chunks(size):
     30-shard repo and a single 4.6GB shard both resolve to plans a worker can
     keep pulling from until the file is actually done.
 
-    Deterministic in `size` alone — no `count` argument, unlike the equal-share
-    split this replaced — which is what lets a resume regenerate the exact
-    same boundaries a previous run planned without having to persist the
-    piece count anywhere but the sidecar's own `segments` list.
+    The chunk is `CHUNK_BYTES` up to the point where that would mean more than
+    `MAX_CHUNKS_PER_FILE` pieces, and grows from there — a floor on the size and
+    a ceiling on the count, which is what keeps a 66GB file's sidecar from
+    carrying two thousand cursors rewritten every second.
+
+    **PER FILE, and not per repo, deliberately.** A repo-wide budget would make
+    one file's chunk size depend on the rest of the FILE SET, and this function
+    is deterministic in `size` alone — no `count` argument, unlike the
+    equal-share split it replaced. That is what lets a resume regenerate the
+    exact boundaries a previous run planned without persisting the piece count
+    anywhere but the sidecar's own `segments` list; under a per-repo cap, a
+    resume after any change to the file list (a scoped download, an
+    `allow_patterns` fetch, a repo that gained a file) would re-plan a file whose
+    own bytes never moved, and throw away recorded progress to do it. The tighter
+    bound is not worth that.
     """
     if size < SEGMENT_MIN_BYTES:
         return [{"start": 0, "end": size - 1, "done": 0}]
+    chunk = max(CHUNK_BYTES,
+                (size + MAX_CHUNKS_PER_FILE - 1) // MAX_CHUNKS_PER_FILE)
     pieces = []
     start = 0
     while start < size:
-        end = min(start + CHUNK_BYTES, size) - 1
+        end = min(start + chunk, size) - 1
         pieces.append({"start": start, "end": end, "done": 0})
         start = end + 1
     return pieces
@@ -935,6 +1039,322 @@ def _blob_sha256(path):
         for block in iter(lambda: handle.read(HASH_BLOCK_BYTES), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+# -------------------------------------------------------------- being throttled
+#
+# A 429 used to be indistinguishable from a broken link: it landed in the
+# generic `HTTP <code>` branch of the retry loop, spent the segment's whole
+# budget on backoff in about seven seconds, and took the repo into hf's own
+# `snapshot_download` — a slower download, with nothing anywhere saying why it
+# had become slow. Two things are wrong with that and both are fixed here: a
+# throttle is WAITED OUT rather than counted as a fault (see
+# `THROTTLE_ATTEMPTS`), and it is SAID on the job row.
+#
+# The notice is a process global, which is right rather than merely convenient:
+# a download-only worker process serves exactly one download, so there is no
+# second job the notice could be attributed to, and the segment threads have no
+# other way to reach the row. `fetch_with_progress`'s tick is the only channel
+# to it, it runs on a different thread from every segment, and several segments
+# can be throttled at once — hence the lock rather than a bare assignment.
+
+_THROTTLE_LOCK = threading.Lock()
+_THROTTLE_DETAIL = None
+
+
+def _note_throttle(seconds, hub):
+    """Publish "we are being rate-limited" for the next tick to say.
+
+    `hub` is whether the throttling host is Hugging Face — `_FileFetch`'s
+    `re_resolvable`, which is True on the Hub path only. A 429 from whatever
+    `FUSED_MODEL_MIRROR` names is a real throttle and worth saying, but naming
+    the Hub for it, or offering a Hub sign-in as the cure, would be advice about
+    a host that is not involved.
+
+    The sign-in half is added only when there is no token: it is the one action
+    that raises the limit, and telling a signed-in user to sign in reads as the
+    app not knowing what it is doing. `_hf_token()` answers that question for
+    the whole file — nothing here reads the environment itself, and no part of
+    the token goes anywhere near the message.
+    """
+    global _THROTTLE_DETAIL
+    waiting = f"waiting {max(1, int(round(seconds)))}s"
+    if not hub:
+        detail = f"This download is being rate-limited — {waiting}"
+    elif _hf_token():
+        detail = f"Hugging Face is limiting this download — {waiting}"
+    else:
+        detail = ("Hugging Face is limiting this download — sign in to Hugging "
+                  "Face in Preferences → AI for a higher limit")
+    with _THROTTLE_LOCK:
+        _THROTTLE_DETAIL = detail
+
+
+def _clear_throttle():
+    """Retire the notice, because bytes are moving again."""
+    global _THROTTLE_DETAIL
+    with _THROTTLE_LOCK:
+        _THROTTLE_DETAIL = None
+
+
+def _throttle_detail():
+    """The throttle notice a tick should show instead of its own detail, or None."""
+    with _THROTTLE_LOCK:
+        return _THROTTLE_DETAIL
+
+
+def _http_status(error):
+    """The HTTP status an exception carries, or None if it carries none.
+
+    Two client libraries reach this file and they raise different shapes. Our own
+    requests go through `urllib`, whose `HTTPError` IS a response (`.code`,
+    `.headers`); the Hub calls go through `huggingface_hub`, which raises
+    `requests`-shaped errors carrying the response beside them (`.response`).
+    Both are throttled by the same server for the same reason, so the throttle
+    logic reads them through one pair of accessors rather than existing twice.
+
+    Duck-typed rather than imported: this module is stdlib-only by contract (see
+    the module docstring), so it cannot name `requests.HTTPError` to check it.
+    """
+    code = getattr(error, "code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(getattr(error, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def _http_headers(error):
+    """The response headers an exception carries, or None. See `_http_status`."""
+    headers = getattr(error, "headers", None)
+    if headers is None:
+        headers = getattr(getattr(error, "response", None), "headers", None)
+    return headers
+
+
+#: One `r=`/`t=` parameter of a `RateLimit` entry. Deliberately loose: this is a
+#: structured-field list whose parameter ORDER is not guaranteed, whose names are
+#: quoted, and which may carry several buckets in one header — so the parse looks
+#: for the two parameters it understands and ignores everything else, rather than
+#: implementing the grammar and failing on the parts it does not need.
+_RATELIMIT_PARAM = re.compile(r'\b([rt])\s*=\s*"?(-?\d+)"?')
+
+
+def _ratelimit_reset_s(headers):
+    """Seconds until the rate limit resets, from the IETF `RateLimit` header.
+
+    **This, not `Retry-After`, is what the Hub actually sends.** It rate-limits
+    by REQUEST COUNT over five-minute fixed windows in three buckets (api, pages,
+    resolvers) and answers a 429 with
+    `RateLimit: "resolvers";r=0;t=42` — `t` being the seconds left in the window
+    (`draft-ietf-httpapi-ratelimit-headers`). There is no `Retry-After` on it, so
+    parsing only that one meant our own fetch fell back to a guessed backoff
+    while the exact answer sat unread in the response — and `snapshot_download`,
+    the FALLBACK, has parsed this header since hf 1.2.0, so hf's own client was
+    better informed about the wait than our fast path was.
+
+    Several buckets can arrive in one header, and the interesting one is the
+    bucket that is actually exhausted: `r=0`. With none of them at zero (or no
+    `r` at all) the longest named reset wins — coming back too late costs a
+    little throughput, coming back too early costs another 429.
+
+    Anything unparseable is None, never a bogus zero: the caller's next source is
+    strictly better than a wait this function invented.
+    """
+    if headers is None:
+        return None
+    raw = headers.get("RateLimit")
+    if not raw:
+        return None
+    exhausted, named = [], []
+    for entry in str(raw).split(","):
+        params = {key.lower(): int(value)
+                  for key, value in _RATELIMIT_PARAM.findall(entry)}
+        reset = params.get("t")
+        if reset is None or reset < 0:
+            continue
+        named.append(reset)
+        if params.get("r") == 0:
+            exhausted.append(reset)
+    pool = exhausted or named
+    return float(max(pool)) if pool else None
+
+
+def _retry_after_s(headers):
+    """`Retry-After` off a response, in seconds, or None if there is none to read.
+
+    Kept beside `_ratelimit_reset_s` although the Hub does not send it: it costs
+    nothing, our own mirror or whatever CDN fronts it may well send it, and the
+    503 case in `_is_throttled` is defined in terms of it.
+
+    Both forms the RFC permits, because both are served in the wild: delta
+    seconds, and an HTTP-date. A date in the past (a clock skewed either way, a
+    response that sat in a queue) is a wait of zero rather than a negative one.
+    """
+    header = ((headers.get("Retry-After") if headers is not None else None) or "").strip()
+    if not header:
+        return None
+    try:
+        return max(0.0, float(int(header)))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        # A `Retry-After` date is GMT by definition; a naive one is that,
+        # not local time.
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (when - now).total_seconds())
+
+
+def _is_throttled(error):
+    """Is this exception the server asking us to wait?
+
+    429 always — it is the ONLY thing the Hub answers a rate limit with, and it
+    shapes no bandwidth, so there is nothing else to detect. 503 only WITH a
+    `Retry-After`: a bare 503 is an overloaded or broken host, which is exactly
+    what the ordinary retry budget is for, and treating every one of them as a
+    throttle would turn a genuinely dead endpoint into a download that waited
+    minutes before falling back.
+
+    Anything with no status at all — a socket error, a bad manifest — is not a
+    throttle, which is what lets this be asked of an arbitrary exception.
+    """
+    status = _http_status(error)
+    if status == 429:
+        return True
+    return status == 503 and _retry_after_s(_http_headers(error)) is not None
+
+
+def _throttle_wait_s(error, attempt):
+    """How long to wait for this throttle: what the server asked, or a backoff.
+
+    Precedence: the `RateLimit` reset (the Hub's own exact answer), then
+    `Retry-After` (anyone else's), then a backoff of our own that doubles per
+    attempt. Capped by `THROTTLE_WAIT_MAX_S` whichever it is.
+
+    A named wait of ZERO falls through to the backoff rather than being honoured
+    — `t=0` means "the window is resetting about now", and taken literally it
+    turned the retry budget into an immediate re-request loop against a host that
+    had just said it was over its limit.
+    """
+    headers = _http_headers(error)
+    for named in (_ratelimit_reset_s(headers), _retry_after_s(headers)):
+        if named:
+            return min(named, THROTTLE_WAIT_MAX_S)
+    return min(THROTTLE_WAIT_MAX_S, RETRY_BACKOFF_S * 2 ** (attempt - 1))
+
+
+def _throttle_sleep(stop, seconds):
+    """Wait `seconds`, in slices, giving up early once `stop` is set.
+
+    In slices because a single `time.sleep` of a minute cannot be interrupted,
+    and the ✕ a user presses reaches a segment only through `stop` (see
+    `THROTTLE_WAIT_MAX_S`). Counted DOWN rather than measured against a
+    deadline, so the loop terminates on the number of naps taken: a test that
+    replaces the clock does not turn this into a spin.
+    """
+    while seconds > 0 and not stop.is_set():
+        nap = min(THROTTLE_SLICE_S, seconds)
+        time.sleep(nap)
+        seconds -= nap
+
+
+class _Throttle:
+    """One stretch of being rate-limited: its waits, its bounds, its notice.
+
+    A stretch, not a request. Both places that can be throttled — the segment
+    loop and the Hub metadata call — need the same three things (honour the
+    named wait, stay inside a budget, say so on the row), and the budget has to
+    be shared across the CONSECUTIVE 429s that make up one stretch rather than
+    reset per request. Two copies of that bookkeeping is how the count and the
+    clock come to disagree.
+
+    **`progressed()` is half the point.** A long download over a busy link is
+    throttled in bursts, and the allowance is a claim about ONE burst: without
+    the reset, the 61st 429 of a healthy multi-hour download — reached an hour
+    apart, with gigabytes moved in between — was treated as an ordinary fault and
+    spent the segment's retry budget on falling back to hf. Exactly the mistake
+    `tries` avoids by resetting on the cursor moving, made one level up.
+    """
+
+    def __init__(self, hub, stop=None):
+        self.hub = hub
+        #: Never set for a caller that has nothing to cancel (the metadata call
+        #: is a single request, not a multi-hour park), so the slicing loop reads
+        #: it uniformly rather than branching on None.
+        self.stop = stop if stop is not None else threading.Event()
+        self.attempts = 0
+        self.waited = 0.0
+
+    def wait(self, error):
+        """Wait out one throttle; False once the budget is spent.
+
+        False is what turns a rate limit back into an ordinary failure, which is
+        the right end state: a host that has been asking us to wait for ten
+        minutes is not going to be waited out, and the fallback — hf's own
+        downloader, which parses the same header — is a better answer than a
+        parked segment holding a connection nobody else can use.
+        """
+        if self.attempts >= THROTTLE_ATTEMPTS or self.waited >= THROTTLE_TOTAL_MAX_S:
+            return False
+        self.attempts += 1
+        seconds = min(_throttle_wait_s(error, self.attempts),
+                      THROTTLE_TOTAL_MAX_S - self.waited)
+        self.waited += seconds
+        # Announced BEFORE the sleep: the announcement is the point — a download
+        # that has gone quiet for a minute has to say why, and only the thread
+        # being throttled knows.
+        _note_throttle(seconds, hub=self.hub)
+        _throttle_sleep(self.stop, seconds)
+        return True
+
+    def progressed(self):
+        """The stretch is over — bytes moved, or the call went through."""
+        self.attempts = 0
+        self.waited = 0.0
+        _clear_throttle()
+
+
+def _throttled_retry(call, hub, stop=None):
+    """`call()`, waiting out a rate limit instead of failing on one.
+
+    For the requests that are NOT the chunk loop, and on the Hub they are the
+    ones that get throttled. The Hub meters URLs with a `/resolve/` segment in
+    them; our ranged GETs go to the presigned CDN location, which has none, so
+    the metadata call is where a 429 realistically lands — and there it used to
+    escape the segmented fetch entirely and take the whole repo into the
+    fallback, with none of the waiting or disclosure below it.
+
+    Anything that is not a throttle re-raises untouched, which is what lets this
+    wrap a call whose other failures (`_Unsegmentable`, a socket error, a repo
+    that moved) must reach their own handlers unchanged.
+    """
+    throttle = _Throttle(hub, stop)
+    while True:
+        try:
+            value = call()
+        except Exception as error:  # noqa: BLE001 - re-raised below unless it is a throttle
+            if not _is_throttled(error) or not throttle.wait(error):
+                raise
+            continue
+        throttle.progressed()
+        return value
+
+
+def _resolved_meta(repo_id, filename, revision, stop=None):
+    """`_hub_file_meta`, waiting out a rate limit rather than failing on one.
+
+    The single funnel for every Hub metadata call in this file — the pre-flight
+    resolve and the mid-download re-resolve — so both get the same treatment from
+    one place. `hub=True` unconditionally: this function IS the Hub path.
+    """
+    return _throttled_retry(
+        lambda: _hub_file_meta(repo_id, filename, revision), hub=True, stop=stop)
 
 
 class _FileFetch:
@@ -1269,6 +1689,10 @@ class _FileFetch:
         ranged = len(self.segments) > 1
         refreshed = False
         tries = 0
+        # Throttles are bounded apart from `tries`, in time rather than in
+        # attempts, and reset by progress exactly as `tries` is — see
+        # `_Throttle`.
+        throttle = _Throttle(self.re_resolvable, self.stop)
         reason = "nothing was attempted"
         while tries < SEGMENT_ATTEMPTS and not self.stop.is_set():
             if _seg_complete(seg):
@@ -1286,10 +1710,22 @@ class _FileFetch:
                         else:
                             self._check_range(response, start)
                     self._drain(response, seg, start)
+                if seg["done"] > before:
+                    # Bytes are moving, so this stretch of being throttled is
+                    # over: the allowance comes back and the row stops saying
+                    # "waiting". Here rather than in the cursor-moved branch
+                    # below, which a completed segment returns past.
+                    throttle.progressed()
                 if _seg_complete(seg):
                     return
                 reason = f"the stream ended at byte {seg['start'] + seg['done']}"
             except urllib.error.HTTPError as error:
+                if _is_throttled(error) and throttle.wait(error):
+                    # A wait the server ASKED for, so it costs no attempt: the
+                    # `continue` skips the retry budget below entirely. Once the
+                    # throttle budget itself is spent, `wait` says False and this
+                    # becomes the ordinary failure it now really is.
+                    continue
                 if error.code in (401, 403) and not refreshed and self.re_resolvable:
                     # `location` is a presigned CDN URL and a multi-hour
                     # download outlives it. Re-resolving does NOT count against
@@ -1324,7 +1760,14 @@ class _FileFetch:
                 # multi-gigabyte download is not, so a second expiry is ordinary
                 # — and unhandled it spends the whole retry budget on 401s and
                 # aborts into a fallback that then deletes the resumable state.
+                #
+                # The throttle allowance comes back with them, and for the same
+                # reason: bytes arrived, so whatever the server was limiting a
+                # moment ago it is serving now. (Reached when `_drain` raised on
+                # top of real progress; the ordinary path resets inside the
+                # `try` above.)
                 tries, refreshed = 0, False
+                throttle.progressed()
             else:
                 tries += 1
                 time.sleep(min(5.0, RETRY_BACKOFF_S * tries))
@@ -1353,7 +1796,8 @@ class _FileFetch:
         if not self.re_resolvable:
             raise _Unsegmentable(
                 f"{self.filename}: this download has no re-resolvable location")
-        fresh = _hub_file_meta(self.repo_id, self.filename, self.revision)
+        fresh = _resolved_meta(self.repo_id, self.filename, self.revision,
+                               stop=self.stop)
         for field in ("etag", "size", "commit"):
             if fresh.get(field) != self.meta[field]:
                 raise _Unsegmentable(
@@ -1591,7 +2035,12 @@ def _resolve(repo_id, filenames, revision, meta=None):
     consulted at all. Same signature either way, so the pool below cannot tell
     the difference and neither can anything downstream of it.
     """
-    provider = meta or _hub_file_meta
+    # The Hub path goes through `_resolved_meta`, which waits out a 429 rather
+    # than letting it abort the whole fetch: these are `/resolve/` URLs, which is
+    # the bucket the Hub actually meters (the ranged GETs below go to a presigned
+    # CDN location it does not). A supplied provider is somebody else's host and
+    # is left exactly as it was handed to us.
+    provider = meta or _resolved_meta
     with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(MAX_CONNECTIONS, len(filenames)),
             thread_name_prefix="meta") as pool:
@@ -2202,6 +2651,12 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     if total is None:
         total = repo_total_bytes(model_id)
     identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+    # A notice left over from a PREVIOUS fetch is not about this one. It cannot
+    # happen in a download-only worker (one process, one download), but a
+    # resident worker fetches component models during requests, and a fetch that
+    # ended while a segment was still parked on a 429 would otherwise open the
+    # next row already claiming to be rate-limited.
+    _clear_throttle()
 
     def measured():
         """Bytes done right now, from whichever source is actually moving.
@@ -2219,7 +2674,16 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
         return disk
 
     def tick(**fields):
-        """One progress report that can carry a ✕ back. See the docstring."""
+        """One progress report that can carry a ✕ back. See the docstring.
+
+        A throttle notice WINS over the caller's `detail`. It is the one thing
+        the row can say that the caller does not know: "Fetching weights…" over
+        a download the Hub has parked is a true sentence that reads as a lie,
+        and the segment threads have no other way to reach this row.
+        """
+        notice = _throttle_detail()
+        if notice:
+            fields["detail"] = notice
         report_or_cancel(job=job, **identity, state="running", **fields)
         if job is not None and CANCEL.is_set():
             raise Cancelled()

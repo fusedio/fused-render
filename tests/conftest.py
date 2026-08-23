@@ -583,6 +583,48 @@ def _no_real_rcd_spawn():
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _real_core_templates_stay_untouched():
+    """Fail the session loudly if it restaged the developer's REAL core templates.
+
+    The redirect at the top of this file only holds while FUSED_RENDER_HOME
+    keeps pointing at the throwaway dir. One import proved able to undo it for
+    the whole worker: `fused_render.supervisor.__main__`'s module body applies
+    the desktop env (self_environment), repointing FUSED_RENDER_HOME at the real
+    ~/.fused-render — after which every later ensure_core_templates() call wiped
+    and restaged the user's ~/.fused-render/.core-templates with this checkout's
+    tree, and env installs built venvs in the real home. test_supervisor_shutdown
+    now restores the env around that import; this guard is the net for the next
+    leak of the same class, turning silent corruption into a named failure.
+
+    Skipped when the caller deliberately pointed FUSED_RENDER_HOME at the real
+    home (the docstring above allows that), since staging there is then intended.
+    """
+    real_home = os.path.realpath(os.path.expanduser("~/.fused-render"))
+    marker = os.path.join(real_home, ".core-templates", ".version")
+    if os.path.realpath(os.environ.get("FUSED_RENDER_HOME", "")) == real_home:
+        yield
+        return
+
+    def snapshot():
+        try:
+            with open(marker, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    before = snapshot()
+    yield
+    after = snapshot()
+    if after != before:
+        pytest.fail(
+            f"this test session changed the REAL staged core templates "
+            f"({marker}: {before!r} -> {after!r}). Some test escaped the "
+            f"FUSED_RENDER_HOME redirect — a process resolved home_dir() to the "
+            f"real ~/.fused-render and restaged it with this checkout's "
+            f"templates.", pytrace=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _reap_test_rcd_daemons():
     """Kill any REAL rclone rcd daemon a test spawned, on session teardown.
 

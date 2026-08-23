@@ -6880,6 +6880,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   timer: the directory grows only when renders happen, the caller is about to
   wait minutes anyway, and a live preview is rewritten every step so its age is
   what tells the two apart. The image itself is never swept at any age.
+- **AI-9f** **`fused.ai.image({image})` edits a base image instead of
+  rendering from the prompt alone — mflux-only, and the diffusers image
+  engine refuses the option rather than answering best-effort** (D432).
+  `image` is a page-relative PATH, resolved exactly as `/api/ai/transcribe`'s
+  `path` is (RH-1): the bridge injects `base` from the page's own `?path=`,
+  and the server 400s a missing or non-file result before a job row opens.
+  **One image, a single string** — an array or any other type is a 400, not
+  a guess: the underlying library's own argument is a list
+  (`image_paths=[...]`), but reading that as license to accept several here
+  would ship untested multi-reference conditioning inside an envelope that
+  was closed for exactly this reason (D413). **No `strength` option, and
+  none is coming as an "unexercised knob"**: the edit mechanism does not use
+  strength at all, so there is nothing to defer. **The reply's width and
+  height default from the BASE IMAGE**, not from the ordinary 1024² — fit the
+  longest side to 1024 without upscaling, snap down to a multiple of 16,
+  floor 256, aspect preserved — read off a small stdlib PNG/JPEG/WebP header
+  parser in `ai_runtime.py` (no Pillow in the app process), since the route
+  answers before the render and the reply has to describe the render that
+  will actually happen, same as every other field on this endpoint. **The
+  256 floor overrides "aspect preserved" on an extreme ratio** — a
+  4000x200 base (20:1) floors its short side to 256 and comes back
+  1024x256 (4:1) — a real, accepted consequence of the arithmetic as
+  written and confirmed by the gate run, not an oversight. An
+  edit's `steps`/`guidance` also default differently from a plain render (4
+  and 1.0, not 28 and 4.0) for the identical reason — an edit inheriting the
+  generate defaults silently would be a real quality regression. **Residency
+  is keyed by `(model_id, mode)`, inside one worker process**: the mflux
+  runner's edit class does not subclass its plain one (two independent
+  classes over the same snapshot, same weights, same latent space), and
+  cannot render with no reference image at all — it crashes inside the
+  denoiser rather than falling back — so the worker swaps between them
+  lazily, re-using the already-downloaded snapshot, only when a request's
+  mode differs from the one already resident. A caller who never passes
+  `image` stays on the untouched plain-generate path for the life of the
+  process. **mflux renders are not byte-reproducible at a fixed seed** —
+  true of the engine as it ships today, not a fact this feature introduces
+  — so nothing here, in a test or in D432, claims otherwise; any check on an
+  edit's output is visual, never a byte or hash comparison.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

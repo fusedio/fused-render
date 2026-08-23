@@ -280,6 +280,62 @@ def test_mflux_needs_the_variant_table_as_well_as_the_layout():
         torch_weights=False)
 
 
+def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
+    """`MFLUX_EDIT_VARIANTS` carries only `variant`/`module` — the two facts
+    that actually differ between editing and plain generation. `config` and
+    `vae` come out of `MFLUX_VARIANTS`'s row for the SAME id, so the two
+    tables cannot independently say something different about a checkpoint's
+    architecture or latent space."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    plain = formats.MFLUX_VARIANTS[known]
+    recipe = formats.mflux_edit_recipe(known)
+    assert recipe["config"] == plain["config"]
+    assert recipe["vae"] == plain["vae"]
+    assert recipe["variant"] == formats.MFLUX_EDIT_VARIANTS[known]["variant"]
+    assert recipe["module"] == formats.MFLUX_EDIT_VARIANTS[known]["module"]
+    # The two facts this table exists to hold are NOT duplicated onto the
+    # edit row — proving the derivation is real rather than a coincidence
+    # between two copies that happen to still agree.
+    assert "config" not in formats.MFLUX_EDIT_VARIANTS[known]
+    assert "vae" not in formats.MFLUX_EDIT_VARIANTS[known]
+
+
+def test_mflux_edit_recipe_TRACKS_a_change_to_the_plain_rows_config(monkeypatch):
+    """The drift this derivation makes structurally impossible: editing the
+    plain row's `config`/`vae` — the kind of edit a re-fitted preview matrix
+    or a renamed `ModelConfig` method would require — must reach the edit
+    recipe with NO second edit anywhere, because there is no second copy to
+    forget."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    changed = dict(formats.MFLUX_VARIANTS[known])
+    changed["config"] = "some_other_config_method"
+    changed["vae"] = "SomeOtherVAE"
+    monkeypatch.setitem(formats.MFLUX_VARIANTS, known, changed)
+    recipe = formats.mflux_edit_recipe(known)
+    assert recipe["config"] == "some_other_config_method"
+    assert recipe["vae"] == "SomeOtherVAE"
+
+
+def test_mflux_edit_recipe_is_None_without_a_row_in_EITHER_table(monkeypatch):
+    known = next(iter(formats.MFLUX_VARIANTS))
+    assert formats.mflux_edit_recipe("no/such-model") is None
+    monkeypatch.delitem(formats.MFLUX_EDIT_VARIANTS, known)
+    assert formats.mflux_edit_recipe(known) is None
+
+
+def test_mflux_edit_recipe_tolerates_a_plain_row_with_NO_vae(monkeypatch):
+    """`MFLUX_VARIANTS`'s own docstring declares `vae` optional — "a variant
+    with no `vae` simply gets no preview" — and `_build_variant` reads it
+    with `.get()`. The derivation in `mflux_edit_recipe` must not turn that
+    into a `KeyError` a plain row itself would never raise."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    no_vae = {k: v for k, v in formats.MFLUX_VARIANTS[known].items() if k != "vae"}
+    monkeypatch.setitem(formats.MFLUX_VARIANTS, known, no_vae)
+    recipe = formats.mflux_edit_recipe(known)
+    assert recipe is not None
+    assert recipe.get("vae") is None
+
+
 def test_a_root_level_gguf_is_llamacpp_texts_and_nothing_elses():
     """A `.gguf` at the snapshot root is llama.cpp's format (SPEC AI-11) —
     checked case-insensitively, and decisive against a stray safetensors file

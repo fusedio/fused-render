@@ -10,8 +10,11 @@ Run explicitly:
     fused_render/templates/map/tests/test_tile_transport.py -o addopts=""
 """
 import importlib.util
+import inspect
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -78,3 +81,52 @@ def test_metadata_responses_stay_uncacheable(daemon):
     recorder = Recorder(handler)
     handler._headers(200, "application/json", 12)
     assert recorder.headers["Cache-Control"] == "no-store"
+
+
+def test_a_viewport_burst_cannot_overflow_the_listen_backlog(daemon):
+    # The stdlib default is 5; a burst of keep-alive connections overflowed it
+    # and refused connections read as "listening but not answering".
+    assert daemon.MapServer.request_queue_size >= 64
+
+
+def test_geo_work_is_confined_to_persistent_render_threads(daemon):
+    # A thread that has done GDAL /vsicurl work deadlocks the whole process at
+    # its exit on Windows (its DLL thread-detach holds the loader lock against
+    # the GIL, so the next Thread.start() blocks forever). Handler threads exit
+    # per connection, so every describe and tile render must run on RENDER_POOL,
+    # whose threads never exit.
+    assert isinstance(daemon.RENDER_POOL, ThreadPoolExecutor)
+    assert isinstance(daemon.DESCRIBE_POOL, ThreadPoolExecutor)
+    assert isinstance(daemon.VTILE_POOL, ThreadPoolExecutor)
+    handler_source = inspect.getsource(daemon.Handler)
+    # Every geo path runs on a persistent pool, never a handler thread: raster
+    # tiles on RENDER_POOL, describe on DESCRIBE_POOL, vector tiles on VTILE_POOL.
+    assert handler_source.count("RENDER_POOL.submit") >= 1
+    assert handler_source.count("DESCRIBE_POOL.submit") >= 1
+    assert handler_source.count("VTILE_POOL.submit") >= 1
+
+
+def test_preparation_runs_on_the_persistent_pool(tmp_path, monkeypatch):
+    # The same exit-time wedge, one layer down: the preview/optimize job used to
+    # run on an ephemeral thread that died when the build finished — the first
+    # remote describe wedged the daemon before a single tile was asked for.
+    raster_engine = _load("map_raster_engine", "raster_engine.py")
+    engine = raster_engine.RasterEngine(
+        cache_dir=str(tmp_path), base_url="http://127.0.0.1:9999", token="tok"
+    )
+    # Bring the pool's one persistent worker up first; after this, any Thread()
+    # is an ephemeral spawn coming back.
+    engine.prepare_pool.submit(lambda: None).result()
+    monkeypatch.setattr(
+        raster_engine.threading, "Thread",
+        lambda *a, **k: pytest.fail("preparation spawned an ephemeral thread"),
+    )
+    ran = []
+    monkeypatch.setattr(engine, "_prepare", ran.append)
+    engine.sources["s1"] = SimpleNamespace(
+        optimization={}, preview_path=None, minzoom=2, maxzoom=9, rescale=[]
+    )
+    job = engine.start_optimization("s1")
+    engine.prepare_pool.shutdown(wait=True)
+    assert ran == ["s1"]
+    assert job["status"] == "queued"
