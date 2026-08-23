@@ -17,6 +17,11 @@ export interface Config {
   // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
   // every mount lives under.
   mounts_root: string;
+  // Whether this machine can raise the OS file/folder dialog from the server
+  // process (server/dirpicker.py) — false on a hosted deploy with no GUI
+  // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
+  // fallback. One backend set raises both dialogs, hence the one flag.
+  native_dir_picker: boolean;
   // Whether the builtin sessions mount record exists yet — a surface linking
   // into it renders only when this is true, so it's never a dead link
   // (unpackaged dev run with no zip, or the brief window before startup's
@@ -1023,6 +1028,20 @@ export function writeFile(path: string, content = "", create = false): Promise<S
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
+/** Raise the user's OWN file dialog, in the server process, and get back the
+ *  absolute path they chose — `null` on a cancel, which is an answer and must
+ *  not be re-asked.
+ *
+ *  The one way for shell code to learn a path: a browser's `<input type=file>`
+ *  hands over BYTES and strips the path on purpose, so an endpoint that takes a
+ *  path (`/api/ai/image`'s `image`) is otherwise only reachable by uploading a
+ *  copy of a file this machine already has. Throws on 409 (a dialog is already
+ *  up), 501 (this machine has no dialog — `Config.native_dir_picker` says so up
+ *  front) and 500. */
+export function pickFile(opts: { start?: string; title?: string } = {}): Promise<string | null> {
+  return postJson<{ path: string | null }>("/api/fs/pick-file", opts).then((r) => r.path);
+}
+
 export function mkdir(path: string): Promise<StatResult> {
   return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }
@@ -2701,6 +2720,14 @@ export interface AiCatalogModel {
    *  repo the user found themselves. NOT the default: `default` is still the
    *  smallest entry and owes nothing to this flag. */
   recommended: boolean;
+  /** Can this model be handed a BASE IMAGE to edit rather than only a prompt
+   *  (AI-9f)? The server's own answer, computed per entry from the resolved
+   *  ENGINE (only mflux honours `image`) and then from the model's own edit
+   *  variant — the same two gates `/api/ai/image` refuses with, so a picker
+   *  that draws an attach affordance off this cannot offer a request the
+   *  route would 400. False on every non-image capability, and optional on
+   *  the wire only because an older server does not send it. */
+  acceptsImage?: boolean;
 }
 
 export interface AiCatalogCapability {

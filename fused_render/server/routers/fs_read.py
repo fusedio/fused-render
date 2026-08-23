@@ -745,3 +745,39 @@ def api_fs_pick_folder(body: dict = Body(...), x_fused: str | None = Header(defa
         logger.warning("folder chooser failed: %s", exc)
         return _error(str(exc) or "the folder chooser failed", status=500)
     return JSONResponse({"path": chosen})
+
+
+@router.post("/api/fs/pick-file")
+def api_fs_pick_file(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Raise the OS FILE chooser and answer with what the user picked.
+
+    The same shape as `/api/fs/pick-folder` above — sync `def` so the threadpool
+    absorbs a modal, `{"path": <abs>}` on a choice, `{"path": null}` on a
+    cancel, 409/501/500 for busy / no dialog here / it broke — and the same
+    reason for existing, one step further on: a browser strips a picked file's
+    path, and an endpoint that takes a PATH (`/api/ai/image`'s `image`) cannot
+    be reached from `<input type=file>` without uploading a COPY of bytes this
+    machine already has. `native_dir_picker` on `/api/config` answers for this
+    route too: one backend set raises both dialogs.
+
+    No type filter on the wire. The caller checks what it can accept and says so
+    itself (see `dirpicker.pick_file`).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    start = body.get("start") or None
+    if start is not None and not os.path.isabs(start):
+        return _error("'start' must be an absolute filesystem path")
+    title = str(body.get("title") or "Choose a file")[:120]
+    try:
+        chosen = dirpicker.pick_file(start=start, title=title)
+    except dirpicker.PickerBusy as exc:
+        return _error(str(exc), status=409)
+    except dirpicker.PickerUnavailable as exc:
+        return _error(str(exc), status=501)
+    except (dirpicker.PickerFailed, TimeoutError) as exc:
+        logger.warning("file chooser failed: %s", exc)
+        return _error(str(exc) or "the file chooser failed", status=500)
+    return JSONResponse({"path": chosen})

@@ -165,12 +165,12 @@ def available() -> bool:
 # ------------------------------------------------------------- macOS: AppKit
 
 
-def _pick_appkit(start, title):
+def _pick_appkit(start, title, *, files=False):
     from fused_render import menubar_pin
 
     try:
-        return menubar_pin.choose_directory(
-            start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
+        chooser = menubar_pin.choose_file if files else menubar_pin.choose_directory
+        return chooser(start=start, title=title, timeout=_DIALOG_TIMEOUT_S)
     except menubar_pin.PanelNotAnswered as exc:
         # The panel belongs to the AppKit main thread and there is nothing here
         # that could dismiss it, so this is not "the dialog failed" — it is "the
@@ -188,18 +188,23 @@ def _as_applescript_string(text: str) -> str:
     return f'"{escaped}"'
 
 
-def _osascript_script(start, title) -> str:
-    """The `choose folder` one-liner. Separate from running it so a test can
-    swap in a script that needs no human and still exercise the real
-    subprocess."""
-    parts = ["choose folder with prompt ", _as_applescript_string(title)]
+def _osascript_script(start, title, *, files=False) -> str:
+    """The `choose folder` / `choose file` one-liner. Separate from running it so
+    a test can swap in a script that needs no human and still exercise the real
+    subprocess.
+
+    `choose file`'s own `default location` is a FOLDER either way — the verb is
+    what changes, not the seed — so the two scripts differ by one word."""
+    verb = "choose file" if files else "choose folder"
+    parts = [verb + " with prompt ", _as_applescript_string(title)]
     if start:
         parts += [" default location POSIX file ", _as_applescript_string(start)]
     return "POSIX path of (" + "".join(parts) + ")"
 
 
-def _pick_osascript(start, title):
-    script = _osascript_script(start, title)
+def _pick_osascript(start, title, *, files=False):
+    script = (_osascript_script(start, title, files=True) if files
+              else _osascript_script(start, title))
     try:
         proc = subprocess.run(
             ["osascript", "-e", script],
@@ -229,13 +234,23 @@ def _pick_osascript(start, title):
 # own. They raise OSError for "the dialog broke" and return None for a cancel.
 
 
-def _pick_linux(start, title):
-    from fused_render.supervisor._linux.ui import pick_directory
+def _pick_linux(start, title, *, files=False):
+    from fused_render.supervisor._linux.ui import pick_directory, pick_file
 
+    if files:
+        # That function predates this one and takes no title or start: it is the
+        # tray's own "open a file" dialog, and zenity/kdialog are given neither
+        # there. Reused rather than reimplemented — a second zenity invocation
+        # in this app is a second set of flags to keep right — with the one cost
+        # named: it cannot tell a cancel from a broken dialog (both are None),
+        # so a Linux file pick reads a failure as a cancel. The FOLDER path
+        # below keeps the distinction, which is what `/api/fs/pick-folder`'s
+        # in-page fallback needs and a file pick has no fallback to need.
+        return pick_file()
     return pick_directory(title=title, start=start)
 
 
-def _pick_win32(start, title):
+def _pick_win32(start, title, *, files=False):
     """The Windows shell dialog, on its own STA thread.
 
     `IFileDialog` pumps its own message loop and shell extensions need a
@@ -244,7 +259,7 @@ def _pick_win32(start, title):
     `supervisor/core.py` documents around `pick_file`. The lock in
     `pick_directory` is the single-dialog half of it.
     """
-    from fused_render.supervisor._win32.ui import pick_directory
+    from fused_render.supervisor._win32.ui import pick_directory, pick_file
 
     cell = {}
     # Set by the dialog thread itself, whatever the outcome. On the timeout path
@@ -254,7 +269,10 @@ def _pick_win32(start, title):
 
     def run():
         try:
-            cell["path"] = pick_directory(title=title, start=start)
+            # `pick_file` is the tray's own GetOpenFileNameW dialog and takes
+            # neither a title nor a start — see `_pick_linux` for the same
+            # trade, made for the same reason.
+            cell["path"] = pick_file() if files else pick_directory(title=title, start=start)
         except BaseException as exc:  # noqa: BLE001 - carried to the caller below
             cell["error"] = exc
         finally:
@@ -388,6 +406,48 @@ def _canonical_absolute(chosen: str) -> str:
     return canonical
 
 
+def _pick(start: str | None, title: str, *, files: bool) -> str | None:
+    """One dialog, folders or files, and everything that is the same either way.
+
+    The claim, the abandoned-dialog handling, the cancel-is-an-answer rule and
+    the canonicalisation are properties of raising a modal from this process,
+    not of what the modal chooses — so `pick_directory` and `pick_file` are two
+    words of difference over one body rather than two copies of it.
+    """
+    noun = "file chooser" if files else "folder chooser"
+    backend = _backend()
+    if not backend:
+        raise PickerUnavailable(
+            f"this system has no {noun} the app can open")
+    claim = _claim()
+    still_up = None
+    try:
+        # `files` is passed only when it is True, so a folder pick calls every
+        # backend with exactly the two arguments it has always taken — the
+        # signature this module's own tests stub, and one they should not have
+        # to learn a third argument for to keep stubbing.
+        chosen = (_BACKENDS[backend](start, title, files=True) if files
+                  else _BACKENDS[backend](start, title))
+    except DialogAbandoned as exc:
+        # The dialog is still on screen. Hand it the claim (see _unclaim) so the
+        # next request is refused while it is up and served once it closes.
+        still_up = exc.finished
+        logger.warning("%s (%s): abandoned, dialog still open", noun, backend)
+        raise PickerFailed(str(exc)) from exc
+    except (PickerBusy, PickerFailed, PickerUnavailable):
+        raise
+    except OSError as exc:
+        raise PickerFailed(str(exc)) from exc
+    finally:
+        _unclaim(claim, still_up)
+    if chosen is None:
+        logger.info("%s (%s): cancelled", noun, backend)
+        return None
+    chosen = _canonical_absolute(chosen)
+    logger.info("%s (%s): %s", noun, backend, chosen)
+    return chosen
+
+
 def pick_directory(start: str | None = None,
                    title: str = "Choose a folder") -> str | None:
     """Raise the OS folder dialog and return the chosen absolute path.
@@ -397,29 +457,24 @@ def pick_directory(start: str | None = None,
     long as the dialog is up, so callers must be on a thread that may block —
     the endpoint is a sync `def` and therefore runs in the threadpool.
     """
-    backend = _backend()
-    if not backend:
-        raise PickerUnavailable(
-            "this system has no folder chooser the app can open")
-    claim = _claim()
-    still_up = None
-    try:
-        chosen = _BACKENDS[backend](start, title)
-    except DialogAbandoned as exc:
-        # The dialog is still on screen. Hand it the claim (see _unclaim) so the
-        # next request is refused while it is up and served once it closes.
-        still_up = exc.finished
-        logger.warning("folder chooser (%s): abandoned, dialog still open", backend)
-        raise PickerFailed(str(exc)) from exc
-    except (PickerBusy, PickerFailed, PickerUnavailable):
-        raise
-    except OSError as exc:
-        raise PickerFailed(str(exc)) from exc
-    finally:
-        _unclaim(claim, still_up)
-    if chosen is None:
-        logger.info("folder chooser (%s): cancelled", backend)
-        return None
-    chosen = _canonical_absolute(chosen)
-    logger.info("folder chooser (%s): %s", backend, chosen)
-    return chosen
+    return _pick(start, title, files=False)
+
+
+def pick_file(start: str | None = None,
+              title: str = "Choose a file") -> str | None:
+    """Raise the OS FILE dialog and return the chosen absolute path.
+
+    Same contract as `pick_directory` above, and the same reason for existing:
+    the app's UI runs in the user's real browser, which strips a picked file's
+    path on purpose — so a page that needs a PATH (`/api/ai/image`'s `image`,
+    `/api/ai/transcribe`'s `path`) has no way to get one from `<input
+    type=file>` short of uploading a COPY of bytes that are already on this
+    disk. This is the dialog raised by the process that already has filesystem
+    authority, and the path never leaves it.
+
+    No type filter, deliberately: the caller checks the extension it cares
+    about and says so in its own words, which is a better message than a dialog
+    that greys out a file for reasons it cannot explain — and the three backends
+    below express filters three incompatible ways.
+    """
+    return _pick(start, title, files=True)

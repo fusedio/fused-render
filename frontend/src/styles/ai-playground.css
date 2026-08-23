@@ -941,6 +941,172 @@ a.pg-hero-repo:hover {
   margin-bottom: 0;
 }
 
+/* -- the image stage's attachment row (D454) ---------------------------------
+   A composer that takes a base image STACKS — attached photo, prompt, then a
+   floor holding the attach controls on the left and the Clear/Run column on the
+   right — where the other three stages' composers are one row of [prompt |
+   button column]. Only this stage sets the modifier, so those three are
+   untouched, and Run stays where D453 put it: the composer's bottom-right. */
+.pg-composer-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Everything on this line lives in the bottom-RIGHT corner: attach, webcam,
+   then Clear/Generate. Bottom-aligned, so the 28px pills sit on the same
+   baseline as the 32px button beside them however tall that column gets. */
+.pg-composer-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The prompt already spans the box in a stacked composer, so the button column
+   has no width to reserve here — its 72px floor exists to stop a one-line input
+   from jumping when a Clear appears beside it, and there is nothing beside it on
+   this row. */
+.pg-composer-foot .pg-composer-side {
+  min-height: 0;
+}
+
+.pg-attach-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+/* The attached photo's own row sits between the prompt and the floor — a direct
+   child of the composer, unlike the floor's chip row — so it carries the gap
+   that keeps it off both. */
+.pg-composer > .pg-attach-row {
+  padding: 6px 4px 8px;
+}
+
+/* The picked photo, as a chip with its own thumbnail: small enough to be an
+   attachment rather than a result, large enough to tell two photos apart. */
+.pg-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 3px 3px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.pg-attach img {
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  object-fit: cover;
+  /* A checker-free flat ground: a transparent PNG over the composer's own fill
+     would read as part of the box rather than as a picture in it. */
+  background: rgba(var(--tint), 0.08);
+}
+
+.pg-attach-name {
+  font-size: 12px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-attach-drop {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pg-attach-drop:hover {
+  background: rgba(var(--tint), 0.1);
+  color: var(--fg);
+}
+
+/* Both ways in wear the same pill — one is a <label> over a hidden file input,
+   the other a <button>, and a person reading the row must not be able to tell
+   which is which. */
+.pg-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pg-attach-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.pg-attach-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.pg-attach-btn input[type="file"] {
+  display: none;
+}
+
+.pg-attach-note {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+/* The live webcam view, while it is open. Capped at 240px tall so the prompt
+   below it stays on screen — this panel is a viewfinder, not the result. */
+.pg-camera {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 6px 4px 8px;
+}
+
+.pg-camera video {
+  flex: 1;
+  min-width: 0;
+  max-height: 240px;
+  border-radius: 8px;
+  background: #000;
+  /* Mirrored, the way every video-call preview is: an unmirrored self-view
+     makes aiming the camera feel inverted. Only the PREVIEW is flipped — the
+     capture draws the raw frame, so what lands on disk is what the lens saw. */
+  transform: scaleX(-1);
+}
+
+.pg-camera-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* A settings row whose value is a sentence rather than a number — the size
+   under an attached image, which the server derives. */
+.pg-ctl-value {
+  font-size: 12px;
+  color: var(--fg);
+}
+
 .pg-under {
   display: flex;
   align-items: center;

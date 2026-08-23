@@ -204,6 +204,13 @@ export async function watchJob(
 export interface ImageRequest {
   prompt: string;
   model?: string;
+  /** An absolute path to a base image to EDIT instead of rendering from the
+   *  prompt alone (AI-9f). Only the mflux engine honours it, and only for a
+   *  model with an edit variant — `AiCatalogModel.acceptsImage` is the server's
+   *  own answer to whether this model is one of them, and sending it for one
+   *  that is not is a 400. Absolute, so no `base` is needed: the shell is not a
+   *  page and has no `?path=` to resolve against. */
+  image?: string;
   width?: number;
   height?: number;
   steps?: number;

@@ -14,6 +14,14 @@
 // difference between a playground and a demo that appears broken. A model
 // with no hint keeps the server's 28.
 //
+// A model that can be handed a BASE IMAGE (AI-9f) also gets an attachment row
+// at the top of the composer: pick a file, or take one with the webcam. Which
+// models those are is the SERVER's answer — `entry.acceptsImage`, computed from
+// the resolved engine and the model's own edit variant, the same two gates
+// `/api/ai/image` refuses with — never a list of repo ids kept over here. The
+// picked bytes land on disk first (`~/ai/inputs`) because the route takes a
+// PATH, exactly as the transcribe stage's recording does.
+//
 // A render is job-shaped — the reply carries the job to watch and the SETTLED
 // parameters (width snapped, steps clamped, seed invented). While it denoises
 // the worker drops a preview beside the output path and this stage polls it;
@@ -21,11 +29,12 @@
 // WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
-import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
-import { startImage, watchJob, type ImageStarted } from "./client";
+import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { canEdit, imageFields, usableBase, type AttachedImage } from "./imageInput";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 const SERVER_STEPS = 28;
@@ -124,6 +133,16 @@ const STARTERS: Starter[] = [
   },
 ];
 
+// The three formats the SERVER can read a size out of — `_image_pixel_size`
+// parses PNG, JPEG and WebP headers and nothing else (there is no Pillow in
+// the app process). A HEIC (what a Mac's Photos hands out by default) would
+// fall through to the generic 1024² and stretch whatever renders, so it is
+// refused HERE with the reason rather than filtered out of the OS dialog:
+// `/api/fs/pick-file` carries no type filter, because a greyed-out file cannot
+// explain itself and the three dialog backends express filters three
+// incompatible ways.
+const ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
+
 interface Run {
   started: ImageStarted;
   job: Job | null;
@@ -160,6 +179,27 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const [previewLive, setPreviewLive] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
 
+  // Can THIS model be handed a base image at all (AI-9f)? The server's own
+  // answer, read through imageInput.ts so the row that is drawn and the field
+  // that is sent cannot come to disagree.
+  const editable = canEdit(entry.acceptsImage);
+  // The base image, as the server path a render will be pointed at. In the URL
+  // (`img`) for the reason the transcribe stage keeps `src` there: this stage
+  // is keyed by model id, so picking another model REMOUNTS it, and "same
+  // photo, different model" is the comparison a playground should make free.
+  const [attachment, setAttachment] = useState<AttachedImage | null>(() => {
+    const path = readParam("img");
+    return path ? { path, name: path.split("/").pop() ?? path } : null;
+  });
+  // Whose size wins. With an image attached the SERVER derives the render's
+  // size from that image (AI-9f), so the stage stops sending `w`/`h` at all —
+  // and the size controls are collapsed to a line saying so rather than left
+  // showing 480x272 next to a render that will come back 1024x688. Touching
+  // any of them takes the size back, explicitly.
+  const [sizeFromImage, setSizeFromImage] = useState(true);
+  const [attaching, setAttaching] = useState(false);
+  const [camera, setCamera] = useState(false);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       writeParams({
@@ -169,14 +209,149 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         steps: steps !== modelSteps ? String(steps) : null,
         guidance: guidance !== DEFAULTS.guidance ? String(guidance) : null,
         seed: seed ? seed : null,
+        // Written only where this model could use one. The key is OMITTED
+        // rather than nulled on a model that cannot edit — nulling would
+        // delete an attachment the user picked under a model that can, so
+        // switching to a render-only model and back would silently lose it.
+        ...(editable ? { img: attachment ? attachment.path : null } : {}),
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [prompt, width, height, steps, guidance, seed, modelSteps]);
+  }, [prompt, width, height, steps, guidance, seed, modelSteps, editable, attachment]);
 
   const abortRef = useRef<AbortController | null>(null);
   const { ref: boxRef, grow } = useAutoGrow();
-  useEffect(() => () => abortRef.current?.abort(), []);
+  const streamRef = useRef<MediaStream | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Set on the way in as well as cleared on the way out, the same shape
+  // TranscribeStage's own flag has: an upload awaits the config, a mkdir and
+  // the POST, and a continuation that lands after an unmount must not write
+  // state (or leave a camera running) from a dead component.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      abortRef.current?.abort();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    };
+  }, []);
+
+  // The live view is attached HERE, not in the click that opened the camera:
+  // the <video> does not exist until this render, so `srcObject` has nothing
+  // to be set on until the panel is mounted.
+  useEffect(() => {
+    if (!camera) return;
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream) return;
+    video.srcObject = stream;
+    void video.play().catch(() => {});
+  }, [camera]);
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setCamera(false);
+  };
+
+  /** Point the render at a file that is ALREADY on this disk — no copy, no
+   *  upload, the user's own path. `<input type=file>` cannot do this: a browser
+   *  hands over bytes and strips the path on purpose, so the only way to a path
+   *  is the OS dialog raised in the server process (`/api/fs/pick-file`). */
+  const choose = async () => {
+    setError(null);
+    setAttaching(true);
+    try {
+      const path = await pickFile({ title: "Choose a picture to edit" });
+      // A cancel is an answer: nothing changes and nothing is said about it.
+      if (path === null || !aliveRef.current) return;
+      const name = path.split("/").pop() || path;
+      if (!ATTACH_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))) {
+        setError(
+          `${name} is not a PNG, JPEG or WebP — those are the three the renderer ` +
+            "can read the size of.",
+        );
+        return;
+      }
+      attach({ path, name });
+    } catch (e) {
+      if (aliveRef.current) setError((e as Error).message);
+    } finally {
+      if (aliveRef.current) setAttaching(false);
+    }
+  };
+
+  /** A webcam frame has no path — it does not exist anywhere yet — so this one
+   *  case genuinely has to be written before it can be pointed at. It lands in
+   *  `<home>/ai/inputs`, beside the `ai/images` renders go to and NOT in it:
+   *  that directory is what the preview sweeper patrols, and a capture filed
+   *  among the outputs is a picture the user cannot tell from a generated one.
+   *  Both levels are mkdir'd — `/api/fs/mkdir` creates ONE directory by design
+   *  (a typo must not spawn a tree), and on a machine that has never rendered
+   *  anything neither level exists. */
+  const save = async (data: Blob, name: string) => {
+    setError(null);
+    setAttaching(true);
+    try {
+      const config = await getConfig();
+      await mkdir(`${config.home}/ai`).catch(() => {});
+      const dir = `${config.home}/ai/inputs`;
+      await mkdir(dir).catch(() => {});
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const path = `${dir}/${stamp}-${name}`;
+      await uploadFile(path, data, name);
+      if (!aliveRef.current) return;
+      attach({ path, name });
+    } catch (e) {
+      if (aliveRef.current) setError((e as Error).message);
+    } finally {
+      if (aliveRef.current) setAttaching(false);
+    }
+  };
+
+  const attach = (picked: AttachedImage) => {
+    setAttachment(picked);
+    // A fresh image is a fresh size question, and the honest default is that
+    // image's own size — even where the last one had been overridden.
+    setSizeFromImage(true);
+  };
+
+  const openCamera = async () => {
+    setError(null);
+    try {
+      streamRef.current = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      });
+      if (!aliveRef.current) {
+        stopCamera();
+        return;
+      }
+      setCamera(true);
+    } catch (e) {
+      setError(
+        (e as Error).name === "NotAllowedError"
+          ? "Camera access was refused — allow it in the browser and try again."
+          : (e as Error).message,
+      );
+    }
+  };
+
+  /** One frame off the live view, at the camera's own pixels. PNG because
+   *  `toBlob` is guaranteed to produce one and the server reads it. */
+  const capture = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    stopCamera();
+    canvas.toBlob((blob) => {
+      if (blob) void save(blob, "webcam.png");
+    }, "image/png");
+  };
 
   // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
   // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
@@ -192,6 +367,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   const aspect = ASPECTS.find((a) => a.width === width && a.height === height)?.value ?? null;
   const speed = speedChips?.find((c) => c.steps === steps)?.value ?? null;
+  // The base image this render will actually edit — the same rule the request
+  // below applies, read from one place (imageInput.ts) rather than restated in
+  // the JSX: an attachment kept across a switch to a render-only model must
+  // not be drawn there, or every request from that stage is a 400.
+  const base = usableBase(entry.acceptsImage, attachment);
+  // Is the SERVER deciding the size? Only with a base image, and only until
+  // somebody picks a size themselves.
+  const sizeIsTheImages = base !== null && sizeFromImage;
 
   const generate = async (asked?: string) => {
     const wanted = (asked ?? prompt).trim();
@@ -210,11 +393,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       const started = await startImage({
         prompt: wanted,
         model,
-        // Always sent, all four: the stage's defaults are its own (480×272,
-        // the model's steps, guidance 1), and leaving any off would hand the
-        // server its generic 1024² / 28 / 4.0.
-        width,
-        height,
+        // `steps`/`guidance` always: the stage's defaults are its own (the
+        // model's benchmarked steps, guidance 1), and leaving either off would
+        // hand the server its generic 28 / 4.0. The SIZE is the one pair that
+        // can be left to the server, and only with an image attached — then
+        // the base image's own size is the better default than any of this
+        // stage's, and the controls say so instead of showing a number that
+        // will not be used.
+        ...imageFields(base, sizeFromImage, width, height),
         steps,
         guidance,
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
@@ -283,23 +469,94 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         onToggleConfig={() => setConfigOpen((open) => !open)}
       />
 
-      <div className="pg-composer">
-          <textarea
-            ref={boxRef}
-            rows={3}
-            value={prompt}
-            placeholder="Describe the picture…"
-            onChange={(e) => {
-              setPrompt(e.target.value);
-              grow();
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void generate();
-              }
-            }}
-          />
+      <div className="pg-composer pg-composer-stack">
+        <textarea
+          ref={boxRef}
+          rows={3}
+          value={prompt}
+          placeholder={base ? "Describe the change…" : "Describe the picture…"}
+          onChange={(e) => {
+            setPrompt(e.target.value);
+            grow();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void generate();
+            }
+          }}
+        />
+        {/* The attached photo, UNDER the prompt and directly above the two
+            buttons that put it there — a picture between the sentence and the
+            controls, rather than a banner over the box you type in. */}
+        {base && (
+          <div className="pg-attach-row">
+            <span className="pg-attach">
+              <img src={rawUrl(base.path)} alt="" />
+              <span className="pg-attach-name" title={base.path}>
+                {base.name}
+              </span>
+              <button
+                type="button"
+                className="pg-attach-drop"
+                title="Remove this image"
+                aria-label="Remove this image"
+                onClick={() => setAttachment(null)}
+              >
+                ✕
+              </button>
+            </span>
+            <span className="pg-attach-note">This picture gets edited, not replaced.</span>
+          </div>
+        )}
+        {/* The live view, while the webcam is open — in the same slot the
+            photo it is about to become occupies, right above the Webcam button
+            that opened it. */}
+        {camera && (
+          <div className="pg-camera">
+            <video ref={videoRef} playsInline muted />
+            <div className="pg-camera-side">
+              <button type="button" className="btn btn-primary" onClick={capture}>
+                Capture
+              </button>
+              <button type="button" className="pg-ghost-btn" onClick={stopCamera}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {/* The composer's floor: the two ways to attach a picture, then the
+            Clear/Generate column — one cluster in the bottom-right corner,
+            attach beside Generate rather than across the box from it. The
+            prompt therefore spans the whole box here rather than sharing its
+            row with the button column the other stages use, and Generate stays
+            exactly where D453 put it. */}
+        <div className="pg-composer-foot">
+          {editable && (
+            <div className="pg-attach-row">
+              <button
+                type="button"
+                className="pg-attach-btn"
+                title="Point at a picture already on this disk — nothing is copied"
+                disabled={attaching}
+                onClick={() => void choose()}
+              >
+                {StarterIcons.landscape}
+                <span>{base ? "Replace" : "Add an image"}</span>
+              </button>
+              <button
+                type="button"
+                className={"pg-attach-btn" + (camera ? " active" : "")}
+                title="Take one with the webcam"
+                disabled={attaching}
+                onClick={() => (camera ? stopCamera() : void openCamera())}
+              >
+                {StarterIcons.camera}
+                <span>Webcam</span>
+              </button>
+              {attaching && <span className="pg-attach-note">Working…</span>}
+            </div>
+          )}
           {/* Clear tops this column and Generate sits at its foot — see the
               same block in TextStage: inline, Clear stole the prompt's width as
               it appeared and left the grown height a line short. */}
@@ -334,6 +591,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               </button>
             )}
           </div>
+        </div>
       </div>
 
       {/* Examples first, under the box they fill; hidden once a picture is on
@@ -343,17 +601,24 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       {/* Chips lead the panel; sliders and the seed follow. */}
       <ConfigPanel open={configOpen}>
         <div className="pg-config-chips">
-          <RailChips
-            options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
-            active={aspect}
-            onPick={(value) => {
-              const pick = ASPECTS.find((a) => a.value === value);
-              if (pick) {
-                setWidth(pick.width);
-                setHeight(pick.height);
-              }
-            }}
-          />
+          {/* Hidden, not disabled, while the attached image decides the size:
+              a chip row where nothing is lit and a slider parked on 480 are
+              both controls saying something about a render that will come back
+              at the photo's own size instead. One line replaces them, and it
+              is also the way back to picking a size by hand. */}
+          {!sizeIsTheImages && (
+            <RailChips
+              options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
+              active={aspect}
+              onPick={(value) => {
+                const pick = ASPECTS.find((a) => a.value === value);
+                if (pick) {
+                  setWidth(pick.width);
+                  setHeight(pick.height);
+                }
+              }}
+            />
+          )}
           {speedChips && (
             <RailChips
               options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
@@ -365,26 +630,47 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             />
           )}
         </div>
-        <RailSlider
-          label="Width"
-          hint="Snapped to a multiple of 16 by the server."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={16}
-          value={width}
-          fallback={DEFAULTS.width}
-          onChange={setWidth}
-        />
-        <RailSlider
-          label="Height"
-          hint="Bigger is slower and needs more memory."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={16}
-          value={height}
-          fallback={DEFAULTS.height}
-          onChange={setHeight}
-        />
+        {sizeIsTheImages ? (
+          <div className="pg-ctl">
+            <span className="pg-ctl-head">
+              <span className="pg-ctl-label">Size</span>
+              <button
+                type="button"
+                className="pg-ctl-reset"
+                onClick={() => setSizeFromImage(false)}
+              >
+                Set a size
+              </button>
+            </span>
+            <span className="pg-ctl-value">Matches the attached image</span>
+            <span className="pg-ctl-hint">
+              The longest side is fitted to 1024 without upscaling, and the shape is kept.
+            </span>
+          </div>
+        ) : (
+          <>
+            <RailSlider
+              label="Width"
+              hint="Snapped to a multiple of 16 by the server."
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
+              step={16}
+              value={width}
+              fallback={DEFAULTS.width}
+              onChange={setWidth}
+            />
+            <RailSlider
+              label="Height"
+              hint="Bigger is slower and needs more memory."
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
+              step={16}
+              value={height}
+              fallback={DEFAULTS.height}
+              onChange={setHeight}
+            />
+          </>
+        )}
         <RailSlider
           label="Steps"
           hint={
