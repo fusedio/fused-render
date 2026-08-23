@@ -288,6 +288,19 @@ def test_video_frame_bounds_matches_the_apps_own_n_window():
     assert registry.video_frame_bounds(h3) == (22, 362)  # 5+17*1, 5+17*21
 
 
+def test_ltx_video_suggestions_name_their_own_8_step_default():
+    """`DistilledPipeline` runs a fixed 8-step stage-1 schedule regardless of
+    quantization tier — not the app's generic image-route default (28) or
+    H3's own 20 — so the Playground's step slider (`VideoStage.tsx`) must
+    not fall back to either. `entry.defaults.steps` is the per-model hint
+    that keeps it from doing so even if a future change moved `registry.
+    VIDEO_TRAITS["ltx-video"].default_steps` off 8 for some other reason."""
+    from fused_render.ai import catalog
+
+    for entry in catalog.SUGGESTIONS["ltx-video"]:
+        assert entry["defaults"] == {"steps": 8}, entry["id"]
+
+
 def test_catalog_default_is_null_when_unavailable(monkeypatch):
     _windows(monkeypatch)
     from fused_render.ai import catalog

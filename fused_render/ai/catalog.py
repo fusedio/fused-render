@@ -839,6 +839,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "under the LTX-2 Community License, which is NOT H3's: "
                     "it carries a revenue threshold and a non-compete "
                     "(Attachment A, item 20).",
+            # `DistilledPipeline` runs a fixed 8-step stage-1 schedule
+            # (`ltx_video/worker.py`'s own default, and `registry.VIDEO_
+            # TRAITS["ltx-video"].default_steps`) — a property of the
+            # PIPELINE both tiers share, not of the quantization. Named
+            # explicitly here too, the same "one repo, one curator's hint"
+            # shape the image entries above use for their own step-distilled
+            # models, rather than relying only on the engine-level fallback
+            # (`registry.video_traits_for`) agreeing with it by construction.
+            "defaults": {"steps": 8},
         },
         {
             "id": "dgrauet/ltx-2.3-mlx-q8",
@@ -848,6 +857,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The same LTX-2 Community License, for the tier that "
                     "reproduces the bf16 sample — a 32 GB+ machine and "
                     "roughly 9 GB more download than the int4 default.",
+            # Same pipeline, same schedule — see the int4 entry's own comment.
+            "defaults": {"steps": 8},
         },
     ],
     # v1's only checkpoint: FL2VA (frame + language to video + audio), one
