@@ -9,9 +9,10 @@
 //
 // `POST /api/ai/transcribe` takes a PATH — the transcript is a file and the
 // run outlives the page on purpose — so both inputs land bytes on disk first
-// through `POST /api/fs/upload`, into ~/recordings. A browser file picker has
-// no path to give; the upload is the door, not a workaround. Only the WATCH
-// stops on unmount: the run itself is a job, visible in Activity.
+// through `POST /api/fs/upload`, into this stage's own scratch dir under the
+// app's cache. A browser file picker has no path to give; the upload is the
+// door, not a workaround. Only the WATCH stops on unmount: the run itself is a
+// job, visible in Activity.
 import { useEffect, useRef, useState } from "react";
 import { getConfig, mkdir, rawUrl } from "@platform/lib/api";
 import { cancelJob, type Job } from "@platform/lib/jobs";
@@ -212,12 +213,20 @@ export function TranscribeStage({ model }: { model: string }) {
     setPhase({ step: "done", started, text: "", readFailed: true });
   };
 
+  // Bytes this stage invented — a mic take, or a dropped file the server has no
+  // path for — land in the app's own scratch dir, `<cache>/transcribe-playground`
+  // (`~/.fused-render/cache/…`), NOT in the user's home. `~/recordings` is a
+  // folder the user browses, holding the capture feature's takes; a playground
+  // upload dropped in there is a file nobody can tell from one they made on
+  // purpose. Both levels are mkdir'd because `/api/fs/mkdir` creates ONE
+  // directory by design and on a fresh machine neither exists.
   const land = async (data: Blob, name: string) => {
     setError(null);
     setPhase({ step: "uploading", name });
     try {
       const config = await getConfig();
-      const dir = `${config.home}/recordings`;
+      await mkdir(config.cache_dir).catch(() => {});
+      const dir = `${config.cache_dir}/transcribe-playground`;
       await mkdir(dir).catch(() => {});
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const safe = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 60) || "recording";
