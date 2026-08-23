@@ -207,6 +207,77 @@ def memory():
 _FRAME_RATE = 24.0
 
 
+def _assert_denoise_tqdm_hook_exists(samplers):
+    """The premise `_StepTicker` depends on, checked before it is relied on.
+
+    `denoise_loop` (`ltx_pipelines_mlx/utils/samplers.py`) wraps its per-step
+    iterator with a bare module-level `tqdm(...)` call — `from tqdm import
+    tqdm` at the top of that file — and has no other per-step hook at all
+    (`utils/progress.py`'s `phase()` markers are per-STAGE, not per-step).
+    `generate` replaces that name for the duration of a render to get both
+    progress and cancellation out of the only seam upstream offers.
+
+    **Why this check exists rather than a bare `setattr`.** `setattr(module,
+    "tqdm", shim)` would SUCCEED even if upstream renamed the import — it
+    would just create an attribute nothing reads, since `denoise_loop`'s
+    compiled bytecode names whatever identifier its own `import` statement
+    bound. The render would then proceed with the REAL tqdm silently back in
+    control: no per-step ticks, no cancel point, and every other test in this
+    file still green because they all fake this attribute into existence
+    themselves. A rename upstream must fail a real render loudly instead —
+    which is what raising here, before touching `generate_and_save` at all,
+    guarantees.
+    """
+    if not hasattr(samplers, "tqdm"):
+        raise RuntimeError(
+            "ltx_pipelines_mlx.utils.samplers has no module-level `tqdm` "
+            "attribute to replace. This runner reports per-step progress "
+            "and honours the × by patching that name for the duration "
+            "of a render; upstream must have renamed or removed the import "
+            "this depends on, and progress/cancellation need to be "
+            "re-derived against whatever replaced it.")
+
+
+class _StepTicker:
+    """A `tqdm`-compatible stand-in: `denoise_loop` calls `tqdm(steps, desc=
+    …, disable=…)` and iterates the result with a plain `for`, so this only
+    has to be CALLABLE with that signature and return something iterable —
+    no `tqdm` import, no class hierarchy, nothing upstream inspects beyond
+    those two things.
+
+    **One instance covers the whole render, not one per `denoise_loop`
+    call.** `DistilledPipeline.generate_two_stage` calls `denoise_loop` TWICE
+    — stage 1 (`stage1_steps` items) then stage 2's fixed 3-step refine —
+    and both go through the same patched name in the same module. The row
+    therefore moves twice, restarting at 0 for stage 2: that is the two-stage
+    pipeline's own shape (`DistilledPipeline` is inherently two internal
+    passes for any request), not a bug in this shim, and it is the same
+    "bare done/total, no clock" trade `h3_video.generate` already makes for
+    its own subprocess's progress lines.
+
+    Ticks BEFORE each step's work rather than after: `tqdm.__iter__` yields
+    control back to the loop body immediately, so there is no "step just
+    finished" moment to hook without wrapping the loop body itself, which is
+    exactly the private, upstream-owned code this shim must not reach into.
+    `done=N` therefore reads as "N steps completed so far, about to start the
+    next" — the same reading `h3_video.generate`'s own pre-spawn "step 0/N"
+    tick gives its row before a single frame has rendered.
+    """
+
+    def __init__(self, job):
+        self.job = job
+
+    def __call__(self, iterable, desc=None, disable=False, **_kwargs):
+        items = list(iterable)
+        total = len(items)
+        label = desc or "Denoising"
+        for done, item in enumerate(items):
+            worker_base.report_or_cancel(
+                job=self.job, kind="task", unit="", done=done, total=total,
+                detail="%s — step %d/%d" % (label, done, total))
+            yield item
+
+
 def generate(body):
     """Render one video. Returns `{path, seconds, seed, width, height, frames,
     steps}` — `h3_video.generate`'s own shape, so a page cannot tell which
@@ -241,10 +312,23 @@ def generate(body):
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=steps, detail="Rendering — step 0/%d" % steps)
 
-    pipeline.generate_and_save(
-        prompt=prompt, output_path=out, height=height, width=width,
-        num_frames=frames, frame_rate=_FRAME_RATE, seed=seed,
-        stage1_steps=steps)
+    from ltx_pipelines_mlx.utils import samplers
+
+    _assert_denoise_tqdm_hook_exists(samplers)
+    original_tqdm = samplers.tqdm
+    samplers.tqdm = _StepTicker(job)
+    try:
+        pipeline.generate_and_save(
+            prompt=prompt, output_path=out, height=height, width=width,
+            num_frames=frames, frame_rate=_FRAME_RATE, seed=seed,
+            stage1_steps=steps)
+    finally:
+        # Restored unconditionally — on the cancel path too. This is
+        # process-wide state on a third-party module, not this request's
+        # own; leaving it patched past `generate`'s return (or its raise)
+        # would have the NEXT render's denoise loop reporting through a
+        # `_StepTicker` bound to a job that has already ended.
+        samplers.tqdm = original_tqdm
 
     return {
         "path": out,

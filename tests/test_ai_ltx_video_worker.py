@@ -55,16 +55,34 @@ class FakeBase:
 
 
 class FakePipeline:
-    """`ltx_pipelines_mlx.distilled.DistilledPipeline`, from the outside."""
+    """`ltx_pipelines_mlx.distilled.DistilledPipeline`, from the outside.
+
+    `drive_denoise_loop`, when set, makes `generate_and_save` call `tqdm(...)`
+    off the SAME `ltx_pipelines_mlx.utils.samplers` module the worker patches
+    — reproducing the two calls `DistilledPipeline.generate_two_stage` really
+    makes (stage 1: `stage1_steps` items, stage 2: a fixed-length refine) —
+    so a test can drive the worker's shim through its real call shape rather
+    than calling the shim directly.
+    """
 
     def __init__(self, model_dir=None, gemma_model_id=None, **kwargs):
         self.model_dir = model_dir
         self.gemma_model_id = gemma_model_id
         self.kwargs = kwargs
         self.calls = []
+        self.drive_denoise_loop = False
+        self.stage2_steps = 3
 
     def generate_and_save(self, **kwargs):
         self.calls.append(kwargs)
+        if self.drive_denoise_loop:
+            import sys as _sys
+
+            samplers = _sys.modules["ltx_pipelines_mlx.utils.samplers"]
+            for _ in samplers.tqdm(range(kwargs["stage1_steps"]), desc="Denoising"):
+                pass
+            for _ in samplers.tqdm(range(self.stage2_steps), desc="Denoising (stage 2)"):
+                pass
         # A real call writes the mp4 at `output_path` — modelled so `generate`'s
         # own `os.makedirs` and the file's presence are both exercised.
         with open(kwargs["output_path"], "wb") as handle:
@@ -80,7 +98,8 @@ class FakeMlxCore(types.ModuleType):
         return 0
 
 
-def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True):
+def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
+                with_samplers_tqdm=True):
     """A fresh import of the ltx_video worker against the fakes.
 
     `monkeypatch.setitem` rather than a save/restore, because this runner
@@ -103,6 +122,15 @@ def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True):
     distilled_mod.DistilledPipeline = _make_pipeline
     monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx", types.ModuleType("ltx_pipelines_mlx"))
     monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx.distilled", distilled_mod)
+    monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx.utils", types.ModuleType("ltx_pipelines_mlx.utils"))
+    samplers_mod = types.ModuleType("ltx_pipelines_mlx.utils.samplers")
+    if with_samplers_tqdm:
+        # A plain callable stand-in for `from tqdm import tqdm` — the real
+        # thing is a class, but nothing here relies on that, only on the
+        # module carrying SOME attribute named `tqdm` for the worker to
+        # replace.
+        samplers_mod.tqdm = lambda iterable, **kwargs: iter(iterable)
+    monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx.utils.samplers", samplers_mod)
 
     mlx = types.ModuleType("mlx")
     mlx_core = FakeMlxCore()
@@ -300,3 +328,111 @@ def test_generate_requires_an_out_path(monkeypatch, base, tmp_path):
     worker.load(MODEL, snapshot(tmp_path))
     with pytest.raises(ValueError, match="out"):
         worker.generate(_request(tmp_path, out=""))
+
+
+# -- Task 4: per-step progress and cancellation via the tqdm shim -----------------
+
+
+def test_the_denoise_module_still_exposes_a_module_level_tqdm(monkeypatch, base, tmp_path):
+    """Assert the PREMISE, not only the conclusion: this worker reports
+    per-step progress and cancellation by replacing `ltx_pipelines_mlx.utils.
+    samplers`'s module-level `tqdm` name for the duration of a render. If
+    upstream ever renames or removes that import, silently patching a name
+    that no longer does anything would report NOTHING and cancel NOTHING,
+    with every other test in this file still green (they all fake the
+    attribute into existence). A render must fail loudly instead."""
+    pipeline = FakePipeline()
+    pipeline.drive_denoise_loop = True
+    worker, _ = load_worker(monkeypatch, base, pipeline=pipeline,
+                            with_samplers_tqdm=False)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    with pytest.raises(RuntimeError, match="tqdm"):
+        worker.generate(_request(tmp_path))
+
+
+def test_ticks_arrive_per_denoising_step(monkeypatch, base, tmp_path):
+    pipeline = FakePipeline()
+    pipeline.drive_denoise_loop = True
+    worker, _ = load_worker(monkeypatch, base, pipeline=pipeline)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path, steps=8))
+
+    # 8 stage-1 ticks + 3 stage-2 ticks, on top of the pre-render 0/8 tick
+    # `generate` itself already sends (see `test_a_render_reports_and_returns
+    # _its_path`) — so at least 8 additional "task" ticks with `total`
+    # matching the stage they came from.
+    # `state="running"` marks `generate`'s own pre-render tick (sent via
+    # `report`, not `report_or_cancel`) — excluded here since it is not one
+    # of the shim's per-step ticks even though it shares `kind="task"`.
+    task_ticks = [t for t in base.ticks if t.get("kind") == "task" and "state" not in t]
+    stage1_ticks = [t for t in task_ticks if t.get("total") == 8]
+    stage2_ticks = [t for t in task_ticks if t.get("total") == 3]
+    assert len(stage1_ticks) >= 8, task_ticks
+    assert len(stage2_ticks) >= 3, task_ticks
+    # Monotonic within a stage, and restarting at the next one (the two-stage
+    # pipeline's own shape — see `_StepTicker`'s docstring).
+    assert [t["done"] for t in stage1_ticks] == list(range(8))
+    assert [t["done"] for t in stage2_ticks] == list(range(3))
+
+
+def test_a_cancel_between_denoising_steps_ends_the_render(monkeypatch, base, tmp_path):
+    class CancellingBase(FakeBase):
+        def report_or_cancel(self, job=None, **fields):
+            self.ticks.append({"job": job, **fields})
+            if fields.get("done") == 3:
+                raise self.Cancelled()
+
+    cancelling = CancellingBase()
+    pipeline = FakePipeline()
+    pipeline.drive_denoise_loop = True
+    worker, _ = load_worker(monkeypatch, cancelling, pipeline=pipeline)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    with pytest.raises(cancelling.Cancelled):
+        worker.generate(_request(tmp_path, out=str(tmp_path / "cancelled.mp4")))
+
+    # The render never reached `generate_and_save`'s own "write the file" tail
+    # for THIS call — the raise unwound out of the denoise loop, straight
+    # through `generate_two_stage`, exactly as `worker_base.Cancelled` does
+    # for every other runner's callback.
+    assert not os.path.exists(tmp_path / "cancelled.mp4")
+
+
+def test_the_tqdm_patch_is_restored_after_a_render(monkeypatch, base, tmp_path):
+    """The shim is process-wide state on a third-party module — it must not
+    leak past the request it was installed for, or a second render (or a
+    failed one) would be instrumented by a stale reporter bound to a job
+    that has already ended."""
+    pipeline = FakePipeline()
+    pipeline.drive_denoise_loop = True
+    worker, _ = load_worker(monkeypatch, base, pipeline=pipeline)
+    worker.load(MODEL, snapshot(tmp_path))
+    samplers = sys.modules["ltx_pipelines_mlx.utils.samplers"]
+    original = samplers.tqdm
+
+    worker.generate(_request(tmp_path))
+
+    assert samplers.tqdm is original
+
+
+def test_the_tqdm_patch_is_restored_even_after_a_cancel(monkeypatch, base, tmp_path):
+    class CancellingBase(FakeBase):
+        def report_or_cancel(self, job=None, **fields):
+            self.ticks.append({"job": job, **fields})
+            if fields.get("done") == 1:
+                raise self.Cancelled()
+
+    cancelling = CancellingBase()
+    pipeline = FakePipeline()
+    pipeline.drive_denoise_loop = True
+    worker, _ = load_worker(monkeypatch, cancelling, pipeline=pipeline)
+    worker.load(MODEL, snapshot(tmp_path))
+    samplers = sys.modules["ltx_pipelines_mlx.utils.samplers"]
+    original = samplers.tqdm
+
+    with pytest.raises(cancelling.Cancelled):
+        worker.generate(_request(tmp_path))
+
+    assert samplers.tqdm is original
