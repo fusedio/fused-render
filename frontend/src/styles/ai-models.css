@@ -1806,16 +1806,27 @@
   color: var(--warning-soft);
 }
 
-/* A link-shaped button — it changes a view, so it is a <button>, but it reads
-   as the sentence it sits inside. */
-.am-bench-linkbtn {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent-soft);
-  font: inherit;
-  cursor: pointer;
-  text-decoration: underline;
+/* -- the capability selector --------------------------------------------------
+   One <select>, one label, above the single capability the tab now shows — see
+   BenchmarkTab.tsx for why a native select rather than a segmented control:
+   four items does not earn a second control vocabulary on this page. */
+.am-bench-capsel {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: var(--am-gap-head);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* `.field-control` carries the app's canonical select skin (styles/fields.css)
+   — its own chevron, its own metrics — so this looks like every other select
+   in the app rather than the platform's bare one. What's left here is a floor
+   on the width: a bare native select sizes to whichever option happens to be
+   showing, so picking a short label ("Embeddings") would visibly narrow the
+   control the reader is about to click again. */
+.am-bench-capsel-input {
+  min-width: 220px;
 }
 
 /* -- the chart, the tab's hero instrument ------------------------------------

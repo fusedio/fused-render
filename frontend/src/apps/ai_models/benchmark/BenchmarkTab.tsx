@@ -53,9 +53,11 @@ import {
   orderCapabilities,
   primaryMetric,
   primaryValue,
+  resolveCapability,
   rowDetail,
   rowHeadline,
   runButtonState,
+  runCountsByCapability,
   runsFor,
   shortModelName,
   stoppedNote,
@@ -95,12 +97,14 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // a timer that hides an explanation before it has been read is worse than a
   // line that waits to be replaced.
   const [stopped, setStopped] = useState<string | null>(null);
-  // The optional focus filter, SEEDED from `?cap=` once and held in state
-  // thereafter. State rather than reading the URL every render because
-  // `writeParams` uses `history.replaceState`, which deliberately fires no
-  // navigation event (a filter change must not stack a history entry) — so a
-  // component that read only the URL would clear the param and go on drawing
-  // the old filter.
+  // The selector's raw choice — `null` until the reader (or a landing
+  // `?cap=`) has actually picked one, at which point `resolveCapability`
+  // below stops filling in a default and just honours it. SEEDED from
+  // `?cap=` once and held in state thereafter, the same reason the tab's old
+  // single-capability filter was: `writeParams` uses `history.replaceState`,
+  // which deliberately fires no navigation event (a selection must not stack
+  // a history entry) — so a component that read only the URL would clear the
+  // param and go on drawing the old choice.
   const [focus, setFocus] = useState<string | null>(() => readParam("cap"));
 
   // On the same trigger as the cache walk, for the reason the Local tab's
@@ -185,10 +189,11 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
 
   if (!data && runs === null) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
-  // Which capabilities get a section: every one this machine has a downloaded
-  // model for, UNION every one with a recorded run. The union is what keeps a
-  // history readable after its model was deleted — the runs are still the truth
-  // about what happened, and dropping the section would silently hide them.
+  // Which capabilities the selector offers: every one this machine has a
+  // downloaded model for, UNION every one with a recorded run. The union is
+  // what keeps a history reachable after its model was deleted — the runs are
+  // still the truth about what happened, and dropping it from the list would
+  // silently hide them.
   const all = orderCapabilities([
     ...new Set([
       ...CAPABILITY_ORDER,
@@ -197,49 +202,67 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     ]),
   ]);
 
-  // `?cap=` narrows the page to one section. The SAME param the playground reads
-  // (lib/params.ts, routes.ts) and the same one Home's cards link in with, so a
-  // link that opens the playground on image generation opens this tab on image
-  // generation too. A `cap` naming nothing here is IGNORED rather than shown as
-  // an empty page: the param travels between tabs (`tabHref` keeps the query),
-  // so this tab will see values that were never meant for it.
-  const focused = focus && all.includes(focus) ? focus : null;
-  const capabilities = focused ? [focused] : all;
+  // One capability at a time now — the tab used to stack all four sections and
+  // `?cap=` only narrowed that stack to one; `resolveCapability` (lib/
+  // benchmark.ts) is the SAME rule made the selector's only state: the URL's
+  // `?cap=` when it names a real capability, otherwise the most-run one
+  // (`defaultCapability`), ties broken by registry order and falling back to
+  // the first capability when nothing has ever run. `runs` may still be `null`
+  // (history not answered yet) — an empty count map picks the same "first in
+  // registry order" default `defaultCapability` gives an all-zero one, so the
+  // choice does not flicker once real counts arrive UNLESS a capability
+  // genuinely turns out to have more runs, which is the point of the feature.
+  const counts = runCountsByCapability(runs ?? []);
+  const selected = resolveCapability(all, focus, counts);
+
+  // Keep the URL in sync with whatever is actually selected — landing on a
+  // default (no `?cap=` yet) writes it in, and choosing a different capability
+  // updates it — via `replaceState` (`writeParams`), never a navigation: a
+  // selector change is not a page to go Back to. Runs after render rather than
+  // during it, since writing history is a side effect.
+  useEffect(() => {
+    writeParams({ cap: selected });
+  }, [selected]);
 
   return (
     <div className="am-bench">
       <ErrorBanner>{error}</ErrorBanner>
       {stopped && <p className="am-bench-stopped">{stopped}</p>}
-      {focused && (
-        <p className="am-group-note">
-          Showing {capabilityLabel(focused)} only.{" "}
-          <button
-            type="button"
-            className="am-bench-linkbtn"
-            // Both halves: the state is what this tab draws from, and the URL
-            // is dropped so a copied link no longer carries a filter the reader
-            // has just cleared. `writeParams` (replaceState) rather than a
-            // navigation — a view narrowing is not a page to go back to.
-            onClick={() => {
-              setFocus(null);
-              writeParams({ cap: null });
-            }}
-          >
-            Show every capability
-          </button>
-        </p>
-      )}
-      {capabilities.map((capability) => (
+      {/* THE SELECTOR. A native <select> with a plain label, per the same
+          "boring control, name it and get out of the way" rule `EnginesTab`
+          uses for its own per-capability selects — four items is not enough to
+          earn a bespoke segmented control, and a second control vocabulary on
+          one page is a cost with no reader benefit at this count. */}
+      <div className="am-bench-capsel">
+        <label htmlFor="am-bench-cap">Capability</label>
+        <select
+          id="am-bench-cap"
+          className="field-control am-bench-capsel-input"
+          value={selected ?? ""}
+          onChange={(e) => setFocus(e.target.value)}
+        >
+          {all.map((capability) => {
+            const count = counts[capability] ?? 0;
+            return (
+              <option key={capability} value={capability}>
+                {capabilityLabel(capability)}
+                {count > 0 ? ` (${count})` : ""}
+              </option>
+            );
+          })}
+        </select>
+      </div>
+      {selected && (
         <CapabilitySection
-          key={capability}
-          capability={capability}
-          repos={repos.filter((r) => r.capability === capability)}
-          runs={runs === null ? null : runsFor(runs, capability)}
+          key={selected}
+          capability={selected}
+          repos={repos.filter((r) => r.capability === selected)}
+          runs={runs === null ? null : runsFor(runs, selected)}
           inFlight={inFlight}
           onRun={start}
           onForget={forget}
         />
-      ))}
+      )}
     </div>
   );
 }
