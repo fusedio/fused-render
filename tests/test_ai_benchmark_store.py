@@ -173,7 +173,7 @@ def test_machine_reports_this_host_without_touching_the_network():
 # -- what the store may hand the page -------------------------------------------
 #
 # The docstring promises "a hand-edited file must not be able to take the AI
-# Models page down" and D433 restates it, but the filter was `isinstance(run,
+# Models page down" and D434 restates it, but the filter was `isinstance(run,
 # dict)` alone — so a record missing `metrics` or `workload` reached the tab,
 # where `lib/benchmark.ts` dereferences `run.metrics[key]` and
 # `run.workload.revision` and threw a TypeError mid-render. The promise is kept
