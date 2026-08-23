@@ -1491,14 +1491,14 @@ a.pg-hero-repo:hover {
   cursor: pointer;
   transition:
     color 0.12s ease,
-    border-color 0.12s ease,
-    background 0.12s ease;
+    border-color 0.12s ease;
 }
 
+/* Border and text only — no fill. The row is eight pills side by side; a tinted
+   plate under the hovered one reads as a selected state rather than a pointer. */
 .pg-starter-card:hover {
   color: var(--fg);
   border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .pg-starter-icon {
