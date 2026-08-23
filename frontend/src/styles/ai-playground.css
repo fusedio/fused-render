@@ -537,7 +537,7 @@ a.pg-hero-repo:hover {
  * itself somehow and `cursor: help` on one item inside a row of plain facts
  * announces a different kind of thing to press (D454 lost that argument once
  * already, on the Tasks list). */
-.pg-hero-fact-warn {
+.pg-hero-fact-judged {
   text-decoration: underline dotted;
   text-decoration-color: var(--border);
   text-underline-offset: 3px;

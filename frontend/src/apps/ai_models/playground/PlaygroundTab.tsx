@@ -343,12 +343,28 @@ export default function PlaygroundTab() {
   // never understating it, and null when there is nothing to say at all (see
   // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
-  // The fit verdict, but only when it is a WARNING: "easy" and null both draw
-  // nothing (see the fact itself for why).
-  const warnFit =
-    selected && (selected.model.fit === "tight" || selected.model.fit === "no")
-      ? selected.model.fit
-      : null;
+  // The fit verdict, in words, for all three answers — null and only null draws
+  // nothing (see the fact itself).
+  const fitNote = !selected
+    ? null
+    : selected.model.fit === "easy"
+      ? {
+          text: "Runs comfortably here",
+          title:
+            "Judged against this machine's memory — the weights leave room for everything else.",
+        }
+      : selected.model.fit === "tight"
+        ? {
+            text: "Tight fit on this machine",
+            title:
+              "Judged against this machine's memory — close other heavy apps while it runs.",
+          }
+        : selected.model.fit === "no"
+          ? {
+              text: "Likely too big for this machine",
+              title: "Judged against this machine's memory — it may crawl or fail to load.",
+            }
+          : null;
 
   // The running pull's own figures, for the header's ring and byte line.
   // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
@@ -704,7 +720,7 @@ export default function PlaygroundTab() {
               {(selected.model.params ||
                 selected.model.quantization ||
                 selected.model.size_gb != null ||
-                warnFit) && (
+                fitNote) && (
                 <dl className="pg-hero-facts">
                   {selected.model.params && (
                     <div className="pg-hero-fact">
@@ -732,34 +748,31 @@ export default function PlaygroundTab() {
                       RUNNING (D461), and a coloured badge here would be the
                       same "quieter card" argument re-lost.
 
-                      Drawn ONLY as a warning. "easy" is the common case on any
-                      capable machine, and a mark that appears on nearly every
-                      model marks nothing — the same reason the ✓ downloaded
-                      chip went (D448) — so absence IS the good news, and the
-                      card gains no element at all in the ordinary case. `null`
-                      draws nothing for the server's own reason: a verdict over
-                      a size nobody measured is the lie the "—" size cell
+                      ALL THREE answers are drawn, reversing the warning-only
+                      first cut. That version had the better argument on paper —
+                      "easy" is the common case, and a mark on nearly every
+                      model marks nothing (D448's chip) — and it was wrong about
+                      what this fact is FOR. It is not a badge decorating a
+                      model; it is the answer to "can my machine run this",
+                      which is asked OF EVERY MODEL, and a row that answers only
+                      when the answer is bad is silent exactly when it is being
+                      consulted: on a 34GB laptop every model the sidebar offers
+                      is "easy", so the fact was unreachable and read as
+                      missing. Absence-as-good-news works for a badge nobody was
+                      looking for, not for a question somebody asked. `null`
+                      still draws nothing, for the server's own reason: a verdict
+                      over a size nobody measured is the lie the "—" size cell
                       exists to avoid.
 
                       Its own fact, not a line on Download: fetching and
                       running are different questions, and the Download slot is
                       the one that turns into a progress ring mid-pull — which
                       is exactly when "will this even fit" is worth reading. */}
-                  {warnFit && (
+                  {fitNote && (
                     <div className="pg-hero-fact">
                       <dt>Memory</dt>
-                      <dd
-                        className="pg-hero-fact-warn"
-                        title={
-                          "Judged against this machine's memory — " +
-                          (warnFit === "no"
-                            ? "it may crawl or fail to load."
-                            : "close other heavy apps while it runs.")
-                        }
-                      >
-                        {warnFit === "no"
-                          ? "Likely too big for this machine"
-                          : "Tight fit on this machine"}
+                      <dd className="pg-hero-fact-judged" title={fitNote.title}>
+                        {fitNote.text}
                       </dd>
                     </div>
                   )}
