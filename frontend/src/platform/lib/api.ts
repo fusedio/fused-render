@@ -2251,11 +2251,31 @@ export interface AiModelRepo {
    * the network.
    */
   added: number | null;
-  /** What the model is for ("text generation", "image generation"), or null. */
+  /** What the model is for ("text generation", "text to image"), or null. */
   task: string | null;
+  /** The Hugging Face `pipeline_tag` behind that label — the key a glossary
+   *  lookup, a search filter and a link to the Hub all join on. Null when
+   *  nothing said what the model is. */
+  taskTag: string | null;
   /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
    *  architecture is our reading of one, and the UI distinguishes them. */
   taskSource: string | null;
+  /** Whether this KIND of model runs here, in three states (server-side
+   *  `ai/tasks.py`):
+   *
+   *  - `supported` — a runner serves it, and `capability` says which.
+   *  - `no-runner` — a task we recognise and do not serve (video generation,
+   *    speech synthesis, a robot policy). `supportReason` is the sentence.
+   *  - `unknown` — a tag this build has never heard of, or no evidence at all.
+   *
+   *  `capability` is non-null exactly when this is `supported`; the other two
+   *  states exist so a card can EXPLAIN the null rather than showing a gap
+   *  where a Load button would be. Optional: an older server omits it. */
+  support?: "supported" | "no-runner" | "unknown";
+  /** Why this app does not run this kind of model, when it does not. Empty
+   *  string for a supported task and for one we cannot identify — an excuse we
+   *  have not earned is worse than none. */
+  supportReason?: string;
   /** One sentence on what the task MEANS (what goes in, what comes out), for
    *  the hover — the labels are the Hub's vocabulary, which is jargon until
    *  someone explains it. Null for a tag we have no sentence for. */

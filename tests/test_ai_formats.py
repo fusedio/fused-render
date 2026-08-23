@@ -123,11 +123,18 @@ def test_every_registered_runner_appears_in_loaders():
     ({"model.bin"}, set(), {}, False, {"faster-whisper"}),
     ({"weights.npz"}, set(), {}, False, {"mlx-whisper"}),
     ({"model_index.json"}, set(), {}, False, _IMAGE),
-    # A directory of plain safetensors is EVERY text runner's — which of them
-    # gets it is the registry's question, not the format's.
-    (set(), set(), {}, True, _TEXT),
-    # …unless the checkpoint is MLX's own, which torch cannot read at all.
+    # A directory of plain safetensors WITH a config is the text runner's —
+    # which runner of that capability gets it is the registry's question, not
+    # the format's.
+    (set(), set(), {"model_type": "qwen3"}, True, _TEXT),
+    # …and the checkpoint MLX packed itself, likewise.
     (set(), set(), {"quantization": {"group_size": 64, "bits": 4}}, True, {"mlx-text"}),
+    # **Weights with NO config are nobody's**, and that is the SymphonyGen case:
+    # `mlx_lm.load` resolves a checkpoint through `config.json`, so a directory
+    # of `.pt` files whose extensions happen to match is not something this
+    # engine can open. Claiming it was how a symbolic-music policy came to be
+    # filed under text generation with a Load button.
+    (set(), set(), {}, True, set()),
     # A quantization this build ships no package for is nobody's.
     (set(), set(), {"quantization_config": {"quant_method": "awq"}}, True, set()),
     # Nothing readable at all — the answer the page most needs to be able to give.

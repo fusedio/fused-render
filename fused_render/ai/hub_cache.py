@@ -103,6 +103,7 @@ from typing import NamedTuple
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import registry as _ai_registry
+from fused_render.ai import tasks as _tasks
 from fused_render.ai.runners import formats
 
 # Directory-name prefix -> the kind reported to the UI. This is also the
@@ -304,57 +305,34 @@ def _read_json(path: str, limit: int = 4 * 1024 * 1024) -> dict | None:
 # Every answer carries WHERE IT CAME FROM, because 1 is a fact and 4 is a
 # reading of one, and a UI that showed them identically would be overclaiming.
 
-# Hub pipeline tags are already readable once the hyphens are spaces, so there
-# is no mapping table to go stale — only these three, whose Hub spelling is
-# jargon for what people actually call them.
-_FRIENDLIER_TAGS = {
-    "feature-extraction": "embeddings",
-    "sentence-similarity": "sentence embeddings",
-    "text2text-generation": "text-to-text generation",
-    # Hyphens-to-spaces turns this one into the unparseable "image text to
-    # text". It means a vision-language model: an image AND a prompt in, text
-    # out, so the "+" is doing the work the hyphens could not.
-    "image-text-to-text": "image + text to text",
-    # The audio half of the same shape, and the same reason: hyphens-to-spaces
-    # gives the unreadable "audio text to text". An audio-language model takes
-    # a RECORDING and a prompt and answers in text — which is not speech
-    # recognition (it is asked questions, not asked to transcribe) and is not
-    # something anything here can load.
-    "audio-text-to-text": "audio + text to text",
-    "any-to-any": "any input to any output",
-    # These two exist to make the CARD path and the ARCHITECTURE path agree on
-    # one spelling. Left alone, a whisper model read from its card said
-    # "automatic speech recognition" while the same model read from its config
-    # said "speech recognition" — one concept, two labels, and the glossary
-    # (keyed by label) only had a sentence for one of them.
-    "automatic-speech-recognition": "speech recognition",
-    "zero-shot-image-classification": "zero-shot image classification",
-    "zero-shot-classification": "zero-shot text classification",
-    # Same reason as the two above: a diffusers video/audio pipeline read from
-    # its `_class_name` already says "video generation" / "audio generation",
-    # so the Hub tags for the same thing are folded onto those labels rather
-    # than sprouting a second spelling with its own (missing) glossary entry.
-    "text-to-video": "video generation",
-    "image-to-video": "video generation",
-    "text-to-audio": "audio generation",
-}
+# The vocabulary itself lives in `ai/tasks.py` — every `pipeline_tag` the Hub
+# serves, vendored from `@huggingface/tasks`, each classified as served by a
+# capability or explicitly not. This module produces TAGS from every evidence
+# path below and never prose: one spelling, one glossary key, one thing to
+# classify. (It used to end in `tag.replace("-", " ")`, which made the
+# vocabulary open — see that module's docstring for the two bugs that caused.)
 
 # transformers architecture suffix -> task. Ordered: the first match wins, so
 # the more specific suffixes come before the ones they contain.
 _ARCH_TASKS = (
-    ("ForZeroShotImageClassification", "zero-shot image classification"),
-    ("ForImageClassification", "image classification"),
-    ("ForImageSegmentation", "image segmentation"),
-    ("ForObjectDetection", "object detection"),
-    ("ForSequenceClassification", "text classification"),
-    ("ForTokenClassification", "token classification"),
-    ("ForQuestionAnswering", "question answering"),
-    ("ForSpeechSeq2Seq", "speech recognition"),
-    ("ForConditionalGeneration", "text-to-text generation"),
-    ("ForMaskedLM", "fill mask"),
-    ("ForCausalLM", "text generation"),
-    ("LMHeadModel", "text generation"),
-    ("ForCTC", "speech recognition"),
+    ("ForZeroShotImageClassification", "zero-shot-image-classification"),
+    ("ForImageClassification", "image-classification"),
+    ("ForImageSegmentation", "image-segmentation"),
+    ("ForObjectDetection", "object-detection"),
+    ("ForSequenceClassification", "text-classification"),
+    ("ForTokenClassification", "token-classification"),
+    ("ForQuestionAnswering", "question-answering"),
+    ("ForSpeechSeq2Seq", "automatic-speech-recognition"),
+    # An encoder-decoder (T5-shaped). Not the causal-LM path mlx-lm serves,
+    # however much "generation" in the name suggests it — and the Hub retired
+    # its own `text2text-generation` tag, so the honest surviving tag for what
+    # such a checkpoint is USED for is `translation` (its sibling
+    # `summarization` classifies the same way, and neither is served here).
+    ("ForConditionalGeneration", "translation"),
+    ("ForMaskedLM", "fill-mask"),
+    ("ForCausalLM", "text-generation"),
+    ("LMHeadModel", "text-generation"),
+    ("ForCTC", "automatic-speech-recognition"),
 )
 
 # …ForConditionalGeneration is the same head for "translate this" and "transcribe
@@ -420,46 +398,10 @@ def _quantization(config: dict) -> int | None:
     return None
 
 
-# What each task actually MEANS, in terms of what goes in and what comes out.
-# The labels above are the Hub's vocabulary (or our reading of an architecture),
-# and "image + text to text" or "fill mask" tell you nothing if you have not met
-# them before — so the card explains them on hover rather than leaving a phrase
-# to be guessed at.
-#
-# Keyed by the LABEL, not the raw tag, so one table serves both the model-card
-# path and the architecture path. Deliberately incomplete: the Hub adds tags,
-# and a tag we have no sentence for still shows its label and its source, which
-# is what an open vocabulary degrades to gracefully.
-_TASK_HELP = {
-    "audio + text to text": "Answers questions about a recording — an audio clip and a prompt in, text out.",
-    "text generation": "Continues or answers a prompt in text — chat models, code models, completion.",
-    "text-to-text generation": "Rewrites text into other text — translation, summarising, reformatting.",
-    "fill mask": "Fills in blanked-out words in a sentence. Mostly a building block for other models.",
-    "text classification": "Sorts a piece of text into categories — sentiment, topic, spam.",
-    "token classification": "Labels each word in a sentence — named entities, parts of speech.",
-    "question answering": "Finds the span of a supplied document that answers a question.",
-    "summarization": "Shortens a long text into its main points.",
-    "translation": "Translates text from one language into another.",
-    "embeddings": "Turns text into vectors, so things can be compared or searched by meaning.",
-    "sentence embeddings": "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG.",
-    "image + text to text": "Takes an image AND a prompt, answers in text — describing a picture, reading a chart, visual chat.",
-    "image to text": "Describes an image in words — captioning, OCR.",
-    "text to image": "Generates a picture from a written description.",
-    "image generation": "Generates a picture, usually from a written description.",
-    "video generation": "Generates video frames, usually from a description or a still image.",
-    "audio generation": "Generates sound — speech, music, effects.",
-    "text to speech": "Reads text aloud as audio.",
-    "speech recognition": "Transcribes speech in audio into text.",
-    "image classification": "Says what an image is a picture of, from a fixed set of labels.",
-    "zero-shot image classification": "Says what an image shows, against labels you supply at the time rather than a fixed set.",
-    "zero-shot text classification": "Sorts text into categories you supply at the time rather than a fixed set.",
-    "image segmentation": "Marks which pixels belong to which object.",
-    "object detection": "Finds objects in an image and boxes them.",
-    "depth estimation": "Estimates how far away each part of an image is.",
-    "image to image": "Turns one picture into another — upscaling, restyling, inpainting.",
-    "audio classification": "Sorts a sound into categories — which language, which speaker, what noise.",
-    "any input to any output": "Handles several kinds of input and output — text, images, audio — in one model.",
-}
+# The glossary lives with the vocabulary (`ai/tasks.py`), keyed by TAG. It used
+# to sit here keyed by prose label, which is how one concept read from a card
+# and from a config produced two spellings and only one of them had a sentence.
+
 
 
 @dataclass
@@ -467,6 +409,9 @@ class _RepoMeta:
     """What a repo is for and how big the model is — read from the default
     revision's snapshot, or empty when the download brought no evidence."""
 
+    #: The Hub `pipeline_tag` this repo is, from whichever evidence answered —
+    #: a TAG, never prose, whether it came from the card or from our own
+    #: reading of a config (`ai/tasks.py`). None when nothing said.
     task: str | None = None
     task_source: str | None = None
     # One sentence on what the task means, when we have one for it.
@@ -527,16 +472,30 @@ def _front_matter(snapshot_dir: str) -> dict[str, str]:
 
 
 def _pipeline_task(tag: str) -> str:
-    return _FRIENDLIER_TAGS.get(tag, tag.replace("-", " "))
+    """The card's `pipeline_tag`, verbatim.
+
+    A function rather than nothing, because the CARD path and the four evidence
+    paths below must produce the same kind of value, and a reader of
+    `_repo_meta` should be able to see that the card is not treated specially.
+    Unrecognised tags are NOT rejected here — `tasks.classify` answers
+    `UNKNOWN` for them and the card still shows what the author wrote."""
+    return tag.strip()
 
 
 def _diffusers_task(class_name: str) -> str:
+    """The pipeline class in this snapshot, as a Hub tag.
+
+    The `text-to-*` tags rather than bare "video generation" / "image
+    generation": a diffusers pipeline IS prompted, and folding the two
+    spellings onto the Hub's own tag is what lets one glossary entry and one
+    classification serve both this path and a model card that says the same
+    thing."""
     lowered = class_name.lower()
     if "video" in lowered:
-        return "video generation"
+        return "text-to-video"
     if "audio" in lowered or "music" in lowered:
-        return "audio generation"
-    return "image generation"
+        return "text-to-audio"
+    return "text-to-image"
 
 
 def _architecture_task(config: dict) -> str | None:
@@ -549,7 +508,7 @@ def _architecture_task(config: dict) -> str | None:
             if suffix == "ForConditionalGeneration":
                 # One head, three jobs, and the config is what tells them apart.
                 if config.get("model_type") in _AUDIO_MODEL_TYPES:
-                    return "speech recognition"
+                    return "automatic-speech-recognition"
                 # A MULTIMODAL WRAPPER — a language model with a vision (and
                 # sometimes audio) tower bolted on, which is what every current
                 # Qwen3.5 and gemma-4 checkpoint is, including the ones this
@@ -561,9 +520,9 @@ def _architecture_task(config: dict) -> str | None:
                 # with no Load button. The label is the one the CARD path
                 # already produces for these repos, so the two agree.
                 if _VISION_CONFIG in config:
-                    return "image + text to text"
+                    return "image-text-to-text"
                 if _AUDIO_CONFIG in config:
-                    return "audio + text to text"
+                    return "audio-text-to-text"
             return task
     return None
 
@@ -635,11 +594,11 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
     stray pickle happened to be called model.bin would be a confident lie.
     """
     if formats.is_ct2_whisper(names, config):
-        return "speech recognition", "its CTranslate2 Whisper layout"
+        return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
-        return "speech recognition", "its MLX Whisper weights"
+        return "automatic-speech-recognition", "its MLX Whisper weights"
     if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
-        return "image generation", "its MLX diffusion components"
+        return "text-to-image", "its MLX diffusion components"
     return None
 
 
@@ -790,7 +749,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
             library = library or "diffusers"
 
     if meta.task is None and ("config_sentence_transformers.json" in names or "modules.json" in names):
-        meta.task, meta.task_source = "embeddings", "its sentence-transformers config"
+        meta.task, meta.task_source = "feature-extraction", "its sentence-transformers config"
         library = library or "sentence-transformers"
 
     # Read once, whatever the task turned out to be: the architecture is only
@@ -840,13 +799,13 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # this from overruling a card that was right: a genuine img2img repo with no
     # such evidence keeps its label, and so does a VLM whose label already
     # resolves to text generation.
-    if meta.task is None or _ai_registry.capability_for_task(meta.task) is None:
+    if not _tasks.classify(meta.task).supported:
         found = _format_task(repo_id, names, dirnames, config)
         if found:
             meta.task, meta.task_source = found
 
     if meta.task:
-        meta.task_help = _TASK_HELP.get(meta.task)
+        meta.task_help = _tasks.help_for(meta.task)
 
     quantized_bits = _quantization(config)
     if quantized_bits:
@@ -1062,7 +1021,7 @@ def _unfinished_fetch(repo_dir: str) -> bool:
     return not _snapshot_dirs(os.path.join(repo_dir, "snapshots"))
 
 
-def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str | None]:
+def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | None, str | None]:
     """Which backend would load this repo, and the capability it would load it
     AS — `(None, capability)` when nothing here reads the format.
 
@@ -1083,10 +1042,20 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
     decisive formats may answer — a directory of safetensors says nothing about
     the modality (`formats.DECISIVE`).
     """
+    capability = reading.capability
     if not meta.loaders:
         return None, capability
     runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
-    if capability is None:
+    if capability is None and not reading.ruled_out:
+        # **Only for a task we could not identify.** A RULED-OUT task is not
+        # rescued by the format, and that guard is the fix for a cached
+        # diffusers VIDEO pipeline: its `_class_name` says `text-to-video`,
+        # nothing here generates video, and yet the diffusers runners are
+        # DECISIVE about the format — so this branch used to answer
+        # "text-to-image" and put a Load button on it. The mflux/CT2 cases the
+        # branch exists for are unaffected, because `_format_task` has already
+        # overruled their misleading labels by the time we get here, making the
+        # reading SUPPORTED rather than ruled out.
         decisive = [r for r in runners if r.code in formats.DECISIVE]
         capability = decisive[0].capability if decisive else None
     if capability is None:
@@ -1162,11 +1131,21 @@ class CacheReading(NamedTuple):
     `cached` is whether there is a revision to read at all; `capability` is what
     a load of it would be (None when nothing here can tell); `looks_like` is the
     same evidence in words, for an error message.
+
+    `support` and `reason` are the THREE-STATE answer behind that `capability`
+    (`ai/tasks.py`): a null capability is "we run this kind of model but not
+    from this format", "we do not run this kind of model at all", or "we cannot
+    tell what this is", and a refusal that cannot tell them apart cannot explain
+    itself. `tag` is the vocabulary key those came from, for a caller that wants
+    to link to the glossary rather than reprint a sentence.
     """
 
     cached: bool
     capability: str | None
     looks_like: str | None
+    support: str = _tasks.UNKNOWN
+    reason: str = ""
+    tag: str | None = None
 
 
 def cached_capability(repo_id: str) -> CacheReading:
@@ -1196,15 +1175,25 @@ def cached_capability(repo_id: str) -> CacheReading:
         return CacheReading(False, None, None)
 
     meta = _repo_meta(repo_dir)
-    # The page's own join, in the page's own order: the task label first, then
-    # the decisive formats, which is what `_engine` exists to combine.
-    _row, capability = _engine(meta, _ai_registry.capability_for_task(meta.task))
-    if capability is None and meta.loaders:
-        # Nothing DECISIVE, but the runners that read this format may still
-        # agree about what it is: a bare directory of safetensors is read only
-        # by the two TEXT runners, and their shared capability is a fact about
-        # the format rather than a guess about the model. This is what keeps
-        # every existing `load(id)` on an unlabelled chat repo working.
+    # The page's own join, in the page's own order: the task first, then the
+    # decisive formats, which is what `_engine` exists to combine.
+    reading = _tasks.classify(meta.task)
+    _row, capability = _engine(meta, reading)
+    if capability is None and meta.loaders and reading.support == _tasks.UNKNOWN:
+        # Nothing DECISIVE and nothing that told us what this IS, but the
+        # runners that read the format may still agree about it: a directory of
+        # safetensors with a `config.json` mlx-lm can resolve is read only by
+        # the TEXT runner, and their shared capability is a fact about the
+        # format rather than a guess about the model. This is what keeps every
+        # existing `load(id)` on an unlabelled chat repo working.
+        #
+        # **Gated on UNKNOWN, and that gate is the point.** A task we recognise
+        # and have ruled out must not be rescued here: `SymphonyGen/SymphonyGen`
+        # is a symbolic-music policy (`reinforcement-learning`, four `.pt`
+        # checkpoints) and this fallback made it a chat model in the
+        # Playground's TEXT section, with a Load aimed at an mlx-lm that has no
+        # `config.json` to read. `formats.loaders` refuses that repo now too —
+        # two guards, because the failure was silent in both.
         found = {r.capability for r in _ai_registry.all_runners()
                  if r.code in meta.loaders}
         if len(found) == 1:
@@ -1219,13 +1208,18 @@ def cached_capability(repo_id: str) -> CacheReading:
             True, None,
             f"{_article(component['part'])} {component['part']} that belongs to "
             f"{component['owner']}")
-    if meta.task:
-        looks_like = f"{_article(meta.task)} {meta.task} model"
+    if reading.label:
+        looks_like = f"{_article(reading.label)} {reading.label} model"
     elif meta.library:
         looks_like = f"{_article(meta.library)} {meta.library} repo"
     else:
         looks_like = None
-    return CacheReading(True, capability, looks_like)
+    # A repo whose TASK is served but whose FORMAT is not keeps its ruled-out
+    # sentence from `_engine`'s own reason (the card shows that one); what
+    # travels here is the vocabulary's answer, which is the half a load route
+    # needs to explain a refusal without re-deriving anything.
+    return CacheReading(True, capability, looks_like,
+                        reading.support, reading.reason, reading.tag)
 
 
 def _article(word: str) -> str:
@@ -1427,12 +1421,12 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     # and no explanation of a 2.4GB row) or, if a component ever came in a
     # loadable shape, a Load button for something nothing serves.
     component = formats.component(repo_id)
-    capability = (
-        _ai_registry.capability_for_task(meta.task)
-        if kind == "model" and component is None else None
+    reading = (
+        _tasks.classify(meta.task)
+        if kind == "model" and component is None else _tasks.NOTHING
     )
     engine, capability = (
-        _engine(meta, capability) if kind == "model" and component is None
+        _engine(meta, reading) if kind == "model" and component is None
         else (None, None)
     )
     return {
@@ -1456,8 +1450,22 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # What the model is FOR, and where that was read from — a pipeline_tag
         # is the Hub's own answer, an architecture is our reading of one, and
         # the UI says which (see _repo_meta).
-        "task": meta.task,
+        # The words, and the Hub tag they came from. Both, because the label is
+        # what a card prints and the TAG is what a filter, a glossary lookup and
+        # a link to the Hub all key on — one string doing both jobs is how the
+        # two faces of this page came to spell one concept two ways.
+        "task": reading.label,
+        "taskTag": reading.tag,
         "taskSource": meta.task_source,
+        # **Whether we run this KIND of model, said out loud** (`ai/tasks.py`).
+        # Three states, because a null `capability` was three different facts
+        # and a card cannot explain a fact it cannot see: "supported",
+        # "no-runner" (a task we recognise and do not serve — video generation,
+        # speech synthesis, a robot policy) and "unknown" (a tag this build has
+        # never heard of). `supportReason` is the sentence for the second, and
+        # the honest empty string for the others.
+        "support": reading.support,
+        "supportReason": reading.reason,
         # One sentence on what that task means — the labels are the Hub's
         # vocabulary, which is jargon until someone explains it.
         "taskHelp": meta.task_help,

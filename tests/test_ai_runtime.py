@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
 from fused_render.ai import hub_cache as ai_models
@@ -2056,8 +2057,9 @@ def test_speech_recognition_is_a_capability_something_here_serves(monkeypatch):
     on ALL of them, unlike text generation, which is the reason the runner is
     CTranslate2 rather than MLX.
     """
-    assert registry.capability_for_task("speech recognition") == registry.SPEECH_TO_TEXT
-    assert "speech recognition" not in registry.NO_RUNNER_YET
+    reading = ai_tasks.classify("automatic-speech-recognition")
+    assert reading.capability == registry.SPEECH_TO_TEXT
+    assert reading.supported and not reading.ruled_out
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
     runner = registry.for_capability(registry.SPEECH_TO_TEXT)
@@ -6197,11 +6199,30 @@ def test_a_cached_text_repo_without_a_capability_still_loads_as_text(
 def test_a_cached_repo_with_no_task_but_readable_weights_is_text(
         client, hub, dispatched):
     """A directory of safetensors says nothing about the modality — but the only
-    runners that read one are the two TEXT runners, so their shared capability
-    is the answer rather than a guess."""
-    _cached_repo(hub, "org/mystery", files=("model.safetensors",))
+    runner that reads one is the TEXT runner, so its capability is the answer
+    rather than a guess.
+
+    `config.json` is part of "readable weights" and not decoration: `mlx_lm.load`
+    resolves a checkpoint through it. See the test below for the repo that has
+    the extensions and not the config."""
+    _cached_repo(hub, "org/mystery", files=("model.safetensors",),
+                 config={"model_type": "qwen3"})
     assert _load(client, {"model": "org/mystery"}).status_code == 200
     assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_weights_with_no_config_are_not_a_chat_model(client, hub, dispatched):
+    """`SymphonyGen/SymphonyGen`'s shape: four bare `.pt` checkpoints of a
+    symbolic-music policy, no `config.json`, no card task this app serves.
+
+    mlx-lm cannot resolve a checkpoint without a config, so claiming the format
+    was a promise the load could not keep — and because the claim was the ONLY
+    evidence left by then, the repo was filed under text generation and drawn in
+    the Playground's chat section."""
+    _cached_repo(hub, "SymphonyGen/SymphonyGen",
+                 files=("stage_one_pretrained.pt", "grpo_clamp_epoch_10.pt"))
+    assert _load(client, {"model": "SymphonyGen/SymphonyGen"}).status_code == 400
+    assert dispatched == []
 
 
 def test_an_uncached_suggested_repo_takes_the_catalogs_capability(
