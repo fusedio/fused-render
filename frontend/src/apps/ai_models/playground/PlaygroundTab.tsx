@@ -36,6 +36,7 @@ import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppSeed, modelName } from "./appSeed";
 import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
+import { PlaygroundApps } from "./PlaygroundApps";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -610,6 +611,7 @@ export default function PlaygroundTab() {
                 still load and manage this model.
               </p>
             )}
+            <PlaygroundApps capability={selected.row.capability} modelId={selected.model.id} />
           </>
         )}
       </div>
