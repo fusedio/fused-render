@@ -15,25 +15,15 @@ Runner resolution is forced too, never inherited from the machine: MLX resolves
 on this laptop and on nothing in CI, so a test that let the registry answer
 would assert one thing here and another there.
 """
-import hashlib
 import json
 import os
+import wave
 
 import pytest
 
 from fused_render import jobs
 from fused_render.ai import bench_store, benchmark
 from fused_render.ai import registry as ai_registry
-
-
-def _write_fake_clip(path: str, content: bytes = b"fake clip bytes") -> str:
-    """A stand-in for the real reference clip: not audio at all, since nothing
-    in this suite decodes it — only its PATH and its role in checksum
-    verification matter here. Returns `path` for convenience."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(content)
-    return path
 
 
 class Clock:
@@ -74,14 +64,8 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
     # A no-op that just says "there was nothing to stop" by default — most
     # tests here are warm and must never reach it at all; the ones that force a
-    # cold load override this with a recording fake (see D444's section below).
+    # cold load override this with a recording fake (see D436's section below).
     monkeypatch.setattr(benchmark.supervisor, "unload", lambda **kwargs: False)
-    # The reference speech clip is a network fetch this suite must never make
-    # (see the class comment above) — every test that is not itself exercising
-    # `_ensure_speech_clip`/`_fetch_speech_clip_bytes` gets a fake local file
-    # instead, exactly the way `ready_worker`/`describe` above are stood in for.
-    clip_path = _write_fake_clip(str(tmp_path / "clip" / benchmark._SPEECH_CLIP_FILENAME))
-    monkeypatch.setattr(benchmark, "_ensure_speech_clip", lambda: clip_path)
     return clock
 
 
@@ -248,18 +232,24 @@ def test_image_steps_fall_back_to_the_server_default_without_a_catalog_hint(
 # -- speech to text -------------------------------------------------------------
 
 
-def test_speech_reports_a_realtime_factor_over_the_reference_clip(bench,
-                                                                  monkeypatch):
-    """D445: the audio is the fixed reference clip (faked here — see the
-    `bench` fixture — never a synthesized tone), and its duration comes from
-    the WORKLOAD rather than from whatever the model claims it heard — a fixed
-    workload whose length the measured thing gets to report is not fixed."""
+def test_speech_reports_a_realtime_factor_over_a_synthesized_tone(bench,
+                                                                 monkeypatch):
+    """The audio is generated here with the stdlib rather than committed as a
+    fixture, and its duration comes from the WORKLOAD rather than from whatever
+    the model claims it heard — a fixed workload whose length the measured thing
+    gets to report is not fixed."""
     seen = []
 
     def generate_transcript(model, request, job):
         seen.append(request)
+        # The file really exists and really is 30 seconds of 16 kHz mono, which
+        # is the half of this that a mocked-out writer would not have caught.
+        with wave.open(request["path"], "rb") as wav:
+            assert wav.getnchannels() == 1
+            assert wav.getframerate() == 16000
+            assert wav.getnframes() == 16000 * 30
         bench.advance(20.0 if len(seen) == 1 else 3.0)
-        return {"text": benchmark._SPEECH_REFERENCE_TEXT, "duration": 30.0}
+        return {"text": "beep", "duration": 30.0}
 
     monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
                         generate_transcript)
@@ -268,167 +258,8 @@ def test_speech_reports_a_realtime_factor_over_the_reference_clip(bench,
     assert metrics["audioSeconds"] == pytest.approx(30.0)
     assert metrics["totalSeconds"] == pytest.approx(3.0)
     assert metrics["realtimeFactor"] == pytest.approx(10.0)
-    # A perfect transcript of the reference scores a perfect WER.
-    assert metrics["wordErrorRate"] == pytest.approx(0.0)
-    # The clip is a persistent cache entry, NOT a per-run temp file — unlike
-    # the image path's PNG, it must still exist after the run.
-    assert os.path.exists(seen[-1]["path"])
-
-
-def test_speech_reports_a_nonzero_word_error_rate_for_an_imperfect_transcript(
-        bench, monkeypatch):
-    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
-                        lambda model, request, job: (
-                            bench.advance(3.0),
-                            {"text": "alice was beginning to get very tired"},
-                        )[1])
-    record = benchmark.run("some/whisper", ai_registry.SPEECH_TO_TEXT)
-    wer = record["metrics"]["wordErrorRate"]
-    assert wer is not None and wer > 0.0
-
-
-def test_speech_word_error_rate_is_null_not_zero_when_no_text_comes_back(
-        bench, monkeypatch):
-    """The null-over-zero rule applied to WER: a transcript this benchmark
-    could not even read must not be scored as a perfect (zero-error) one."""
-    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
-                        lambda model, request, job: (bench.advance(3.0), {})[1])
-    record = benchmark.run("some/whisper", ai_registry.SPEECH_TO_TEXT)
-    assert record["metrics"]["wordErrorRate"] is None
-
-
-def test_speech_normalization_ignores_case_and_punctuation():
-    """Both sides of the comparison are normalized identically — a transcript
-    that differs from the reference only by case and punctuation must score a
-    perfect WER, or the metric would be measuring formatting instead of
-    transcription accuracy."""
-    shouted = benchmark._SPEECH_REFERENCE_TEXT.upper().replace(",", "!!!")
-    assert benchmark._word_error_rate(shouted) == pytest.approx(0.0)
-
-
-def test_speech_reference_clip_row_title_is_not_a_name_a_user_could_have_dropped_in(
-        bench, monkeypatch):
-    """The title an inherited row gets is the clip's basename (see
-    `supervisor._transcribe_title`); it must be `_SPEECH_CLIP_FILENAME`, a name
-    only this feature would produce, and not something generic a user's own
-    file could coincidentally share."""
-    seen = []
-
-    def generate_transcript(model, request, job):
-        seen.append(os.path.basename(request["path"]))
-        bench.advance(3.0)
-        return {"text": "beep"}
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
-                        generate_transcript)
-    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
-    assert seen[-1] == benchmark._SPEECH_CLIP_FILENAME
-
-
-# -- fetching and caching the reference clip (D445) ------------------------------
-
-
-def test_the_placeholder_checksum_is_reported_as_not_yet_published(tmp_path,
-                                                                    monkeypatch):
-    """`_SPEECH_CLIP_SHA256` ships as the unfilled placeholder until a human
-    records the real digest — reaching the fetch path in that state must fail
-    with a message that says so, not a generic or a silent one."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    with pytest.raises(benchmark.SpeechClipUnavailable, match="not been published"):
-        benchmark._fetch_speech_clip_bytes()
-
-
-def test_offline_with_no_cache_records_a_failed_run_not_a_tone_fallback(
-        tmp_path, monkeypatch):
-    """The one behavioural point of this whole feature: a machine that cannot
-    reach the mirror, and has never cached the clip, must FAIL the run — never
-    silently measure a substitute and label it the same as a real one.
-
-    Deliberately does NOT use the `bench` fixture: that fixture fakes
-    `_ensure_speech_clip` for every OTHER test so they need not think about the
-    network at all, and this is the one test that must not have it faked."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    clock = Clock()
-    monkeypatch.setattr(benchmark, "_now", clock)
-    monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: FakeRunner)
-    monkeypatch.setattr(benchmark.supervisor, "ready_worker",
-                        lambda cap, model=None: object())
-    monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
-    monkeypatch.setattr(benchmark.supervisor, "unload", lambda **kwargs: False)
-    # A real (non-placeholder) checksum, so this test fails for the reason it
-    # is actually testing — "no mirror" — rather than "not published yet".
-    monkeypatch.setattr(benchmark, "_SPEECH_CLIP_SHA256", "a" * 64)
-    monkeypatch.setattr(benchmark.mirror, "base_url", lambda: "")
-
-    def generate_transcript(model, request, job):
-        raise AssertionError("the transcription worker must never be reached offline")
-
-    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
-                        generate_transcript)
-    record = benchmark.run("some/whisper", ai_registry.SPEECH_TO_TEXT)
-    assert record["ok"] is False
-    assert "mirror" in record["error"]
-    # It really was appended to history as a failure, the way any other
-    # failed run is — not swallowed, not silently retried as a tone.
-    stored = bench_store.read()
-    assert stored[-1]["id"] == record["id"]
-    assert stored[-1]["ok"] is False
-
-
-def test_a_checksum_mismatch_is_fatal_and_never_silently_accepted(tmp_path,
-                                                                  monkeypatch):
-    """A byte a corrupted or swapped mirror asset changed must fail loudly —
-    accepting it would silently turn a 'fixed' workload into a moving one for
-    everybody who benchmarks after it."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(benchmark.mirror, "base_url", lambda: "https://fake.mirror.test")
-    monkeypatch.setattr(benchmark, "_SPEECH_CLIP_SHA256", "b" * 64)
-
-    class _FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def read(self, n):
-            return b"not the right bytes at all"
-
-    def fake_urlopen(request, timeout):
-        return _FakeResponse()
-
-    monkeypatch.setattr(benchmark.urllib.request, "urlopen", fake_urlopen)
-    with pytest.raises(benchmark.SpeechClipUnavailable, match="checksum"):
-        benchmark._fetch_speech_clip_bytes()
-
-
-def test_a_valid_cached_clip_is_used_without_touching_the_network(tmp_path,
-                                                                  monkeypatch):
-    """Downloaded once: a machine holding a verified copy must never re-fetch
-    it, offline or online."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    content = b"a verified local copy"
-    digest = hashlib.sha256(content).hexdigest()
-    monkeypatch.setattr(benchmark, "_SPEECH_CLIP_SHA256", digest)
-    cache_path = benchmark._speech_clip_cache_path()
-    _write_fake_clip(cache_path, content)
-
-    def fail_if_called(*a, **kw):
-        raise AssertionError("a cached, verified clip must not be re-fetched")
-
-    monkeypatch.setattr(benchmark.urllib.request, "urlopen", fail_if_called)
-    monkeypatch.setattr(benchmark.mirror, "base_url", fail_if_called)
-    assert benchmark._ensure_speech_clip() == cache_path
-
-
-def test_a_corrupted_cache_entry_is_not_trusted(tmp_path, monkeypatch):
-    """The cache is re-verified on every call, not trusted after the first
-    successful fetch — a byte flipped on disk by anything else must not go on
-    silently poisoning every run after it."""
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(benchmark, "_SPEECH_CLIP_SHA256", hashlib.sha256(b"right").hexdigest())
-    _write_fake_clip(benchmark._speech_clip_cache_path(), b"wrong bytes on disk")
-    assert benchmark._cached_speech_clip() is None
+    import os
+    assert not os.path.exists(seen[1]["path"])  # the temp dir is cleaned up
 
 
 # -- load timing ----------------------------------------------------------------
@@ -484,7 +315,7 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     assert record["error"] == "some/text-model did not finish loading in time"
 
 
-# -- unload after a cold benchmark (D444) ----------------------------------------
+# -- unload after a cold benchmark (D436) ----------------------------------------
 #
 # A benchmark that had to cold-load the model tears it back down when the run
 # ends, success or failure alike, because a measurement is not a claim on the
@@ -738,8 +569,6 @@ def norows(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: object())
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
-    clip_path = _write_fake_clip(str(tmp_path / "clip" / benchmark._SPEECH_CLIP_FILENAME))
-    monkeypatch.setattr(benchmark, "_ensure_speech_clip", lambda: clip_path)
     jobs.reset()
     yield clock
     jobs.reset()
@@ -1060,6 +889,25 @@ def test_a_row_inherited_from_the_transcribe_queue_is_closed(norows, monkeypatch
     assert row["state"] in ("done", "error", "cancelled"), (
         "a row inherited from the transcribe queue was left running forever"
     )
+
+
+def test_the_temp_audio_is_named_so_an_inherited_row_reads_as_a_benchmark(
+        bench, monkeypatch):
+    """The title that row gets is the AUDIO FILE's basename, which is the only
+    part of it this module controls. "benchmark.wav" could be a file the user
+    dropped in; this cannot."""
+    seen = []
+
+    def generate_transcript(model, request, job):
+        seen.append(os.path.basename(request["path"]))
+        bench.advance(3.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    assert seen[-1].startswith("fused-benchmark-")
+    assert seen[-1].endswith(".wav")
 
 
 def test_a_text_run_creates_no_row_and_reaches_no_closer(norows, monkeypatch):

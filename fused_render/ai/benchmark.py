@@ -27,23 +27,20 @@ canvas, each model contributes its own catalog default step count, and
 comparability is recovered by making SECONDS PER STEP the primary metric with
 the step count recorded on the run.
 
-**Speech to text used to synthesize its own audio — a pure sine tone — and that
-was wrong (D445).** A tone contains no speech, so a model with any
-speech-dependent early-exit or VAD-adjacent behaviour reports how fast it gives
-up on silence, not how fast it transcribes. `whisper-tiny.en-8bit` "decoding"
-30s of tone in 0.022s (1400x realtime) next to `whisper-large-v3-turbo` at
-0.65s (46x) was exactly that artifact wearing the shape of a ranking. The fix
-is a real 30-second speech clip with a known reference transcript, fetched once
-from our own mirror distribution (`ai/runners/mirror.py`) and cached on disk —
-verified against a pinned sha256 so a corrupted or swapped asset fails loudly
-instead of silently becoming a different fixed workload — plus a word-error-rate
-accuracy metric scored against that reference. `SPEECH_TO_TEXT`'s `revision`
-bumped to 2 for exactly this: a run measured against the tone and a run
-measured against the clip are not comparable, and must not be charted as if
-they were. An unreachable mirror with no cached copy is now a real failure mode
-for this benchmark, recorded like any other (`run()`'s existing `ok:false`
-path) rather than silently falling back to the tone, which would have produced
-a record indistinguishable from a real one while measuring something else.
+**Speech to text synthesizes its own audio.** Realtime factor is a decode
+throughput measure and does not need intelligible speech, and generating a tone
+with the stdlib `wave` module avoids committing a binary asset to the repo for
+one benchmark. The risk, stated rather than hidden: a model with
+speech-dependent early-exit behaviour could look faster on a tone than on real
+audio.
+
+**D445 tried replacing this tone with a real clip fetched from our own mirror
+plus a word-error-rate metric, and was reverted (see D445's updated
+DECISIONS.md entry).** The asset was never published, so every machine hit
+`SpeechClipUnavailable` on every speech run — a live, user-visible outage
+rather than a latent risk. The design in D445 is still the right one for when
+the clip exists; this file is back to the tone in the meantime, and re-landing
+it is a `git revert` of the revert.
 
 `machine()` records why a number is not portable. It is stdlib only — no
 `psutil`, which fused-render's venv does not carry and which would make a
@@ -55,18 +52,16 @@ as "this runner does not say", which is the truth.
 """
 from __future__ import annotations
 
-import hashlib
-import http.client
 import logging
+import math
 import os
 import platform
-import re
 import secrets
+import struct
 import tempfile
 import time
-import urllib.error
-import urllib.request
 import uuid
+import wave
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
@@ -74,8 +69,6 @@ from typing import Mapping
 import fused_render
 from fused_render import jobs
 from fused_render.ai import bench_store, catalog, registry, supervisor
-from fused_render.ai.runners import mirror
-from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
 
@@ -127,262 +120,6 @@ _EMBED_TEXTS = (
     "SELECT count(*) FROM read_parquet('s3://bucket/*.parquet')",
 )
 
-#: The fixed reference transcript a speech benchmark scores its output against
-#: (D445). This is the opening sentence of Lewis Carroll's *Alice's Adventures
-#: in Wonderland* (1865) — public domain worldwide. **This text drives the
-#: audio, not the other way round**: whoever produces `_SPEECH_CLIP_FILENAME`
-#: (see that constant) must record or select a spoken reading of exactly this
-#: passage, so the reference below is guaranteed to match the words actually
-#: on the clip rather than being a guess at what some already-chosen recording
-#: says. If the clip is sourced from an existing public-domain recording (e.g.
-#: a LibriVox reading, which volunteers dedicate to the public domain as a
-#: condition of the project) rather than freshly recorded, the reader's name
-#: and the recording's source URL belong in the DECISIONS.md entry for D445
-#: (or right here) — that attribution is NOT filled in here because no such
-#: recording has actually been chosen yet, and inventing one would be a false
-#: provenance claim.
-#:
-#: Deliberately free of digits or numerals: `_normalize_for_wer` below does no
-#: number-word-vs-digit normalization ("twenty" vs "20"), because a correct
-#: version of that needs a real text-normalizer (currency, dates, ordinals)
-#: that the stdlib does not provide, and a wrong one would be worse than none.
-#: Writing the reference with no numbers in it sidesteps the whole class of
-#: spurious error rather than mis-handling it — if a future reference ever
-#: needs a quantity, spell it out in words and accept that a model emitting
-#: digit-style output will take a benign WER hit on that token.
-_SPEECH_REFERENCE_TEXT = (
-    "Alice was beginning to get very tired of sitting by her sister on the "
-    "bank, and of having nothing to do: once or twice she had peeped into "
-    "the book her sister was reading, but it had no pictures or "
-    "conversations in it, and what is the use of a book, thought Alice, "
-    "without pictures or conversations?"
-)
-
-#: Name of the reference clip, used BOTH as the mirror object's filename and
-#: as the local cache's filename — same name on both ends because there is no
-#: reason for them to differ, and because the local filename is also what
-#: `_measure_transcript` hands the transcription worker as `request["path"]`,
-#: which is what `supervisor._transcribe_title` titles an inherited row with
-#: (see `_measure_transcript`'s docstring): a name a user could not plausibly
-#: have dropped in themselves.
-_SPEECH_CLIP_FILENAME = "fused-benchmark-speech-30s.flac"
-
-#: Where the clip lives relative to the mirror's base URL. Not under
-#: `models/...` — `ai/runners/mirror.py`'s manifest/blob shapes are for model
-#: repos, and this is one static asset — but the base URL itself goes through
-#: `mirror.base_url()`, which is what makes an operator's `FUSED_MODEL_MIRROR`
-#: override (or explicit opt-out) apply here too instead of a URL hardcoded
-#: past it.
-_SPEECH_CLIP_ASSET_PATH = f"benchmark/{_SPEECH_CLIP_FILENAME}"
-
-#: **PLACEHOLDER.** The asset above does not exist on the mirror yet. A human
-#: must: (1) record or source a ~30-second mono 16kHz FLAC (~300KB) reading of
-#: `_SPEECH_REFERENCE_TEXT` verbatim, attributing it as described in that
-#: constant's comment; (2) publish it to the mirror at
-#: `<FUSED_MODEL_MIRROR base>/benchmark/fused-benchmark-speech-30s.flac`;
-#: (3) compute its real sha256 (`shasum -a 256 fused-benchmark-speech-30s.flac`)
-#: and replace this constant with it. Left as an all-zero string, which cannot
-#: collide with any real digest, so `_fetch_speech_clip_bytes` can tell "not
-#: published yet" apart from "published and corrupted" and say which one it
-#: hit — a build that reaches this path before step (3) fails with a message
-#: that says so, rather than accepting whatever a 404 or a squatted path
-#: returns.
-_SPEECH_CLIP_SHA256_UNSET = "0" * 64
-_SPEECH_CLIP_SHA256 = _SPEECH_CLIP_SHA256_UNSET
-
-#: The clip is ~300KB; this is a ceiling against a misconfigured mirror
-#: serving something enormous, not a size we expect to approach.
-_SPEECH_CLIP_MAX_BYTES = 2 * 1024 * 1024
-
-_SPEECH_CLIP_FETCH_TIMEOUT_S = 30.0
-
-#: Every way `urllib` can fail to answer, in the same spirit as
-#: `mirror._UNREACHABLE` — reachability failures are not distinguished from
-#: "no mirror" by the caller, both just mean "cannot get the clip right now".
-_SPEECH_CLIP_UNREACHABLE = (urllib.error.URLError, OSError, ValueError,
-                            http.client.HTTPException)
-
-
-class SpeechClipUnavailable(RuntimeError):
-    """The fixed reference clip could not be obtained: not published yet, no
-    mirror configured or reachable, or the bytes that came back failed their
-    checksum. Always raised rather than substituted for — `run()`'s existing
-    `except BaseException` turns this into an ordinary `ok:false` record with
-    this message, exactly like any other measurement failure. There is no
-    fallback path to a synthesized tone: a speech benchmark that quietly
-    measured something else on a machine that cannot reach the mirror would
-    produce a record indistinguishable from a real one, which is worse than no
-    record at all.
-    """
-
-
-def _speech_clip_cache_path() -> str:
-    """Where the downloaded-once clip is cached, once verified.
-
-    Under `storage.home_dir()` — the same root `ai_benchmarks.json` lives
-    under — rather than `hub_cache.hub_home()`: this is not a model, and
-    filing it into that tree would make every scan of it (the Local tab's
-    inventory, disk usage) count a benchmark fixture as one.
-    """
-    return os.path.join(storage.home_dir(), "ai", _SPEECH_CLIP_FILENAME)
-
-
-def _cached_speech_clip() -> str | None:
-    """The cache path IF it is present and still matches the pinned checksum,
-    else None.
-
-    Re-verified on every call rather than trusted after the first successful
-    fetch: a fixed workload whose bytes can silently change on disk (a partial
-    write, something else touching the cache dir) is not fixed, and the cost of
-    reading a ~300KB file and hashing it is not worth skipping to save.
-    """
-    path = _speech_clip_cache_path()
-    try:
-        with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
-        return None
-    if hashlib.sha256(data).hexdigest() != _SPEECH_CLIP_SHA256:
-        return None
-    return path
-
-
-def _fetch_speech_clip_bytes() -> bytes:
-    """The clip's bytes, fetched fresh off the mirror and verified.
-
-    Raises `SpeechClipUnavailable` for every way this can fail — the
-    checksum constant is still the unfilled placeholder, there is no mirror
-    base URL (unset/opted-out/misconfigured — `mirror.base_url()` collapses
-    all of those to `""`), the mirror did not answer, the body was larger than
-    expected, or the body's digest does not match. Never returns bytes that
-    have not been checked: a caller of this function holds either a verified
-    clip or an exception, nothing in between.
-    """
-    if _SPEECH_CLIP_SHA256 == _SPEECH_CLIP_SHA256_UNSET:
-        raise SpeechClipUnavailable(
-            "the speech benchmark's reference clip has not been published "
-            "yet (_SPEECH_CLIP_SHA256 in benchmark.py is still the "
-            "placeholder) — see that constant's comment for what to publish")
-    base = mirror.base_url()
-    if not base:
-        raise SpeechClipUnavailable(
-            "no model mirror is reachable for the speech benchmark's "
-            "reference clip (FUSED_MODEL_MIRROR is unset/empty, or the "
-            "configured/default base did not validate) — nothing was "
-            "substituted for it")
-    url = f"{base}/{_SPEECH_CLIP_ASSET_PATH}"
-    try:
-        request = urllib.request.Request(
-            url, headers={"Accept": "audio/flac", "Accept-Encoding": "identity"})
-        with urllib.request.urlopen(
-                request, timeout=_SPEECH_CLIP_FETCH_TIMEOUT_S) as response:
-            # One byte past the cap, so an exactly-at-the-limit body is still
-            # distinguishable from one that ran over it.
-            data = response.read(_SPEECH_CLIP_MAX_BYTES + 1)
-    except _SPEECH_CLIP_UNREACHABLE as e:
-        raise SpeechClipUnavailable(
-            f"could not reach the model mirror for the speech benchmark's "
-            f"reference clip ({url}): {e}") from e
-    if len(data) > _SPEECH_CLIP_MAX_BYTES:
-        raise SpeechClipUnavailable(
-            f"the speech benchmark's reference clip at {url} was larger "
-            f"than expected")
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != _SPEECH_CLIP_SHA256:
-        raise SpeechClipUnavailable(
-            f"the speech benchmark's reference clip at {url} failed its "
-            f"checksum check (expected {_SPEECH_CLIP_SHA256}, got {digest}) "
-            f"— refusing to use it")
-    return data
-
-
-def _ensure_speech_clip() -> str:
-    """A local path to a VERIFIED copy of the fixed reference clip.
-
-    Cache-first: a machine that already has a verified copy never touches the
-    network again, which is what "downloaded once" means. Written atomically
-    (temp file + `os.replace`, `shell/storage.py`'s own pattern) so a reader
-    that races a write never sees a partial file — and, unlike that module, no
-    corrupt-read-returns-None tolerance is appropriate here: an unverified or
-    partial clip is exactly the case `SpeechClipUnavailable` exists to raise
-    on rather than silently accept.
-    """
-    cached = _cached_speech_clip()
-    if cached is not None:
-        return cached
-    data = _fetch_speech_clip_bytes()
-    path = _speech_clip_cache_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return path
-
-
-#: Non-word characters other than an apostrophe (kept for contractions like
-#: "don't") collapse to a space, so punctuation never counts as a word-boundary
-#: mismatch.
-_WER_STRIP_RE = re.compile(r"[^a-z0-9'\s]")
-
-
-def _normalize_for_wer(text: str) -> list[str]:
-    """`text`, lowercased, punctuation-stripped and whitespace-collapsed, as a
-    list of words. Applied identically to the reference and the hypothesis —
-    scoring one side normalized and the other raw would count formatting
-    differences as transcription errors."""
-    text = _WER_STRIP_RE.sub(" ", text.lower())
-    return [w for w in (word.strip("'") for word in text.split()) if w]
-
-
-#: The reference, normalized once at import time — it is a module constant,
-#: not something that changes per run.
-_REFERENCE_WORDS = _normalize_for_wer(_SPEECH_REFERENCE_TEXT)
-
-
-def _word_error_rate(hypothesis: object) -> float | None:
-    """Word error rate of `hypothesis` against the fixed reference transcript,
-    or `None` if there is nothing to score.
-
-    `None` — never `0.0` — when `hypothesis` is not a usable string: the
-    module's standing rule is that an unmeasured value is null, and a
-    transcript this benchmark could not even read is exactly that, not a
-    (false) claim of a perfect zero-error transcription.
-
-    Standard word-level Levenshtein distance over the reference length: the
-    minimum number of single-word substitutions, insertions and deletions that
-    turns the reference into the hypothesis is, by construction, exactly
-    substitutions + insertions + deletions, so one edit-distance DP is the
-    whole metric. **Lower is better** — a `0.0` is a perfect transcript.
-    """
-    if not isinstance(hypothesis, str) or not hypothesis.strip():
-        return None
-    hyp_words = _normalize_for_wer(hypothesis)
-    ref_words = _REFERENCE_WORDS
-    if not ref_words:
-        return None
-    n, m = len(ref_words), len(hyp_words)
-    dp = list(range(m + 1))
-    for i in range(1, n + 1):
-        prev_diag = dp[0]
-        dp[0] = i
-        for j in range(1, m + 1):
-            temp = dp[j]
-            if ref_words[i - 1] == hyp_words[j - 1]:
-                dp[j] = prev_diag
-            else:
-                dp[j] = 1 + min(prev_diag, dp[j - 1], dp[j])
-            prev_diag = temp
-    return dp[m] / n
-
-
 #: One entry per capability constant in `registry`. A capability with no entry
 #: would render a Run button that measures nothing defined, so
 #: `test_ai_benchmark_store.py` pins this table against `registry.capabilities()`
@@ -422,23 +159,21 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
             "guidance": 4.0,
         }),
     ),
+    # D445 (module docstring) briefly replaced this with a real clip + a
+    # word-error-rate metric at revision=2, and was reverted before the asset
+    # existed anywhere to fetch — every machine failed every speech run with
+    # `SpeechClipUnavailable`. Back to the tone, back to revision=1, matching
+    # every tone-era run already on disk.
     registry.SPEECH_TO_TEXT: Workload(
-        name="speech-30s-clip",
-        # D445: was a synthesized tone at revision 1. A tone and a real speech
-        # clip are not the same work — the whole point of the change — so this
-        # MUST NOT compare against revision-1 history.
-        revision=2,
+        name="speech-30s-tone",
+        revision=1,
         params=MappingProxyType({
-            # The clip's own nominal length. Whoever publishes the asset (see
-            # `_SPEECH_CLIP_SHA256`'s comment) must set this to the ACTUAL
-            # duration of what they upload if it differs from 30.0 — this is
-            # the denominator of `realtimeFactor` and a fixed workload whose
-            # length disagrees with the thing being measured is not fixed.
+            # 30s is Whisper's own window: one pass, no chunking policy in the
+            # measurement, and a realtime factor that reads as "this many times
+            # faster than listening to it".
             "audioSeconds": 30.0,
-            # The known-correct transcript, ships with the workload rather
-            # than being fetched — see `_SPEECH_REFERENCE_TEXT`'s comment for
-            # what it is and why it drives the audio rather than the reverse.
-            "referenceText": _SPEECH_REFERENCE_TEXT,
+            "sampleRate": 16000,
+            "toneHz": 440.0,
         }),
     ),
     registry.EMBEDDINGS: Workload(
@@ -530,6 +265,30 @@ def _image_steps(model: str) -> int:
                 return steps
             return DEFAULT_IMAGE_STEPS
     return DEFAULT_IMAGE_STEPS
+
+
+def _write_tone_wav(path: str, seconds: float, sample_rate: int, hz: float) -> None:
+    """Write `seconds` of a mono sine tone at `hz` as 16-bit PCM.
+
+    Stdlib only, so no binary fixture is committed for one benchmark, and the
+    file is regenerated per run rather than cached — writing 30s of 16 kHz mono
+    is under a megabyte and a millisecond, which is far cheaper than owning a
+    cache-invalidation rule.
+
+    Amplitude is deliberately well below full scale: a clipped, square-ish wave
+    is a different signal from a tone, and some front ends normalise loudly.
+    """
+    frames = int(seconds * sample_rate)
+    step = 2.0 * math.pi * hz / sample_rate
+    samples = struct.pack(
+        f"<{frames}h",
+        *(int(12000 * math.sin(step * i)) for i in range(frames)),
+    )
+    with wave.open(path, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(sample_rate)
+        out.writeframes(samples)
 
 
 def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
@@ -668,14 +427,8 @@ def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
 
 def _measure_transcript(model: str, workload: Workload, *,
                         timed: bool) -> dict:
-    """Decode the fixed reference clip and report how many times faster than
-    realtime it was, plus its word error rate against the known transcript
-    (D445 — this used to be a synthesized tone, see the module docstring).
-
-    `_ensure_speech_clip()` raises `SpeechClipUnavailable` — never falls back
-    to anything synthesized — when the clip cannot be obtained: unreachable
-    here means unreachable to `run()`'s ordinary failure path, an `ok:false`
-    record with the reason, not a quietly different benchmark.
+    """Decode the synthesized tone and report how many times faster than
+    realtime it was.
 
     `audioSeconds` comes from the WORKLOAD, not from the transcript's own
     `duration`: a fixed workload whose length is reported by the thing being
@@ -683,14 +436,20 @@ def _measure_transcript(model: str, workload: Workload, *,
     denominator under the metric.
 
     The VAD is off, and so are diarization and word timings. All three are
-    optional passes that change what the decode IS, and a model benchmarked
-    with speech detection on would be measured on how much of the clip it
-    decided to skip.
+    optional passes that change what the decode IS, and a model benchmarked with
+    speech detection on a tone would be measured on how much of it it decided to
+    skip.
     """
     params = workload.params
     seconds = float(params["audioSeconds"])
-    audio = _ensure_speech_clip()
     with tempfile.TemporaryDirectory(prefix="fused-bench-") as tmp:
+        # Named so that a row INHERITED from the transcribe queue reads as ours:
+        # `supervisor._transcribe_title` titles that row with this basename, and
+        # "benchmark.wav" is a name a user could plausibly have dropped in.
+        # `_close_any_row` closes it; this makes it legible while it is open.
+        audio = os.path.join(tmp, "fused-benchmark-tone.wav")
+        _write_tone_wav(audio, seconds, int(params["sampleRate"]),
+                        float(params["toneHz"]))
         request = {
             "path": audio,
             "model": model,
@@ -699,8 +458,8 @@ def _measure_transcript(model: str, workload: Workload, *,
             "vad": False,
             "diarize": False,
             "words": False,
-            "out": os.path.join(tmp, "fused-benchmark-speech.json"),
-            "outText": os.path.join(tmp, "fused-benchmark-speech.txt"),
+            "out": os.path.join(tmp, "fused-benchmark-tone.json"),
+            "outText": os.path.join(tmp, "fused-benchmark-tone.txt"),
             # No `row`: that key is how a caller gives the worker a progress row
             # to restate its identity onto, and a benchmark has none by design
             # (see `run`). Without it the worker's ticks carry no title,
@@ -711,10 +470,7 @@ def _measure_transcript(model: str, workload: Workload, *,
         job = _unwatched_job()
         start = _now()
         try:
-            # The worker's own transcript comes back on `result["text"]`
-            # (`_transcribe_turn`'s payload) — captured here rather than
-            # discarded, because it is the WER metric's hypothesis.
-            result = supervisor.generate_transcript(model, request, job)
+            supervisor.generate_transcript(model, request, job)
         except BaseException as e:
             # Both arms close the row, because the row this closes is inherited on
             # the QUEUED path and a run that raises out of the queue (a ✕, a dead
@@ -727,14 +483,10 @@ def _measure_transcript(model: str, workload: Workload, *,
         total = _now() - start
     if not timed:
         return {}
-    hypothesis = result.get("text") if isinstance(result, dict) else None
     return {
         "realtimeFactor": seconds / total if total > 0 else None,
         "audioSeconds": seconds,
         "totalSeconds": total,
-        # Lower is better — see `_word_error_rate`. `None` when the worker's
-        # reply carried no readable `text`, never a false `0.0`.
-        "wordErrorRate": _word_error_rate(hypothesis),
     }
 
 
@@ -1008,7 +760,7 @@ def run(model: str, capability: str) -> dict:
        reading two numbers side by side.
     4. The timed pass.
     5. Memory and device off `describe()`.
-    6. **Unload, if step 2 loaded it** (D443) — success, failure or exception
+    6. **Unload, if step 2 loaded it** (D435) — success, failure or exception
        alike. A benchmark is a measurement, not a claim on the model's
        residency, so a cold run must not leave gigabytes parked after the
        button stops spinning; a WARM run (step 2 returned `None`) unloads
@@ -1066,7 +818,7 @@ def run(model: str, capability: str) -> dict:
                 model, capability)
             record["ok"] = True
         finally:
-            # D443: a benchmark that had to COLD-LOAD the model tears it back
+            # D435: a benchmark that had to COLD-LOAD the model tears it back
             # down when it is done — success, a failed workload, a timeout, or
             # an exception mid-measurement alike, which is exactly the `finally`
             # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`

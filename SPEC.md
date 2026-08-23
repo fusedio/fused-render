@@ -7991,19 +7991,19 @@ an AI Models page that could say what was on disk but not what was *running*.
     sampling would be new cross-platform machinery — and a polling thread reaching
     into a worker mid-generation is a request waiting on a GPU call — for a
     second-order number.
-  - **AI-14f** **Speech to text benchmarks a real 30-second speech clip with a
-    known reference transcript, fetched once from our own mirror distribution
-    and cached on disk under a pinned sha256 — not the synthesized sine tone
-    this used to be (D445).** The tone measured how fast a model gives up on
-    silence, not how fast it transcribes; the clip's reference transcript also
-    powers a word-error-rate accuracy metric, scored with a stdlib word-level
-    edit-distance DP against a normalized (lowercased, punctuation-stripped)
-    hypothesis, **lower is better**, `null` (never `0.0`) when no readable text
-    came back. An unreachable mirror with no cached copy is a real, recorded
-    failure now (`run()`'s ordinary `ok:false` path) rather than a silent
-    fallback to the tone — the workload's `revision` was bumped to 2 for
-    exactly this, so old tone-measured runs are never charted against new
-    clip-measured ones.
+  - **AI-14f** **Speech to text benchmarks a synthesized tone, generated per run
+    with the stdlib `wave` module, at `revision=1`.** Realtime factor is a
+    decode-throughput measure and does not need intelligible speech, and this
+    commits no binary asset to the repo. Stated risk: a model with
+    speech-dependent early-exit behaviour could look faster on a tone than on
+    real audio. **D445 replaced this with a real 30-second clip fetched from
+    our own mirror plus a word-error-rate accuracy metric, and was reverted
+    the same day**: the clip asset was never published, so every machine
+    failed every speech run with `SpeechClipUnavailable` — a live outage
+    worse than the risk the tone accepted. The clip design and the WER DP are
+    unchanged in D445's own text and ready to re-land (a `git revert` of the
+    revert) once a human publishes the asset; until then this is the accurate
+    description of what runs.
   - **AI-14g** **One benchmark at a time per capability, enforced server-side,
     and the request is held open for the whole run.** The supervisor holds one
     resident model per capability, so a second concurrent run's load would evict
