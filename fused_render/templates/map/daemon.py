@@ -357,6 +357,21 @@ def _write_status(path: Path, payload: dict):
     os.replace(temporary, path)
 
 
+def _prewarm_geo_stack() -> None:
+    """Import the geo stack on a persistent pool thread at startup so the first
+    describe does not pay the ~2s cold import while the user waits. Handler
+    threads must never touch the geo stack (they exit per connection and wedge
+    the interpreter on exit), but a RENDER_POOL worker is persistent, like the
+    threads that render every tile."""
+    try:
+        import pyogrio  # noqa: F401
+        import pyproj  # noqa: F401
+        import rasterio  # noqa: F401
+        import shapely  # noqa: F401
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--status", required=True)
@@ -394,6 +409,7 @@ def main():
             "pid": os.getpid(),
         },
     )
+    RENDER_POOL.submit(_prewarm_geo_stack)
     try:
         server.serve_forever(poll_interval=0.25)
     finally:
