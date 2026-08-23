@@ -1863,13 +1863,60 @@
   min-width: 220px;
 }
 
-/* -- the chart, the tab's hero instrument ------------------------------------
+/* -- the trend instrument, and its two possible shapes -----------------------
    Chart-first: this sits ABOVE the leaderboard rows in the DOM (BenchmarkTab's
    `CapabilitySection`), because the trend is the first question this tab
-   answers and the ranked list is the second. */
+   answers and the ranked list — which doubles as its model picker — is the
+   second. */
+
+/* The trend instrument's own title: the model and the selected metric, since
+   the capability itself is already stated by the section heading above and
+   the Capability `<select>` above THAT. `.am-bench-metric` (the unit badge)
+   is reused here rather than duplicated — one declaration for what a badge in
+   this tab looks like, wherever it appears. */
+.am-bench-trend-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.am-bench-trend-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
 
 .am-bench-chart {
   margin-bottom: var(--am-gap-head);
+}
+
+/* The ONE-RUN state: no trend to draw (a single point has no before to read
+   it against), so no ~400px frame either — the actual bug this exists to fix
+   was a lone dot in an otherwise empty chart, reading as the page being
+   broken rather than as "here is the one number we have". A fraction of the
+   chart's own height, the value stated as plainly as the leaderboard states
+   it, with the fix in the same breath. */
+.am-bench-trend-single {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 16px;
+  margin-bottom: var(--am-gap-head);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.am-bench-trend-value {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-trend-note {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* The y-axis label column plus the plot, side by side. Both children share the

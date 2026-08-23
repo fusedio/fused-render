@@ -29,11 +29,15 @@
 // the metric and the domain — under test in `benchmark.test.ts` rather than
 // inside a component.
 //
-// **The y axis starts at zero, always** (`yMin` from `chartSeries` is 0), and
-// its top gridline IS the peak (`yAxisTicks` divides the domain equally, so
-// the last tick lands exactly on `yMax`) — which is why there is no separate
-// "peak N unit" caption any more: the axis already says it.
-import { chartAxisTicks, chartSeries, formatNumber, type MetricSpec, yAxisTicks } from "@apps/ai_models/lib/benchmark";
+// **The y axis starts at zero, always** (`yMin` from `chartSeries` is 0). The
+// top does NOT sit exactly at the peak, on purpose: `paddedAxisMax` adds 20%
+// headroom above the highest measured value before `yAxisTicks` divides the
+// domain, so the best point sits visibly INSIDE the plot rather than pinned
+// to the top gridline (859.7 exactly on the top line, reading as clipped
+// against the frame, was the bug this fixes). There is still no separate
+// "peak N unit" caption — the aria-label states the true peak in words, and
+// the chart itself is for seeing the shape, not reading the exact top tick.
+import { MIN_TREND_POINTS, chartAxisTicks, chartSeries, formatNumber, paddedAxisMax, type MetricSpec, yAxisTicks } from "@apps/ai_models/lib/benchmark";
 import type { AiBenchmarkRun } from "@platform/lib/api";
 
 // The plot's own coordinate space. Taller than the old 160px box — this chart
@@ -55,11 +59,22 @@ export function ModelTrendChart({
   metric: MetricSpec;
 }) {
   const { series, yMax } = chartSeries(runs, metric);
-  // Nothing plottable. Said in words rather than drawn as an empty box with
-  // axes: an axis under no data reads as "zero throughput", which is a
-  // measurement, and there has not been one.
-  if (series.length === 0 || yMax <= 0) return null;
-  const line = series[0]!;
+  const line = series[0];
+  // Nothing plottable, or not enough of it to be a TREND — `BenchmarkTab.tsx`
+  // already decides this before choosing to render this component at all
+  // (`trendKind`, the single-run compact state lives there), but the check is
+  // repeated here too: this component's OWN contract is "a real chart or
+  // nothing", so it must never draw a sparse one-point plot for a caller that
+  // forgets the rule. Said in words rather than an empty box with axes: an
+  // axis under no data reads as "zero throughput", which is a measurement,
+  // and there has not been one.
+  if (!line || line.points.length < MIN_TREND_POINTS || yMax <= 0) return null;
+
+  // The DOMAIN top is padded past the true peak (`yMax`) — see the file
+  // header — so `axisMax`, not `yMax`, is what the axis and every point's `y`
+  // position are actually scaled against. `yMax` survives only for the
+  // aria-label, which states the real peak in words.
+  const axisMax = paddedAxisMax(yMax);
 
   // The x domain is the count of runs in this model's own history, since a
   // point's `x` is its position there.
@@ -69,13 +84,13 @@ export function ModelTrendChart({
   // higher — even on the one capability where "faster" is a smaller number, in
   // which case a line going UP is a slower model and the section's unit label
   // ("s/step") is what says so.
-  const py = (y: number) => H - PAD - (y / yMax) * (H - 2 * PAD);
+  const py = (y: number) => H - PAD - (y / axisMax) * (H - 2 * PAD);
   // Percentage-of-box versions of the same two functions, for the HTML labels
   // laid over the plot — see the file header for why these can't be `<text>`.
   const pxPct = (x: number) => (px(x) / W) * 100;
   const pyPct = (y: number) => (py(y) / H) * 100;
 
-  const ticks = yAxisTicks(yMax, metric.digits, 3);
+  const ticks = yAxisTicks(axisMax, metric.digits, 3);
 
   // Three x ticks at most — first run, the middle one, last run — never a
   // claim of even spacing the runs don't have (see the file header on why the

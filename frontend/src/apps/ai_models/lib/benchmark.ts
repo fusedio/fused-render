@@ -880,3 +880,52 @@ export function defaultModel(models: string[], counts: Record<string, number>): 
 export function resolveModel(models: string[], param: string | null, counts: Record<string, number>): string | null {
   return resolveFromRuns(models, param, counts);
 }
+
+/** Whether a model's history for one metric is a TREND — a shape with a
+ *  direction, worth the full `ModelTrendChart` — or something smaller.
+ *
+ *  `"none"` — nothing measured yet: no chart, no chart-shaped empty box
+ *  either (an axis under no data reads as "measured zero", the same rule
+ *  `chartSeries` already follows).
+ *
+ *  `"single"` — exactly ONE measured point. This is deliberately its own
+ *  state rather than falling into the same bucket as "none" or being drawn
+ *  as a one-point chart: a lone dot in an otherwise empty ~400px frame was
+ *  the actual bug report (`whisper-tiny.en-8bit`, one run, 95% dead space,
+ *  the largest thing on the page) — a single measurement has no BEFORE to
+ *  compare against, so there is no direction to plot, and the honest answer
+ *  is the value itself stated plainly, at a fraction of the height, with an
+ *  invitation to run it again.
+ *
+ *  `"trend"` from two points on — the smallest count two points *are* a
+ *  direction, even a short one.
+ */
+export type TrendKind = "none" | "single" | "trend";
+
+/** The point count boundary `trendKind` applies. Its own named constant
+ *  rather than a bare `2` inside the function, so a reader (or a future
+ *  change) sees the THRESHOLD as a decision, not an incidental comparison. */
+export const MIN_TREND_POINTS = 2;
+
+export function trendKind(pointCount: number): TrendKind {
+  if (pointCount <= 0) return "none";
+  if (pointCount < MIN_TREND_POINTS) return "single";
+  return "trend";
+}
+
+/** The y-axis DOMAIN TOP for a chart whose highest measured value is `peak`
+ *  — deliberately never `peak` itself. `yAxisTicks` divides whatever domain
+ *  it is given into equal gridlines ending exactly at the top, so handing it
+ *  the raw peak pins the best point to the very top gridline — which reads
+ *  as the value being clipped against the frame's edge, not as the best
+ *  result on the chart (859.7 sitting exactly on the top line was the bug).
+ *
+ *  20% headroom is a deliberate, fixed choice — not derived from `digits` or
+ *  the metric's unit — chosen for the same reason `chartSeries`' zero
+ *  baseline is unconditional: a rule that varies per metric is a rule nobody
+ *  can hold in their head while comparing two charts.
+ */
+export function paddedAxisMax(peak: number): number {
+  return peak > 0 ? peak * 1.2 : 0;
+}
+

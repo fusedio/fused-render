@@ -57,9 +57,11 @@ import { tabHref } from "@apps/ai_models/routes";
 import {
   DASH,
   availableMetrics,
+  chartSeries,
   failureReason,
   formatLoad,
   formatMemory,
+  formatMetricSpecValue,
   formatPrimary,
   latestByModel,
   leaderboard,
@@ -78,6 +80,7 @@ import {
   runsFor,
   shortModelName,
   stoppedNote,
+  trendKind,
   type LeaderboardRow,
   type MetricSpec,
   type ModelLatest,
@@ -417,6 +420,15 @@ function CapabilitySection({
   onRun: (model: string, capability: string) => void;
   onForget: (id: string) => void;
 }) {
+  // The trend instrument's shape — `trendKind` (lib/benchmark.ts) decides
+  // "none" / "single" / "trend" from how many of `trendRuns` actually
+  // measured `metric`. Computed here, once, rather than inline in the JSX
+  // below: both the compact single-run state and the full chart need the
+  // series `chartSeries` already produced, and a second call would just be
+  // the first one's answer computed twice.
+  const trendSeries = metric ? chartSeries(trendRuns, metric).series[0] ?? null : null;
+  const trend = trendKind(trendSeries?.points.length ?? 0);
+
   return (
     <section className="am-section">
       <div className="am-section-head">
@@ -456,14 +468,41 @@ function CapabilitySection({
               chart always had) even though the model picker (the rows below)
               comes after it in the DOM: clicking a row updates this chart in
               place, which is the more useful order to read top-down once a
-              reader already knows which model they came here to check. */}
-          {metric && trendRuns.length > 0 ? (
+              reader already knows which model they came here to check.
+
+              **Titled by what it now shows** — the model and the selected
+              metric — rather than repeating the capability name the section
+              heading above and the Capability `<select>` above THAT already
+              both say. A model with a card gone from disk (`gone`) still
+              gets a title here: its history is still what this instrument is
+              showing. */}
+          {metric && selectedModel && (
+            <div className="am-bench-trend-head">
+              <h4 className="am-bench-trend-title">{shortModelName(selectedModel)}</h4>
+              <span className="am-bench-metric">{metric.label} · {metric.unit}</span>
+            </div>
+          )}
+          {/* Three shapes, not two. A single measured point is NOT a trend:
+              it has no before to compare against, and drawing it in the same
+              ~400px frame as a real chart was the actual bug (one dot, ~95%
+              empty frame, the largest element on the page). So it gets its
+              own compact state — the value stated plainly, at a fraction of
+              the height — and only two-or-more points earn
+              `ModelTrendChart`. */}
+          {!metric || !selectedModel ? (
+            <p className="am-group-note">Click a model below to see its trend.</p>
+          ) : trend === "trend" ? (
             <ModelTrendChart runs={trendRuns} metric={metric} />
+          ) : trend === "single" ? (
+            <div className="am-bench-trend-single">
+              <span className="am-bench-trend-value">
+                {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
+              </span>
+              <span className="am-bench-trend-note">one run · run again to see a trend</span>
+            </div>
           ) : (
             <p className="am-group-note">
-              {selectedModel
-                ? `No ${(metric?.label ?? "runs").toLowerCase()} recorded for ${shortModelName(selectedModel)} yet.`
-                : "Click a model below to see its trend."}
+              No {metric.label.toLowerCase()} recorded for {shortModelName(selectedModel)} yet.
             </p>
           )}
           {/* INSTRUMENT TWO: the comparison — every model, ranked, one line

@@ -19,6 +19,7 @@ import {
   metricValueForSpec,
   middleEllipsis,
   orderCapabilities,
+  paddedAxisMax,
   primaryMetric,
   primaryValue,
   resolveCapability,
@@ -33,6 +34,7 @@ import {
   shortModelName,
   stoppedNote,
   summaryLine,
+  trendKind,
   yAxisTicks,
   type MetricSpec,
   type ModelLatest,
@@ -732,6 +734,20 @@ describe("chartAxisTicks", () => {
     expect(dateCaption).toBe(formatRunDate(runs[0]!.startedAt));
   });
 
+  it("switches to times for exactly two runs the same day too", () => {
+    // The two-run case is the common one right now (most models have one or
+    // two runs), and it must not fall through to dates just because the
+    // "middle tick" logic above only applies at three or more.
+    const base = 1_700_000_000;
+    const runs = [run({ startedAt: base }), run({ startedAt: base + 3000 })];
+    const { ticks, dateCaption } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.label)).toEqual([
+      formatRunTime(runs[0]!.startedAt),
+      formatRunTime(runs[1]!.startedAt),
+    ]);
+    expect(dateCaption).toBe(formatRunDate(runs[0]!.startedAt));
+  });
+
   it("picks first, middle and last for four or more runs", () => {
     const runs = [1, 2, 3, 4, 5].map((n) => run({ startedAt: n }));
     const { ticks } = chartAxisTicks(runs);
@@ -926,3 +942,38 @@ describe("resolveModel", () => {
     expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 })).toBe("a");
   });
 });
+
+// -- the trend chart's own threshold: a point is not a trend -----------------
+
+describe("trendKind", () => {
+  it("is 'none' with nothing measured", () => {
+    expect(trendKind(0)).toBe("none");
+  });
+
+  it("is 'single' for exactly one measured point — nothing to compare it against", () => {
+    expect(trendKind(1)).toBe("single");
+  });
+
+  it("is 'trend' from two points on — the smallest count with a direction", () => {
+    expect(trendKind(2)).toBe("trend");
+    expect(trendKind(5)).toBe("trend");
+  });
+});
+
+describe("paddedAxisMax", () => {
+  it("pads past the peak, so the highest point does not sit ON the top gridline", () => {
+    // Pinning the domain top to the exact peak (859.7 at the very top, the
+    // bug this fixes) reads as the point being clipped against the frame
+    // rather than as the best result on the chart.
+    expect(paddedAxisMax(100)).toBeGreaterThan(100);
+  });
+
+  it("is a fixed, deliberate 20% — not derived from digits or unit", () => {
+    expect(paddedAxisMax(100)).toBeCloseTo(120);
+  });
+
+  it("stays zero over an empty domain — nothing to pad", () => {
+    expect(paddedAxisMax(0)).toBe(0);
+  });
+});
+
