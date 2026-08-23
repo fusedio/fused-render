@@ -20,12 +20,17 @@ Refresh guardrail: the module's mtime is checked on every call and the module is
 re-imported when it changed on disk, so editing the `.py` takes effect the way it
 does for `/api/run` (which gets fresh code for free every call).
 
-Phase 1 is a single warm worker per script: calls are serialized on one lock, so
-module state and the stdout capture below can never be corrupted by a concurrent
-call. The per-script POOL that would let a handful of concurrent calls run in
-parallel is Phase 2 (design §6) — TODO.
+Concurrency (Phase 2, design §6): calls run in parallel in this one process.
+Only the brief import / mtime-check / `main` lookup is serialized; `main()` runs
+outside the lock, so I/O-bound handlers (an S3 list, an HTTP fetch) overlap
+because the GIL is released during that I/O — and they share the one warm client
+cache. `print()` is captured per call, not per process, via a contextvar-routed
+stdout, so concurrent calls never scramble each other's output. A separate
+MULTI-PROCESS pool would only add value for CPU-bound `main()` (GIL-bound work
+that in-process threads cannot parallelize); it is left as a future option.
 """
 import argparse
+import contextvars
 import importlib.util
 import io
 import json
@@ -36,6 +41,33 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+
+# The StringIO the CURRENT call captures print() into, or None to fall through to
+# the real stdout. A contextvar (not a global) so concurrent calls, each in its
+# own handler thread, capture only their own output. A fresh thread starts with
+# an empty context, so writes from a thread that never called set() route to the
+# real stdout — the safe default.
+_call_stdout = contextvars.ContextVar("engine_call_stdout", default=None)
+
+
+class _RoutedStdout:
+    """Installed once as `sys.stdout`; routes each write to the current call's
+    buffer when one is set, else to the real stdout. Lets many calls capture
+    concurrently without swapping the process-global stream per call."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def write(self, s):
+        buf = _call_stdout.get()
+        return (buf if buf is not None else self._real).write(s)
+
+    def flush(self):
+        buf = _call_stdout.get()
+        (buf if buf is not None else self._real).flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
 
 # Top-level (not `fused_render._binding`) import on purpose, exactly as _child.py
 # does it: this file is invoked as a standalone script
@@ -57,9 +89,11 @@ CALL_TIMEOUT_S = 60.0
 class _Target:
     """The one module this worker serves, imported once and re-imported on edit.
 
-    All access is serialized by `_lock`: Phase 1 runs a single warm worker per
-    script, so one call at a time keeps module state and the process-global
-    stdout redirect (below) race-free. Phase 2's pool relaxes this.
+    Only the import / mtime-check / `main` lookup is serialized by `_lock`;
+    `main()` itself runs OUTSIDE it, so concurrent I/O-bound calls overlap. The
+    lock keeps a re-import from swapping the module mid-lookup, and each call
+    already holds its own bound `main` reference, so a reload started by another
+    call cannot disturb one in flight.
     """
 
     def __init__(self, path: str):
@@ -83,62 +117,67 @@ class _Target:
         spec.loader.exec_module(module)
         self._module = module
 
+    def _resolve_main(self):
+        """Under the lock: re-import on mtime change, return a bound `main`."""
+        with self._lock:
+            try:
+                mtime = os.path.getmtime(self.path)
+            except OSError:
+                mtime = None
+            if self._module is None or mtime != self._mtime:
+                self._load_locked()
+                self._mtime = mtime
+            fn = getattr(self._module, "main", None)
+            if not callable(fn):
+                raise AttributeError(
+                    f"{os.path.basename(self.path)} does not define a callable "
+                    "'main' function"
+                )
+            return fn
+
     def call(self, params: dict) -> dict:
         """Run `main(**params)` in the warm process, returning _child.py's
-        envelope. Re-imports first when the file changed on disk (mtime)."""
+        envelope. Re-imports first when the file changed on disk (mtime).
+        `main()` runs outside the lock so concurrent calls overlap; print() is
+        captured per call through the contextvar-routed stdout."""
         captured = io.StringIO()
-        real_stdout = sys.stdout
-        with self._lock:
-            out = {"ok": False}
-            sys.stdout = captured
+        token = _call_stdout.set(captured)
+        out = {"ok": False}
+        try:
+            fn = self._resolve_main()
+            result = fn(**bind_params(fn, params or {}))
             try:
-                try:
-                    mtime = os.path.getmtime(self.path)
-                except OSError:
-                    mtime = None
-                if self._module is None or mtime != self._mtime:
-                    self._load_locked()
-                    self._mtime = mtime
-
-                fn = getattr(self._module, "main", None)
-                if not callable(fn):
-                    raise AttributeError(
-                        f"{os.path.basename(self.path)} does not define a callable "
-                        "'main' function"
-                    )
-                result = fn(**bind_params(fn, params or {}))
-                try:
-                    json.dumps(result)
-                except (TypeError, ValueError):
-                    raise TypeError(
-                        f"main() returned {type(result).__name__}, which is not "
-                        "JSON-serializable; return dict/list/str/number/bool/None "
-                        "(e.g. df.to_dict('records'))"
-                    ) from None
-                out = {"ok": True, "result": result}
-            except BaseException as e:  # noqa: BLE001 — includes SystemExit, as _child.py
-                message = str(e)
-                # Same worker-bootstrap diagnostic _child.py attaches: a helper
-                # that cannot see `fused_render` is naming the interpreter, not a
-                # bug in the helper. EXACT name match, for the reason _child.py
-                # documents (a missing submodule reports its full dotted path).
-                if isinstance(e, ImportError) and e.name == "fused_render":
-                    message += (
-                        f" [worker could not see the fused_render package: "
-                        f"executable={sys.executable}, "
-                        f"PYTHONPATH={os.environ.get('PYTHONPATH') or '(unset)'}, "
-                        f"sys.path[:3]={sys.path[:3]}]"
-                    )
-                out = {
-                    "ok": False,
-                    "error": {
-                        "type": type(e).__name__,
-                        "message": message,
-                        "traceback": traceback.format_exc(),
-                    },
-                }
-            finally:
-                sys.stdout = real_stdout
+                json.dumps(result)
+            except (TypeError, ValueError):
+                raise TypeError(
+                    f"main() returned {type(result).__name__}, which is not "
+                    "JSON-serializable; return dict/list/str/number/bool/None "
+                    "(e.g. df.to_dict('records'))"
+                ) from None
+            out = {"ok": True, "result": result}
+        except BaseException as e:  # noqa: BLE001 — includes SystemExit, as _child.py
+            message = str(e)
+            # Same worker-bootstrap diagnostic _child.py attaches: a helper
+            # that cannot see `fused_render` is naming the interpreter, not a
+            # bug in the helper. EXACT name match, for the reason _child.py
+            # documents (a missing submodule reports its full dotted path).
+            if isinstance(e, ImportError) and e.name == "fused_render":
+                message += (
+                    f" [worker could not see the fused_render package: "
+                    f"executable={sys.executable}, "
+                    f"PYTHONPATH={os.environ.get('PYTHONPATH') or '(unset)'}, "
+                    f"sys.path[:3]={sys.path[:3]}]"
+                )
+            out = {
+                "ok": False,
+                "error": {
+                    "type": type(e).__name__,
+                    "message": message,
+                    "traceback": traceback.format_exc(),
+                },
+            }
+        finally:
+            _call_stdout.reset(token)
         out["stdout"] = captured.getvalue()
         # The absolute file that actually ran, so the runtime can watch it for
         # auto-reload (LR-2) exactly as routers/run.py sets it on /api/run.
@@ -236,6 +275,9 @@ def main() -> None:
     # very same file).
     parser.add_argument("--module", required=True)
     args = parser.parse_args()
+
+    # Route print() per call (see _RoutedStdout); installed once, before serving.
+    sys.stdout = _RoutedStdout(sys.stdout)
 
     token = secrets.token_urlsafe(32)
     server = _Server(("127.0.0.1", 0), _Handler)
