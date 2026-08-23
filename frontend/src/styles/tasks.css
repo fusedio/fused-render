@@ -527,6 +527,16 @@ button.tasks-caret,
   padding: 3px 5px;
   border-radius: 5px;
   transition: background-color 120ms ease;
+  /* ABOVE THE STRETCHED ROW LINK, like the caret and the hover actions — and
+     for the reason those two carry the same pair. `.tasks-rowlink` is an
+     absolutely positioned <a> over the whole row at `z-index: 1`, so a control
+     that does not lift itself out of the way is simply not clickable: the press
+     lands on the link and the row navigates instead. The bug that found this
+     was a good one to see — the ONE row whose tag worked was an upcoming task,
+     which has no conversation yet and therefore draws no rowlink at all
+     (Akshil, 2026-08-23: "i can click only on the first item's folder"). */
+  position: relative;
+  z-index: 2;
 }
 
 /* `--ctl-quiet-bg-hover` is the app's own "a control is under the pointer" wash,
@@ -540,6 +550,28 @@ button.tasks-caret,
 .tasks-row .schedule-tv-id--tag:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 0;
+}
+
+/* AND WHEN THE FILTER IS ON, the chip says so — a pill with a fill and a
+   hairline, the pressed state of the control that did the narrowing. It has to
+   be legible at rest, not on hover: without it the only trace of an active
+   project filter was the toolbar's little "1", four hundred pixels from the
+   rows it was acting on, and the chip itself had disappeared (every row now
+   agreeing about its folder is exactly when `spansProjects` used to drop it).
+
+   The fill is the app's quiet-control fill rather than the accent: this marks a
+   state, and the accent on this page belongs to what is RUNNING. The name goes
+   to full strength — it is the answer to "what am I looking at" now, not a
+   footnote on a row. */
+.tasks-row .schedule-tv-id--tag.is-on {
+  background: var(--ctl-quiet-bg-hover);
+  box-shadow: inset 0 0 0 1px var(--ctl-quiet-border);
+}
+
+.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name,
+.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-folder-icon {
+  color: var(--fg);
+  opacity: 1;
 }
 
 /* The folder chip is `flex: 0 1 auto` where schedule.css defines it, because on a

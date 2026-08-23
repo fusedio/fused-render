@@ -368,9 +368,13 @@ export function StatusIcon({
 /** The folder a task's work happens in — a plain folder glyph and the folder's
  * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
  * not an initials avatar: that stands for a PERSON, and a directory is not one. */
-export function IdentityChip({ name, title, onPick }: {
+export function IdentityChip({ name, title, onPick, active = false }: {
   name: string;
   title?: string;
+  /** Is the page filtered to this folder right now? Only meaningful with
+   * `onPick` — it is the pressed state of a control, not a fact about a label.
+   * It paints the chip as an ON pill and turns its press into "let it go". */
+  active?: boolean;
   /** Makes the chip a TAG: pressed, it filters the page to this folder (Akshil,
    * 2026-08-23). Given one, the chip becomes a real button — hover wash, focus
    * ring, `stopPropagation` so it never counts as a press on the row it sits in.
@@ -393,11 +397,13 @@ export function IdentityChip({ name, title, onPick }: {
   return (
     <button
       type="button"
-      className="schedule-tv-id schedule-tv-id--tag"
+      className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
       // The tooltip says what the press DOES, on top of the path it already
       // said: a chip that only ever labelled something gives the reader no
-      // reason to try clicking it.
-      title={`Show only ${title || name}`}
+      // reason to try clicking it. On an ON chip it says the opposite thing,
+      // because that is what the press now does.
+      title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+      aria-pressed={active}
       onClick={(e) => {
         e.stopPropagation();
         onPick();
@@ -912,6 +918,7 @@ export function TaskList({
   onEditEntry,
   onReload,
   onPickProject,
+  pinnedProjects = [],
   emptyLabel = "Nothing to show here.",
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
@@ -948,6 +955,14 @@ export function TaskList({
    *
    * Optional: without it the chip stays the plain label it has always been. */
   onPickProject?: (project: string) => void;
+  /** The projects the page is currently FILTERED to — the toolbar's own
+   * `projects` value (Akshil, 2026-08-23). Two jobs, both about not hiding the
+   * thing the reader just pressed: it keeps the folder chip drawn when the
+   * filter has narrowed the list to one project (`spansProjects` would
+   * otherwise take it away at exactly the moment it became the answer to "what
+   * am I looking at"), and it is what a chip reads to know it is the one that
+   * is ON. */
+  pinnedProjects?: string[];
   emptyLabel?: string;
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
@@ -995,11 +1010,19 @@ export function TaskList({
     latest.current = tasks;
   }, [tasks]);
 
-  // Whether a row draws its folder chip at all — asked ONCE for the whole list,
-  // because the question is about the list and not about any one row
-  // (tasks-lib.spansProjects). Cheap, and memoised only so it is not a new answer
-  // on every keystroke of the search box.
-  const showProject = useMemo(() => spansProjects(tasks), [tasks]);
+  // Whether a row draws its folder chip at all, in two halves. The first is the
+  // old rule: a chip every visible row repeats distinguishes nothing
+  // (tasks-lib.spansProjects). The second is what a FILTER changes about that
+  // (Akshil, 2026-08-23) — narrowing to one project makes every row agree,
+  // which used to make the chips vanish; but the chip is now the control that
+  // did the narrowing, and a control that deletes itself on use leaves the
+  // reader with no on-screen answer to "which folder is this" and nothing to
+  // press to get back. So a pinned project keeps its chip, wearing the state.
+  const pinnedKey = pinnedProjects.join("\u0000");
+  const showProject = useMemo(
+    () => spansProjects(tasks) || pinnedKey !== "",
+    [tasks, pinnedKey],
+  );
 
   // The list's rows, in rank order and then by printed time (tasks-lib.sortByLane).
   // Memoised for the same reason `showProject` is: this runs on every keystroke of
@@ -1343,6 +1366,7 @@ export function TaskList({
           onEditEntry={onEditEntry}
           onReload={onReload}
           onPickProject={onPickProject}
+          pinned={pinnedProjects.includes(task.project)}
           onPageNote={setPageNote}
           read={read}
           onRead={clear}
@@ -1371,6 +1395,7 @@ function TaskNode({
   onEditEntry,
   onReload,
   onPickProject,
+  pinned,
   onPageNote,
   read,
   onRead,
@@ -1407,6 +1432,9 @@ function TaskNode({
   /** Filter the page to this row's folder — the List's handler, passed through
    * untouched. See TaskList's own `onPickProject`. */
   onPickProject?: (project: string) => void;
+  /** Is the page filtered to THIS row's folder? The chip wears it, so the
+   * control that narrowed the list is visibly the one that is on. */
+  pinned?: boolean;
   /** The List's page-level note — the only holder that survives this row being
    * filtered out by the very move it announces (see TaskList's render). */
   onPageNote: (s: string) => void;
@@ -2120,10 +2148,15 @@ function TaskNode({
             name={basename(task.project)}
             title={tildePath(task.project, home)}
             // A TAG, not a label (Akshil, 2026-08-23): pressing it narrows the
-            // page to this folder. Only on the List — the Board card's foot
-            // keeps the plain chip, because a card is a drag target first and a
-            // button inside one competes with the gesture that moves it.
+            // page to this folder, and pressing it again lets it go. Only on
+            // the List — the Board card's foot keeps the plain chip, because a
+            // card is a drag target first and a button inside one competes with
+            // the gesture that moves it.
             onPick={onPickProject && (() => onPickProject(task.project))}
+            // …and while the filter is on, the chip SAYS SO. Without this the
+            // one row-level trace of an active filter was the toolbar's little
+            // "1", four hundred pixels away from the rows it was acting on.
+            active={pinned}
           />
         )}
         {/* HOW MANY MESSAGES this task holds, between the folder and the time

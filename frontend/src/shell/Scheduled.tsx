@@ -485,15 +485,29 @@ export default function Scheduled() {
               stale={tasksFailed}
               onEditEntry={editEntry}
               // The folder chip as a TAG: pressing one narrows the page to that
-              // project. It REPLACES the project selection rather than adding to
-              // it — the gesture means "show me this folder", and a press that
-              // quietly widened an existing selection would be the opposite of
-              // what it looks like. Everything else about the filters is left
-              // alone, so a status or a search already on stays on, and the
-              // toolbar's popover is where it gets cleared again.
+              // project, pressing the pinned one again clears it. It REPLACES
+              // the project selection rather than adding to it — the gesture
+              // means "show me this folder", and a press that quietly widened
+              // an existing selection would be the opposite of what it looks
+              // like. Everything else about the filters is left alone, so a
+              // status or a search already on stays on.
               onPickProject={(project) =>
-                setFilters((f) => ({ ...f, projects: [project] }))
+                setFilters((f) => ({
+                  ...f,
+                  // A TOGGLE, because the chip stays on screen wearing the
+                  // state: pressing the folder you are already filtered to is
+                  // the obvious way to let it go, and it is the only way that
+                  // does not send the reader to the toolbar popover to undo a
+                  // gesture they made in the list.
+                  projects:
+                    f.projects.length === 1 && f.projects[0] === project
+                      ? []
+                      : [project],
+                }))
               }
+              // Which project the page is pinned to — so the chip survives the
+              // filter that makes every row agree, and shows that it is on.
+              pinnedProjects={filters.projects}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
