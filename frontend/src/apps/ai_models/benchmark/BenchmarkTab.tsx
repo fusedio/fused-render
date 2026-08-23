@@ -144,21 +144,32 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // line that waits to be replaced.
   const [stopped, setStopped] = useState<string | null>(null);
   // The three selectors' raw choices — each `null` until the reader (or a
-  // landing `?cap=`/`?benchMetric=`/`?benchModel=`) has actually picked one,
-  // at which point the matching `resolve*` function stops filling in a
+  // landing `?benchCap=`/`?benchMetric=`/`?benchModel=`) has actually picked
+  // one, at which point the matching `resolve*` function stops filling in a
   // default and just honours it. SEEDED from the URL once and held in state
   // thereafter, the same reason the capability filter always was:
   // `writeParams` uses `history.replaceState`, which deliberately fires no
   // navigation event (a selection must not stack a history entry) — so a
   // component that read only the URL would clear the param and go on drawing
-  // the old choice. `benchMetric`/`benchModel` are deliberately NOT `?metric=`
-  // /`?model=` — `?model=` already means something specific and page-wide (the
+  // the old choice.
+  //
+  // **All THREE are tab-private names, never `?cap=`/`?metric=`/`?model=`.**
+  // `?model=` already means something specific and page-wide (the
   // Playground's own picker seed, carried across tabs by `tabHref`), and
   // reusing it here would mean clicking a leaderboard row silently changes
   // what model the Playground preselects on the next tab switch, and a Local
   // tab "Try" link would silently jump this tab's trend chart to an unrelated
-  // model. Scoped, tab-private names avoid that collision entirely.
-  const [focus, setFocus] = useState<string | null>(() => readParam("cap"));
+  // model. `?cap=` is the same hazard in the OTHER direction, and it shipped
+  // once: `focus` used to read AND write the shared `?cap=` — Home's cards
+  // seed Playground with it (routes.ts) — so merely opening this tab, with no
+  // click at all, resolved a default capability and wrote it into `?cap=`
+  // (the effect below), and switching to Playground right after landed on
+  // that default as if it had been asked for. A private key cannot collide
+  // with anything else later, which is the guarantee "only write after an
+  // explicit selection" does not give — that rule has to be re-derived
+  // correctly at every future capability this tab grows, and getting it
+  // wrong once is exactly how `?cap=` ended up written unconditionally here.
+  const [focus, setFocus] = useState<string | null>(() => readParam("benchCap"));
   const [metricParam, setMetricParam] = useState<string | null>(() => readParam("benchMetric"));
   const [modelParam, setModelParam] = useState<string | null>(() => readParam("benchModel"));
 
@@ -420,7 +431,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   useEffect(() => {
     if (loading) return;
     writeParams({
-      cap: selected,
+      benchCap: selected,
       benchMetric: selectedMetric?.key ?? null,
       benchModel: selectedModel,
     });
