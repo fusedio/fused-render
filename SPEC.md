@@ -7841,7 +7841,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   existing `model_loading` handling already covers it.
 - **AI-14** **A local model can be BENCHMARKED on demand: a fixed workload per
   capability, run against one model, recorded forever with its throughput, its
-  memory, its load time and the machine it ran on** (D428, D429, D430). The AI
+  memory, its load time and the machine it ran on** (D432, D433, D434). The AI
   Models page's Benchmark tab (`/ai-models/benchmark`) draws one section per
   capability listing that capability's downloaded models with a Run button;
   `fused_render/ai/benchmark.py` performs the run and
