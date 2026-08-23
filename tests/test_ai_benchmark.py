@@ -19,6 +19,8 @@ import json
 import os
 import wave
 
+import types
+
 import pytest
 
 from fused_render import jobs
@@ -204,6 +206,28 @@ def test_a_model_not_ready_race_that_never_settles_is_a_real_failure(
     # time out rather than settle.
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: None)
+    # …and with `ready_worker` never settling, `_load_to_ready` goes on to start a
+    # bring-up for real — which calls `supervisor._require_build_tools()` and, on
+    # a machine with no `uv` on PATH (every CI runner), fails with "uv is not
+    # available, so the model environment cannot be built" instead of the timeout
+    # this test is about. The assertion then reads as a broken timeout when the
+    # only thing missing was a binary. Stubbed here rather than in the fixture:
+    # this is the one test that reaches the call at all, since every other one
+    # lets `ready_worker` answer.
+    #
+    # The stub has to land in `_workers` as well as be returned: the loop reads
+    # `_workers[capability] is not pending` as "something evicted this", so a
+    # record that was never in the table looks evicted on the first poll and the
+    # run fails with "was unloaded before it could be used" — a different real
+    # branch, and not this test's.
+    pending = types.SimpleNamespace(state="loading", error=None)
+    monkeypatch.setitem(benchmark.supervisor._workers,
+                        ai_registry.TEXT_GENERATION, pending)
+    monkeypatch.setattr(
+        benchmark.supervisor, "_start_resident",
+        lambda model, capability: ({"jobId": "sys:job", "model": model,
+                                    "state": "loading"}, pending),
+    )
 
     def generate_text(model, body):
         raise benchmark.supervisor.ModelNotReady(
