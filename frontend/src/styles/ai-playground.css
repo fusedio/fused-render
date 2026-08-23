@@ -184,20 +184,13 @@
   color: var(--fg-muted);
 }
 
-/* The card fills, as local tokens rather than --bg-alt: the cards want to sit
- * a step DARKER than the page's usual raised surface, and no single wash can
- * do that in both themes (--tint lightens in dark, darkens in light), so each
- * theme names its own pre-composited pair. Scoped to the sidebar because that
- * is the only place a .pg-model exists. */
-.pg-side {
-  --pg-card-bg: #16181c;
-  --pg-card-bg-hover: #1d2025;
-}
-
-:root[data-theme="light"] .pg-side {
-  --pg-card-bg: #eaebee;
-  --pg-card-bg-hover: #e1e2e6;
-}
+/* The card fills live in tokens.css with every other colour (--pg-card-bg,
+ * --pg-card-bg-hover). They were declared HERE, as literals scoped to
+ * .pg-side, which is the one thing this stylesheet may not do: a value written
+ * outside the palettes cannot be repainted by the other theme, and the palette
+ * is also where the light-mode override belongs rather than in a
+ * `:root[data-theme="light"]` block of this file's own. The reasoning for the
+ * pair itself is with them. */
 
 /* A CARD, reversing the old "row, not a card" call (D428): one line — nickname,
  * the Download CTA when there is one, size — carried by a fill, not an outline.

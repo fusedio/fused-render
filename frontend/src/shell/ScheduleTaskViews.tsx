@@ -77,6 +77,7 @@ import {
   markReadIntent,
   messageEditEntry,
   messageHref,
+  taskFile,
   threadTone,
   messageWhenTitle,
   nextRunChip,
@@ -194,6 +195,14 @@ const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
 const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
+  12,
+);
+// The mark a task about ONE DOCUMENT wears after its title. Paired with
+// ICON_FOLDER above and drawn at the same 12px: the two answer the same
+// question ("what is this task about") at two scales.
+const ICON_FILE = icon(
+  <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+  <path d="M14 2v6h6" /></>,
   12,
 );
 // There is no ICON_CLOCK/ICON_CHAT pair here any more (2026-08-18). A clock on a
@@ -1541,6 +1550,9 @@ function TaskNode({
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
   const ahead = isUpcomingTask(task);
+  // The file this task is about, or "" for a task about its folder — the mark
+  // after the title. tasks-lib.taskFile owns the test.
+  const taskFile_ = taskFile(task);
   // The scheduled run a ONE-MESSAGE UPCOMING row's press edits when it has no
   // conversation to open instead, because the instruction that has not run yet is
   // the only content such a row has. tasks-lib.upcomingEditEntry owns all three conditions — the
@@ -2075,9 +2087,32 @@ function TaskNode({
             fading the whole row would say "archived", which is a different fact
             with a lane of its own. */}
         <span className={"tasks-title" + (ahead ? " is-upcoming" : "")}>{label}</span>
-        {/* Nothing follows the title. The live ping used to (see LivePulse's
-            headstone above): a blue disc in the one position, and the one shape,
-            that means unread everywhere else. */}
+        {/* The one thing that follows the title (Akshil, 2026-08-23): a file
+            mark, on the tasks whose target is a FILE rather than the folder.
+            The row already says which project the work happened in; what it
+            could not say is that this task is about one document inside it —
+            the difference between "something happened in this repo" and
+            "something happened to this file".
+
+            A GLYPH, not the name — the opposite call to the message count two
+            elements along, and for the opposite reason. A count is a number
+            that needs a unit to be read at all; a filename is prose, and a
+            column of prose at the busiest end of the row is the crowding this
+            row has twice been trimmed for. The name is one hover away, in the
+            same `title` the folder chip has always used for its path.
+
+            The live ping used to sit here (see LivePulse's headstone above): a
+            blue disc in the one position, and the one shape, that means unread
+            everywhere else. This is a hollow outline and never blue. */}
+        {taskFile_ && (
+          <span
+            className="tasks-row-file"
+            title={tildePath(taskFile_, home)}
+            aria-label={`This task is about ${basename(taskFile_)}`}
+          >
+            {ICON_FILE}
+          </span>
+        )}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the

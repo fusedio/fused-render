@@ -521,6 +521,42 @@ button.tasks-caret,
   flex: 0 0 auto;
 }
 
+/* THE FILE MARK AFTER THE TITLE (2026-08-23). A task whose target is a file
+   rather than its folder wears one glyph, and the name lives in the `title` —
+   the same place the folder chip has always kept its path, so one hover
+   habit answers both.
+
+   `z-index: 2` and `position: relative` are NOT decoration: `.tasks-rowlink`
+   is an invisible <a> stretched over the whole row at `z-index: 1`, and any
+   element that has to receive a pointer — even only to raise a tooltip — has
+   to sit above it or the link swallows the hover. The folder tag learned this
+   the hard way on 2026-08-23; this is the same lesson, not a second one.
+
+   `flex: 0 0 auto` beside a title that is the row's only shrinking element:
+   the mark must not be what disappears when a long title runs out of room,
+   because then it would say "about a folder" by being absent. */
+.tasks-row-file {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  /* PULLED BACK toward the title (Akshil, 2026-08-23). The row's flex `gap` is
+     10px and applies between every pair of children, so the mark shipped with
+     10px on both sides plus a 5px margin of its own — it read as a third
+     element floating between the title and the folder rather than as something
+     the title wears. It belongs to the title, so it sits against it and keeps
+     the full gap only on the folder side. */
+  margin-left: calc(var(--tasks-row-gap) * -1 + 4px);
+  color: var(--fg-muted);
+  opacity: 0.75;
+  /* NO `cursor: help` (Akshil, 2026-08-23). The whole row is a link and reads
+     as one under the pointer; a question-mark cursor over one glyph inside it
+     announces a different kind of thing to press and looks broken beside the
+     row's own pointer. The tooltip needs no cursor to advertise it. */
+}
+.tasks-row-file:hover { opacity: 1; }
+
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
    folder, so on the List the chip is a real <button> — and it has to look like
    one only when pointed at: a permanent box on every row would be a column of
