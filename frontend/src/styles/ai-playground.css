@@ -1771,11 +1771,11 @@ a.pg-hero-repo:hover {
 .pg-apps-row .app-pcard {
   flex: 0 0 300px;
 }
+/* Sentence case, at reading size: "Use it in an app" is an invitation, and
+ * caps-plus-tracking turns a sentence into a section label. */
 .pg-apps-head {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--fg-muted);
 }
