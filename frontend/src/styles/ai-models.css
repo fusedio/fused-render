@@ -1904,10 +1904,19 @@
   font-size: 12px;
 }
 
+/* No `white-space: nowrap` here (there used to be one) — below roughly
+   600px this row's own value string ("1384.6 × realtime · 281 MB") is wider
+   than the whole flexible column on its own, so `.am-bench-latest`'s
+   `flex-wrap` (which moves the DELTA and Details onto their own line) is not
+   enough by itself: the headline was still one unbreakable unit, still wide
+   enough to overflow past the button's column at that width. Letting it wrap
+   internally is the same fix at one layer deeper — nothing here FORCES a
+   wrap at any width that already fits it on one line, since flex items
+   without a fixed width still lay out on one line while there is room. */
 .am-bench-headline {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 /* "Never benchmarked" — the absence of a measurement, said quietly. It is the
