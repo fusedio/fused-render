@@ -46,6 +46,11 @@ AUTO_OPTIMIZE_MAX_BYTES = int(
 DOWNLOAD_CONFIRM_MAX_BYTES = int(
     os.environ.get("MAP_VIEWER_DOWNLOAD_CONFIRM_BYTES", str(50 << 20))
 )
+# Cap the on-disk COG/preview derivative cache. Least-recently-opened entries
+# are evicted past this; a derivative backing a live layer is never removed.
+OPTIMIZED_CACHE_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_OPTIMIZED_CACHE_MAX_BYTES", str(4 << 30))
+)
 PREVIEW_MAX_SIZE = int(os.environ.get("MAP_VIEWER_PREVIEW_MAX_SIZE", "512"))
 PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
@@ -479,6 +484,46 @@ class RasterEngine:
         self.prepare_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="prepare"
         )
+        self._evict_optimized()
+
+    def _evict_optimized(self) -> None:
+        """Keep the on-disk derivative cache under OPTIMIZED_CACHE_MAX_BYTES,
+        deleting least-recently-opened entries first. A derivative that backs a
+        live layer is never removed, and _describe touches a reused derivative's
+        mtime so the order reflects last open rather than build time."""
+        if OPTIMIZED_CACHE_MAX_BYTES <= 0:
+            return
+        try:
+            entries = [
+                (entry.path, entry.stat())
+                for entry in os.scandir(self.optimized_dir)
+                if entry.is_file()
+                and entry.name.endswith(".tif")
+                and ".tmp" not in entry.name
+                and ".stage" not in entry.name
+            ]
+        except OSError:
+            return
+        total = sum(stat.st_size for _, stat in entries)
+        if total <= OPTIMIZED_CACHE_MAX_BYTES:
+            return
+        with self.lock:
+            protected = {
+                os.path.abspath(path)
+                for record in self.sources.values()
+                for path in (record.optimized_path, record.preview_path)
+                if path
+            }
+        for path, stat in sorted(entries, key=lambda item: item[1].st_mtime):
+            if total <= OPTIMIZED_CACHE_MAX_BYTES:
+                break
+            if os.path.abspath(path) in protected:
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= stat.st_size
 
     @staticmethod
     def _needs_relay(url: str) -> bool:
@@ -876,6 +921,8 @@ class RasterEngine:
                             "progress": 100,
                             "path": str(derivative),
                         }
+                        with contextlib.suppress(OSError):
+                            os.utime(derivative, None)
             except Exception:
                 pass
         if record.optimized_path is None and preview_derivative.exists():
@@ -883,6 +930,8 @@ class RasterEngine:
                 with rasterio.open(preview_derivative) as cached:
                     if cached.crs is not None and cached.count:
                         record.preview_path = str(preview_derivative)
+                        with contextlib.suppress(OSError):
+                            os.utime(preview_derivative, None)
                         if record.auto_rescale:
                             record.rescale = band_ranges(cached.read(masked=True))
                         record.optimization = {
@@ -1283,6 +1332,7 @@ class RasterEngine:
                     "finished_at": time.time(),
                 }
                 self._drop_source_tiles(source_id)
+            self._evict_optimized()
         except Exception as error:
             with self.lock:
                 record.optimization = {
