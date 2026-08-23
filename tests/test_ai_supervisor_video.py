@@ -80,6 +80,20 @@ def test_unload_by_model_also_reaches_a_video_worker(monkeypatch):
 
 
 def test_cancel_generation_reaches_a_video_worker(monkeypatch):
+    """Pins `_RUNNERS` to h3-video alone, matching `_fake_worker`'s hardcoded
+    `runner_code` — since `ltx-video` was registered ahead of it (SPEC §40's
+    LTX-2.3 plan), `ready_worker` (which `cancel_generation` calls) evicts a
+    resident whose `runner_code` no longer matches the capability's RESOLVED
+    runner (`ready_worker`'s own "a mismatch EVICTS" contract). On a machine
+    that resolves `text-to-video` to `ltx-video` (any Apple Silicon box with
+    no engine preference set — this suite's own dev machine among them) the
+    unpinned fixture would evict the fake worker before `cancel_generation`
+    ever reached it, which is a fact about WHICH ENGINE the test asked for,
+    not a bug in eviction. Pinning removes that hardware dependency, the same
+    way `test_ai_runtime.py::test_a_video_off_apple_silicon_says_so` pins the
+    registry to test one runner's behaviour in isolation.
+    """
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("h3-video"),))
     worker = _fake_worker(registry.VIDEO_GENERATION)
     calls = {}
 
