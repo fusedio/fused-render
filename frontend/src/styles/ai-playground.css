@@ -923,6 +923,12 @@ a.pg-hero-repo:hover {
   flex: none;
   height: 32px;
   margin-bottom: auto;
+  /* Held off the edge Run's border sits on. Flush, the two right edges lined up
+     exactly — and a bare label squared off against a filled button's corner
+     reads as a mis-set pair, not as alignment: the button has a box holding its
+     own edge, the label has nothing but the glyphs. 8px lands its last letter
+     just inside Run's ⏎. */
+  margin-right: 8px;
   display: inline-flex;
   align-items: center;
   padding: 0 6px;
