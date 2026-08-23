@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 
 from fused_render.shell.storage import home_dir
@@ -300,6 +301,27 @@ def project_env_for(path: str) -> str | None:
     if root and has_project_env(root):
         return root
     return None
+
+
+def interpreter_for(project_dir: str | None) -> str:
+    """The interpreter a script in *project_dir* runs on.
+
+    The app's own `sys.executable` when the folder declares no environment
+    (PY-17), and that folder's venv python otherwise — the same choice `/api/run`
+    makes, factored here so `/api/engine`'s warm worker (server/engine_host.py)
+    and `/api/run` pick the identical interpreter. Pass `project_env_for(path)`
+    as the argument: None ⇒ the app interpreter, a root ⇒ its venv.
+
+    Only names the venv python; it does not build it. A folder whose environment
+    has never been installed yields a path that does not exist yet, and spawning
+    it fails loudly at the caller — Phase 1 leaves the `/api/env/install` progress
+    flow that `/api/run` drives (design §13) as a TODO for the warm path.
+    """
+    if not project_dir:
+        return sys.executable
+    from fused_render import envinstall
+
+    return envinstall.venv_python_for(project_dir)
 
 
 def display_name(project_dir: str) -> str:
