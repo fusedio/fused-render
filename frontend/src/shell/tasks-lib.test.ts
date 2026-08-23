@@ -6800,6 +6800,13 @@ describe("the list row's message count", () => {
     expect(VIEWS).toContain("{task.message_count > 0 && (");
   });
 
+  it("says the noun rather than drawing a glyph", () => {
+    // A bare "4" between a folder and a time is a number with no unit; the
+    // bubble it replaced had to be learned before the row could be read.
+    expect(VIEWS).toContain("message{task.message_count === 1 ? \"\" : \"s\"}");
+    expect(VIEWS).not.toContain("ICON_MESSAGES");
+  });
+
   it("reads in the same register as the chip beside it", () => {
     // Same 11px, same muted colour, same `flex: 0 0 auto` — the TITLE is the
     // only thing that gives way when a row runs out of room — and tabular

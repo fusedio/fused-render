@@ -196,15 +196,6 @@ const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
   12,
 );
-// The speech bubble on the LIST ROW's message count (2026-08-23) — lucide
-// "message-square", at the folder chip's 12px so the two chips beside each other
-// read as one register. Not a revival of the per-message ICON_CHAT below: that
-// one said which KIND a single message was, on a line that already carried two
-// glyphs; this one says how many there are, once, on the row.
-const ICON_MESSAGES = icon(
-  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
-  12,
-);
 // There is no ICON_CLOCK/ICON_CHAT pair here any more (2026-08-18). A clock on a
 // scheduled message and a speech bubble on a chat one used to sit between the
 // status ring and MSG-003 on every thread row, saying where the message came
@@ -2142,19 +2133,21 @@ function TaskNode({
             identically until you opened them, which is the wrong thing to have
             to do to choose which to open.
 
-            A GLYPH AND A NUMBER, the same shape as the folder chip beside it,
-            and no word: "3 messages" spelled out is three times the ink for a
-            fact that is read at a glance, on the busiest end of the row. The
-            noun lives in the tooltip. Drawn only when the server has counted at
-            least one — zero is a task whose thread has not started, and a "0"
-            is worse than the space it would fill. */}
+            THE WORD, NOT A GLYPH (Akshil, 2026-08-23, second pass). It began as
+            a speech bubble and a number, on the argument that the row's busiest
+            end could not afford three more characters. It could: a bare "4"
+            between a folder and a time is a number with no unit, and the reader
+            has to learn what the bubble means before the row reads — where "4
+            messages" is read, not decoded. The count is the only thing on this
+            row that needed a noun, because it is the only one whose number
+            could be mistaken for another (a time, an id, a count of runs).
+
+            Drawn only when the server has counted at least one — zero is a task
+            whose thread has not started, and a "0 messages" is worse than the
+            space it would fill. */}
         {task.message_count > 0 && (
-          <span
-            className="tasks-row-msgs"
-            title={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}
-          >
-            <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MESSAGES}</span>
-            {task.message_count}
+          <span className="tasks-row-msgs">
+            {task.message_count} message{task.message_count === 1 ? "" : "s"}
           </span>
         )}
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen

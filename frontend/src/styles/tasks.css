@@ -500,23 +500,11 @@ button.tasks-caret,
    `tabular-nums` for the same reason the time has it: a column of counts that
    jitters as it goes 9 → 10 reads as movement in a list that has not changed. */
 .tasks-row-msgs {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-/* The glyph stays quieter than its number, exactly as the folder icon does
-   beside it: the bubble says what kind of fact this is, the digits are the
-   fact. */
-.tasks-row-msgs-icon {
-  display: inline-flex;
-  align-items: center;
-  opacity: 0.75;
 }
 
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
