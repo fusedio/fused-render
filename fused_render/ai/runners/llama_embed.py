@@ -225,18 +225,30 @@ def _remote_header(repo_id, filename):
     being a download: the Hub answers `206 Partial Content` with exactly the
     requested bytes (checked directly, 2026-08-23).
 
-    `b""` for ANY failure — no network, a mirror that ignores `Range` and
-    starts streaming the whole file, an odd status, a timeout. That is not
-    defensiveness for its own sake; it is the contract the module docstring
-    states: a refusal must rest on evidence, so "could not look" resolves to
-    "do not refuse" and lets the load-time check answer instead. The timeout
-    is short for the same reason — a slow Hub should delay a download by
-    seconds, not replace it with a failure.
+    **Only `206 Partial Content` counts, and a plain `200` is treated as a
+    failure to look.** That is the whole of what bounds this read. A 206 is
+    the server saying it honoured the `Range`, so the body cannot be larger
+    than the 2MB asked for; a 200 is a server that ignored it and is about to
+    hand over the entire multi-gigabyte file, which is precisely what a
+    function whose job is to AVOID a download must not accept. Rejecting 200
+    is therefore not fastidiousness about status codes — it is the memory
+    bound, expressed in the one place the protocol actually guarantees it.
 
-    Streamed with `stream=True` and read to a hard cap rather than trusted to
-    honour `Range`: a server that ignores the header would otherwise pull a
-    multi-gigabyte file into memory inside a function whose whole job is to
-    avoid downloading it.
+    (An earlier draft asked for `stream=True` and read to a cap instead. That
+    is the `requests` spelling, and `huggingface_hub` 1.x's `get_session()`
+    returns an **httpx.Client**, whose `get()` has no such keyword — so every
+    call raised `TypeError`, the broad `except` below turned it into `b""`,
+    and the peek silently never ran. Caught by driving a real chat GGUF
+    through the running server and watching it start downloading instead of
+    refusing. Requiring 206 needs no streaming API at all, so it is correct on
+    both clients.)
+
+    `b""` for ANY failure — no network, a mirror that ignores `Range`, an odd
+    status, a timeout. That is not defensiveness for its own sake; it is the
+    contract the module docstring states: a refusal must rest on evidence, so
+    "could not look" resolves to "do not refuse" and lets the load-time check
+    answer instead. The timeout is short for the same reason — a slow Hub
+    should delay a download by seconds, not replace it with a failure.
     """
     try:
         from huggingface_hub import hf_hub_url
@@ -245,11 +257,17 @@ def _remote_header(repo_id, filename):
         url = hf_hub_url(repo_id, filename)
         headers = dict(build_hf_headers() or {})
         headers["Range"] = f"bytes=0-{formats._GGUF_HEADER_PEEK_BYTES - 1}"
-        response = get_session().get(url, headers=headers, timeout=20, stream=True)
-        if response.status_code not in (200, 206):
+        # No redirect keyword, deliberately: `requests` spells it
+        # `allow_redirects` and `httpx` spells it `follow_redirects`, and
+        # `huggingface_hub` has shipped both clients — naming either one is
+        # the same TypeError-into-silence trap described above. Neither is
+        # needed; hf's own session already follows the Hub's `resolve/main`
+        # redirect to the CDN (checked: a bare `get` returns 206 with the
+        # requested bytes).
+        response = get_session().get(url, headers=headers, timeout=20)
+        if response.status_code != 206:
             return b""
-        with response:
-            return response.raw.read(formats._GGUF_HEADER_PEEK_BYTES) or b""
+        return response.content[:formats._GGUF_HEADER_PEEK_BYTES]
     except Exception:  # noqa: BLE001 - see the docstring: any failure to LOOK
                        # must read as "no evidence", never as a refusal
         return b""

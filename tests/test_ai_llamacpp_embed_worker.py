@@ -286,6 +286,75 @@ def test_an_unreadable_header_does_NOT_refuse(worker, monkeypatch):
     assert path.endswith("mystery-Q8_0.gguf")
 
 
+def _fake_hf_session(monkeypatch, status, content, seen=None):
+    """Stand in for `huggingface_hub.utils.get_session()`, recording the
+    kwargs `_remote_header` passes so a client-specific keyword cannot creep
+    back in unnoticed."""
+    class _Response:
+        def __init__(self):
+            self.status_code = status
+            self.content = content
+
+    class _Session:
+        def get(self, url, **kwargs):
+            if seen is not None:
+                seen.append((url, kwargs))
+            return _Response()
+
+    utils = types.ModuleType("huggingface_hub.utils")
+    utils.get_session = lambda: _Session()
+    utils.build_hf_headers = lambda: {}
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_url = lambda repo, filename, **kw: f"https://hub/{repo}/{filename}"
+    hub.utils = utils
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils", utils)
+
+
+def test_the_header_peek_reads_a_206_and_asks_for_a_range(worker, monkeypatch):
+    """**A regression test for a bug that shipped silently and was found by
+    running the server, not by the suite.**
+
+    The first draft called `get_session().get(..., stream=True)` and read
+    `response.raw`. That is the `requests` spelling; `huggingface_hub` 1.x
+    returns an **httpx.Client**, whose `get()` has no `stream` keyword — so
+    every call raised `TypeError`, `_remote_header`'s deliberately broad
+    `except` turned it into `b""`, and the peek never ran. Nothing failed:
+    "could not look" is a legitimate state that means "do not refuse", so the
+    runner simply started downloading chat models it should have refused.
+
+    This test pins the two things that would have caught it: the bytes come
+    back, and the request carries a `Range` header and NO client-specific
+    keyword.
+    """
+    seen = []
+    _fake_hf_session(monkeypatch, 206, b"GGUFxx", seen)
+    assert worker._remote_header("org/r", "m.gguf") == b"GGUFxx"
+    (url, kwargs), = seen
+    assert url == "https://hub/org/r/m.gguf"
+    assert kwargs["headers"]["Range"].startswith("bytes=0-")
+    # `stream`/`follow_redirects`/`allow_redirects` are each spelled by only
+    # ONE of the two clients hf has shipped, so naming any of them is the
+    # same TypeError-into-silence trap this test exists for.
+    assert not ({"stream", "follow_redirects", "allow_redirects"} & set(kwargs))
+
+
+def test_a_200_is_treated_as_a_failure_to_look_not_as_a_header(worker, monkeypatch):
+    """**The memory bound, and the reason it is a status check.** A `206` is
+    the server saying it honoured the `Range`, so the body cannot exceed the
+    2MB asked for. A plain `200` is a server that ignored it and is handing
+    over the whole multi-gigabyte file — which is exactly what a function
+    whose job is to avoid a download must not read.
+
+    Answering `b""` puts it in the "no evidence" state, so the runner
+    proceeds and the load-time check decides. That is the right direction:
+    a mirror with no Range support costs a user one download, not a model
+    they cannot load.
+    """
+    _fake_hf_session(monkeypatch, 200, b"GGUF" + b"x" * 10_000)
+    assert worker._remote_header("org/r", "m.gguf") == b""
+
+
 def test_a_lookup_failure_is_a_different_refusal_from_a_bad_repo(worker, monkeypatch):
     """"Try again" and "this will never resolve" are different facts a user
     acts on differently — the distinction `llama_text` draws too."""

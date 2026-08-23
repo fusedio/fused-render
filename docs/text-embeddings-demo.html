@@ -1,0 +1,201 @@
+<!--
+  A working exercise of `fused.ai.embedText` (SPEC §40) — the `text-embeddings`
+  capability, end to end, in one file.
+
+  Open it in fused-render (see TESTING.md at the repo root for the exact
+  command). It is deliberately the smallest thing that shows every part of the
+  contract actually working rather than a polished tool:
+
+    * a corpus embedded with kind:"document" and a query with kind:"query",
+      which is how the endpoint is meant to be used and the only way the
+      asymmetric prompt pair does its job;
+    * ranking by a PLAIN DOT PRODUCT with no magnitudes divided out, which is
+      legal only because the vectors come back unit-normalized — so the page
+      is itself a check on that guarantee;
+    * the 409 `model_loading` fork handled the way every page should handle
+      it: catch the rejection, watch the job id it carries, ask again. The
+      first run on a cold model goes through this, so it is exercised rather
+      than described.
+
+  The default corpus is the one `tests/test_ai_text_embed_retrieval.py` uses,
+  chosen so that word-overlap ranking scores 2/5 while a real encoder scores
+  5/5 — try "keeping the bread culture alive", which shares not one word with
+  the sourdough line it should find.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 24px; max-width: 860px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { opacity: .7; margin: 0 0 20px; }
+  label { display: block; font-weight: 600; margin: 16px 0 6px; }
+  textarea, input[type=text] {
+    width: 100%; box-sizing: border-box; font: inherit;
+    padding: 8px 10px; border-radius: 6px;
+    border: 1px solid color-mix(in oklab, currentColor 25%, transparent);
+    background: transparent; color: inherit;
+  }
+  textarea { min-height: 116px; resize: vertical; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  button {
+    font: inherit; padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid color-mix(in oklab, currentColor 30%, transparent);
+    background: color-mix(in oklab, currentColor 8%, transparent); color: inherit;
+  }
+  button[disabled] { opacity: .5; cursor: default; }
+  #status { opacity: .75; min-height: 1.5em; }
+  table { border-collapse: collapse; width: 100%; margin-top: 18px; }
+  th, td { text-align: left; padding: 7px 10px; vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; opacity: .6; }
+  tbody tr { border-top: 1px solid color-mix(in oklab, currentColor 12%, transparent); }
+  tbody tr.top { background: color-mix(in oklab, currentColor 8%, transparent); }
+  td.score { font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
+  .meta { margin-top: 14px; font-size: 12px; opacity: .7; }
+  .meta code { font-size: 12px; }
+  .err { color: #c0392b; }
+</style>
+
+<h1>Text embeddings — semantic search over a tiny corpus</h1>
+<p class="sub">
+  Each line below is embedded once as a <code>document</code>. Your query is
+  embedded as a <code>query</code>, so the model gets the prompt it was trained
+  to see on each side. Ranking is a plain dot product.
+</p>
+
+<label for="corpus">Corpus — one passage per line</label>
+<textarea id="corpus">The landlord is responsible for repairing a leaking roof within 14 days of written notice.
+Espresso should be pulled at roughly nine bars of pressure for 25 to 30 seconds.
+Photosynthesis converts light energy into chemical energy stored as glucose in plant cells.
+A pull request must be approved by one reviewer before it can be merged to the main branch.
+Sourdough starter needs feeding with equal parts flour and water every twelve hours.</textarea>
+
+<label for="query">Query</label>
+<input id="query" type="text" value="keeping the bread culture alive">
+
+<div class="row">
+  <button id="go">Search</button>
+  <span id="status"></span>
+</div>
+
+<table id="results" hidden>
+  <thead><tr><th class="score">Score</th><th>Passage</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<p class="meta" id="meta"></p>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const say = (text, isError) => {
+    $("status").textContent = text;
+    $("status").className = isError ? "err" : "";
+  };
+
+  // Cosine similarity as a PLAIN DOT PRODUCT. Legal only because
+  // fused.ai.embedText guarantees unit-length vectors — if that guarantee
+  // ever broke, the scores here would silently stop being cosines, which is
+  // why the page prints one vector's self-dot in the footer as a check.
+  const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
+
+  // The `model_loading` fork, handled once and reused for both calls.
+  //
+  // A cold model answers 409 with the id of the load it just started; the
+  // caller is meant to watch that job and ask again. `fused.watchJob` is the
+  // read side of the download manager, so this shows real download progress
+  // rather than an opaque spinner.
+  //
+  // **Two things here are easy to get wrong, and both were, in the first
+  // draft of this page.**
+  //
+  // `fused.watchJob(id)` returns a HANDLE, not a promise — the thing to await
+  // is `handle.watch(onUpdate)`, which resolves with the job's final record
+  // when it stops running. Awaiting the handle itself resolves instantly, so
+  // the retry below became a hot loop hammering the server for as long as the
+  // load took.
+  //
+  // And a job that ends in `error` is a TERMINAL state that `watch` resolves
+  // with rather than rejecting on. Retrying then just starts the same doomed
+  // load again, forever. So the record's state is checked and its message is
+  // what the page shows — which is how a user finds out that, say, their CPU
+  // cannot run the llama.cpp wheel, instead of watching a spinner.
+  async function embed(opts) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await fused.ai.embedText(opts);
+      } catch (err) {
+        if (err.type !== "model_loading" || !err.jobId) throw err;
+        say("Loading the embedding model…");
+        const record = await fused.watchJob(err.jobId).watch((job) => say(
+          job.total
+            ? `Loading the embedding model — ${job.detail || job.state} `
+              + `(${Math.round((job.done / job.total) * 100)}%)`
+            : `Loading the embedding model — ${job.detail || job.state}`));
+        if (record && record.state === "error") {
+          const failed = new Error(record.message || "the model failed to load");
+          failed.type = "ai_error";
+          throw failed;
+        }
+        // …and round again: the retry is what actually gets the vectors.
+      }
+    }
+    const stuck = new Error(
+      "the model is still not resident after three attempts — check the "
+        + "download manager");
+    stuck.type = "model_loading";
+    throw stuck;
+  }
+
+  async function search() {
+    const passages = $("corpus").value.split("\n")
+      .map((line) => line.trim()).filter(Boolean);
+    const query = $("query").value.trim();
+    if (!passages.length || !query) {
+      say("Give it a corpus and a query.", true);
+      return;
+    }
+
+    $("go").disabled = true;
+    $("results").hidden = true;
+    say("Embedding…");
+    try {
+      // Two calls, two kinds. Embedding both sides as documents would still
+      // "work" — unit vectors, right width, plausible scores — and would
+      // quietly cost recall, which is the whole reason `kind` exists.
+      const docs = await embed({ texts: passages, kind: "document" });
+      const q = await embed({ texts: [query], kind: "query" });
+
+      const ranked = passages
+        .map((text, i) => ({ text, score: dot(q.vectors[0], docs.vectors[i]) }))
+        .sort((a, b) => b.score - a.score);
+
+      const body = $("results").querySelector("tbody");
+      body.replaceChildren(...ranked.map((row, i) => {
+        const tr = document.createElement("tr");
+        if (i === 0) tr.className = "top";
+        const score = document.createElement("td");
+        score.className = "score";
+        score.textContent = row.score.toFixed(4);
+        const text = document.createElement("td");
+        text.textContent = row.text;
+        tr.append(score, text);
+        return tr;
+      }));
+      $("results").hidden = false;
+
+      const selfDot = dot(q.vectors[0], q.vectors[0]);
+      $("meta").textContent =
+        `${q.model} · ${q.dim}-dim · prompt scheme "${q.promptScheme}" · `
+        + `query kind "${q.kind}" · unit-length check (v·v) = ${selfDot.toFixed(6)}`;
+      say(`Ranked ${passages.length} passages.`);
+    } catch (err) {
+      say(`${err.type || "error"}: ${err.message}`, true);
+    } finally {
+      $("go").disabled = false;
+    }
+  }
+
+  $("go").addEventListener("click", search);
+  $("query").addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+</script>
