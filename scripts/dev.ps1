@@ -108,7 +108,12 @@ if (-not (Test-Path $dist)) {
     }
     Write-Host "==> no shell-dist found; building it (npm install + npm run build)"
     Push-Location (Join-Path $WT "frontend")
-    try { & npm install; & npm run build } finally { Pop-Location }
+    try {
+      & npm install
+      if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE)." }
+      & npm run build
+      if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE)." }
+    } finally { Pop-Location }
   }
 }
 

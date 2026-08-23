@@ -321,9 +321,11 @@ def _mvt_features(geometry):
             yield from _mvt_features(part)
 
 
-def _coverage_grid(minx, maxx, miny, maxy, weight: float, bbox, size: int):
+def _coverage_grid(minx, maxx, miny, maxy, weight, bbox, size: int):
     """Mark every grid cell each node bbox overlaps (difference array + 2D
-    prefix sum), so summary coverage has no holes between node centres."""
+    prefix sum), so summary coverage has no holes between node centres. ``weight``
+    is per node (one value per box), so a node contributes its own feature count
+    rather than a single average shared across every node."""
     import numpy as np
 
     span_x = bbox[2] - bbox[0]
@@ -804,13 +806,13 @@ class VectorEngine:
                 blobs = self._fetch_nodes(connection, node_table, child_ids)
         if not (source.feature_count / 500 <= len(child_bounds) <= source.feature_count):
             raise ValueError("the rtree node walk is inconsistent with the layer")
-        per_node = source.feature_count / len(child_bounds)
+        weights = np.full(len(child_bounds), source.feature_count / len(child_bounds))
         return (
             child_bounds[:, 0],
             child_bounds[:, 1],
             child_bounds[:, 2],
             child_bounds[:, 3],
-            per_node,
+            weights,
         )
 
     def _fetch_nodes(self, connection, node_table: str, ids) -> list[bytes]:
@@ -846,9 +848,12 @@ class VectorEngine:
 
     def _parse_qix(self, qix: str, feature_count: int) -> tuple | None:
         """Walk the ``.qix`` quadtree and return the bboxes of shape-bearing
-        nodes. Format (shapelib): 8-byte header, int32 shape count, int32 depth,
-        then nodes of {int32 subtree size, 4 f64 bounds, int32 shape count, that
-        many int32 ids, int32 subnode count, subnodes}."""
+        nodes with each node's own shape count as its weight. Format (shapelib):
+        8-byte header, int32 shape count, int32 depth, then nodes of {int32
+        subtree size, 4 f64 bounds, int32 shape count, that many int32 ids, int32
+        subnode count, subnodes}. Carrying the real per-node count (a large
+        internal node holds more shapes than a small leaf) keeps the occupancy
+        weight honest instead of spreading one average across every node."""
         import numpy as np
 
         with open(qix, "rb") as handle:
@@ -858,6 +863,7 @@ class VectorEngine:
         order = "<" if buf[3] == 1 else ">"
         one, four = struct.Struct(order + "i"), struct.Struct(order + "4d")
         bounds: list[tuple[float, float, float, float]] = []
+        counts: list[int] = []
         pos, remaining = 16, [1]
         while remaining:
             if remaining[-1] == 0:
@@ -873,13 +879,14 @@ class VectorEngine:
             pos += 4
             if shapes:
                 bounds.append(box)
+                counts.append(shapes)
             if subnodes:
                 remaining.append(subnodes)
         if not bounds or not (feature_count / 500 <= len(bounds) <= feature_count):
             raise ValueError("the quadtree node walk is inconsistent with the layer")
         boxes = np.asarray(bounds, dtype="float64")
-        per_node = feature_count / len(boxes)
-        return (boxes[:, 0], boxes[:, 2], boxes[:, 1], boxes[:, 3], per_node)
+        weights = np.asarray(counts, dtype="float64")
+        return (boxes[:, 0], boxes[:, 2], boxes[:, 1], boxes[:, 3], weights)
 
     def _summary_disk_path(self, source: VectorSource) -> Path | None:
         if self.cache_dir is None:
@@ -936,10 +943,13 @@ class VectorEngine:
 
     def _summary_from_bounds(self, bounds) -> tuple:
         # shapely.bounds columns are (minx, miny, maxx, maxy); the overview grid
-        # and node-summary path both want (minx, maxx, miny, maxy, per_node).
+        # and node-summary path both want (minx, maxx, miny, maxy, weights).
+        import numpy as np
+
         column = bounds.astype("float64")
         return (
-            column[:, 0], column[:, 2], column[:, 1], column[:, 3], 1.0,
+            column[:, 0], column[:, 2], column[:, 1], column[:, 3],
+            np.ones(column.shape[0]),
         )
 
     def _store_summary_disk(self, source: VectorSource, bounds) -> None:
@@ -1102,16 +1112,16 @@ class VectorEngine:
         return self._render_cells(source, grid, bbox, size, z, x, y)
 
     def _summary_grid(self, summary: tuple, bbox, size: int):
-        minx, maxx, miny, maxy, per_node = summary
+        minx, maxx, miny, maxy, weights = summary
         inside = (
             (maxx >= bbox[0]) & (minx <= bbox[2])
             & (maxy >= bbox[1]) & (miny <= bbox[3])
         )
-        if inside.sum() * per_node <= OVERVIEW_EXACT_MAX:
+        if float(weights[inside].sum()) <= OVERVIEW_EXACT_MAX:
             return None
         return _coverage_grid(
             minx[inside], maxx[inside], miny[inside], maxy[inside],
-            per_node, bbox, size,
+            weights[inside], bbox, size,
         )
 
     def _overview_from_summary(
@@ -1127,7 +1137,7 @@ class VectorEngine:
         size = max(8, min(256, OVERVIEW_GRID_SIZE))
         if bbox[2] - bbox[0] <= 0 or bbox[3] - bbox[1] <= 0:
             return b""
-        minx, maxx, miny, maxy, per_node = summary
+        minx, maxx, miny, maxy, weights = summary
         if inside is None:
             inside = (
                 (maxx >= bbox[0]) & (minx <= bbox[2])
@@ -1137,7 +1147,7 @@ class VectorEngine:
             return b""
         grid = _coverage_grid(
             minx[inside], maxx[inside], miny[inside], maxy[inside],
-            per_node, bbox, size,
+            weights[inside], bbox, size,
         )
         return self._render_cells(source, grid, bbox, size, z, x, y)
 
@@ -1364,12 +1374,12 @@ class VectorEngine:
             if cancel is not None and cancel.is_set():
                 raise TileCancelled(f"vector tile {z}/{x}/{y}")
             return self._provisional_tile(source, source_bbox, z, x, y)
-        minx, maxx, miny, maxy, per_node = summary
+        minx, maxx, miny, maxy, weights = summary
         inside = (
             (maxx >= source_bbox[0]) & (minx <= source_bbox[2])
             & (maxy >= source_bbox[1]) & (miny <= source_bbox[3])
         )
-        if inside.sum() * per_node > MAX_TILE_FEATURES:
+        if float(weights[inside].sum()) > MAX_TILE_FEATURES:
             return TileResult(
                 self._overview_from_summary(
                     source, summary, source_bbox, z, x, y, inside
@@ -1445,9 +1455,10 @@ class VectorEngine:
             f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
         )
         try:
+            replaced = path.stat().st_size if path.exists() else 0
             temporary.write_bytes(tile)
             os.replace(temporary, path)
-            self._disk_bytes += len(tile)
+            self._disk_bytes += len(tile) - replaced
             if self._disk_bytes > VECTOR_TILE_CACHE_MAX_BYTES:
                 self._evict_disk_tiles()
         finally:

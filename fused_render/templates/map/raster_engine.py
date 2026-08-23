@@ -1427,17 +1427,19 @@ class RasterEngine:
             # exists to withhold, so draw nothing until the user accepts it.
             if record.optimization.get("status") == "confirm_download":
                 return self.transparent_tile()
-            # While a preparation is pulling the source (a confirmed or automatic
-            # optimize) and no coarse copy exists yet, an on-demand read would
-            # re-fetch the same remote bytes _prepare is already downloading, so
-            # draw nothing until a preview or the pyramid lands.
+            # While a preparation is pulling a remote source and no coarse copy
+            # exists yet, an on-demand read would re-fetch the same bytes _prepare
+            # is already downloading, so draw nothing until a preview or the
+            # pyramid lands. A local source has no such duplicate fetch, so it
+            # keeps serving live reads at native zoom during preparation.
+            preparing_remote = (
+                record.optimization.get("status") in {"queued", "running"}
+                and is_remote_path(record.source)
+            )
             if (
                 not record.has_overviews
                 and not record.preview_path
-                and (
-                    z < record.minzoom
-                    or record.optimization.get("status") in {"queued", "running"}
-                )
+                and (z < record.minzoom or preparing_remote)
             ):
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)

@@ -71,14 +71,15 @@ def test_parse_qix_reads_shape_bearing_node_boxes(eng, tmp_path):
     qix = tmp_path / "farms.qix"
     _write_qix(qix, nshapes=4)
 
-    minx, maxx, miny, maxy, per_node = eng._parse_qix(str(qix), 4)
+    minx, maxx, miny, maxy, weights = eng._parse_qix(str(qix), 4)
 
     # All three nodes carry shapes, in file order: root, then the two leaves.
     assert list(minx) == [0, 0, 5]
     assert list(maxx) == [10, 5, 10]
     assert list(miny) == [0, 0, 5]
     assert list(maxy) == [10, 5, 10]
-    assert per_node == pytest.approx(4 / 3)
+    # Each node keeps its own shape count: root holds 1, the leaves 2 and 1.
+    assert list(weights) == [1, 2, 1]
 
 
 def test_parse_qix_rejects_a_non_index_file(eng, tmp_path):
