@@ -46,6 +46,24 @@ const ICONS: Record<string, ReactNode> = {
       <path d="m3.5 17 5-5 4 4 3-3 5 5" />
     </svg>
   ),
+  // Video: a camera body with the lens wedge off its right side — Home's own
+  // `video` glyph (shell/Home.tsx's MEDIA_GLYPHS), path for path.
+  //
+  // It was MISSING here, so the rail's video section drew the sparkle FALLBACK
+  // — the mark that means "a capability this build has not learned yet" — over
+  // a section with two working models in it. Copied rather than shared for the
+  // reason this file's own header gives: Home imports `groups.ts` eagerly, and
+  // a module of JSX reachable from the front door is the pull these glyphs are
+  // kept apart to avoid. The chat glyph is already duplicated across the two
+  // files on that trade, and Home's comment on it makes the other half of the
+  // argument — these two surfaces are one click apart, so a different drawing
+  // on each end reads as two different features.
+  "text-to-video": (
+    <svg {...base}>
+      <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
+      <path d="M16 10.5 21 7.5v9L16 13.5z" />
+    </svg>
+  ),
   // Transcription: a microphone.
   "automatic-speech-recognition": (
     <svg {...base}>

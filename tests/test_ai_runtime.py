@@ -4761,6 +4761,91 @@ def test_editing_a_model_WITH_an_edit_recipe_still_opens_a_job(
     _wait_job(started["jobId"])
 
 
+# -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------
+#
+# The Playground's image composer draws its attach affordance off this flag, so
+# the flag has to be the endpoint's own answer rather than a second opinion
+# about it. Every test below asserts the pair together — the payload's bool and
+# what a POST carrying `image` actually does — because a flag that drifts from
+# the route is a button that 400s, which is the one failure this field exists
+# to prevent.
+
+
+def _image_row(client):
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    return next(row for row in rows if row["capability"] == registry.IMAGE_GENERATION)
+
+
+def test_the_catalog_marks_the_EDITABLE_model_and_the_endpoint_agrees(
+        client, fake_mflux_image_runner, base_photo, monkeypatch):
+    """Two entries under the real mflux code — one with an edit recipe, one
+    without — and the flag matches which of them the route will accept."""
+    from fused_render.ai.runners import formats
+
+    known = next(iter(formats.MFLUX_EDIT_VARIANTS))
+    page, _photo = base_photo
+    monkeypatch.setitem(catalog.SUGGESTIONS, "mflux-image", [
+        {"id": known, "label": "Editable", "size_gb": None, "note": ""},
+        {"id": "org/no-edit-variant", "label": "Render only", "size_gb": None,
+         "note": ""},
+    ])
+    flags = {m["id"]: m["acceptsImage"] for m in _image_row(client)["models"]}
+    assert flags[known] is True
+    assert flags["org/no-edit-variant"] is False
+
+    # …and the route says the same thing about both, which is the claim.
+    refused = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page,
+              "model": "org/no-edit-variant"},
+        headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+    assert "no edit variant" in refused.json()["error"]
+    accepted = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "model": known},
+        headers={"X-Fused": "1"})
+    assert accepted.status_code == 200, accepted.json()
+    _wait_job(accepted.json()["jobId"])
+
+
+def test_the_diffusers_engine_marks_NO_image_model_as_editable(
+        client, fake_diffusers_image_runner, base_photo):
+    """The engine refusal is the first gate, so on a diffusers machine the
+    flag is False for every entry however editable the MODEL may be
+    elsewhere — the Playground draws no attach button there at all."""
+    from fused_render.ai.runners import formats
+
+    known = next(iter(formats.MFLUX_EDIT_VARIANTS))
+    page, _photo = base_photo
+    row = _image_row(client)
+    assert row["models"], "the fixture's shortlist vanished"
+    assert all(m["acceptsImage"] is False for m in row["models"])
+    refused = client.post(
+        "/api/ai/image",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "model": known},
+        headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+    assert "Diffusers image engine" in refused.json()["error"]
+
+
+def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, monkeypatch):
+    """False on every non-image capability rather than True by vacancy.
+
+    `engine_options` is an exception list, so a text runner "refuses nothing"
+    — and a flag computed off that answer alone would have every chat model in
+    the payload claiming it takes a photo.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    for row in client.get("/api/ai/catalog").json()["capabilities"]:
+        if row["capability"] == registry.IMAGE_GENERATION:
+            continue
+        for model in row["models"]:
+            assert model["acceptsImage"] is False, (
+                f"{row['capability']}/{model['id']} claims to accept an image")
+
+
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
                                                         monkeypatch):
     monkeypatch.setenv("FAKE_IMAGE_FAILS", "1")

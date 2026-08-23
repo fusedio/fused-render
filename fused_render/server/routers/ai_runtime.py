@@ -795,6 +795,12 @@ def _catalog_with_downloads() -> list[dict]:
         row["models"] = curated + extra
         for entry in row["models"]:
             entry["fit"] = _fit_verdict(entry.get("size_gb"))
+            # Whether this one can be handed a base image to EDIT (AI-9f) —
+            # computed per entry on BOTH halves, because a cached mflux repo
+            # with no edit variant is as unable to edit as a diffusers one and
+            # a picker filtering on absence would offer it anyway.
+            entry["acceptsImage"] = _accepts_image(
+                row["capability"], row["runner"], entry["id"])
     return rows
 
 
@@ -854,6 +860,37 @@ def _fit_verdict(size_gb: float | None) -> str | None:
     if size_gb <= ram * 0.5:
         return "tight"
     return "no"
+
+
+def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
+    """Can `model_id` be handed a BASE IMAGE to edit on this machine (AI-9f)?
+
+    A mirror of `api_ai_image`'s own two refusals, in the same order, so a
+    picker that draws an attach button and the endpoint that would 400 the
+    resulting request cannot disagree:
+
+    1. the ENGINE — `engine_options` is the one place that says which backends
+       honour `image` (every diffusers image code refuses it, mflux honours
+       it), and it is asked here rather than restated;
+    2. the MODEL — mflux additionally needs an edit variant class named for the
+       repo (`formats.mflux_edit_recipe`), since a repo can be renderable and
+       not editable. A future engine that honours `image` with no per-model
+       table is True on the engine's answer alone, exactly as the endpoint
+       treats it.
+
+    False on every non-image capability rather than True-by-vacancy: the
+    engine table is an exception list, so a text runner "refuses nothing" and
+    would otherwise come back claiming a chat model takes a photo.
+    """
+    if capability != registry.IMAGE_GENERATION or runner_code is None:
+        return False
+    try:
+        engine_options.unsupported_or_raise(runner_code, image="probe")
+    except ValueError:
+        return False
+    if runner_code == "mflux-image":
+        return formats.mflux_edit_recipe(model_id) is not None
+    return True
 
 
 @router.get("/api/ai/catalog")

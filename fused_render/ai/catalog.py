@@ -845,6 +845,20 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "recommended": True,
             "label": "LTX-2.3 int4 distilled",
             "nickname": "LTX-2.3 (int4)",
+            # Both video tiers shipped with no `params` and no `quantization`,
+            # so the playground's model card had two of its four facts blank
+            # beside every text and image entry. Filled from the PUBLISHERS,
+            # per this file's AI-2c rule that these are strings somebody owns:
+            # the upstream weights are `ltx-2.3-22b-distilled` (Lightricks/LTX-2.3,
+            # a 22B DiT), and the conversion's own card states "Int4
+            # quantization (group_size 64, transformer block Linear weights
+            # only)" — mlx-forge, not mlx-community, but the same scheme the
+            # other MLX rows in this file name as "MLX 4-bit", and the column is
+            # read down. The group size and the linear-weights-only scope stay
+            # here rather than in the field: they are true and they are not what
+            # a reader comparing two rows is asking.
+            "params": "22B",
+            "quantization": "MLX 4-bit",
             "size_gb": 28.5,
             "note": "Text-to-video with audio, 8 denoising steps, on a "
                     "16 GB+ Mac. Diverges from the bf16 sample at this "
@@ -867,6 +881,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "dgrauet/ltx-2.3-mlx-q8",
             "label": "LTX-2.3 int8 distilled",
             "nickname": "LTX-2.3 (int8)",
+            # Same 22B upstream, the other tier of the same conversion ("Int8
+            # quantization (group_size 64, transformer block Linear weights
+            # only)") — see the int4 entry for where both strings come from.
+            "params": "22B",
+            "quantization": "MLX 8-bit",
             "size_gb": 37.8,
             "note": "The same LTX-2 Community License, for the tier that "
                     "reproduces the bf16 sample — a 32 GB+ machine and "
@@ -899,6 +918,17 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "recommended": True,
             "label": "MiniMax H3 FL2VA",
             "nickname": "MiniMax H3",
+            # The card's own header figure, and its own sentence behind it:
+            # "H3-Omni-Transformer is a 33B-parameter dense, single-stream
+            # Transformer". Left at the bare number the publisher publishes —
+            # the 144GB download also carries a Qwen3-VL text encoder and two
+            # VAEs, so the figure and the size do not reconcile, but naming
+            # what 33B excludes is this file's editorialising rather than
+            # MiniMax's claim (AI-2c: the string is a value somebody owns).
+            # No `quantization`: these are the published bf16 weights, and the
+            # field is absent where no honest short scheme name exists rather
+            # than carrying an invented one.
+            "params": "33B",
             "size_gb": 144.1,
             "note": "Text-to-video with audio. One resident model — the ref2va "
                     "checkpoint (a second 144GB tree in the same repo) is not "
