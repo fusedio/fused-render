@@ -17,6 +17,7 @@
 import { describe, expect, test } from "bun:test";
 import { COMPANION_FRAC, companionFrac } from "@apps/explorer/lib/side-width";
 import {
+  MAX_PANE_SHARE,
   PANE_DEFAULT_FRAC,
   clampPaneWidth,
   dragPaneFrac,
@@ -147,12 +148,60 @@ describe("paneFracFromSharedWidth", () => {
   });
 
   test("a shared width wider than this container's list floor allows is clamped down", () => {
-    expect(paneFracFromSharedWidth(1190, 1200)).toBeCloseTo(1140 / 1200, 10);
+    // 1190/1200 would be 95% by the pixel floor alone (list at its 60px
+    // sliver) — MAX_PANE_SHARE catches it first.
+    expect(paneFracFromSharedWidth(1190, 1200)).toBe(MAX_PANE_SHARE);
   });
 
   test("an unmeasured container answers the companion share, not a division by zero", () => {
     expect(paneFracFromSharedWidth(400, 0)).toBe(companionFrac(0));
     expect(paneFracFromSharedWidth(400, Number.NaN)).toBe(companionFrac(Number.NaN));
+  });
+
+  // -------------------------------------------------- the imported-width ceiling
+  // Two real failure modes once the pixel number can arrive from elsewhere
+  // (D443's own follow-up): a width dragged wide on the FILE SIDEBAR of a
+  // much bigger monitor, and this container merely SHRINKING under a width
+  // that no longer moves with it (the whole point of storing pixels rather
+  // than a proportion — see pane-math.ts's header).
+
+  test("a width dragged wide on a much bigger monitor's file sidebar cannot open this listing at a sliver", () => {
+    // The file sidebar has no share cap of its own — only pixel floors — so
+    // a 3840px-wide monitor's sidebar can be dragged out past 2000px. Read
+    // back on an ordinary 1200px folder window, the pixel floor alone would
+    // clamp it to 1140 (95%); the share ceiling holds it at 70% instead.
+    expect(paneFracFromSharedWidth(2200, 1200)).toBe(MAX_PANE_SHARE);
+  });
+
+  test("a window shrinking under an already-dragged pixel width is capped the same way", () => {
+    // Drag to 900px while the container is 1400px wide (64%, comfortably
+    // under the cap) — nothing capped yet.
+    expect(paneFracFromSharedWidth(900, 1400)).toBeCloseTo(900 / 1400, 10);
+    // The SAME 900px, read back after the window shrinks to 1000px, would be
+    // 90% by the pixel floor alone (FS-12's own regression case: "the listing
+    // collapses") — the share ceiling holds it at 70%.
+    expect(paneFracFromSharedWidth(900, 1000)).toBe(MAX_PANE_SHARE);
+  });
+
+  test("a degenerate container (< 280px) ignores the shared width entirely", () => {
+    // Below PANE_MIN_W + LIST_MIN_W, clampPaneWidth returns PANE_MIN_W (220)
+    // regardless of input — more pixels than the container has — and dividing
+    // it out would answer a fraction over 1 (`flexBasis: "110%"`), which
+    // dragPaneFrac itself refuses to produce (it answers null there). This
+    // module has no null to hand back, so it falls back to the plain
+    // companion share instead, unconditionally, before the shared width is
+    // even read.
+    expect(paneFracFromSharedWidth(900, 200)).toBe(companionFrac(200));
+    expect(paneFracFromSharedWidth(900, 279)).toBe(companionFrac(279));
+    expect(paneFracFromSharedWidth(900, 200)).toBeLessThanOrEqual(1);
+  });
+
+  test("280px is still the narrowest container the shared width can reach", () => {
+    // Both floors fit exactly (PANE_MIN_W=220 of 280 = ~78.6%), so unlike the
+    // degenerate case above the shared width IS honoured and clamped — it is
+    // MAX_PANE_SHARE that ends up deciding the answer here, not the
+    // degenerate-container guard.
+    expect(paneFracFromSharedWidth(900, 280)).toBe(MAX_PANE_SHARE);
   });
 });
 

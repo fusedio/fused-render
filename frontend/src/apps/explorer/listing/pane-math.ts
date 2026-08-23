@@ -83,6 +83,24 @@ export function clampPaneWidth(containerW: number, width: number): number {
   return Math.max(PANE_MIN_W, Math.min(containerW - LIST_MIN_W, width));
 }
 
+// THE CEILING ON AN IMPORTED WIDTH. `clampPaneWidth` alone bounds a width in
+// PIXELS (never below PANE_MIN_W, never so wide the list loses LIST_MIN_W of
+// ITS OWN container) — which is exactly right for a drag performed ON this
+// container, where the cursor is visibly the thing choosing the number. It is
+// not enough once the pixel number can arrive from SOMEWHERE ELSE (the file
+// sidebar's own drag, D443): the file sidebar's ceiling is `containerW -
+// CONTENT_MIN_W` on whatever monitor it was dragged on, which can be a much
+// bigger pixel count than this container has ever seen, and reading it back
+// through the pixel floors alone would open this listing at its 60px sliver —
+// or, across an ordinary window resize (this container shrinking under a
+// WIDTH that no longer moves with it, since the stored number is pixels and
+// not a proportion), squeeze it there without any drag at all. A SHARE
+// ceiling bounds the fraction directly, on top of the pixel floors, so a
+// number chosen for a different container — or for this one, before it
+// shrank — can never starve the list beyond what the design ever intends a
+// companion column to take.
+export const MAX_PANE_SHARE = 0.7;
+
 // THE SHARED-WIDTH SEAM (D443): the fraction THIS container should render,
 // given the pixel width dragged either here or on the file sidebar
 // (`lib/side-store.ts` holds one number for both) and this container's own
@@ -94,14 +112,28 @@ export function clampPaneWidth(containerW: number, width: number): number {
 // what lets the two surfaces share one stored pixel value while keeping
 // different minimums: a width dragged comfortable for a chat composer (the
 // file sidebar's 380px floor) is still valid input here, just re-clamped
-// against this pane's narrower 220px one, and vice versa.
+// against this pane's narrower 220px one, and vice versa. The resulting
+// fraction is then capped at `MAX_PANE_SHARE` — see there for why the pixel
+// floors alone are not enough once the number can be imported.
 //
-// An unmeasured container (0, NaN) answers the companion share too —
+// A DEGENERATE CONTAINER (under PANE_MIN_W + LIST_MIN_W = 280px — the same
+// threshold `dragPaneFrac` guards) answers the plain companion share too,
+// UNCONDITIONALLY, before the shared number is even consulted: at that width
+// `clampPaneWidth` returns PANE_MIN_W regardless of input, which is more
+// pixels than the container has, and dividing it out yields a fraction over
+// 1 (`flexBasis: "110%"`) — a number CSS cannot render sanely and that
+// `dragPaneFrac` itself refuses to produce (it answers `null` there, and the
+// caller changes nothing). This module has no `null` to hand back — a
+// fraction always renders — so it hands back the one number that was always
+// the answer for an unmeasurable or unsplittable container anyway.
+//
+// An unmeasured container (0, NaN) takes the same early return —
 // `companionFrac` already treats that as "not small" — rather than dividing
 // by a width that cannot back a fraction.
 export function paneFracFromSharedWidth(sharedPx: number | null, containerW: number): number {
-  if (sharedPx === null || !(containerW > 0)) return companionFrac(containerW);
-  return clampPaneWidth(containerW, sharedPx) / containerW;
+  if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return companionFrac(containerW);
+  if (sharedPx === null) return companionFrac(containerW);
+  return Math.min(clampPaneWidth(containerW, sharedPx) / containerW, MAX_PANE_SHARE);
 }
 
 // The divider drag, in one pure step: the cursor's distance from the
