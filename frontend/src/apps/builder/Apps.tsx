@@ -19,7 +19,7 @@ import { sortApps } from "@platform/lib/appEntry";
 import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import { orderCategories, repoChips } from "@apps/builder/app-categories";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";

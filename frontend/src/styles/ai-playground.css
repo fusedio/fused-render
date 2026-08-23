@@ -51,6 +51,10 @@
  *
  * Spacing is MARGINS, not flex gap: Chrome keeps <details> block-level
  * whatever display it is handed, so a gap here silently does nothing. */
+.pg-group + .pg-group {
+  margin-top: 15px;
+}
+
 .pg-group > :not(summary) {
   margin: 8px 0 0;
 }

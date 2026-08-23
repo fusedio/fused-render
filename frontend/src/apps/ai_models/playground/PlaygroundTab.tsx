@@ -254,37 +254,6 @@ export default function PlaygroundTab() {
   // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
 
-  // The state line under the model name: what is TRUE right now, in words. The
-  // sidebar dots carry the same facts; this is where they are spelled out.
-  const stateLine = !selected
-    ? ""
-    : selectedResident
-      ? selectedResident.state === "ready"
-        ? "Loaded — answering from memory."
-        : selectedResident.detail || "Loading…"
-      : selectedDownloading
-        ? "Downloading…"
-        : selected.model.downloaded
-          ? "Downloaded — loads on first use."
-          : selectedSize
-            ? `Not downloaded — ${selectedSize.text} to fetch.` +
-              // The fit verdict, spelled out where the Download decision is
-              // being made — the badge says "too big here", this says why.
-              (selected.model.fit === "no"
-                ? " This one is likely too big for this machine's memory — it may crawl or fail to load."
-                : selected.model.fit === "tight"
-                  ? " A tight fit for this machine — close other heavy apps while it runs."
-                  : "")
-            : "Not downloaded.";
-
-  // Eviction is reversible, so it is a sentence rather than a modal — but it
-  // must be said BEFORE the click that does it (AI-4): one resident model per
-  // capability, and using this one stops that one.
-  const evicts =
-    selected && residentRow && residentRow.model !== selected.model.id
-      ? `Using this stops ${residentRow.model.split("/").pop()}.`
-      : null;
-
   return (
     <div className="pg-body">
       <aside className="pg-side" aria-label="Models to try">
@@ -483,12 +452,7 @@ export default function PlaygroundTab() {
           <>
             <section className="pg-hero">
               <div className="pg-hero-head">
-                <span className="pg-hero-icon" title={groupLabel(selected.row.capability)}>
-                  {capabilityIcon(selected.row.capability)}
-                </span>
                 <div className="pg-hero-names">
-                  {/* No capability word beside the name — the icon says it,
-                      with the label as its tooltip for whoever hovers. */}
                   <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
                   {/* The full repo id — author/name as Hugging Face knows it.
                       A link only when it IS a repo id: llama.cpp entries are
@@ -515,7 +479,7 @@ export default function PlaygroundTab() {
                       they want. */}
                   <button
                     type="button"
-                    className="btn btn-primary"
+                    className="btn btn-secondary"
                     title="Open the app builder with this model and your settings pre-filled"
                     onClick={() =>
                       navigateUrl(
@@ -577,10 +541,6 @@ export default function PlaygroundTab() {
                   itself; the mechanics (loaded, downloading) stay on the
                   quieter line below it. */}
               {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-              <p className="pg-stage-state">
-                {stateLine}
-                {evicts ? ` ${evicts}` : ""}
-              </p>
             </section>
             {selected.row.capability === "text-generation" ? (
               <TextStage
