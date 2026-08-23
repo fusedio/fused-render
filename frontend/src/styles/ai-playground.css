@@ -24,6 +24,16 @@
   padding-bottom: 16px;
 }
 
+/* The gap under the page heading, which the caption used to pay for. Every
+ * other tab still has one and gets its 22px from `.cc-caption`'s
+ * margin-bottom; this tab dropped its caption, and the heading's own 2px is
+ * not a gap. Restated here on the head ROW rather than on `.cc-heading`,
+ * because the row's height is set by whichever column is taller — the heading
+ * on the left or the tab strip on the right — and only the row knows which. */
+.pg-fill .cc-page-head {
+  margin-bottom: 22px;
+}
+
 .pg-body {
   display: flex;
   gap: 22px;
@@ -52,7 +62,10 @@
  * Spacing is MARGINS, not flex gap: Chrome keeps <details> block-level
  * whatever display it is handed, so a gap here silently does nothing. */
 .pg-group + .pg-group {
-  margin-top: 15px;
+  /* Wider than the 8px between a heading and its own cards by enough to read
+   * as a different order of gap: the cards lost their borders, so the space
+   * between sections is what groups them now. */
+  margin-top: 28px;
 }
 
 .pg-group > :not(summary) {
@@ -73,13 +86,18 @@
   display: none;
 }
 
+/* Immediately right of the title, not flushed to the rail's far edge: the
+ * caret belongs to the word it opens, and parked 200px away it read as a
+ * control for the whole column. Smaller with it — the old 7px square was the
+ * heavier of the two marks on the line. */
 .pg-group-head::after {
   content: "";
-  margin-left: auto;
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid var(--fg-muted);
-  border-bottom: 1.5px solid var(--fg-muted);
+  flex: none;
+  margin-left: -2px;
+  width: 6px;
+  height: 6px;
+  border-right: 1.25px solid var(--fg-muted);
+  border-bottom: 1.25px solid var(--fg-muted);
   transform: rotate(-45deg);
   transition: transform 0.15s ease;
 }
@@ -97,11 +115,21 @@
   flex: none;
 }
 
+/* Bigger than capabilityIcon's own 16px, in CSS rather than by an argument —
+ * the same override the stage header does below. These are the rail's only
+ * headings now that the labels are no longer tracked-out caps, so the glyph
+ * carries part of the weight the letter-spacing used to. */
+.pg-group-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* The label as written — "Text generation", "Transcription", "Not supported" — instead of
+ * tracked-out caps. The words are already the section's own nouns, and shouting
+ * them made four small headings compete with the cards under them. */
 .pg-group-title {
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .pg-group-off {
@@ -115,17 +143,23 @@
  * say the same thing: no pointer (there is nothing to select), a dimmed body,
  * and a dashed border — the shape a reader already reads as "present but not
  * active" everywhere else in this app. */
-.pg-model-off {
+/* Both classes on purpose: `.pg-model` is declared LOWER in this file, so a
+ * single-class selector here loses the cascade and its border shorthand
+ * quietly wins — which is how the dashed edge stopped drawing at all. */
+.pg-model.pg-model-off {
   cursor: default;
-  border-style: dashed;
+  /* Colour named here, not inherited: the live cards' border is transparent
+   * now, and a dashed transparent edge is no edge at all. */
+  border: 1px dashed var(--border);
   background: transparent;
   color: var(--fg-muted);
 }
 
-.pg-model-off:hover {
+.pg-model.pg-model-off:hover {
   /* Explicitly NOT the hover the live cards get: hover feedback on something
    * that cannot be clicked is the exact false promise the dashed border is
    * there to withdraw. */
+  background: transparent;
   border-color: var(--border);
 }
 
@@ -150,17 +184,34 @@
   color: var(--fg-muted);
 }
 
-/* A CARD now, reversing the old "row, not a card" call (D428): spacious,
- * bordered, four facts and nothing else — nickname, full name, size, and the
- * Download CTA. The active one is carried by an accent border + wash. */
+/* The card fills, as local tokens rather than --bg-alt: the cards want to sit
+ * a step DARKER than the page's usual raised surface, and no single wash can
+ * do that in both themes (--tint lightens in dark, darkens in light), so each
+ * theme names its own pre-composited pair. Scoped to the sidebar because that
+ * is the only place a .pg-model exists. */
+.pg-side {
+  --pg-card-bg: #16181c;
+  --pg-card-bg-hover: #1d2025;
+}
+
+:root[data-theme="light"] .pg-side {
+  --pg-card-bg: #eaebee;
+  --pg-card-bg-hover: #e1e2e6;
+}
+
+/* A CARD, reversing the old "row, not a card" call (D428): one line — nickname,
+ * the Download CTA when there is one, size — carried by a fill, not an outline.
+ * Unselected draws NO border: a column of them was a stack of boxes, and the
+ * fill already says where each card ends. The border stays declared as
+ * transparent so gaining one on select moves nothing. */
 .pg-model {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
+  padding: 15px;
+  border: 1px solid transparent;
   border-radius: 10px;
-  background: var(--bg-alt);
+  background: var(--pg-card-bg);
   color: var(--fg);
   font: inherit;
   font-size: 13px;
@@ -168,13 +219,18 @@
   cursor: pointer;
 }
 
+/* Hover is a fill too, now that there is no edge to brighten. */
 .pg-model:hover {
-  border-color: var(--ctl-quiet-border-hover);
+  background: var(--pg-card-bg-hover);
 }
 
+/* Selected = an accent OUTLINE and nothing else. The accent wash that used to
+ * fill the card made the selection read as a highlighter stripe down the rail
+ * and tinted the params chip's --tint wash sitting on top of it; the border
+ * alone is the quieter claim, and it is already zero-shift because every card
+ * carries a transparent one of the same width. */
 .pg-model.active {
   border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.06);
 }
 
 .pg-model:focus-visible {
@@ -182,12 +238,65 @@
   outline-offset: -2px;
 }
 
+/* The card, on one line: nickname, then CTA and size pushed right. The name is
+ * the part that gives way — it truncates; neither of the other two ever does.
+ * Centred rather than baseline-aligned: one of the three is a padded button,
+ * and a shared baseline would hang it below the text it sits beside. */
+.pg-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* NOT ON THIS DISK: the name greys to the weight of the figures beside it.
+ * A downloaded model's name is the only full-contrast thing on its card, so
+ * dropping the contrast is what makes "you have this one" visible at a glance
+ * down the rail — the download glyph says the same thing, but only to a reader
+ * who has already stopped on the row. Deliberately NOT the dashed treatment
+ * `.pg-model-off` gives an unsupported card: that one cannot be played at all,
+ * and this one is a click and a wait away. */
+.pg-model-absent .pg-model-name {
+  color: var(--fg-muted);
+}
+
 .pg-model-name {
+  flex: 1;
   font-weight: 600;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The parameter count, a filled chip left of the size. FILLED and borderless
+ * on purpose: the Download pill beside it is bordered, and a second bordered
+ * pill on the same line would read as a second thing to click. A wash of
+ * --tint rather than a colour, so it stays a label and not a status.
+ *
+ * `flex: none` like its two neighbours — the name is the only thing on this
+ * row that gives way. The curated string can be long ("8B (~1B active)"), and
+ * that is allowed to cost the name width: an MoE row's whole point is the
+ * parenthetical.  */
+.pg-model-chip {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(var(--tint), 0.07);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Was inheriting the foot's type; now that it lives on the name line it says
+ * so itself. `flex: none` is the whole point of the slot — the size is the one
+ * thing on the card that must not shrink. */
+.pg-model-size {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Loaded right now: a green dot ahead of the name. */
@@ -211,38 +320,62 @@
   white-space: nowrap;
 }
 
-.pg-model-foot {
-  margin-top: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 20px;
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-
+/* The CTA, now a glyph and last on the name line, right of the chip and the
+ * size.
+ * `flex: none` for the same reason those two have it: the name is the only
+ * thing on this row allowed to give up space.
+ *
+ * BORDERLESS, where the text version was a bordered pill. The pill's outline
+ * was doing the work of saying "clickable" for a word that already said it;
+ * an arrow-into-tray says it by itself, and a second bordered shape beside
+ * the params chip made the row read as two chips of equal weight. What is
+ * left is a round hit area that only paints on hover.
+ *
+ * Muted, not white: the CTA shares a line with the model's name, and at full
+ * contrast it read as the louder of the two. It goes to --fg on hover, which
+ * is where a reader has already committed. */
 .pg-model-dl {
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  padding: 3px;
+  border: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--fg);
   cursor: pointer;
 }
 
-.pg-model-dl:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
+/* 14px, not MenuIcons' own 16: the glyph sits beside 13px text and an 11px
+ * chip, and at 16 it was the biggest thing on the row. Overridden here rather
+ * than parameterised in MenuIcons — same call as `.pg-group-icon svg`. */
+.pg-model-dl svg {
+  width: 14px;
+  height: 14px;
 }
 
+.pg-model-dl:hover:not(:disabled) {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.1);
+}
+
+/* Mid-download: the glyph cannot say "Downloading…" the way the word did, so
+ * it dims and stops responding, and the title carries the sentence. */
 .pg-model-dl:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: default;
+}
+
+/* The unsupported card's task word, and nothing else — the selectable cards
+ * are one line now, so they draw no foot at all. */
+.pg-model-foot {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
 }
 
 /* -- the stage shell --------------------------------------------------------- */

@@ -147,10 +147,18 @@ function Section({
 // task reads or writes rather than by the capability, because the card body
 // draws each task as the pair it maps between (see PLAYGROUND_FLOWS).
 const MEDIA_GLYPHS = {
+  // Material's `message` — a squared bubble with a corner tail and three lines
+  // of writing — and the SAME geometry the playground rail's Text generation
+  // section wears (apps/ai_models/playground/capabilityIcons.tsx). These two
+  // surfaces are one click apart and the card is a picture of where the click
+  // lands, so a different bubble on each end reads as two different features.
+  // It replaces a rounded balloon whose only marks were two short lines: at
+  // the 18px this draws at, that read as a speech balloon — someone talking —
+  // where every use of this glyph here is about WRITTEN text.
   chat: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.8-.8L3 20l1-4.1a8.4 8.4 0 1 1 17-4.4z" />
-      <path d="M8 10h8M8 13.5h5" />
+      <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7l-4 4V6a2 2 0 0 1 2-2Z" />
+      <path d="M7 7.5h10M7 10.5h10M7 13.5h6" />
     </svg>
   ),
   image: (
