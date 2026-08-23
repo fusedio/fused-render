@@ -962,8 +962,8 @@ a.pg-hero-repo:hover {
    its in-flow life are undone here. */
 .pg-clear-corner {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 10px;
+  right: 10px;
   height: auto;
   margin: 0;
   /* Padding rather than offset: the word needs room around it (flush to the
