@@ -6701,6 +6701,68 @@ an AI Models page that could say what was on disk but not what was *running*.
   cancel, a crash or a quit RESUMES instead of restarting, and it could not have
   fixed the state anyway — a quit mid-download produces the identical card with no
   cancel anywhere in it.
+- **AI-7g** **A partly downloaded repo with nothing to resume from is a card with
+  a Delete on it, and a folder the fetcher tidies after itself** (D437). Reported
+  from the field: a cancelled download left `models--…/refs/main`, one 40-byte
+  file, and not a blob. Every reading the page made of that was correct —
+  `partial` (no snapshot is exactly AI-7f's evidence), `40 B` (the folder), and
+  Unrecognised (no files, so no task, so no capability) — and the card was still a
+  dead end: its primary control was a DISABLED Download whose hover said to delete
+  it, and the delete was an unlabelled trash glyph third in a row of four. The
+  user deleted the folder in Finder.
+  So: where a resume is impossible — the repo's own `capability` is null AND the
+  curation cannot place the id either — the card's primary control becomes a
+  **labelled Delete** (the same target and the same confirm dialog as the trash: a
+  door to it, not a second way of deleting), and the partial tag's hover says the
+  folder holds bookkeeping rather than weights. And a weights-only fetch calls
+  `hub_cache.discard_empty_shell` on its way out, which removes the repo folder
+  **only** when it holds no snapshot AND no blob of any kind. That guard is what
+  keeps AI-5i intact: a part file is bytes a resume picks up, so a folder holding
+  one is never touched. It reads the FOLDER rather than the job's outcome, so the
+  call is a no-op after a successful fetch and the next attempt tidies a crash.
+- **AI-7h** **The card's own surface states the disk facts, and one hue per engine
+  states the identity** (D436). A complete repo wears the green wash and the search
+  results' own **✓ downloaded** chip in its footer — the SAME wash a loaded card
+  wears, which is set apart by its tinted border and 3px rail rather than by a
+  stronger tint, since a card either has an edge or it does not and that is a
+  distinction a reader can make without judging a shade; a partly downloaded one wears a
+  warning wash drawn as a hard-stop gradient at the fraction fetched — the live
+  job's `done/total` where there is one, else bytes-on-disk over the curation's
+  `size_gb`, clamped to 2–95%, and a FLAT wash where neither exists, because "some
+  of this is here and we cannot say how much" is a different sentence from "2% of
+  it is". Loaded keeps the border tint, the 3px rail and the badge, since memory
+  being spent right now must outrank disk being spent at some point.
+  A download **in flight** takes the same boundary in GREEN, at the job's own
+  progress, on all three cards that can be downloading — amber is a boundary that
+  has stopped moving and green is one that has not (D439). The partial fraction is
+  the **larger** of the two readings (`fetchedBytes` over the total, and the job's
+  `done/total`) — a monotonic guard, so the boundary cannot jump backwards when a
+  resume starts.
+  **The numerator is `fetchedBytes`, never `size`** (D440). A part file is
+  preallocated to the full length of the file being fetched, so `size` reports the
+  whole download the moment it starts; `fetchedBytes` is the scan total corrected
+  per part file from the sidecar cursors `flush()` writes only after fsyncing the
+  data — the accounting a resume itself trusts. A part file with no sidecar counts
+  zero, not its length (positive evidence only); hf's `.incomplete` is not
+  corrected, since that writer appends and its length already is its progress; and
+  a sidecar's own bytes are excluded, because a fraction made of bookkeeping is not
+  a fraction. `size` remains the figure the page PRINTS — allocated bytes are what
+  the folder costs.
+  A card whose pull is RUNNING also carries the download manager's ✕, on all three
+  card kinds: while a fetch holds files open the primary button is a disabled
+  "Downloading…" and the trash is disabled too, so without it a multi-GB download
+  started by mistake could not be stopped from the card that started it. The job's own total is the denominator
+  wherever there is one, and only when the job counts BYTES.
+  All of it is **background only** — no border, no rail, no radius, no padding —
+  because these cards sit in a horizontal carousel and a card that changed size on
+  a state change would shift its neighbours mid-scroll.
+  The engine tag gives up the accent (spoken for by the ✓ chip) for one
+  of the eight categorical hues (`--task-c0…c7`) per engine FAMILY, assigned by a
+  named table so the lime one is spent deliberately; a hardware-qualified label
+  resolves to its family's hue, and an unregistered family stays muted rather than
+  taking a colour this app cannot justify. Colour is never the only channel — the
+  tag says the engine's name, and the UNAVAILABLE state keeps its dashed border and
+  warning hue, where the state outranks the identity.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second

@@ -7119,7 +7119,7 @@ def test_a_cached_repo_with_no_task_but_readable_weights_is_text(
 
 
 def test_the_catalog_lists_what_it_cannot_run_with_the_reason(client, hub):
-    """D434: everything downloaded appears somewhere, and the unrunnable half
+    """D441: everything downloaded appears somewhere, and the unrunnable half
     says why.
 
     These repos are in no `capabilities[]` list by construction — that is what

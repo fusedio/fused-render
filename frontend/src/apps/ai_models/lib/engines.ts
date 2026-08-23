@@ -293,3 +293,77 @@ export function unloadCountdown(unloadsInSeconds: number | null): string | null 
 function isFirstAvailable(row: CapabilityEngine, code: string): boolean {
   return row.choices.find((c) => c.available)?.code === code;
 }
+
+/** Which of the eight categorical hues an engine tag wears, or null when this
+ *  app has never heard of that engine family.
+ *
+ *  **A table, not a hash of the label.** A hash gives stable colours too, and
+ *  gives them without anybody having to agree — which is the problem: the
+ *  clash it cannot avoid is with the ACCENT, and the accent is now spoken for on
+ *  the same card (the Downloaded pill). Naming the eight assignments here means
+ *  the one lime hue is spent deliberately, on the rarest family, instead of
+ *  landing on MLX LM by arithmetic.
+ *
+ *  The hues are `--task-c0…c7` (styles/tokens.css) — the calendar's per-project
+ *  palette, hand-picked, evenly spread and already deepened for light mode. This
+ *  app's answer to "same thing, same colour" is that list, and a second
+ *  hand-picked eight would be a second answer.
+ *
+ *  Keyed on the FAMILY label, which is what the tag renders: all three Diffusers
+ *  builds read "Diffusers" and are one identity, and the hardware qualifier
+ *  belongs to this machine rather than to the model (see the tag in RepoCard).
+ *  An unregistered family gets null and the tag stays muted — a colour invented
+ *  for a name we cannot place would be a claim we cannot back.
+ */
+const ENGINE_HUES: Record<string, number> = {
+  "MLX LM": 7,
+  "MLX Whisper": 0,
+  "MLX FLUX": 6,
+  "MLX Embeddings": 1,
+  "Diffusers": 5,
+  "llama.cpp": 2,
+  "Faster Whisper": 4,
+  // The lime one, which is the accent's own hue — spent on the family least
+  // likely to sit beside a Downloaded pill in the same glance, since embeddings
+  // are their own section at the bottom of the tab.
+  "Transformers Embeddings": 3,
+};
+
+export function engineHue(label: string | null | undefined): number | null {
+  if (!label) return null;
+  const exact = ENGINE_HUES[label];
+  if (exact !== undefined) return exact;
+  // A HARDWARE-QUALIFIED label resolves to its family's hue. The two cards that
+  // draw a tag for a model not yet on disk have only the runner's short label to
+  // hand ("Diffusers (CUDA)"), and the registry asserts in its own tests that
+  // `family_label` is a PREFIX of `short_label` — which is exactly the join. One
+  // colour across all three torch builds is also the right answer: they read the
+  // same safetensors, and the accelerator is a fact about this machine rather
+  // than about the model.
+  //
+  // Longest match wins, so a family whose name begins with another's could not be
+  // captured by the shorter one.
+  let best: number | null = null;
+  let bestLength = 0;
+  for (const [family, hue] of Object.entries(ENGINE_HUES)) {
+    if (label.startsWith(family) && family.length > bestLength) {
+      best = hue;
+      bestLength = family.length;
+    }
+  }
+  return best;
+}
+
+/** The inline custom property an engine tag carries, or undefined when the
+ *  family is unknown — in which case the stylesheet's muted fallback stands.
+ *
+ *  Built here so the three cards that draw an engine tag (RepoCard,
+ *  RecommendedCard, HubResultCard) agree by construction rather than by three
+ *  copies of the same template string.
+ */
+export function engineHueStyle(
+  label: string | null | undefined,
+): Record<string, string> | undefined {
+  const hue = engineHue(label);
+  return hue === null ? undefined : { "--am-eng": `var(--task-c${hue})` };
+}
