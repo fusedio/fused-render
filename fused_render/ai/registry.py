@@ -1382,6 +1382,83 @@ _RUNNERS: tuple[Runner, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class VideoTraits:
+    """The shape of a video request, for the one runner that will actually
+    serve it — the three facts `server/routers/ai_runtime.py`'s route used
+    to hardcode as H3's own numbers before a second video runner existed:
+    the frame-count grid, the default canvas, and the default step count.
+
+    **The frame grid is `frames_base + frames_step * n`**, `n` starting at 0
+    — `_snap_frames` (`ai_runtime.py`) rounds a request UP to the nearest
+    point on it, never down, mirroring whichever engine's own alignment rule
+    it is (h3.c's `h3_align_frame_count` for H3; LTX has no compiled binary
+    to align against, but its VAE's temporal compression is 8, so `8n + 1`
+    is the natural grid its own upstream CLI defaults to). Side clamps and
+    the overall pixel budget stay SHARED across every video runner — those
+    are values the app itself chose as a safety rail, not a fact about
+    either engine's weights — so only the canvas DEFAULT is a trait here.
+
+    Not a dict of bare ints: the fields are named exactly once (here) and
+    read by name everywhere else, the same argument `Runner`'s own fields
+    make over a positional tuple.
+    """
+
+    #: `n = 0`'s frame count — the shortest clip the grid can name.
+    frames_base: int
+    #: The grid's spacing — the next valid frame count is `frames_base +
+    #: frames_step`, and so on.
+    frames_step: int
+    #: Which `n` a request that named no `frames` at all gets.
+    default_frames_n: int
+    default_width: int
+    default_height: int
+    default_steps: int
+
+
+#: Runner code -> its `VideoTraits`. ABSENT for a runner with no video
+#: capability — the same "absent rather than empty" shape `runners/engine_
+#: options.py`'s own table uses (see that module's docstring for the
+#: argument in full): the common case (a non-video runner) costs a dict
+#: lookup rather than an entry that says nothing.
+#:
+#: `video_traits_for` is the only reader outside this file, and it falls
+#: back to H3's own row for a code THIS table has never heard of — a runner
+#: registered by a test (`fake_video_runner`), or one written before this
+#: table existed. That fallback is not a guess: it is the exact request
+#: shape every video call got before a second engine existed, so a caller
+#: this table cannot name gets the behaviour it always had rather than a
+#: KeyError or an arbitrary new default.
+VIDEO_TRAITS: dict[str, VideoTraits] = {
+    # 97 = 1 + 8*12 — upstream's own CLI default (`--frames 97`), and this
+    # runner's own `worker.py` default. 704x480 and 8 steps are that same
+    # CLI's `--width`/`--height`/(distilled default) numbers.
+    "ltx-video": VideoTraits(
+        frames_base=1, frames_step=8, default_frames_n=12,
+        default_width=704, default_height=480, default_steps=8),
+    # VERIFIED against the built `h3` binary — see `ai_runtime.py`'s own
+    # comments beside `_FRAMES_STEP`/`_FRAMES_BASE` and the 864x480 default,
+    # which this row's numbers are copied from verbatim. Unchanged by this
+    # runner's addition; also serves as `video_traits_for`'s fallback.
+    "h3-video": VideoTraits(
+        frames_base=5, frames_step=17, default_frames_n=5,
+        default_width=864, default_height=480, default_steps=20),
+}
+
+
+def video_traits_for(code: str | None) -> VideoTraits:
+    """The request shape for `code`, falling back to H3's own numbers.
+
+    See `VIDEO_TRAITS`'s docstring for why the fallback is H3's row
+    specifically rather than some engine-neutral guess: it is the shape
+    every video request already had before this table existed, for a runner
+    this table does not name at all — `code=None` (nothing can serve this
+    capability at all, checked separately before a route ever gets here)
+    included.
+    """
+    return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["h3-video"])
+
+
 #: Friendly task label (the vocabulary `ai_models` produces) -> the capability
 #: that can actually RUN it.
 #:

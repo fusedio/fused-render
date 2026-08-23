@@ -305,3 +305,24 @@ def test_hub_repo_h3_cannot_read_hits_the_existing_wrong_format_refusal():
     directly in `test_ai_h3_worker.py` rather than duplicated here.
     """
     assert registry.capability_for_task("video generation") == registry.VIDEO_GENERATION
+
+
+def test_video_traits_names_both_registered_video_runners():
+    assert set(registry.VIDEO_TRAITS) == {"ltx-video", "h3-video"}
+
+
+def test_video_traits_for_falls_back_to_h3_for_an_unknown_code():
+    """The exact request shape every video call got before `ltx-video`
+    existed — a runner under test (`fake_video_runner`'s `code="fake-
+    video"`), or one written before this table existed, must not get an
+    arbitrary new default or a `KeyError`."""
+    assert registry.video_traits_for("fake-video") == registry.VIDEO_TRAITS["h3-video"]
+    assert registry.video_traits_for(None) == registry.VIDEO_TRAITS["h3-video"]
+
+
+def test_video_traits_for_ltx_video():
+    traits = registry.video_traits_for("ltx-video")
+    assert (traits.frames_base, traits.frames_step) == (1, 8)
+    assert traits.default_frames_n == 12  # 1 + 8*12 = 97, upstream's own default
+    assert (traits.default_width, traits.default_height) == (704, 480)
+    assert traits.default_steps == 8

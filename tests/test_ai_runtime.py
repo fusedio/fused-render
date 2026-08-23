@@ -426,6 +426,49 @@ def fake_video_runner(tmp_path, monkeypatch):
     supervisor.reset()
 
 
+def _only_video_runner(tmp_path, monkeypatch, code):
+    """A registry whose ONLY runner serves video generation, registered
+    under `code` — the mirror `fake_video_runner` needs to exercise
+    `registry.video_traits_for` per engine (Task 5): that fixture's own
+    `code="fake-video"` is deliberately NOT one of `registry.VIDEO_TRAITS`'
+    keys, so it always exercises the fallback (H3's numbers) rather than
+    letting a test pick which row it wants. This one takes the code as a
+    parameter for exactly that reason — see `_only_transcribe_runner` above,
+    which the same argument already justifies for that capability.
+    """
+    folder = tmp_path / ("fake_runner_" + code.replace("-", "_"))
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code=code, capability=registry.VIDEO_GENERATION,
+        folder=str(folder), label=f"Fake {code}",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setitem(catalog.SUGGESTIONS, code, [
+        {"id": f"org/{code}", "label": f"Fake {code}", "size_gb": None, "note": ""},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_ltx_video_runner(tmp_path, monkeypatch):
+    """Registered under the REAL `ltx-video` code, so the route resolves
+    `registry.VIDEO_TRAITS["ltx-video"]` rather than the fallback."""
+    yield from _only_video_runner(tmp_path, monkeypatch, "ltx-video")
+
+
+@pytest.fixture()
+def fake_h3_video_runner(tmp_path, monkeypatch):
+    """Registered under the REAL `h3-video` code — this is also what
+    `video_traits_for` falls back to, so it exists mainly to pin that the
+    row itself is right, independent of the fallback ever firing."""
+    yield from _only_video_runner(tmp_path, monkeypatch, "h3-video")
+
+
 def _only_transcribe_runner(tmp_path, monkeypatch, code):
     """A registry whose ONLY runner transcribes, under `code`, with the fake
     worker and this interpreter — so no CTranslate2, no weights, no audio.
@@ -4048,6 +4091,45 @@ def test_video_default_canvas_matches_h3s_own_default(client, fake_video_runner)
     reply = client.post("/api/ai/video", json={"prompt": "x"},
                         headers={"X-Fused": "1"}).json()
     assert (reply["width"], reply["height"]) == (864, 480)
+    _wait_job(reply["jobId"])
+
+
+# -- Task 5: request shaping follows the SERVING runner's own traits -------------
+
+
+def test_h3_video_request_shape_is_unchanged(client, fake_h3_video_runner):
+    """The mirror of the two tests above, pinned against the REAL `h3-video`
+    code rather than the fallback — H3's own numbers must not move for this
+    runner just because a second one now exists."""
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert (reply["width"], reply["height"]) == (864, 480)
+    assert reply["steps"] == 20
+    _wait_job(reply["jobId"])
+
+    for asked in (1, 5, 21):
+        reply = client.post("/api/ai/video", json={"prompt": "x", "frames": asked},
+                            headers={"X-Fused": "1"}).json()
+        assert reply["frames"] == 22, (asked, reply["frames"])
+        _wait_job(reply["jobId"])
+
+
+def test_ltx_video_request_shape_follows_its_own_traits(client, fake_ltx_video_runner):
+    """`registry.VIDEO_TRAITS["ltx-video"]`: 704x480 canvas, 8 denoising
+    steps, frames on the `1 + 8n` grid — a bare call gets LTX's own shape,
+    not H3's, once `ltx-video` is the runner actually serving the request."""
+    reply = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert (reply["width"], reply["height"]) == (704, 480)
+    assert reply["steps"] == 8
+    assert reply["frames"] == 97  # 1 + 8*12, this runner's own default n
+    _wait_job(reply["jobId"])
+
+    # Rounds UP to the next `1 + 8n` point, never to the nearest one — same
+    # direction rule as h3's grid, against a different spacing.
+    reply = client.post("/api/ai/video", json={"prompt": "x", "frames": 90},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["frames"] == 97  # 90 is between 89 (1+8*11) and 97; rounds up
     _wait_job(reply["jobId"])
 
 

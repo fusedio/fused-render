@@ -79,26 +79,36 @@ _MAX_SEED = 2**31 - 1
 _IMAGE_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "steps", "guidance", "seed"})
 # Bounds for a video request. Narrower canvas than an image's — `w*h <=
-# 768*1344` — because H3's FL2VA checkpoint is the only one this app can load
-# and that is the shape it was benchmarked at; a caller asking for more gets
-# clamped down to it rather than an OOM minutes into a render. `frames` snaps
-# to h3's own valid grid, `5 + 17n`, because a value off that grid is not a
-# smaller or larger request, it is one h3 cannot run at all.
+# 768*1344` — chosen against H3's FL2VA checkpoint, the shape it was
+# benchmarked at; a caller asking for more gets clamped down to it rather
+# than an OOM minutes into a render. Shared across every video runner: this
+# is a safety rail the APP chose, not a fact about either engine's weights
+# (unlike the frame grid and the canvas/step DEFAULTS below, which are —
+# see `registry.VideoTraits`). `frames` snaps to the SERVING engine's own
+# valid grid (`_snap_frames`, given that engine's traits), because a value
+# off its grid is not a smaller or larger request, it is one that engine
+# renders differently than the reply would claim.
 _MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
 _MAX_VIDEO_PIXELS = 768 * 1344
-#: `frames = 5 + 17*n`, and `n` ranges 1..21 (aligned 22..362) — VERIFIED
-#: against the built binary's own `h3_align_frame_count`/`h3_valid_params`
-#: (h3_host.c, h3.c): `n=0` (5 frames, one VAE chunk with no decoder history)
-#: is refused at generation time with "generation requires at least one
-#: trained 22-frame decoder chunk", and anything aligning above 362 is
-#: refused as outside "the released 5..362 range". n=5 -> 90 frames, ~3.75s
-#: at 24fps, and is the default.
-_FRAMES_STEP, _FRAMES_BASE = 17, 5
-_MIN_FRAMES_N, _MAX_FRAMES_N, _DEFAULT_FRAMES_N = 1, 21, 5
+#: `n` ranges 1..21 on EVERY engine's own grid — an app-chosen bound, not a
+#: per-engine fact, so it stays here rather than in `registry.VideoTraits`.
+#: Originally VERIFIED against h3's built binary (`h3_align_frame_count`/
+#: `h3_valid_params`: `n=0` — 5 frames, one VAE chunk with no decoder
+#: history — is refused at generation time with "generation requires at
+#: least one trained 22-frame decoder chunk", and anything aligning above
+#: 362 is refused as outside "the released 5..362 range") — LTX has no
+#: compiled binary to refuse a value outright, so the same `[1, 21]` window
+#: is carried over as the app's own bound on its grid too (1 + 8*21 = 169
+#: frames, ~7s at 24fps), rather than inventing an unrelated ceiling with no
+#: measurement behind it.
+_MIN_FRAMES_N, _MAX_FRAMES_N = 1, 21
 #: [2, 1000] is h3's own hard floor/ceiling ("denoising steps must be in
 #: [2, 1000]", h3.c `h3_valid_params`) — 1 step is not merely slow, it is a
-#: request the binary refuses outright. The app's own ceiling (50) is far
-#: inside that and is ours to pick; the floor is not.
+#: request the binary refuses outright. LTX has no such floor (`stage1_steps`
+#: is a plain slice of a fixed sigma schedule — see `ltx_video/worker.py`),
+#: but a value this low is not a meaningfully faster render on either
+#: engine, so the shared floor stays rather than becoming a fourth
+#: per-engine trait. The app's own ceiling (50) is ours to pick either way.
 _MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
 # No `guidance` here — H3 is CFG-distilled and takes no such parameter. A
 # caller passing one hits `_reject_unknown` like any other unsupported option.
@@ -198,34 +208,45 @@ def _clamp_video_canvas(width: int, height: int) -> tuple[int, int]:
     return width, height
 
 
-def _snap_frames(value) -> int:
-    """The value on h3's frame grid, `5 + 17n`, that the binary would ACTUALLY
-    RENDER for `value` — rounded UP to the next grid point, never to the
-    nearest one.
+def _snap_frames(value, traits: "registry.VideoTraits") -> int:
+    """The value on `traits`' own frame grid that the serving ENGINE would
+    ACTUALLY RENDER for `value` — rounded UP to the next grid point, never
+    to the nearest one.
 
-    Mirrors `h3_align_frame_count` (h3_host.c) exactly: `value = max(5,
-    requested)`, then rounded up to the next `5 + 17n`. Matching the
-    direction matters, not only the grid — h3 aligns UP, so a server that
+    **Per-runner since Task 5 of the LTX-2.3 plan** — this used to be h3's
+    grid, `5 + 17n`, hardcoded, because h3-video was the only video runner
+    there was. `traits` now carries whichever engine will actually serve the
+    request (`registry.video_traits_for`, resolved by the caller), and the
+    arithmetic is unchanged: `value = max(traits.frames_base, requested)`,
+    then rounded up to the next `frames_base + frames_step * n`. Matching the
+    direction matters, not only the grid — h3 aligns UP (`h3_align_frame_
+    count`, h3_host.c, VERIFIED against the built binary), and a server that
     rounded to nearest would report a smaller `frames` than the render it
     just started for any request whose distance-below its nearest grid point
-    is shorter than its distance to the one above (e.g. 100 renders as 107,
-    not the "closer" 90 a nearest-rounding server would have claimed).
-    Bounded to `n` in `[1, 21]` (aligned 22..362) — h3's own hard range;
-    below it there is no generation to run at all (h3.c's "requires at
-    least one trained 22-frame decoder chunk"), and the app has no reason
-    to offer anything above it.
+    is shorter than its distance to the one above (e.g. 100 renders as 107 on
+    h3's grid, not the "closer" 90 a nearest-rounding server would have
+    claimed). LTX has no compiled binary to align against, but `8n + 1` is the
+    grid its own upstream CLI defaults to, and rounding the same direction
+    keeps this function's one contract — "the frames on the reply are the
+    frames the engine renders" — true for both.
+
+    Bounded to `n` in `[_MIN_FRAMES_N, _MAX_FRAMES_N]` regardless of engine —
+    an app-chosen safety rail (unlike the grid itself, this is not a fact
+    about either engine's weights), so it stays a shared constant rather
+    than a fourth `VideoTraits` field.
     """
+    base, step = traits.frames_base, traits.frames_step
     try:
         frames = int(value)
     except (TypeError, ValueError):
-        return _FRAMES_BASE + _FRAMES_STEP * _DEFAULT_FRAMES_N
-    frames = max(_FRAMES_BASE, frames)
-    remainder = (frames - _FRAMES_BASE) % _FRAMES_STEP
+        return base + step * traits.default_frames_n
+    frames = max(base, frames)
+    remainder = (frames - base) % step
     if remainder:
-        frames += _FRAMES_STEP - remainder
-    n = (frames - _FRAMES_BASE) // _FRAMES_STEP
+        frames += step - remainder
+    n = (frames - base) // step
     n = max(_MIN_FRAMES_N, min(_MAX_FRAMES_N, n))
-    return _FRAMES_BASE + _FRAMES_STEP * n
+    return base + step * n
 
 
 #: How long a preview frame has to sit untouched before a sweep takes it.
@@ -902,11 +923,25 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
                       or "no video model is configured", status=409)
 
+    # The runner that will actually SERVE this request — resolution is by
+    # CAPABILITY, not by `model` (`registry.py`'s own module docstring), so
+    # this is the same call `start_video`'s `_runner_or_raise` makes a few
+    # lines down, made here too because the request SHAPE (frame grid,
+    # canvas/step defaults) is that runner's fact, not the route's own.
+    # `None` when nothing can serve the capability at all — already answered
+    # with a 409 above via `catalog.default_for`'s dead branch, or about to
+    # be via `start_video`'s own error below; `video_traits_for` handles
+    # `None` by falling back to H3's numbers, matching every request this
+    # route ever answered before a second engine existed.
+    serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
+    traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
+
     try:
-        steps = max(_MIN_VIDEO_STEPS, min(_MAX_VIDEO_STEPS, int(body.get("steps") or 20)))
+        steps = max(_MIN_VIDEO_STEPS,
+                    min(_MAX_VIDEO_STEPS, int(body.get("steps") or traits.default_steps)))
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
-    frames = _snap_frames(body.get("frames"))
+    frames = _snap_frames(body.get("frames"), traits)
     # A seed the caller did not choose is chosen HERE and reported back, so
     # "make that one again" is always possible — same rule `/api/ai/image` uses.
     try:
@@ -915,13 +950,15 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _error("'seed' must be a whole number", status=400)
     seed = max(0, min(_MAX_SEED, seed))
 
-    # 864x480 — VERIFIED as h3's own default canvas (the built binary's
-    # `--help`: "Output width (default: 864)" / "Output height (default:
-    # 480)"), not a guess: a bare call should render at the shape h3 itself
-    # is tuned for, the same way the image route's 1024x1024 default matches
-    # its own pipelines' square default rather than an arbitrary size.
-    width = _video_side(body.get("width"), 864)
-    height = _video_side(body.get("height"), 480)
+    # The serving engine's own default canvas (`traits.default_width/height`
+    # — VERIFIED per-engine: H3's built binary `--help` for h3-video, LTX's
+    # own CLI `--width`/`--height` for ltx-video). A bare call renders at the
+    # shape the ENGINE is tuned for, the same way the image route's
+    # 1024x1024 default matches its own pipelines' square default rather
+    # than an arbitrary size. The side snap and pixel clamp below stay
+    # shared across every engine — see `_MIN_VIDEO_SIDE` and friends above.
+    width = _video_side(body.get("width"), traits.default_width)
+    height = _video_side(body.get("height"), traits.default_height)
     width, height = _clamp_video_canvas(width, height)
 
     uid = secrets.token_hex(6)
