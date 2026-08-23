@@ -8025,6 +8025,16 @@ an AI Models page that could say what was on disk but not what was *running*.
     an eviction says it was unloaded. The timeout remains only as the backstop for
     a bring-up that neither succeeds nor reports.
 
+  - **AI-14k** **A benchmark that had to cold-load the model UNLOADS it when the
+    run ends** (D435) — success, a failed workload, a timeout, or an exception
+    mid-measurement alike, via a `try`/`finally` around the measure-and-read
+    phase — **and never unloads a model that was already resident.** The signal
+    is `_load_to_ready`'s own return value (`None` for warm, a float for cold),
+    reused rather than duplicated into a second flag. Placed AFTER
+    `_memory_and_device` reads the live worker, and `supervisor.unload`'s own
+    exception is logged and swallowed so a failed teardown cannot mask a
+    measurement's real error.
+
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
 Goal: the app could start a Claude Code session on demand — the split-view chat,

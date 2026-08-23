@@ -62,6 +62,10 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
                         lambda cap, model=None: object())
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
+    # A no-op that just says "there was nothing to stop" by default — most
+    # tests here are warm and must never reach it at all; the ones that force a
+    # cold load override this with a recording fake (see D435's section below).
+    monkeypatch.setattr(benchmark.supervisor, "unload", lambda **kwargs: False)
     return clock
 
 
@@ -309,6 +313,118 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     # "was unloaded before it could be used" and is what made the drift
     # invisible when the eviction branch took this test over.
     assert record["error"] == "some/text-model did not finish loading in time"
+
+
+# -- unload after a cold benchmark (D435) ----------------------------------------
+#
+# A benchmark that had to cold-load the model tears it back down when the run
+# ends, success or failure alike, because a measurement is not a claim on the
+# model's residency; a WARM run never touches `unload` at all, because the
+# model belongs to whoever already had it running.
+
+
+def _cold_ready(bench, monkeypatch):
+    """Force `_load_to_ready` down the COLD path: `ready_worker` says no until
+    `_start_resident` flips a flag, the same shape
+    `test_a_cold_model_records_the_seconds_it_took_to_load` uses."""
+    states = {"ready": False}
+
+    def ready_worker(capability, model=None):
+        return object() if states["ready"] else None
+
+    def start_resident(model, capability):
+        bench.advance(1.0)
+        states["ready"] = True
+        return {"jobId": "j"}, FakePending()
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    monkeypatch.setattr(benchmark.supervisor, "_start_resident", start_resident)
+    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
+
+
+def _spy_unload(monkeypatch):
+    """Replace the default no-op `unload` fake with one that records every
+    call and still answers True, the way a real unload of a resident model
+    would."""
+    calls = []
+    monkeypatch.setattr(benchmark.supervisor, "unload",
+                        lambda **kwargs: (calls.append(kwargs), True)[1])
+    return calls
+
+
+def test_a_warm_run_never_calls_unload(bench, monkeypatch):
+    calls = _spy_unload(monkeypatch)
+    record, _ = _text_run(bench, monkeypatch)
+    assert record["loadSeconds"] is None
+    assert calls == []
+
+
+def test_a_cold_run_unloads_the_model_it_loaded(bench, monkeypatch):
+    _cold_ready(bench, monkeypatch)
+    calls = _spy_unload(monkeypatch)
+    record, _ = _text_run(bench, monkeypatch)
+    assert record["ok"] is True
+    assert record["loadSeconds"] == pytest.approx(1.0)
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["model"] == "some/text-model"
+    assert call["capability"] == ai_registry.TEXT_GENERATION
+    # Says a BENCHMARK did it, not the default "Unloaded" — the job row's
+    # detail is the only place a reader would see why this model just vanished
+    # from the Local tab's Loaded badge.
+    assert "benchmark" in call["reason"].lower()
+
+
+def test_a_cold_run_is_unloaded_even_when_the_workload_fails(bench, monkeypatch):
+    """The crash case is precisely the one that matters most: a model big
+    enough to fail its measurement is a model whose gigabytes are worst left
+    parked."""
+    _cold_ready(bench, monkeypatch)
+    calls = _spy_unload(monkeypatch)
+    record, _ = _text_run(bench, monkeypatch,
+                          done={"type": "done", "ok": False, "error": "out of memory"})
+    assert record["ok"] is False
+    assert record["error"] == "out of memory"
+    assert len(calls) == 1
+    assert calls[0]["model"] == "some/text-model"
+
+
+def test_a_cancelled_load_is_never_unloaded(loading, monkeypatch):
+    """Nothing came up, so there is nothing of ours to tear down — see
+    `test_a_cancelled_load_records_nothing` for the same scenario's other
+    half."""
+    clock, pending = loading
+    calls = _spy_unload(monkeypatch)
+
+    def ready_worker(capability, model=None):
+        clock.advance(1.0)
+        pending.state = "error"
+        pending.error = "cancelled"
+        benchmark.supervisor._workers.clear()
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    with pytest.raises(benchmark.Cancelled):
+        benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert calls == []
+
+
+def test_a_failing_unload_does_not_mask_the_measurement_error(bench, monkeypatch):
+    """If `finally`'s own exception were left to propagate it would REPLACE the
+    real one — Python's ordinary behaviour for an exception raised while
+    another is already in flight — so a teardown bug would turn a legible
+    "out of memory" into an opaque `RuntimeError` from deep inside the
+    unload path. The measurement's own verdict must survive that."""
+    _cold_ready(bench, monkeypatch)
+
+    def failing_unload(**kwargs):
+        raise RuntimeError("teardown exploded")
+
+    monkeypatch.setattr(benchmark.supervisor, "unload", failing_unload)
+    record, _ = _text_run(bench, monkeypatch,
+                          done={"type": "done", "ok": False, "error": "out of memory"})
+    assert record["ok"] is False
+    assert record["error"] == "out of memory"
 
 
 # -- memory, device and the record itself ---------------------------------------

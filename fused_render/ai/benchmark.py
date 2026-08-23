@@ -44,6 +44,7 @@ as "this runner does not say", which is the truth.
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import platform
@@ -60,6 +61,8 @@ from typing import Mapping
 import fused_render
 from fused_render import jobs
 from fused_render.ai import bench_store, catalog, registry, supervisor
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -744,6 +747,11 @@ def run(model: str, capability: str) -> dict:
        reading two numbers side by side.
     4. The timed pass.
     5. Memory and device off `describe()`.
+    6. **Unload, if step 2 loaded it** (D435) — success, failure or exception
+       alike. A benchmark is a measurement, not a claim on the model's
+       residency, so a cold run must not leave gigabytes parked after the
+       button stops spinning; a WARM run (step 2 returned `None`) unloads
+       nothing, because the model belongs to whoever already had it running.
     """
     workload = WORKLOADS.get(capability)
     measure = _MEASURE.get(capability)
@@ -783,17 +791,44 @@ def run(model: str, capability: str) -> dict:
                 or f"nothing here can run {capability}")
         record["runner"] = runner.code
 
-        record["loadSeconds"] = _load_to_ready(model, capability)
+        loaded_seconds = _load_to_ready(model, capability)
+        record["loadSeconds"] = loaded_seconds
 
-        # The discarded warm-up, then the timed pass. Same function twice — see
-        # step 3 of the docstring for why the first one's timings are thrown away
-        # and why the rule is uniform across capabilities.
-        measure(model, workload, timed=False)
-        record["metrics"] = measure(model, workload, timed=True)
+        try:
+            # The discarded warm-up, then the timed pass. Same function twice — see
+            # step 3 of the docstring for why the first one's timings are thrown away
+            # and why the rule is uniform across capabilities.
+            measure(model, workload, timed=False)
+            record["metrics"] = measure(model, workload, timed=True)
 
-        record["peakResidentBytes"], record["device"] = _memory_and_device(
-            model, capability)
-        record["ok"] = True
+            record["peakResidentBytes"], record["device"] = _memory_and_device(
+                model, capability)
+            record["ok"] = True
+        finally:
+            # D435: a benchmark that had to COLD-LOAD the model tears it back
+            # down when it is done — success, a failed workload, a timeout, or
+            # an exception mid-measurement alike, which is exactly the `finally`
+            # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`
+            # found the model already resident (its own docstring's
+            # null-over-estimate rule, reused here as the unload signal rather
+            # than adding a second piece of state to track the same fact): a
+            # model somebody else was already using — a Playground chat, another
+            # tab — is never ours to unload, and the capability may not even be
+            # ours any more by the time we get here. Placed AFTER the memory and
+            # device read above, which needs the worker still resident to answer
+            # at all — unloading first would record both as null. `unload`'s own
+            # exception is swallowed rather than left to propagate: a teardown
+            # that fails must not steal the traceback from a measurement that
+            # failed for a real reason (and on the success path there is no
+            # exception in flight for it to compete with).
+            if loaded_seconds is not None:
+                try:
+                    supervisor.unload(
+                        model=model, capability=capability,
+                        reason="Unloaded — a benchmark run loaded it and is done")
+                except Exception:
+                    logger.exception(
+                        "benchmark: failed to unload %s after measuring it", model)
     except (KeyboardInterrupt, SystemExit):
         # NOT a result, and not ours to swallow. A Ctrl-C on the dev server or
         # an interpreter shutdown arriving on this threadpool thread is not a
