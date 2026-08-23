@@ -184,20 +184,13 @@
   color: var(--fg-muted);
 }
 
-/* The card fills, as local tokens rather than --bg-alt: the cards want to sit
- * a step DARKER than the page's usual raised surface, and no single wash can
- * do that in both themes (--tint lightens in dark, darkens in light), so each
- * theme names its own pre-composited pair. Scoped to the sidebar because that
- * is the only place a .pg-model exists. */
-.pg-side {
-  --pg-card-bg: #16181c;
-  --pg-card-bg-hover: #1d2025;
-}
-
-:root[data-theme="light"] .pg-side {
-  --pg-card-bg: #eaebee;
-  --pg-card-bg-hover: #e1e2e6;
-}
+/* The card fills live in tokens.css with every other colour (--pg-card-bg,
+ * --pg-card-bg-hover). They were declared HERE, as literals scoped to
+ * .pg-side, which is the one thing this stylesheet may not do: a value written
+ * outside the palettes cannot be repainted by the other theme, and the palette
+ * is also where the light-mode override belongs rather than in a
+ * `:root[data-theme="light"]` block of this file's own. The reasoning for the
+ * pair itself is with them. */
 
 /* A CARD, reversing the old "row, not a card" call (D428): one line — nickname,
  * the Download CTA when there is one, size — carried by a fill, not an outline.
@@ -645,7 +638,7 @@ a.pg-hero-repo:hover {
 
 /* Wide enough for the whole PAIR — column plus card — to sit centered with the
    stage's own 32px edges: 680 + 16 gap + 240 card + 2×32 = 1000cqw. Below this
-   the card stays in flow under the input, where D449 put it. That band used to
+   the card stays in flow under the input, where D462 put it. That band used to
    keep the card beside the column by letting the column give up width; it no
    longer does, which is the price of never resizing the input. */
 @container (min-width: 1000px) {
@@ -941,12 +934,12 @@ a.pg-hero-repo:hover {
   margin-bottom: 0;
 }
 
-/* -- the image stage's attachment row (D454) ---------------------------------
+/* -- the image stage's attachment row (D467) ---------------------------------
    A composer that takes a base image STACKS — attached photo, prompt, then a
    floor holding the attach controls on the left and the Clear/Run column on the
    right — where the other three stages' composers are one row of [prompt |
    button column]. Only this stage sets the modifier, so those three are
-   untouched, and Run stays where D453 put it: the composer's bottom-right. */
+   untouched, and Run stays where D466 put it: the composer's bottom-right. */
 .pg-composer-stack {
   flex-direction: column;
   align-items: stretch;
@@ -976,7 +969,7 @@ a.pg-hero-repo:hover {
 /* The prompt keeps a lane clear for it — ALWAYS, not only while Clear is on
    screen: the text wraps inside this padding, so a lane that appeared with the
    button would rewrap the whole prompt (and, with `useAutoGrow` writing an
-   inline height, leave the box a line short — the D453 bug). ~64px is Clear at
+   inline height, leave the box a line short — the D466 bug). ~64px is Clear at
    its widest plus the corner offset. */
 .pg-composer-stack textarea {
   padding-right: 64px;
@@ -1268,10 +1261,10 @@ a.pg-hero-repo:hover {
    other one, which is the one thing a two-word label cannot afford. Nothing
    here ellipsises; when the row runs out of width the COUNT drops instead —
    `StarterCards` measures this box and shows one pill fewer (controls.tsx), so
-   the settings card's narrower column (D451) gets three whole names rather
+   the settings card's narrower column (D464) gets three whole names rather
    than four cut ones. `overflow: hidden` is what makes that measurement
    possible (scrollWidth vs clientWidth) and is never seen. No label above the
-   row (D449 deleted exactly that). */
+   row (D462 deleted exactly that). */
 
 .pg-starters {
   display: flex;
@@ -1642,6 +1635,218 @@ a.pg-hero-repo:hover {
   font-size: 12px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* `.pg-seed` and `.pg-image-strip` outlived ImageStage's own gallery (D429
+   dropped it there), but VideoStage still draws a strip of past clips plus
+   the seed-reuse caption button, so these stay. */
+.pg-seed {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.pg-seed:hover {
+  color: var(--fg);
+}
+
+.pg-image-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.pg-image-strip img {
+  height: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pg-image-strip img:hover {
+  opacity: 1;
+}
+
+.pg-image-strip img.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.pg-image-strip video {
+  height: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pg-image-strip video:hover {
+  opacity: 1;
+}
+
+.pg-image-strip video.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+/* A render in flight: picking a past clip would silently drop the
+   in-flight Stop button and its progress (VideoStage.tsx). */
+.pg-image-strip video.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* VideoStage predates the other four stages' rail removal (D429) and keeps
+   its own main-column + settings-rail shape — scoped under `.pg-work-video`
+   so it does not fight the shared `.pg-work` (now a centered single column)
+   the other four stages draw. */
+.pg-work.pg-work-video {
+  width: min(1100px, calc(100% - 64px));
+  flex-direction: row;
+  gap: 20px;
+  align-items: stretch;
+}
+
+.pg-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pg-rail {
+  flex: 0 0 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(var(--tint), 0.02);
+  align-self: flex-start;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.pg-rail-toggle {
+  display: none;
+}
+
+.pg-rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pg-rail-section + .pg-rail-section {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.pg-rail-title {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* VideoStage's empty state, and only VideoStage's — the four cog stages (D464)
+   invite with `StarterCards` inside their own composer instead, so nothing
+   else draws this centered title/sub/chips column any more. */
+
+.pg-empty-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 4px 16px 24px;
+}
+
+.pg-empty-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.pg-empty-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  max-width: 46ch;
+}
+
+.pg-starter {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.pg-starter-title {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.pg-starter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 560px;
+}
+
+.pg-starter-chip {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.pg-starter-chip:hover {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+@media (max-width: 1100px) {
+  .pg-work-video {
+    flex-direction: column;
+  }
+
+  .pg-rail {
+    display: none;
+    flex: none;
+    width: 100%;
+    max-height: none;
+  }
+
+  .pg-work.rail-open .pg-rail {
+    display: flex;
+  }
+
+  .pg-rail-toggle {
+    display: inline-block;
+  }
 }
 
 /* -- transcription ------------------------------------------------------------------ */

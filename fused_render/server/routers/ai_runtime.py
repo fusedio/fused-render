@@ -20,9 +20,11 @@ Four routes and one rule each:
   page, where the verb is "Download" and the user is not asking to run anything
   yet.
 
-Plus the two routes that make a capability DO something rather than be resident:
-`POST /api/ai/image` and `POST /api/ai/transcribe`. Both answer with a job id
-and a path, because both run for minutes and both produce a file.
+Plus the three routes that make a capability DO something rather than be
+resident: `POST /api/ai/image`, `POST /api/ai/transcribe` and
+`POST /api/ai/video`. All three answer with a job id and a path, because all
+three run for minutes (video: potentially hours — see `supervisor.
+VIDEO_TIMEOUT_S`) and all three produce a file.
 
 The POSTs mutate — they start processes and write gigabytes — so every one of
 them carries the D3 `X-Fused` guard. The reads do not, like every other read in
@@ -77,6 +79,46 @@ _MAX_SEED = 2**31 - 1
 # below is what stops the two from drifting apart.
 _IMAGE_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
+# Bounds for a video request. Narrower canvas than an image's — `w*h <=
+# 768*1344` — chosen against H3's FL2VA checkpoint, the shape it was
+# benchmarked at; a caller asking for more gets clamped down to it rather
+# than an OOM minutes into a render. Shared across every video runner: this
+# is a safety rail the APP chose, not a fact about either engine's weights
+# (unlike the frame grid and the canvas/step DEFAULTS below, which are —
+# see `registry.VideoTraits`). `frames` snaps to the SERVING engine's own
+# valid grid (`_snap_frames`, given that engine's traits), because a value
+# off its grid is not a smaller or larger request, it is one that engine
+# renders differently than the reply would claim.
+_MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
+_MAX_VIDEO_PIXELS = 768 * 1344
+#: `n` ranges 1..21 on EVERY engine's own grid — an app-chosen bound, not a
+#: per-engine fact. `registry.MIN_VIDEO_FRAMES_N`/`MAX_VIDEO_FRAMES_N`, not a
+#: private pair here, because `catalog.py`'s video-traits payload for the
+#: Playground's frame slider needs the identical window — a slider computed
+#: from one and a server clamped by the other would disagree with itself
+#: exactly the way Task 5 left the client disagreeing with H3's grid.
+#: Originally VERIFIED against h3's built binary (`h3_align_frame_count`/
+#: `h3_valid_params`: `n=0` — 5 frames, one VAE chunk with no decoder
+#: history — is refused at generation time with "generation requires at
+#: least one trained 22-frame decoder chunk", and anything aligning above
+#: 362 is refused as outside "the released 5..362 range") — LTX has no
+#: compiled binary to refuse a value outright, so the same `[1, 21]` window
+#: is carried over as the app's own bound on its grid too (1 + 8*21 = 169
+#: frames, ~7s at 24fps), rather than inventing an unrelated ceiling with no
+#: measurement behind it.
+_MIN_FRAMES_N, _MAX_FRAMES_N = registry.MIN_VIDEO_FRAMES_N, registry.MAX_VIDEO_FRAMES_N
+#: [2, 1000] is h3's own hard floor/ceiling ("denoising steps must be in
+#: [2, 1000]", h3.c `h3_valid_params`) — 1 step is not merely slow, it is a
+#: request the binary refuses outright. LTX has no such floor (`stage1_steps`
+#: is a plain slice of a fixed sigma schedule — see `ltx_video/worker.py`),
+#: but a value this low is not a meaningfully faster render on either
+#: engine, so the shared floor stays rather than becoming a fourth
+#: per-engine trait. The app's own ceiling (50) is ours to pick either way.
+_MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
+# No `guidance` here — H3 is CFG-distilled and takes no such parameter. A
+# caller passing one hits `_reject_unknown` like any other unsupported option.
+_VIDEO_OPTIONS = frozenset({
+    "prompt", "model", "width", "height", "frames", "steps", "seed"})
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words"})
@@ -283,6 +325,86 @@ def _images_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "images")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+def _videos_dir() -> str:
+    """Where rendered videos land: `<home>/ai/videos`. See `_images_dir`."""
+    from fused_render.shell.storage import home_dir
+
+    directory = os.path.join(home_dir(), "ai", "videos")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _video_side(value, default: int) -> int:
+    """One dimension, clamped to H3's range and snapped DOWN to a multiple of
+    32 — `_side`'s rule, with video's own bounds."""
+    try:
+        side = int(value)
+    except (TypeError, ValueError):
+        side = default
+    side = max(_MIN_VIDEO_SIDE, min(_MAX_VIDEO_SIDE, side))
+    return side - (side % _VIDEO_SIDE_STEP)
+
+
+def _clamp_video_canvas(width: int, height: int) -> tuple[int, int]:
+    """`(width, height)`, each already snapped by `_video_side`, brought under
+    `w*h <= 768*1344` by shaving the LARGER side down by one step at a time.
+
+    Alternating on the larger side (rather than always the same one) keeps an
+    over-asked SQUARE canvas square rather than silently favouring one axis —
+    an 1344x1344 ask should shrink toward a still-roughly-square frame, not
+    collapse to `1344 x <minimum>`.
+    """
+    while width * height > _MAX_VIDEO_PIXELS:
+        if width >= height and width > _MIN_VIDEO_SIDE:
+            width -= _VIDEO_SIDE_STEP
+        elif height > _MIN_VIDEO_SIDE:
+            height -= _VIDEO_SIDE_STEP
+        else:
+            break
+    return width, height
+
+
+def _snap_frames(value, traits: "registry.VideoTraits") -> int:
+    """The value on `traits`' own frame grid that the serving ENGINE would
+    ACTUALLY RENDER for `value` — rounded UP to the next grid point, never
+    to the nearest one.
+
+    **Per-runner since Task 5 of the LTX-2.3 plan** — this used to be h3's
+    grid, `5 + 17n`, hardcoded, because h3-video was the only video runner
+    there was. `traits` now carries whichever engine will actually serve the
+    request (`registry.video_traits_for`, resolved by the caller), and the
+    arithmetic is unchanged: `value = max(traits.frames_base, requested)`,
+    then rounded up to the next `frames_base + frames_step * n`. Matching the
+    direction matters, not only the grid — h3 aligns UP (`h3_align_frame_
+    count`, h3_host.c, VERIFIED against the built binary), and a server that
+    rounded to nearest would report a smaller `frames` than the render it
+    just started for any request whose distance-below its nearest grid point
+    is shorter than its distance to the one above (e.g. 100 renders as 107 on
+    h3's grid, not the "closer" 90 a nearest-rounding server would have
+    claimed). LTX has no compiled binary to align against, but `8n + 1` is the
+    grid its own upstream CLI defaults to, and rounding the same direction
+    keeps this function's one contract — "the frames on the reply are the
+    frames the engine renders" — true for both.
+
+    Bounded to `n` in `[_MIN_FRAMES_N, _MAX_FRAMES_N]` regardless of engine —
+    an app-chosen safety rail (unlike the grid itself, this is not a fact
+    about either engine's weights), so it stays a shared constant rather
+    than a fourth `VideoTraits` field.
+    """
+    base, step = traits.frames_base, traits.frames_step
+    try:
+        frames = int(value)
+    except (TypeError, ValueError):
+        return base + step * traits.default_frames_n
+    frames = max(base, frames)
+    remainder = (frames - base) % step
+    if remainder:
+        frames += step - remainder
+    n = (frames - base) // step
+    n = max(_MIN_FRAMES_N, min(_MAX_FRAMES_N, n))
+    return base + step * n
 
 
 #: How long a preview frame has to sit untouched before a sweep takes it.
@@ -1119,6 +1241,158 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # resolved to.
         reply["image"] = canonical_fs_path(image_path)
     return reply
+
+
+@router.post("/api/ai/video")
+def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Render one video (with audio). Returns everything about it except the
+    bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
+    `guidance` (H3 is CFG-distilled) and `previewPath` (no live preview in
+    this build), plus `frames`.
+
+    The 409 case is the one this route has that the image route does not:
+    video generation is the first capability with no "everywhere" row, so on
+    anything but Apple Silicon (or a Mac with no h3 binary staged) this always
+    answers with `registry.unavailable_reason` rather than ever reaching a
+    default model.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Checked first, so an unknown option (`guidance`, say) is reported even
+    # when another field is also wrong — see `_reject_unknown`.
+    rejection = _reject_unknown(body, _VIDEO_OPTIONS, "/api/ai/video")
+    if rejection is not None:
+        return rejection
+
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("'prompt' must be a non-empty string", status=400)
+
+    model = _model_of(body) or catalog.default_for(registry.VIDEO_GENERATION)
+    if not model:
+        # CORRECTED: this branch is dead in practice, exactly like the same
+        # branch in `api_ai_image` above (`catalog.default_for` never gates
+        # on availability -- only `catalog.describe`'s own `default` field
+        # does that, a different function entirely -- and `SUGGESTIONS
+        # ["h3-video"]` is a hardcoded non-empty list, so `default_for`
+        # always returns that one id here whether or not this machine can
+        # run it). Kept anyway, matching `api_ai_image`'s own choice: cheap
+        # defensive code against a catalog that someday ships an empty
+        # shortlist, not the mechanism this route actually relies on for
+        # the 409. The REAL "needs Apple Silicon"/"the h3 binary is not
+        # available" answer, on a machine that cannot serve this
+        # capability, comes from `start_video`'s own `_runner_or_raise`
+        # below -- caught and turned into the same 409 a few lines down.
+        return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
+                      or "no video model is configured", status=409)
+
+    # The runner that will actually SERVE this request — resolution is by
+    # CAPABILITY, not by `model` (`registry.py`'s own module docstring), so
+    # this is the same call `start_video`'s `_runner_or_raise` makes a few
+    # lines down, made here too because the request SHAPE (frame grid,
+    # canvas/step defaults) is that runner's fact, not the route's own.
+    # `None` when nothing can serve the capability at all — already answered
+    # with a 409 above via `catalog.default_for`'s dead branch, or about to
+    # be via `start_video`'s own error below; `video_traits_for` handles
+    # `None` by falling back to H3's numbers, matching every request this
+    # route ever answered before a second engine existed.
+    serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
+    traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
+
+    # **Naming a model explicitly does NOT pick its runner.** Resolution is
+    # by CAPABILITY plus stored preference (`registry.resolve`), never by
+    # `model` — `start_video`'s own `_runner_or_raise` never reads it either.
+    # So on an Apple Silicon Mac with `ltx-video` resolved and NO engine
+    # preference set, `{"model": "MiniMaxAI/MiniMax-H3"}` would build and
+    # start the ltx-video worker against the H3 repo, which raises deep
+    # inside `load()` after a (cheap, listing-only) Hub round trip — a
+    # confusing failure for someone who deliberately named the model they
+    # already have 144GB of. Refused here instead, naming the one other
+    # place this repo IS reachable: the Engines tab, which is exactly the
+    # switch `registry.resolve` already honours (see that module's own
+    # docstring). Silent for anything not already cached — there is no
+    # format evidence to refuse on without a network call this route has
+    # never made, and an uncached id is the ordinary "let the runner's own
+    # `load()` refusal explain it" path every other capability already
+    # relies on.
+    if serving_runner is not None:
+        reading = cached_capability(model)
+        if (reading.cached and reading.capability == registry.VIDEO_GENERATION
+                and reading.runner_code is not None
+                and reading.runner_code != serving_runner.code):
+            other = registry.by_code(reading.runner_code)
+            other_name = other.short if other is not None else reading.runner_code
+            return _error(
+                f"{model} is an {other_name} model, and video generation is "
+                f"set to {serving_runner.short}, which does not read this "
+                f"format — switch the video engine to {other_name} on the "
+                f"Engines tab, or name a model {serving_runner.short} reads.",
+                status=409)
+
+    try:
+        steps = max(_MIN_VIDEO_STEPS,
+                    min(_MAX_VIDEO_STEPS, int(body.get("steps") or traits.default_steps)))
+    except (TypeError, ValueError):
+        return _error("'steps' must be a number", status=400)
+    frames = _snap_frames(body.get("frames"), traits)
+    # A seed the caller did not choose is chosen HERE and reported back, so
+    # "make that one again" is always possible — same rule `/api/ai/image` uses.
+    try:
+        seed = int(body["seed"]) if body.get("seed") is not None else secrets.randbelow(_MAX_SEED)
+    except (TypeError, ValueError):
+        return _error("'seed' must be a whole number", status=400)
+    seed = max(0, min(_MAX_SEED, seed))
+
+    # The serving engine's own default canvas (`traits.default_width/height`
+    # — VERIFIED per-engine: H3's built binary `--help` for h3-video, LTX's
+    # own CLI `--width`/`--height` for ltx-video). A bare call renders at the
+    # shape the ENGINE is tuned for, the same way the image route's
+    # 1024x1024 default matches its own pipelines' square default rather
+    # than an arbitrary size. The side snap and pixel clamp below stay
+    # shared across every engine — see `_MIN_VIDEO_SIDE` and friends above.
+    width = _video_side(body.get("width"), traits.default_width)
+    height = _video_side(body.get("height"), traits.default_height)
+    width, height = _clamp_video_canvas(width, height)
+
+    uid = secrets.token_hex(6)
+    job = supervisor.video_job_id(uid)
+    videos = _videos_dir()
+    # Time-ordered and unique, like the image route's filename.
+    path = os.path.join(videos, f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.mp4")
+
+    request = {
+        "prompt": prompt.strip(),
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
+        "seed": seed,
+        "out": path,
+    }
+    try:
+        supervisor.start_video(model, request, job)
+    except supervisor.SupervisorError as e:
+        # 409 for the same reason a load does: the request was well-formed and
+        # the answer is a fact about this machine, not a server fault.
+        return _error(str(e), status=409)
+    # The settled request, not the one that came in: `width`/`height` may have
+    # been snapped, `frames` rounded to h3's grid, `steps` clamped, `seed`
+    # invented. A caller that echoes these back gets the render it actually
+    # got, not the one it asked for.
+    return {
+        "jobId": job,
+        # Canonical, like every other path this API hands back.
+        "path": canonical_fs_path(path),
+        "model": model,
+        "prompt": request["prompt"],
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
+        "seed": seed,
+    }
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out

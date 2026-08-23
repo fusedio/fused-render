@@ -78,7 +78,7 @@ const ASPECTS = [
   { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768 },
 ] as const;
 
-// Eight authored examples — two pages of four (D452). Every one names a
+// Eight authored examples — two pages of four (D465). Every one names a
 // subject AND a way of rendering it (medium, light, lens, texture), because
 // that pairing is the thing a newcomer to image models does not know to write
 // and the difference it makes is the whole demonstration.
@@ -141,7 +141,7 @@ const STARTERS: Starter[] = [
   },
 ];
 
-// Three examples that bring their own PHOTO (D454): the pill attaches the
+// Three examples that bring their own PHOTO (D467): the pill attaches the
 // picture and fills in the prompt, and Generate is the only thing left to
 // press. An edit prompt with nothing to edit demonstrates nothing, and finding
 // a suitable file is the step that stops somebody trying this at all — so the
@@ -150,7 +150,7 @@ const STARTERS: Starter[] = [
 //
 // Mixed into the prompt-only eight rather than fronting them, so the row's
 // first page is not three photo pills in a block — eleven authored, four shown,
-// which is three rotate pages (D452). The photos are Unsplash's, re-encoded and
+// which is three rotate pages (D465). The photos are Unsplash's, re-encoded and
 // credited in `static/samples/CREDITS.md`.
 const EDIT_STARTERS: Starter[] = [
   {
@@ -183,7 +183,7 @@ const EDIT_STARTERS: Starter[] = [
 // reader does not meet the three photo examples as a block at the head of the
 // row and the pill they see first is not the same pill every session. Once, at
 // module scope, and never per render — a row that reorders itself under the
-// cursor is a slot machine (D452's own "no shuffle" note was about exactly
+// cursor is a slot machine (D465's own "no shuffle" note was about exactly
 // that, and stands: this order is fixed for as long as the tab is open, and
 // rotate steps through it in the same order both ways).
 const ALL_STARTERS: Starter[] = shuffleOnce([...STARTERS, ...EDIT_STARTERS]);
@@ -699,7 +699,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         {/* Clear, floating in the box's top-right corner: it appears only once
             there is a picture to throw away, and in this stacked composer a
             slot of its own would have cost the box a permanent 40px of height
-            (D453's stack is right where the prompt and the buttons share ONE
+            (D466's stack is right where the prompt and the buttons share ONE
             row — here they do not). Absolute, so it adds none. */}
         {!busy && run && (
           <button
@@ -716,7 +716,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             attach beside Generate rather than across the box from it. The
             prompt therefore spans the whole box here rather than sharing its
             row with the button column the other stages use, and Generate stays
-            exactly where D453 put it. */}
+            exactly where D466 put it. */}
         <div className="pg-composer-foot">
           {/* The attached photo, on the floor's own line: the space left of the
               buttons was empty, and the picture belongs beside the controls

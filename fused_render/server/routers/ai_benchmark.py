@@ -137,8 +137,25 @@ def _benchmarkable_models(capability: str) -> set[str]:
 
 
 def _history() -> dict:
-    """The payload both reading routes answer with."""
-    return {"runs": bench_store.read(), "machine": benchmark.machine()}
+    """The payload both reading routes answer with.
+
+    `workloadCapabilities` names exactly `benchmark.WORKLOADS`' keys — the
+    capabilities this route can actually measure, as opposed to
+    `registry.capabilities()`'s full set — so the Benchmark tab can offer a
+    Run button only where one can succeed rather than hardcoding the gap
+    itself. Video generation is the first capability the registry knows that
+    this table does not (`benchmark.NO_WORKLOAD_YET`, SPEC §40's LTX-2.3
+    plan) — a real workload would mean a multi-GB, minutes-long render
+    behind every press — and without this field the tab had no way to know
+    that short of a hardcoded capability name that would go stale the day a
+    workload actually lands. The server stays the one place that decision is
+    made; the tab reads it rather than repeating it.
+    """
+    return {
+        "runs": bench_store.read(),
+        "machine": benchmark.machine(),
+        "workloadCapabilities": sorted(benchmark.WORKLOADS),
+    }
 
 
 @router.get("/api/ai/benchmark")

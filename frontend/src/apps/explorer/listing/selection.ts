@@ -283,14 +283,21 @@ export function cameFromSelParam(dest: string, from: string): string | null {
 // What a press on a row does TO THE SELECTION — and nothing else, which is the
 // point.
 //
-// The explorer has ONE press model: a press selects, a double click opens, on
-// every row in every view mode. It used to have two, chosen by whether the
-// preview pane happened to be showing — pane off, a single click selected AND
-// opened; pane on, it only selected and the double click opened. That was
-// defensible while the pane was a thing the user switched on, and stopped being
-// so the moment the split became a measurement of the window (listing/pane.ts):
-// the same click in the same folder would open a file or not depending on how
-// wide the window was when you clicked it.
+// The explorer has ONE press model: a press selects, and a plain RELEASE that
+// never left the row (no drag, no sweep) opens it — on every row, in every
+// listing, at every window width (D460, superseding the double-click rule
+// below). It used to be double-click, and before that TWO models chosen by
+// whether the preview pane happened to be showing — pane off, a single click
+// selected AND opened; pane on, it only selected and a double click opened.
+// Both were defensible only while a click had to leave room for a plain press
+// to ALSO preview the row via the selection (the pane used to follow the
+// selection): a single click that navigated away would have made that preview
+// unreachable for exactly the rows it was most useful on. D460 deleted that
+// coupling — the pane now shows the open folder's own companions and never the
+// selection (see `listing/pane-side.ts`) — so there is nothing left for a
+// single click to preserve by not opening, and the double-click detour (itself
+// a fix for an even older bug: the same click opening or not depending on how
+// wide the window happened to be, listing/pane.ts) goes with it.
 //
 // THIS IS DECIDED ON POINTERDOWN, not on click, and that is not a detail. Rows
 // are drag sources, and on a `draggable` element WebKit does not reliably
@@ -298,8 +305,11 @@ export function cameFromSelParam(dest: string, from: string): string | null {
 // Shift/Cmd-click went silently dead once, and how a plain click on parts of a
 // row could fail to select at all. Deciding on the press removes the entire
 // failure class rather than working around it, and it is what Finder and
-// Explorer do: the highlight lands while the button is still down. Opening is
-// untouched — `dblclick` fires independently of any of this.
+// Explorer do: the highlight lands while the button is still down. OPENING is
+// decided on the RELEASE instead (Listing's onRowPointerUp): a `select` or
+// `defer` press that lets go without passing the drag slop opens the row: a
+// `toggle`/`extend` (modified) press never does, because a Shift/Mod click
+// means "add this to my selection", not "take me there".
 //
 // The four answers:
 //

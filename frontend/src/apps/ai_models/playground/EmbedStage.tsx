@@ -22,7 +22,7 @@ import { embedTexts, withModelReady } from "./client";
 import { ConfigPanel, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
-// The examples (D452). A sample here is a whole SCENARIO, not a prompt: the
+// The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
 // query and the six lines it is searched against travel together, because the
 // demonstration is the gap between them. Every set is built the same way —
 // three lines that match the query in meaning while sharing NO word with it,

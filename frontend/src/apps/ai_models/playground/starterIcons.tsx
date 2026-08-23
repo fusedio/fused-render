@@ -1,4 +1,4 @@
-// The glyphs the stages' sample cards wear (D452). One shared set, NOT one
+// The glyphs the stages' sample cards wear (D465). One shared set, NOT one
 // drawing per sample: thirty-two samples across four stages would mean
 // thirty-two hand-drawn paths to maintain for a decoration, and a small
 // vocabulary reused across stages reads as a family rather than a zoo. The

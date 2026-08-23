@@ -48,7 +48,7 @@ const LIMITS = {
 // set. A model that rambles or thinks out loud without one is telling the reader
 // something true about itself, which is what they came to find out.
 
-// Eight authored examples — two pages of four (D452). Each is a real ask with
+// Eight authored examples — two pages of four (D465). Each is a real ask with
 // its constraints spelled out, not a topic: what to write, how long, what to
 // leave out. A one-line "write a haiku" tests that the model answers; these
 // test what the reader actually came to find out, which is whether it follows

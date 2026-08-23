@@ -1,7 +1,7 @@
 # Sample photographs
 
 The three JPEGs here are the base images behind the AI Playground image stage's
-edit examples (D454): clicking one of those pills attaches the photo and fills
+edit examples (D467): clicking one of those pills attaches the photo and fills
 in the prompt, so a first edit needs neither a file to find nor a sentence to
 invent.
 
