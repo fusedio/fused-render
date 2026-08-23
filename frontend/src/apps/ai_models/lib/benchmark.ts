@@ -252,6 +252,31 @@ export function formatMetricSpecValue(value: number | null, spec: MetricSpec): s
   return withUnit(value, spec.unit, spec.digits);
 }
 
+/** The section's own metric badge — unit and, where it matters, DIRECTION —
+ *  never the metric's own name (the `<select>` right beside this badge
+ *  already shows that; repeating it here is exactly the duplicated-ink this
+ *  file has already cut once, see `ComparisonChart`'s own header comment).
+ *
+ *  "lower is better" is stated ONLY for a `!higherIsBetter` metric, and
+ *  NEVER the mirror phrase for a higher-is-better one — driven off the
+ *  metric's own `higherIsBetter` flag, not a hardcoded list of metric keys,
+ *  so a lower-is-better metric added later gets the cue automatically rather
+ *  than needing to be remembered. The reason for the asymmetry: both the
+ *  comparison chart's bars and the leaderboard's own rank order already read
+ *  correctly for a higher-is-better metric under the ordinary "longer bar /
+ *  bigger number wins" habit — labelling that case too would be noise that
+ *  makes the one case actually worth flagging (a SHORTER bar winning) stop
+ *  standing out. One badge, read by both instruments below it (the
+ *  comparison chart and the per-model trend chart both invert the same way),
+ *  rather than a copy of the same words drawn twice.
+ */
+export function metricUnitAndCue(metric: MetricSpec): string {
+  const parts: string[] = [];
+  if (metric.unit) parts.push(metric.unit);
+  if (!metric.higherIsBetter) parts.push("lower is better");
+  return parts.join(" · ");
+}
+
 /** The primary metric as the page shows it — "42.1 tok/s", or a dash. */
 export function formatPrimary(run: AiBenchmarkRun): string {
   const metric = primaryMetric(run.capability);
@@ -670,7 +695,19 @@ export function chartAxisTicks(runs: AiBenchmarkRun[]): ChartAxisTicks {
         : [0, Math.floor((runs.length - 1) / 2), runs.length - 1];
 
   const span = runs[runs.length - 1]!.startedAt - runs[0]!.startedAt;
-  const useTime = runs.length > 1 && span < 24 * 60 * 60;
+  // **`span < 24h` alone is not "the same day" — it is only "the same day
+  // MOST of the time".** A real run of this bug: 23:02 one evening to 14:07
+  // the next afternoon is under 24 hours elapsed but crosses midnight, so the
+  // old rule drew time-only ticks ("11:02 PM" / "01:50 PM") under a single
+  // "Aug 22" caption that was wrong for the later points — they happened on
+  // Aug 23. `sameCalendarDay` checks the actual local dates of the first and
+  // last tick, not just the elapsed duration between them; when they differ,
+  // this falls through to dated ticks (each stating its OWN date, correctly)
+  // exactly as it already does for a multi-day span.
+  const useTime =
+    runs.length > 1 &&
+    span < 24 * 60 * 60 &&
+    sameCalendarDay(runs[0]!.startedAt, runs[runs.length - 1]!.startedAt);
 
   const ticks = indices.map((i) => ({
     x: i,
@@ -678,6 +715,19 @@ export function chartAxisTicks(runs: AiBenchmarkRun[]): ChartAxisTicks {
   }));
 
   return { ticks, dateCaption: useTime ? formatRunDate(runs[0]!.startedAt) : null };
+}
+
+/** Whether two epoch-seconds timestamps fall on the same LOCAL calendar day —
+ *  not just within 24 hours of each other, which a pair straddling midnight
+ *  can satisfy while still being two different dates. */
+function sameCalendarDay(a: number, b: number): boolean {
+  const da = new Date(a * 1000);
+  const db = new Date(b * 1000);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
 }
 
 /** Truncate `text` to at most `maxLength` characters, eliding the MIDDLE

@@ -19,6 +19,7 @@ import {
   formatRunTime,
   latestByModel,
   leaderboard,
+  metricUnitAndCue,
   metricValueForSpec,
   middleEllipsis,
   niceAxisMax,
@@ -902,7 +903,15 @@ describe("chartAxisTicks", () => {
     // The bug this exists to fix: four runs inside one day rendered
     // "22 Aug / 22 Aug / 22 Aug" — three identical labels telling the reader
     // nothing about when, within that day, each run happened.
-    const base = 1_700_000_000;
+    //
+    // Anchored at LOCAL noon rather than a raw epoch constant — a fixed epoch
+    // (e.g. 1_700_000_000) lands at a different LOCAL time in every timezone,
+    // and happened to sit close enough to local midnight in this suite's own
+    // timezone that adding a few thousand seconds crossed into the next
+    // calendar day, defeating the very premise this test means to set up
+    // (see the midnight-crossing test below, which exercises that case on
+    // purpose). Noon has hours of margin either side in any timezone.
+    const base = new Date(2024, 0, 15, 12, 0, 0).getTime() / 1000;
     const runs = [
       run({ startedAt: base }),
       run({ startedAt: base + 2000 }),
@@ -922,8 +931,35 @@ describe("chartAxisTicks", () => {
     // The two-run case is the common one right now (most models have one or
     // two runs), and it must not fall through to dates just because the
     // "middle tick" logic above only applies at three or more.
-    const base = 1_700_000_000;
+    const base = new Date(2024, 0, 15, 12, 0, 0).getTime() / 1000;
     const runs = [run({ startedAt: base }), run({ startedAt: base + 3000 })];
+    const { ticks, dateCaption } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.label)).toEqual([
+      formatRunTime(runs[0]!.startedAt),
+      formatRunTime(runs[1]!.startedAt),
+    ]);
+    expect(dateCaption).toBe(formatRunDate(runs[0]!.startedAt));
+  });
+
+  // The reported bug: whisper-tiny.en-8bit's real runs spanned 23:02 one
+  // evening to 14:07 the next afternoon — under 24 hours elapsed, but NOT the
+  // same calendar day. The old rule (`span < 24h` alone) drew time-only
+  // ticks ("11:02 PM" / "01:50 PM") under a single "Aug 22" caption that was
+  // wrong for the later point, which actually happened on Aug 23.
+  it("uses dates rather than a lying single-day caption when the span crosses midnight", () => {
+    const base = new Date(2026, 7, 22, 23, 2, 53).getTime() / 1000; // Aug 22, 23:02:53 local
+    const runs = [run({ startedAt: base }), run({ startedAt: base + 13 * 60 * 60 })];
+    const { ticks, dateCaption } = chartAxisTicks(runs);
+    expect(ticks.map((t) => t.label)).toEqual([
+      formatRunDate(runs[0]!.startedAt),
+      formatRunDate(runs[1]!.startedAt),
+    ]);
+    expect(dateCaption).toBeNull();
+  });
+
+  it("stays on time ticks for a same-day span that runs right up near midnight but doesn't cross it", () => {
+    const base = new Date(2026, 7, 22, 20, 0, 0).getTime() / 1000;
+    const runs = [run({ startedAt: base }), run({ startedAt: base + 3 * 60 * 60 })]; // 20:00 -> 23:00, same day
     const { ticks, dateCaption } = chartAxisTicks(runs);
     expect(ticks.map((t) => t.label)).toEqual([
       formatRunTime(runs[0]!.startedAt),
@@ -1112,6 +1148,25 @@ describe("formatDuration", () => {
   it("spans four orders of magnitude without either printing '0s' or six decimals", () => {
     expect(formatDuration(0.0221, 1)).toBe("22 ms");
     expect(formatDuration(24.63, 1)).toBe("24.6 s");
+  });
+});
+
+describe("metricUnitAndCue", () => {
+  it("is just the unit for a higher-is-better metric — no mirror-image cue", () => {
+    expect(metricUnitAndCue(REALTIME)).toBe("× realtime");
+  });
+
+  it("adds 'lower is better' for a lower-is-better metric with a unit", () => {
+    expect(metricUnitAndCue(DECODE_TIME)).toBe("s · lower is better");
+  });
+
+  it("is just the cue when the metric has no unit of its own (peak memory's is dynamic)", () => {
+    expect(metricUnitAndCue(MEMORY)).toBe("lower is better");
+  });
+
+  it("never states the metric's own name — the select beside it already does", () => {
+    expect(metricUnitAndCue(REALTIME)).not.toContain("Speed");
+    expect(metricUnitAndCue(MEMORY)).not.toContain("Peak memory");
   });
 });
 
