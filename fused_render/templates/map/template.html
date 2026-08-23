@@ -1383,11 +1383,13 @@ async function openClientCog(L, target) {
   let geotiff, auto;
   try {
     geotiff = await deck.GeoTIFF.fromUrl(target);
-    // No overview pyramid means this is not cloud-optimized: reading it in the
-    // browser would pull the whole file at full resolution, so hand it to the
-    // Python engine, which meters that download behind a confirmation.
-    if (!(geotiff.overviews && geotiff.overviews.length)) {
-      throw new Error("no overview pyramid; not cloud-optimized");
+    // No overview pyramid means reading the file whole. That is fine for a
+    // small COG (one that fits in roughly a tile grid), but for a large one it
+    // would pull the entire file at full resolution in the browser and bypass
+    // the download confirmation, so hand those to the Python engine.
+    const pixels = (geotiff.width || 0) * (geotiff.height || 0);
+    if (!(geotiff.overviews && geotiff.overviews.length) && pixels > 4096 * 4096) {
+      throw new Error("no overview pyramid on a large raster; not cloud-optimized");
     }
     epsgResolver(geotiff.crs);
     // A device that never initialises must not strand the layer: time the wait
@@ -2011,7 +2013,7 @@ function layerCard(L) {
     m.textContent = d.message || (d.error && d.error.message) || "Couldn't render this file.";
     card.appendChild(m);
   }
-  if (d && !L.loading && d.status === "ok" && ["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) {
+  if (d && !L.loading && d.status === "ok" && !awaitingDownload(d) && ["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) {
     const message = d.kind === "raster_tiles" ? formatRasterStatus(L) : formatVectorStatus(L);
     const bounds = d.bounds || [];
     if (message || bounds.length === 4) {
@@ -2183,6 +2185,9 @@ function renderStyleDock() {
 
 function rasterControls(body, L) {
   const s = L.style, d = L.descriptor;
+  // Nothing is drawn yet for a raster still behind its download prompt, so its
+  // style controls would only trigger no-op re-describes.
+  if (awaitingDownload(d)) return;
   if (d.kind === "raster_cog_client") {
     const single = (d.stats.bands || 1) < 3;
     // Each end is remembered as the user left it, so a blank box stays blank

@@ -44,15 +44,16 @@ def eng(re, tmp_path):
     )
 
 
-def _write_raster(path, *, overviews=False, tiled=False):
+def _write_raster(path, *, overviews=False, tiled=False, wh=(64, 64)):
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.transform import from_bounds
 
-    data = (np.random.default_rng(0).integers(1, 200, (64, 64))).astype("uint8")
+    width, height = wh
+    data = (np.random.default_rng(0).integers(1, 200, (height, width))).astype("uint8")
     profile = dict(
-        driver="GTiff", width=64, height=64, count=1, dtype="uint8",
-        crs="EPSG:4326", transform=from_bounds(10, 10, 20, 20, 64, 64),
+        driver="GTiff", width=width, height=height, count=1, dtype="uint8",
+        crs="EPSG:4326", transform=from_bounds(10, 10, 20, 20, width, height),
     )
     if tiled:
         profile.update(tiled=True, blockxsize=16, blockysize=16)
@@ -166,3 +167,60 @@ def test_local_oversized_noncog_is_not_gated(re, eng, tmp_path, monkeypatch):
     d = eng._describe(target=path, source=path, artifact_id="a", opts={})
 
     assert d["optimization"]["status"] != "confirm_download"
+
+
+def test_real_source_size_of_a_remote_file_drives_the_gate(re, eng, tmp_path, monkeypatch):
+    # Do NOT stub _source_size: the real function (local getsize branch) plus the
+    # real size-vs-threshold comparison must decide, so a regression there fails.
+    path = _write_raster(tmp_path / "plain.tif")
+    monkeypatch.setattr(re, "is_remote_path", lambda source: True)
+    monkeypatch.setattr(re, "DOWNLOAD_CONFIRM_MAX_BYTES", 100)
+
+    d = eng._describe(target=path, source=path, artifact_id="a", opts={})
+
+    assert d["optimization"]["status"] == "confirm_download"
+    assert d["optimization"]["download_bytes"] == os.path.getsize(path)
+
+
+def test_unknown_size_remote_noncog_is_not_gated(re, eng, tmp_path, monkeypatch):
+    # A HEAD that yields no size can't promise the file is large, so per the
+    # threshold-only policy it proceeds rather than prompting.
+    path = _write_raster(tmp_path / "plain.tif")
+    _as_remote(re, monkeypatch, None)
+    monkeypatch.setattr(re, "_infer_background", lambda *a, **k: None)
+    monkeypatch.setattr(eng, "_start_preparation", lambda *a, **k: None)
+
+    d = eng._describe(target=path, source=path, artifact_id="a", opts={})
+
+    assert d["optimization"]["status"] != "confirm_download"
+
+
+def test_valid_cached_derivative_skips_the_gate(re, eng, tmp_path, monkeypatch):
+    path = _write_raster(tmp_path / "plain.tif")
+    _as_remote(re, monkeypatch, 200 << 20)
+    monkeypatch.setattr(re, "_infer_background", lambda *a, **k: None)
+
+    source_id = eng._describe(target=path, source=path, artifact_id="a", opts={})["data"]["source_id"]
+    # A matching derivative means the file is already local: no download to gate.
+    _write_raster(eng.optimized_dir / f"{source_id}.tif", overviews=True, tiled=True)
+    eng.sources.clear()
+
+    d = eng._describe(target=path, source=path, artifact_id="a", opts={})
+
+    assert d["optimization"]["status"] != "confirm_download"
+
+
+def test_mismatched_cached_derivative_still_gates(re, eng, tmp_path, monkeypatch):
+    path = _write_raster(tmp_path / "plain.tif")
+    _as_remote(re, monkeypatch, 200 << 20)
+    monkeypatch.setattr(re, "_infer_background", lambda *a, **k: None)
+
+    source_id = eng._describe(target=path, source=path, artifact_id="a", opts={})["data"]["source_id"]
+    # A derivative whose grid doesn't match is unusable, so it must not disable
+    # the gate and let a silent download through.
+    _write_raster(eng.optimized_dir / f"{source_id}.tif", wh=(32, 32))
+    eng.sources.clear()
+
+    d = eng._describe(target=path, source=path, artifact_id="a", opts={})
+
+    assert d["optimization"]["status"] == "confirm_download"

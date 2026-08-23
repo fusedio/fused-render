@@ -642,6 +642,23 @@ class RasterEngine:
                 raise
         return self._describe(**arguments)
 
+    def _derivative_ready(self, path: Path, width: int, height: int) -> bool:
+        """Whether a cached derivative exists and matches the source grid.
+
+        A stale or truncated file at the fingerprint path is not "already
+        downloaded" — the confirm gate must still fire — so mere existence is
+        not enough.
+        """
+        import rasterio
+
+        if not path.exists():
+            return False
+        try:
+            with rasterio.open(path) as cached:
+                return cached.width == width and cached.height == height
+        except Exception:
+            return False
+
     def _describe(
         self, target: str, source: str, artifact_id: str, opts: dict[str, Any]
     ) -> dict[str, Any]:
@@ -720,7 +737,9 @@ class RasterEngine:
                 is_remote_path(source)
                 and not overviews
                 and not crosses_antimeridian
-                and not derivative.exists()
+                and not self._derivative_ready(
+                    derivative, dataset.width, dataset.height
+                )
                 and source_size is not None
                 and source_size > DOWNLOAD_CONFIRM_MAX_BYTES
             )
@@ -1358,10 +1377,17 @@ class RasterEngine:
             # exists to withhold, so draw nothing until the user accepts it.
             if record.optimization.get("status") == "confirm_download":
                 return self.transparent_tile()
+            # While a preparation is pulling the source (a confirmed or automatic
+            # optimize) and no coarse copy exists yet, an on-demand read would
+            # re-fetch the same remote bytes _prepare is already downloading, so
+            # draw nothing until a preview or the pyramid lands.
             if (
                 not record.has_overviews
                 and not record.preview_path
-                and z < record.minzoom
+                and (
+                    z < record.minzoom
+                    or record.optimization.get("status") in {"queued", "running"}
+                )
             ):
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)
