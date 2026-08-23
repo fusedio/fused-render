@@ -233,21 +233,6 @@
   gap: 10px;
 }
 
-/* capabilityIcon draws at 16px; CSS wins over the SVG's width/height
-   attributes, so the hero scales it without a second icon set. A bare glyph
-   beside the name now, not a 40px tile — the tile was card furniture. */
-.pg-hero-icon {
-  flex: none;
-  display: grid;
-  place-items: center;
-  height: 24px;
-  color: var(--accent);
-}
-.pg-hero-icon svg {
-  width: 18px;
-  height: 18px;
-}
-
 .pg-hero-names {
   flex: 1;
   min-width: 0;

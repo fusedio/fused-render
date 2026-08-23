@@ -417,12 +417,9 @@ export default function PlaygroundTab() {
           <>
             <section className="pg-hero">
               <div className="pg-hero-head">
-                <span className="pg-hero-icon" title={groupLabel(selected.row.capability)}>
-                  {capabilityIcon(selected.row.capability)}
-                </span>
                 <div className="pg-hero-names">
-                  {/* No capability word beside the name — the icon says it,
-                      with the label as its tooltip for whoever hovers. */}
+                  {/* No capability word or icon beside the name — the sidebar
+                      group the row sits under already says it. */}
                   <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
                   {/* The full repo id — author/name as Hugging Face knows it.
                       A link only when it IS a repo id: llama.cpp entries are
