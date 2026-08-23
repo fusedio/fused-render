@@ -22,7 +22,7 @@ import {
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
-import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterCards, type Starter } from "./controls";
+import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
@@ -190,7 +190,7 @@ export function TextStage({
   }, [prompt, temperature, topP, maxTokens, system]);
 
   const abortRef = useRef<AbortController | null>(null);
-  const boxRef = useRef<HTMLTextAreaElement | null>(null);
+  const { ref: boxRef, grow } = useAutoGrow();
 
   // Leaving the stage must not orphan a generation burning battery behind a
   // tab the user left: abort the fetch AND tell the worker (an abort alone
@@ -204,13 +204,6 @@ export function TextStage({
     },
     [],
   );
-
-  const grow = () => {
-    const box = boxRef.current;
-    if (!box) return;
-    box.style.height = "auto";
-    box.style.height = Math.min(box.scrollHeight, 180) + "px";
-  };
 
   const settings = (): ChatSettings => ({
     ...(temperature !== DEFAULTS.temperature ? { temperature } : {}),
@@ -311,7 +304,7 @@ export function TextStage({
         <textarea
           ref={boxRef}
           value={prompt}
-          rows={2}
+          rows={3}
           placeholder={`Ask ${modelLabel} something…`}
           onChange={(e) => {
             setPrompt(e.target.value);
@@ -324,31 +317,39 @@ export function TextStage({
             }
           }}
         />
-        {!streaming && reply && (
-          <button
-            type="button"
-            className="pg-ghost-btn pg-clear"
-            title="Clear the prompt and reply"
-            onClick={clear}
-          >
-            Clear
-          </button>
-        )}
-        {streaming ? (
-          <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
-            Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-primary pg-send"
-            disabled={!prompt.trim()}
-            title="Enter to run · Shift+Enter for a new line"
-            onClick={() => void send()}
-          >
-            Run <kbd className="pg-kbd">⏎</kbd>
-          </button>
-        )}
+        {/* Clear at the top of this column, Run at the bottom — not inline with
+            the prompt. Inline, Clear appeared and disappeared BESIDE the text,
+            narrowing the box by its own width and rewrapping the prompt taller
+            than the height the grow already wrote. The column's width is set by
+            Run, the wider of the two, so nothing moves when Clear comes and
+            goes. */}
+        <div className="pg-composer-side">
+          {!streaming && reply && (
+            <button
+              type="button"
+              className="pg-ghost-btn pg-clear"
+              title="Clear the prompt and reply"
+              onClick={clear}
+            >
+              Clear
+            </button>
+          )}
+          {streaming ? (
+            <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary pg-send"
+              disabled={!prompt.trim()}
+              title="Enter to run · Shift+Enter for a new line"
+              onClick={() => void send()}
+            >
+              Run <kbd className="pg-kbd">⏎</kbd>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Examples first, under the box they fill; hidden once there is a

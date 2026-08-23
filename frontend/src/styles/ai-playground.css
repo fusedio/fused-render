@@ -877,17 +877,65 @@ a.pg-hero-repo:hover {
   outline: none;
 }
 
+/* A three-line floor, because a prompt worth running is usually two or three
+   lines and a box that starts at one makes it look like a search field. It has
+   to be a min-height rather than `rows` alone: useAutoGrow writes an inline
+   height from the text's own scrollHeight, and min-height is what stops that
+   from collapsing the box back to one line. 4.5em is 3 × the 1.5 line-height,
+   plus the box's own 12px of padding — box-sizing is border-box globally. */
+.pg-composer textarea {
+  min-height: calc(4.5em + 12px);
+}
+
 .pg-send {
   flex: none;
 }
 
-/* 32px matches .btn (buttons-modal.css) so Clear and Run share a line. */
+/* Every composer's buttons stack in a column of their own beside the input:
+   Clear pinned to the top, Run to the bottom. The lift is `margin-bottom: auto`
+   on Clear rather than `justify-content: space-between` here, so Run stays at
+   the FOOT when Clear is absent (space-between with one child puts it at the
+   top). The column's width is Run's, the wider of the two, so Clear appearing
+   and disappearing never changes the input's width — which is what used to
+   leave a grown textarea height a line short and turn the box into a
+   scroller. */
+.pg-composer-side {
+  flex: none;
+  align-self: stretch;
+  /* Both slots, whether Clear is in one of them or not (2 × 32px button + the
+     gap). Without it the embed stage's one-line input sets the composer's
+     height, and the box would jump taller the moment a result gave it a Clear —
+     trading the width jitter this stack removes for a height one. The three-line
+     textareas are already taller than this, so it changes nothing there. */
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 32px matches .btn (buttons-modal.css), so Clear reads as the same weight of
+   control as the Run below it. */
+/* 32px matches .btn (buttons-modal.css), so Clear reads as the same weight of
+   control as the Run below it. Top-aligned by DEFAULT — `margin-bottom: auto`
+   lifts it in the stack, and in any row-flex parent the same auto margin is a
+   cross-axis one that lifts it just the same, so Clear is at the top wherever
+   it appears. */
 .pg-clear {
   flex: none;
   height: 32px;
+  margin-bottom: auto;
   display: inline-flex;
   align-items: center;
   padding: 0 6px;
+}
+
+/* The one place that opts out: the recording's own row is a horizontal toolbar
+   around an <audio> element, not a composer — its Clear belongs on that line
+   with the buttons beside it, not lifted off it. */
+.pg-audio-row .pg-clear {
+  margin-bottom: 0;
 }
 
 .pg-under {

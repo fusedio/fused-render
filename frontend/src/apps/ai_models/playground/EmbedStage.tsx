@@ -265,25 +265,30 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
               if (e.key === "Enter") void run();
             }}
           />
-          {ranked && !busy && (
+          {/* Same stack as the other composers — Clear at the top, Search at
+              the foot — so Clear sits in one place across the playground and
+              never appears BESIDE the input, stealing its width. */}
+          <div className="pg-composer-side">
+            {ranked && !busy && (
+              <button
+                type="button"
+                className="pg-ghost-btn pg-clear"
+                title="Clear the results"
+                onClick={() => setRanked(null)}
+              >
+                Clear
+              </button>
+            )}
             <button
               type="button"
-              className="pg-ghost-btn pg-clear"
-              title="Clear the results"
-              onClick={() => setRanked(null)}
+              className="btn btn-primary pg-send"
+              disabled={busy || !query.trim() || !lines.trim()}
+              title="Enter to run"
+              onClick={() => void run()}
             >
-              Clear
+              {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
             </button>
-          )}
-          <button
-            type="button"
-            className="btn btn-primary pg-send"
-            disabled={busy || !query.trim() || !lines.trim()}
-            title="Enter to run"
-            onClick={() => void run()}
-          >
-            {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
-          </button>
+          </div>
         </div>
 
         <ConfigPanel open={configOpen}>

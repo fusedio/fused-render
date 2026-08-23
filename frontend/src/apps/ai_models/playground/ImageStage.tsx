@@ -24,7 +24,7 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterCards, type Starter } from "./controls";
+import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
@@ -175,16 +175,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   }, [prompt, width, height, steps, guidance, seed, modelSteps]);
 
   const abortRef = useRef<AbortController | null>(null);
-  const boxRef = useRef<HTMLTextAreaElement | null>(null);
+  const { ref: boxRef, grow } = useAutoGrow();
   useEffect(() => () => abortRef.current?.abort(), []);
-
-  // Grows with the prompt so a Shift+Enter newline is visible.
-  const grow = () => {
-    const box = boxRef.current;
-    if (!box) return;
-    box.style.height = "auto";
-    box.style.height = Math.min(box.scrollHeight, 180) + "px";
-  };
 
   // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
   // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
@@ -294,7 +286,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       <div className="pg-composer">
           <textarea
             ref={boxRef}
-            rows={2}
+            rows={3}
             value={prompt}
             placeholder="Describe the picture…"
             onChange={(e) => {
@@ -308,35 +300,40 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               }
             }}
           />
-          {!busy && run && (
-            <button
-              type="button"
-              className="pg-ghost-btn pg-clear"
-              title="Clear the prompt and the picture"
-              onClick={clear}
-            >
-              Clear
-            </button>
-          )}
-          {busy ? (
-            <button
-              type="button"
-              className="btn btn-secondary pg-send"
-              onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="btn btn-primary pg-send"
-              disabled={!prompt.trim()}
-              title="Enter to run · Shift+Enter for a new line"
-              onClick={() => void generate()}
-            >
-              Generate <kbd className="pg-kbd">⏎</kbd>
-            </button>
-          )}
+          {/* Clear tops this column and Generate sits at its foot — see the
+              same block in TextStage: inline, Clear stole the prompt's width as
+              it appeared and left the grown height a line short. */}
+          <div className="pg-composer-side">
+            {!busy && run && (
+              <button
+                type="button"
+                className="pg-ghost-btn pg-clear"
+                title="Clear the prompt and the picture"
+                onClick={clear}
+              >
+                Clear
+              </button>
+            )}
+            {busy ? (
+              <button
+                type="button"
+                className="btn btn-secondary pg-send"
+                onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary pg-send"
+                disabled={!prompt.trim()}
+                title="Enter to run · Shift+Enter for a new line"
+                onClick={() => void generate()}
+              >
+                Generate <kbd className="pg-kbd">⏎</kbd>
+              </button>
+            )}
+          </div>
       </div>
 
       {/* Examples first, under the box they fill; hidden once a picture is on
