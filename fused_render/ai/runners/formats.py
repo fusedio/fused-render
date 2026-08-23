@@ -844,9 +844,9 @@ def text_embed_scheme(model_id: str, filename: str = "") -> str:
 #: 2026-08-23; all three repos are ungated, and each file is a single
 #: root-level `.gguf` rather than a shard, because `worker_base.download_file`
 #: takes one filename and a sharded tier would be silently unloadable.
-#: `test_ai_formats.py` asserts every id here also appears in
+#: `test_ai_llamacpp_embed_worker.py` asserts every id here also appears in
 #: `catalog.SUGGESTIONS["llamacpp-embed"]`, so the two cannot drift — the
-#: same pin `GGUF_RECIPES` has.
+#: same pin `GGUF_RECIPES` has in `test_ai_llamacpp_worker.py`.
 TEXT_EMBED_RECIPES = {
     "nomic-embed-text-v1.5.Q8_0.gguf": {
         "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
@@ -935,8 +935,9 @@ def gguf_recipe(model_id: str) -> dict | None:
 
     The two tables' keys must stay disjoint, which they are by construction
     (chat quantizations and embedding quantizations of different models) and
-    which `test_ai_formats.py` pins — `GGUF_RECIPES` is consulted first, so a
-    collision would resolve to the chat recipe and download the wrong file.
+    which `test_ai_llamacpp_embed_worker.py` pins — `GGUF_RECIPES` is
+    consulted first, so a collision would resolve to the chat recipe and
+    download the wrong file.
     """
     return GGUF_RECIPES.get(model_id) or TEXT_EMBED_RECIPES.get(model_id)
 
