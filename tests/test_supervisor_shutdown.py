@@ -14,9 +14,19 @@ import pytest
 
 pytest.importorskip("win32event")
 
+# __main__'s module body applies the desktop env — it repoints FUSED_RENDER_HOME
+# (and friends) at the REAL ~/.fused-render via os.environ.update. Right for the
+# packaged supervisor process, fatal here: this import runs at collection time in
+# the pytest process itself, so without the restore below every later test in the
+# worker stages core templates and builds venvs in the developer's real home.
+_env_before = dict(os.environ)
 from fused_render.supervisor import __main__ as entry
 from fused_render.supervisor import core, protocol
 from fused_render.supervisor._win32 import instance
+
+for _name in set(os.environ) - set(_env_before):
+    del os.environ[_name]
+os.environ.update(_env_before)
 
 _NAMES = instance.InstanceNames(mutex="m", pipe="p", sid="s")
 
@@ -432,3 +442,12 @@ def test_wait_payload_gone_times_out_when_process_survives(tmp_path, monkeypatch
             instance._wait_payload_gone(time.monotonic() + 1.0, payload=str(payload))
     finally:
         proc.kill()
+
+
+def test_the_entry_import_did_not_leak_the_desktop_env_into_the_suite():
+    """Pins the restore around the module-level `entry` import above: without it,
+    importing __main__ left FUSED_RENDER_HOME pointing at the real ~/.fused-render
+    for the rest of the pytest process — every later test then staged core
+    templates and built venvs in the developer's real home."""
+    for name in entry.DesktopPaths.discover().self_environment():
+        assert os.environ.get(name) == _env_before.get(name), name
