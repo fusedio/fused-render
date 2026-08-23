@@ -2477,6 +2477,72 @@ UNBOUNDED_RUNNER_DEPENDENCIES = {
 }
 
 
+_FULL_GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _uv_source_for(project_dir: str, name: str) -> dict | None:
+    """The `[tool.uv.sources]` entry routing `name`, or None.
+
+    A version specifier means nothing for a dependency `uv` resolves off a git
+    checkout instead of PyPI — `ltx-core-mlx`/`ltx-pipelines-mlx` carry no
+    operator at all in `[project].dependencies` (there is no PyPI release to
+    version against), so the BOUNDS test has to look here instead to decide
+    whether the requirement is pinned.
+    """
+    from fused_render import projectenv
+
+    meta = projectenv._load_manifest(project_dir)
+    if not isinstance(meta, dict):
+        return None
+    sources = meta.get("tool", {}).get("uv", {}).get("sources", {})
+    entry = sources.get(name)
+    return entry if isinstance(entry, dict) else None
+
+
+def _git_requirement_is_pinned(project_dir: str, name: str) -> bool:
+    """A git-sourced dependency counts as BOUNDED only pinned to a full commit.
+
+    A branch (`rev = "main"`), a tag that can be force-moved, or a bare git
+    URL with no `rev` at all are each exactly the unbounded-requirement risk
+    this suite exists to catch — `uv sync` re-resolves HEAD every time a venv
+    key changes, with no diff anywhere to explain what changed. A 40-hex `rev`
+    is the one form that cannot move under a user without a new commit to
+    this file naming it.
+    """
+    source = _uv_source_for(project_dir, name)
+    if source is None or "git" not in source:
+        return False
+    rev = source.get("rev")
+    return isinstance(rev, str) and bool(_FULL_GIT_SHA.match(rev))
+
+
+def test_a_git_dependency_pinned_to_a_full_commit_counts_as_bounded(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["ltx-core-mlx"]\n\n'
+        '[tool.uv.sources]\n'
+        'ltx-core-mlx = { git = "https://example.com/repo", '
+        'rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc" }\n')
+    assert _git_requirement_is_pinned(str(tmp_path), "ltx-core-mlx")
+
+
+@pytest.mark.parametrize("bad_source", [
+    '{ git = "https://example.com/repo", rev = "main" }',
+    '{ git = "https://example.com/repo", branch = "main" }',
+    '{ git = "https://example.com/repo" }',
+], ids=["branch-as-rev", "explicit-branch", "no-rev-at-all"])
+def test_a_git_dependency_on_a_branch_or_bare_url_still_fails_the_pin_check(
+        tmp_path, bad_source):
+    """The half that makes the positive case above safe: a rev that is not a
+    40-hex commit — a branch name, or nothing at all — must still read as
+    UNbounded, or the check above would rubber-stamp any `[tool.uv.sources]`
+    entry rather than the one shape that is actually pinned."""
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\ndependencies = ["ltx-core-mlx"]\n\n'
+        f'[tool.uv.sources]\n'
+        f'ltx-core-mlx = {bad_source}\n')
+    assert not _git_requirement_is_pinned(str(tmp_path), "ltx-core-mlx")
+
+
 @pytest.mark.parametrize("runner", registry.all_runners(), ids=lambda r: r.code)
 def test_every_runner_BOUNDS_its_model_runtimes(runner):
     """The generalisation of the mflux abort, applied to every manifest.
@@ -2492,6 +2558,12 @@ def test_every_runner_BOUNDS_its_model_runtimes(runner):
     supposed to move: bumping one is a normal change with a run behind it. What
     must not move silently is the major/minor, so the failure a new unbounded
     dependency produces is a prompt to decide, not a chore.
+
+    **A git-sourced requirement never carries an operator at all** (there is
+    no PyPI release to write `<` against), so it is checked through
+    `_git_requirement_is_pinned` instead — a full commit `rev` counts as
+    bounded, a branch or a bare URL does not (see the two tests above this
+    one, which exercise that half directly against a synthetic manifest).
     """
     from fused_render import projectenv
 
@@ -2502,12 +2574,17 @@ def test_every_runner_BOUNDS_its_model_runtimes(runner):
         name = name.strip().replace("_", "-").lower()
         if name in UNBOUNDED_RUNNER_DEPENDENCIES:
             continue
-        assert "<" in requirement or "==" in requirement, (
+        if "<" in requirement or "==" in requirement:
+            continue
+        if _git_requirement_is_pinned(runner.folder, requirement.strip()):
+            continue
+        assert False, (
             f"{os.path.relpath(runner.pyproject)} declares `{requirement}` with "
             f"no upper bound. These runners have no committed uv.lock and "
             f"`uv sync` runs bare, so every new venv key re-resolves this from "
             f"PyPI — a major bump lands on users with no commit behind it "
-            f"(the mflux abort above). Add a ceiling, or add `{name}` to "
+            f"(the mflux abort above). Add a ceiling, pin a git source to a full "
+            f"commit `rev`, or add `{name}` to "
             f"UNBOUNDED_RUNNER_DEPENDENCIES in {os.path.basename(__file__)} "
             f"with the reason it cannot change what a model computes.")
 
