@@ -160,9 +160,9 @@ export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
  * watched has to be the row that says how it ended.
  *
  * `done` and `cancelled` only, never `error`. Not a hedge — the two are
- * self-retiring (jobs.py sweeps a finished row after FINISHED_TTL_S, 30s), so
- * the fold gains one closing frame and gives it back. An `error` row is kept
- * until it is dismissed BY DESIGN (it is the outcome someone may have to act
+ * self-retiring (jobs.py sweeps a finished row after FINISHED_TTL_S, a few
+ * seconds), so the fold gains one closing frame and gives it back. An `error`
+ * row is kept until it is dismissed BY DESIGN (it is the outcome someone may have to act
  * on), so piercing the fold with one would defeat the collapse preference for as
  * long as it sat there — and the card's header already carries the count that
  * says a run failed.
@@ -403,6 +403,31 @@ export function overallFraction(jobs: Job[]): number | null {
 export const POLL_ACTIVE_MS = 1000;
 export const POLL_IDLE_MS = 5000;
 
-export function pollInterval(jobs: Job[]): number {
-  return jobs.some(isRunning) ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+// How long to keep the ACTIVE cadence going after the last running job
+// disappears. jobs.py sweeps a finished row after FINISHED_TTL_S (currently
+// 3s) — a short TTL only actually shortens what the user sees if the client
+// is still polling fast enough to catch the row landing AND catch it being
+// swept. Dropping straight to POLL_IDLE_MS (5s) the instant nothing is
+// running would mean a row could be missed on arrival, or sit for a ragged
+// 0-5s after it dies depending on poll phase, instead of the clean ~3s the
+// server now promises.
+//
+// GRACE_MS must comfortably outlive FINISHED_TTL_S plus a poll interval —
+// this is the other half of that relationship, so a future change to
+// FINISHED_TTL_S (fused_render/jobs.py) should come back here and check the
+// margin still holds, and vice versa: shrinking GRACE_MS below
+// FINISHED_TTL_S + POLL_ACTIVE_MS reopens the same lag this constant exists
+// to close.
+export const GRACE_MS = 6000;
+
+/**
+ * Poll cadence given the current jobs and how long ago a job was last seen
+ * running. Pure — no clock of its own — so the caller (DownloadManager's
+ * `useJobs`) is the one that owns `Date.now()` and remembers when it last
+ * saw a running job; this function just decides what the elapsed time means.
+ */
+export function pollInterval(jobs: Job[], sinceLastRunningMs: number): number {
+  if (jobs.some(isRunning)) return POLL_ACTIVE_MS;
+  if (sinceLastRunningMs < GRACE_MS) return POLL_ACTIVE_MS;
+  return POLL_IDLE_MS;
 }

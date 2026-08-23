@@ -4,6 +4,7 @@
 // header counting finished work as running.
 import { expect, test } from "bun:test";
 import {
+  GRACE_MS,
   jobAmount,
   jobFraction,
   jobStatusLine,
@@ -170,8 +171,18 @@ test("finished jobs are not averaged into the running total", () => {
 
 // ---------------------------------------------------------------- poll pacing
 
-test("the poll goes fast while anything runs and idles when nothing does", () => {
-  expect(pollInterval([job()])).toBe(POLL_ACTIVE_MS);
-  expect(pollInterval([job({ state: "done" })])).toBe(POLL_IDLE_MS);
-  expect(pollInterval([])).toBe(POLL_IDLE_MS);
+test("the poll goes fast while anything runs, regardless of elapsed time", () => {
+  expect(pollInterval([job()], 0)).toBe(POLL_ACTIVE_MS);
+  expect(pollInterval([job()], GRACE_MS + 1)).toBe(POLL_ACTIVE_MS);
+});
+
+test("the poll stays fast through a grace window after the last running job disappears", () => {
+  expect(pollInterval([job({ state: "done" })], 0)).toBe(POLL_ACTIVE_MS);
+  expect(pollInterval([job({ state: "done" })], GRACE_MS - 1)).toBe(POLL_ACTIVE_MS);
+});
+
+test("the poll idles once the grace window has elapsed", () => {
+  expect(pollInterval([job({ state: "done" })], GRACE_MS)).toBe(POLL_IDLE_MS);
+  expect(pollInterval([job({ state: "done" })], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
+  expect(pollInterval([], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
 });
