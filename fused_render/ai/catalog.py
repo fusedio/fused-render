@@ -92,16 +92,21 @@ from fused_render.ai import registry
 #: which the card shows as "—" rather than inventing a figure from parameter
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
-#: `nickname` is the short human name the Playground sidebar shows — the
-#: model without its quantization/engine qualifier, and free to be plainer
-#: still: both Liquid rows read "Liquid 2.5" where the labels say "LFM2.5 1.2B
+#: `nickname` is the short human name the Playground sidebar shows — the model
+#: without its quantization/engine qualifier and WITHOUT ITS PARAMETER COUNT,
+#: which the card prints beside it as a chip: "Qwen3.5", not "Qwen3.5 4B". The
+#: name and the chip repeating each other was the whole reason to state the
+#: rule here. It goes further where the full name is jargon rather than a name
+#: — both Liquid rows read "Liquid 2.5" where the labels say "LFM2.5 1.2B
 #: Instruct" and "LFM2.5 8B-A1B", because the acronym and the instruct-tuning
-#: distinguish nothing on a tab where every text row is chat-tuned. The two
-#: sharing one nickname is deliberate and only safe because the sidebar card
-#: prints `params` beside it (the chip left of the download size): that is
-#: what separates them, so the name does not have to carry a size a reader is
-#: already looking at. A capability whose rows would collide with no
-#: distinguishing chip must not do this.
+#: distinguish nothing on a tab where every text row is chat-tuned.
+#:
+#: So SIBLINGS OF ONE FAMILY SHARE A NICKNAME on purpose (two "Liquid 2.5", two
+#: "Qwen3.5"), and the chip is what tells them apart. That only holds while
+#: every colliding row HAS a `params` — a family whose rows would collide with
+#: no distinguishing chip must keep the size in the name. What is not a
+#: parameter count stays: Whisper's tiny/small/large-v3 and SigLIP2's `base`
+#: are the publisher's own variant names, and the chip says 39M beside them.
 #: A curated FIELD, never
 #: derived by stripping the label's parenthetical at runtime, for the reason
 #: `short_label` and `family_label` are fields too (AI-2c): a stripped name
@@ -279,7 +284,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "OptiQ 4-bit",
             "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
-            "nickname": "Qwen3.5 4B",
+            "nickname": "Qwen3.5",
             "size_gb": 4.0,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
@@ -320,7 +325,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "4B effective",
             "quantization": "MLX 4-bit",
             "label": "Gemma 4 E4B (4-bit)",
-            "nickname": "Gemma 4 E4B",
+            "nickname": "Gemma 4",
             "size_gb": 5.2,
             "note": "A second family at much the same size as the Qwen 4B, "
                     "worth trying on a prompt Qwen handles badly.",
@@ -342,7 +347,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "Ternary 2-bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
-            "nickname": "Ternary Bonsai 27B",
+            "nickname": "Ternary Bonsai",
             # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
             # the completed download MEASURES on disk, reported by the AI Models
             # page's own scan. Where the two disagree the measurement wins —
@@ -359,7 +364,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "9B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
-            "nickname": "Qwen3.5 9B",
+            "nickname": "Qwen3.5",
             "size_gb": 8.2,
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
@@ -373,7 +378,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "MLX 4-bit",
             "label": "Qwen3.8 27B (MLX 4-bit)",
-            "nickname": "Qwen3.8 27B",
+            "nickname": "Qwen3.8",
             # Measured from the repo's blob sizes, not estimated.
             "size_gb": 16.1,
             "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
@@ -394,7 +399,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
-            "nickname": "Qwen3.6 27B",
+            "nickname": "Qwen3.6",
             "size_gb": 20.0,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
@@ -518,7 +523,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "GGUF Q4_K_M",
             "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
-            "nickname": "Qwen3.5 4B",
+            "nickname": "Qwen3.5",
             "size_gb": 2.7,
             "note": "The first row here strong enough for real work: current-"
                     "gen Qwen, and a fifth of the unquantized 4B's download.",
@@ -528,7 +533,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "4B effective",
             "quantization": "GGUF Q4_K_M",
             "label": "Gemma 4 E4B (Q4_K_M)",
-            "nickname": "Gemma 4 E4B",
+            "nickname": "Gemma 4",
             "size_gb": 5.0,
             "note": "A second family, worth trying on a prompt the Qwen 4B "
                     "above handles badly — it answers above its size class "
@@ -567,7 +572,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "GGUF UD-Q3_K_XL",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
-            "nickname": "Qwen3.8 27B",
+            "nickname": "Qwen3.8",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
@@ -582,7 +587,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "int8 (torchao)",
             "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
-            "nickname": "FLUX.2 klein 4B",
+            "nickname": "FLUX.2 klein",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
             # `usedStorage` (2026-08-20 Hub metadata), and here that number IS
             # the download — one repo, no component repo, and no skipped
@@ -636,7 +641,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "MLX 4-bit",
             "recommended": True,
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
-            "nickname": "FLUX.2 klein 4B",
+            "nickname": "FLUX.2 klein",
             "size_gb": 4.6,
             "note": "One repo instead of the Diffusers split, and quicker per "
                     "image — but it reserves far more memory while running.",
