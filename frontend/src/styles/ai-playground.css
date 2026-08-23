@@ -52,7 +52,10 @@
  * Spacing is MARGINS, not flex gap: Chrome keeps <details> block-level
  * whatever display it is handed, so a gap here silently does nothing. */
 .pg-group + .pg-group {
-  margin-top: 15px;
+  /* Wider than the 8px between a heading and its own cards by enough to read
+   * as a different order of gap: the cards lost their borders, so the space
+   * between sections is what groups them now. */
+  margin-top: 28px;
 }
 
 .pg-group > :not(summary) {
@@ -73,13 +76,18 @@
   display: none;
 }
 
+/* Immediately right of the title, not flushed to the rail's far edge: the
+ * caret belongs to the word it opens, and parked 200px away it read as a
+ * control for the whole column. Smaller with it — at 7px next to 12px text it
+ * was the heavier of the two marks. */
 .pg-group-head::after {
   content: "";
-  margin-left: auto;
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid var(--fg-muted);
-  border-bottom: 1.5px solid var(--fg-muted);
+  flex: none;
+  margin-left: -2px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.25px solid var(--fg-muted);
+  border-bottom: 1.25px solid var(--fg-muted);
   transform: rotate(-45deg);
   transition: transform 0.15s ease;
 }
@@ -97,11 +105,12 @@
   flex: none;
 }
 
+/* The label as written — "Text", "Transcription", "Not supported" — instead of
+ * tracked-out caps. The words are already the section's own nouns, and shouting
+ * them made four small headings compete with the cards under them. */
 .pg-group-title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .pg-group-off {
