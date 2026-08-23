@@ -105,3 +105,108 @@ def test_the_force_list_reconciliation_does_not_repin_the_shipped_payload():
             "can silently change a version the DMG ships: "
             f'"$BUILD_VENV/bin/pip" install {flags}'
         )
+
+
+def test_h3_commit_pin_is_single_sourced():
+    """H3_COMMIT must come from scripts/h3_commit.txt, not a literal.
+
+    scripts/dev.sh builds the same antirez/h3.c pin (for the h3-video runner in
+    a dev checkout) and MUST read the identical commit — a second hardcoded sha
+    is exactly the drift this repo has been bitten by elsewhere (see
+    RCLONE_VERSION, duplicated across build_dmg.sh and
+    build_linux_appimage.sh). scripts/h3_commit.txt is the one place a pin bump
+    may be written.
+    """
+    src = _script()
+    assert 'H3_COMMIT="$(tr -d \'[:space:]\' < "$REPO_ROOT/scripts/h3_commit.txt")"' in src, (
+        "build_dmg.sh must read H3_COMMIT from scripts/h3_commit.txt, not a "
+        "hardcoded sha, so a pin bump cannot drift out of sync with dev.sh"
+    )
+    # No leftover 40-hex-char literal assignment anywhere else in the script.
+    assert not re.search(r'H3_COMMIT="[0-9a-f]{40}"', src), (
+        "found a hardcoded H3_COMMIT sha literal — the pin must live only in "
+        "scripts/h3_commit.txt"
+    )
+
+    commit_file = os.path.join(_SCRIPTS, "h3_commit.txt")
+    with open(commit_file, encoding="utf-8") as f:
+        pinned = f.read().strip()
+    assert re.fullmatch(r"[0-9a-f]{40}", pinned), (
+        f"scripts/h3_commit.txt must hold exactly one 40-char hex sha, got: {pinned!r}"
+    )
+
+    dev_sh = os.path.join(_SCRIPTS, "dev.sh")
+    with open(dev_sh, encoding="utf-8") as f:
+        dev_src = f.read()
+    assert "scripts/h3_commit.txt" in dev_src, (
+        "dev.sh must read the same scripts/h3_commit.txt file build_dmg.sh reads"
+    )
+    assert not re.search(r'h3_commit="[0-9a-f]{40}"', dev_src), (
+        "found a hardcoded h3 commit literal in dev.sh — it must read "
+        "scripts/h3_commit.txt like build_dmg.sh does"
+    )
+
+
+def test_h3_license_is_staged_and_shipped():
+    """h3.c is MIT: the notice must travel with every copy of the binary.
+
+    A dev-only local build (dev.sh) is not redistribution, but this script
+    ships the compiled h3 binary inside the DMG — that IS redistribution, so
+    the upstream LICENSE has to be staged alongside the cached binary and
+    copied into the app bundle next to it, the same as the binary itself.
+    """
+    src = _script()
+    assert 'cp "$H3_SRC_DIR/LICENSE" "$H3_STAGE_DIR/LICENSE"' in src, (
+        "the h3.c LICENSE must be staged into the build cache alongside the "
+        "compiled binary"
+    )
+    assert 'cp "$H3_STAGED_LICENSE" "$APP_DIR/Contents/Resources/bin/h3-LICENSE"' in src, (
+        "the staged h3.c LICENSE must be copied into the app bundle next to "
+        "the h3 binary it accompanies"
+    )
+
+
+def test_dev_sh_h3_build_is_soft_fail_with_an_opt_out():
+    """dev.sh's h3 build must never be able to abort the dev server start.
+
+    Every failure mode (no Apple Silicon, no network, missing git/clang, a
+    failed compile) has to warn and return 0 under dev.sh's own
+    `set -euo pipefail` — and there must be an env var to skip the compile
+    entirely, in the FUSED_RENDER_* naming convention this script already
+    uses for its other knobs (FUSED_RENDER_NO_RELOAD, etc).
+    """
+    dev_sh = os.path.join(_SCRIPTS, "dev.sh")
+    with open(dev_sh, encoding="utf-8") as f:
+        src = f.read()
+    assert "FUSED_RENDER_SKIP_H3_BUILD" in src, (
+        "dev.sh needs an opt-out env var to skip the h3 compile"
+    )
+    assert "export FUSED_RENDER_H3_BIN=" in src, (
+        "dev.sh must export FUSED_RENDER_H3_BIN so registry.h3_bin() (its "
+        "first resolution step) finds the freshly-built/cached binary"
+    )
+    func_match = re.search(
+        r"_maybe_build_h3\(\) \{(.*?)\n\}\n", src, re.DOTALL
+    )
+    assert func_match, "expected a _maybe_build_h3 function in dev.sh"
+    body = func_match.group(1)
+    # Every early-exit path must `return 0` (not a bare non-zero exit) so a
+    # failure inside the function cannot itself register as the function's
+    # failing exit status in a way that surprises the `|| …` guard at the
+    # call site — and, more importantly, so it never calls a bare `exit`,
+    # which WOULD take the whole of dev.sh down with it.
+    assert "exit 1" not in body and re.search(r"\bexit\b", body) is None, (
+        "_maybe_build_h3 must never call `exit` — only `return 0` on failure — "
+        "or a failure would abort the whole dev server start"
+    )
+    assert body.count("return 0") >= 5, (
+        "expected a `return 0` soft-fail on each of: opt-out, non-Apple-Silicon, "
+        "missing git, missing clang/cc, clone failure, checkout failure, and "
+        "compile failure"
+    )
+    # The call site must guard the whole function with `||`, which is what
+    # suspends `set -e` for every command inside the function body.
+    assert re.search(r"_maybe_build_h3 \|\|", src), (
+        "the call to _maybe_build_h3 must be guarded with `||` so a failing "
+        "command inside it cannot abort dev.sh under set -e"
+    )

@@ -289,7 +289,11 @@ fi
 #     FRAMEWORK_PYTHON note), and h3.c's own Metal path has no other target.
 # ---------------------------------------------------------------------------
 
-H3_COMMIT="8974cc055ea9c02fcd14cc27dfda3e1027c05153"
+# Single-sourced from scripts/h3_commit.txt (plain text, one line: the pinned
+# sha) so scripts/dev.sh's own h3 build reads the SAME pin rather than
+# carrying a second literal that can drift silently out of sync with this
+# one. Bumping the pin is therefore a one-line edit to that file alone.
+H3_COMMIT="$(tr -d '[:space:]' < "$REPO_ROOT/scripts/h3_commit.txt")"
 H3_STAGE_DIR="$BUILD_DIR/h3-bin/${H3_COMMIT}"
 H3_STAGED_BIN="$H3_STAGE_DIR/h3"
 
@@ -312,9 +316,28 @@ if [[ ! -x "$H3_STAGED_BIN" ]]; then
   mkdir -p "$H3_STAGE_DIR"
   cp "$H3_SRC_DIR/h3" "$H3_STAGED_BIN"
   chmod +x "$H3_STAGED_BIN"
+  # MIT obligation: h3.c is MIT-licensed (Salvatore Sanfilippo, 2026), which
+  # requires the copyright + permission notice to accompany copies. This DMG
+  # ships the binary (unlike a dev-only local build), so that is
+  # redistribution — stage the upstream LICENSE alongside the binary here so
+  # it travels with every cache hit, and copy it into the bundle below.
+  if [[ ! -f "$H3_SRC_DIR/LICENSE" ]]; then
+    echo "FATAL: antirez/h3.c @ ${H3_COMMIT} has no LICENSE file at its root —" >&2
+    echo "       the MIT notice cannot be shipped alongside the binary. Check" >&2
+    echo "       upstream before bundling this commit." >&2
+    exit 1
+  fi
+  cp "$H3_SRC_DIR/LICENSE" "$H3_STAGE_DIR/LICENSE"
   rm -rf "$H3_SRC_DIR"
 else
   echo "==> h3 (${H3_COMMIT}) already staged, skipping build"
+fi
+H3_STAGED_LICENSE="$H3_STAGE_DIR/LICENSE"
+if [[ ! -f "$H3_STAGED_LICENSE" ]]; then
+  echo "FATAL: $H3_STAGED_LICENSE missing even though $H3_STAGED_BIN is staged —" >&2
+  echo "       a cache from before the LICENSE staging fix. Delete $H3_STAGE_DIR" >&2
+  echo "       and re-run to rebuild it with the notice included." >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -963,6 +986,9 @@ H3_DEST="$APP_DIR/Contents/Resources/bin/h3"
 mkdir -p "$(dirname "$H3_DEST")"
 cp "$H3_STAGED_BIN" "$H3_DEST"
 chmod +x "$H3_DEST"
+# MIT notice, shipped alongside the binary (see the staging step above for
+# why this is required here and not for the dev-only build in dev.sh).
+cp "$H3_STAGED_LICENSE" "$APP_DIR/Contents/Resources/bin/h3-LICENSE"
 
 # `-h`/`--help` rather than a full render: this smoke test runs on every
 # build and must not spend minutes loading a 62GB snapshot nobody staged

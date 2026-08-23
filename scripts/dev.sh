@@ -37,6 +37,8 @@
 #     nothing. Consumed here, never forwarded to the server.
 #   * FUSED_RENDER_NO_RELOAD=1: disable Python auto-reload; run the server once
 #     exactly as before (server opens its own browser tab).
+#   * FUSED_RENDER_SKIP_H3_BUILD=1: skip building the h3-video runner's h3.c
+#     binary (see _maybe_build_h3 below) — h3-video stays unavailable.
 # watchfiles is auto-installed into the venv if missing; if the install fails,
 # dev.sh falls back to the original single-launch behavior.
 set -euo pipefail
@@ -578,6 +580,106 @@ done
 # already-set value so the caller can override (including to "0" to force the
 # production dies-with-server behavior).
 export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
+
+# ---------------------------------------------------------------------------
+# h3-video runner: build + cache the h3.c (antirez) Metal binary so a dev
+# checkout has `h3-video` available with no one hand-building it first.
+#
+# Mirrors build_dmg.sh step 2c exactly: same commit pin (both scripts read
+# scripts/h3_commit.txt — a single-line file so the pin cannot drift between
+# the two build paths; bumping it is a one-line edit there, never here or in
+# build_dmg.sh) and the same cache layout, `build/h3-bin/<commit>/h3`. Within
+# one checkout, dev.sh and build_dmg.sh derive that path from the SAME
+# $REPO_ROOT/build, so a build done by one is a cache hit for the other. That
+# sharing does NOT cross worktrees/checkouts — build/ is gitignored and
+# per-checkout, so a separate worktree (this one included, relative to the
+# ltx-video-engine checkout it will eventually merge into) has its own cache
+# and pays the compile once on its own.
+#
+# Soft-fail, ALWAYS: h3-video is one optional local AI runner among several
+# (see _h3_available() in fused_render/ai/registry.py) — never something a
+# dev server start can be allowed to fail over. Every failure mode below —
+# not Apple Silicon, no network, missing git/clang, a compile error, an
+# unsupported SDK — prints a warning and returns 0, leaving h3-video simply
+# unavailable (registry.py's own availability check already reports why).
+#
+# Opt out entirely with FUSED_RENDER_SKIP_H3_BUILD=1 (e.g. you don't want
+# h3-video on this machine, or you're offline and don't want the clone
+# attempt's delay).
+#
+# `|| _h3_build_failed_hint` below is what makes this safe under this
+# script's `set -euo pipefail`: bash suspends -e for the whole duration of a
+# function call that is the tested command of `||`, so a `false` deep inside
+# `_maybe_build_h3` cannot abort dev.sh even though every failure branch
+# inside the function still uses ordinary `if ! cmd; then ... fi` checks.
+_maybe_build_h3() {
+  if [[ "${FUSED_RENDER_SKIP_H3_BUILD:-}" == "1" ]]; then
+    echo "==> FUSED_RENDER_SKIP_H3_BUILD set -> skipping h3 build (h3-video will be unavailable)"
+    return 0
+  fi
+  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    echo "==> h3-video needs Apple Silicon (this is $(uname -s)/$(uname -m)) -> skipping h3 build"
+    return 0
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    echo "==> WARNING: git not found on PATH -> skipping h3 build (h3-video will be unavailable)" >&2
+    return 0
+  fi
+  if ! command -v clang >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
+    echo "==> WARNING: no clang/cc on PATH -> skipping h3 build (h3-video will be unavailable)" >&2
+    return 0
+  fi
+
+  local h3_commit h3_stage_dir h3_bin h3_src_dir
+  h3_commit="$(tr -d '[:space:]' < "$REPO_ROOT/scripts/h3_commit.txt")"
+  h3_stage_dir="$REPO_ROOT/build/h3-bin/${h3_commit}"
+  h3_bin="$h3_stage_dir/h3"
+
+  if [[ -x "$h3_bin" ]]; then
+    echo "==> h3 (${h3_commit}) already built and cached at $h3_bin"
+    export FUSED_RENDER_H3_BIN="$h3_bin"
+    return 0
+  fi
+
+  # First-run cost is real (up to ~90s of a from-scratch C/Objective-C build)
+  # and must never read as a silent hang — say so before it starts, same
+  # style as every other `==>` step in this script.
+  echo "==> building h3 (antirez/h3.c @ ${h3_commit}) for the h3-video runner"
+  echo "    — first build only, cached at build/h3-bin/${h3_commit}/ after;"
+  echo "    can take up to ~90s"
+  h3_src_dir="$REPO_ROOT/build/h3-src"
+  rm -rf "$h3_src_dir"
+  if ! git clone --quiet https://github.com/antirez/h3.c.git "$h3_src_dir" 2>&1; then
+    echo "==> WARNING: could not clone antirez/h3.c (offline?) -> h3-video will be unavailable" >&2
+    rm -rf "$h3_src_dir"
+    return 0
+  fi
+  if ! git -C "$h3_src_dir" checkout --quiet "$h3_commit" 2>&1; then
+    echo "==> WARNING: could not check out h3.c @ ${h3_commit} -> h3-video will be unavailable" >&2
+    rm -rf "$h3_src_dir"
+    return 0
+  fi
+  # See build_dmg.sh's own step-2c comment for why no offline Metal shader
+  # toolchain is needed but a macOS 26+ SDK still is (Metal 4 / MPSGraph
+  # declarations in the Objective-C source).
+  if ! (cd "$h3_src_dir" && make -j8 h3) 2>&1 || [[ ! -x "$h3_src_dir/h3" ]]; then
+    echo "==> WARNING: h3.c build failed (needs a macOS 26+ SDK selected — see" >&2
+    echo "    build_dmg.sh step 2c) -> h3-video will be unavailable" >&2
+    rm -rf "$h3_src_dir"
+    return 0
+  fi
+  mkdir -p "$h3_stage_dir"
+  cp "$h3_src_dir/h3" "$h3_bin"
+  chmod +x "$h3_bin"
+  # MIT notice: a local dev build is not redistribution, so this is not a
+  # compliance requirement here the way it is for build_dmg.sh's shipped DMG
+  # — staged anyway since it costs nothing and keeps the two caches identical.
+  [[ -f "$h3_src_dir/LICENSE" ]] && cp "$h3_src_dir/LICENSE" "$h3_stage_dir/LICENSE"
+  rm -rf "$h3_src_dir"
+  echo "==> h3 built and cached at $h3_bin"
+  export FUSED_RENDER_H3_BIN="$h3_bin"
+}
+_maybe_build_h3 || echo "==> WARNING: h3 build step failed unexpectedly -> h3-video will be unavailable" >&2
 
 # Python: active venv first, then the repo-local .venv. With neither, bootstrap
 # a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh
