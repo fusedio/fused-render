@@ -169,11 +169,18 @@ def test_h3_license_is_staged_and_shipped():
 def test_dev_sh_h3_build_is_soft_fail_with_an_opt_out():
     """dev.sh's h3 build must never be able to abort the dev server start.
 
-    Every failure mode (no Apple Silicon, no network, missing git/clang, a
-    failed compile) has to warn and return 0 under dev.sh's own
-    `set -euo pipefail` — and there must be an env var to skip the compile
-    entirely, in the FUSED_RENDER_* naming convention this script already
-    uses for its other knobs (FUSED_RENDER_NO_RELOAD, etc).
+    `_h3_maybe_build` is the SYNCHRONOUS gate (opt-out, Apple Silicon, git/
+    clang presence, cache-hit) — every early-exit path there has to `return 0`
+    under dev.sh's own `set -euo pipefail`, and it must never call a bare
+    `exit`, which WOULD take the whole of dev.sh down with it. The actual
+    clone/build/install runs in `_h3_build_in_background`, backgrounded via
+    `( … ) &` — that one legitimately calls `exit 0` on a clone/checkout/
+    compile failure, and that is fine: it only exits the backgrounded
+    subshell dev.sh forked for it, never dev.sh itself.
+
+    There must also be an env var to skip the compile entirely, in the
+    FUSED_RENDER_* naming convention this script already uses for its other
+    knobs (FUSED_RENDER_NO_RELOAD, etc).
     """
     dev_sh = os.path.join(_SCRIPTS, "dev.sh")
     with open(dev_sh, encoding="utf-8") as f:
@@ -185,28 +192,54 @@ def test_dev_sh_h3_build_is_soft_fail_with_an_opt_out():
         "dev.sh must export FUSED_RENDER_H3_BIN so registry.h3_bin() (its "
         "first resolution step) finds the freshly-built/cached binary"
     )
-    func_match = re.search(
-        r"_maybe_build_h3\(\) \{(.*?)\n\}\n", src, re.DOTALL
+    gate_match = re.search(
+        r"\n_h3_maybe_build\(\) \{(.*?)\n\}\n", src, re.DOTALL
     )
-    assert func_match, "expected a _maybe_build_h3 function in dev.sh"
-    body = func_match.group(1)
-    # Every early-exit path must `return 0` (not a bare non-zero exit) so a
-    # failure inside the function cannot itself register as the function's
-    # failing exit status in a way that surprises the `|| …` guard at the
-    # call site — and, more importantly, so it never calls a bare `exit`,
-    # which WOULD take the whole of dev.sh down with it.
-    assert "exit 1" not in body and re.search(r"\bexit\b", body) is None, (
-        "_maybe_build_h3 must never call `exit` — only `return 0` on failure — "
+    assert gate_match, "expected an _h3_maybe_build function in dev.sh"
+    gate_body = gate_match.group(1)
+    assert "exit 1" not in gate_body and re.search(r"\bexit\b", gate_body) is None, (
+        "_h3_maybe_build must never call `exit` — only `return 0` on failure — "
         "or a failure would abort the whole dev server start"
     )
-    assert body.count("return 0") >= 5, (
+    assert gate_body.count("return 0") >= 5, (
         "expected a `return 0` soft-fail on each of: opt-out, non-Apple-Silicon, "
-        "missing git, missing clang/cc, clone failure, checkout failure, and "
-        "compile failure"
+        "missing git, missing clang/cc, and a cache hit"
     )
-    # The call site must guard the whole function with `||`, which is what
-    # suspends `set -e` for every command inside the function body.
-    assert re.search(r"_maybe_build_h3 \|\|", src), (
-        "the call to _maybe_build_h3 must be guarded with `||` so a failing "
+    # The build itself is backgrounded, not called synchronously with a `||`
+    # guard: a background job's failure can never register against dev.sh's
+    # own `set -e` regardless, so there is nothing for `||` to protect here
+    # (unlike the earlier synchronous version of this step).
+    assert re.search(r"\(\s*_h3_build_in_background .*\)\s*&", src), (
+        "expected the actual clone/build to be launched as a backgrounded "
+        "explicit subshell, `( _h3_build_in_background … ) &`"
+    )
+    assert re.search(r"_h3_maybe_build \|\|", src), (
+        "the call to _h3_maybe_build must be guarded with `||` so a failing "
         "command inside it cannot abort dev.sh under set -e"
+    )
+
+
+def test_dev_sh_h3_build_is_atomic_and_cleans_up_on_exit():
+    """The install must be temp-then-rename, and the lock/temp state must be
+    released on every exit path of the background build — not just success.
+
+    `h3_bin()` (fused_render/ai/registry.py) resolves `FUSED_RENDER_H3_BIN`
+    with a bare `os.path.isfile` check, so a half-written binary at the cache
+    path would be exec'd by whichever server resolves it next. And a build
+    killed with dev.sh (or one that lost a lock race) must not leave a
+    half-built temp directory or a stale lock behind for a later run to trip
+    over.
+    """
+    dev_sh = os.path.join(_SCRIPTS, "dev.sh")
+    with open(dev_sh, encoding="utf-8") as f:
+        src = f.read()
+    assert re.search(r'mv -f "\$tmp_bin" "\$bin_path"', src), (
+        "the built binary must be moved into place with `mv` (a same-"
+        "filesystem rename is atomic), not written directly to the cache path"
+    )
+    # The cleanup trap must be installed for EXIT, INT and TERM alike — TERM
+    # is what dev.sh's own shutdown sends this subshell's process tree.
+    assert re.search(r'trap "rm -rf .*" EXIT INT TERM', src), (
+        "expected an EXIT/INT/TERM trap that removes the temp build dir, "
+        "temp binary and lock dir on every exit path"
     )
