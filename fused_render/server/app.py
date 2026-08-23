@@ -222,9 +222,29 @@ def write_server_json(port: int, host: str = "127.0.0.1") -> None:
 def remove_server_json() -> None:
     """Undo `write_server_json` at shutdown. Best-effort: a file that is
     already gone, or a home dir that went away underneath the server, is not
-    a reason to raise from a shutdown handler."""
+    a reason to raise from a shutdown handler.
+
+    **Only ever removes a file THIS process wrote.** `write_server_json` is
+    last-writer-wins into one branch-resolved path with no locking, and two
+    servers on the same branch (different ports — the desktop app plus a
+    manually-launched `fused-render serve --port 8001`) both write it. With
+    no ownership check, whichever shuts down first deletes the file the
+    survivor is still relying on, and every external `resolve_origin()` then
+    raises `ServerNotRunning` while a server genuinely is. Read the file
+    back and compare its recorded `pid` against this process's own before
+    deleting — a read failure (also best-effort) or a pid mismatch means
+    "not mine", and this is a no-op either way.
+    """
+    path = _server_json_path()
     try:
-        os.remove(_server_json_path())
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict) or data.get("pid") != os.getpid():
+        return
+    try:
+        os.remove(path)
     except OSError:
         pass
 

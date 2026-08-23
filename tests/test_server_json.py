@@ -59,6 +59,30 @@ def test_remove_server_json_is_a_noop_when_nothing_is_there():
     server_app.remove_server_json()  # must not raise
 
 
+def test_remove_server_json_never_deletes_another_processs_file():
+    """Two servers on the same branch (different ports — desktop app +
+    `fused-render serve --port 8001`) both write server.json into the same
+    branch-resolved home dir; last-writer-wins with no ownership check means
+    the first to shut down deletes the SURVIVOR's file, and every external
+    resolve_origin() then raises ServerNotRunning while a server IS running.
+    remove_server_json() must only ever remove a file this process wrote."""
+    path = server_app._server_json_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"origin": "http://127.0.0.1:9999", "pid": os.getpid() + 12345},
+                  f)
+    server_app.remove_server_json()
+    assert os.path.isfile(path), "deleted a file this process did not write"
+
+
+def test_remove_server_json_deletes_its_own_file_even_with_others_present():
+    server_app.write_server_json(1777)  # writes with THIS process's pid
+    path = server_app._server_json_path()
+    assert os.path.isfile(path)
+    server_app.remove_server_json()
+    assert not os.path.exists(path)
+
+
 def test_a_write_failure_is_swallowed_and_never_raises(monkeypatch, tmp_path):
     """A home dir that cannot hold the file (a plain file sitting where a
     directory should be) must not block or crash startup."""
