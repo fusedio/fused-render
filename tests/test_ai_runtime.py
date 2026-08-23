@@ -2590,6 +2590,33 @@ def test_unload_all_waits_for_an_in_progress_eviction_to_finish_draining(
         t.join(timeout=5)
 
 
+def test_cancel_check_is_not_tied_to_the_tightened_health_poll_cadence(
+        fake_runner, monkeypatch):
+    """C1 tightened `_bring_up`'s health-poll sleep from 0.5s to 0.1s for load
+    latency — a local loopback GET, cheap to do 5x more often. The cancel
+    check sitting beside it is a different call, `_cancel_requested` ->
+    `jobs.list_jobs()`, which takes the GLOBAL jobs lock, runs a sweep, and
+    `asdict()`s up to `MAX_JOBS` records — contending with every `_report`
+    call from every other loading worker. It must stay on its own ~0.5s
+    cadence rather than scale 5x alongside the health poll."""
+    calls = {"n": 0}
+    real_cancel_requested = supervisor._cancel_requested
+
+    def counting(job):
+        calls["n"] += 1
+        return real_cancel_requested(job)
+
+    monkeypatch.setattr(supervisor, "_cancel_requested", counting)
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.0")
+
+    supervisor.load("org/slow-count", registry.TEXT_GENERATION)
+    _wait_ready("org/slow-count")
+
+    # ~2-3 calls at the intended 0.5s cadence over a ~1s load; tying it to the
+    # tightened 0.1s health-poll cadence would have made it ~10.
+    assert calls["n"] <= 5, f"_cancel_requested called {calls['n']} times over a ~1s load"
+
+
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
     first = supervisor.load("org/same", registry.TEXT_GENERATION)
     worker = _wait_ready("org/same")

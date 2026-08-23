@@ -944,6 +944,12 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     raise SupervisorError(f"the environment for {runner.short} did not build")
 
 
+#: How often `_bring_up`'s health-poll loop checks `jobs.list_jobs()` for a
+#: cancel, independent of the loop's own health-poll cadence. See the comment
+#: where it is used.
+_CANCEL_CHECK_INTERVAL_S = 0.5
+
+
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
     """Venv -> spawn -> wait for ready. Runs on its own thread."""
     try:
@@ -958,16 +964,35 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
         # From here the WORKER is the one that knows what is happening — it is
         # doing the downloading and the loading — so its /health is the source
         # of truth and it reports its own byte counts to the same job row.
+        #
+        # `_cancel_requested` is checked on its own WALL-CLOCK cadence
+        # (`_CANCEL_CHECK_INTERVAL_S`), not every health-poll tick: it calls
+        # `jobs.list_jobs()`, which takes the global jobs lock, runs a sweep,
+        # and `asdict()`s up to `MAX_JOBS` records — cheap once, but tying it
+        # to the health poll's own interval means a future change to THAT
+        # (this loop's `time.sleep` below went 0.5s -> 0.1s for load latency,
+        # nothing to do with cancel responsiveness) silently changes how often
+        # this contends with every `_report` call from every other loading
+        # worker. Expressed in seconds for the same reason `_ERROR_GRACE_S`
+        # in benchmark.py is: a poll-count budget silently tracks whatever the
+        # poll interval happens to be.
+        last_cancel_check = 0.0  # forces a check on the very first iteration
         while True:
             # BOTH, and the second is the one a user actually presses. `stopping`
             # is set by an eviction or an explicit unload — things the server
-            # decided. The ✕ on the download row sets `cancel_requested` on the
-            # JOB, which the env-build loop above already honours; without it
-            # here, pressing ✕ during the phase that actually takes the time —
-            # the multi-GB fetch the worker is doing — did nothing at all, and
-            # the download ran to completion under a row that said cancelled.
-            if worker.stopping or _cancel_requested(job):
+            # decided, and reading it costs nothing (an in-memory attribute).
+            # The ✕ on the download row sets `cancel_requested` on the JOB,
+            # which the env-build loop above already honours; without it here,
+            # pressing ✕ during the phase that actually takes the time — the
+            # multi-GB fetch the worker is doing — did nothing at all, and the
+            # download ran to completion under a row that said cancelled.
+            if worker.stopping:
                 raise SupervisorError("cancelled")
+            now = time.monotonic()
+            if now - last_cancel_check >= _CANCEL_CHECK_INTERVAL_S:
+                last_cancel_check = now
+                if _cancel_requested(job):
+                    raise SupervisorError("cancelled")
             if not _alive(worker):
                 raise SupervisorError("the model process exited while loading")
             health = _health(worker)
@@ -1005,10 +1030,12 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
             # 0.1s: `_health` is a local loopback GET, not a real network
-            # call, so tightening this costs nothing — and `benchmark.py`'s
-            # own `_LOAD_POLL_S` wait sits on top of this one, so the two used
-            # to stack into up to a full second of extra latency per load at
-            # the old 0.5s each.
+            # call, so tightening THAT part of this loop costs nothing — and
+            # `benchmark.py`'s own `_LOAD_POLL_S` wait sits on top of this
+            # one, so the two used to stack into up to a full second of extra
+            # latency per load at the old 0.5s each. The cancel check above is
+            # deliberately NOT tied to this cadence any more — see
+            # `_CANCEL_CHECK_INTERVAL_S`.
             time.sleep(0.1)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see below
         # EVERYTHING, not just SupervisorError. This is the top of a thread, so
