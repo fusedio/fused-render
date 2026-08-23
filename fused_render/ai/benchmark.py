@@ -305,6 +305,12 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
     `messages` turn: a chat template is per-model, so templating would send each
     model a different number of prefill tokens and quietly break the one thing
     the fixed workload exists to guarantee.
+
+    Retries once (per race) on `supervisor.ModelNotReady` — see
+    `_await_settled_load` — rather than letting the first one fail the whole
+    run: `run()` already confirmed this model ready before calling here, so a
+    `ModelNotReady` this soon after is somebody else's eviction settling, not
+    a fact about this model's performance.
     """
     params = workload.params
     body = {
@@ -312,15 +318,24 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
         "max_tokens": params["maxTokens"],
         "temperature": params["temperature"],
     }
-    start = _now()
-    first_token_at = None
-    done: dict = {}
-    for event in supervisor.generate_text(model, body):
-        kind = event.get("type")
-        if kind == "chunk" and first_token_at is None:
-            first_token_at = _now()
-        elif kind == "done":
-            done = event
+    deadline = _now() + _LOAD_TIMEOUT_S
+    while True:
+        start = _now()
+        first_token_at = None
+        done = {}
+        try:
+            for event in supervisor.generate_text(model, body):
+                kind = event.get("type")
+                if kind == "chunk" and first_token_at is None:
+                    first_token_at = _now()
+                elif kind == "done":
+                    done = event
+            break
+        except supervisor.ModelNotReady:
+            # Nothing was yielded yet -- generate_text raises this before its
+            # first `yield`, never mid-stream -- so retrying from scratch
+            # loses no partial measurement.
+            _await_settled_load(model, registry.TEXT_GENERATION, deadline)
     end = _now()
     if done.get("cancelled"):
         # `ok` is TRUE on this frame — the worker did what it was told — so
@@ -367,10 +382,19 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
     The whole batch in one request rather than eight requests, because batching
     is what an embedding backend is FOR — a per-call figure would measure this
     app's HTTP hop as much as the model.
+
+    Retries on `supervisor.ModelNotReady` exactly like `_measure_text` — see
+    `_await_settled_load` for the race this settles.
     """
     texts = list(workload.params["texts"])
-    start = _now()
-    result = supervisor.generate_embed(model, {"texts": texts})
+    deadline = _now() + _LOAD_TIMEOUT_S
+    while True:
+        start = _now()
+        try:
+            result = supervisor.generate_embed(model, {"texts": texts})
+            break
+        except supervisor.ModelNotReady:
+            _await_settled_load(model, registry.EMBEDDINGS, deadline)
     total = _now() - start
     if not timed:
         return {}
@@ -592,6 +616,33 @@ def _close_any_row(job: str, failure: BaseException | None = None) -> None:
         supervisor._report(job, state="error", message=message)
 
 
+def _await_settled_load(model: str, capability: str, deadline: float) -> None:
+    """Block until `model` is `capability`'s READY worker, or raise a
+    `SupervisorError` once `deadline` (an `_now()`-clock timestamp) passes.
+
+    Exists for exactly one race, distinct from the cold-load wait
+    `_load_to_ready` already does: THAT function confirms `model` is ready
+    before `run()` calls a measurement function — but `generate_text` and
+    `generate_embed` re-check readiness themselves an instant later, and if
+    something else (another benchmark in a Run-all queue, a page elsewhere in
+    the app) evicted the worker in that gap, they answer the same way they
+    answer a cold caller: kick off a load and raise `ModelNotReady`
+    immediately, never blocking. That is the right contract for an
+    interactive caller, who must not have a request held open for a
+    multi-minute load it did not ask to wait for — and the wrong one for a
+    benchmark, which explicitly did. `_measure_text`/`_measure_embed` catch
+    that exception and call this to settle the race on the benchmark's own
+    time, bounded by the SAME `_LOAD_TIMEOUT_S` a genuine cold load gets
+    rather than a fresh one per retry, so a run cannot be strung along by a
+    machine where something keeps re-evicting this capability.
+    """
+    while supervisor.ready_worker(capability, model) is None:
+        if _now() >= deadline:
+            raise supervisor.SupervisorError(
+                f"{model} did not finish loading in time")
+        time.sleep(_LOAD_POLL_S)
+
+
 def _load_to_ready(model: str, capability: str) -> float | None:
     """Make `model` resident, returning the seconds it took — or `None` when it
     already was.
@@ -760,7 +811,7 @@ def run(model: str, capability: str) -> dict:
        reading two numbers side by side.
     4. The timed pass.
     5. Memory and device off `describe()`.
-    6. **Unload, if step 2 loaded it** (D435) — success, failure or exception
+    6. **Unload, if step 2 loaded it** (D443) — success, failure or exception
        alike. A benchmark is a measurement, not a claim on the model's
        residency, so a cold run must not leave gigabytes parked after the
        button stops spinning; a WARM run (step 2 returned `None`) unloads
@@ -818,7 +869,7 @@ def run(model: str, capability: str) -> dict:
                 model, capability)
             record["ok"] = True
         finally:
-            # D435: a benchmark that had to COLD-LOAD the model tears it back
+            # D443: a benchmark that had to COLD-LOAD the model tears it back
             # down when it is done — success, a failed workload, a timeout, or
             # an exception mid-measurement alike, which is exactly the `finally`
             # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`

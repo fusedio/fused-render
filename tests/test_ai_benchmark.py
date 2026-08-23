@@ -64,7 +64,7 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": []})
     # A no-op that just says "there was nothing to stop" by default — most
     # tests here are warm and must never reach it at all; the ones that force a
-    # cold load override this with a recording fake (see D436's section below).
+    # cold load override this with a recording fake (see D444's section below).
     monkeypatch.setattr(benchmark.supervisor, "unload", lambda **kwargs: False)
     return clock
 
@@ -148,6 +148,96 @@ def test_a_done_frame_that_says_not_ok_fails_the_run(bench, monkeypatch):
                           done={"type": "done", "ok": False, "error": "out of memory"})
     assert record["ok"] is False
     assert "out of memory" in record["error"]
+
+
+# -- a race settling between the load wait and the measurement call -------------
+#
+# `_load_to_ready` confirms a model ready before `run()` calls a measurement
+# function, but `generate_text`/`generate_embed` re-check readiness themselves an
+# instant later. If something else — another benchmark in a Run-all queue, a page
+# elsewhere in the app — evicted the worker in that gap, those two answer the
+# same way they answer a cold caller: kick off a load and raise `ModelNotReady`
+# immediately, never blocking. A benchmark that recorded that as a permanent
+# failure ("Qwen/Qwen3-4B-Instruct-2507 is loading now") never even attempted the
+# model; `_await_settled_load` exists to wait the race out instead.
+
+
+def test_a_model_not_ready_race_is_waited_out_and_retried(bench, monkeypatch):
+    calls = {"n": 0}
+
+    def generate_text(model, body):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The discarded warm-up: uneventful.
+            bench.advance(1.0)
+            yield {"type": "chunk", "text": "x"}
+            yield {"type": "done", "ok": True, "tokens": 1}
+            return
+        if calls["n"] == 2:
+            # The timed pass's first attempt races into an eviction — nothing
+            # yielded yet, so nothing measured is lost by retrying.
+            raise benchmark.supervisor.ModelNotReady(
+                f"{model} is loading now", "sys:job")
+        bench.advance(0.5)
+        yield {"type": "chunk", "text": "Hello"}
+        bench.advance(4.0)
+        yield {"type": "chunk", "text": " world"}
+        yield {"type": "done", "ok": True, "tokens": 41, "input_tokens": 20}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is True
+    assert record["error"] is None
+    # warm-up, the raced attempt, and the retry that succeeded.
+    assert calls["n"] == 3
+    assert record["metrics"]["tokensPerSecond"] == pytest.approx(10.0)
+
+
+def test_a_model_not_ready_race_that_never_settles_is_a_real_failure(
+        bench, monkeypatch):
+    """The wait is bounded by `_LOAD_TIMEOUT_S`, same as a genuine cold load —
+    a capability something keeps re-evicting must eventually fail the run
+    rather than hold the request open forever."""
+    monkeypatch.setattr(benchmark, "_LOAD_POLL_S", 0.0)
+    monkeypatch.setattr(benchmark, "_LOAD_TIMEOUT_S", 0.0)
+    # The wait polls `ready_worker`, which must never say "ready" for this to
+    # time out rather than settle.
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker",
+                        lambda cap, model=None: None)
+
+    def generate_text(model, body):
+        raise benchmark.supervisor.ModelNotReady(
+            f"{model} is loading now", "sys:job")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", generate_text)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    assert "did not finish loading in time" in record["error"]
+
+
+def test_an_embedding_race_is_waited_out_and_retried_the_same_way(
+        bench, monkeypatch):
+    calls = {"n": 0}
+
+    def generate_embed(model, body):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The discarded warm-up: uneventful.
+            bench.advance(0.1)
+            return {"vectors": [[0.0] * 768] * len(body["texts"]), "dim": 768}
+        if calls["n"] == 2:
+            # The timed pass's first attempt races into an eviction.
+            raise benchmark.supervisor.ModelNotReady(
+                f"{model} is loading now", "sys:job")
+        bench.advance(2.0)
+        return {"vectors": [[0.0] * 768] * len(body["texts"]), "dim": 768}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_embed", generate_embed)
+    record = benchmark.run("some/embed-model", ai_registry.EMBEDDINGS)
+    assert record["ok"] is True
+    # warm-up, the raced attempt, and the retry that succeeded.
+    assert calls["n"] == 3
+    assert record["metrics"]["dim"] == 768
 
 
 # -- embeddings -----------------------------------------------------------------
@@ -315,7 +405,7 @@ def test_a_load_that_never_becomes_ready_fails_the_run(bench, monkeypatch):
     assert record["error"] == "some/text-model did not finish loading in time"
 
 
-# -- unload after a cold benchmark (D436) ----------------------------------------
+# -- unload after a cold benchmark (D444) ----------------------------------------
 #
 # A benchmark that had to cold-load the model tears it back down when the run
 # ends, success or failure alike, because a measurement is not a claim on the
