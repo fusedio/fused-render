@@ -104,6 +104,14 @@ const METRICS: Record<string, MetricSpec[]> = {
   "automatic-speech-recognition": [
     { key: "realtimeFactor", label: "Speed", unit: "× realtime", higherIsBetter: true, digits: 1 },
     { key: "totalSeconds", label: "Decode time", unit: "s", higherIsBetter: false, digits: 1 },
+    // A RATIO on the wire (0.042, never 4.2) but read as a PERCENTAGE here —
+    // the conventional unit for ASR accuracy work, and easier to judge at a
+    // glance than a bare decimal. `formatPercent` is the one place this file
+    // multiplies by 100; `unit: "%"` is what the badge and any generic
+    // unit-and-digits formatting see. Lower is better: a model that
+    // transcribes with fewer errors wins, the same direction as decode time
+    // and memory — not throughput's.
+    { key: "wordErrorRate", label: "Word error rate", unit: "%", higherIsBetter: false, digits: 1 },
     { key: "peakResidentBytes", label: "Peak memory", unit: "", higherIsBetter: false, digits: 0 },
     { key: "loadSeconds", label: "Load time", unit: "s", higherIsBetter: false, digits: 1 },
   ],
@@ -249,7 +257,22 @@ export function formatDuration(seconds: number, digits: number): string {
 export function formatMetricSpecValue(value: number | null, spec: MetricSpec): string {
   if (value === null) return DASH;
   if (spec.key === "peakResidentBytes") return formatSize(value);
+  if (spec.key === "wordErrorRate") return formatPercent(value, spec.digits);
   return withUnit(value, spec.unit, spec.digits);
+}
+
+/** A RATIO (0.042) as a PERCENTAGE ("4.2%") — the one place this file
+ *  multiplies by 100. Word error rate is the first ratio-shaped metric this
+ *  page reports; percentage is the conventional unit ASR work is read in and
+ *  is easier to judge at a glance than a bare "0.042".
+ *
+ *  **No clamping.** A hallucinating model can genuinely emit more words than
+ *  the reference passage has, which scores ABOVE 100% — a real outcome, not
+ *  a bug, and capping it here would quietly turn a model's worst failure
+ *  into an indistinguishable "100%" alongside every merely-bad one.
+ */
+export function formatPercent(ratio: number, digits: number): string {
+  return `${formatNumber(ratio * 100, digits)}%`;
 }
 
 /** The section's own metric badge — unit and, where it matters, DIRECTION —
@@ -609,6 +632,10 @@ function axisTickLabel(value: number, metric: MetricSpec): string {
   // MILLISECONDS, and a bare "0" tick repeated four times is the exact bug
   // this whole file exists to prevent, just on an axis instead of a row.
   if (metric.unit === "s") return formatDuration(value, metric.digits);
+  // A ratio-valued tick goes through the same ×100 a bar's own end-value
+  // label does (`formatPercent`) — a raw "0.35" tick beside a "35%" bar label
+  // would be the metric disagreeing with itself across one chart.
+  if (metric.key === "wordErrorRate") return formatPercent(value, metric.digits);
   return formatNumber(value, metric.digits);
 }
 

@@ -14,6 +14,7 @@ import {
   formatLoad,
   formatMemory,
   formatMetricSpecValue,
+  formatPercent,
   formatPrimary,
   formatRunDate,
   formatRunTime,
@@ -1148,6 +1149,62 @@ describe("formatDuration", () => {
   it("spans four orders of magnitude without either printing '0s' or six decimals", () => {
     expect(formatDuration(0.0221, 1)).toBe("22 ms");
     expect(formatDuration(24.63, 1)).toBe("24.6 s");
+  });
+});
+
+describe("formatPercent", () => {
+  it("is a clean 0% for a perfect score", () => {
+    expect(formatPercent(0, 1)).toBe("0%");
+  });
+
+  it("multiplies a ratio by 100 at the given precision", () => {
+    expect(formatPercent(0.042, 1)).toBe("4.2%");
+  });
+
+  it("does not clamp above 100% — a hallucinating model is a real outcome", () => {
+    expect(formatPercent(1.5, 1)).toBe("150%");
+  });
+});
+
+describe("wordErrorRate metric", () => {
+  const wer = availableMetrics("automatic-speech-recognition", []).find(
+    (s) => s.key === "wordErrorRate",
+  )!;
+
+  it("is offered for the speech capability, lower-is-better", () => {
+    expect(wer).toMatchObject({ key: "wordErrorRate", higherIsBetter: false });
+  });
+
+  it("picks up the direction cue, being lower-is-better", () => {
+    expect(metricUnitAndCue(wer)).toBe("% · lower is better");
+  });
+
+  it("formats a normal value, zero, and an above-100% one through formatMetricSpecValue", () => {
+    expect(formatMetricSpecValue(0, wer)).toBe("0%");
+    expect(formatMetricSpecValue(0.042, wer)).toBe("4.2%");
+    expect(formatMetricSpecValue(1.5, wer)).toBe("150%");
+  });
+
+  // The module-wide rule: an unmeasured value is null, never zero, and a
+  // null must render as the dash and drop out of a chart rather than
+  // plotting as a perfect (zero-error) score.
+  it("is a dash when unscored, not a fabricated perfect score", () => {
+    expect(formatMetricSpecValue(null, wer)).toBe(DASH);
+  });
+
+  it("is excluded from the chart series when unscored — never plotted as zero", () => {
+    const scored = run({
+      capability: "automatic-speech-recognition",
+      metrics: { wordErrorRate: 0.1 },
+    });
+    const unscored = run({
+      capability: "automatic-speech-recognition",
+      metrics: { wordErrorRate: null },
+      startedAt: scored.startedAt + 1,
+    });
+    const { series } = chartSeries([scored, unscored], wer);
+    expect(series[0]!.points.length).toBe(1);
+    expect(series[0]!.points[0]!.y).toBe(0.1);
   });
 });
 
