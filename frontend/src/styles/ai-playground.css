@@ -2153,14 +2153,6 @@ a.pg-hero-repo:hover {
   gap: 14px;
 }
 
-.pg-embed-intro {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--fg-muted);
-  max-width: 60ch;
-}
-
 .pg-embed-lines {
   resize: vertical;
   border: 1px solid var(--border);

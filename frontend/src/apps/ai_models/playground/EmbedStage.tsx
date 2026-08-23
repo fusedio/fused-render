@@ -2,10 +2,11 @@
 //
 // An embedding model has no output a newcomer can look at — a vector is 768
 // floats — so this stage demos the thing vectors are FOR: rank a handful of
-// lines against a query by meaning rather than by shared words. The form
-// comes prefilled so the first click produces a ranked list with zero typing,
-// and the prefilled query deliberately shares no word with its best matches —
-// that gap is the whole demonstration.
+// lines against a query by meaning rather than by shared words. The lines come
+// prefilled and the query does not — a starter pill fills both and runs, so the
+// first ranked list still costs zero typing — and every sample's query
+// deliberately shares no word with its best matches: that gap is the whole
+// demonstration.
 //
 // One POST per run (`/api/ai/embed`, SPEC §40): the query and the lines ride
 // the same batch, so every score comes from one forward pass. Vectors return
@@ -147,10 +148,13 @@ const STARTERS: EmbedSample[] = [
   },
 ];
 
-// The prefill is the first sample: a query about food against lines where the
-// matches say "delicious" and "bakery", not "food" — a keyword search finds
-// nothing here, which is exactly the point being made.
-const DEFAULT_QUERY = STARTERS[0].prompt;
+// The LINES are prefilled and the QUERY is not. The lines have to be: they are
+// the corpus, they live behind the settings cog, and an empty one leaves Search
+// disabled for a reason the reader cannot see from the composer. The query used
+// to be prefilled too — the first sample's — and that is what the starter pills
+// are for: a filled composer nobody typed into reads as a search already made,
+// and it made the pills look like they would do something the box had already
+// done. Empty, the box asks its question and the pills answer it in one click.
 const DEFAULT_LINES = STARTERS[0].lines.join("\n");
 
 // One under embed_common.MAX_ITEMS (64): the query rides in the same batch.
@@ -162,7 +166,7 @@ interface Ranked {
 }
 
 export function EmbedStage({ model, downloaded }: { model: string; downloaded: boolean }) {
-  const [query, setQuery] = useState(DEFAULT_QUERY);
+  const [query, setQuery] = useState("");
   const [lines, setLines] = useState(DEFAULT_LINES);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -233,12 +237,6 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
           configOpen={configOpen}
           onToggleConfig={() => setConfigOpen((open) => !open)}
         />
-        <p className="pg-embed-intro">
-          Lines are ranked by how close their meaning is to the search, even when they share no
-          words with it. Pick an example below, or type a search and put your own lines in from
-          the settings cog above.
-        </p>
-
         <div className="pg-composer">
           <input
             type="text"

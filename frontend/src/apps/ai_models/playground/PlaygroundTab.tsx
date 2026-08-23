@@ -40,7 +40,7 @@ import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { PlaygroundApps } from "./PlaygroundApps";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
-import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
@@ -272,6 +272,29 @@ export default function PlaygroundTab() {
 
   const select = (id: string) => {
     setActionError(null);
+    // CHANGING CAPABILITY CLEARS THE SETTINGS. Every stage writes its tuning
+    // into one query namespace and nulls only the keys it owns, so a merge kept
+    // the abandoned stage's — which is not merely untidy: `prompt`, `steps`,
+    // `seed` and `w`/`h` are spelled the same across stages and mean different
+    // things, so a scene written for an image model arrived as a sentence for a
+    // chat one, and a step count tuned for a distilled renderer was read by a
+    // video engine with its own grid. Whatever does NOT collide is dead weight
+    // in a URL people share.
+    //
+    // Written as "keep the model" rather than as a list of keys to drop,
+    // because the list of keys is the thing that goes stale: a stage that gains
+    // a parameter tomorrow is already covered here.
+    //
+    // A move WITHIN a capability keeps everything on purpose — comparing two
+    // image models at one size and seed is the whole point of the sidebar, and
+    // the stage does not even remount for it.
+    const nextCapability = railRows.find((row) =>
+      row.models.some((model) => model.id === id),
+    )?.capability;
+    if (nextCapability && selected && nextCapability !== selected.row.capability) {
+      resetParams({ model: id });
+      return;
+    }
     // cap dies with the first explicit pick — leaving it would make a shared
     // URL claim a task the user has since clicked away from.
     writeParams({ model: id, cap: null });
