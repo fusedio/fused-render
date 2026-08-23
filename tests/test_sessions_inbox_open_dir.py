@@ -19,19 +19,28 @@ duplicated rule needs a test, not a comment).
 
 The third file is the reason the link ARRIVES SOMEWHERE, and it is worth writing
 down what changed under it. A session is keyed on ONE cwd — its transcript lives
-under ~/.claude/projects/<munge(_workdir)> — and the chat pane's target follows
-the selected row (`paneSideTarget`). So while the listing still auto-selected a
-row on arrival, this link resolved the resume against a SUBFOLDER of the cwd the
-session was recorded in and found nothing: the right session id in the pane's
-corner, an empty transcript under it. That was held off by a `resumingPaneSession`
-guard inside the one-shot auto-select effect.
+under ~/.claude/projects/<munge(_workdir)> — and the chat pane's target USED TO
+follow the selected row (`paneSideTarget`). So while the listing still
+auto-selected a row on arrival, this link resolved the resume against a
+SUBFOLDER of the cwd the session was recorded in and found nothing: the right
+session id in the pane's corner, an empty transcript under it. That was held off
+by a `resumingPaneSession` guard inside the one-shot auto-select effect.
 
 D278 then deleted the folder auto-select outright (FS-16): opening a folder now
-selects nothing at all. With no row selected `paneSideTarget` falls back to the
+selects nothing at all. With no row selected `paneSideTarget` fell back to the
 folder, which is the ground the session has — so the behaviour the guard bought
-is now simply how the listing works, for every arrival and not just this one. The
-guard went with the effect it guarded, and what is pinned below is the stronger
-fact that replaced it: there is no folder auto-select left to steal the pane.
+became simply how the listing worked, for every arrival and not just this one.
+
+D443 went a step further and deleted the READING, not merely the auto-select
+that used to feed it a wrong answer: the pane no longer has a per-row target at
+all — `paneSideTarget`/`isFolderBoundSide` are gone, and every mode's `_file` is
+`folder`, full stop (`listing/pane-side.ts`'s `paneKey`, `ListingPreviewPane.tsx`'s
+companion iframe). So what this link depends on is no longer "no folder
+auto-select happens to leave the selection empty" — it is "the pane's target is
+never a function of the selection in the first place", which is what is pinned
+below now: the absence of the OLD auto-select machinery (still real — D278 is a
+separate decision from D443 and either regressing would break this link its own
+way) AND the absence of any row-shaped target left in pane-side.ts to steal.
 
 The link itself is checked by running the page's REAL handler under node (the
 `_js_block` approach of test_sessions_inbox_layout.py / test_calls.py — a copy of
@@ -53,6 +62,7 @@ _INBOX = os.path.join(_ROOT, "core_apps", "sessions", "inbox.html")
 _PANE_SIDE = os.path.join(_ROOT, "frontend", "src", "apps", "explorer",
                           "listing", "pane-side.ts")
 _LISTING = os.path.join(_ROOT, "frontend", "src", "apps", "explorer", "Listing.tsx")
+_PANE = os.path.join(_ROOT, "frontend", "src", "apps", "explorer", "ListingPreviewPane.tsx")
 _TEMPLATE = os.path.join(_ROOT, "fused_render", "templates", "claude", "template.html")
 
 
@@ -182,25 +192,48 @@ def test_the_id_is_read_by_the_chat_itself_not_the_shell():
 
 
 def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
-    """The load-bearing half, and since D278 it is an ABSENCE rather than a guard.
+    """The load-bearing half, and since D443 it is a STRUCTURAL guarantee rather
+    than a conditionally-maintained one.
 
-    The chat pane's target follows the selected row (paneSideTarget), so anything
-    that selects a row on arrival aims the resume at a SUBFOLDER of the session's
-    cwd and it comes up empty. The folder auto-select is what used to do that; it
-    is deleted, so a freshly opened folder holds no selection and the pane falls
-    back to the folder — the one target the id can be resolved against.
+    Two eras, both pinned here so either regressing breaks this test:
 
-    Pinned as the absence of the machinery, because that is what makes the link
-    work: a re-added folder auto-select would silently break this button again.
-    `searchAutoSelectPath` is deliberately still allowed — a query is a request to
-    look at something, and this link is not a query."""
+    Era 1 (D278, FS-16): the folder auto-select that used to select a row on
+    every arrival is deleted outright, so a freshly opened folder holds no
+    selection. Still a real thing to protect — `searchAutoSelectPath` is
+    deliberately still allowed (a query is a request to look at something, and
+    this link is not a query), so this pins the ABSENCE of the folder-arrival
+    machinery specifically, not "no auto-select of any kind".
+
+    Era 2 (D443): even if a row WERE somehow selected on arrival, it would not
+    matter any more — the pane stopped reading the selection at all.
+    `paneSideTarget`/`isFolderBoundSide` are deleted, and every mode's `_file`
+    target is unconditionally `folder` (`listing/pane-side.ts`'s `paneKey`,
+    `ListingPreviewPane.tsx`'s companion iframe). So the property this link
+    depends on is no longer "the resume happens to land on the folder because
+    nothing else is selected" — it is "there is no selection-shaped input left
+    for the resume's target to depend on in the first place"."""
     listing = _read(_LISTING)
     assert "autoSelectedRef" not in listing, (
         "a folder auto-select is back: it will steal the pane from the arriving chat")
     assert not re.search(r"(?<![A-Za-z])autoSelectPath", listing), (
         "the folder auto-select decision is back (searchAutoSelectPath is fine)")
     assert "selectionClaimed" not in listing
-    # and with nothing selected, the chat is aimed at the folder
-    reader = _read(_PANE_SIDE)
-    assert 'return isFolderBoundSide(side) ? folder : (rowPath ?? folder);' in reader, (
-        "paneSideTarget no longer falls back to the folder without a row")
+    # and the pane's target is never a function of the selection at all any more.
+    # Checked as DEFINITIONS/USES, not bare substrings: pane-side.ts's own header
+    # comment names both deleted functions in prose (explaining why they are
+    # gone), and a bare `"paneSideTarget" not in text` check would fail on that
+    # history the moment this test tried to match D443's own account of itself.
+    pane_side = _read(_PANE_SIDE)
+    assert not re.search(r"function paneSideTarget\s*\(", pane_side), (
+        "paneSideTarget is back: a per-row pane target can steal the arriving chat again")
+    assert not re.search(r"function isFolderBoundSide\s*\(", pane_side), (
+        "isFolderBoundSide is back: it only ever existed to split a row-target "
+        "from a folder-target, and D443 deleted the row-target side entirely")
+    assert not re.search(r"rowPath\s*:", pane_side), (
+        "a row parameter is back on a pane-side.ts function signature: the "
+        "pane's target must not read the selection at all")
+    assert "export function paneKey(side: PaneSide, folder: string): string {" in pane_side, (
+        "paneKey's signature grew a row/selection parameter back")
+    pane = _read(_PANE)
+    assert "`&_file=${encodeURIComponent(folder)}${chatOnly}&_preview=1`" in pane, (
+        "the companion iframe's _file target is no longer unconditionally the folder")

@@ -11,7 +11,6 @@ import {
   paneSideList,
   paneSideMenu,
   paneSideParam,
-  paneSideTarget,
   parsePaneSide,
   type PaneSide,
 } from "./pane-side";
@@ -421,67 +420,30 @@ describe("activePaneSide", () => {
   });
 });
 
-// The pane's REMOUNT identity, and the one thing it has to get right: Git is about
-// the FOLDER, so its key must not move with the selection.
+// The pane's REMOUNT identity. D443 made every mode folder-bound — the
+// selection does not enter into any of them any more — so the key is just
+// the mode and the folder, full stop.
 describe("paneKey", () => {
   const folder = "/w/repo";
+  const other = "/w/other";
 
-  test("the folder-bound companions ignore the selection entirely", () => {
-    // Arrow-keying down a listing must not reload a `git status` per keystroke.
-    const a = paneKey("git", folder, "/w/repo/a.md", 1);
-    const b = paneKey("git", folder, "/w/repo/b.md", 1);
-    const none = paneKey("git", folder, null, 0);
-    const many = paneKey("git", folder, null, 3);
-    expect(a).toBe(b);
-    expect(a).toBe(none);
-    expect(a).toBe(many);
-    // `mcp` too — and for a second reason: a remount would throw away whatever
-    // curation the user had typed into the panel.
-    expect(paneKey("mcp", folder, "/w/repo/a.md", 1)).toBe(paneKey("mcp", folder, null, 0));
-    expect(paneKey("mcp", folder, null, 0)).not.toBe(a);
+  test("every mode ignores the selection entirely — there is no row parameter left", () => {
+    // Arrow-keying down a listing must not reload a `git status` (or respawn
+    // `agent.py` on the chat) per keystroke, whatever used to be selected.
+    for (const mode of PANE_SIDE_MODES) {
+      expect(paneKey(mode, folder)).toBe(paneKey(mode, folder));
+    }
   });
 
-  test("Claude follows the selected row, and falls back to the folder", () => {
-    expect(paneKey("claude", folder, "/w/repo/a.md", 1)).not.toBe(
-      paneKey("claude", folder, "/w/repo/b.md", 1)
-    );
-    // Nothing selected and a multi-selection are both "the folder itself".
-    expect(paneKey("claude", folder, null, 0)).toBe(paneKey("claude", folder, null, 4));
-  });
-
-  test("Preview keeps its three selection states apart", () => {
-    // Still three, and the `self` one is still needed: since D284 it identifies the
-    // neither-companion fallback (a mount-backed folder) rather than the ordinary
-    // no-selection state, but it is the key the hint renders under either way.
-    const row = paneKey("preview", folder, "/w/repo/a.md", 1);
-    const self = paneKey("preview", folder, null, 0);
-    const many = paneKey("preview", folder, null, 3);
-    expect(new Set([row, self, many]).size).toBe(3);
+  test("a different folder is a different key, for every mode", () => {
+    for (const mode of PANE_SIDE_MODES) {
+      expect(paneKey(mode, folder)).not.toBe(paneKey(mode, other));
+    }
   });
 
   test("the modes never collide on one key", () => {
-    const keys = (PANE_SIDE_MODES as readonly PaneSide[]).map((m) =>
-      paneKey(m, folder, "/w/repo/a.md", 1)
-    );
+    const keys = (PANE_SIDE_MODES as readonly PaneSide[]).map((m) => paneKey(m, folder));
     expect(new Set(keys).size).toBe(keys.length);
-  });
-});
-
-// Four modes, two subjects.
-describe("paneSideTarget", () => {
-  const folder = "/w/repo";
-
-  test("the folder-bound companions are aimed at the folder, whatever is selected", () => {
-    expect(paneSideTarget("git", folder, "/w/repo/a.md")).toBe(folder);
-    expect(paneSideTarget("git", folder, null)).toBe(folder);
-    expect(paneSideTarget("mcp", folder, "/w/repo/a.md")).toBe(folder);
-    expect(paneSideTarget("mcp", folder, null)).toBe(folder);
-  });
-
-  test("the rest are aimed at the row, and at the folder without one", () => {
-    expect(paneSideTarget("claude", folder, "/w/repo/a.md")).toBe("/w/repo/a.md");
-    expect(paneSideTarget("preview", folder, "/w/repo/a.md")).toBe("/w/repo/a.md");
-    expect(paneSideTarget("claude", folder, null)).toBe(folder);
   });
 });
 

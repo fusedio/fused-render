@@ -90,7 +90,6 @@ import {
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
-import { useSettledLead } from "@apps/explorer/listing/useSettledLead";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
@@ -120,7 +119,6 @@ const FLIP_BUDGET = 2;
 export default function Listing({
   fsPath,
   provisional = false,
-  embedded = false,
   barChrome = false,
 }: {
   fsPath: string;
@@ -134,13 +132,6 @@ export default function Listing({
   // let stat commit the real view. Absent/false (the committed post-stat
   // render), errors show normally.
   provisional?: boolean;
-  // `embedded`: this Listing renders INSIDE another view (the preview pane's
-  // `_listing` mode), not as the shell's main view. It must not touch the
-  // address bar (no sort/q/sel URL reflection), never opens its own
-  // preview pane (no nesting), and registers no document-level keyboard
-  // handlers — those belong to the host's Listing. Mouse interaction stays:
-  // clicks select/navigate, right-click menus and dialogs work as usual.
-  embedded?: boolean;
   // `barChrome`: this Listing IS the explorer's folder view — the one under
   // the crumb bar, whose layout zone it therefore claims (see
   // listing/folder-chrome.ts). The splits go away and the path `···` renders
@@ -158,14 +149,13 @@ export default function Listing({
   const [{ sort, order }, setSortState] = useState<{
     sort: SortKey;
     order: SortOrder;
-  }>(() => resolveSort(fsPath, !embedded));
+  }>(() => resolveSort(fsPath));
   // When the sort was restored from saved state (URL carried none), reflect it
   // in the URL so the address bar, bookmarks, and Back-button history match
   // what's shown — as if the column had been clicked. Only syncs a genuinely
   // saved order; an unsorted folder keeps its clean, param-free URL. replaceState
   // (not navigate) so the view doesn't remount.
   useEffect(() => {
-    if (embedded) return; // the URL belongs to the host view
     if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
     const s = new URLSearchParams(getViewState(fsPath));
     // No stored SORT → leave default sort + clean URL. (The stored string may
@@ -182,12 +172,6 @@ export default function Listing({
       sort: key,
       order: key === sort && order === "asc" ? "desc" : "asc",
     };
-    if (embedded) {
-      // Pane-local: no URL write, no persisted per-folder choice — a glance
-      // in the preview must not re-sort the folder's real listing later.
-      setSortState(next);
-      return;
-    }
     const params = new URLSearchParams(location.search);
     params.set("sort", next.sort);
     params.set("order", next.order);
@@ -220,29 +204,40 @@ export default function Listing({
     showingHeld,
     rowsAnswerQuery,
     cappedAway,
-  } = useWalkSearch(fsPath, refresh, !embedded);
+  } = useWalkSearch(fsPath, refresh);
 
   // Scan state for the search box's "indexing…" caveat. Gated on `searching`
   // so an idle listing never polls.
   const indexScan = useIndexStatus(searching);
 
-  // An embedded Listing never opens its own pane (no nesting): the feature is
-  // disabled at the hook, however wide the embedded listing gets. **These three
-  // flags are now the WHOLE of whether there is a pane** — `pane.on` is exactly
-  // `paneEnabled` since D282 deleted the width gate, so "is this a Listing that has
-  // a pane" is a question about the SURFACE and never about pixels.
+  // **THESE TWO FLAGS ARE NOW THE WHOLE of whether there is a pane** —
+  // `pane.on` is exactly `paneEnabled` since D282 deleted the width gate, so
+  // "is this a Listing that has a pane" is a question about the SURFACE and
+  // never about pixels.
   //
-  // A FROZEN-TREE listing is the second no-nesting case, and `embedded` cannot
-  // see it: the browsable snapshot (the `browse` framing of the removed timeline
-  // mode, PT-14) is a whole shell loaded at `/explorer/embed/<tree>?snapshot=1`,
-  // so its Listing is the page's OWN top-level one — `embedded=false` — inside
-  // the framing view's preview column, where it grew a preview pane INSIDE a
-  // preview pane. `?preview=false` used to stop it and was dropped with the toggle
-  // it belonged to, on the reasoning that the width decides — true for a listing
-  // that owns its window, false for one handed a column by a framer. *That
-  // reasoning is doubly dead now: with the width gate deleted (D282) the framed
-  // listing would grow a pane at ANY column width, so this flag is not a
-  // refinement of a measurement but the whole answer.*
+  // There used to be a THIRD flag here, `embedded` — this Listing rendering
+  // INSIDE another view's pane rather than as a top-level surface, the no-
+  // nesting guard for the preview pane's own `_listing` mode. That mode
+  // embedded a real, second `Listing` inside this one's pane so a selected
+  // folder could be peeked at without navigating into it — and D443 deleted
+  // the entire selection-driven pane that mode belonged to (FS-11): the pane
+  // shows the open folder's own companions now, never a selected row's
+  // anything, so there is no longer a second `Listing` anywhere for this one
+  // to be nested inside. The prop had no caller left once that branch was
+  // gone, and is deleted with it rather than kept as a guard against a
+  // nesting that can no longer happen.
+  //
+  // A FROZEN-TREE listing is the first of the two remaining cases: the
+  // browsable snapshot (the `browse` framing of the removed timeline mode,
+  // PT-14) is a whole shell loaded at `/explorer/embed/<tree>?snapshot=1`, so
+  // its Listing is the page's OWN top-level one, inside the framing view's
+  // preview column, where it would otherwise grow a preview pane INSIDE a
+  // preview pane. `?preview=false` used to stop it and was dropped with the
+  // toggle it belonged to, on the reasoning that the width decides — true for
+  // a listing that owns its window, false for one handed a column by a
+  // framer. *That reasoning is doubly dead now: with the width gate deleted
+  // (D282) the framed listing would grow a pane at ANY column width, so this
+  // flag is not a refinement of a measurement but the whole answer.*
   //
   // `snapshot=1` and not a second param of its own: the framing flag has
   // exactly one producer, and that producer is a template framing this listing
@@ -250,13 +245,13 @@ export default function Listing({
   // one is the "three places to agree about one bit" the pane's own history
   // (pane.ts) is a warning about.
   //
-  // A PANEL PANE is the third, and it is the same shape of blind spot as the
+  // A PANEL PANE is the second, and it is the same shape of blind spot as the
   // snapshot: a pane is a whole shell at `/explorer/embed/<path>`, so its
-  // Listing is that frame's own top-level one — `embedded=false`, `barChrome`
-  // true, everything about it says "I own this window". What it does not own is
-  // the layout: the user split it, so a split-right of a folder grew two
-  // half-width listings each with their own preview. Four columns where the user
-  // asked for two — and no width test could ever have objected, because the width
+  // Listing is that frame's own top-level one — `barChrome` true, everything
+  // about it says "I own this window". What it does not own is the layout:
+  // the user split it, so a split-right of a folder grew two half-width
+  // listings each with their own preview. Four columns where the user asked
+  // for two — and no width test could ever have objected, because the width
   // was genuinely there. IS_PANEL_PANE is the host-side question a measurement
   // cannot answer (see router.ts, including why `IS_EMBED` — which is also
   // every TAB, where the pane is right and stays — is the wrong flag here).
@@ -265,10 +260,10 @@ export default function Listing({
   // (D282 left nothing else in it), so one flag takes the slot, the divider, the
   // closing chevron on the pane's header, the reopening SideToggleButton in the
   // search row and the two `useDirMode` companion probes with it. Nothing about the
-  // ROWS changes: a pane's listing still selects, arrow-keys, and opens on
-  // double-click/Enter —
-  // opening a file in a pane replaces that pane's document, which is the point.
-  const paneEnabled = !embedded && !IS_SNAPSHOT && !IS_PANEL_PANE;
+  // ROWS changes: a pane's listing still selects, arrow-keys, and opens on a
+  // single click/Enter — opening a file in a pane replaces that pane's
+  // document, which is the point.
+  const paneEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE;
   // Drag-to-close hands off to the same `_side=off` the pane header's close
   // button writes (`closeSide`, below) — one vocabulary for "the pane is shut",
   // whichever gesture said it. A closure, called only from pointer events, so
@@ -337,8 +332,9 @@ export default function Listing({
   };
   const paneOpen = pane.on && sideState.open;
   // One writer for both halves of the state, and it writes the URL only where the
-  // listing owns one: an embedded pane (the preview pane's own `_listing` mode) is
-  // URL-silent by contract, and it never has a pane of its own anyway.
+  // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
+  // shell handed a column by something else (`paneEnabled` above), and neither
+  // owns the address bar it happens to be inside of.
   const setSide = (next: PaneSideState) => {
     setSideState(next);
     if (!paneEnabled) return;
@@ -414,7 +410,7 @@ export default function Listing({
   // A layout effect: the claim moves the bar, and a passive effect would paint
   // one frame with it still spanning the window before it dropped into place.
   // Refs are attached before layout effects run, so the slot is there.
-  const ownsBarChrome = barChrome && !embedded;
+  const ownsBarChrome = barChrome;
   const crumbSlotRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (!ownsBarChrome) return;
@@ -485,7 +481,7 @@ export default function Listing({
   // in the box — measuring a strip the crumbs have stood down from
   // (.searching hides them) reads zeros.
   useLayoutEffect(() => {
-    if (embedded || searching || pinnedOpen) return;
+    if (searching || pinnedOpen) return;
     const row = searchRowRef.current;
     if (!row) return;
     const bar = row.closest("#breadcrumb");
@@ -604,7 +600,9 @@ export default function Listing({
     searchInputRef,
     rowCtxByPathRef,
     overlayOpenRef,
-    globalKeys: !embedded,
+    // `globalKeys` defaults to true (useListingSelection.ts): there is no
+    // caller left that ever passed false — the one that used to (`embedded`,
+    // the preview pane's own nested `_listing` mode) is gone with D443.
   });
 
   const {
@@ -738,9 +736,10 @@ export default function Listing({
 
   // OPENING A FOLDER SELECTS NOTHING (FS-16, D278). There is no folder
   // auto-select here and there is deliberately no code for one: a freshly opened
-  // folder has an empty selection, so its pane sits on its self target — showing the
-  // chat about the folder, since a folder is not a thing the pane previews (FS-11,
-  // D284) — until the user picks a row.
+  // folder has an empty selection, and its pane shows the chat about the folder
+  // regardless (FS-11, D443) — the pane no longer reads the selection at all, so
+  // there is no "until the user picks a row" any more: picking a row changes
+  // nothing about what the pane shows.
   //
   // What used to be here was a one-shot effect that walked the settled rows for
   // the first page, else the first row, and selected it — so the pane always had
@@ -768,11 +767,10 @@ export default function Listing({
   // decision (searchAutoSelectPath) owns what to select; this owns only two
   // things.
   //
-  // WHEN to ask. Not while embedded (the pane's own `_listing` has no pane to
-  // fill) and not provisional — a scaffold's selection would be torn down and
-  // re-made by the swap to the resolved listing a beat later. It does NOT wait
-  // for `pane.on`: a selected top hit is worth having for Enter and the arrow
-  // keys whether or not the window is wide enough to preview it.
+  // WHEN to ask. Not provisional — a scaffold's selection would be torn down
+  // and re-made by the swap to the resolved listing a beat later. It does NOT
+  // wait for `pane.on`: a selected top hit is worth having for Enter and the
+  // arrow keys whether or not the window is wide enough to preview it.
   //
   // Whose selection it is — and in particular that a user's choice OUTLIVES a
   // query change — is `nextSearchSelection`'s to track, not this effect's. It
@@ -781,7 +779,7 @@ export default function Listing({
   // belongs somewhere it can be tested.
   const searchSelectRef = useRef(INITIAL_SEARCH_SELECT);
   useEffect(() => {
-    if (embedded || provisional || !searching) return;
+    if (provisional || !searching) return;
     const { state, select, clear } = nextSearchSelection(
       searchSelectRef.current,
       navRows,
@@ -795,7 +793,7 @@ export default function Listing({
     // have stopped answering the query in the box (listing/selection). Left
     // standing it arms Enter and Cmd+Backspace on a file nobody is looking for.
     else if (clear) clearSelection();
-  }, [embedded, provisional, searching, navRows, rowCtxByPath, sel, selectOnly,
+  }, [provisional, searching, navRows, rowCtxByPath, sel, selectOnly,
       clearSelection, rowsAnswerQuery]);
 
   // The selection as full rows, in rendered order (so a batch op processes rows
@@ -813,82 +811,39 @@ export default function Listing({
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
-  // THE ROW THE PANE IS ABOUT, which is the lead ONCE IT HAS SETTLED (D281's cost
-  // fix — the rule, and why a pane mount has to be earned, are on pane-settle.ts).
-  // Every mount is an iframe load, and the `claude` side's iframe spawns `agent.py`
-  // through /api/run before it draws, so the pane must not chase a held arrow key
-  // down the listing. A move from rest still lands at once; only the rows passed
-  // THROUGH are skipped.
+  // WHICH of the pane's three modes it is on. Resolved here, below the selection
+  // even though it no longer READS the selection (D443) — it stays here because
+  // it is folder-scoped state that lives alongside the other folder-scoped state
+  // this component already holds (sideEntries, folderClaude/folderGit/folderMcp
+  // above).
   //
-  // The whole pane reads this and not `sel.lead`: the row it renders, the mode key
-  // that remounts it, and the folder/file question behind the pill. Reading the
-  // live lead for any of them would put the per-keystroke mount straight back.
-  // The LEAD is settled unconditionally — not `paths.length === 1 ? lead : null`,
-  // which mixed a live count into a settled value and made the pane flash its
-  // "Select a file to preview." hint with a row plainly selected: collapsing a
-  // 2-row selection onto a third row moved the count to 1 while the settled lead
-  // was still catching up from the multi-selection's `null`, so for one settle
-  // window there was a count of one and no row to show for it. Settling the lead
-  // alone means the pane TRAILS onto the previous row instead, which is what a
-  // debounce means and what arrowing already looks like.
-  const settledLead = useSettledLead(sel.lead);
-  // …and the pane's STATE stays live, because none of its other states mount
-  // anything: nothing selected is the self target, two or more is the count
-  // placeholder, and both must land the instant the selection does. Only the
-  // single-row case is expensive, and only it is settled.
-  const paneRow =
-    sel.paths.length === 1 && settledLead ? rowCtxByPath.get(settledLead) : undefined;
-
-  // WHICH of the pane's three modes it is on. Resolved here, below the selection,
-  // because no FOLDER SUBJECT has a `preview` side at all (pane-side's
-  // paneSideList, D281/D284) and so lands on the chat about it — a folder is not a
-  // thing this pane previews.
-  //
-  // **A FOLDER SUBJECT IS TWO STATES**: a selected directory, and NOTHING SELECTED,
-  // where the subject is this folder itself. D281 did only the first, which left the
-  // state every folder OPENS into (FS-16) reading "Preview" over a "Select a file to
-  // preview." hint — the more visible half of the same bug, and what the owner
-  // reported next. The self target keeps that hint only as the neither-companion
-  // fallback now (ListingPreviewPane's self branch).
-  //
-  // **The subject no longer enters into it at all** (D285): `preview` is not on offer
-  // for any row type, so there is nothing left to ask about the subject and
-  // `paneSideList` takes no flag. What it answers is what the FOLDER offers.
-  // --- OPEN APP: the entry page of THE PANE'S SUBJECT ------------------------
-  //
-  // One question asked of one subject, which is what keeps "a selected folder row"
-  // and "the open folder" from being two conditions with a precedence rule between
-  // them. The pane already resolves its subject and already pays the settled-lead
-  // debounce for it (paneRow above; paneSideTarget/paneKey downstream), so the
-  // precedence the owner asked for — a selected row wins over the open folder —
-  // falls out of asking the same value rather than being a tiebreak to maintain.
-  //
-  // The subject as a FOLDER, or null when there is no folder subject: a single
-  // settled directory row, else the open folder when nothing is selected. A FILE row
-  // has no entry page to open, and a MULTI-selection has no single subject at all
-  // (`paneRow` is only ever set for a single-row selection, so both fall out).
-  const paneSubjectDir =
-    paneRow?.isDir ? paneRow.path : sel.paths.length === 0 ? base : null;
+  // **THE PANE'S SUBJECT IS THE OPEN FOLDER, ALWAYS** (D443, superseding
+  // D280/D281/D284/D285's whole arc of "which selection state is the subject").
+  // It used to be a question with an answer that moved: a selected directory row,
+  // else nothing selected (the folder itself, D284), else a selected file (no
+  // subject at all — `null`, which is why the code below used to carry a
+  // `paneSubjectDir === null` branch and `openAppEntry` an `!paneSubjectDir`
+  // guard). All of that read the selection to decide what the pane would show,
+  // which is exactly the coupling D443 deletes: the subject is `base`, the open
+  // folder, full stop — a plain string, never null, and it never changes
+  // without a navigation. The indirection through a `paneSubjectDir` constant
+  // is gone with the question it used to answer; `base` is used directly below.
 
   // The subject's entry page comes from the server (GET /api/apps/entry — the
-  // one copy of the rule, see the note above), one request per SETTLED subject:
-  // keyed on `paneSubjectDir`, an arrow-key walk re-keys only when the
-  // selection settles (useSettledLead's 250 ms gate), so a walk down a listing
-  // of folders issues nothing per row.
+  // one copy of the rule, `app_listing.app_entry`, D301), one request per
+  // FOLDER OPEN — `base` only changes on a navigation, so this effect fires
+  // once per folder rather than once per selection change the way it used to.
   //
-  // Cleared to null on every subject change BEFORE the fetch: the button must never
-  // point at the previous subject while the new one resolves, which is the "whatever
-  // it points at is what the pane says it is about" rule. Hidden-then-shown is the
-  // acceptable shape of that; pointing at the wrong row is not.
+  // Cleared to null before every fetch: the button must never point at the
+  // previous folder's entry while the new one resolves, which is the
+  // "whatever it points at is what the pane says it is about" rule.
+  // Hidden-then-shown is the acceptable shape of that; pointing at the wrong
+  // folder is not.
   const [appEntryPath, setAppEntryPath] = useState<string | null>(null);
   useEffect(() => {
-    if (paneSubjectDir === null) {
-      setAppEntryPath(null);
-      return;
-    }
     let alive = true;
     setAppEntryPath(null);
-    getAppEntry(paneSubjectDir).then(
+    getAppEntry(base).then(
       (res) => alive && setAppEntryPath(res.entry),
       // An unreadable folder is "no entry page", never an error of its own: the
       // button simply does not appear.
@@ -897,7 +852,7 @@ export default function Listing({
     return () => {
       alive = false;
     };
-  }, [paneSubjectDir]);
+  }, [base]);
 
   // The ONE "Open app" click, shared by the pane strip's button and its
   // shut-pane fallback in the bar so they can't drift. The click just
@@ -905,16 +860,16 @@ export default function Listing({
   // registration for an external folder — is the SERVER's, done by GET /render
   // when it serves the marker-carrying page this navigation renders (D301).
   const openAppEntry = () => {
-    if (!appEntryPath || !paneSubjectDir) return;
+    if (!appEntryPath) return;
     navigate(appEntryPath, { isDir: false });
   };
 
   const paneSides = paneSideList(sideEntries);
-  // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
+  // UNDECIDED — this folder's companion probes have not answered yet (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
-  // skeleton: resolving a side here would put the pill on `preview` while the row's
-  // own `claude` default rendered a chat under it, and would then remount — and
-  // respawn `agent.py` — when the probe landed.
+  // skeleton: resolving a side here would put the pill on `preview` while a chat
+  // rendered under it regardless, and would then remount — and respawn
+  // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
   const paneSide = activePaneSide(paneSides, sideState.mode);
 
@@ -973,7 +928,8 @@ export default function Listing({
     doTrash,
     startRename,
     startNewFolder,
-    globalKeys: !embedded,
+    // `globalKeys` defaults to true (useListingShortcuts.ts) for the same
+    // reason as the selection hook's call above.
   });
 
   // Mouse selection on a row — SELECTION ONLY, never navigation, and decided
@@ -999,8 +955,40 @@ export default function Listing({
     action: RowPressAction;
   } | null>(null);
 
+  // A HABITUAL DOUBLE-CLICK NOW DOUBLE-OPENS, and this is the guard against it.
+  // Single-click-open (D443) means the first press of what a lifetime of
+  // double-clicking trained someone to do already navigates on its release —
+  // and when that navigation is INTO A FOLDER, this same `Listing` instance
+  // re-renders with the new `fsPath` rather than unmounting (shell/App.tsx
+  // renders it unkeyed), so the second press of the habitual pair lands on
+  // whatever row the NEW folder painted under a cursor that has not moved —
+  // and opens THAT, which nobody asked for and nothing about it looks like a
+  // mistake to whoever it happens to.
+  //
+  // Set only from the RELEASE that actually opened something (onRowPointerUp
+  // below), and checked here, at the very top of the next press, before
+  // anything else runs — no select, no toggle, no extend either, because the
+  // whole point is that this press should not be read as an action on this
+  // (freshly rendered, unrelated) row at all. A plain timestamp compared
+  // against `Date.now()` rather than a timer: nothing has to be scheduled or
+  // cleared, and a press that never comes finds the ref simply stale.
+  //
+  // The window is the same rough length a native double-click's is — long
+  // enough to catch the habitual second click, short enough that a genuinely
+  // deliberate fast click a folder-hop later is the rare cost, not the norm.
+  //
+  // THIS IS NOT A DOUBLE-CLICK TIMER RESTORED FOR ITS OWN SAKE — there is
+  // still no delay before a plain press's own release opens IT (D443's whole
+  // point stands: nothing here waits to see if a second click arrives before
+  // acting on the first). It exists purely to absorb the SECOND press of a
+  // pair that a habit built for the old model still sends, aimed at a row
+  // that just changed out from under it.
+  const OPEN_SUPPRESS_MS = 400;
+  const suppressPressUntilRef = useRef(0);
+
   const onRowPointerDown = (e: React.PointerEvent, path: string) => {
     if (e.button !== 0) return;
+    if (Date.now() < suppressPressUntilRef.current) return;
     const action = rowPressAction({
       mod: isMod(e),
       shift: e.shiftKey,
@@ -1022,19 +1010,24 @@ export default function Listing({
     else toggleSelected(path);
   };
 
-  // SINGLE CLICK OPENS — in an EMBEDDED listing only, i.e. in the preview
-  // pane's `_listing` mode (ListingPreviewPane). That listing is not a place to
-  // build a selection: it is a look INSIDE the folder the middle panel has
-  // selected, and the one thing to do with a row there is go to it. The middle
-  // panel keeps the unified select-on-press / open-on-double-click model, which
-  // is why the gate is `embedded` and not the pane's presence (see the note on
-  // onRowDoubleClick, and listing/selection's source test).
+  // SINGLE CLICK OPENS — in every listing, at every window width (D443). A
+  // plain press SELECTS (onRowPointerDown above); the matching RELEASE OPENS,
+  // provided the press never left the row (no drag, no sweep). Only a PLAIN
+  // press opens: Shift and Mod still mean range and toggle, never navigation,
+  // so a modified click keeps building a selection instead of taking the user
+  // somewhere.
   //
-  // Only a PLAIN press opens. Shift and Mod still mean range and toggle even
-  // here, so the pane's own multi-selection (its context menu, its file ops)
-  // stays reachable; those two actions are exactly what this excludes.
+  // This used to be gated to an EMBEDDED listing only (the preview pane's own
+  // `_listing` mode) while every other listing waited for a double-click. The
+  // gate existed because a plain click had a second job to protect: the pane
+  // used to follow the SELECTION, so a click that navigated away would have
+  // made a row's own preview unreachable, and a folder was worst hit of all
+  // (FS-11's old text). D443 removed that coupling — the pane now shows the
+  // open folder's own companions and never the selection — so there is nothing
+  // left to protect, and the single-click model that already worked in the
+  // pane extends to every listing.
   const openOnRelease = (action: RowPressAction) =>
-    embedded && (action === "select" || action === "defer");
+    action === "select" || action === "defer";
 
   // The deferred half: a plain press inside a multi-selection collapses onto
   // the pressed row when the button comes up, and ONLY if the press stayed
@@ -1047,7 +1040,7 @@ export default function Listing({
   // so this mostly does not run in that case; the slop covers the rest,
   // including a drag the user cancelled.
   //
-  // The release is also where an EMBEDDED listing OPENS on a single click
+  // The release is also where every listing OPENS on a single click
   // (openOnRelease above). Both halves want the same two facts — same row, press
   // stayed still — so they share the one handler and the one slop test.
   const onRowPointerUp = (e: React.PointerEvent, path: string) => {
@@ -1058,22 +1051,14 @@ export default function Listing({
     if (press.action === "defer") selectOnly(path);
     if (openOnRelease(press.action)) {
       const row = rowCtxByPath.get(path);
-      if (row) navigate(row.path, { isDir: row.isDir });
+      if (row) {
+        // Arm the double-click guard above BEFORE navigating: the point is to
+        // catch the habitual second press, which can arrive before this
+        // function returns on a fast enough click.
+        suppressPressUntilRef.current = Date.now() + OPEN_SUPPRESS_MS;
+        navigate(row.path, { isDir: row.isDir });
+      }
     }
-  };
-
-  // Double-click OPENS. Unconditionally: the same gesture in the same folder
-  // has to mean the same thing whether or not the window happens to be wide
-  // enough for the preview pane (listing/selection documents the model). Enter
-  // opens the same target from the keyboard.
-  // No single/double-click delay timer: the first click of a double-click
-  // selects, which is harmless — any pane fetch it starts is superseded or
-  // unmounted by the navigation the second click triggers. In an EMBEDDED
-  // listing that first click has already OPENED (openOnRelease), so this rarely
-  // gets to run there; it stays wired anyway, because a gesture that opens must
-  // not become a no-op in the one surface whose release beat it to it.
-  const onRowDoubleClick = (row: RowCtx) => {
-    navigate(row.path, { isDir: row.isDir });
   };
 
   // Kill the browser's own text selection for a Shift/Mod press.
@@ -1209,8 +1194,8 @@ export default function Listing({
   // because the actions act on the current folder in every one of them.
   //
   // Only where this listing OWNS the bar chrome: the menu replaces the crumb
-  // bar's path `⋮`, so it belongs to the same view that dropped it. An
-  // embedded or pane-hosted listing never had that menu — and its "Split
+  // bar's path `⋮`, so it belongs to the same view that dropped it. A
+  // snapshot's or a panel pane's listing never had that menu — and its "Split
   // right" would rewrite the SHELL's URL from inside a nested surface.
   const headerMenuBtn = !ownsBarChrome ? null : (
     <button
@@ -1273,14 +1258,6 @@ export default function Listing({
                 }
                 onPointerDown={(e) => onRowPointerDown(e, childPath)}
                 onPointerUp={(e) => onRowPointerUp(e, childPath)}
-                onDoubleClick={() =>
-                  onRowDoubleClick({
-                    path: childPath,
-                    name: entry.rel.split("/").pop() ?? entry.rel,
-                    isDir: entry.is_dir,
-                    parentDir: dirname(childPath),
-                  })
-                }
                 onContextMenu={(e) =>
                   openRowMenu(e, {
                     path: childPath,
@@ -1416,14 +1393,6 @@ export default function Listing({
           }
           onPointerDown={(e) => onRowPointerDown(e, childPath)}
           onPointerUp={(e) => onRowPointerUp(e, childPath)}
-          onDoubleClick={() =>
-            onRowDoubleClick({
-              path: childPath,
-              name: entry.name,
-              isDir: entry.is_dir,
-              parentDir: base,
-            })
-          }
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,
@@ -1575,9 +1544,7 @@ export default function Listing({
               down. `display: contents`, so the bar is a flex item of
               .listing-main exactly as it was of #main. */}
           {ownsBarChrome && <div className="listing-crumb-slot" ref={crumbSlotRef} />}
-          {/* Embedded (preview pane): no search row — the pane is a glance,
-              and the host listing's search/toggle already own that chrome. */}
-          {!embedded && inSearchSlot(barSearchSlot,
+          {inSearchSlot(barSearchSlot,
             /* `searching` (a non-empty query) is what tells the crumb bar to
                stand the crumbs down and give the row its whole width — see
                #breadcrumb:has(.listing-search.searching) in explorer.css.
@@ -1745,7 +1712,7 @@ export default function Listing({
                   action a few pixels apart, which reads as a rendering fault.
 
                   Same `navigate(path, { isDir: false })` as the row's own
-                  double-click (onRowDoubleClick), reused rather than reinvented: no
+                  open-on-click (onRowPointerUp), reused rather than reinvented: no
                   new view and no `_mode`, just the file. */}
               {!paneOpen && appEntryPath && (
                 <button
@@ -1888,45 +1855,15 @@ export default function Listing({
               // floor, so the two shares paint identically down there.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
-              {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey), which is
-                  the previewed row for two of the three modes and the FOLDER for
-                  Git — see there. Keying on the row is what stops a stale iframe
-                  lingering a frame while the new row's stat/list resolves; keying
-                  Git on the folder instead is what stops arrow-keying down the
-                  listing reloading a `git status` per keystroke.
-                  Nothing selected → the SELF target: the pane's subject is THIS
-                  folder, and it has no PREVIEW at all, so since D284 it lands on the
-                  chat about the folder like any other folder subject. It falls back
-                  to the neutral "Select a file to preview." hint only where neither
-                  companion is offered (ListingPreviewPane's self branch, which
-                  resolves no template and issues no stat) — and certainly not to a
-                  "lone app": that concept was deleted with D264 and the comment here
-                  outlived it by describing a resolution the self branch has never
-                  performed. Its listing is not the answer either — that is already
-                  on the left. */}
+              {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey): the mode
+                  and the OPEN FOLDER, nothing else (D443). Every mode's subject is
+                  this folder now, so the key changes only when the folder or the
+                  mode does — never when the selection moves — which is what stops
+                  arrow-keying down the listing remounting the chat/git/mcp iframe
+                  (a `git status`/`git log` fork, or a second `agent.py` spawn) on
+                  every keystroke. */}
               <ListingPreviewPane
-                key={paneKey(
-                  paneSide,
-                  fsPath,
-                  paneRow ? paneRow.path : null,
-                  sel.paths.length
-                )}
-                row={
-                  /* `paneRow` is already "the settled row of a single-row
-                     selection" (above), so it carries the count with it and needs
-                     no second check here. */
-                  paneRow ??
-                  (sel.paths.length === 0
-                    ? {
-                        path: fsPath,
-                        name:
-                          fsPath.replace(/\/+$/, "").split("/").pop() || fsPath,
-                        isDir: true,
-                        self: true,
-                      }
-                    : null)
-                }
-                selCount={sel.paths.length}
+                key={paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
                 appEntry={appEntryPath}
                 onOpenApp={openAppEntry}
