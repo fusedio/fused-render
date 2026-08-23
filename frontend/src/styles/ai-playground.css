@@ -1743,6 +1743,13 @@ a.pg-hero-repo:hover {
  * end under its own `.pg-apps-` prefix: the rest of this sheet is under
  * concurrent redesign (#760) and this block must merge clean. ---- */
 .pg-apps {
+  /* The banner's own gutters, so the stage's top and bottom bands share one
+   * pair of edges — the same min() expression, not a number copied. Auto side
+   * margins centre it; `margin-top: auto` is untouched by them and still does
+   * its main-axis job below. */
+  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
+  margin-left: auto;
+  margin-right: auto;
   /* Pinned to the bottom of the stage's viewport when the content above is
    * short (`auto` soaks up the spare space — .pg-stage is a flex column),
    * and pushed below the fold when it isn't: .pg-stage is the scroller, so
