@@ -1,4 +1,4 @@
-"""A Python client for the local fused-render AI API (SPEC PY-16, D448-D450).
+"""A Python client for the local fused-render AI API (SPEC PY-19, D448-D450).
 
 Mirrors `fused.ai` from `fused_render/static/runtime.js` — same names, same
 option names, same closed-envelope rejection (D413) — for Python code that
@@ -13,7 +13,7 @@ package (SPEC PY-15; `_child.py` has a dedicated diagnostic for exactly this
 mistake). It imports its sibling `appenv.py` instead, which already knows the
 env-var contract for the shell's home dir — re-deriving that here would be
 the second copy that drifts. Vendoring this file for use outside a
-fused-render page (SPEC PY-16's bootstrap, or a standalone copy) means
+fused-render page (SPEC PY-19's bootstrap, or a standalone copy) means
 vendoring `appenv.py` beside it; neither is useful alone.
 
 **Three ways to reach this module** (see `docs/PYTHON_CLIENT_DESIGN.md`):

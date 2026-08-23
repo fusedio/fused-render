@@ -16,7 +16,9 @@ missing).
 """
 
 import asyncio
+import json
 import os
+import time
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -162,6 +164,71 @@ def export_app_env() -> None:
     _export_bundled_uv_path()
 
 
+def _server_json_path() -> str:
+    from fused_render.shell import storage as shell_storage
+
+    return os.path.join(shell_storage.home_dir(), "server.json")
+
+
+def write_server_json(port: int, host: str = "127.0.0.1") -> None:
+    """Publish this server's origin + the shared-template dir to
+    `<home_dir()>/server.json`, for a process the server did NOT spawn (SPEC
+    PY-19, D450) — `fused_ai.py`'s `resolve_origin()` reads it as the fallback
+    below `FUSED_RENDER_ORIGIN`. A server child already inherits the env var
+    (`set_server_origin_env`, right above); a user-launched app inherits
+    nothing and cannot compute the port itself, since the desktop launcher
+    auto-picks a free one and `_branch.branch_port()` is only right for a bare
+    `fused-render` run.
+
+    Written at the SAME lifecycle point as `set_server_origin_env`/
+    `export_app_env` — before the server starts serving — into
+    `shell.storage.home_dir()`, which is already branch-resolved, so a
+    per-branch dev server writes its own file rather than colliding with
+    another branch's.
+
+    **Best-effort and non-fatal, like every other startup export here.** This
+    runs before the socket bind; a write failure (a read-only home dir, a
+    disk full) must never block or crash startup — the desktop supervisor
+    reads a slow start as a failed one. A stale file from a crashed server is
+    expected and is the CLIENT's problem to detect (a connect probe before
+    trusting it), not something this side heartbeats.
+    """
+    try:
+        import fused_render
+
+        path = _server_json_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shared = os.path.join(
+            os.path.dirname(os.path.abspath(fused_render.__file__)),
+            "templates", "shared")
+        payload = {
+            "origin": f"http://{host}:{port}",
+            "pid": os.getpid(),
+            "shared": shared,
+            "version": fused_render.__version__,
+            "started": time.time(),
+        }
+        # Write-then-rename so a reader never observes a half-written file —
+        # `resolve_origin()` may be polling this path from another process at
+        # the same moment.
+        tmp_path = path + f".{os.getpid()}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp_path, path)
+    except OSError:
+        logger.warning("could not write server.json (non-fatal)", exc_info=True)
+
+
+def remove_server_json() -> None:
+    """Undo `write_server_json` at shutdown. Best-effort: a file that is
+    already gone, or a home dir that went away underneath the server, is not
+    a reason to raise from a shutdown handler."""
+    try:
+        os.remove(_server_json_path())
+    except OSError:
+        pass
+
+
 def _export_bundled_uv_path() -> None:
     """Put the bundled ``uv`` on PATH so template daemons can find it.
 
@@ -298,6 +365,15 @@ def create_app(start_dir: str) -> FastAPI:
     # `fused-render` server (Ctrl-C, uvicorn's own shutdown); the packaged app
     # never gets here — it exits via `os._exit` — so `app.quit_teardown` has a
     # "capture" rung of its own.
+    # Undo `write_server_json` on an ordinary shutdown (Ctrl-C, uvicorn's own
+    # stop). The packaged app's other exit path (`os._exit`) runs no shutdown
+    # event at all — a stale file there is exactly the case `resolve_origin()`
+    # is required to connect-probe before trusting, so it is a correctness gap
+    # this side does not need to close.
+    @app.on_event("shutdown")
+    async def _shutdown_server_json():
+        remove_server_json()
+
     @app.on_event("shutdown")
     async def _shutdown_captures():
         from fused_render import capture

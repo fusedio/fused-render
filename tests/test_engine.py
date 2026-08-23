@@ -1932,7 +1932,7 @@ def test_app_packages_does_not_cache_an_unresolved_interpreter(monkeypatch):
         engine.reset_app_packages_cache()
 
 
-# --- shared-template path seeding (SPEC PY-16): both engines, in lockstep ----
+# --- shared-template path seeding (SPEC PY-19): both engines, in lockstep ----
 
 
 def test_build_code_appends_the_shared_templates_dir_to_sys_path(tmp_path):

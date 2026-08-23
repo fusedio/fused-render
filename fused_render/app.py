@@ -30,7 +30,9 @@ import uvicorn
 from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_path, setup_logging
-from fused_render.server import create_app, export_app_env, set_server_origin_env
+from fused_render.server import (
+    create_app, export_app_env, set_server_origin_env, write_server_json,
+)
 # The two teardown budgets the quit deadline is derived from (see
 # QUIT_HARD_DEADLINE_S). Imported eagerly — `create_app` above already pulls the
 # mounts package in, so this costs nothing — because a deadline that has to
@@ -334,6 +336,9 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     # Same lifecycle point, same reason: templates read the shell dirs + the
     # read-only mount list from the env (they can't import fused_render).
     export_app_env()
+    # And the discovery file for a process this server did NOT spawn (SPEC
+    # PY-19) — a server child already has FUSED_RENDER_ORIGIN above.
+    write_server_json(port, host="127.0.0.1")
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
