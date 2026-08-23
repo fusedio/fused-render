@@ -34,6 +34,11 @@ from geo_paths import (
 from optional_runtime import require
 from raster_engine import MAX_TILE_CACHE, band_ranges, error_descriptor, transparent_tile
 
+with contextlib.suppress(Exception):
+    import certifi
+
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+
 
 MULTIDIM_RUNTIME = {
     "xarray": "xarray",
