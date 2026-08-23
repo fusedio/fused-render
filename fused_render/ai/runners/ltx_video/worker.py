@@ -56,6 +56,7 @@ import time
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import formats  # noqa: E402 - LTX_SPLIT_MANIFEST; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The constructed pipeline. One per process — `DistilledPipeline.__init__` is
@@ -82,6 +83,18 @@ _GEMMA_MODEL_ID = "mlx-community/gemma-3-12b-it-4bit"
 #: NOT here — see `_distilled_transformer_filename` and `_spatial_upscaler_
 #: filename`, which pick a single winning name out of the repo's own listing
 #: rather than a glob that could match more than one real file.
+#:
+#: `formats.LTX_SPLIT_MANIFEST` ("split_model.json") is included too, and it
+#: is the one entry `DistilledPipeline` never opens at all — it exists so
+#: `formats.has_ltx_split_layout` can tell a cached download of THIS engine's
+#: layout apart from an ordinary directory of MLX safetensors. Without it on
+#: disk, a real `dgrauet/ltx-2.3-mlx-q4` download fails that predicate,
+#: `loaders()` falls through to the plain-safetensors branch, and the AI
+#: Models page offers the checkpoint as `mlx-text` — a Load button for an
+#: LTX-2.3 model aimed at a chat runner. `test_ai_ltx_video_worker.py`'s own
+#: `test_the_downloaded_file_set_is_recognised_by_loaders` is the seam test
+#: that catches this drifting apart again; it failed before this file
+#: carried the manifest, and this comment is why it stopped.
 _FIXED_FILES = (
     "config.json",
     "embedded_config.json",
@@ -90,6 +103,7 @@ _FIXED_FILES = (
     "vae_decoder.safetensors",
     "audio_vae.safetensors",
     "vocoder.safetensors",
+    formats.LTX_SPLIT_MANIFEST,
 )
 
 
@@ -198,13 +212,28 @@ def _put_ffmpeg_on_path():
     because h3.c reads that variable by its own convention. `ltx_core_mlx.
     utils.ffmpeg.find_ffmpeg()` has no such override; it is a bare `shutil.
     which("ffmpeg")` (verified by reading it at the pinned commit), so the
-    only lever this process has is PATH itself. Prepending the bundled
-    binary's directory — rather than exporting a fixed `ffmpeg` shim — keeps
-    a real system ffmpeg (if one happens to be ahead on this process's PATH
-    already) from silently winning by directory order; measured: `imageio_
-    ffmpeg.get_ffmpeg_exe()` returns a path whose directory holds a binary
-    literally named `ffmpeg` (or `ffmpeg.exe` on Windows), so prepending its
-    directory is enough for `shutil.which` to resolve it first.
+    only lever this process has is PATH itself.
+
+    **A symlink is unavoidable — prepending the binary's own directory does
+    NOT work.** MEASURED against the installed `imageio-ffmpeg` 0.6.0 wheel
+    (2026-08-23: `uv pip install --target . imageio-ffmpeg` into a scratch
+    directory, then listed `imageio_ffmpeg/binaries/`): it holds exactly one
+    file, `ffmpeg-macos-aarch64-v7.1` — platform-and-version-qualified, NOT
+    named `ffmpeg` at all. `shutil.which` matches on the exact basename, so
+    an earlier version of this function that only prepended `dirname(get_
+    ffmpeg_exe())` never actually resolved anything: `find_ffmpeg()` still
+    returned `None` on any machine with no SYSTEM ffmpeg already on PATH,
+    and the render died mid-flight inside `ltx_pipelines_mlx.utils.media_io`
+    the first time it shelled out. A fresh temp directory holding one link
+    literally named `ffmpeg` — pointing at the real binary — is what
+    `shutil.which("ffmpeg")` actually needs to find.
+
+    Symlinked on POSIX (no copy of a ~70-90MB binary); copied on Windows,
+    where `os.symlink` needs a privilege (Developer Mode, or an elevated
+    process) this worker cannot assume it has — a real cost on that
+    platform, but `ltx-video` is Apple-Silicon-gated in the registry and
+    never actually runs there; this only has to not crash a portable test
+    suite.
 
     Idempotent and called from `load()` rather than `generate()`: this
     process renders one video at a time behind `worker_base.GENERATE_LOCK`,
@@ -212,13 +241,23 @@ def _put_ffmpeg_on_path():
     process-wide fact this worker owns outright — no other code here reads
     or depends on it being unset.
     """
+    import shutil
+    import tempfile
+
     import imageio_ffmpeg
 
-    ffmpeg_dir = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+    real_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    link_dir = tempfile.mkdtemp(prefix="fused-render-ltx-ffmpeg-")
+    link_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    link_path = os.path.join(link_dir, link_name)
+    if sys.platform == "win32":
+        shutil.copyfile(real_exe, link_path)
+        os.chmod(link_path, 0o755)
+    else:
+        os.symlink(real_exe, link_path)
     path = os.environ.get("PATH", "")
-    if ffmpeg_dir not in path.split(os.pathsep):
-        os.environ["PATH"] = os.pathsep.join(
-            [ffmpeg_dir, path] if path else [ffmpeg_dir])
+    os.environ["PATH"] = os.pathsep.join(
+        [link_dir, path] if path else [link_dir])
 
 
 def load(model_id, fetched):

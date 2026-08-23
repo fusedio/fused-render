@@ -9,12 +9,18 @@ patterns, what `load` refuses and why, and that `generate` drives
 `DistilledPipeline.generate_and_save` with this worker's defaults and returns
 the same reply shape `h3_video.generate` does.
 """
+import fnmatch
 import importlib.util
 import os
+import shutil
+import stat
 import sys
+import tempfile
 import types
 
 import pytest
+
+from fused_render.ai.runners import formats
 
 WORKER_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -135,14 +141,42 @@ class FakeHfHub(types.ModuleType):
         return list(self.listing)
 
 
+def _fake_ffmpeg_binary():
+    """A real, executable file named the way the REAL `imageio-ffmpeg` wheel
+    actually names its binary — NOT `ffmpeg`.
+
+    MEASURED against the installed 0.6.0 wheel on this machine (2026-08-23,
+    `uv pip install --target . imageio-ffmpeg` into a scratch directory and
+    listed): `imageio_ffmpeg/binaries/` holds exactly one file,
+    `ffmpeg-macos-aarch64-v7.1`, and nothing named `ffmpeg` at all. A fake
+    that returned a path already named `ffmpeg` (this file's previous
+    version) could not have caught `_put_ffmpeg_on_path` merely prepending
+    the binary's own directory to PATH — `shutil.which("ffmpeg")` would
+    never have found anything there on a real machine, only in the test.
+    Named with the same platform-and-version-qualified shape here so the
+    premise cannot drift back silently.
+    """
+    fd, path = tempfile.mkstemp(prefix="ffmpeg-macos-aarch64-v", suffix=".1")
+    os.close(fd)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
 def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
-                with_samplers_tqdm=True, hf_hub=None):
+                with_samplers_tqdm=True, hf_hub=None, ffmpeg_exe=None):
     """A fresh import of the ltx_video worker against the fakes.
 
     `monkeypatch.setitem` rather than a save/restore, because this runner
     imports every third-party name INSIDE the functions that need it — a stub
     withdrawn after the import would be gone by the time anything looked for
     it (the same reason `test_ai_mflux_worker.py`'s loader does this).
+
+    `ffmpeg_exe`, when given, is the path `imageio_ffmpeg.get_ffmpeg_exe()`
+    fakes returning — a REAL file, so `_put_ffmpeg_on_path`'s symlink/copy
+    has something to point at and `shutil.which` can actually resolve it
+    afterward (see `_fake_ffmpeg_binary` and `test_load_makes_ffmpeg_
+    resolvable_via_PATH`, which is the test that would catch this fake
+    drifting away from the real wheel's shape again).
     """
     made = pipeline if pipeline is not None else FakePipeline()
 
@@ -178,8 +212,8 @@ def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
 
     if with_ffmpeg:
         ffmpeg_mod = types.ModuleType("imageio_ffmpeg")
-        ffmpeg_dir = os.path.join(os.sep, "fake", "ffmpeg", "bin")
-        ffmpeg_mod.get_ffmpeg_exe = lambda: os.path.join(ffmpeg_dir, "ffmpeg")
+        exe = ffmpeg_exe if ffmpeg_exe is not None else _fake_ffmpeg_binary()
+        ffmpeg_mod.get_ffmpeg_exe = lambda: exe
         monkeypatch.setitem(sys.modules, "imageio_ffmpeg", ffmpeg_mod)
 
     spec = importlib.util.spec_from_file_location("ltx_video_worker_under_test", WORKER_PATH)
@@ -190,12 +224,21 @@ def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
 
 
 def snapshot(tmp_path, *, distilled=True, versioned=False, name="snap"):
-    """A downloaded weights snapshot directory, as `download` would leave it."""
+    """A downloaded weights snapshot directory, as `download` would leave it.
+
+    Includes `split_model.json` — `_FIXED_FILES` names it precisely so a real
+    download carries it, and a fixture that silently dropped it would agree
+    with nothing that actually exercises `formats.has_ltx_split_layout`
+    (see `test_the_downloaded_file_set_is_recognised_by_loaders`, which
+    crosses that seam directly against the real allow_patterns output
+    instead of trusting this fixture's idea of the tree).
+    """
     root = tmp_path / name
     root.mkdir(parents=True, exist_ok=True)
     for filename in ("config.json", "connector.safetensors", "vae_encoder.safetensors",
                      "vae_decoder.safetensors", "audio_vae.safetensors",
-                     "vocoder.safetensors", "spatial_upscaler_x2_v1_1.safetensors"):
+                     "vocoder.safetensors", "spatial_upscaler_x2_v1_1.safetensors",
+                     "split_model.json"):
         (root / filename).write_bytes(b"")
     if distilled:
         name_ = "transformer-distilled-1.1.safetensors" if versioned else "transformer-distilled.safetensors"
@@ -237,6 +280,46 @@ def test_download_fetches_the_weights_repo_with_the_curated_pattern_set(monkeypa
     assert not any("lora" in p.lower() for p in patterns)
     assert not any("temporal" in p.lower() for p in patterns)
     assert not any("x1_5" in p for p in patterns)
+    # The one file `DistilledPipeline` never opens but `formats.has_ltx_
+    # split_layout` requires — see `test_the_downloaded_file_set_is_
+    # recognised_by_loaders` for why this line is load-bearing rather than
+    # decorative.
+    assert formats.LTX_SPLIT_MANIFEST in patterns
+
+
+def test_the_downloaded_file_set_is_recognised_by_loaders(monkeypatch, base):
+    """Crosses the seam between `download`'s real `allow_patterns` and
+    `formats.has_ltx_split_layout`'s predicate — the seam this file's own
+    `snapshot()` fixture and `test_ai_formats.py`'s synthetic file sets each
+    modelled independently, and neither ever tested against the other. A
+    fixture that agreed with `download` but not with the real predicate (or
+    vice versa) could pass every other test in both files while a genuine
+    `dgrauet/ltx-2.3-mlx-q4` download still got tagged `mlx-text` on the AI
+    Models page.
+
+    So this computes the REAL patterns `download` would request against the
+    REAL Hub listing, filters that listing exactly as `huggingface_hub`'s
+    `allow_patterns` fnmatch would (`download_snapshot`'s own contract), and
+    feeds the result — the file set a real download actually leaves on
+    disk — straight into the real `formats.loaders()`.
+    """
+    worker, _ = load_worker(monkeypatch, base)
+
+    worker.download(MODEL)
+
+    ids = [model_id for model_id, _kwargs in base.downloads]
+    patterns = dict(base.downloads[ids.index(MODEL)][1])["allow_patterns"]
+    downloaded = {name for name in REAL_Q4_LISTING
+                 if any(fnmatch.fnmatch(name, pattern) for pattern in patterns)}
+
+    assert formats.has_ltx_split_layout(downloaded), downloaded
+    codes = formats.loaders(
+        repo_id=MODEL, names=downloaded, dirnames=set(), config={},
+        torch_weights=True)
+    assert set(codes) == {"ltx-video"}, (
+        f"a real download of {MODEL} would be tagged {set(codes)!r}, not "
+        f"ltx-video — the on-disk file set formats.py checks for and the "
+        f"one download.py actually fetches have drifted apart")
     # The one upscaler file this repo actually ships, plus its config.
     assert "spatial_upscaler_x2_v1_1.safetensors" in patterns
     assert "spatial_upscaler_x2_v1_1_config.json" in patterns
@@ -345,18 +428,38 @@ def test_load_accepts_the_versioned_distilled_transformer(monkeypatch, base, tmp
     assert made.model_dir == fetched
 
 
-def test_load_puts_the_bundled_ffmpeg_directory_on_PATH(monkeypatch, base, tmp_path):
+def test_load_makes_ffmpeg_resolvable_via_PATH(monkeypatch, base, tmp_path):
     """`ltx_core_mlx.utils.ffmpeg.find_ffmpeg()` is a bare `shutil.which
     ("ffmpeg")` with no environment-variable override (unlike h3.c's own
-    `H3_FFMPEG` convention) — the only lever this process has is PATH."""
+    `H3_FFMPEG` convention) — the only lever this process has is PATH, and
+    `shutil.which` matches on the exact basename.
+
+    Asserted through `shutil.which("ffmpeg")` itself — the actual call `find_
+    ffmpeg()` makes — rather than by inspecting which directory landed on
+    PATH: a fake `get_ffmpeg_exe()` that already returned something named
+    `ffmpeg` (this test's previous version) could pass with an
+    implementation that only prepended the binary's own directory, which
+    does NOT work against the real wheel (see `_fake_ffmpeg_binary` and
+    `_put_ffmpeg_on_path`'s docstring for the measurement). `_fake_ffmpeg_
+    binary()` is named the way the real one is — NOT `ffmpeg` — so this can
+    only pass if `load()` actually made a same-named link resolvable.
+    """
     monkeypatch.delenv("PATH", raising=False)
-    worker, _ = load_worker(monkeypatch, base)
+    exe = _fake_ffmpeg_binary()
+    worker, _ = load_worker(monkeypatch, base, ffmpeg_exe=exe)
     fetched = snapshot(tmp_path)
 
     worker.load(MODEL, fetched)
 
-    ffmpeg_dir = os.path.join(os.sep, "fake", "ffmpeg", "bin")
-    assert ffmpeg_dir in os.environ["PATH"].split(os.pathsep)
+    resolved = shutil.which("ffmpeg")
+    assert resolved is not None, os.environ.get("PATH")
+    if sys.platform == "win32":
+        # Copied there, not symlinked (`_put_ffmpeg_on_path`'s own docstring
+        # says why) — same bytes, different path.
+        with open(resolved, "rb") as a, open(exe, "rb") as b:
+            assert a.read() == b.read()
+    else:
+        assert os.path.realpath(resolved) == os.path.realpath(exe)
 
 
 def test_load_sets_the_device_state(monkeypatch, base, tmp_path):
