@@ -345,23 +345,35 @@ export default function PlaygroundTab() {
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
   // The fit verdict, in words, for all three answers — null and only null draws
   // nothing (see the fact itself).
+  //
+  // The two bad answers are TINTED and the good one is not. Amber and red are
+  // the app's warning and error tokens and they are spent here for the reason
+  // they exist: "tight" and "no" are the only verdicts that ask the reader to
+  // do something differently. "easy" deliberately gets no green — green on this
+  // page means RUNNING (the sidebar's live dot, the loaded badge, D461), and a
+  // second meaning for one hue on one screen dilutes the one that matters,
+  // doubly so when it would appear on nearly every model. Untinted-is-fine is
+  // legible precisely because the other two are not.
   const fitNote = !selected
     ? null
     : selected.model.fit === "easy"
       ? {
           text: "Runs comfortably here",
+          tone: "",
           title:
             "Judged against this machine's memory — the weights leave room for everything else.",
         }
       : selected.model.fit === "tight"
         ? {
             text: "Tight fit on this machine",
+            tone: " pg-fact-tight",
             title:
               "Judged against this machine's memory — close other heavy apps while it runs.",
           }
         : selected.model.fit === "no"
           ? {
               text: "Likely too big for this machine",
+              tone: " pg-fact-no",
               title: "Judged against this machine's memory — it may crawl or fail to load.",
             }
           : null;
@@ -771,7 +783,7 @@ export default function PlaygroundTab() {
                   {fitNote && (
                     <div className="pg-hero-fact">
                       <dt>Memory</dt>
-                      <dd className="pg-hero-fact-judged" title={fitNote.title}>
+                      <dd className={"pg-hero-fact-judged" + fitNote.tone} title={fitNote.title}>
                         {fitNote.text}
                       </dd>
                     </div>
