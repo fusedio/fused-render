@@ -561,6 +561,33 @@ def test_generate_with_no_model_says_so(worker):
         worker.generate({"texts": ["a"]})
 
 
+def test_the_recipes_and_the_catalog_cannot_drift(worker):
+    """Two tables key the same models by the same filenames, and nothing but
+    this stops them diverging — the pin `test_ai_llamacpp_worker.py` already
+    has for the chat pair, which `formats.TEXT_EMBED_RECIPES`' own docstring
+    promises exists for this one.
+
+    A recipe with no catalog row is a model nobody is offered; a catalog row
+    with no recipe is a Download button whose resolution then raises. Neither
+    fails anywhere else.
+    """
+    from fused_render.ai import catalog
+    from fused_render.ai.runners import formats
+
+    assert set(formats.TEXT_EMBED_RECIPES) == {
+        entry["id"] for entry in catalog.SUGGESTIONS["llamacpp-embed"]}
+
+
+def test_the_two_recipe_tables_share_no_key(worker):
+    """`formats.gguf_recipe` consults the chat table FIRST, so a shared key
+    would silently resolve an embedding id to a chat model's repo and
+    download several gigabytes of the wrong thing. Disjoint by construction
+    today; pinned so it stays that way."""
+    from fused_render.ai.runners import formats
+
+    assert not (set(formats.GGUF_RECIPES) & set(formats.TEXT_EMBED_RECIPES))
+
+
 def test_main_wires_every_callback_the_base_expects(worker):
     """An unwired `memory()` would be silently ignored forever, including the
     day someone gives it a real probe — the same rule `llama_text.memory`'s

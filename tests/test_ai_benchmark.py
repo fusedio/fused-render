@@ -243,7 +243,7 @@ def test_an_embedding_race_is_waited_out_and_retried_the_same_way(
         bench, monkeypatch):
     calls = {"n": 0}
 
-    def generate_embed(model, body):
+    def generate_embed(model, body, capability=None):
         calls["n"] += 1
         if calls["n"] == 1:
             # The discarded warm-up: uneventful.
@@ -269,9 +269,11 @@ def test_an_embedding_race_is_waited_out_and_retried_the_same_way(
 
 def test_embeddings_report_texts_per_second_and_dim(bench, monkeypatch):
     calls = {"n": 0}
+    seen_capabilities = []
 
-    def generate_embed(model, body):
+    def generate_embed(model, body, capability=None):
         calls["n"] += 1
+        seen_capabilities.append(capability)
         assert body["texts"] == list(
             benchmark.WORKLOADS[ai_registry.EMBEDDINGS].params["texts"])
         bench.advance(50.0 if calls["n"] == 1 else 2.0)
@@ -285,11 +287,44 @@ def test_embeddings_report_texts_per_second_and_dim(bench, monkeypatch):
     assert metrics["batch"] == 8
     assert metrics["textsPerSecond"] == pytest.approx(4.0)  # 8 texts / 2.0s
     assert metrics["dim"] == 768
+    # …and the capability travelled, which is what keeps this measurer usable
+    # by BOTH embedding capabilities without a second copy of it.
+    assert seen_capabilities == [ai_registry.EMBEDDINGS] * 2
+
+
+def test_the_text_embedding_workload_measures_its_own_capability(bench, monkeypatch):
+    """The second capability's measurer, and the two things that make it not
+    a duplicate of the one above: it names `TEXT_EMBEDDINGS` to the supervisor
+    (so it cannot evict the dual encoder), and it carries the workload's
+    pinned `kind` into the request.
+
+    `kind` matters to a BENCHMARK and not only to a result: the prompt prefix
+    lengthens every sequence — on Qwen3-Embedding by a whole instruction block
+    — so a measurer that dropped it would report a number for less work than
+    the workload describes.
+    """
+    seen = []
+
+    def generate_embed(model, body, capability=None):
+        seen.append((body, capability))
+        bench.advance(20.0 if len(seen) == 1 else 4.0)
+        return {"vectors": [[0.0] * 384] * len(body["texts"]), "dim": 384,
+                "kind": body.get("kind"), "promptScheme": "e5"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_embed", generate_embed)
+    record = benchmark.run("some/text-embed-model", ai_registry.TEXT_EMBEDDINGS)
+    assert record["ok"] is True
+    assert [capability for _body, capability in seen] == \
+        [ai_registry.TEXT_EMBEDDINGS] * 2
+    assert seen[1][0]["kind"] == "document"
+    assert record["metrics"]["dim"] == 384
+    assert record["metrics"]["textsPerSecond"] == pytest.approx(2.0)  # 8 / 4.0s
 
 
 def test_an_embedding_reply_with_no_dim_leaves_dim_null(bench, monkeypatch):
     monkeypatch.setattr(benchmark.supervisor, "generate_embed",
-                        lambda model, body: (bench.advance(1.0), {"vectors": []})[1])
+                        lambda model, body, capability=None: (
+                            bench.advance(1.0), {"vectors": []})[1])
     record = benchmark.run("some/embed-model", ai_registry.EMBEDDINGS)
     assert record["metrics"]["dim"] is None
 

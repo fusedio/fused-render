@@ -184,6 +184,27 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
             "batch": len(_EMBED_TEXTS),
         }),
     ),
+    # The same eight strings the dual-encoder workload uses, deliberately.
+    # The two capabilities load different models and their scores are not
+    # comparable as QUALITY, but an identical input means a difference in
+    # `textsPerSecond` is a difference in the engines rather than in how much
+    # text each was handed.
+    #
+    # `kind` is pinned rather than left to the endpoint's default, for the
+    # reason `text-128-tokens` pins `temperature`: the prompt prefix is real
+    # work — it lengthens every sequence, and on Qwen3-Embedding by a whole
+    # instruction block — so two runs disagreeing about it would not be
+    # measuring the same thing. "document" is the side a corpus is indexed
+    # with, which is the case anyone benchmarking this cares about.
+    registry.TEXT_EMBEDDINGS: Workload(
+        name="text-embed-8-texts",
+        revision=1,
+        params=MappingProxyType({
+            "texts": _EMBED_TEXTS,
+            "batch": len(_EMBED_TEXTS),
+            "kind": "document",
+        }),
+    ),
 })
 
 
@@ -390,7 +411,8 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
     }
 
 
-def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
+def _measure_embed(model: str, workload: Workload, *, timed: bool,
+                   capability: str = registry.EMBEDDINGS) -> dict:
     """Encode the fixed batch of texts in one call.
 
     The whole batch in one request rather than eight requests, because batching
@@ -399,16 +421,31 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
 
     Retries on `supervisor.ModelNotReady` exactly like `_measure_text` — see
     `_await_settled_load` for the race this settles.
+
+    **`capability` is a parameter for `supervisor.generate_embed`'s reason:**
+    two capabilities answer this exact shape, everything below is about
+    residency and timing rather than about what the model does, and a second
+    copy would be two identical measurement bodies free to drift on the one
+    thing a benchmark must not drift on. It defaults to `EMBEDDINGS` so the
+    existing caller reads unchanged, and `_measure_text_embed` below binds the
+    other value.
+
+    Any extra workload params (`kind`, today) ride along into the request:
+    they are part of what is being timed, and a measurer that dropped them
+    would report a number for work the workload did not describe.
     """
     texts = list(workload.params["texts"])
+    body = {"texts": texts}
+    if "kind" in workload.params:
+        body["kind"] = workload.params["kind"]
     deadline = _now() + _LOAD_TIMEOUT_S
     while True:
         start = _now()
         try:
-            result = supervisor.generate_embed(model, {"texts": texts})
+            result = supervisor.generate_embed(model, body, capability=capability)
             break
         except supervisor.ModelNotReady:
-            _await_settled_load(model, registry.EMBEDDINGS, deadline)
+            _await_settled_load(model, capability, deadline)
     total = _now() - start
     if not timed:
         return {}
@@ -418,6 +455,18 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
         "dim": dim if isinstance(dim, int) else None,
         "batch": len(texts),
     }
+
+
+def _measure_text_embed(model: str, workload: Workload, *, timed: bool) -> dict:
+    """`_measure_embed` against the TEXT-embedding capability.
+
+    A named function rather than a `partial` in the table below, so that
+    `_MEASURE`'s "one measurement function per capability" reads as literally
+    true and a reader tracing a capability lands on a `def` with this
+    docstring rather than on a bound argument.
+    """
+    return _measure_embed(model, workload, timed=timed,
+                          capability=registry.TEXT_EMBEDDINGS)
 
 
 def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
@@ -537,6 +586,7 @@ _MEASURE = {
     registry.IMAGE_GENERATION: _measure_image,
     registry.SPEECH_TO_TEXT: _measure_transcript,
     registry.EMBEDDINGS: _measure_embed,
+    registry.TEXT_EMBEDDINGS: _measure_text_embed,
 }
 
 
