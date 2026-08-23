@@ -63,3 +63,18 @@ const FALLBACK: ReactNode = (
 export function capabilityIcon(capability: string): ReactNode {
   return ICONS[capability] ?? FALLBACK;
 }
+
+/** The "Not supported" group's glyph: a crossed-out circle.
+ *
+ *  Deliberately not the sparkle FALLBACK above, which means "a capability this
+ *  build has not learned yet" — the opposite claim. And not a warning triangle:
+ *  nothing is wrong, the download worked, this app just does not run that kind
+ *  of model. */
+export function unsupportedIcon(): ReactNode {
+  return (
+    <svg {...base}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M5.6 5.6l12.8 12.8" />
+    </svg>
+  );
+}

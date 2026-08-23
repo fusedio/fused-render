@@ -103,6 +103,7 @@ from typing import NamedTuple
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import registry as _ai_registry
+from fused_render.ai import tasks as _tasks
 from fused_render.ai.runners import formats
 
 # Directory-name prefix -> the kind reported to the UI. This is also the
@@ -304,62 +305,71 @@ def _read_json(path: str, limit: int = 4 * 1024 * 1024) -> dict | None:
 # Every answer carries WHERE IT CAME FROM, because 1 is a fact and 4 is a
 # reading of one, and a UI that showed them identically would be overclaiming.
 
-# Hub pipeline tags are already readable once the hyphens are spaces, so there
-# is no mapping table to go stale — only these three, whose Hub spelling is
-# jargon for what people actually call them.
-_FRIENDLIER_TAGS = {
-    "feature-extraction": "embeddings",
-    "sentence-similarity": "sentence embeddings",
-    "text2text-generation": "text-to-text generation",
-    # Hyphens-to-spaces turns this one into the unparseable "image text to
-    # text". It means a vision-language model: an image AND a prompt in, text
-    # out, so the "+" is doing the work the hyphens could not.
-    "image-text-to-text": "image + text to text",
-    # The audio half of the same shape, and the same reason: hyphens-to-spaces
-    # gives the unreadable "audio text to text". An audio-language model takes
-    # a RECORDING and a prompt and answers in text — which is not speech
-    # recognition (it is asked questions, not asked to transcribe) and is not
-    # something anything here can load.
-    "audio-text-to-text": "audio + text to text",
-    "any-to-any": "any input to any output",
-    # These two exist to make the CARD path and the ARCHITECTURE path agree on
-    # one spelling. Left alone, a whisper model read from its card said
-    # "automatic speech recognition" while the same model read from its config
-    # said "speech recognition" — one concept, two labels, and the glossary
-    # (keyed by label) only had a sentence for one of them.
-    "automatic-speech-recognition": "speech recognition",
-    "zero-shot-image-classification": "zero-shot image classification",
-    "zero-shot-classification": "zero-shot text classification",
-    # Same reason as the two above: a diffusers video/audio pipeline read from
-    # its `_class_name` already says "video generation" / "audio generation",
-    # so the Hub tags for the same thing are folded onto those labels rather
-    # than sprouting a second spelling with its own (missing) glossary entry.
-    "text-to-video": "video generation",
-    "image-to-video": "video generation",
-    "text-to-audio": "audio generation",
-}
+# The vocabulary itself lives in `ai/tasks.py` — every `pipeline_tag` the Hub
+# serves, vendored from `@huggingface/tasks`, each classified as served by a
+# capability or explicitly not. This module produces TAGS from every evidence
+# path below and never prose: one spelling, one glossary key, one thing to
+# classify. (It used to end in `tag.replace("-", " ")`, which made the
+# vocabulary open — see that module's docstring for the two bugs that caused.)
 
 # transformers architecture suffix -> task. Ordered: the first match wins, so
 # the more specific suffixes come before the ones they contain.
 _ARCH_TASKS = (
-    ("ForZeroShotImageClassification", "zero-shot image classification"),
-    ("ForImageClassification", "image classification"),
-    ("ForImageSegmentation", "image segmentation"),
-    ("ForObjectDetection", "object detection"),
-    ("ForSequenceClassification", "text classification"),
-    ("ForTokenClassification", "token classification"),
-    ("ForQuestionAnswering", "question answering"),
-    ("ForSpeechSeq2Seq", "speech recognition"),
-    ("ForConditionalGeneration", "text-to-text generation"),
-    ("ForMaskedLM", "fill mask"),
-    ("ForCausalLM", "text generation"),
-    ("LMHeadModel", "text generation"),
-    ("ForCTC", "speech recognition"),
+    ("ForZeroShotImageClassification", "zero-shot-image-classification"),
+    ("ForImageClassification", "image-classification"),
+    ("ForImageSegmentation", "image-segmentation"),
+    # The three other segmentation heads transformers ships. Read as nothing at
+    # all they fell through to the format branch, which is text.
+    ("ForSemanticSegmentation", "image-segmentation"),
+    ("ForInstanceSegmentation", "image-segmentation"),
+    ("ForUniversalSegmentation", "image-segmentation"),
+    ("ForObjectDetection", "object-detection"),
+    ("ForZeroShotObjectDetection", "zero-shot-object-detection"),
+    # `Intel/dpt-beit-base-384`, and the case that showed the gap: its
+    # downloaded card's front matter is `license: mit` and nothing else, so the
+    # architecture is the whole of the local evidence and an unlisted suffix
+    # meant "no task", which the format fallback then read as a chat model.
+    ("ForDepthEstimation", "depth-estimation"),
+    ("ForVideoClassification", "video-classification"),
+    ("ForAudioClassification", "audio-classification"),
+    ("ForAudioFrameClassification", "audio-classification"),
+    ("ForTextToSpectrogram", "text-to-speech"),
+    ("ForTextToWaveform", "text-to-speech"),
+    ("ForVisualQuestionAnswering", "visual-question-answering"),
+    ("ForDocumentQuestionAnswering", "document-question-answering"),
+    ("ForMultipleChoice", "multiple-choice"),
+    ("ForSequenceClassification", "text-classification"),
+    ("ForTokenClassification", "token-classification"),
+    ("ForQuestionAnswering", "question-answering"),
+    ("ForSpeechSeq2Seq", "automatic-speech-recognition"),
+    # An encoder-decoder (T5-shaped). Not the causal-LM path mlx-lm serves,
+    # however much "generation" in the name suggests it — and the Hub retired
+    # its own `text2text-generation` tag, so the honest surviving tag for what
+    # such a checkpoint is USED for is `translation` (its sibling
+    # `summarization` classifies the same way, and neither is served here).
+    ("ForConditionalGeneration", "translation"),
+    ("ForMaskedLM", "fill-mask"),
+    ("ForCausalLM", "text-generation"),
+    ("LMHeadModel", "text-generation"),
+    ("ForCTC", "automatic-speech-recognition"),
 )
 
 # …ForConditionalGeneration is the same head for "translate this" and "transcribe
 # this", so the model type is what separates them.
 _AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
+
+# …and the same head AGAIN for speech OUT. `Qwen/Qwen3-TTS-12Hz-1.7B-Base`
+# publishes no `pipeline_tag` at all — its sibling VoiceDesign repo does — so
+# the architecture is the only evidence there is, and read as a bare
+# `…ForConditionalGeneration` it came out "translation": the right VERDICT (no
+# runner either way) under a label that is simply wrong about what the model
+# does. Matched on the model type rather than on the architecture name, the
+# same way the audio-IN case above is, because the head is shared and the type
+# is what distinguishes them. A substring test: the family names it
+# (`qwen3_tts`, `parler_tts`, `xtts`), and an exact list would need a new entry
+# for every synthesis family that ships — the maintenance that let the two
+# multimodal families arrive mislabelled.
+_SPEECH_OUT_MARKERS = ("_tts", "tts_", "vits", "bark", "vall_e")
 
 # …and the same head again for a vision-language model. This sub-config is how
 # a multimodal wrapper says so — a nested block per extra tower — and it is
@@ -420,46 +430,10 @@ def _quantization(config: dict) -> int | None:
     return None
 
 
-# What each task actually MEANS, in terms of what goes in and what comes out.
-# The labels above are the Hub's vocabulary (or our reading of an architecture),
-# and "image + text to text" or "fill mask" tell you nothing if you have not met
-# them before — so the card explains them on hover rather than leaving a phrase
-# to be guessed at.
-#
-# Keyed by the LABEL, not the raw tag, so one table serves both the model-card
-# path and the architecture path. Deliberately incomplete: the Hub adds tags,
-# and a tag we have no sentence for still shows its label and its source, which
-# is what an open vocabulary degrades to gracefully.
-_TASK_HELP = {
-    "audio + text to text": "Answers questions about a recording — an audio clip and a prompt in, text out.",
-    "text generation": "Continues or answers a prompt in text — chat models, code models, completion.",
-    "text-to-text generation": "Rewrites text into other text — translation, summarising, reformatting.",
-    "fill mask": "Fills in blanked-out words in a sentence. Mostly a building block for other models.",
-    "text classification": "Sorts a piece of text into categories — sentiment, topic, spam.",
-    "token classification": "Labels each word in a sentence — named entities, parts of speech.",
-    "question answering": "Finds the span of a supplied document that answers a question.",
-    "summarization": "Shortens a long text into its main points.",
-    "translation": "Translates text from one language into another.",
-    "embeddings": "Turns text into vectors, so things can be compared or searched by meaning.",
-    "sentence embeddings": "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG.",
-    "image + text to text": "Takes an image AND a prompt, answers in text — describing a picture, reading a chart, visual chat.",
-    "image to text": "Describes an image in words — captioning, OCR.",
-    "text to image": "Generates a picture from a written description.",
-    "image generation": "Generates a picture, usually from a written description.",
-    "video generation": "Generates video frames, usually from a description or a still image.",
-    "audio generation": "Generates sound — speech, music, effects.",
-    "text to speech": "Reads text aloud as audio.",
-    "speech recognition": "Transcribes speech in audio into text.",
-    "image classification": "Says what an image is a picture of, from a fixed set of labels.",
-    "zero-shot image classification": "Says what an image shows, against labels you supply at the time rather than a fixed set.",
-    "zero-shot text classification": "Sorts text into categories you supply at the time rather than a fixed set.",
-    "image segmentation": "Marks which pixels belong to which object.",
-    "object detection": "Finds objects in an image and boxes them.",
-    "depth estimation": "Estimates how far away each part of an image is.",
-    "image to image": "Turns one picture into another — upscaling, restyling, inpainting.",
-    "audio classification": "Sorts a sound into categories — which language, which speaker, what noise.",
-    "any input to any output": "Handles several kinds of input and output — text, images, audio — in one model.",
-}
+# The glossary lives with the vocabulary (`ai/tasks.py`), keyed by TAG. It used
+# to sit here keyed by prose label, which is how one concept read from a card
+# and from a config produced two spellings and only one of them had a sentence.
+
 
 
 @dataclass
@@ -467,8 +441,23 @@ class _RepoMeta:
     """What a repo is for and how big the model is — read from the default
     revision's snapshot, or empty when the download brought no evidence."""
 
+    #: The Hub `pipeline_tag` this repo is, from whichever evidence answered —
+    #: a TAG, never prose, whether it came from the card or from our own
+    #: reading of a config (`ai/tasks.py`). None when nothing said.
     task: str | None = None
     task_source: str | None = None
+    #: The config DECLARED an architecture and `_ARCH_TASKS` could not map its
+    #: suffix — which is a fact, not a silence, and the difference matters to
+    #: exactly one caller (`cached_capability`'s format fallback).
+    #:
+    #: transformers names a checkpoint's head in that string, and mlx-lm
+    #: resolves a checkpoint by importing `mlx_lm.models.<model_type>` for a
+    #: CAUSAL LM. So "this repo says it is a `…ForDepthEstimation`" is positive
+    #: evidence that the text runner cannot open it, even though the task came
+    #: out unknown — and treating it as "we know nothing, let the file
+    #: extensions decide" is how `Intel/dpt-beit-base-384` landed in the
+    #: Playground's TEXT section.
+    unmapped_arch: bool = False
     # One sentence on what the task means, when we have one for it.
     task_help: str | None = None
     params: int | None = None
@@ -527,16 +516,42 @@ def _front_matter(snapshot_dir: str) -> dict[str, str]:
 
 
 def _pipeline_task(tag: str) -> str:
-    return _FRIENDLIER_TAGS.get(tag, tag.replace("-", " "))
+    """The card's `pipeline_tag`, verbatim.
+
+    A function rather than nothing, because the CARD path and the four evidence
+    paths below must produce the same kind of value, and a reader of
+    `_repo_meta` should be able to see that the card is not treated specially.
+    Unrecognised tags are NOT rejected here — `tasks.classify` answers
+    `UNKNOWN` for them and the card still shows what the author wrote."""
+    return tag.strip()
 
 
 def _diffusers_task(class_name: str) -> str:
+    """The pipeline class in this snapshot, as a Hub tag.
+
+    The `text-to-*` tags rather than bare "video generation" / "image
+    generation": a diffusers pipeline IS prompted, and folding the two
+    spellings onto the Hub's own tag is what lets one glossary entry and one
+    classification serve both this path and a model card that says the same
+    thing."""
     lowered = class_name.lower()
     if "video" in lowered:
-        return "video generation"
+        return "text-to-video"
     if "audio" in lowered or "music" in lowered:
-        return "audio generation"
-    return "image generation"
+        return "text-to-audio"
+    return "text-to-image"
+
+
+def _declares_architecture(config: dict) -> bool:
+    """Does this config NAME a head at all?
+
+    Separate from `_architecture_task` returning None, which conflates "no
+    architectures key" with "a key this table does not know" — and those are
+    opposite facts for a caller deciding whether to trust the file extensions.
+    """
+    architectures = config.get("architectures")
+    name = architectures[0] if isinstance(architectures, list) and architectures else None
+    return isinstance(name, str) and bool(name)
 
 
 def _architecture_task(config: dict) -> str | None:
@@ -547,9 +562,13 @@ def _architecture_task(config: dict) -> str | None:
     for suffix, task in _ARCH_TASKS:
         if name.endswith(suffix):
             if suffix == "ForConditionalGeneration":
-                # One head, three jobs, and the config is what tells them apart.
-                if config.get("model_type") in _AUDIO_MODEL_TYPES:
-                    return "speech recognition"
+                # One head, four jobs, and the config is what tells them apart.
+                model_type = config.get("model_type")
+                if model_type in _AUDIO_MODEL_TYPES:
+                    return "automatic-speech-recognition"
+                if isinstance(model_type, str) and any(
+                        marker in model_type.lower() for marker in _SPEECH_OUT_MARKERS):
+                    return "text-to-speech"
                 # A MULTIMODAL WRAPPER — a language model with a vision (and
                 # sometimes audio) tower bolted on, which is what every current
                 # Qwen3.5 and gemma-4 checkpoint is, including the ones this
@@ -561,9 +580,9 @@ def _architecture_task(config: dict) -> str | None:
                 # with no Load button. The label is the one the CARD path
                 # already produces for these repos, so the two agree.
                 if _VISION_CONFIG in config:
-                    return "image + text to text"
+                    return "image-text-to-text"
                 if _AUDIO_CONFIG in config:
-                    return "audio + text to text"
+                    return "audio-text-to-text"
             return task
     return None
 
@@ -635,11 +654,11 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
     stray pickle happened to be called model.bin would be a confident lie.
     """
     if formats.is_ct2_whisper(names, config):
-        return "speech recognition", "its CTranslate2 Whisper layout"
+        return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
-        return "speech recognition", "its MLX Whisper weights"
+        return "automatic-speech-recognition", "its MLX Whisper weights"
     if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
-        return "image generation", "its MLX diffusion components"
+        return "text-to-image", "its MLX diffusion components"
     return None
 
 
@@ -790,7 +809,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
             library = library or "diffusers"
 
     if meta.task is None and ("config_sentence_transformers.json" in names or "modules.json" in names):
-        meta.task, meta.task_source = "embeddings", "its sentence-transformers config"
+        meta.task, meta.task_source = "feature-extraction", "its sentence-transformers config"
         library = library or "sentence-transformers"
 
     # Read once, whatever the task turned out to be: the architecture is only
@@ -801,6 +820,9 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         task = _architecture_task(config)
         if task:
             meta.task, meta.task_source = task, "the architecture in config.json"
+        elif _declares_architecture(config):
+            # Read, and not recognised — see `_RepoMeta.unmapped_arch`.
+            meta.unmapped_arch = True
 
     # A GGUF file names the LIBRARY and nothing else. It used to name the task
     # too — "text generation", unconditionally — which put a Load button on
@@ -840,13 +862,13 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # this from overruling a card that was right: a genuine img2img repo with no
     # such evidence keeps its label, and so does a VLM whose label already
     # resolves to text generation.
-    if meta.task is None or _ai_registry.capability_for_task(meta.task) is None:
+    if not _tasks.classify(meta.task).supported:
         found = _format_task(repo_id, names, dirnames, config)
         if found:
             meta.task, meta.task_source = found
 
     if meta.task:
-        meta.task_help = _TASK_HELP.get(meta.task)
+        meta.task_help = _tasks.help_for(meta.task)
 
     quantized_bits = _quantization(config)
     if quantized_bits:
@@ -1062,7 +1084,86 @@ def _unfinished_fetch(repo_dir: str) -> bool:
     return not _snapshot_dirs(os.path.join(repo_dir, "snapshots"))
 
 
-def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str | None]:
+def _fetched_bytes(repo_dir: str, scanned: int) -> int:
+    """How many of this repo's bytes actually ARRIVED (D440).
+
+    **Not the same number as the folder's size, and the difference is the bug
+    this exists for.** Our fetcher PREALLOCATES a part file to the full length of
+    the file it is fetching, so a repo 15% of the way through a 1.6GB download
+    measures 1.6GB — and a card drawing "how much of this is here" from that read
+    as nearly finished while the job row beside it said 243 MB. `_scan_repo` is
+    not wrong to count those bytes (the file really is that long, and this page's
+    other job is telling you what is eating the disk); they are just not an answer
+    to "how much arrived".
+
+    So this is the SCANNED total with one correction applied per part file:
+    subtract the length that was counted, add back what is durable. Starting from
+    the scan rather than re-adding the blobs is what keeps a finished repo's two
+    numbers identical — refs, snapshot entries and any stray file are counted
+    once, by the one walk that already knows how to count them.
+
+    Durable, per kind, from the evidence each kind carries:
+
+    * **`.fusedpart`** — the sidecar's segment cursors, the same accounting a
+      resume trusts: `flush()` fsyncs the data BEFORE recording an offset, so a
+      recorded cursor is always bytes the disk really has (see
+      `worker_base._FileFetch.flush`). No sidecar, or an unreadable one, counts
+      ZERO rather than the file's length: positive evidence only, the same posture
+      `_unfinished_fetch` takes, because the file may be pure preallocation.
+    * **`.incomplete`** — `huggingface_hub` APPENDS, so the length already IS the
+      progress. Left alone, which is why only our own suffix is corrected here.
+    """
+    corrected = scanned
+    try:
+        entries = list(os.scandir(os.path.join(repo_dir, "blobs")))
+    except OSError:
+        return scanned
+    for entry in entries:
+        if entry.name.endswith(worker_part_suffix() + ".json"):
+            # The sidecar's own bytes. Real, counted by the scan, and not part of
+            # the model — a card saying "9 bytes of this 1.6GB model are here"
+            # because a sidecar exists would be a fraction made of bookkeeping.
+            corrected -= _blob_size(entry.path)
+            continue
+        if not entry.name.endswith(worker_part_suffix()):
+            continue
+        corrected -= _blob_size(entry.path)
+        corrected += _part_progress(entry.path + ".json")
+    # A sidecar recording more than its part file is long would otherwise push
+    # this above the scan; a negative is impossible but cheap to rule out.
+    return max(0, corrected)
+
+
+def worker_part_suffix() -> str:
+    """Our own part suffix, which is the ONLY one `_fetched_bytes` corrects.
+
+    A function rather than a second constant so the reason stays attached: hf's
+    `.incomplete` is in `_PART_SUFFIXES` too (both mean "unfinished", which is
+    what `_unfinished_fetch` asks), and it must NOT be corrected, because that
+    writer appends and its length is already the progress.
+    """
+    return ".fusedpart"
+
+
+def _part_progress(sidecar: str) -> int:
+    """Durable bytes recorded for one part file, or 0 when nothing says."""
+    try:
+        with open(sidecar) as handle:
+            state = json.load(handle)
+        segments = state["segments"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+    done = 0
+    for segment in segments:
+        try:
+            width = int(segment["end"]) - int(segment["start"]) + 1
+            done += max(0, min(int(segment["done"]), width))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return done
+
+
+def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | None, str | None]:
     """Which backend would load this repo, and the capability it would load it
     AS — `(None, capability)` when nothing here reads the format.
 
@@ -1083,10 +1184,20 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
     decisive formats may answer — a directory of safetensors says nothing about
     the modality (`formats.DECISIVE`).
     """
+    capability = reading.capability
     if not meta.loaders:
         return None, capability
     runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
-    if capability is None:
+    if capability is None and not reading.ruled_out:
+        # **Only for a task we could not identify.** A RULED-OUT task is not
+        # rescued by the format, and that guard is the fix for a cached
+        # diffusers VIDEO pipeline: its `_class_name` says `text-to-video`,
+        # nothing here generates video, and yet the diffusers runners are
+        # DECISIVE about the format — so this branch used to answer
+        # "text-to-image" and put a Load button on it. The mflux/CT2 cases the
+        # branch exists for are unaffected, because `_format_task` has already
+        # overruled their misleading labels by the time we get here, making the
+        # reading SUPPORTED rather than ruled out.
         decisive = [r for r in runners if r.code in formats.DECISIVE]
         capability = decisive[0].capability if decisive else None
     if capability is None:
@@ -1162,11 +1273,21 @@ class CacheReading(NamedTuple):
     `cached` is whether there is a revision to read at all; `capability` is what
     a load of it would be (None when nothing here can tell); `looks_like` is the
     same evidence in words, for an error message.
+
+    `support` and `reason` are the THREE-STATE answer behind that `capability`
+    (`ai/tasks.py`): a null capability is "we run this kind of model but not
+    from this format", "we do not run this kind of model at all", or "we cannot
+    tell what this is", and a refusal that cannot tell them apart cannot explain
+    itself. `tag` is the vocabulary key those came from, for a caller that wants
+    to link to the glossary rather than reprint a sentence.
     """
 
     cached: bool
     capability: str | None
     looks_like: str | None
+    support: str = _tasks.UNKNOWN
+    reason: str = ""
+    tag: str | None = None
 
 
 def cached_capability(repo_id: str) -> CacheReading:
@@ -1196,15 +1317,26 @@ def cached_capability(repo_id: str) -> CacheReading:
         return CacheReading(False, None, None)
 
     meta = _repo_meta(repo_dir)
-    # The page's own join, in the page's own order: the task label first, then
-    # the decisive formats, which is what `_engine` exists to combine.
-    _row, capability = _engine(meta, _ai_registry.capability_for_task(meta.task))
-    if capability is None and meta.loaders:
-        # Nothing DECISIVE, but the runners that read this format may still
-        # agree about what it is: a bare directory of safetensors is read only
-        # by the two TEXT runners, and their shared capability is a fact about
-        # the format rather than a guess about the model. This is what keeps
-        # every existing `load(id)` on an unlabelled chat repo working.
+    # The page's own join, in the page's own order: the task first, then the
+    # decisive formats, which is what `_engine` exists to combine.
+    reading = _tasks.classify(meta.task)
+    _row, capability = _engine(meta, reading)
+    if (capability is None and meta.loaders
+            and reading.support == _tasks.UNKNOWN and not meta.unmapped_arch):
+        # Nothing DECISIVE and nothing that told us what this IS, but the
+        # runners that read the format may still agree about it: a directory of
+        # safetensors with a `config.json` mlx-lm can resolve is read only by
+        # the TEXT runner, and their shared capability is a fact about the
+        # format rather than a guess about the model. This is what keeps every
+        # existing `load(id)` on an unlabelled chat repo working.
+        #
+        # **Gated on UNKNOWN, and that gate is the point.** A task we recognise
+        # and have ruled out must not be rescued here: `SymphonyGen/SymphonyGen`
+        # is a symbolic-music policy (`reinforcement-learning`, four `.pt`
+        # checkpoints) and this fallback made it a chat model in the
+        # Playground's TEXT section, with a Load aimed at an mlx-lm that has no
+        # `config.json` to read. `formats.loaders` refuses that repo now too —
+        # two guards, because the failure was silent in both.
         found = {r.capability for r in _ai_registry.all_runners()
                  if r.code in meta.loaders}
         if len(found) == 1:
@@ -1219,13 +1351,18 @@ def cached_capability(repo_id: str) -> CacheReading:
             True, None,
             f"{_article(component['part'])} {component['part']} that belongs to "
             f"{component['owner']}")
-    if meta.task:
-        looks_like = f"{_article(meta.task)} {meta.task} model"
+    if reading.label:
+        looks_like = f"{_article(reading.label)} {reading.label} model"
     elif meta.library:
         looks_like = f"{_article(meta.library)} {meta.library} repo"
     else:
         looks_like = None
-    return CacheReading(True, capability, looks_like)
+    # A repo whose TASK is served but whose FORMAT is not keeps its ruled-out
+    # sentence from `_engine`'s own reason (the card shows that one); what
+    # travels here is the vocabulary's answer, which is the half a load route
+    # needs to explain a refusal without re-deriving anything.
+    return CacheReading(True, capability, looks_like,
+                        reading.support, reading.reason, reading.tag)
 
 
 def _article(word: str) -> str:
@@ -1262,6 +1399,15 @@ class CachedModel(NamedTuple):
     # reason: `on_disk` (a set of repo ids) cannot say WHICH of a repo's
     # curated quantizations is present, only that the repo is.
     files: frozenset[str] = frozenset()
+    # What the model DOES and why we do not run it, when we do not
+    # (`ai/tasks.py`). Carried so a picker can SHOW an unloadable download
+    # rather than silently dropping it: "you have this, and here is why there
+    # is no button" is a sentence only this side can write, and a page that
+    # omits the row instead answers the user's next question ("where did my
+    # download go?") with nothing at all.
+    task: str | None = None
+    support: str = _tasks.UNKNOWN
+    reason: str = ""
 
 
 #: `cached_models()`'s memo: cache dir -> (read time, signature, answer). See the
@@ -1410,7 +1556,8 @@ def cached_models() -> list[CachedModel]:
         repo_meta = _repo_meta(repo_dir)
         size = _repo_size(repo_dir, by_dir[name])
         models.append(CachedModel(
-            repo_id, reading.capability, size, repo_meta.loaders, repo_meta.names))
+            repo_id, reading.capability, size, repo_meta.loaders, repo_meta.names,
+            _tasks.label_for(reading.tag), reading.support, reading.reason))
     _CACHED_MODELS[cache_dir] = (_now(), signature, models)
     return models
 
@@ -1427,12 +1574,12 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     # and no explanation of a 2.4GB row) or, if a component ever came in a
     # loadable shape, a Load button for something nothing serves.
     component = formats.component(repo_id)
-    capability = (
-        _ai_registry.capability_for_task(meta.task)
-        if kind == "model" and component is None else None
+    reading = (
+        _tasks.classify(meta.task)
+        if kind == "model" and component is None else _tasks.NOTHING
     )
     engine, capability = (
-        _engine(meta, capability) if kind == "model" and component is None
+        _engine(meta, reading) if kind == "model" and component is None
         else (None, None)
     )
     return {
@@ -1456,8 +1603,22 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # What the model is FOR, and where that was read from — a pipeline_tag
         # is the Hub's own answer, an architecture is our reading of one, and
         # the UI says which (see _repo_meta).
-        "task": meta.task,
+        # The words, and the Hub tag they came from. Both, because the label is
+        # what a card prints and the TAG is what a filter, a glossary lookup and
+        # a link to the Hub all key on — one string doing both jobs is how the
+        # two faces of this page came to spell one concept two ways.
+        "task": reading.label,
+        "taskTag": reading.tag,
         "taskSource": meta.task_source,
+        # **Whether we run this KIND of model, said out loud** (`ai/tasks.py`).
+        # Three states, because a null `capability` was three different facts
+        # and a card cannot explain a fact it cannot see: "supported",
+        # "no-runner" (a task we recognise and do not serve — video generation,
+        # speech synthesis, a robot policy) and "unknown" (a tag this build has
+        # never heard of). `supportReason` is the sentence for the second, and
+        # the honest empty string for the others.
+        "support": reading.support,
+        "supportReason": reading.reason,
         # One sentence on what that task means — the labels are the Hub's
         # vocabulary, which is jargon until someone explains it.
         "taskHelp": meta.task_help,
@@ -1500,6 +1661,12 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # of models: a dataset or a Space in this cache is not something this
         # page can resume.
         "partial": kind == "model" and _unfinished_fetch(repo_dir),
+        # Bytes that actually ARRIVED, which is `size` for everything finished and
+        # very much less than it mid-fetch, since a part file is preallocated to
+        # its full length (D440). Only the cards that draw a FRACTION read this;
+        # every figure the page prints is still `size`, because what a folder
+        # costs on the disk is the allocated bytes.
+        "fetchedBytes": _fetched_bytes(repo_dir, scan.size),
     }
 
 
@@ -1622,6 +1789,55 @@ def _delete_repo(repo_dir: str) -> int:
         ignore_errors=True,
     )
     return freed
+
+
+def discard_empty_shell(repo_id: str) -> bool:
+    """Remove `repo_id`'s cache folder when a stopped fetch left NOTHING in it (D437).
+
+    The state a user hit in the wild: a cancelled download whose folder held one
+    40-byte `refs/main` and not a single blob. The listing has to call that
+    partial — no snapshot is exactly the evidence `_unfinished_fetch` reads — so
+    the page drew a "partly downloaded" card, under Unrecognised (no files, so no
+    task, so no capability), offering a resume of a download with nothing to
+    resume from. The card has a way out of that now; this stops it being drawn.
+
+    **Two positive conditions, both about emptiness, and no others.** No snapshot
+    directory AND no blob of any kind — not even a part file. That is the whole
+    of it: a folder in that state cannot resume, cannot load, and cannot tell
+    anybody what it was going to be, so the bytes it is protecting do not exist.
+    Notably NOT deleted:
+
+    * a folder with part files in it — those bytes are exactly what a resume
+      picks up (D275/AI-5i), and throwing them away is the behaviour that
+      argument rejected;
+    * a folder with a snapshot — some of the model is materialised and readable;
+    * anything on the strength of a MISSING marker or of the fetch having failed.
+      Emptiness is read off the folder, never inferred from the job's outcome, so
+      calling this after a SUCCESSFUL fetch is a no-op rather than a hazard.
+
+    Returns whether anything was removed. Never raises: this runs on a fetch
+    thread's way out, and a cache folder it could not tidy is not a reason to
+    turn a cancelled download into an error.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return False
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    try:
+        if not os.path.isdir(repo_dir) or os.path.islink(repo_dir):
+            return False
+        if _snapshot_dirs(os.path.join(repo_dir, "snapshots")):
+            return False
+        try:
+            blobs = list(os.scandir(os.path.join(repo_dir, "blobs")))
+        except OSError:
+            blobs = []  # no blobs/ at all, which is the emptiest case of all
+        if blobs:
+            return False
+        _delete_repo(repo_dir)
+        return True
+    except OSError:
+        return False
 
 
 def _delete_revision(repo_dir: str, revision: object) -> int:

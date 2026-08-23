@@ -450,6 +450,13 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         "unread": False,
         "entry_id": str(entry.get("id") or ""),
         "template_id": str(entry.get("template_id") or ""),
+        # Was this message PLANNED for its time, or does it merely have one?
+        # A task typed into the List or the Board with the when-row untouched
+        # runs now because now is the form's default — nobody put it on a
+        # calendar, so the calendar does not draw it (schedule-lib.taskChips).
+        # False for every entry stored before the flag existed, which is the
+        # right reading: they all came from a form that asked for a time.
+        "immediate": bool(entry.get("immediate")),
         "turn": _entry_turn(entry),
         "anchor": anchor,
     }

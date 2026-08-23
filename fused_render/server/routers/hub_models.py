@@ -120,12 +120,11 @@ import httpx
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai.registry import capability_for_task, for_capability
+from fused_render.ai import tasks as ai_tasks
+from fused_render.ai.registry import for_capability
 from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 from fused_render.ai.hub_cache import (
-    _FRIENDLIER_TAGS,
-    _TASK_HELP,
     _entry_is_dir,
     _scan_repo,
     _unfinished_fetch,
@@ -185,42 +184,12 @@ _MAX_ID_LEN = 200
 _OVERFETCH = 4
 _MAX_FETCH = 200
 
-# The tags a filter menu COULD offer: the Hub's own `pipeline_tag` values —
-# the far side has to recognise a filter for it to return anything — ordered the
-# way someone scanning a menu would read them: text, then vision, then audio.
-#
-# Which of them the page actually offers is not decided here (see
-# `supported_tags`). This list is the vocabulary; the registry is the authority
-# on what can be run, and keeping the two apart is what stops a new runner
-# needing an edit in this module to become searchable.
-_CANDIDATE_TAGS = (
-    "text-generation",
-    "text2text-generation",
-    "image-text-to-text",
-    "summarization",
-    "translation",
-    "question-answering",
-    "text-classification",
-    "token-classification",
-    "zero-shot-classification",
-    "fill-mask",
-    "feature-extraction",
-    "sentence-similarity",
-    "text-to-image",
-    "image-to-image",
-    "image-to-text",
-    "image-classification",
-    "zero-shot-image-classification",
-    "image-segmentation",
-    "object-detection",
-    "depth-estimation",
-    "text-to-video",
-    "automatic-speech-recognition",
-    "text-to-speech",
-    "text-to-audio",
-    "audio-classification",
-    "any-to-any",
-)
+# The tags a filter menu could offer are `ai/tasks.py`'s table, in its order —
+# every `pipeline_tag` the Hub serves, vendored from `@huggingface/tasks`. This
+# module used to keep its own hand-picked subset beside that; two lists of tags
+# with different edit histories is exactly the drift `supported_tags` exists to
+# prevent, and the local subset had already gone stale (it still offered
+# `text2text-generation`, a tag the Hub retired and now returns nothing for).
 
 # Bits per safetensors dtype, for turning a parameter count back into bytes.
 # Deliberately the same table the model card uses on local files (HF-17): one
@@ -322,30 +291,22 @@ def _token() -> str | None:
     return hf_auth.token()
 
 
-def _friendly_task(tag) -> str | None:
-    """The Hub's `pipeline_tag` in the words the rest of the app uses. Same
-    table the local scan uses, so one model reads the same on both tabs."""
-    if not isinstance(tag, str) or not tag:
-        return None
-    return _FRIENDLIER_TAGS.get(tag, tag.replace("-", " "))
-
-
 def supported_tags() -> tuple[str, ...]:
     """The Hub pipeline tags this app can download AND run, in menu order.
 
-    Asked of the registry rather than listed here, and that is the whole point
-    of the split above. `capability_for_task` is the SAME function that decides
-    whether a repo already on this disk gets a Load button, so a search result
-    and a downloaded card cannot disagree about whether a kind of model is
-    runnable — which they would the moment two hand-maintained lists drifted,
-    and the drift would be invisible until a user downloaded 8GB of something
-    that then refused to load.
+    Asked of `ai/tasks.py` rather than listed here, and that is the whole point
+    of the split: it is the SAME table that decides whether a repo already on
+    this disk gets a Load button, so a search result and a downloaded card
+    cannot disagree about whether a kind of model is runnable — which they would
+    the moment two hand-maintained lists drifted, and the drift would be
+    invisible until a user downloaded 8GB of something that then refused to
+    load.
 
     It follows that adding a runner for, say, text-to-speech makes that filter
     appear here with no edit to this module, and that removing one makes it
     vanish. `tests/test_hub_models.py` pins both directions.
     """
-    return tuple(t for t in _CANDIDATE_TAGS if capability_for_task(_friendly_task(t)))
+    return ai_tasks.supported_tags()
 
 
 def _estimated_bytes(safetensors) -> int | None:
@@ -520,10 +481,15 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         return None
     if raw.get("private"):
         return None
-    task = _friendly_task(raw.get("pipeline_tag"))
-    capability = capability_for_task(task)
+    reading = ai_tasks.classify(raw.get("pipeline_tag"))
+    capability = reading.capability
     if capability is None:
+        # HS-0: everything on this tab is runnable HERE. A ruled-out task and an
+        # unrecognised one are both dropped, and now for stateable reasons —
+        # `reading.support` says which, for a future face that wants to show
+        # rather than hide them.
         return None
+    task = reading.label
     library = raw.get("library_name") if isinstance(raw.get("library_name"), str) else None
     if library and library.lower() in _UNRUNNABLE_LIBRARIES:
         return None
@@ -548,7 +514,7 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         "task": task,
         # The same sentence the local cards show on hover, so a task means the
         # same thing on both tabs or it means nothing.
-        "taskHelp": _TASK_HELP.get(task),
+        "taskHelp": ai_tasks.help_for(reading.tag),
         "pipelineTag": raw.get("pipeline_tag"),
         # Never null, by the drop rule above — it is what the page hands to
         # `POST /api/ai/runtime/download`, which needs to know which runner is
@@ -742,7 +708,7 @@ def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(d
     # two-layer shape the pipeline-tag filter itself already has.
     extra_tags: tuple[str, ...] = ()
     if task_filter:
-        filter_capability = capability_for_task(_friendly_task(task_filter))
+        filter_capability = ai_tasks.capability_for_tag(task_filter)
         filter_runner = for_capability(filter_capability) if filter_capability else None
         if filter_runner is not None:
             extra_tags = filter_runner.hub_filter_tags
@@ -862,8 +828,9 @@ def api_hub_tasks():
     architecture suffix, not tags anyone publishes under, and a filter built
     from one would quietly return nothing.
     """
-    tasks = []
+    rows = []
     for tag in supported_tags():
-        label = _friendly_task(tag)
-        tasks.append({"tag": tag, "label": label, "help": _TASK_HELP.get(label)})
-    return {"tasks": tasks}
+        rows.append({"tag": tag,
+                     "label": ai_tasks.label_for(tag),
+                     "help": ai_tasks.help_for(tag)})
+    return {"tasks": rows}

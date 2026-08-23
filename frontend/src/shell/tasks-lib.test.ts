@@ -6776,3 +6776,105 @@ describe("popoverPill", () => {
     expect(CAL).not.toContain("popoverPill(task, recurring, chip.projected");
   });
 });
+
+// ---- The row's right-hand end: folder, count, time --------------------------
+// Three chips in a fixed order, and the order was argued over twice — folder
+// first because the time is what changes and the last thing before the edge is
+// what a reader lands on; the count between them because it is the fact that
+// says how much there is to read, and it is read WITH the folder rather than
+// with the clock (Akshil, 2026-08-23).
+describe("the list row's message count", () => {
+  it("sits between the folder chip and the time", () => {
+    const folder = VIEWS.indexOf("<IdentityChip\n            name={basename(task.project)}");
+    const count = VIEWS.indexOf('className="tasks-row-msgs"');
+    const time = VIEWS.indexOf('className="tasks-row-time"');
+    expect(folder).toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(folder);
+    expect(time).toBeGreaterThan(count);
+  });
+
+  it("is drawn only when there is something to count", () => {
+    // "0" is worse than the space it would fill: a task whose thread has not
+    // started has nothing to say here, and a column of zeroes is noise on the
+    // row's busiest edge.
+    expect(VIEWS).toContain("{task.message_count > 0 && (");
+  });
+
+  it("says the noun rather than drawing a glyph", () => {
+    // A bare "4" between a folder and a time is a number with no unit; the
+    // bubble it replaced had to be learned before the row could be read.
+    expect(VIEWS).toContain("message{task.message_count === 1 ? \"\" : \"s\"}");
+    expect(VIEWS).not.toContain("ICON_MESSAGES");
+  });
+
+  it("reads in the same register as the chip beside it", () => {
+    // Same 11px, same muted colour, same `flex: 0 0 auto` — the TITLE is the
+    // only thing that gives way when a row runs out of room — and tabular
+    // digits so a count going 9 → 10 does not shift the column.
+    const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-msgs {"));
+    const body = rule.slice(0, rule.indexOf("}"));
+    expect(body).toContain("font-size: 11px");
+    expect(body).toContain("color: var(--fg-muted)");
+    expect(body).toContain("flex: 0 0 auto");
+    expect(body).toContain("font-variant-numeric: tabular-nums");
+  });
+});
+
+describe("the folder chip as a filter tag", () => {
+  it("only the LIST's chip is pressable — the board card's stays a label", () => {
+    // A card is a drag target first, and a button inside one competes with the
+    // gesture that moves it.
+    expect(VIEWS).toContain("onPick={onPickProject && (() => onPickProject(task.project))}");
+    expect(VIEWS.match(/onPick=\{onPickProject/g)?.length).toBe(1);
+  });
+
+  it("a press filters the page and never counts as a press on the row", () => {
+    // The chip lives inside a row that opens a thread when clicked; without
+    // the stop the tag would do both.
+    const chip = VIEWS.slice(VIEWS.indexOf("export function IdentityChip"));
+    expect(chip.slice(0, chip.indexOf("\n}\n"))).toContain("e.stopPropagation();");
+    // It REPLACES the project selection rather than widening it, and pressing
+    // the pinned one again lets it go: the chip stays on screen wearing the
+    // state, so it has to be the way back out too.
+    expect(SCHEDULED).toContain("f.projects.length === 1 && f.projects[0] === project");
+    expect(SCHEDULED).toContain("pinnedProjects={filters.projects}");
+  });
+
+  it("survives the filter it applies, and wears it", () => {
+    // `spansProjects` drops the chip when every row agrees about its folder —
+    // which is exactly what pressing the chip causes. Left alone, the control
+    // deleted itself on use and the reader had no on-screen answer to "which
+    // folder is this" and nothing to press to get back.
+    expect(VIEWS).toContain('spansProjects(tasks) || pinnedKey !== ""');
+    expect(VIEWS).toContain("pinned={pinnedProjects.includes(task.project)}");
+    expect(VIEWS).toContain("active={pinned}");
+    expect(VIEWS).toContain("aria-pressed={active}");
+    // Legible at REST, not on hover: it is a state, not an affordance.
+    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag.is-on {");
+  });
+
+  it("looks like a control only when it is pointed at", () => {
+    // A permanent box on every row would be a column of buttons down the
+    // busiest edge of the list.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("background: none");
+    expect(body).toContain("cursor: pointer");
+    // Negative margins matched by padding, so growing the box costs no layout.
+    expect(body).toContain("margin: -3px -5px");
+    expect(body).toContain("padding: 3px 5px");
+    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:focus-visible");
+  });
+
+  it("sits above the row's stretched link, or it is not clickable at all", () => {
+    // `.tasks-rowlink` is an absolutely positioned <a> over the whole row at
+    // z-index 1. A control that does not lift out of the way never receives the
+    // press — the row navigates instead. It shipped without this and only the
+    // ONE upcoming row worked, because a task with no conversation yet draws no
+    // rowlink (Akshil, 2026-08-23).
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+  });
+});
