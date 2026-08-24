@@ -720,15 +720,6 @@
   }
 
 
-  /* ---------- ecosystem figure: the hub, drawn ---------- */
-  .ecofig { margin: 0 auto; max-width: 760px; }
-  .ecofig svg { width: 100%; height: auto; display: block; }
-  .ecofig .e-line line { stroke: var(--rule-hi); stroke-width: 1.5; }
-  .ecofig .e-dot circle { fill: var(--ink-3); }
-  .ecofig .e-ring circle { fill: var(--tile); stroke: var(--rule-hi); stroke-width: 1.5; }
-  .ecofig .e-star { fill: var(--accent-fill); }
-  .ecofig .e-icon path, .ecofig .e-icon use { fill: var(--ink); color: var(--ink); }
-
   /* ---------- footer ---------- */
   footer {
     position: relative; overflow: hidden;
@@ -941,37 +932,62 @@
       machine&rsquo;s own APIs.</p>
     </div>
 
-    <figure class="ecofig" role="img"
-        aria-label="Fused Render at the center, connected to Python, Claude Code, local AI and the machine's native APIs.">
-      <svg viewBox="0 0 760 460">
-        <g class="e-line">
-          <line x1="316" y1="181" x2="176" y2="112"/>
-          <line x1="444" y1="181" x2="584" y2="112"/>
-          <line x1="316" y1="279" x2="176" y2="348"/>
-          <line x1="444" y1="279" x2="584" y2="348"/>
-        </g>
-        <g class="e-dot">
-          <circle cx="246" cy="146.5" r="4"/>
-          <circle cx="514" cy="146.5" r="4"/>
-          <circle cx="246" cy="313.5" r="4"/>
-          <circle cx="514" cy="313.5" r="4"/>
-        </g>
-        <g class="e-ring"><circle cx="380" cy="230" r="88"/></g>
-        <path class="e-star" d="M380 172c7 32 19 44 50 58-31 14-43 26-50 58-7-32-19-44-50-58 31-14 43-26 50-58Z"/>
-        <g class="e-ring">
-          <circle cx="140" cy="94" r="46"/>
-          <circle cx="620" cy="94" r="46"/>
-          <circle cx="140" cy="366" r="46"/>
-          <circle cx="620" cy="366" r="46"/>
-        </g>
-        <g class="e-icon">
-          <path transform="translate(122,76) scale(1.5)" d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/>
-          <use href="#i-claude" transform="translate(600,74) scale(2)"/>
-          <use href="#i-brain" transform="translate(120,346) scale(2)"/>
-          <path transform="translate(602,348) scale(1.5)" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/>
-        </g>
-      </svg>
-    </figure>
+    <div class="howflow">
+      <div class="howrow hub">
+        <div class="howstack">
+          <div class="howside py mini">
+            <h3><span class="dot" aria-hidden="true"></span>The Python</h3>
+            <div class="eg">pandas, DuckDB, your files &amp; APIs.</div>
+            <div class="loc mono">fused.runPython()</div>
+          </div>
+          <div class="howside nd mini">
+            <h3><span class="dot" aria-hidden="true"></span>Local AI models</h3>
+            <div class="eg">Text, images, speech &mdash; resident on your hardware.</div>
+            <div class="loc mono">fused.ai()</div>
+          </div>
+        </div>
+        <div class="howconn" aria-hidden="true">
+          <div class="howarrow">
+            <div class="lbl">&larr; your inputs</div>
+            <div class="track back"><span class="head"></span><span class="pulse pb"></span></div>
+          </div>
+          <div class="howarrow">
+            <div class="lbl">the result &rarr;</div>
+            <div class="track fwd"><span class="head"></span><span class="pulse pf"></span></div>
+          </div>
+        </div>
+        <div class="howside pg">
+          <h3><span class="dot" aria-hidden="true"></span>The page</h3>
+          <div class="what">What you see</div>
+          <div class="eg">Sliders, maps, charts &mdash; the interface.</div>
+          <div class="loc">runs in the browser</div>
+        </div>
+        <div class="howconn" aria-hidden="true">
+          <div class="howarrow">
+            <div class="lbl">your inputs &rarr;</div>
+            <div class="track fwd"><span class="head"></span><span class="pulse pf"></span></div>
+          </div>
+          <div class="howarrow">
+            <div class="lbl">&larr; the result</div>
+            <div class="track back"><span class="head"></span><span class="pulse pb"></span></div>
+          </div>
+        </div>
+        <div class="howstack">
+          <div class="howside nd mini">
+            <h3><span class="dot" aria-hidden="true"></span>Claude Code</h3>
+            <div class="eg">Builds tools, answers about files &mdash; your login, no key.</div>
+            <div class="loc mono">claude</div>
+          </div>
+          <div class="howside nd mini">
+            <h3><span class="dot" aria-hidden="true"></span>Native APIs</h3>
+            <div class="eg">Microphone, screen and camera capture.</div>
+            <div class="loc mono">fused.capture</div>
+          </div>
+        </div>
+      </div>
+      <div class="bridge">The page hands inputs across and gets JSON back &mdash; every arrow
+      lands on this machine.</div>
+    </div>
   </section>
 
   <section id="models">
