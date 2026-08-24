@@ -47,6 +47,9 @@ import {
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { X } from "lucide-react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import {
   canEdit,
   fitToImage,
@@ -706,26 +709,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             }
           }}
         />
-        {/* The live view, while the webcam is open — in the same slot the
-            photo it is about to become occupies, right above the Webcam button
-            that opened it. */}
-        {camera && (
-          <div className="pg-camera">
-            <video ref={videoRef} playsInline muted />
-            <div className="pg-camera-side">
-              <button type="button" className="btn btn-primary" onClick={capture}>
-                Capture
-              </button>
-              <button
-                type="button"
-                className="pg-ghost-btn pg-camera-cancel"
-                onClick={stopCamera}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
         {/* Clear, floating in the box's top-right corner: it appears only once
             there is a picture to throw away, and in this stacked composer a
             slot of its own would have cost the box a permanent 40px of height
@@ -790,16 +773,52 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 {StarterIcons.landscape}
                 <span>{base ? "Replace" : "Add an image"}</span>
               </button>
-              <button
-                type="button"
-                className={"pg-attach-btn" + (camera ? " active" : "")}
-                title="Take one with the webcam"
-                disabled={attaching}
-                onClick={() => (camera ? stopCamera() : void openCamera())}
+              {/* The live view rides a popover over the button, not the
+                  composer: the composer is the prompt's box, and a camera
+                  feed inside it shoved everything below around. Controlled by
+                  `camera`, which only turns true once getUserMedia has a
+                  stream — the trigger's click asks for the camera, the
+                  popover opens when it answers. Esc and the ✕ both land in
+                  onOpenChange, which is the one place the stream is stopped. */}
+              <Popover
+                open={camera}
+                onOpenChange={(next) => {
+                  if (next) void openCamera();
+                  else stopCamera();
+                }}
               >
-                {StarterIcons.camera}
-                <span>Webcam</span>
-              </button>
+                <PopoverTrigger
+                  render={
+                    <button
+                      type="button"
+                      className={"pg-attach-btn" + (camera ? " active" : "")}
+                      title="Take one with the webcam"
+                      disabled={attaching}
+                    />
+                  }
+                >
+                  {StarterIcons.camera}
+                  <span>Webcam</span>
+                </PopoverTrigger>
+                <PopoverContent side="top" align="start" className="w-80 gap-2 p-2">
+                  <div className="flex items-center justify-between">
+                    <span className="px-1 text-xs font-semibold">Webcam</span>
+                    <button
+                      type="button"
+                      className="cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-1 text-muted-foreground transition-colors hover:text-foreground"
+                      title="Close without a picture"
+                      aria-label="Close without a picture"
+                      onClick={stopCamera}
+                    >
+                      <X className="size-4" />
+                    </button>
+                  </div>
+                  <video ref={videoRef} className="pg-webcam-video w-full rounded-md" playsInline muted />
+                  <Button variant="outline" size="sm" onClick={capture}>
+                    Capture
+                  </Button>
+                </PopoverContent>
+              </Popover>
               {attaching && <span className="pg-attach-note">Working…</span>}
             </div>
           )}

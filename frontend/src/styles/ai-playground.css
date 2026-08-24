@@ -1229,51 +1229,13 @@
   color: var(--fg-muted);
 }
 
-/* The live webcam view, while it is open. Capped at 240px tall so the prompt
-   below it stays on screen — this panel is a viewfinder, not the result. */
-.pg-camera {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  padding: 6px 4px 8px;
-}
-
-.pg-camera video {
-  flex: 1;
-  min-width: 0;
-  max-height: 240px;
-  border-radius: 8px;
-  background: var(--scrim-letterbox);
-  /* Mirrored, the way every video-call preview is: an unmirrored self-view
-     makes aiming the camera feel inverted. Only the PREVIEW is flipped — the
-     capture draws the raw frame, so what lands on disk is what the lens saw. */
+/* The webcam popover's preview, mirrored the way every video-call self-view
+   is: an unmirrored preview makes aiming the camera feel inverted. Only the
+   PREVIEW is flipped — the capture draws the raw frame, so what lands on disk
+   is what the lens saw. */
+.pg-webcam-video {
   transform: scaleX(-1);
-}
-
-.pg-camera-side {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  /* Stretch, not flex-end: Cancel is CENTRED under Capture, and it can only be
-     centred on the button above it if it is as wide as the column Capture set. */
-  align-items: stretch;
-  gap: 8px;
-}
-
-/* Closing the viewfinder without taking a picture — the one destructive-ish
-   action in this box, so it reads in the error colour rather than as a second
-   grey label. No border, no underline, no fill: it is a word under a button,
-   and the extra top margin is what keeps it from reading as part of Capture. */
-.pg-camera-cancel {
-  margin-top: 4px;
-  text-align: center;
-  color: var(--error);
-  text-decoration: none;
-}
-
-.pg-camera-cancel:hover:not(:disabled) {
-  color: var(--error);
-  opacity: 0.75;
+  background: var(--scrim-letterbox);
 }
 
 .pg-ghost-btn {
