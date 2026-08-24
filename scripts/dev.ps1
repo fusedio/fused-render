@@ -19,8 +19,13 @@
   rather than risk the shared ~/.fused-render (whose staged .core-templates a
   non-isolated server on the worktree's differing template digest would wipe).
 
-  Port: never 1777 (the desktop/production port). Defaults to 8799 and rejects
-  1777 outright.
+  Port: defaults to 8799; if that is busy the next free port is used
+  automatically, so many independent instances coexist. Never 1777 (the
+  desktop/production port), which is rejected outright.
+
+  Self-healing: a missing .venv is built with uv, a missing React shell is
+  copied from the primary checkout (or built with npm), and .dev-home is
+  created — so a fresh worktree starts without manual setup.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\dev.ps1
@@ -36,6 +41,10 @@ param(
   [switch]$Stop
 )
 $ErrorActionPreference = "Stop"
+
+function Test-PortFree([int]$p) {
+  -not (Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue)
+}
 
 if ($Port -eq 1777) {
   throw "Refusing port 1777 (desktop/production). Pick another, e.g. -Port 8799."
@@ -64,11 +73,23 @@ if (-not [System.IO.Path]::IsPathRooted($commonDir)) {
 }
 $MAIN = Split-Path -Parent (Resolve-Path $commonDir)
 
-# Interpreter: prefer a worktree-local .venv, else the primary checkout's.
+# Interpreter: prefer a worktree-local .venv, else the primary checkout's, else
+# build one (the project uses uv/Astral).
 $PY = Join-Path $WT ".venv\Scripts\python.exe"
-if (-not (Test-Path $PY)) { $PY = Join-Path $MAIN ".venv\Scripts\python.exe" }
 if (-not (Test-Path $PY)) {
-  throw "No .venv in the worktree or the primary checkout ($MAIN). Build one: uv venv --python 3.12 .venv then uv pip install -e .[dev,fused,bundled]"
+  $mainPy = Join-Path $MAIN ".venv\Scripts\python.exe"
+  if (Test-Path $mainPy) { $PY = $mainPy }
+}
+if (-not (Test-Path $PY)) {
+  if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw "No .venv found and uv is not on PATH. Install uv, or create one: uv venv --python 3.12 .venv; uv pip install -e .[dev,fused,bundled]"
+  }
+  $wtVenv = Join-Path $WT ".venv"
+  Write-Host "==> no .venv found; creating $wtVenv (uv venv --python 3.12 + editable install)"
+  & uv venv --python 3.12 $wtVenv
+  & uv pip install --python (Join-Path $wtVenv "Scripts\python.exe") -e "$WT[dev,fused,bundled]"
+  $PY = Join-Path $wtVenv "Scripts\python.exe"
+  if (-not (Test-Path $PY)) { throw "Failed to create a .venv at $wtVenv." }
 }
 
 # The React shell (gitignored). Reuse the primary checkout's build (this branch
@@ -76,13 +97,24 @@ if (-not (Test-Path $PY)) {
 $dist = Join-Path $WT "fused_render\static\shell-dist\index.html"
 if (-not (Test-Path $dist)) {
   $mainDist = Join-Path $MAIN "fused_render\static\shell-dist"
-  if (-not (Test-Path (Join-Path $mainDist "index.html"))) {
-    throw "No shell-dist in the worktree or the primary checkout. Run: cd frontend; npm install; npm run build"
-  }
-  Write-Host "==> copying shell-dist from the primary checkout"
   $wtStatic = Join-Path $WT "fused_render\static\shell-dist"
-  New-Item -ItemType Directory -Force -Path (Split-Path $wtStatic) | Out-Null
-  Copy-Item -Recurse -Force $mainDist $wtStatic
+  if (Test-Path (Join-Path $mainDist "index.html")) {
+    Write-Host "==> copying shell-dist from the primary checkout"
+    New-Item -ItemType Directory -Force -Path (Split-Path $wtStatic) | Out-Null
+    Copy-Item -Recurse -Force $mainDist $wtStatic
+  } else {
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+      throw "No shell-dist anywhere and npm is not on PATH. Install Node, or build it: cd frontend; npm install; npm run build"
+    }
+    Write-Host "==> no shell-dist found; building it (npm install + npm run build)"
+    Push-Location (Join-Path $WT "frontend")
+    try {
+      & npm install
+      if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE)." }
+      & npm run build
+      if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE)." }
+    } finally { Pop-Location }
+  }
 }
 
 $devHome = Join-Path $WT ".dev-home"
@@ -120,13 +152,18 @@ if ($probeRC -ne 0) {
   throw "Isolation did not reach the server interpreter (home_dir not inside .dev-home, or template override inactive). REFUSING to start so the shared ~/.fused-render is never touched."
 }
 
-# Stop a previous dev server on this port (idempotent restart); leave others be.
-$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-  Select-Object -First 1 -ExpandProperty OwningProcess
-if ($listener) {
-  Write-Host "==> stopping the previous dev server on :$Port (pid $listener)"
-  taskkill /PID $listener /T /F | Out-Null
-  Start-Sleep -Milliseconds 500
+# Never fail on a busy port: walk up to the next free one so many independent
+# dev servers coexist. Use `-Stop -Port <n>` to shut a specific one down.
+if (-not (Test-PortFree $Port)) {
+  $chosen = $null
+  for ($i = 1; $i -le 50; $i++) {
+    $probe = $Port + $i
+    if ($probe -eq 1777) { continue }
+    if (Test-PortFree $probe) { $chosen = $probe; break }
+  }
+  if (-not $chosen) { throw "No free port found in $Port..$($Port + 50)." }
+  Write-Host "==> :$Port is busy; using the next free port :$chosen"
+  $Port = $chosen
 }
 
 Write-Host "==> worktree : $WT"

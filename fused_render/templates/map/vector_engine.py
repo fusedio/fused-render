@@ -13,6 +13,7 @@ import hashlib
 import math
 import os
 import sqlite3
+import struct
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -61,6 +62,11 @@ OVERVIEW_EXACT_MAX = int(
 MAX_TILE_CACHE = int(
     os.environ.get("MAP_VIEWER_VECTOR_TILE_CACHE_SIZE", "512")
 )
+# Cap the on-disk .pbf tile cache; least-recently-served tiles are evicted past
+# this (see _evict_disk_tiles).
+VECTOR_TILE_CACHE_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_VECTOR_TILE_CACHE_MAX_BYTES", str(2 << 30))
+)
 MAX_ATTRIBUTES = int(
     os.environ.get("MAP_VIEWER_VECTOR_TILE_ATTRIBUTES", "8")
 )
@@ -74,7 +80,20 @@ SUMMARY_MAX_FEATURES = int(
 )
 MVT_EXTENT = 4096
 MVT_BUFFER = 64
-SIMPLIFY_TOLERANCE = 2.0
+# Douglas-Peucker tolerance in tile units. MVT is a fixed-resolution display
+# format (4096 units across a 512px tile => 8 units/px), so vertices closer than
+# a screen pixel are detail nobody can see but every one still costs an encode
+# and payload byte. One pixel (8 units) is imperceptible yet ~15% faster and
+# smaller on dense tiles; the old 2.0 preserved ~1/8 px.
+SIMPLIFY_TOLERANCE = float(os.environ.get("MAP_VIEWER_VECTOR_SIMPLIFY_UNITS", "8.0"))
+# A detail tile that is mostly features barely larger than a screen pixel wastes
+# both encode time and payload drawing specks that land on the same pixel.
+# Features whose footprint is under COALESCE_PIXELS px are collapsed to one (the
+# largest) per cell of that size; larger features — long lines, big polygons —
+# are always kept, so only visually-coincident geometry is dropped. 0 disables
+# it. Measured against the same 512px tile as SIMPLIFY_TOLERANCE (8 units/px).
+TILE_PIXELS = 512
+COALESCE_PIXELS = float(os.environ.get("MAP_VIEWER_VECTOR_COALESCE_PX", "1.5"))
 WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
 ENGINE_VERSION = "native-mvt-v2"
@@ -253,10 +272,9 @@ def _int_path(coords, ring: bool):
 
 
 def _shoelace2(points) -> int:
-    import numpy as np
-
     x, y = points[:, 0], points[:, 1]
-    return int(x @ np.roll(y, -1) - np.roll(x, -1) @ y)
+    main = x[:-1] * y[1:] - x[1:] * y[:-1]
+    return int(main.sum() + x[-1] * y[0] - x[0] * y[-1])
 
 
 def _polygon_rings(polygon):
@@ -279,12 +297,13 @@ def _polygon_rings(polygon):
     return rings
 
 
-def _mvt_features(geometry):
+def _mvt_features(geometry, type_id=None):
     """(geometry_type, command_integers) features for one shapely geometry."""
     import numpy as np
     import shapely
 
-    type_id = shapely.get_type_id(geometry)
+    if type_id is None:
+        type_id = shapely.get_type_id(geometry)
     if type_id in (0, 4):
         points = np.rint(shapely.get_coordinates(geometry)).astype(np.int64)
         if len(points):
@@ -315,9 +334,11 @@ def _mvt_features(geometry):
             yield from _mvt_features(part)
 
 
-def _coverage_grid(minx, maxx, miny, maxy, weight: float, bbox, size: int):
+def _coverage_grid(minx, maxx, miny, maxy, weight, bbox, size: int):
     """Mark every grid cell each node bbox overlaps (difference array + 2D
-    prefix sum), so summary coverage has no holes between node centres."""
+    prefix sum), so summary coverage has no holes between node centres. ``weight``
+    is per node (one value per box), so a node contributes its own feature count
+    rather than a single average shared across every node."""
     import numpy as np
 
     span_x = bbox[2] - bbox[0]
@@ -421,8 +442,40 @@ class VectorEngine:
             if cache_dir is not None
             else None
         )
+        self._disk_bytes = 0
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self._evict_disk_tiles()
+
+    def _evict_disk_tiles(self) -> None:
+        """Keep the on-disk .pbf tile cache under VECTOR_TILE_CACHE_MAX_BYTES,
+        deleting least-recently-served tiles first. Runs on startup and whenever
+        the running byte count (bumped per write, tiles touched on read) crosses
+        the cap, so the whole-tree scan is rare rather than per tile."""
+        if self.cache_dir is None or VECTOR_TILE_CACHE_MAX_BYTES <= 0:
+            return
+        entries = []
+        for root, _dirs, files in os.walk(self.cache_dir):
+            for name in files:
+                if not name.endswith(".pbf") or ".tmp" in name:
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                entries.append((path, stat.st_size, stat.st_mtime))
+        total = sum(size for _, size, _ in entries)
+        if total > VECTOR_TILE_CACHE_MAX_BYTES:
+            for path, size, _ in sorted(entries, key=lambda item: item[2]):
+                if total <= VECTOR_TILE_CACHE_MAX_BYTES:
+                    break
+                try:
+                    os.remove(path)
+                except OSError:
+                    continue
+                total -= size
+        self._disk_bytes = total
 
     def try_describe(self, request: dict[str, Any], obj: Any | None = None):
         target = obj if isinstance(obj, (str, os.PathLike)) else request.get("target")
@@ -766,13 +819,13 @@ class VectorEngine:
                 blobs = self._fetch_nodes(connection, node_table, child_ids)
         if not (source.feature_count / 500 <= len(child_bounds) <= source.feature_count):
             raise ValueError("the rtree node walk is inconsistent with the layer")
-        per_node = source.feature_count / len(child_bounds)
+        weights = np.full(len(child_bounds), source.feature_count / len(child_bounds))
         return (
             child_bounds[:, 0],
             child_bounds[:, 1],
             child_bounds[:, 2],
             child_bounds[:, 3],
-            per_node,
+            weights,
         )
 
     def _fetch_nodes(self, connection, node_table: str, ids) -> list[bytes]:
@@ -789,6 +842,68 @@ class VectorEngine:
                 raise ValueError("the rtree node walk lost nodes")
             blobs.extend(row[0] for row in rows)
         return blobs
+
+    def _qix_summary(self, source: VectorSource) -> tuple | None:
+        """Occupancy overview from a shapefile's ``.qix`` quadtree — the analog
+        of the GeoPackage RTree walk. Reading the few-MB index instead of every
+        geometry is what keeps the first open of a large ``.shp`` from stalling
+        on a full-file read."""
+        locator = source.locator
+        if _suffix(locator) != ".shp" or not os.path.isfile(locator):
+            return None
+        stem = os.path.splitext(locator)[0]
+        qix = next(
+            (path for path in (stem + ".qix", stem + ".QIX") if os.path.isfile(path)),
+            None,
+        )
+        if qix is None:
+            return None
+        try:
+            return self._parse_qix(qix, source.feature_count)
+        except (OSError, ValueError, struct.error):
+            return None
+
+    def _parse_qix(self, qix: str, feature_count: int) -> tuple | None:
+        """Walk the ``.qix`` quadtree and return the bboxes of shape-bearing
+        nodes with each node's own shape count as its weight. Format (shapelib):
+        8-byte header, int32 shape count, int32 depth, then nodes of {int32
+        subtree size, 4 f64 bounds, int32 shape count, that many int32 ids, int32
+        subnode count, subnodes}. Carrying the real per-node count (a large
+        internal node holds more shapes than a small leaf) keeps the occupancy
+        weight honest instead of spreading one average across every node."""
+        import numpy as np
+
+        with open(qix, "rb") as handle:
+            buf = handle.read()
+        if buf[:3] != b"SQT" or len(buf) < 16:
+            raise ValueError("not a shapefile quadtree index")
+        order = "<" if buf[3] == 1 else ">"
+        one, four = struct.Struct(order + "i"), struct.Struct(order + "4d")
+        bounds: list[tuple[float, float, float, float]] = []
+        counts: list[int] = []
+        pos, remaining = 16, [1]
+        while remaining:
+            if remaining[-1] == 0:
+                remaining.pop()
+                continue
+            remaining[-1] -= 1
+            pos += 4
+            box = four.unpack_from(buf, pos)
+            pos += 32
+            shapes = one.unpack_from(buf, pos)[0]
+            pos += 4 + 4 * shapes
+            subnodes = one.unpack_from(buf, pos)[0]
+            pos += 4
+            if shapes:
+                bounds.append(box)
+                counts.append(shapes)
+            if subnodes:
+                remaining.append(subnodes)
+        if not bounds or not (feature_count / 500 <= len(bounds) <= feature_count):
+            raise ValueError("the quadtree node walk is inconsistent with the layer")
+        boxes = np.asarray(bounds, dtype="float64")
+        weights = np.asarray(counts, dtype="float64")
+        return (boxes[:, 0], boxes[:, 2], boxes[:, 1], boxes[:, 3], weights)
 
     def _summary_disk_path(self, source: VectorSource) -> Path | None:
         if self.cache_dir is None:
@@ -816,6 +931,12 @@ class VectorEngine:
                 self._summaries[sid] = summary
                 self._summary_jobs[sid] = {"status": "ready", "cached": True}
             return False
+        summary = self._qix_summary(source)
+        if summary is not None:
+            with self.lock:
+                self._summaries[sid] = summary
+                self._summary_jobs[sid] = {"status": "ready", "indexed": True}
+            return False
         self.summary_pool.submit(self._build_feature_summary, source)
         return True
 
@@ -839,10 +960,13 @@ class VectorEngine:
 
     def _summary_from_bounds(self, bounds) -> tuple:
         # shapely.bounds columns are (minx, miny, maxx, maxy); the overview grid
-        # and node-summary path both want (minx, maxx, miny, maxy, per_node).
+        # and node-summary path both want (minx, maxx, miny, maxy, weights).
+        import numpy as np
+
         column = bounds.astype("float64")
         return (
-            column[:, 0], column[:, 2], column[:, 1], column[:, 3], 1.0,
+            column[:, 0], column[:, 2], column[:, 1], column[:, 3],
+            np.ones(column.shape[0]),
         )
 
     def _store_summary_disk(self, source: VectorSource, bounds) -> None:
@@ -1005,16 +1129,16 @@ class VectorEngine:
         return self._render_cells(source, grid, bbox, size, z, x, y)
 
     def _summary_grid(self, summary: tuple, bbox, size: int):
-        minx, maxx, miny, maxy, per_node = summary
+        minx, maxx, miny, maxy, weights = summary
         inside = (
             (maxx >= bbox[0]) & (minx <= bbox[2])
             & (maxy >= bbox[1]) & (miny <= bbox[3])
         )
-        if inside.sum() * per_node <= OVERVIEW_EXACT_MAX:
+        if float(weights[inside].sum()) <= OVERVIEW_EXACT_MAX:
             return None
         return _coverage_grid(
             minx[inside], maxx[inside], miny[inside], maxy[inside],
-            per_node, bbox, size,
+            weights[inside], bbox, size,
         )
 
     def _overview_from_summary(
@@ -1030,7 +1154,7 @@ class VectorEngine:
         size = max(8, min(256, OVERVIEW_GRID_SIZE))
         if bbox[2] - bbox[0] <= 0 or bbox[3] - bbox[1] <= 0:
             return b""
-        minx, maxx, miny, maxy, per_node = summary
+        minx, maxx, miny, maxy, weights = summary
         if inside is None:
             inside = (
                 (maxx >= bbox[0]) & (minx <= bbox[2])
@@ -1040,7 +1164,7 @@ class VectorEngine:
             return b""
         grid = _coverage_grid(
             minx[inside], maxx[inside], miny[inside], maxy[inside],
-            per_node, bbox, size,
+            weights[inside], bbox, size,
         )
         return self._render_cells(source, grid, bbox, size, z, x, y)
 
@@ -1128,6 +1252,38 @@ class VectorEngine:
             return "wkb_geometry"
         return table.column_names[-1]
 
+    def _coalesce_rows(self, geometries, drawable):
+        """Row indices to draw for a detail tile, dropping sub-pixel features that
+        collapse onto a pixel another already fills. ``geometries`` are in tile
+        units; only features smaller than the coalesce cell in both dimensions are
+        candidates, so extended geometry (long lines, large polygons) is always
+        kept. The largest feature in each occupied cell wins."""
+        import numpy as np
+        import shapely
+
+        rows = np.flatnonzero(drawable)
+        cell = MVT_EXTENT / TILE_PIXELS * COALESCE_PIXELS
+        if COALESCE_PIXELS <= 0 or rows.size <= 256:
+            return rows
+        bounds = shapely.bounds(geometries)
+        width = bounds[:, 2] - bounds[:, 0]
+        height = bounds[:, 3] - bounds[:, 1]
+        small = drawable & (width < cell) & (height < cell)
+        small_rows = np.flatnonzero(small)
+        if small_rows.size <= 256:
+            return rows
+        cx = (bounds[small_rows, 0] + bounds[small_rows, 2]) * 0.5
+        cy = (bounds[small_rows, 1] + bounds[small_rows, 3]) * 0.5
+        col = np.floor((cx + MVT_BUFFER) / cell).astype(np.int64)
+        srow = np.floor((cy + MVT_BUFFER) / cell).astype(np.int64)
+        areas = shapely.area(geometries[small_rows])
+        order = np.argsort(-areas, kind="stable")
+        cells = np.stack([col[order], srow[order]], axis=1)
+        _, keep = np.unique(cells, axis=0, return_index=True)
+        kept_small = small_rows[order[keep]]
+        large_rows = np.flatnonzero(drawable & ~small)
+        return np.sort(np.concatenate([large_rows, kept_small]))
+
     def _detail_tile(
         self,
         source: VectorSource,
@@ -1162,17 +1318,20 @@ class VectorEngine:
         geometries = shapely.simplify(
             geometries, SIMPLIFY_TOLERANCE, preserve_topology=False
         )
+        type_ids = shapely.get_type_id(geometries)
+        drawable = ~(shapely.is_missing(geometries) | shapely.is_empty(geometries))
+        rows = self._coalesce_rows(geometries, drawable)
         columns = {
             name: table.column(name).to_pylist()
             for name in table.column_names
             if name != geometry_name
         }
         writer = LayerWriter("layer", MVT_EXTENT)
-        for row, geometry in enumerate(geometries):
-            if geometry is None or geometry.is_empty:
-                continue
+        for row in rows:
             properties = {name: values[row] for name, values in columns.items()}
-            for geometry_type, commands in _mvt_features(geometry):
+            for geometry_type, commands in _mvt_features(
+                geometries[row], int(type_ids[row])
+            ):
                 writer.feature(geometry_type, commands, properties)
         return writer.tile()
 
@@ -1267,12 +1426,12 @@ class VectorEngine:
             if cancel is not None and cancel.is_set():
                 raise TileCancelled(f"vector tile {z}/{x}/{y}")
             return self._provisional_tile(source, source_bbox, z, x, y)
-        minx, maxx, miny, maxy, per_node = summary
+        minx, maxx, miny, maxy, weights = summary
         inside = (
             (maxx >= source_bbox[0]) & (minx <= source_bbox[2])
             & (maxy >= source_bbox[1]) & (miny <= source_bbox[3])
         )
-        if inside.sum() * per_node > MAX_TILE_FEATURES:
+        if float(weights[inside].sum()) > MAX_TILE_FEATURES:
             return TileResult(
                 self._overview_from_summary(
                     source, summary, source_bbox, z, x, y, inside
@@ -1318,6 +1477,8 @@ class VectorEngine:
             tile = path.read_bytes()
         except OSError:
             return None
+        with contextlib.suppress(OSError):
+            os.utime(path, None)
         self._remember(key, tile)
         return tile
 
@@ -1346,8 +1507,12 @@ class VectorEngine:
             f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
         )
         try:
+            replaced = path.stat().st_size if path.exists() else 0
             temporary.write_bytes(tile)
             os.replace(temporary, path)
+            self._disk_bytes += len(tile) - replaced
+            if self._disk_bytes > VECTOR_TILE_CACHE_MAX_BYTES:
+                self._evict_disk_tiles()
         finally:
             try:
                 temporary.unlink(missing_ok=True)
