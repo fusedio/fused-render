@@ -1262,22 +1262,71 @@ _RUNNERS: tuple[Runner, ...] = (
         code="transformers-embed",
         capability=EMBEDDINGS,
         folder=os.path.join(RUNNERS_DIR, "transformers_embed"),
-        # No qualifier on either name, and that is the decision rather than an
-        # omission: the naming note above the table makes a bracketed SHORT name
-        # the marker of a per-hardware variant, and this row has none. There is
-        # one torch embedding engine, it installs the `whl/cpu` build (D416
-        # withdrew the transformers TEXT family, not the wheel index its
-        # manifest borrows), and CUDA and ROCm variants are deliberately not
-        # offered — a text encoder and a vision tower are milliseconds of work
-        # per item on a CPU, which is the case an accelerated variant would be
-        # paying several gigabytes of wheels to improve. Adding one later is
-        # one folder and one row, exactly as it was for text.
-        label="Transformers Embeddings",
-        short_label="Transformers Embeddings",
+        # "(CPU)" now that `transformers-embed-cuda`/`-rocm` sit below it, for
+        # the same reason `llamacpp-text` carries it once
+        # `llamacpp-text-vulkan` existed: the qualifier names the BUILD —
+        # PyPI's `whl/cpu` wheel, which also happens to run on Apple Silicon's
+        # GPU through MPS — never a prediction about the device, and a family
+        # with a sibling needs it on every row or two engines print the same
+        # name.
+        label="Transformers Embeddings (CPU)",
+        short_label="Transformers Embeddings (CPU)",
         family_label="Transformers Embeddings",
-        note="Runs on the CPU on any machine, or Apple Silicon's GPU — quick "
-             "either way, since one item is a single forward pass.",
+        # "the CPU build" rather than "runs on the CPU on any machine": with
+        # accelerated siblings now registered, this row is one build among
+        # three rather than the only way to run this engine, and the note has
+        # to say which one this is rather than describe the family.
+        note="The CPU build — quick on any machine, or Apple Silicon's GPU, "
+             "since one item is a single forward pass.",
         _available=_torch_platform,
+    ),
+    # The CUDA and ROCm siblings, and neither contradicts the CPU row's own
+    # case for having no accelerated variant: a dual encoder is one forward
+    # pass over a short sequence or one image, milliseconds already on a CPU,
+    # so neither row buys meaningful speed. What they buy is DEVICE — a
+    # machine with a working NVIDIA or fully ROCm-capable AMD card runs
+    # `transformers-embed` in fp32 on the CPU by default, because that row
+    # pins PyPI's `whl/cpu` torch on every platform (see its own comment).
+    # These rows are for whoever would rather their card do it, opted into
+    # from the Engines tab exactly like `diffusers-image-cuda`/`-rocm` above —
+    # nobody is moved here who did not ask, because the speed argument
+    # genuinely is a wash.
+    #
+    # Both below `transformers-embed`, CUDA before ROCm — the same order the
+    # image family uses — and per the naming note over this table and
+    # `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR`,
+    # `auto` must keep resolving to the CPU/MPS row on every platform.
+    Runner(
+        code="transformers-embed-cuda",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "transformers_embed_cuda"),
+        label="Transformers Embeddings (CUDA)",
+        short_label="Transformers Embeddings (CUDA)",
+        family_label="Transformers Embeddings",
+        # One line, hardware-neutral about which MODELS this loads (that is
+        # `family_label`'s job) — and, like the ROCm row below, no
+        # desktop-stall warning: that hazard is a denoise holding the GPU for
+        # minutes, and an embed call is one forward pass at
+        # `embed_common.MAX_ITEMS` items, over in under a second.
+        note="Embeds on an NVIDIA GPU — a larger download for a workload "
+             "that is already fast on the CPU.",
+        _available=_cuda,
+    ),
+    Runner(
+        code="transformers-embed-rocm",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "transformers_embed_rocm"),
+        label="Transformers Embeddings (ROCm)",
+        short_label="Transformers Embeddings (ROCm)",
+        family_label="Transformers Embeddings",
+        # One line, hardware-neutral about which MODELS this loads (that is
+        # `family_label`'s job) — and unlike the image ROCm row's note, no
+        # desktop-stall warning: that hazard comes from holding the GPU for
+        # minutes during a denoise, and an embed call is one forward pass at
+        # `embed_common.MAX_ITEMS` items, over in under a second.
+        note="Embeds on a supported AMD GPU under Linux — a larger download "
+             "for a workload that is already fast on the CPU.",
+        _available=_rocm,
     ),
     # Video generation, the fifth capability and the first with no
     # "everywhere" row: its one engine is MLX, so this capability is

@@ -928,6 +928,11 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
+    # Hardware variants of `transformers-embed` — same repos, same format,
+    # different wheel — for the identical reason the Diffusers pair above is
+    # aliased rather than copied.
+    "transformers-embed-cuda": "transformers-embed",
+    "transformers-embed-rocm": "transformers-embed",
     # Not a hardware variant of the same runner — a DIFFERENT runner that reads
     # the same repos (see the comment on the embeddings block above). Aliased
     # for the same reason as the pairs above: one list to keep in step rather
