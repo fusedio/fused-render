@@ -17,6 +17,15 @@ export interface Config {
   // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
   // every mount lives under.
   mounts_root: string;
+  // Where shell code may write scratch files — bytes the app made and can
+  // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
+  // the writer mkdirs it, and /api/fs/mkdir makes ONE level at a time.
+  cache_dir: string;
+  // Whether this machine can raise the OS file/folder dialog from the server
+  // process (server/dirpicker.py) — false on a hosted deploy with no GUI
+  // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
+  // fallback. One backend set raises both dialogs, hence the one flag.
+  native_dir_picker: boolean;
   // Whether the builtin sessions mount record exists yet — a surface linking
   // into it renders only when this is true, so it's never a dead link
   // (unpackaged dev run with no zip, or the brief window before startup's
@@ -1023,6 +1032,28 @@ export function writeFile(path: string, content = "", create = false): Promise<S
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
+/** Raise the user's OWN file dialog, in the server process, and get back the
+ *  absolute path they chose — `null` on a cancel, which is an answer and must
+ *  not be re-asked.
+ *
+ *  The one way for shell code to learn a path: a browser's `<input type=file>`
+ *  hands over BYTES and strips the path on purpose, so an endpoint that takes a
+ *  path (`/api/ai/image`'s `image`) is otherwise only reachable by uploading a
+ *  copy of a file this machine already has. Throws on 409 (a dialog is already
+ *  up), 501 (this machine has no dialog — `Config.native_dir_picker` says so up
+ *  front) and 500.
+ *
+ *  `types` narrows the dialog to those extensions (bare, no dot) — a caller that
+ *  can read three formats should not be offered a fourth. It is the dialog's
+ *  half of the job and NOT the check: a drag-drop never sees the dialog, and the
+ *  Linux backends can only suggest, so a caller still refuses what it cannot
+ *  read in its own words. */
+export function pickFile(
+  opts: { start?: string; title?: string; types?: string[] } = {},
+): Promise<string | null> {
+  return postJson<{ path: string | null }>("/api/fs/pick-file", opts).then((r) => r.path);
+}
+
 export function mkdir(path: string): Promise<StatResult> {
   return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }
@@ -2701,6 +2732,14 @@ export interface AiCatalogModel {
    *  repo the user found themselves. NOT the default: `default` is still the
    *  smallest entry and owes nothing to this flag. */
   recommended: boolean;
+  /** Can this model be handed a BASE IMAGE to edit rather than only a prompt
+   *  (AI-9f)? The server's own answer, computed per entry from the resolved
+   *  ENGINE (only mflux honours `image`) and then from the model's own edit
+   *  variant — the same two gates `/api/ai/image` refuses with, so a picker
+   *  that draws an attach affordance off this cannot offer a request the
+   *  route would 400. False on every non-image capability, and optional on
+   *  the wire only because an older server does not send it. */
+  acceptsImage?: boolean;
 }
 
 export interface AiCatalogCapability {
@@ -2723,6 +2762,25 @@ export interface AiCatalogCapability {
   reason: string | null;
   default: string | null;
   models: AiCatalogModel[];
+  /** The resolved video engine's own request shape — the frame grid, the
+   *  canvas default and the step default (`registry.VideoTraits`, server
+   *  side). `null` for every capability but video generation: it is the
+   *  first (only) one whose request shape varies by which runner resolved
+   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps against `h3-video`'s
+   *  `5 + 17n` at 864×480/20), so the Playground's frame/canvas/step
+   *  sliders read this rather than a hardcoded grid — a slider that
+   *  disagreed with the server would snap on every render and land off by
+   *  up to half its own travel. */
+  videoTraits: {
+    framesBase: number;
+    framesStep: number;
+    minFrames: number;
+    maxFrames: number;
+    defaultFrames: number;
+    defaultWidth: number;
+    defaultHeight: number;
+    defaultSteps: number;
+  } | null;
 }
 
 /** A model on this disk that NO capability can load, and why.
@@ -2777,6 +2835,177 @@ export function downloadAiModel(model: string, capability?: string): Promise<AiL
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
+/** Stop the generation in flight on `capability`'s resident worker, WITHOUT
+ *  unloading it — the weights stay, so whatever asked for this can start
+ *  answering again immediately. Distinct from `unloadAiModel`, which
+ *  terminates the worker process instead: that is right for "get this out of
+ *  memory" but wrong for "stop what it's doing", because killing the process
+ *  mid-stream does not resolve the in-flight request with a clean, readable
+ *  outcome — it drops the connection, and whatever was waiting on it sees a
+ *  socket error rather than a cooperative `cancelled: true`. False from the
+ *  server means there was nothing to stop, which is not an error: a Stop
+ *  pressed just as the last token (or the last step, or the one embed call)
+ *  settled should be a no-op.
+ *
+ *  `playground/client.ts` wraps the same route for its own Stop button
+ *  (`cancelGeneration`) — kept here too, rather than importing that module
+ *  from a sibling feature, because this is the platform-level HTTP surface
+ *  every other AI wrapper on this page (`unloadAiModel`, `runAiBenchmark`, …)
+ *  already lives beside. */
+export function cancelAiGeneration(capability?: string): Promise<{ cancelled: boolean }> {
+  return postJson<{ cancelled: boolean }>("/api/ai/cancel", capability ? { capability } : {});
+}
+
+// -- AI benchmarks (/api/ai/benchmark, SPEC AI-14) ----------------------------
+// One recorded benchmark run per entry, kept forever on disk — the deliberate
+// opposite of the in-memory usage counters below. Where those summarise the real
+// calls that happened to pass through, these are a FIXED workload somebody ran
+// on purpose so that two models, or one model across two app versions, are
+// legitimately comparable.
+//
+// **Every metric here can be null, and null means NOT MEASURED.** A runner that
+// does not count its own tokens leaves `tokensPerSecond` null rather than a
+// number derived from the text; a platform whose RAM the stdlib will not report
+// leaves `totalMemoryBytes` null. Nothing in this payload is ever a zero
+// standing in for an absence, so nothing that renders it may treat one as such.
+
+/** The machine a run was taken on — why a number is not portable. */
+export interface AiBenchmarkMachine {
+  platform: string;
+  arch: string;
+  cpuCount: number | null;
+  totalMemoryBytes: number | null;
+}
+
+/** Which fixed workload produced a run, and which VERSION of it.
+ *
+ *  `revision` is a comparability seam: if the prompt, token budget or canvas
+ *  ever changes the server bumps it, and runs either side of the bump are not
+ *  comparable. A consumer must not draw a delta across two different revisions
+ *  — see `latestWithDelta` in apps/ai_models/lib/benchmark.ts.
+ */
+export interface AiBenchmarkWorkload {
+  name: string;
+  revision: number;
+  /** The frozen parameters, verbatim from the server. Shape varies by
+   *  capability, so it is opaque here — the run's `metrics` is what a page
+   *  renders, and this is provenance to show on demand. */
+  params: Record<string, unknown>;
+}
+
+/** The measured numbers. Which keys are present depends on the capability, and
+ *  a present key can still be null (not measured). The PRIMARY metric per
+ *  capability is decided in one place — `primaryMetric` in
+ *  apps/ai_models/lib/benchmark.ts — never inferred from which keys exist. */
+export interface AiBenchmarkMetrics {
+  // text-generation
+  tokensPerSecond?: number | null;
+  ttftMs?: number | null;
+  promptTokensPerSecond?: number | null;
+  outputTokens?: number | null;
+  // text-to-image
+  secondsPerStep?: number | null;
+  totalSeconds?: number | null;
+  steps?: number | null;
+  width?: number | null;
+  height?: number | null;
+  // automatic-speech-recognition
+  realtimeFactor?: number | null;
+  audioSeconds?: number | null;
+  // embeddings
+  textsPerSecond?: number | null;
+  dim?: number | null;
+  batch?: number | null;
+}
+
+export interface AiBenchmarkRun {
+  /** uuid4 hex — what `deleteAiBenchmarks` names. */
+  id: string;
+  /** Epoch SECONDS (the server's clock), not ms. */
+  startedAt: number;
+  capability: string;
+  model: string;
+  /** Which backend measured it, e.g. "mlx-text" — null when resolution failed,
+   *  which is one of the ways a run can be `ok: false`. */
+  runner: string | null;
+  /** What the weights landed on ("mps" | "cuda" | "cpu" | …), or null from a
+   *  runner that does not report one. Never guessed from the platform. */
+  device: string | null;
+  /** The app version this was measured under. The app is part of what is being
+   *  measured, so a runner upgrade that halves throughput is visible here. */
+  appVersion: string;
+  /** False for a run that FAILED — an OOM, a dead worker, a machine with no
+   *  runner. Those are kept and shown: "this model OOMs on this laptop" is a
+   *  result. `metrics` is then empty rather than a dict of nulls. */
+  ok: boolean;
+  error: string | null;
+  /** Seconds to make the model resident, or null when it already was. Null is
+   *  not zero: a warm run did not load anything. */
+  loadSeconds: number | null;
+  /** Resident bytes sampled from the worker AFTER the run — a resident figure,
+   *  not a continuously-sampled peak (see ai/benchmark.py). Null from a runner
+   *  that does not report memory. */
+  peakResidentBytes: number | null;
+  machine: AiBenchmarkMachine;
+  workload: AiBenchmarkWorkload;
+  metrics: AiBenchmarkMetrics;
+}
+
+export interface AiBenchmarkHistory {
+  /** Oldest first — append order IS the chart's x axis. */
+  runs: AiBenchmarkRun[];
+  /** THIS machine, as it is now. Travels with the history rather than only on
+   *  each run, because the page has to caption the comparison before it has
+   *  drawn a single run. */
+  machine: AiBenchmarkMachine;
+  /** Exactly `benchmark.WORKLOADS`' keys (server side) — the capabilities a
+   *  Run press can actually measure, narrower than the registry's full
+   *  capability list. Video generation is the first capability this omits
+   *  (`benchmark.NO_WORKLOAD_YET`): a real workload would be a multi-GB,
+   *  minutes-long render behind every press. The Benchmark tab filters its
+   *  capability selector to this set rather than hardcoding the gap, so a
+   *  future workload lights the section up with no frontend change. */
+  workloadCapabilities: string[];
+}
+
+export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {
+  return getJson<AiBenchmarkHistory>("/api/ai/benchmark", opts);
+}
+
+/** Run one benchmark. **Resolves in MINUTES** — the request is held open for
+ *  the whole run, exactly as `/api/ai/image` is.
+ *
+ *  **There is no job id and no download-manager row**, deliberately: a
+ *  benchmark's row would share the title-keyed job namespace with the load row
+ *  `supervisor.load` already opens for the same model and shadow it. Show your
+ *  own in-progress state for the duration; through a COLD run the load's own row
+ *  appears in the manager with real byte counts, which is the progress that was
+ *  always worth watching.
+ *
+ *  A run that failed still resolves, with `run.ok === false` — that is a result
+ *  and belongs in the history. A run STOPPED from outside resolves with **no
+ *  `run`** and `cancelled: true`: nothing was measured, so there is nothing to
+ *  add. Read `run` for presence; never pattern-match on
+ *  `run.error === "cancelled"`, which is what drew a phantom "Failed — cancelled"
+ *  entry that outlived the click. Only a rejected REQUEST rejects. */
+export function runAiBenchmark(
+  model: string,
+  capability: string,
+): Promise<{ run?: AiBenchmarkRun; cancelled?: boolean }> {
+  return postJson<{ run?: AiBenchmarkRun; cancelled?: boolean }>(
+    "/api/ai/benchmark",
+    { model, capability },
+  );
+}
+
+/** Forget runs by id, answering with the fresh history so the caller swaps in
+ *  state it just re-read rather than patching rows it hopes are still true. */
+export function deleteAiBenchmarks(
+  ids: string[],
+): Promise<AiBenchmarkHistory & { removed: number }> {
+  return postJson<AiBenchmarkHistory & { removed: number }>("/api/ai/benchmark/delete", { ids });
 }
 
 // -- AI usage (GET /api/ai/metrics, SPEC AI-12) -------------------------------

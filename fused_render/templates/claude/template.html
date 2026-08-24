@@ -25,6 +25,10 @@
        floor for text this small — so it is lifted to a value that clears it
        while still reading as "quieter than --dim". */
     --faint: #8a8f99;
+    /* The shell's own running colour, the same value tokens.css gives
+       --status-progress, so the shimmer on a chat row is the shimmer the
+       sidebar draws beside a running task. Two palettes, one hue. */
+    --status-progress: #facc15;
     --border: #34363e;
     --border-strong: #4a4d57;
     --accent: #d97757;
@@ -73,6 +77,7 @@
     --fg-strong: #000000;
     --dim: #61656c;
     --faint: #676c74;
+    --status-progress: #ca8a04;
     --border: #e3e4e8;
     --border-strong: #c9cbd2;
     --accent: #b8542f;
@@ -577,6 +582,13 @@
   }
   .kebab-opt:hover, .kebab-opt:focus-visible { background: var(--surface-2); }
   .kebab-opt[disabled] { color: var(--dim); cursor: default; }
+  /* The SAME story as `#kebabpop[hidden]` above, one level down: `display:
+     block` on the rule beats the UA sheet's `[hidden] { display: none }`, so an
+     item hidden in the markup still took its full height. The archive item is
+     hidden on a chat with no task behind it, and it left a blank row under
+     "New session in terminal" — a menu that reads as still loading something
+     (Akshil, 2026-08-23). */
+  .kebab-opt[hidden] { display: none; }
 
   /* "Comment on preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
@@ -996,6 +1008,78 @@
     white-space: nowrap;
     flex: 1;
     min-width: 0;
+  }
+  /* "running", while a turn is live. Drawn only on `body.running`, which the
+     composer's stop-button swap already owns — one source of truth, no second
+     flag.
+
+     The shimmer is a moving highlight through the WORD, not a spinner: the
+     strip is 43px tall in the narrow view and already carries a spark, a name,
+     a file and an id, and a rotating glyph beside all that reads as a fifth
+     object rather than as a state of the fourth. A gradient clipped to the
+     text adds no box at all.
+
+     `background-size` at 200% with the position animated is what moves it;
+     clipping to the text is what makes it a shimmer rather than a swiping
+     rectangle. The two colours are the muted foreground and the accent, so the
+     word stays legible at every point in the sweep instead of fading out
+     against the strip at the trough. */
+  /* THE SHELL'S OWN RUNNING SHIMMER, ported rather than reinvented
+     (sidebar.css `.sidebar-running`, and schedule.css's twin of it): same hue,
+     same 2.2s pace, same geometry — every "running" in this app is one mark.
+
+     Two details over there are load-bearing, and the first pass here got both
+     wrong. **The travel stays inside 100% → 0%** across a background 300% the
+     width of the box: every position in that range still covers the box, so no
+     frame can leave a letter unpainted. Going outside it — 100% → -100% over a
+     200% image, which is what this shipped as — exposes bare box at the ends,
+     and under `background-clip: text` an unpainted spot is not a dim letter,
+     it is a MISSING one. **And the clip box has to hold the whole glyph**: at
+     `line-height: 1` the painted area is shorter than the type and the
+     descender of the "g" in "running" comes out chipped, which is why the
+     leading and the hair of padding are here rather than the text being
+     trimmed to fit.
+
+     `-webkit-text-fill-color`, not `color: transparent`: the fill is what the
+     clip paints through. */
+  #topbar .tb-run,
+  .chat-row .row-run {
+    display: none;
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    line-height: 1.6;
+    padding: 1px 1px;
+    color: var(--status-progress);
+    background-image: linear-gradient(
+      100deg,
+      var(--status-progress) 30%,
+      color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+      var(--status-progress) 70%
+    );
+    background-size: 300% 100%;
+    background-repeat: repeat;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: claude-running-shimmer 2.2s linear infinite;
+    white-space: nowrap;
+  }
+  body.running #topbar .tb-run { display: inline-block; }
+  /* ONE property animates, and it is the position of the highlight — never
+     opacity, never the fill, never anything that could take a letter away. */
+  @keyframes claude-running-shimmer {
+    from { background-position: 100% 0; }
+    to   { background-position: 0% 0; }
+  }
+  /* Still SAYS it, just stops moving: the word is the information and the
+     shimmer is only what draws the eye to it. */
+  @media (prefers-reduced-motion: reduce) {
+    #topbar .tb-run,
+    .chat-row .row-run {
+      animation: none;
+      background-image: none;
+      -webkit-text-fill-color: var(--status-progress);
+    }
   }
   /* TASK-023 (see showSession) — tabular figures for the same reason the
      composer block's `.sb-id` has them: the same identifier must not shift
@@ -3167,6 +3251,69 @@
     flex: 1;
   }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
+  /* The right-hand end of a row: [file icon] [file name] [time], in that order,
+     and the TIME NEVER LEAVES. At rest a row whose chat was opened on another
+     file shows the icon alone beside the time — enough to say "this one is
+     about a file" while a column of filenames would drown the titles. On hover
+     the name opens out between them, pushing the icon left, and the title
+     ellipsises to pay for it.
+
+     The name animates on `max-width`, not on display or position: a name that
+     appears by being laid out shoves the time sideways in one frame, and one
+     that is positioned out of flow overlaps the title instead of making room.
+     `max-width` grows the same box the text already lives in, so the row opens
+     smoothly and the time is carried, never covered. */
+  .chat-row .row-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    max-width: 60%;
+  }
+  .chat-row .row-fileic {
+    display: none;
+    flex: 0 0 auto;
+    color: var(--faint);
+    line-height: 0;
+  }
+  .chat-row.has-pane .row-fileic { display: block; }
+  /* "running" on a row whose turn is still going — declared WITH the top
+     strip's mark above, not beside it: it is the same fact seen from outside
+     the chat rather than inside it, and one rule is what keeps the two from
+     drifting into two shimmers. Only the visibility switch differs. */
+  .chat-row.is-running .row-run { display: inline-block; }
+  .chat-row .row-file {
+    color: var(--faint);
+    font-size: 12px;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Only a row that HAS a file opens; every other row is icon-less and its
+     name element is permanently empty, so there is nothing to open. */
+  /* The reveal is EASED and the fade TRAILS the width both ways, so the name
+     is never text sitting in a box that has not finished opening (nor left
+     hanging in one that has already closed). Leaving: width and opacity run
+     together at the same short duration, because a name that lingers after the
+     pointer has gone reads as a stuck tooltip. */
+  .chat-row.has-pane .row-file {
+    transition: max-width .2s cubic-bezier(0.22, 0.61, 0.36, 1),
+                opacity .14s ease;
+  }
+  .chat-row.has-pane:hover .row-file,
+  .chat-row.has-pane:focus-visible .row-file {
+    max-width: 180px;
+    opacity: 1;
+    transition: max-width .24s cubic-bezier(0.22, 0.61, 0.36, 1),
+                opacity .2s ease .06s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chat-row.has-pane .row-file,
+    .chat-row.has-pane:hover .row-file,
+    .chat-row.has-pane:focus-visible .row-file { transition: none; }
+  }
 
   /* ── skeleton loading placeholders ── */
   .skel-bar {
@@ -3510,6 +3657,16 @@
              holds the draft, so the composer is what can hand it over. -->
         <div id="kebabpop" role="menu" aria-label="More options" hidden>
           <button id="terminalopt" type="button" role="menuitem" class="kebab-opt"></button>
+          <!-- File this conversation's TASK away, or take the filing back
+               (Akshil, 2026-08-23). Below the terminal item and hidden outright
+               when this chat has no task behind it: the Tasks page keys a task
+               by its session id, so a chat that has never been listed there has
+               nothing to archive and an item that cannot act is worse than an
+               item that is not there. The label is decided at open time for the
+               same reason the terminal one is — the state can change from the
+               Tasks page while this menu sits closed. -->
+          <button id="archiveopt" type="button" role="menuitem" class="kebab-opt"
+                  hidden></button>
         </div>
       </div>
       <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
@@ -3546,6 +3703,19 @@
       <span class="tb-title">Claude</span>
       <span class="tb-file" id="banner-sub"></span>
       <span id="session" class="mono"></span>
+      <!-- "running", at the end of the chat's name, while a turn is live
+           (Akshil, 2026-08-23). The composer already swaps its arrow for a stop
+           square on `body.running`, but that sits at the BOTTOM of the pane and
+           says "you can stop this" rather than "this is working" — a reader who
+           has scrolled up, or who is watching the preview beside the chat, had
+           nothing at the top of the conversation saying it was still going.
+           Driven by that same body class, so there is ONE source of truth for
+           "a turn is live" and no second flag to fall out of step with it.
+
+           `aria-live="polite"`, not assertive: this is an ambient state, and a
+           reader that interrupts to announce the start of every turn is worse
+           than one that mentions it when it next comes up for air. -->
+      <span id="runmark" class="tb-run" aria-live="polite">running</span>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
     <!-- A scheduled message pending IN THIS SESSION closes the composer, and this
@@ -10821,6 +10991,81 @@ function enterChat() {
 const kebabBtn = document.getElementById("kebabbtn");
 const kebabPop = document.getElementById("kebabpop");
 const terminalOpt = document.getElementById("terminalopt");
+
+// ── archive / unarchive this conversation's task ───────────────────────
+// The Tasks page keys a task by its SESSION ID (`task.key`), which is the same
+// id this page already fetches /api/tasks for to learn a task's number — so
+// "which task is this chat" needs no new endpoint and no new identity.
+//
+// The item is HIDDEN, not disabled, when there is no task behind the chat: a
+// disabled row invites a reader to work out what would enable it, and the
+// answer here ("this conversation has never been listed as a task") is not
+// something they can act on from this menu.
+const archiveOpt = document.getElementById("archiveopt");
+let archiveKey = "";
+
+async function refreshArchiveOpt() {
+  const id = fused.params.get("session_id");
+  archiveKey = "";
+  archiveOpt.hidden = true;
+  archiveOpt.disabled = false;
+  if (!id) return;
+  try {
+    const res = await fetch("/api/tasks");
+    if (!res.ok) throw new Error(String(res.status));
+    const data = await res.json();
+    const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
+    if (!task) return;
+    // The session can change while this is in flight (the reader clicked a
+    // recent chat as the menu opened); a stale answer must not label the item
+    // for a conversation nobody is looking at any more.
+    if (fused.params.get("session_id") !== id) return;
+    archiveKey = id;
+    archiveOpt.textContent = task.status === "archived"
+      ? "Unarchive this task" : "Archive this task";
+    archiveOpt.dataset.filed = task.status === "archived" ? "1" : "";
+    archiveOpt.hidden = false;
+  } catch (err) {
+    /* FAILS CLOSED, unlike the task-number read above: that one costs a nicer
+       label and falls back to the hash, where this one is an ACTION. An item
+       offered on a listing we could not read is an item whose verb we are
+       guessing at. */
+  }
+}
+
+archiveOpt.addEventListener("click", async () => {
+  if (!archiveKey) return;
+  const filed = archiveOpt.dataset.filed === "1";
+  archiveOpt.disabled = true;
+  try {
+    const res = await fetch(filed ? "/api/tasks/unarchive" : "/api/tasks/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ key: archiveKey }),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    // Confirmed INSIDE the item and then the menu leaves on its own — the same
+    // shape the terminal item uses, because this page has no toast of its own
+    // and one invented here would be a second vocabulary for "it worked".
+    //
+    // Archiving CANCELS this task's pending work as well as filing it
+    // (routers/tasks.py api_task_archive), and the count comes back in the
+    // answer, so the confirmation says what actually happened rather than a
+    // bare "done".
+    const body = await res.json().catch(() => ({}));
+    const off = Number(body && body.cancelled) || 0;
+    archiveOpt.textContent = filed
+      ? "Unarchived"
+      : (off ? `Archived — ${off} pending run${off === 1 ? "" : "s"} cancelled`
+             : "Archived");
+    setTimeout(() => { kebabClose(); archiveOpt.disabled = false; }, 1100);
+  } catch (err) {
+    archiveOpt.disabled = false;
+    archiveOpt.textContent = "Could not " + (filed ? "unarchive" : "archive")
+      + " — " + (err && err.message || err);
+    setTimeout(() => { void refreshArchiveOpt(); }, 2500);
+  }
+});
 function kebabClose() {
   kebabPop.hidden = true;
   kebabBtn.setAttribute("aria-expanded", "false");
@@ -10831,6 +11076,12 @@ function kebabOpen() {
   terminalOpt.textContent = fused.params.get("session_id")
     ? "Continue in terminal" : "New session in terminal";
   terminalOpt.disabled = false;
+  // Same rule, one step further: the archive item's very PRESENCE depends on
+  // there being a task, and its word on which way that task is filed — both of
+  // which the Tasks page can change while this menu sits closed. Asked fresh on
+  // every open rather than cached; a menu is opened rarely and a wrong verb
+  // here files something the user meant to unfile.
+  void refreshArchiveOpt();
   kebabPop.hidden = false;
   kebabBtn.setAttribute("aria-expanded", "true");
   // preventScroll, and it is load-bearing: the popup hangs BELOW the strip,
@@ -15273,21 +15524,90 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
-// One row for one past chat — every transcript in this cwd's project dir,
-// whether it started in this page or in a terminal (agent.py `_sessions`).
-// A row is resumable because its transcript is in this cwd's project dir,
-// which is precisely where `_cli_sessions` found it — so the SAME `history`
-// read and the same `--resume` on the next send work on it untouched.
+// Same normalization the peer link-outs use (artOpenHref, the shell's
+// router.ts urlForFsPath): only a drive-letter path has its backslashes
+// rewritten, because a backslash is a legal POSIX filename char.
+function paneSlashes(path) {
+  return /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/")
+                                      : String(path);
+}
+
+// The file this row's chat was opened on, or "" — and "" for a chat opened on
+// THIS target, which is every row when the target is a file. Naming the same
+// file on every row would be noise, and the swap below would trade a useful
+// timestamp for it.
+function rowPane(s) {
+  const pane = (s && s.pane) || "";
+  if (!pane) return "";
+  return paneSlashes(pane) === paneSlashes(FILE) ? "" : pane;
+}
+
+// The one mark a row wears at rest to say "this chat was about a file". Inline
+// rather than a shared sprite for the same reason every other glyph in this
+// page is inline: the template is one file and has no icon module to import.
+const ICON_FILE =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+  'stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>' +
+  '<path d="M14 2v6h6"/></svg>';
+
+// One row for one past chat — every transcript in this cwd's project dir when
+// the target is a folder, and the ones opened on this very file when it is a
+// file (agent.py `_sessions`). A row is resumable because its transcript is in
+// this cwd's project dir, which is precisely where `_cli_sessions` found it —
+// so the SAME `history` read and the same `--resume` on the next send work on
+// it untouched, whichever file the chat was about.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
+  // Icon, then name, then time — the time is LAST and always drawn, so the
+  // right edge of every row says the same thing whether or not it is hovered.
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
-                  '<span class="row-sub"></span>';
+                  '<span class="row-right">' +
+                  '<span class="row-fileic" aria-hidden="true">' + ICON_FILE +
+                  '</span><span class="row-file"></span>' +
+                  '<span class="row-run">running</span>' +
+                  '<span class="row-sub"></span></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
+  // A row whose turn is STILL GOING says so, in the same word and the same
+  // shimmer the top strip uses once you are inside that chat (agent.py
+  // `_live_sessions`). Without it the list's only clue was a timestamp reading
+  // "now", which is equally true of a chat that finished a second ago — so the
+  // one row you might want to open, because something is happening in it, was
+  // the one row that looked like all the others.
+  //
+  // It REPLACES the timestamp rather than joining it: "running" already says
+  // when, and the two side by side spend the row's last inch saying one thing
+  // twice.
+  if (s.running) {
+    row.classList.add("is-running");
+    row.querySelector(".row-sub").hidden = true;
+  }
+  const pane = rowPane(s);
+  if (pane) {
+    row.classList.add("has-pane");
+    const label = row.querySelector(".row-file");
+    // Basename on the row, whole path on hover: the folder is already the one
+    // we are looking at, so the leading path repeated down the list says
+    // nothing, and a name that has been ellipsised still has somewhere to be
+    // read in full.
+    label.textContent = paneSlashes(pane).split("/").pop() || pane;
+    label.title = pane;
+    // The icon carries the path too: at rest it is the only part of this on
+    // screen, so pointing at it has to answer the question it raises.
+    row.querySelector(".row-fileic").title = pane;
+  }
   const open = async () => {
+    // A chat about ANOTHER file does not belong in this pane: resuming it here
+    // would put its transcript beside a preview of a file it never mentions.
+    // The host is sent to that file with the session attached instead, so the
+    // reader lands on the same pairing the chat was had in — which is the same
+    // move, and the same URL, "open this task" makes from the Tasks list.
+    if (pane) return openPaneChat(pane, s.id);
     fused.params.set("session_id", s.id);
     showSession();
     enterChat();
@@ -15301,6 +15621,29 @@ function addChatRow(list, s) {
   row.onclick = open;
   row.onkeydown = (e) => { if (e.key === "Enter") open(); };
   list.appendChild(row);
+}
+
+// Open one file in the host's left pane with one session in the Claude side —
+// `/explorer/view/<path>?_side=claude&session_id=<id>`, the shell route the
+// Tasks list already opens a task on.
+//
+// The same top-window hop `openTaskOnCalendar` makes, and for the same reason:
+// the target is a shell ROUTE, so pushState + "fused:navigate" is the in-app
+// move and a real navigation is the fallback for an absent or foreign parent.
+function openPaneChat(pane, sessionId) {
+  const segs = paneSlashes(pane).replace(/^\/+/, "").split("/")
+    .filter(Boolean).map(encodeURIComponent);
+  const url = "/explorer/view/" + segs.join("/") + "?_side=claude&session_id="
+    + encodeURIComponent(sessionId);
+  try {
+    const host = window.top;
+    void host.location.href;   // throws when cross-origin
+    host.history.pushState(null, "", url);
+    host.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (err) { /* fall through to a real navigation */ }
+  try { window.top.location.href = url; }
+  catch (err) { location.href = url; }
 }
 
 // Content-shaped placeholder for the session list.

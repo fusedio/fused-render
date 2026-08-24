@@ -138,7 +138,13 @@ def test_the_kebab_no_longer_carries_a_schedule_item(code):
     assert "schedopt" not in code
     pop = re.search(r'<div id="kebabpop".*?</div>', code, flags=re.S).group(0)
     assert 'id="terminalopt"' in pop
-    assert pop.count("<button") == 1
+    # The claim is that SCHEDULING is not in this menu, not that the menu has
+    # exactly one item — it grew a second on 2026-08-23 (archive this task).
+    # Pinned by NAME so a third item has to be added here deliberately, which
+    # is the check that was actually wanted: a menu nobody is watching is how
+    # the schedule item got in the first time.
+    assert set(re.findall(r'<button id="(\w+)"', pop)) == {
+        "terminalopt", "archiveopt"}
 
 
 # ------------------------------------------------------------- the confirm

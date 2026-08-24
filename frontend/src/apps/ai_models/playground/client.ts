@@ -197,6 +197,92 @@ export async function watchJob(
   }
 }
 
+/** How many cold-start 409s one call may wait out before giving up. More than
+ *  one, because a load finishing is NOT the same as this call's model being
+ *  resident when it asks again: ONE model per capability is resident at a time
+ *  (AI-13), so any other surface asking for a different one — a second tab, the
+ *  Models page, an app calling `fused.ai` — evicts ours between the job row
+ *  going `done` and the retry landing, and the retry earns a fresh 409. The
+ *  single retry this replaces surfaced that as "<model> is still loading
+ *  (loading)", which reads as a broken run when nothing was broken: the answer
+ *  was to ask again. Bounded because two surfaces asking for two models can
+ *  trade the slot forever, and a spinner that never resolves is worse than a
+ *  sentence saying what is happening. */
+const MAX_LOAD_WAITS = 4;
+
+/** Sleep, but abortable — a Stop pressed during the wait must land on the same
+ *  AbortError every other step of the dance throws. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException("aborted", "AbortError"));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Run `attempt`, waiting out AI-5's cold start: the first call STARTS the load
+ *  and 409s with the job id, so this watches that job and asks again.
+ *
+ *  Lives here rather than in a stage because both stages that generate against
+ *  a resident model do the identical dance, and the copy in each of them drifted
+ *  the moment one of them learned something (this bound is that something). The
+ *  IMAGE path needs none of it: `generate_image` waits for the model inside the
+ *  render job server-side (`_wait_ready`), which is why the image stage never
+ *  saw the failure this fixes — a text box may not hang for a multi-GB load, so
+ *  the text and embedding paths fail fast and the waiting happens HERE.
+ *
+ *  `onStatus` is told what to narrate and handed null once there is nothing to
+ *  say. A load stopped from the Activity panel ends the call rather than being
+ *  retried into a second 409. */
+export async function withModelReady<T>(
+  attempt: () => Promise<T>,
+  opts: { signal: AbortSignal; downloaded: boolean; onStatus: (text: string | null) => void },
+): Promise<T> {
+  for (let waited = 0; ; waited++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      if (!(e instanceof ModelLoading)) throw e;
+      if (waited >= MAX_LOAD_WAITS) {
+        throw new Error(
+          `${e.message} — and it keeps losing its place before a run can start. ` +
+            `One model at a time is resident, so another page asking for a ` +
+            `different one takes the slot. Try again.`,
+        );
+      }
+      opts.onStatus(
+        waited > 0
+          ? "Loading the model again — something else took its place…"
+          : opts.downloaded
+            ? "Loading the model into memory — the first run pays for this once…"
+            : "Downloading the model — the first run pays for this once…",
+      );
+      if (e.jobId) {
+        const outcome = await watchJob(e.jobId, opts.signal, (job) =>
+          opts.onStatus(job.detail || "Loading the model…"),
+        );
+        // Someone stopped the load from the Activity panel. Asking again would
+        // just earn a second 409 and read as a stream error, so say what
+        // actually happened.
+        if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
+        // No row to watch: retired, or never seen. Nothing to poll, so pace the
+        // retry rather than hammering the route with it.
+        if (outcome.state === "gone") await pause(1000, opts.signal);
+      } else {
+        await pause(1000, opts.signal);
+      }
+      opts.onStatus(null);
+    }
+  }
+}
+
 // -- Images (POST /api/ai/image, AI-9) ----------------------------------------
 
 /** What the route accepts — `_reject_unknown` refuses any other key, so this
@@ -204,6 +290,13 @@ export async function watchJob(
 export interface ImageRequest {
   prompt: string;
   model?: string;
+  /** An absolute path to a base image to EDIT instead of rendering from the
+   *  prompt alone (AI-9f). Only the mflux engine honours it, and only for a
+   *  model with an edit variant — `AiCatalogModel.acceptsImage` is the server's
+   *  own answer to whether this model is one of them, and sending it for one
+   *  that is not is a 400. Absolute, so no `base` is needed: the shell is not a
+   *  page and has no `?path=` to resolve against. */
+  image?: string;
   width?: number;
   height?: number;
   steps?: number;
@@ -228,6 +321,41 @@ export interface ImageStarted {
 
 export function startImage(request: ImageRequest): Promise<ImageStarted> {
   return postJson<ImageStarted>("/api/ai/image", request);
+}
+
+// -- Video (POST /api/ai/video, SPEC §40) --------------------------------------
+
+/** `ImageRequest`'s twin, minus `guidance` (H3 is CFG-distilled and takes no
+ *  such parameter) and plus `frames`. Closed the same way, for the same
+ *  reason: `_reject_unknown` refuses any other key. */
+export interface VideoRequest {
+  prompt: string;
+  model?: string;
+  width?: number;
+  height?: number;
+  frames?: number;
+  steps?: number;
+  seed?: number;
+}
+
+/** The reply echoes the SETTLED request — width/height snapped and shrunk to
+ *  fit the canvas ceiling, `frames` rounded to h3's own grid, `steps`
+ *  clamped, `seed` invented — never what was asked. No `previewPath`: there
+ *  is no live preview in this build. */
+export interface VideoStarted {
+  jobId: string;
+  path: string;
+  model: string;
+  prompt: string;
+  width: number;
+  height: number;
+  frames: number;
+  steps: number;
+  seed: number;
+}
+
+export function startVideo(request: VideoRequest): Promise<VideoStarted> {
+  return postJson<VideoStarted>("/api/ai/video", request);
 }
 
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------

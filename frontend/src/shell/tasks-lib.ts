@@ -1153,6 +1153,21 @@ export function parseListMemory(raw: string | null): ListMemory {
 /** The query key the Claude pane reads to scroll a resumed chat to one turn. */
 export const MESSAGE_ANCHOR_PARAM = "msg";
 
+/** The FILE this task is about, or "" when it is about the folder.
+ *
+ * The server resolves `target` to the scheduled entry's own target, else the
+ * file the chat pane was on, else the project folder (routers/tasks.py
+ * `_place`), so "the target is not the project" IS the test for a file — that
+ * fallback is the only way the two are ever equal. Compared with trailing
+ * slashes off both, because a folder target can arrive spelled either way and
+ * a task about a folder must not grow a file mark over a slash. */
+export function taskFile(task: Task): string {
+  const trim = (p: string) => p.replace(/\/+$/, "");
+  const target = trim(task.target || "");
+  if (!target) return "";
+  return target === trim(task.project || "") ? "" : task.target;
+}
+
 /** The task's thread, top of the chat. Null when the task has never run —
  * there is no session to open yet. */
 export function taskHref(task: Task): string | null {
@@ -2098,7 +2113,19 @@ export function spansProjects(tasks: Task[]): boolean {
 export function projectOptions(tasks: Task[]): string[] {
   const seen = new Set<string>();
   for (const t of tasks) if (t.project) seen.add(t.project);
-  return [...seen].sort((a, b) => a.localeCompare(b));
+  // **Sorted by the NAME the menu prints, not by the path it carries** (D448).
+  // The menu draws `basename(path)` and this sorted the whole path, so a list
+  // that is alphabetical by `/Users/me/Desktop/fused/…` then `/Users/me/Fused/
+  // local/…` arrives on screen as "fused-render, aviary, lens, canvas" — no
+  // order at all as far as the reader is concerned ("check order of the filter
+  // folder as well, it appears random to me").
+  //
+  // The full path is the TIE-BREAK, not the key: two checkouts of one repo in
+  // different parents share a basename, and a sort with no stable second key
+  // would let them swap places between renders.
+  return [...seen].sort(
+    (a, b) => basename(a).localeCompare(basename(b)) || a.localeCompare(b),
+  );
 }
 
 export function taskMatches(task: Task, filters: TaskFilters): boolean {

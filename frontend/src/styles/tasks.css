@@ -505,7 +505,57 @@ button.tasks-caret,
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  /* The number and its bubble are one token: `inline-flex` with a 3px gap keeps
+     them welded, which is the whole argument for dropping the noun (D448) — a
+     bare number beside a folder and a time would be unlabelled again. */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
+
+/* Optically centred with the digits rather than sitting on their baseline: the
+   glyph's box is taller than the numerals it stands beside. */
+.tasks-row-msgs-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+/* THE FILE MARK AFTER THE TITLE (2026-08-23). A task whose target is a file
+   rather than its folder wears one glyph, and the name lives in the `title` —
+   the same place the folder chip has always kept its path, so one hover
+   habit answers both.
+
+   `z-index: 2` and `position: relative` are NOT decoration: `.tasks-rowlink`
+   is an invisible <a> stretched over the whole row at `z-index: 1`, and any
+   element that has to receive a pointer — even only to raise a tooltip — has
+   to sit above it or the link swallows the hover. The folder tag learned this
+   the hard way on 2026-08-23; this is the same lesson, not a second one.
+
+   `flex: 0 0 auto` beside a title that is the row's only shrinking element:
+   the mark must not be what disappears when a long title runs out of room,
+   because then it would say "about a folder" by being absent. */
+.tasks-row-file {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  /* PULLED BACK toward the title (Akshil, 2026-08-23). The row's flex `gap` is
+     10px and applies between every pair of children, so the mark shipped with
+     10px on both sides plus a 5px margin of its own — it read as a third
+     element floating between the title and the folder rather than as something
+     the title wears. It belongs to the title, so it sits against it and keeps
+     the full gap only on the folder side. */
+  margin-left: calc(var(--tasks-row-gap) * -1 + 4px);
+  color: var(--fg-muted);
+  opacity: 0.75;
+  /* NO `cursor: help` (Akshil, 2026-08-23). The whole row is a link and reads
+     as one under the pointer; a question-mark cursor over one glyph inside it
+     announces a different kind of thing to press and looks broken beside the
+     row's own pointer. The tooltip needs no cursor to advertise it. */
+}
+.tasks-row-file:hover { opacity: 1; }
 
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
    folder, so on the List the chip is a real <button> — and it has to look like
@@ -559,13 +609,28 @@ button.tasks-caret,
    rows it was acting on, and the chip itself had disappeared (every row now
    agreeing about its folder is exactly when `spansProjects` used to drop it).
 
-   The fill is the app's quiet-control fill rather than the accent: this marks a
-   state, and the accent on this page belongs to what is RUNNING. The name goes
-   to full strength — it is the answer to "what am I looking at" now, not a
-   footnote on a row. */
+   **In the ACCENT, by request (D448)**, reversing the quiet fill this carried:
+   the quiet wash is the same one the chip wears on hover, so at rest the
+   difference between "the pointer is here" and "this folder is the filter" came
+   down to a hairline. The accent otherwise marks what is RUNNING on this page,
+   and that ambiguity is real — what keeps them apart is that running state is a
+   DOT and a ring on the row's left, never a filled pill around a folder name,
+   and only one chip on the page can be on at a time.
+   Both channels stay subtle, and the hairline more so after a look at it on a real
+   list (Akshil): at 55% it drew a hard ring around every folder in a filtered
+   column and became the loudest thing in the row — the WASH is what marks the
+   state, and the border is only there to give it an edge. 22% keeps that edge
+   without competing with the titles beside it. */
 .tasks-row .schedule-tv-id--tag.is-on {
-  background: var(--ctl-quiet-bg-hover);
-  box-shadow: inset 0 0 0 1px var(--ctl-quiet-border);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Hover must not wash the accent away — the quiet rule above is a plain
+   `background`, and on the ON chip it would win by source order. */
+.tasks-row .schedule-tv-id--tag.is-on:hover,
+.tasks-row .schedule-tv-id--tag.is-on:focus-visible {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
 .tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name,
@@ -1403,4 +1468,103 @@ button.tasks-caret,
   font-size: 10px;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* -- dropping ONE filter, from the control that set it (D448) -----------------
+   `[ ⊙ Project 1 | ✕ ]`: the menu trigger and an attached ✕, drawn as one pill
+   with a divider rather than as two controls that happen to be adjacent.
+
+   It replaces a lone "Clear" button on the bar, which had two problems. It could
+   only mean ALL of it — there is no room for three Clears — so dropping a project
+   filter also threw away a status filter and a half-typed search; and it was a
+   fourth box in a row of three menus, a different kind of thing at a different
+   height, which is what read as misalignment.
+
+   The geometry: the trigger keeps its own border and gives up its right corners,
+   the ✕ carries the right corners and NO left border, so the two boxes share one
+   1px line and it lands as the divider. Nothing here sets a height — the ✕ takes
+   the trigger's 32px by being in the same inline-flex row, which is what keeps
+   the pair aligned with the menus beside it however that height changes. */
+.schedule-tv-filter-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.schedule-tv-filter-btn.is-split {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* The doubled selector is the same trick `.schedule-tv-filter-btn` uses beside it,
+   and against the same opponent: `.prefs-section button` (preferences.css) skins
+   EVERY button on this page — `padding: 5px 12px; align-self: flex-start` — and at
+   (0,1,1) it outranks a lone class. Unqualified, this chip came out 28px tall and
+   top-aligned against its 32px trigger, which is the exact misalignment this
+   control exists to remove. `.deploy-body` is listed too because the same toolbar
+   is drawn inside the deploy shell, whose fields.css carries an identical skin. */
+.schedule-tv-filter-x,
+.prefs-section .schedule-tv-filter-x,
+.deploy-body .schedule-tv-filter-x {
+  appearance: none;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  /* Written as a width shorthand rather than `border-left: 0`, and that is not a
+     style preference: `tasks-lib.test.ts` greps this whole stylesheet for the
+     string "border-left" to hold the thread rows' no-vertical-rule geometry, and
+     the check has no way to tell a filter chip from a message row. Same result,
+     and the guard it protects stays exact. */
+  border-width: 1px 1px 1px 0;
+  border-radius: 0 6px 6px 0;
+  cursor: pointer;
+  transition: color 0.08s ease, background-color 0.08s ease;
+}
+
+/* ONE CONTROL, ONE HOVER. The trigger and its ✕ are two boxes for geometry only
+   — a divider needs two borders — and the reader is looking at a single pill, so
+   the pointer landing anywhere on it lights the whole thing. Per-half hovers were
+   the first shape and were wrong twice over: the two halves lit in different
+   colours (`.prefs-section button:hover:not(:disabled)` paints any hovered button
+   `border-color: var(--accent)`, which the trigger dodges with its own
+   `:not(:disabled)` rule and the ✕ did not), and even matched they made one
+   control blink in halves as the pointer crossed the divider.
+
+   So the hover lives on the GROUP and paints both children. The doubled
+   `.prefs-section`/`.deploy-body` selectors are what outrank that accent rule:
+   3 classes + `:hover` is (0,4,0) against its (0,3,1). The ✕ restates its border
+   WIDTH because a `border-color` alone would repaint the left edge that must stay
+   absent — the divider is the trigger's own right border, and it brightens with
+   everything else because it belongs to a child this rule covers.
+
+   FOCUS stays per-half, deliberately: hover is about the control, but a keyboard
+   ring has to say which half will answer the Return key. */
+.schedule-tv-filter-group:hover .schedule-tv-filter-btn,
+.schedule-tv-filter-group:hover .schedule-tv-filter-x,
+.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
+.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-x,
+.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
+.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-x {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.schedule-tv-filter-group:hover .schedule-tv-filter-x,
+.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-x,
+.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-x {
+  border-width: 1px 1px 1px 0;
+}
+
+.schedule-tv-filter-x:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }

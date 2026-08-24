@@ -34,7 +34,7 @@ from fastapi.responses import JSONResponse
 
 from fused_render.server import dirpicker
 from fused_render.server.routers.config import api_config
-from fused_render.server.routers.fs_read import api_fs_pick_folder
+from fused_render.server.routers.fs_read import api_fs_pick_file, api_fs_pick_folder
 
 
 @pytest.fixture(autouse=True)
@@ -141,6 +141,33 @@ def test_a_quote_in_a_prompt_cannot_break_out_of_the_applescript():
     script = dirpicker._osascript_script('/tmp/we"ird\\dir', 'say "hi"')
     assert r'\"hi\"' in script
     assert r'we\"ird\\dir' in script
+
+
+def test_the_applescript_narrows_a_file_pick_to_the_types_it_was_given():
+    script = dirpicker._osascript_script(None, "Pick", files=True,
+                                         types=["png", "webp"])
+    assert 'of type {"png", "webp"}' in script
+    # After the prompt and before the seed: `choose file` accepts the clauses in
+    # that order and rejects them in any other.
+    assert script.index("with prompt") < script.index("of type")
+
+
+def test_a_folder_pick_never_grows_an_of_type_clause():
+    # `choose folder` has no such clause — emitting one would be a syntax error
+    # in the one script that has no filter to express in the first place.
+    assert "of type" not in dirpicker._osascript_script(
+        None, "Pick", types=["png"])
+    # Nor does a file pick with nothing to narrow to.
+    assert "of type" not in dirpicker._osascript_script(
+        None, "Pick", files=True, types=[])
+
+
+def test_a_quote_in_a_type_cannot_break_out_of_the_type_list():
+    # An extension arrives off the wire, unlike a title: one holding a quote
+    # would otherwise close the list early and leave the rest as statements.
+    script = dirpicker._osascript_script(None, "Pick", files=True,
+                                         types=['pn"g'])
+    assert r'{"pn\"g"}' in script
 
 
 # ---------------------------------------------------- osascript, really run
@@ -250,6 +277,54 @@ def test_kdialog_is_asked_for_an_existing_directory(monkeypatch):
     monkeypatch.setattr(ui, "_run", fake_run)
     assert ui.pick_directory(start="/home/ada") == "/home/ada/code"
     assert "--getexistingdirectory" in seen["argv"]
+
+
+def test_a_linux_file_pick_offers_the_types_and_keeps_all_files_reachable(monkeypatch):
+    from fused_render.supervisor._linux import ui
+
+    seen = {}
+
+    def fake_run(argv):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout="/home/ada/a.png\n", stderr="")
+
+    monkeypatch.setattr(ui, "_dialog_tool", lambda: "zenity")
+    monkeypatch.setattr(ui, "_run", fake_run)
+    assert ui.pick_file(types=["png", "jpg"]) == "/home/ada/a.png"
+    filters = [a for a in seen["argv"] if "|" in a]
+    assert filters[0] == "Allowed files | *.png *.jpg"
+    # The escape hatch stays: the filter is a courtesy, and a format the caller
+    # can read but did not list must not become unpickable.
+    assert filters[1] == "All files | *"
+    # And the tray's own call, which passes none, is the dialog it always was.
+    ui.pick_file()
+    assert not [a for a in seen["argv"] if a == "--file-filter"]
+
+
+def test_a_kdialog_file_pick_puts_the_filter_where_kdialog_wants_it(monkeypatch):
+    from fused_render.supervisor._linux import ui
+
+    seen = {}
+
+    def fake_run(argv):
+        seen["argv"] = argv
+        return subprocess.CompletedProcess(argv, 0, stdout="/home/ada/a.png\n", stderr="")
+
+    monkeypatch.setattr(ui, "_dialog_tool", lambda: "kdialog")
+    monkeypatch.setattr(ui, "_run", fake_run)
+    assert ui.pick_file(types=["png"]) == "/home/ada/a.png"
+    # The filter is POSITIONAL and follows the start dir, so the empty string is
+    # load-bearing: without it kdialog reads the filter as the directory to open.
+    assert seen["argv"][-2:] == ["", "*.png|Allowed files\n*|All files"]
+
+
+def test_a_leading_dot_on_a_type_does_not_become_a_double_dot_glob():
+    from fused_render.supervisor._linux import ui
+
+    # The wire may send either shape; a "*..png" would match nothing at all.
+    assert ui._glob_filter([".png", "jpg"]) == ["*.png", "*.jpg"]
+    assert ui._glob_filter(None) == []
+    assert ui._glob_filter(["."]) == []
 
 
 def test_a_linux_cancel_is_none_but_a_crash_raises(monkeypatch):
@@ -867,6 +942,63 @@ def test_a_broken_dialog_is_a_server_error(monkeypatch):
     resp = _pick({})
     assert _status(resp) == 500
     assert "exploded" in _data(resp)["error"]
+
+
+# ------------------------------------------------------- the FILE endpoint
+# Only the half that is its own: the guard, the relative-start refusal and the
+# cancel are `_pick`'s and are covered above. What is new here is `types`, which
+# reaches three shells and so is the one field that may not be forwarded raw.
+
+
+def _pick_file(body, x_fused="1"):
+    return api_fs_pick_file(body=body, x_fused=x_fused)
+
+
+def test_the_types_a_caller_asks_for_reach_the_dialog(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dirpicker, "pick_file",
+                        lambda **kw: seen.update(kw) or "/Users/ada/a.png")
+    assert _data(_pick_file({"types": ["png", "jpg"]})) == {"path": "/Users/ada/a.png"}
+    assert seen["types"] == ["png", "jpg"]
+
+
+def test_a_type_is_normalised_before_it_reaches_a_shell(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dirpicker, "pick_file",
+                        lambda **kw: seen.update(kw) or "/tmp/a")
+    _pick_file({"types": [".PNG", "png", "jpg;*", "", "x" * 40, 7]})
+    # Dots stripped, lower-cased, de-duped; a glob-and-a-half and an empty one
+    # dropped rather than escaped, because neither is an extension, and a
+    # 40-character one dropped rather than SLICED — a truncated extension is a
+    # filter matching files nobody asked for. A number is not refused: `str()`
+    # makes it one, and "7" merely matches nothing.
+    assert seen["types"] == ["png", "7"]
+    # Clamped like `title`: a runaway list is a dialog nobody can use.
+    _pick_file({"types": [f"e{i}" for i in range(200)]})
+    assert len(seen["types"]) == 24
+
+
+def test_no_types_leaves_the_dialog_showing_everything(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(dirpicker, "pick_file",
+                        lambda **kw: seen.update(kw) or "/tmp/a")
+    _pick_file({})
+    assert seen["types"] is None
+    # Junk in the field is "show everything" too, NOT a dialog that can pick
+    # nothing: a filter is a courtesy and a malformed one must not lock the user
+    # out of the thing they came to do.
+    for junk in ("png", {"png": True}, [], ["!!", "*"]):
+        _pick_file({"types": junk})
+        assert seen["types"] is None
+
+
+def test_a_picked_file_comes_back_as_a_path_and_a_cancel_as_null(monkeypatch):
+    monkeypatch.setattr(dirpicker, "pick_file", lambda **kw: "/Users/ada/a.png")
+    assert _data(_pick_file({"title": "Choose a picture"}))["path"] == "/Users/ada/a.png"
+    monkeypatch.setattr(dirpicker, "pick_file", lambda **kw: None)
+    resp = _pick_file({})
+    assert _status(resp) == 200
+    assert _data(resp)["path"] is None
 
 
 # ------------------------------------------------------------ the capability flag

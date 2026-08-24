@@ -10,6 +10,7 @@ from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
+from fused_render.shell.storage import home_dir as shell_home_dir
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
@@ -76,6 +77,19 @@ def api_config(
         # behaviour change and belongs with the mount code, not here.)
         "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
         "calls_suffix": shell_calls.SUFFIX,
+        # Where shell code may write SCRATCH files — bytes the app made and can
+        # remake, never the user's own documents. `~/.fused-render/cache`, under
+        # the same branch-aware home every other piece of shell state lives in
+        # (storage.home_dir), so a worktree's leftovers are its own. It exists so
+        # a surface that has to put bytes somewhere has ONE answer that is not
+        # the user's home: the image playground's webcam captures are the first,
+        # and a capture in `~/ai/images` — a folder the user browses, holding
+        # renders — is a file nobody can tell from a generated one. Path only;
+        # whoever writes there creates it, exactly as `fused_dir` above is a
+        # path and not a mkdir on this read. Canonicalized for `calls_dir`'s
+        # reason: every path above the OS in this app is forward-slashed.
+        "cache_dir": canonical_fs_path(
+            os.path.abspath(os.path.join(shell_home_dir(), "cache"))),
         # Whether POST /api/fs/pick-folder can raise a REAL OS folder dialog
         # here (server/dirpicker.py). A template asking the user where to write
         # something uses the native chooser when this is true and its own in-page

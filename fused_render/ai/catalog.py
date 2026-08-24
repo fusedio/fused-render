@@ -92,8 +92,22 @@ from fused_render.ai import registry
 #: which the card shows as "—" rather than inventing a figure from parameter
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
-#: `nickname` is the short human name the Playground sidebar shows — the
-#: model without its quantization/engine qualifier. A curated FIELD, never
+#: `nickname` is the short human name the Playground sidebar shows — the model
+#: without its quantization/engine qualifier and WITHOUT ITS PARAMETER COUNT,
+#: which the card prints beside it as a chip: "Qwen3.5", not "Qwen3.5 4B". The
+#: name and the chip repeating each other was the whole reason to state the
+#: rule here. It goes further where the full name is jargon rather than a name
+#: — both Liquid rows read "Liquid 2.5" where the labels say "LFM2.5 1.2B
+#: Instruct" and "LFM2.5 8B-A1B", because the acronym and the instruct-tuning
+#: distinguish nothing on a tab where every text row is chat-tuned.
+#:
+#: So SIBLINGS OF ONE FAMILY SHARE A NICKNAME on purpose (two "Liquid 2.5", two
+#: "Qwen3.5"), and the chip is what tells them apart. That only holds while
+#: every colliding row HAS a `params` — a family whose rows would collide with
+#: no distinguishing chip must keep the size in the name. What is not a
+#: parameter count stays: Whisper's tiny/small/large-v3 and SigLIP2's `base`
+#: are the publisher's own variant names, and the chip says 39M beside them.
+#: A curated FIELD, never
 #: derived by stripping the label's parenthetical at runtime, for the reason
 #: `short_label` and `family_label` are fields too (AI-2c): a stripped name
 #: is a value nobody owns and no test can see.
@@ -259,7 +273,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "1.2B",
             "quantization": "MLX 4-bit",
             "label": "LFM2.5 1.2B Instruct (MLX 4-bit)",
-            "nickname": "LFM2.5 1.2B Instruct",
+            "nickname": "Liquid 2.5",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — quick "
                     "to fetch and to answer, and weaker than every other row.",
@@ -270,7 +284,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "OptiQ 4-bit",
             "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
-            "nickname": "Qwen3.5 4B",
+            "nickname": "Qwen3.5",
             "size_gb": 4.0,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
@@ -300,7 +314,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "8B (~1B active)",
             "quantization": "MLX 4-bit",
             "label": "LFM2.5 8B-A1B (MLX 4-bit)",
-            "nickname": "LFM2.5 8B-A1B",
+            "nickname": "Liquid 2.5",
             "size_gb": 4.9,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -311,7 +325,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "4B effective",
             "quantization": "MLX 4-bit",
             "label": "Gemma 4 E4B (4-bit)",
-            "nickname": "Gemma 4 E4B",
+            "nickname": "Gemma 4",
             "size_gb": 5.2,
             "note": "A second family at much the same size as the Qwen 4B, "
                     "worth trying on a prompt Qwen handles badly.",
@@ -333,7 +347,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "Ternary 2-bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
-            "nickname": "Ternary Bonsai 27B",
+            "nickname": "Ternary Bonsai",
             # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
             # the completed download MEASURES on disk, reported by the AI Models
             # page's own scan. Where the two disagree the measurement wins —
@@ -350,7 +364,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "9B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
-            "nickname": "Qwen3.5 9B",
+            "nickname": "Qwen3.5",
             "size_gb": 8.2,
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
@@ -364,7 +378,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "MLX 4-bit",
             "label": "Qwen3.8 27B (MLX 4-bit)",
-            "nickname": "Qwen3.8 27B",
+            "nickname": "Qwen3.8",
             # Measured from the repo's blob sizes, not estimated.
             "size_gb": 16.1,
             "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
@@ -385,7 +399,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
-            "nickname": "Qwen3.6 27B",
+            "nickname": "Qwen3.6",
             "size_gb": 20.0,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
@@ -497,7 +511,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "1.2B",
             "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 1.2B Instruct (Q4_K_M)",
-            "nickname": "LFM2.5 1.2B Instruct",
+            "nickname": "Liquid 2.5",
             "size_gb": 0.7,
             "note": "The smallest here and the one a bare call loads — a "
                     "hybrid architecture built for CPU decode, so it answers "
@@ -509,7 +523,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "GGUF Q4_K_M",
             "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
-            "nickname": "Qwen3.5 4B",
+            "nickname": "Qwen3.5",
             "size_gb": 2.7,
             "note": "The first row here strong enough for real work: current-"
                     "gen Qwen, and a fifth of the unquantized 4B's download.",
@@ -519,7 +533,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "4B effective",
             "quantization": "GGUF Q4_K_M",
             "label": "Gemma 4 E4B (Q4_K_M)",
-            "nickname": "Gemma 4 E4B",
+            "nickname": "Gemma 4",
             "size_gb": 5.0,
             "note": "A second family, worth trying on a prompt the Qwen 4B "
                     "above handles badly — it answers above its size class "
@@ -547,7 +561,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "8B (~1B active)",
             "quantization": "GGUF Q4_K_M",
             "label": "LFM2.5 8B-A1B (Q4_K_M)",
-            "nickname": "LFM2.5 8B-A1B",
+            "nickname": "Liquid 2.5",
             "size_gb": 5.2,
             "note": "8B of knowledge answering at about a 1B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
@@ -558,7 +572,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "GGUF UD-Q3_K_XL",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
-            "nickname": "Qwen3.8 27B",
+            "nickname": "Qwen3.8",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
@@ -573,7 +587,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "int8 (torchao)",
             "recommended": True,
             "label": "FLUX.2 klein 4B (int8)",
-            "nickname": "FLUX.2 klein 4B",
+            "nickname": "FLUX.2 klein",
             # The whole repo, per the module docstring's rule: 8.22e9 bytes of
             # `usedStorage` (2026-08-20 Hub metadata), and here that number IS
             # the download — one repo, no component repo, and no skipped
@@ -627,7 +641,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "MLX 4-bit",
             "recommended": True,
             "label": "FLUX.2 klein 4B (MLX 4-bit)",
-            "nickname": "FLUX.2 klein 4B",
+            "nickname": "FLUX.2 klein",
             "size_gb": 4.6,
             "note": "One repo instead of the Diffusers split, and quicker per "
                     "image — but it reserves far more memory while running.",
@@ -807,6 +821,118 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 4.6,
             "note": "Noticeably better matches than the base model, for three "
                     "times the download and 1152-dim vectors to store.",
+        },
+    ],
+    # LTX-2.3 on MLX, through `ltx-2-mlx` — the accessible video engine (see
+    # the plan's "ltx-2-mlx, not mlx-video" decision) that a bare
+    # `fused.ai.video()` now reaches first (`registry.py`'s ordering).
+    #
+    # **`size_gb` is every byte BOTH downloads fetch, per this file's own
+    # rule** — the weights repo's curated file set (`ltx_video/worker.py`'s
+    # `download`, which picks exactly ONE transformer file out of the two
+    # this repo ships side by side — see that module's docstring for why a
+    # bare glob would have silently fetched both) PLUS the whole Gemma-3
+    # text encoder repo neither tier can render without. Measured against
+    # the Hub's own per-file byte sums, 2026-08-23:
+    #   int4: 20,479,309,067 B weights + 8,068,021,302 B gemma = 28.5 GB
+    #   int8: 29,754,496,331 B weights + 8,068,021,302 B gemma = 37.8 GB
+    # (the plan's own estimate — ~29.9/~39.2 GB — was written before the
+    # worker's final pattern set excluded the second, unused transformer
+    # copy; these are the re-derived figures the plan itself calls for).
+    "ltx-video": [
+        {
+            "id": "dgrauet/ltx-2.3-mlx-q4",
+            "recommended": True,
+            "label": "LTX-2.3 int4 distilled",
+            "nickname": "LTX-2.3 (int4)",
+            # Both video tiers shipped with no `params` and no `quantization`,
+            # so the playground's model card had two of its four facts blank
+            # beside every text and image entry. Filled from the PUBLISHERS,
+            # per this file's AI-2c rule that these are strings somebody owns:
+            # the upstream weights are `ltx-2.3-22b-distilled` (Lightricks/LTX-2.3,
+            # a 22B DiT), and the conversion's own card states "Int4
+            # quantization (group_size 64, transformer block Linear weights
+            # only)" — mlx-forge, not mlx-community, but the same scheme the
+            # other MLX rows in this file name as "MLX 4-bit", and the column is
+            # read down. The group size and the linear-weights-only scope stay
+            # here rather than in the field: they are true and they are not what
+            # a reader comparing two rows is asking.
+            "params": "22B",
+            "quantization": "MLX 4-bit",
+            "size_gb": 28.5,
+            "note": "Text-to-video with audio, 8 denoising steps, on a "
+                    "16 GB+ Mac. Diverges from the bf16 sample at this "
+                    "tier — upstream's own ladder calls it a different "
+                    "valid composition, not a degraded one — and ships "
+                    "under the LTX-2 Community License, which is NOT H3's: "
+                    "it carries a revenue threshold and a non-compete "
+                    "(Attachment A, item 20).",
+            # `DistilledPipeline` runs a fixed 8-step stage-1 schedule
+            # (`ltx_video/worker.py`'s own default, and `registry.VIDEO_
+            # TRAITS["ltx-video"].default_steps`) — a property of the
+            # PIPELINE both tiers share, not of the quantization. Named
+            # explicitly here too, the same "one repo, one curator's hint"
+            # shape the image entries above use for their own step-distilled
+            # models, rather than relying only on the engine-level fallback
+            # (`registry.video_traits_for`) agreeing with it by construction.
+            "defaults": {"steps": 8},
+        },
+        {
+            "id": "dgrauet/ltx-2.3-mlx-q8",
+            "label": "LTX-2.3 int8 distilled",
+            "nickname": "LTX-2.3 (int8)",
+            # Same 22B upstream, the other tier of the same conversion ("Int8
+            # quantization (group_size 64, transformer block Linear weights
+            # only)") — see the int4 entry for where both strings come from.
+            "params": "22B",
+            "quantization": "MLX 8-bit",
+            "size_gb": 37.8,
+            "note": "The same LTX-2 Community License, for the tier that "
+                    "reproduces the bf16 sample — a 32 GB+ machine and "
+                    "roughly 9 GB more download than the int4 default.",
+            # Same pipeline, same schedule — see the int4 entry's own comment.
+            "defaults": {"steps": 8},
+        },
+    ],
+    # v1's only checkpoint: FL2VA (frame + language to video + audio), one
+    # of the two top-level trees `MiniMaxAI/MiniMax-H3` actually ships —
+    # NOT its own repo (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist; that
+    # id 401s). The real repo is 498.5GB whole (measured against the Hub's
+    # per-file byte sums, 2026-08-23) because it carries BOTH checkpoints —
+    # `FL2VA/` (144.05GB) and `Ref2VA/` (144.05GB) — plus a second, unused
+    # copy of their shared components at the repo root
+    # (`text_encoder/`+`transformer/`+`transformer_ref/`+`vae/`+`audio_vae/`,
+    # ~210GB more). h3.c's loader (`h3_load_dir` in h3.c, read at the pinned
+    # commit) never opens a bare root path — every file it touches is
+    # `FL2VA/…` or `Ref2VA/…` — so `FL2VA/*` is both NECESSARY and
+    # SUFFICIENT for this v1's prompt-only path, and `h3_video/worker.py`'s
+    # `download()` passes it as `allow_patterns` rather than fetching the
+    # whole 498.5GB repo. `size_gb` here is `FL2VA/`'s own measured total
+    # (144,051,182,625 bytes across its 81 files) — the whole of what a
+    # Download actually fetches, per this file's own `size_gb` rule — and
+    # is metadata only: never fetched by this app's own build or tests (see
+    # the hard "never download the H3 model" constraint).
+    "h3-video": [
+        {
+            "id": "MiniMaxAI/MiniMax-H3",
+            "recommended": True,
+            "label": "MiniMax H3 FL2VA",
+            "nickname": "MiniMax H3",
+            # The card's own header figure, and its own sentence behind it:
+            # "H3-Omni-Transformer is a 33B-parameter dense, single-stream
+            # Transformer". Left at the bare number the publisher publishes —
+            # the 144GB download also carries a Qwen3-VL text encoder and two
+            # VAEs, so the figure and the size do not reconcile, but naming
+            # what 33B excludes is this file's editorialising rather than
+            # MiniMax's claim (AI-2c: the string is a value somebody owns).
+            # No `quantization`: these are the published bf16 weights, and the
+            # field is absent where no honest short scheme name exists rather
+            # than carrying an invented one.
+            "params": "33B",
+            "size_gb": 144.1,
+            "note": "Text-to-video with audio. One resident model — the ref2va "
+                    "checkpoint (a second 144GB tree in the same repo) is not "
+                    "fetched or offered in this build.",
         },
     ],
 }
@@ -1015,9 +1141,58 @@ def describe() -> list[dict]:
                 "runnerNote": runner.note or None if runner else None,
                 "available": status.ok,
                 "reason": status.reason or None,
+                # Gated on `status.ok`, which every capability before video
+                # generation made irrelevant: each of them has an
+                # "everywhere" row, so SOME runner was always available and
+                # this was always non-null in practice. Video is the first
+                # capability that can be genuinely unservable here — h3.c is
+                # Metal-only with no fallback — and a caller with no model
+                # specified must be told there is nothing to load, not handed
+                # an id `default_for()` would then fail to load anyway. The
+                # suggestion LIST still shows the entry either way (`models`
+                # below) — a repo worth downloading once you have a Mac is
+                # still worth listing today, per `_runner_for`'s own fallback.
                 "default": for_capability(capability)[0]["id"]
-                if for_capability(capability) else None,
+                if status.ok and for_capability(capability) else None,
                 "models": for_capability(capability),
+                # Absent for every capability but video generation — the
+                # same "absent rather than empty" shape `registry.VIDEO_
+                # TRAITS` itself uses. Video is the first (only) capability
+                # whose REQUEST SHAPE varies by which runner resolved (the
+                # frame grid, canvas and step defaults — `registry.
+                # VideoTraits`), and the Playground's own frame/canvas/step
+                # sliders need those numbers to draw a control that agrees
+                # with what the server will actually do — Task 5 of the
+                # LTX-2.3 plan de-hardcoded the SERVER's copy of H3's grid
+                # and left the client statically wired to it, which is the
+                # defect this field exists to close.
+                "videoTraits": (
+                    _video_traits_payload(runner.code)
+                    if capability == registry.VIDEO_GENERATION and runner is not None
+                    else None
+                ),
             }
         )
     return rows
+
+
+def _video_traits_payload(runner_code: str) -> dict:
+    """`registry.VideoTraits`, in the shape `describe()`'s payload wants —
+    absolute frame bounds rather than the `(base, step, n)` the server's own
+    grid math uses internally, because a slider draws a min/max/step/value,
+    not an `n` window it would have to re-derive the same arithmetic to get.
+    """
+    traits = registry.video_traits_for(runner_code)
+    min_frames, max_frames = registry.video_frame_bounds(traits)
+    default_frames = (traits.frames_base
+                      + traits.frames_step * traits.default_frames_n)
+    return {
+        "framesBase": traits.frames_base,
+        "framesStep": traits.frames_step,
+        "minFrames": min_frames,
+        "maxFrames": max_frames,
+        "defaultFrames": default_frames,
+        "defaultWidth": traits.default_width,
+        "defaultHeight": traits.default_height,
+        "defaultSteps": traits.default_steps,
+    }

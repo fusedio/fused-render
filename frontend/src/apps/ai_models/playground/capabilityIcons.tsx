@@ -21,10 +21,21 @@ const base = {
 };
 
 const ICONS: Record<string, ReactNode> = {
-  // Chat: a speech bubble.
+  // Chat: a speech bubble with three lines of writing in it — Material's
+  // `message`, whose bottom-left corner drops into the tail, drawn here rather
+  // than imported from react-icons/md. A hand path for one glyph beats a
+  // dependency in a build with three, and Material's own outlined assets are
+  // filled shapes at a heavier apparent weight, which would have made this the
+  // loudest of the four section icons instead of a peer.
+  //
+  // The lines sit on a 3-unit pitch centred on the body (7.5/10.5/13.5, body
+  // 4..17), which is what keeps the gaps above and below them equal. Material
+  // spaces its own the same way; at 18px that reads as writing rather than as
+  // three separate strokes.
   "text-generation": (
     <svg {...base}>
-      <path d="M21 12a8 8 0 0 1-8 8H5.5L3 22V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8Z" />
+      <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7l-4 4V6a2 2 0 0 1 2-2Z" />
+      <path d="M7 7.5h10M7 10.5h10M7 13.5h6" />
     </svg>
   ),
   // Images: a framed picture with sun and horizon.
@@ -33,6 +44,24 @@ const ICONS: Record<string, ReactNode> = {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <circle cx="9" cy="10" r="1.6" />
       <path d="m3.5 17 5-5 4 4 3-3 5 5" />
+    </svg>
+  ),
+  // Video: a camera body with the lens wedge off its right side — Home's own
+  // `video` glyph (shell/Home.tsx's MEDIA_GLYPHS), path for path.
+  //
+  // It was MISSING here, so the rail's video section drew the sparkle FALLBACK
+  // — the mark that means "a capability this build has not learned yet" — over
+  // a section with two working models in it. Copied rather than shared for the
+  // reason this file's own header gives: Home imports `groups.ts` eagerly, and
+  // a module of JSX reachable from the front door is the pull these glyphs are
+  // kept apart to avoid. The chat glyph is already duplicated across the two
+  // files on that trade, and Home's comment on it makes the other half of the
+  // argument — these two surfaces are one click apart, so a different drawing
+  // on each end reads as two different features.
+  "text-to-video": (
+    <svg {...base}>
+      <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
+      <path d="M16 10.5 21 7.5v9L16 13.5z" />
     </svg>
   ),
   // Transcription: a microphone.

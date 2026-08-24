@@ -567,10 +567,18 @@ def _float_panel_over_everything(panel) -> None:
 
 def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
                           directories: bool, start: str | None = None,
-                          create_directories: bool = False) -> str | None:
+                          create_directories: bool = False,
+                          types: list[str] | None = None) -> str | None:
     """Run an NSOpenPanel to completion. MAIN THREAD ONLY.
 
     Returns the chosen path, or None when the user cancelled.
+
+    `types` is a list of bare extensions the panel will let the user choose;
+    anything else is shown greyed out. `setAllowedFileTypes_` is soft-deprecated
+    (macOS 12 prefers `allowedContentTypes`, which is UTTypes) but is still
+    honoured on every macOS this app runs on, and it takes exactly the list of
+    extensions the caller already has — a UTType hop would mean importing
+    UniformTypeIdentifiers to say the same thing.
     """
     _prepare_app_for_modal()
     panel = NSOpenPanel.openPanel()
@@ -578,6 +586,8 @@ def _run_open_panel_modal(*, title: str, prompt: str, files: bool,
     panel.setCanChooseDirectories_(directories)
     panel.setAllowsMultipleSelection_(False)
     panel.setCanCreateDirectories_(create_directories)
+    if types:
+        panel.setAllowedFileTypes_(list(types))
     panel.setTitle_(title)
     panel.setPrompt_(prompt)
     # A starting directory that does not exist would leave the panel wherever it
@@ -600,6 +610,19 @@ def _run_directory_panel(start: str | None, title: str, prompt: str) -> str | No
     return _run_open_panel_modal(
         title=title, prompt=prompt, files=False, directories=True,
         start=start, create_directories=True)
+
+
+def _run_file_panel(start: str | None, title: str, prompt: str,
+                    types: list[str] | None = None) -> str | None:
+    """Files only. MAIN THREAD ONLY — see `choose_file`.
+
+    No `canCreateDirectories`, unlike `_run_directory_panel`: this panel picks
+    something that already exists, and a New Folder button in it would offer a
+    destination where none is being asked for.
+    """
+    return _run_open_panel_modal(
+        title=title, prompt=prompt, files=True, directories=False,
+        start=start, create_directories=False, types=types)
 
 
 class PanelNotAnswered(TimeoutError):
@@ -645,12 +668,43 @@ def choose_directory(start: str | None = None, title: str = "Choose a folder",
     osascript backend there for exactly that reason; this is the backstop for
     the case where the detection is wrong.)
     """
+    return _on_the_main_thread(
+        lambda: _run_directory_panel(start, title, prompt),
+        timeout, "the folder chooser was not answered in time")
+
+
+def choose_file(start: str | None = None, title: str = "Choose a file",
+                prompt: str = "Choose", types: list[str] | None = None,
+                timeout: float = 300.0) -> str | None:
+    """A file-only NSOpenPanel, callable from ANY thread. Blocks the caller.
+
+    Everything `choose_directory` says applies unchanged — the main-thread hop,
+    the cancel, the timeout carrying the panel's own Event — because both go
+    through `_on_the_main_thread`; only which panel runs differs.
+
+    `types` narrows the panel to those extensions (see `_run_open_panel_modal`).
+    Ahead of `timeout` in the signature because every caller in this app passes
+    it by keyword, and it is a property of the dialog rather than of the wait.
+    """
+    return _on_the_main_thread(
+        lambda: _run_file_panel(start, title, prompt, types),
+        timeout, "the file chooser was not answered in time")
+
+
+def _on_the_main_thread(run_panel, timeout: float, not_answered: str) -> str | None:
+    """Run `run_panel` on the AppKit main thread and hand back its answer.
+
+    The shared half of `choose_directory`/`choose_file`: an NSOpenPanel is an
+    NSOpenPanel, and the hop, the result cell, the inline case and the timeout
+    are properties of calling AppKit from a uvicorn worker rather than of what
+    the panel picks.
+    """
     cell: dict = {}
     done = threading.Event()
 
     def run() -> None:
         try:
-            cell["path"] = _run_directory_panel(start, title, prompt)
+            cell["path"] = run_panel()
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
             cell["error"] = exc
         finally:
@@ -665,8 +719,7 @@ def choose_directory(start: str | None = None, title: str = "Choose a folder",
         if not done.wait(timeout):
             # `done` rides along: the panel is very possibly still on screen, and
             # this is the only handle anyone has on when it goes away.
-            raise PanelNotAnswered(
-                "the folder chooser was not answered in time", done)
+            raise PanelNotAnswered(not_answered, done)
     if "error" in cell:
         raise cell["error"]
     return cell.get("path")

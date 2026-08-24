@@ -38,6 +38,7 @@ import {
   isMessageRunning,
   isRunningNow,
   isRunningIn,
+  taskFile,
   activeMessage,
   hasStarted,
   isPastDue,
@@ -6800,11 +6801,20 @@ describe("the list row's message count", () => {
     expect(VIEWS).toContain("{task.message_count > 0 && (");
   });
 
-  it("says the noun rather than drawing a glyph", () => {
-    // A bare "4" between a folder and a time is a number with no unit; the
-    // bubble it replaced had to be learned before the row could be read.
-    expect(VIEWS).toContain("message{task.message_count === 1 ? \"\" : \"s\"}");
-    expect(VIEWS).not.toContain("ICON_MESSAGES");
+  it("draws the glyph after the number, and keeps the noun for readers", () => {
+    // Reversed by request (D448). The objection to the bubble was that it has to
+    // be learned before the row can be read — true once, and repaid on every row
+    // after it on a page read by sweeping a column. What made the old bare "4"
+    // ambiguous was standing alone between a folder and a time; a number with a
+    // bubble welded to its right is not that number, which is what the
+    // inline-flex + gap in `.tasks-row-msgs` is for.
+    expect(VIEWS).toContain("tasks-row-msgs-icon");
+    expect(VIEWS).toContain("{ICON_MSG}");
+    // …and the noun is not gone, it moved to where a screen reader finds it: a
+    // bare digit is exactly as unlabelled to a reader who cannot see the glyph.
+    expect(VIEWS).toContain(
+      'aria-label={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}',
+    );
   });
 
   it("reads in the same register as the chip beside it", () => {
@@ -6876,5 +6886,68 @@ describe("the folder chip as a filter tag", () => {
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("position: relative");
     expect(body).toContain("z-index: 2");
+  });
+});
+
+describe("the file mark after a task's title", () => {
+  it("names the file only when the target is not the folder", () => {
+    // routers/tasks.py `_place` falls back to the project folder when a task
+    // has no file, so target-equals-project IS the test for "about a folder".
+    expect(taskFile(task({ target: "/p/one.py", project: "/p" }))).toBe("/p/one.py");
+    expect(taskFile(task({ target: "/p", project: "/p" }))).toBe("");
+    expect(taskFile(task({ target: "", project: "/p" }))).toBe("");
+  });
+
+  it("does not grow a mark over a trailing slash", () => {
+    // A folder target arrives spelled either way; "/p/" and "/p" are one place.
+    expect(taskFile(task({ target: "/p/", project: "/p" }))).toBe("");
+    expect(taskFile(task({ target: "/p", project: "/p/" }))).toBe("");
+  });
+
+  it("is a glyph with the name in the tooltip, not the name itself", () => {
+    // The opposite call to the message count two elements along, for the
+    // opposite reason: a count is a number that needs a unit to be read at
+    // all, and a filename is prose. A column of prose is the crowding this
+    // row has twice been trimmed for.
+    expect(VIEWS).toContain("{taskFile_ && (");
+    expect(VIEWS).toContain('className="tasks-row-file"');
+    expect(VIEWS).toContain("title={tildePath(taskFile_, home)}");
+    expect(VIEWS).toContain("{ICON_FILE}");
+    // The same hover habit the folder chip's path already taught.
+    expect(VIEWS).toContain("title={tildePath(task.project, home)}");
+  });
+
+  it("sits above the row's stretched link, like every other hoverable", () => {
+    // `.tasks-rowlink` is an <a> over the whole row at z-index 1. An element
+    // that does not lift out of the way never receives the pointer — and this
+    // one exists only to be pointed at. Same lesson as the folder tag.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+    // And it is not what gives way when a long title runs out of room —
+    // absent would read as "about a folder".
+    expect(body).toContain("flex: 0 0 auto");
+  });
+
+  it("wears the row's own cursor, not a question mark", () => {
+    // The whole row is a link and reads as one under the pointer; a `help`
+    // cursor over one glyph inside it announces a different kind of thing to
+    // press and looks broken beside the row's own pointer (Akshil,
+    // 2026-08-23).
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    // Comments stripped first — the rule's own headstone names the property it
+    // no longer sets, and a substring search would find that instead.
+    const body = rest.slice(0, rest.indexOf("}")).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(body).not.toContain("cursor:");
+  });
+
+  it("sits against the title rather than floating between it and the folder", () => {
+    // The row's flex `gap` is 10px and applies between every pair of children,
+    // so the mark shipped with 10px on both sides plus a margin of its own. It
+    // belongs to the title, so the gap is pulled back on that side only.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
   });
 });

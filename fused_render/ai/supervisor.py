@@ -96,6 +96,16 @@ GENERATE_TIMEOUT_S = 900.0
 # daemon thread on that forever is the thing worth refusing.
 TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
 
+# How long a video request will wait for the worker to finish rendering.
+# `TRANSCRIBE_TIMEOUT_S`'s reasoning restated for the other job that can
+# genuinely run for hours on ordinary hardware: a 768-class H3 render on an
+# M3 can far exceed the image path's `GENERATE_TIMEOUT_S` (900s), and the
+# precedent for a carve-out this wide is transcription's own four hours. Two,
+# not four, because a render — unlike a multi-hour recording — is bounded by
+# `frames`/`steps` this app itself clamps (`ai_runtime.py`'s video route), so
+# the worst case here is a known ceiling rather than an open-ended file.
+VIDEO_TIMEOUT_S = 2 * 3600.0
+
 # How long an image request will wait for its model to become resident. Long,
 # because the honest worst case is a multi-GB download on a slow connection
 # followed by a minutes-long load — and the alternative to waiting is failing a
@@ -110,6 +120,8 @@ JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 #: And one row per RECORDING, for the same reason.
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
+#: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
+VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -637,7 +649,7 @@ def _mirror_ok(model: str) -> str:
         return ""
 
 
-def _child_env(token: str, model: str = "") -> dict:
+def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -680,6 +692,16 @@ def _child_env(token: str, model: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
+    # `h3_video/worker.py` spawns the h3 binary itself and has no resolution
+    # ladder of its own to run — `registry.h3_bin()` already ran once, when
+    # `_runner_or_raise` decided this capability was available at all, and
+    # this hands that ANSWER down rather than asking the worker to derive it
+    # again (the same reason no Hub token is minted here: the parent already
+    # knows and a second derivation could only disagree with the first).
+    if capability == registry.VIDEO_GENERATION:
+        resolved = registry.h3_bin()
+        if resolved:
+            env["FUSED_RENDER_H3_BIN"] = resolved
     return env
 
 
@@ -742,7 +764,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
         stdout=subprocess.DEVNULL,
         stderr=open(log, "w"),
         cwd=runner.folder,
-        env=_child_env(worker.token, worker.model),
+        env=_child_env(worker.token, worker.model, worker.capability),
         close_fds=True,
         **SPAWN_KWARGS,
     )
@@ -1214,17 +1236,24 @@ def image_job_id(uid: str) -> str:
     return IMAGE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_image(model: str, request: dict, job: str) -> None:
-    """Open `job` and render on a thread. Raises before starting if it cannot.
+def _start_render(capability: str, model: str, request: dict, job: str,
+                   generate, *, noun: str, thread_name: str) -> None:
+    """Open `job` and render `generate(model, request, job)` on a thread.
+    Raises before starting if it cannot.
 
-    The runner check happens HERE, synchronously, so an image asked of a machine
-    with no image runner answers the request with the reason instead of opening
-    a job row that immediately fails — the caller gets an error it can show,
-    rather than a progress bar it has to watch die.
+    Shared by `start_image` and `start_video`, which were near-byte-copies
+    of this body differing only in the capability, which `generate` to call,
+    and the noun in the terminal "Saved …" detail and the thread's name — a
+    genuine format, not two things that happened to look alike once.
+
+    The runner check happens HERE, synchronously, so a request asked of a
+    machine with no runner for `capability` answers with the reason instead
+    of opening a job row that immediately fails — the caller gets an error
+    it can show, rather than a progress bar it has to watch die.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
-    _runner_or_raise(registry.IMAGE_GENERATION)
+    _runner_or_raise(capability)
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
@@ -1233,7 +1262,7 @@ def start_image(model: str, request: dict, job: str) -> None:
 
     def run() -> None:
         try:
-            result = generate_image(model, request, job)
+            result = generate(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -1242,9 +1271,15 @@ def start_image(model: str, request: dict, job: str) -> None:
                 _report(job, state="error", message=message)
             return
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
-                detail=f"Saved {os.path.basename(result.get('path') or 'image')}")
+                detail=f"Saved {os.path.basename(result.get('path') or noun)}")
 
-    threading.Thread(target=run, name="ai-image", daemon=True).start()
+    threading.Thread(target=run, name=thread_name, daemon=True).start()
+
+
+def start_image(model: str, request: dict, job: str) -> None:
+    """Open `job` and render an image on a thread. See `_start_render`."""
+    _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
+                  noun="image", thread_name="ai-image")
 
 
 #: What a queued transcription's row says while it waits.
@@ -1467,10 +1502,11 @@ def _leak_ceiling(capability: str, window: float) -> float:
     before it counts as leaked rather than busy (see `idle_workers`).
 
     Derived from the request timeout that actually bounds a call on this
-    capability — `TRANSCRIBE_TIMEOUT_S` for `SPEECH_TO_TEXT`,
-    `GENERATE_TIMEOUT_S` for text and image otherwise — plus a margin: past
-    that bound `_worker_request` itself has already raised, so a counter
-    still reading positive cannot be a slow answer, only a leaked one.
+    capability — `TRANSCRIBE_TIMEOUT_S` for `SPEECH_TO_TEXT`, `VIDEO_TIMEOUT_S`
+    for `VIDEO_GENERATION`, `GENERATE_TIMEOUT_S` for text and image otherwise —
+    plus a margin: past that bound `_worker_request` itself has already
+    raised, so a counter still reading positive cannot be a slow answer, only
+    a leaked one.
 
     `max(window, …)` rather than the timeout alone: a hand-set idle window
     already longer than the request timeout (someone dialling the reaper out
@@ -1478,7 +1514,12 @@ def _leak_ceiling(capability: str, window: float) -> float:
     ceiling for a busy worker is never tighter than the ceiling for an idle
     one.
     """
-    timeout = TRANSCRIBE_TIMEOUT_S if capability == registry.SPEECH_TO_TEXT else GENERATE_TIMEOUT_S
+    if capability == registry.SPEECH_TO_TEXT:
+        timeout = TRANSCRIBE_TIMEOUT_S
+    elif capability == registry.VIDEO_GENERATION:
+        timeout = VIDEO_TIMEOUT_S
+    else:
+        timeout = GENERATE_TIMEOUT_S
     return max(window, timeout + _LEAK_CEILING_MARGIN_S)
 
 
@@ -1868,35 +1909,73 @@ def _wait_ready(model: str, capability: str, job: str,
         f"{model} did not finish loading in time (watch {started['jobId']})")
 
 
-def generate_image(model: str, request: dict, job: str) -> dict:
-    """Render one image. Blocking — call it on a thread, never on the loop.
+def video_job_id(uid: str) -> str:
+    """The download-manager row for one render. See `image_job_id`."""
+    return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_video(model: str, request: dict, job: str) -> None:
+    """Open `job` and render a video on a thread. See `_start_render`.
+
+    Raises before starting if it cannot — a request this machine cannot
+    serve (no Apple Silicon, or no h3 binary staged) answers with the
+    reason instead of opening a row that immediately dies.
+    """
+    _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
+                  noun="video", thread_name="ai-video")
+
+
+def _generate_via_worker(capability: str, model: str, request: dict, job: str,
+                          *, timeout: float, noun: str) -> dict:
+    """Render one item through the resident `capability` worker. Blocking —
+    call it on a thread, never on the loop.
+
+    Shared by `generate_image` and `generate_video`, which were near-byte-
+    copies of this body differing only in the capability, the request
+    timeout, and the noun in each error sentence.
 
     Loads the model first if it is not resident, which is the difference from
-    the text path (see `_wait_ready`). The worker writes the PNG itself and
-    reports its denoising steps straight to `job`, so nothing here polls: this
-    function's whole job is to hold the request open and turn a dead worker into
-    an error somebody can read.
+    the text path (see `_wait_ready`). The worker writes the file itself and
+    reports its own progress straight to `job`, so nothing here polls: this
+    function's whole job is to hold the request open and turn a dead worker
+    into an error somebody can read.
     """
-    worker = ready_worker(registry.IMAGE_GENERATION, model)
+    worker = ready_worker(capability, model)
     if worker is None:
-        worker = _wait_ready(model, registry.IMAGE_GENERATION, job)
+        worker = _wait_ready(model, capability, job)
 
     with _in_use(worker):
         try:
             response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                       timeout=GENERATE_TIMEOUT_S)
+                                       timeout=timeout)
         except (OSError, ValueError) as e:
-            raise SupervisorError(f"the image process did not answer: {e}") from e
+            raise SupervisorError(f"the {noun} process did not answer: {e}") from e
         with response:
             try:
                 payload = json.loads(response.read().decode() or "{}")
             except ValueError as e:
-                raise SupervisorError("the image process sent a malformed reply") from e
+                raise SupervisorError(f"the {noun} process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
-        raise SupervisorError(str(payload.get("error") or "the image failed to render"))
+        raise SupervisorError(str(payload.get("error") or f"the {noun} failed to render"))
     return payload.get("result") or {}
+
+
+def generate_image(model: str, request: dict, job: str) -> dict:
+    """Render one image. See `_generate_via_worker`."""
+    return _generate_via_worker(registry.IMAGE_GENERATION, model, request, job,
+                                timeout=GENERATE_TIMEOUT_S, noun="image")
+
+
+def generate_video(model: str, request: dict, job: str) -> dict:
+    """Render one video. See `_generate_via_worker`.
+
+    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a 768-class
+    H3 render can run for far longer than any image request.
+    """
+    return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
+                                timeout=VIDEO_TIMEOUT_S, noun="video")
 
 
 def _await_turn(job: str, title: str) -> None:

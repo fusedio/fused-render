@@ -22,7 +22,7 @@ import { expect, test } from "bun:test";
 // A dynamic import, not a static one: static imports hoist ABOVE the shim
 // above and router.ts would read `location` before it exists (chat-params.test
 // takes the same route for the same reason).
-const { numParam, readParam } = await import("./params");
+const { numParam, readParam, searchString } = await import("./params");
 
 // Every case drives the `search` argument rather than a real `location` — the
 // same reason `tabHref` takes one (routes.ts): these are codecs, and a codec
@@ -69,4 +69,18 @@ test("bounds are optional and absent ones do not clamp", () => {
 test("readParam takes the search it is handed", () => {
   expect(readParam("model", "?model=a%2Fb")).toBe("a/b");
   expect(readParam("cap", "?model=x")).toBe(null);
+});
+
+test("a reset's search names only what it was given", () => {
+  // The shape a cross-capability pick writes: the model survives, every stage
+  // setting that was in the URL does not — and the caller says so by naming
+  // what to KEEP, so a stage that adds a parameter needs no edit here.
+  expect(searchString({ model: "mlx-community/whisper-small-mlx" })).toBe(
+    "?model=mlx-community%2Fwhisper-small-mlx",
+  );
+  // Nulls are absences, not empty values: "?model=" is a model nobody picked.
+  expect(searchString({ model: "a/b", prompt: null, seed: null })).toBe("?model=a%2Fb");
+  // Nothing at all is no question mark, not a bare one — a trailing "?" is a
+  // URL that differs from the clean one only in a character.
+  expect(searchString({ model: null })).toBe("");
 });

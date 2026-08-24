@@ -1190,14 +1190,22 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | Non
     runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
     if capability is None and not reading.ruled_out:
         # **Only for a task we could not identify.** A RULED-OUT task is not
-        # rescued by the format, and that guard is the fix for a cached
-        # diffusers VIDEO pipeline: its `_class_name` says `text-to-video`,
-        # nothing here generates video, and yet the diffusers runners are
-        # DECISIVE about the format — so this branch used to answer
-        # "text-to-image" and put a Load button on it. The mflux/CT2 cases the
-        # branch exists for are unaffected, because `_format_task` has already
-        # overruled their misleading labels by the time we get here, making the
-        # reading SUPPORTED rather than ruled out.
+        # rescued by the format — the bug this guard fixes was a cached
+        # diffusers VIDEO pipeline whose `_class_name` said `text-to-video`
+        # while nothing here generated video at all, and the diffusers
+        # runners are DECISIVE about the format regardless — so this branch
+        # used to answer "text-to-image" and put a Load button on it.
+        # `text-to-video` itself stopped being an example of a ruled-out
+        # task once `h3-video`/`ltx-video` shipped (SPEC §40's LTX-2.3 plan;
+        # `ai/tasks.py` maps it to `VIDEO_GENERATION` now, genuinely
+        # SUPPORTED), but the guard is unchanged and still needed: `image-
+        # to-video` is a still-ruled-out sibling tag (no runner here is
+        # image-conditioned) that a decisive format could resurrect the
+        # identical way — see `test_ai_models_api.py`'s own test for that
+        # exact case. The mflux/CT2 cases the branch exists for are
+        # unaffected either way, because `_format_task` has already
+        # overruled their misleading labels by the time we get here, making
+        # the reading SUPPORTED rather than ruled out.
         decisive = [r for r in runners if r.code in formats.DECISIVE]
         capability = decisive[0].capability if decisive else None
     if capability is None:
@@ -1280,6 +1288,18 @@ class CacheReading(NamedTuple):
     tell what this is", and a refusal that cannot tell them apart cannot explain
     itself. `tag` is the vocabulary key those came from, for a caller that wants
     to link to the glossary rather than reprint a sentence.
+
+    `runner_code`/`runner_reason` are `_engine`'s own answer to "which BACKEND
+    reads this file", carried past `capability` for a capability two runners
+    can share (video generation, since Task 1 of the LTX-2.3 plan: `ltx-video`
+    and `h3-video` read mutually unloadable layouts). `capability` alone
+    cannot tell a caller whether the SERVING runner is the one that reads
+    this repo — `runner_code` is that runner's code, and it can differ from
+    whichever runner `registry.for_capability(capability)` resolves to right
+    now. `None` for a repo `_engine` never named a specific runner for (not
+    cached, a component, or the rare case where several runners share a
+    capability with no decisive format evidence at all — `mlx-text`'s own
+    fallback below).
     """
 
     cached: bool
@@ -1288,6 +1308,8 @@ class CacheReading(NamedTuple):
     support: str = _tasks.UNKNOWN
     reason: str = ""
     tag: str | None = None
+    runner_code: str | None = None
+    runner_reason: str | None = None
 
 
 def cached_capability(repo_id: str) -> CacheReading:
@@ -1362,7 +1384,9 @@ def cached_capability(repo_id: str) -> CacheReading:
     # travels here is the vocabulary's answer, which is the half a load route
     # needs to explain a refusal without re-deriving anything.
     return CacheReading(True, capability, looks_like,
-                        reading.support, reading.reason, reading.tag)
+                        reading.support, reading.reason, reading.tag,
+                        _row.get("code") if _row else None,
+                        _row.get("reason") if _row else None)
 
 
 def _article(word: str) -> str:
@@ -1560,6 +1584,39 @@ def cached_models() -> list[CachedModel]:
             _tasks.label_for(reading.tag), reading.support, reading.reason))
     _CACHED_MODELS[cache_dir] = (_now(), signature, models)
     return models
+
+
+def is_downloaded(model_id: str, cached: list[CachedModel] | None = None) -> bool:
+    """Does this disk hold `model_id` — a repo id OR a curated GGUF filename?
+
+    **The one place that answers "is this catalog entry on this machine".** It
+    was a closure inside `ai_runtime._catalog_with_downloads` and is now shared,
+    because a second reader appeared (`routers/ai_benchmark._benchmarkable_models`)
+    and wrote its own version — which got it wrong in the one way this function
+    exists to prevent, admitting every curated id because `catalog.for_capability`
+    is the CURATION and knows nothing about the filesystem. Two answers to this
+    question is how a page comes to offer a Run (or a Load) for bytes that are
+    not here.
+
+    Two id shapes, and the second is why `model_id in {m.repo_id …}` is not
+    enough on its own: `formats.GGUF_RECIPES` keys `llamacpp-text`'s catalog
+    entries by the GGUF's own FILENAME (AI-5m), because a repo id cannot address
+    one of a repo's several curated quantizations — so a filename id resolves
+    through the recipe's `(repo, file)` pair against `CachedModel.files`, the
+    snapshot's own top-level filenames.
+
+    `cached` is the already-paid-for `cached_models()` answer; callers making
+    several of these in a row should pass it rather than paying the memo lookup
+    per id. Either way a PARTLY downloaded repo is already absent from that list
+    (D424's `_unfinished_fetch` skip), so "downloaded" here means a fetch that
+    finished — which is what keeps a caller from resuming a multi-GB pull.
+    """
+    models = cached_models() if cached is None else cached
+    recipe = formats.GGUF_RECIPES.get(model_id)
+    if recipe is None:
+        return any(model.repo_id == model_id for model in models)
+    return any(model.repo_id == recipe["repo"] and recipe["file"] in model.files
+               for model in models)
 
 
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
