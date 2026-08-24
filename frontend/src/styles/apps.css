@@ -95,10 +95,16 @@
   border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
 }
 
+/* Selected chip: a GREY plate, not a white one. --fg is the page's ink, so a
+   filled --fg pill is the brightest thing on the toolbar — the filter row was
+   out-shouting the app cards it filters. --fg-muted keeps the "one of these is
+   on" read (still a filled pill against the unfilled ones, still well clear of
+   :hover, which only moves the border) at the weight of chrome. Shared with
+   .apps-filter-mode-btn.is-active below so the two selections in the row match. */
 .apps-tag-chip.is-active {
   color: var(--bg);
-  background: var(--fg);
-  border-color: var(--fg);
+  background: var(--fg-muted);
+  border-color: var(--fg-muted);
 }
 
 .apps-count {
@@ -138,9 +144,10 @@
   color: var(--fg);
 }
 
+/* Grey fill, matching the selected chip above — see the note there. */
 .apps-filter-mode-btn.is-active {
   color: var(--bg);
-  background: var(--fg);
+  background: var(--fg-muted);
 }
 
 /* -- Preview cards ------------------------------------------------------------
