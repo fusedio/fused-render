@@ -4188,6 +4188,22 @@ const BASENAME = FILE.split("/").pop();
 // fused.params), so this one is read directly.
 const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
 
+// A one-shot prompt the git sidebar's "Fix with AI" button built for a failed
+// operation, handed here through the runtime's ancestor-window hop rather than
+// through the shell (static/runtime.js `noteAskClaude`, the explorer's
+// `window._fusedClaudeAsk` — see Preview.tsx/Listing.tsx). By the time it
+// reaches THIS document it has already become the query param the host built
+// the iframe src with: `_fused_ask`, read directly off `location.search` for
+// the same reason `_file` is, a few lines up — a leading underscore is
+// reserved and unreadable through `fused.params`, and this is a HOST fact
+// about how this one document was opened, not view state that belongs on the
+// shell's own URL. It is also, even more than `_file`, a value with no address
+// worth keeping: it is one failed command's error text, meant to be read and
+// acted on once and then forgotten, and a shell URL (or a bookmark of one)
+// that could replay a stale error into a fresh conversation would be actively
+// wrong. Consumed once, at boot, below — never re-read afterwards.
+const ASK = new URLSearchParams(location.search).get("_fused_ask") || "";
+
 if (!FILE) {
   document.body.innerHTML = '<div id="msg">No file selected (missing _file param).</div>';
   throw new Error("claude template: missing _file");
@@ -4497,10 +4513,14 @@ function searchParamsOf(search) {
 // `msg` is here for the `session_id` reason: it is this chat's own bookkeeping
 // (which turn a Tasks-list link asked to land on), and reporting it to the model
 // as a param the APP is running with describes our navigation as its state.
+// `_fused_ask` is the `_file`/`chat_only` case twice over: it names how THIS
+// DOCUMENT was opened (see ASK, above), not a param the app itself defined,
+// and it is consumed once at boot and gone — reporting it as a param the app
+// is "running with" would describe a one-shot instruction as ongoing state.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
                              "annmode", "leftmode", "paneview", "chat_only",
-                             "path", "msg"]);
+                             "_fused_ask", "path", "msg"]);
 
 function appParamsOf(all) {
   const out = {};
@@ -16896,7 +16916,21 @@ async function loadSnapshots() {
 (async () => {
   const session_id = fused.params.get("session_id");
   const run_id = fused.params.get("run");
-  if (session_id || run_id) {
+  if (ASK) {
+    // The git sidebar's "Fix with AI" button opened THIS document fresh for
+    // exactly this ask (see ASK, above) — never onto an existing session_id or
+    // run, because the host builds this src only when it is switching the
+    // sidebar TO claude for the first time over this error. So this branch
+    // wins outright rather than folding into the resume/landing choice below:
+    // there is no history to load and no run to re-attach, only a new
+    // conversation to start immediately, the same way the home screen's own
+    // submit handler does (`enterChat()` then `sendMessage`, further down).
+    // `ASK` itself is read once here and never again — the const has no other
+    // reader in this file, which is what makes "one-shot" true on this side of
+    // the hop as well as the shell's.
+    enterChat();
+    sendMessage(ASK);
+  } else if (session_id || run_id) {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.
     enterChat();
