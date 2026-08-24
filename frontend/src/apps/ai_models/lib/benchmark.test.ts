@@ -32,6 +32,7 @@ import {
   primaryValue,
   resolveCapability,
   resolveMetric,
+  closedModelSentinel,
   resolveModel,
   rowDetail,
   rowHeadline,
@@ -1313,28 +1314,47 @@ describe("defaultModel", () => {
 
 describe("resolveModel", () => {
   it("keeps an explicit ?benchModel= naming a real model in this capability", () => {
-    expect(resolveModel(["a", "b"], "b", { a: 5 })).toBe("b");
+    expect(resolveModel(["a", "b"], "b", { a: 5 }, "text-generation")).toBe("b");
   });
 
   it("falls back to the default when the param names a model from a DIFFERENT capability", () => {
     // The reader switched ?cap=; a model that belonged to the old one is
     // exactly like a stale or foreign param.
-    expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 })).toBe("a");
+    expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 }, "text-generation")).toBe("a");
   });
 
-  it("treats an EXPLICIT empty ?benchModel= as closed, not as absent", () => {
-    // "" (a bare `?benchModel=`) is the reader having closed the open row —
-    // a real third state, distinct from `null` (no opinion yet). Falling
-    // through to the default here would make a closed row re-open itself on
-    // every reload, which is the exact bug this case pins.
-    expect(resolveModel(["a", "b"], "", { a: 5, b: 1 })).toBeNull();
+  it("treats THIS capability's own closed sentinel as closed, not as absent", () => {
+    // The sentinel is the reader having closed the open row — a real third
+    // state, distinct from `null` (no opinion yet). Falling through to the
+    // default here would make a closed row re-open itself on every reload,
+    // which is the exact bug this case pins.
+    expect(resolveModel(["a", "b"], closedModelSentinel("text-generation"), { a: 5, b: 1 }, "text-generation")).toBeNull();
   });
 
   it("still opens the default when there is no ?benchModel= at all", () => {
     // `null` — a fresh landing, or a shared link that never mentioned a
     // model — is NOT the same as an explicit close, and must keep the
     // existing default-opens behaviour.
-    expect(resolveModel(["a", "b"], null, { a: 5, b: 1 })).toBe("a");
+    expect(resolveModel(["a", "b"], null, { a: 5, b: 1 }, "text-generation")).toBe("a");
+  });
+
+  it("does NOT let a row closed under one capability collapse a different one", () => {
+    // The real bug: `modelParam` is one piece of React state shared across
+    // every capability, so closing a row under "text-generation" and then
+    // switching `?benchCap=` to "embeddings" must NOT leave "embeddings"
+    // reading as closed too — its own default model should still open. A
+    // bare "" sentinel could not tell these apart; a capability-scoped one
+    // can, by construction (`closedModelSentinel`'s own comment).
+    const closedElsewhere = closedModelSentinel("text-generation");
+    expect(resolveModel(["a", "b"], closedElsewhere, { a: 5, b: 1 }, "embeddings")).toBe("a");
+  });
+
+  it("is null-safe when there is no current capability to scope the sentinel to", () => {
+    // Defensive only — `BenchmarkTab` never calls this with a null
+    // capability while also holding a real sentinel — but a null
+    // capability must not accidentally equal a closed marker for some
+    // OTHER falsy-ish capability string and misreport "closed".
+    expect(resolveModel(["a", "b"], closedModelSentinel("text-generation"), { a: 5, b: 1 }, null)).toBe("a");
   });
 });
 

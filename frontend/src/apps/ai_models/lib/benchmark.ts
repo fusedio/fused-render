@@ -1138,26 +1138,51 @@ export function defaultModel(models: string[], counts: Record<string, number>): 
   return mostRuns(models, counts);
 }
 
+/** The sentinel `resolveModel` reads as "the reader explicitly closed the
+ *  open row" (D481's toggle) — carrying the CAPABILITY it was closed
+ *  under, rather than a bare `""`. `BenchmarkTab`'s `modelParam` is one
+ *  piece of state shared across every capability (only the LEADERBOARD it
+ *  is resolved against changes when `?benchCap=` does), so a bare `""`
+ *  written while closing a row under "text-generation" would still read as
+ *  "closed" the instant the reader switched to "embeddings" — collapsing a
+ *  capability that was never actually closed, rather than opening its own
+ *  default model. Prefixed with a token no real `?benchModel=` value can
+ *  ever collide with (a capability id, never a model id), so a sentinel
+ *  closed under one capability fails the equality check under any OTHER
+ *  capability and falls through to `resolveFromRuns`'s ordinary default —
+ *  self-correcting with no separate "clear this on capability switch"
+ *  effect required anywhere. */
+export function closedModelSentinel(capability: string): string {
+  return `__closed__${capability}`;
+}
+
 /** The trend chart's actual model: the URL's `?benchModel=` when it names a
  *  model in THIS capability's leaderboard, `defaultModel`'s pick otherwise.
  *  See `resolveFromRuns` — a model belonging to a DIFFERENT capability (the
  *  reader just switched `?cap=`) falls through to the default exactly like a
  *  stale or foreign value would.
  *
- *  **`param === ""` is a THIRD state, distinct from absent (`null`) — the
- *  reader explicitly closed the open row (D481's toggle), and that must NOT
- *  fall through to `defaultModel`'s pick the way an absent or unrecognised
- *  param does.** `null` means "no opinion yet, pick the usual default";
- *  `""` means "there WAS a pick, and it was closed" — a plain landing on
- *  this tab (or a shared link with no `?benchModel=` at all) still opens the
- *  best-ranked row, exactly as before, but a reader who closed it and then
- *  reloads gets the closed state back rather than the row silently
- *  re-opening under them. `URLSearchParams.get` already hands back `""` for
- *  a bare `?benchModel=` and `null` for a key that is not there at all, so
- *  this is a distinction the URL already carries for free — `resolveModel`
- *  only had to start reading it. */
-export function resolveModel(models: string[], param: string | null, counts: Record<string, number>): string | null {
-  if (param === "") return null;
+ *  **`param === closedModelSentinel(capability)` is a THIRD state, distinct
+ *  from absent (`null`) — the reader explicitly closed the open row for
+ *  THIS capability, and that must NOT fall through to `defaultModel`'s pick
+ *  the way an absent or unrecognised param does.** `null` means "no opinion
+ *  yet, pick the usual default"; the sentinel means "there WAS a pick FOR
+ *  THIS CAPABILITY, and it was closed" — a plain landing on this tab (or a
+ *  shared link with no `?benchModel=` at all) still opens the best-ranked
+ *  row, exactly as before, but a reader who closed it and then reloads
+ *  gets the closed state back rather than the row silently re-opening
+ *  under them. A sentinel closed under a DIFFERENT capability (stale
+ *  `modelParam` state a capability switch does not itself clear) is
+ *  neither this capability's own sentinel NOR a real model id, so it falls
+ *  through to the ordinary default exactly like any other foreign value —
+ *  the cross-capability leak this signature change exists to close. */
+export function resolveModel(
+  models: string[],
+  param: string | null,
+  counts: Record<string, number>,
+  capability: string | null,
+): string | null {
+  if (capability !== null && param === closedModelSentinel(capability)) return null;
   return resolveFromRuns(models, param, counts);
 }
 

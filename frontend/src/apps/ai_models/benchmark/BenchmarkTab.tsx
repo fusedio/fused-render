@@ -92,6 +92,7 @@ import {
   benchmarkableCapabilities,
   busyRowText,
   formatMetricSpecValue,
+  closedModelSentinel,
   formatPrimary,
   latestByModel,
   leaderboard,
@@ -484,22 +485,35 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // so a tie breaks toward whichever model is already reading as the better
   // one rather than an arbitrary list order.
   const modelCounts = capabilityRuns ? runCountsByModel(capabilityRuns) : {};
-  const selectedModel = resolveModel(ranked.map((r) => r.model), modelParam, modelCounts);
+  const selectedModel = resolveModel(ranked.map((r) => r.model), modelParam, modelCounts, selected);
   const trendRuns = selectedModel && capabilityRuns
     ? capabilityRuns.filter((r) => r.model === selectedModel)
     : [];
+  // This capability's own "closed" marker (`resolveModel`'s own comment) —
+  // computed once here since both `toggleModel` and the URL-sync effect
+  // below need the exact same string to write or compare against.
+  const closedSentinel = selected ? closedModelSentinel(selected) : null;
 
   // Selecting a row now OPENS it (D481) — which means it has to be closable
   // too, or `aria-expanded="true"` on an open row would be a control with no
   // way back. `toggleModel` is the WHOLE ROW's own click (the row is the
   // accordion header now, not a small chevron target inside it — see the
   // big comment above `.am-bench-rows`' render loop): already-open closes
-  // it (writes the EXPLICIT "" `resolveModel` now reads as "closed", not
-  // "no opinion yet" — see that function's own comment), anything else
-  // opens it. `openModel` never closes anything — it is what the Run button
-  // uses, since starting a benchmark must never hide the row you are about
-  // to watch update (see the Run button's own comment in `BenchmarkRow`).
-  const toggleModel = (model: string) => setModelParam(model === selectedModel ? "" : model);
+  // it (writes THIS capability's own `closedSentinel`, never a bare `""` —
+  // a bare flag would still read as "closed" after switching to a different
+  // capability, since `modelParam` is one piece of state shared across all
+  // of them; see `closedModelSentinel`'s own comment in lib/benchmark.ts),
+  // anything else opens it. `openModel` never closes anything — it is what
+  // the Run button uses, since starting a benchmark must never hide the row
+  // you are about to watch update (see the Run button's own comment in
+  // `BenchmarkRow`). Both bail out with no-ops if `selected` is somehow
+  // null — `CapabilitySection`, where both are actually wired to a click,
+  // only ever renders under a real capability, so this is defensive, not
+  // reachable in practice.
+  const toggleModel = (model: string) => {
+    if (!closedSentinel) return;
+    setModelParam(model === selectedModel ? closedSentinel : model);
+  };
   const openModel = (model: string) => setModelParam(model);
 
   // Keep the URL in sync with whatever is actually selected — landing on a
@@ -508,16 +522,18 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // navigation: a selector change is not a page to go Back to. Runs after
   // render rather than during it, since writing history is a side effect.
   //
-  // **An explicit close (`modelParam === ""`) is written VERBATIM, never as
+  // **An explicit close is written VERBATIM (`modelParam === closedSentinel`
+  // — THIS capability's own marker, never any other), not as
   // `selectedModel`** (which `resolveModel` resolves to `null` for exactly
   // this case): `writeParams` deletes a key given `null`, and a deleted
   // `?benchModel=` is indistinguishable from one that was never set, which
   // would make a closed row silently re-open itself on the next reload. Every
-  // OTHER case still writes the resolved `selectedModel` rather than echoing
-  // `modelParam` raw — landing on a default with no param at all writes that
-  // default in, and a stale/foreign param gets corrected to the real
-  // resolved value — so the "write the closed sentinel back verbatim" rule
-  // applies to that one state alone.
+  // OTHER case — including a marker closed under a DIFFERENT capability,
+  // left over in `modelParam` from before the reader switched — writes the
+  // resolved `selectedModel` rather than echoing `modelParam` raw, which
+  // doubles as the fix for the cross-capability leak: the stale foreign
+  // marker gets overwritten with this capability's own real default the
+  // very next time this effect runs, rather than lingering in the URL.
   //
   // **This hook must run on EVERY render, loading or not** — React throws
   // ("Rendered more hooks than during the previous render") the moment a hook
@@ -532,9 +548,9 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     writeParams({
       benchCap: selected,
       benchMetric: selectedMetric?.key ?? null,
-      benchModel: modelParam === "" ? "" : selectedModel,
+      benchModel: modelParam !== null && modelParam === closedSentinel ? modelParam : selectedModel,
     });
-  }, [loading, selected, selectedMetric, selectedModel, modelParam]);
+  }, [loading, selected, selectedMetric, selectedModel, modelParam, closedSentinel]);
 
   if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
@@ -1033,7 +1049,15 @@ function CapabilitySection({
               thing it changed; the sibling-of-the-row position fixed that,
               and each later pass fixed a way the fix itself still fell
               short of "click the thing, see the thing change, right
-              there". */}
+              there". One more since: the `""` mentioned above was a BARE
+              flag, and `modelParam` is one piece of state shared across
+              every capability — closing a row under one capability left
+              every OTHER capability's `?benchModel=` reading as "closed"
+              too the instant the reader switched to it. The sentinel now
+              carries the capability it was closed under
+              (`closedModelSentinel`, lib/benchmark.ts) so a marker closed
+              elsewhere fails the equality check here and falls through to
+              this capability's own default instead. */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
