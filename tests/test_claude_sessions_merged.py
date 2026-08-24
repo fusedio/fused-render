@@ -210,6 +210,31 @@ def test_an_annotation_only_send_is_named_by_the_note_on_the_pin(agent, target):
     assert sessions[0]["preview"] == records.ANNOTATION_NOTE
 
 
+def test_a_tagged_annotation_send_is_named_by_the_words_in_its_stanzas(agent, target):
+    """The same job over TODAY'S block, whose notes are prose rather than a
+    `content` key: a chat whose only message was a walkthrough still gets its
+    row, named with what the user said. The stanza shape is what makes that
+    readable — the heading line, then the words, with machine prose in italics —
+    and this is the test that fails if the writer stops writing it that way."""
+    file, workdir = target
+    _cli_transcript(agent, workdir, "cli-1", [
+        _said(records.prefixed(records.APP_STATE, records.PANE_SHOT,
+                               records.ANNOTATION_TAGGED), workdir),
+    ])
+    sessions = agent._sessions(workdir)["sessions"]
+    assert [s["id"] for s in sessions] == ["cli-1"]
+    assert sessions[0]["preview"] == records.ANNOTATION_TAGGED_NOTES
+
+
+def test_the_no_badge_caveat_is_not_mistaken_for_the_users_words(agent):
+    """The italics rule earning its place: `_no badge on the overview: …_` is
+    written by us, and a row named with our own caveat instead of the note under
+    it is exactly the class of bug the untagged block's preamble used to cause."""
+    assert "no badge" not in tasks_store.ann_notes(records.ANNOTATION_TAGGED)
+    assert tasks_store.ann_notes(records.ANNOTATION_TAGGED) == \
+        records.ANNOTATION_TAGGED_NOTES
+
+
 def test_free_text_still_wins_over_the_notes_on_the_pins(agent, target):
     """The pins are a FALLBACK. When the user both pinned and typed, the typed
     words are the title — they are the thing they wrote to be read."""
@@ -266,6 +291,10 @@ def test_a_wordless_send_is_skipped_like_any_other_nameless_record(agent, target
     records.BASH_ENVELOPE,
     records.ANNOTATION,
     records.ANNOTATION_NOTED,
+    records.ANNOTATION_TAGGED,
+    records.ANNOTATION_TAGGED + "\n\n" + records.ANNOTATED_ASK,
+    records.APP_STATE + "\n\n" + records.PANE_SHOT + "\n\n"
+    + records.ANNOTATION_TAGGED + "\n\n" + records.ANNOTATED_ASK,
     "now ship it <system-reminder>be careful</system-reminder>",
     "<div class=\"card\">Order now</div> why does this render twice?",
     "",
@@ -292,6 +321,21 @@ def test_the_templates_stripper_and_the_servers_agree_exactly(agent, text):
     "The user annotated 1 element…\n```json\nnot json at all\n```",
     "The user annotated 1 element…\n```json\n{\"content\": \"an object\"}\n```",
     "The user annotated 1 element…\n```json\n[\"a bare string\"]\n```",
+    # Today's tagged markdown block, in every position the wire puts it — the
+    # reader is a stanza parser now, not `json.loads`, so both copies of it have
+    # to agree about prose too.
+    records.ANNOTATION_TAGGED,
+    records.APP_STATE + "\n\n" + records.ANNOTATION_TAGGED,
+    records.APP_STATE + "\n\n" + records.PANE_SHOT + "\n\n"
+    + records.ANNOTATION_TAGGED,
+    records.ANNOTATION_TAGGED + "\n\n" + records.ANNOTATED_ASK,
+    # Malformed stanzas: a block with nothing but its preamble, a heading with
+    # no words under it, and a stanza that never opened with `**`. Answers on
+    # both sides, not exceptions.
+    "<annotations>\nThe user annotated 0 things.\n</annotations>",
+    "<annotations>\npreamble\n\n**A** — `<b>`  · 0:01\n</annotations>",
+    "<annotations>\npreamble\n\nnot a stanza at all\n</annotations>",
+    "<annotations>\n</annotations>",
     "",
 ])
 def test_the_two_annotation_readers_agree_exactly(agent, text):
@@ -362,7 +406,7 @@ def test_the_strip_list_names_the_tags_the_page_actually_writes(agent, template)
     be added to the page without being classified here too."""
     written = set()
     for line in template.splitlines():
-        for const in ("APP_STATE_TAG", "PANE_SHOT_TAG"):
+        for const in ("APP_STATE_TAG", "PANE_SHOT_TAG", "ANN_TAG"):
             prefix = "const %s = \"" % const
             if line.strip().startswith(prefix):
                 written.add(line.strip()[len(prefix):].split('"')[0])

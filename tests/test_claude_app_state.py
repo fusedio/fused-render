@@ -1074,7 +1074,8 @@ _WIRE_FNS = ["const APP_STATE_TAG", "function appStateBlock(",
              # formatAnnotations' preamble names the target's KIND (a file's pane
              # is fused-render's preview OF the file, not an app with an entry
              # page), and this is the one writer of that noun.
-             "let targetNoun", "let paneNoun", "function formatAnnotations(",
+             "let targetNoun", "let paneNoun", "const ANN_TAG",
+             "function annClock(", "function annStanza(", "function formatAnnotations(",
              "function composeOutgoing(",
              "function stripAppStateBlock(", "function stripBlocks(",
              # The pane shot is a third block on the same wire (see

@@ -97,8 +97,13 @@ def test_a_manual_background_click_opens_a_point_composer(html):
 
 
 def test_a_point_click_over_an_element_opens_a_point_composer(html):
+    """And it carries `nearPath` — the element the forced point landed OVER. The
+    spot is still the note (annResolve must never resolve a point to an element,
+    or a note about the gap beside a button becomes a note about the button), but
+    naming what it sits inside is the difference between a coordinate the model
+    can only look at on the overview and one it can edit around."""
     body = _block(html, "// A point click over an element:", "// Re-anchor the ring")
-    assert "annOpenComposer(e.clientX, e.clientY, pointAnchor)" in body
+    assert "Object.assign({ nearPath }, pointAnchor)" in body
 
 
 def test_an_element_click_opens_an_element_composer(html):
@@ -115,7 +120,22 @@ def test_the_tool_decides_and_alt_is_a_two_way_override(html):
 
 def test_the_tool_applies_inside_a_recording_too(html):
     body = _block(html, "if (annRecOn) {\n      if (wantPoint)", "annRecMark(anchor);")
-    assert "annRecMarkPoint(e.clientX, e.clientY, win)" in body
+    assert "annRecMarkPoint(e.clientX, e.clientY, win, nearPath)" in body
+
+
+def test_a_forced_point_names_the_element_it_landed_over(html):
+    """ONE field for both anchor shapes — an id spelled as a selector, or
+    annPathOf's path — because both are spellings of the same scheme (D146
+    forbids a second implementation, not a second spelling). Absent for a click
+    with nothing under it: the two branches above this one pass no `nearPath`."""
+    assert ('const nearPath = anchor.anchorId ? "#" + anchor.anchorId '
+            ': anchor.anchorPath;') in html
+    body = _block(html, "function annRecMarkPoint(", "annRecPaint();")
+    assert "if (nearPath) c.nearPath = nearPath;" in body
+    # The click with nothing under it, and the cross-origin overlay, both still
+    # mark with three arguments — there is no element to name.
+    assert "annRecMarkPoint(e.clientX, e.clientY, win); return; }" in html
+    assert "annRecMarkPoint(x, y, null); return; }" in html
 
 
 def test_the_tool_picker_follows_the_mode(html):
