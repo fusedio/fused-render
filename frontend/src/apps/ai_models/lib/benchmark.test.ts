@@ -1321,6 +1321,21 @@ describe("resolveModel", () => {
     // exactly like a stale or foreign param.
     expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 })).toBe("a");
   });
+
+  it("treats an EXPLICIT empty ?benchModel= as closed, not as absent", () => {
+    // "" (a bare `?benchModel=`) is the reader having closed the open row —
+    // a real third state, distinct from `null` (no opinion yet). Falling
+    // through to the default here would make a closed row re-open itself on
+    // every reload, which is the exact bug this case pins.
+    expect(resolveModel(["a", "b"], "", { a: 5, b: 1 })).toBeNull();
+  });
+
+  it("still opens the default when there is no ?benchModel= at all", () => {
+    // `null` — a fresh landing, or a shared link that never mentioned a
+    // model — is NOT the same as an explicit close, and must keep the
+    // existing default-opens behaviour.
+    expect(resolveModel(["a", "b"], null, { a: 5, b: 1 })).toBe("a");
+  });
 });
 
 // -- the trend chart's own threshold: a point is not a trend -----------------

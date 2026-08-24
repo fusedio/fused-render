@@ -489,11 +489,33 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     ? capabilityRuns.filter((r) => r.model === selectedModel)
     : [];
 
+  // Selecting a row now OPENS it (D481) — which means it has to be closable
+  // too, or `aria-expanded="true"` on an open row would be a control with no
+  // way back. `toggleModel` is the row/chevron's own click: already-open
+  // closes it (writes the EXPLICIT "" `resolveModel` now reads as "closed",
+  // not "no opinion yet" — see that function's own comment), anything else
+  // opens it. `openModel` never closes anything — it is what the Run button
+  // uses, since starting a benchmark must never hide the row you are about
+  // to watch update (see the Run button's own comment in `BenchmarkRow`).
+  const toggleModel = (model: string) => setModelParam(model === selectedModel ? "" : model);
+  const openModel = (model: string) => setModelParam(model);
+
   // Keep the URL in sync with whatever is actually selected — landing on a
   // default (no param yet) writes it in, and choosing a different capability,
   // metric or model updates it — via `replaceState` (`writeParams`), never a
   // navigation: a selector change is not a page to go Back to. Runs after
   // render rather than during it, since writing history is a side effect.
+  //
+  // **An explicit close (`modelParam === ""`) is written VERBATIM, never as
+  // `selectedModel`** (which `resolveModel` resolves to `null` for exactly
+  // this case): `writeParams` deletes a key given `null`, and a deleted
+  // `?benchModel=` is indistinguishable from one that was never set, which
+  // would make a closed row silently re-open itself on the next reload. Every
+  // OTHER case still writes the resolved `selectedModel` rather than echoing
+  // `modelParam` raw — landing on a default with no param at all writes that
+  // default in, and a stale/foreign param gets corrected to the real
+  // resolved value — so the "write the closed sentinel back verbatim" rule
+  // applies to that one state alone.
   //
   // **This hook must run on EVERY render, loading or not** — React throws
   // ("Rendered more hooks than during the previous render") the moment a hook
@@ -508,9 +530,9 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     writeParams({
       benchCap: selected,
       benchMetric: selectedMetric?.key ?? null,
-      benchModel: selectedModel,
+      benchModel: modelParam === "" ? "" : selectedModel,
     });
-  }, [loading, selected, selectedMetric, selectedModel]);
+  }, [loading, selected, selectedMetric, selectedModel, modelParam]);
 
   if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
@@ -561,7 +583,8 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           gone={gone}
           selectedModel={selectedModel}
           trendRuns={trendRuns}
-          onSelectModel={setModelParam}
+          onToggleModel={toggleModel}
+          onOpenModel={openModel}
           inFlight={inFlight}
           runStartedAt={runStartedAt}
           runtime={scan.runtime}
@@ -587,7 +610,8 @@ function CapabilitySection({
   gone,
   selectedModel,
   trendRuns,
-  onSelectModel,
+  onToggleModel,
+  onOpenModel,
   inFlight,
   runStartedAt,
   runtime,
@@ -629,7 +653,17 @@ function CapabilitySection({
   /** `selectedModel`'s own runs, already filtered — `ModelTrendChart` draws
    *  nothing else. */
   trendRuns: AiBenchmarkRun[];
-  onSelectModel: (model: string) => void;
+  /** The row/chevron's own click: closes an already-open row, opens any
+   *  other (`BenchmarkTab`'s `toggleModel`). Exactly one row open at a
+   *  time, same as `selectedModel` always meant — the new part is that
+   *  re-clicking the open one now closes it instead of being a no-op. */
+  onToggleModel: (model: string) => void;
+  /** The Run button's own click: opens this row, NEVER closes it — starting
+   *  a benchmark must not hide the chart you are about to watch update
+   *  (`BenchmarkTab`'s `openModel`, a plain "select" with no toggle branch).
+   *  See the Run button's own comment below for how its click avoids also
+   *  triggering the row's toggle. */
+  onOpenModel: (model: string) => void;
   /** Every capability's in-flight run, not just this one's — `runButtonState`
    *  reads its own key out, which keeps the "which capability blocks which"
    *  rule in one tested place rather than in each section's props. */
@@ -951,36 +985,36 @@ function CapabilitySection({
           {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
               with the action (Run, Details) the chart above has no room for.
               Clicking a row (or focusing it and pressing Enter/Space, or
-              pressing its own chevron button — see below) selects that
-              model, and selecting IS opening: the one full-width expansion
-              rendered as this row's sibling in `.am-bench-rows` holds BOTH
-              the per-run detail/failure text and INSTRUMENT THREE, the
-              trend, for whichever model is currently `selectedModel` (D481).
+              pressing its own chevron button — see below) TOGGLES it: an
+              already-open row closes, any other opens (and closes whichever
+              row was open before it — exactly one at a time). Open is the
+              one full-width expansion rendered as that row's sibling in
+              `.am-bench-rows`, holding BOTH the per-run detail/failure text
+              and INSTRUMENT THREE, the trend, for `selectedModel` (D481).
 
-              **One row, one open state — the second attempt at this.** The
+              **One row, one open state — now also actually CLOSABLE.** The
               first D481 pass left the trend expansion driven by selection
               while the row's own `›` disclosure stayed a SEPARATE
               `<details>` with its own open state and a `stopPropagation`
-              guard specifically so opening it did not select the row. That
-              put two independent expanders on one row: the chevron read as
-              purposeless once the trend appeared on a plain row click
-              regardless of it, and the trend expansion had no toggle
-              affordance of its own — exactly the "one row cannot carry two
-              unrelated open states" hazard D481 itself warns against,
-              reached from the other side. Now the chevron IS the row's
-              single disclosure control: it is a real `<button>`
-              (`am-bench-rowdetail-chevron`) carrying `aria-expanded` and
-              `aria-controls` rather than a `<details>`/`<summary>` pair, its
-              click is left to bubble to the row's own `onSelect` with no
-              guard at all (selecting is precisely what pressing it should
-              do), and what it points at is the same full-width sibling a
-              plain row click already opens — there is no second state to
-              keep in sync. At N models the trend's old position (a block
-              below the WHOLE list) put row N's click a full screen away from
-              the thing it changed; the sibling-of-the-row position fixes
-              that, and merging the two disclosures into one fixes the
+              guard — two independent expanders on one row. Merging them
+              into one control fixed that, but selection was still a plain
+              assignment with no way back to "nothing open": a control
+              reporting `aria-expanded="true"` that cannot be collapsed is
+              broken for exactly the users who read that attribute. Clicking
+              an open row (or its chevron) now writes an EXPLICIT "" into
+              `?benchModel=` — a real third state `resolveModel`
+              (lib/benchmark.ts) reads as "closed", distinct from `null`
+              ("no opinion yet, pick the usual default") — so the closed
+              state survives a reload instead of silently re-resolving to
+              the default row. The Run button is the one click in this row
+              that must never close anything (see its own comment below):
+              it opens via a separate path that bypasses the toggle
+              entirely. At N models the trend's old position (a block below
+              the WHOLE list) put row N's click a full screen away from the
+              thing it changed; the sibling-of-the-row position fixes that,
+              and merging + un-sticking the two disclosures fixes the
               "what's the dropdown for if the chart shows up anyway" report
-              the first attempt drew. */}
+              the very first attempt drew. */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
@@ -1010,8 +1044,11 @@ function CapabilitySection({
                     busyText={model === busyModel ? busyText : null}
                     gone={gone.has(model)}
                     selected={model === selectedModel}
-                    onSelect={() => onSelectModel(model)}
-                    onRun={() => onRun(model, capability)}
+                    onToggle={() => onToggleModel(model)}
+                    onRun={() => {
+                      onOpenModel(model);
+                      onRun(model, capability);
+                    }}
                   />
                   {/* The row's single expansion (D481): full row width for
                       free, since this is a SIBLING of `.am-bench-row`'s grid
@@ -1096,7 +1133,7 @@ function BenchmarkRow({
   busyText,
   gone,
   selected,
-  onSelect,
+  onToggle,
   onRun,
 }: {
   model: string;
@@ -1131,36 +1168,45 @@ function BenchmarkRow({
   busyText?: string | null;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
-  /** This row is the one whose expansion (detail text + trend, D481) is open
-   *  right below it — selecting a model IS opening it, there is no separate
-   *  toggle state. */
+  /** This row's expansion (detail text + trend, D481) is open right below
+   *  it — closing it is now a real, reachable state (`onToggle` below), not
+   *  just an implementation detail of "which one is selected". */
   selected: boolean;
-  /** Choose this model — a click anywhere on the row, including its own
-   *  chevron button, or Enter/Space while the row (or the chevron) has
-   *  focus. Selecting opens this row's expansion below it; there is nothing
-   *  else for "select" to mean here any more. */
-  onSelect: () => void;
+  /** This row's own toggle — a click anywhere on it, including its own
+   *  chevron button, or Enter/Space while it has focus. Opens the row's
+   *  expansion below it if it was closed, closes it if it was already open
+   *  (`BenchmarkTab`'s `toggleModel`). The Run button below is the one
+   *  exception: it calls `onRun`, never this, so pressing it cannot close a
+   *  row it just opened (or is about to run against). */
+  onToggle: () => void;
+  /** Runs this model AND opens its row — never closes it, even when the row
+   *  is already open (`BenchmarkTab` wires this to call `onOpenModel`
+   *  before starting the run). See the Run button's own comment below for
+   *  why its click must not also reach `onToggle` via bubbling. */
   onRun?: () => void;
 }) {
   return (
     // A div-as-button, not a `<button>`: the Run and chevron buttons both
     // live inside this row (the same shape the Playground's model cards
     // settled on, D428) and a button inside a button is markup browsers are
-    // free to mangle. Clicking either one also selects this row and opens
-    // its expansion below — a harmless, arguably useful side effect for Run
-    // (you are clearly interested in that model right now) and precisely
-    // the point for the chevron (D481) — so both buttons' clicks are left to
-    // bubble here rather than stopped.
+    // free to mangle. This div's own click is now a TOGGLE (D481) rather
+    // than a plain select, which is exactly why the Run button below can no
+    // longer just let its click bubble here the way the chevron still does —
+    // toggling an already-open row closed is the right answer for a plain
+    // row/chevron click, and the wrong one for Run, so Run stops its own
+    // propagation and calls `onRun` (which opens-without-toggling) directly
+    // instead. The chevron carries no handler of its own; bubbling to this
+    // `onClick` is its entire mechanism, same as before.
     <div
       className={"am-bench-row" + (selected ? " selected" : "")}
       role="button"
       tabIndex={0}
       aria-pressed={selected}
-      onClick={onSelect}
+      onClick={onToggle}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onSelect();
+          onToggle();
         }
       }}
     >
@@ -1211,10 +1257,11 @@ function BenchmarkRow({
                 there is nothing native disclosure semantics would be doing
                 here that plain `aria-expanded`/`aria-controls` do not do
                 just as well, explicitly. No `stopPropagation` — the button
-                is left to bubble its click up to the row's own `onClick`
-                exactly like the Run button below does, and that IS the
-                point now: pressing the chevron selects this row, which is
-                what opens the expansion it points at. Drawn for every row
+                is left to bubble its click up to the row's own `onClick`,
+                which is now `onToggle`: pressing the chevron toggles this
+                row exactly like pressing anywhere else on it does (the Run
+                button below is the ONE exception, and stops its own click
+                from reaching here — see its comment). Drawn for every row
                 with a history (this whole branch is `row !== null`) whether
                 or not `detail` itself has text, because the expansion below
                 can still hold a trend even when the detail line is empty —
@@ -1243,18 +1290,25 @@ function BenchmarkRow({
         )}
       </div>
       {!gone && button && (
-        // No `stopPropagation` — see the row's own comment above. Pressing
-        // Run bubbles its click up to the row's `onClick` too, which selects
-        // (and opens the expansion of) this model. That is a plain
-        // assignment (`onSelect` sets state to the same model `onRun` is
-        // about to run), not a toggle, so it cannot fight the button's
-        // `disabled` state — there is nothing here for the two handlers to
-        // disagree about.
+        // `stopPropagation` HERE now, deliberately reversing the old rule —
+        // the row's own click used to be a plain, idempotent select, so
+        // letting Run's click bubble into it was harmless (selecting the
+        // already-selected model twice does nothing). Now that click is a
+        // TOGGLE: on an already-open row, an unstoppped bubble would fire
+        // `onToggle` right after `onRun`'s own open, closing the row this
+        // same press just opened (or was already showing) — hiding the
+        // chart you pressed Run specifically to watch. `onRun` itself
+        // (wired in `CapabilitySection`) opens this row via `onOpenModel`
+        // before starting the run, so the row still opens on a first press;
+        // it simply never gets a chance to close on a second one.
         <button
           type="button"
           className="cc-iconbtn"
           disabled={button.blocked}
-          onClick={onRun}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRun?.();
+          }}
           title={button.title}
           aria-label={button.label}
         >

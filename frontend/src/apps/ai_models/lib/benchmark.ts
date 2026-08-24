@@ -1142,8 +1142,22 @@ export function defaultModel(models: string[], counts: Record<string, number>): 
  *  model in THIS capability's leaderboard, `defaultModel`'s pick otherwise.
  *  See `resolveFromRuns` — a model belonging to a DIFFERENT capability (the
  *  reader just switched `?cap=`) falls through to the default exactly like a
- *  stale or foreign value would. */
+ *  stale or foreign value would.
+ *
+ *  **`param === ""` is a THIRD state, distinct from absent (`null`) — the
+ *  reader explicitly closed the open row (D481's toggle), and that must NOT
+ *  fall through to `defaultModel`'s pick the way an absent or unrecognised
+ *  param does.** `null` means "no opinion yet, pick the usual default";
+ *  `""` means "there WAS a pick, and it was closed" — a plain landing on
+ *  this tab (or a shared link with no `?benchModel=` at all) still opens the
+ *  best-ranked row, exactly as before, but a reader who closed it and then
+ *  reloads gets the closed state back rather than the row silently
+ *  re-opening under them. `URLSearchParams.get` already hands back `""` for
+ *  a bare `?benchModel=` and `null` for a key that is not there at all, so
+ *  this is a distinction the URL already carries for free — `resolveModel`
+ *  only had to start reading it. */
 export function resolveModel(models: string[], param: string | null, counts: Record<string, number>): string | null {
+  if (param === "") return null;
   return resolveFromRuns(models, param, counts);
 }
 
