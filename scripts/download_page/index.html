@@ -722,6 +722,19 @@
   }
 
 
+  /* ---------- apps carousel: one row, scroll-snap ---------- */
+  .carousel {
+    display: flex; gap: 14px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    padding-bottom: 14px;
+    scrollbar-width: thin;
+  }
+  .carousel .tile {
+    flex: 0 0 clamp(300px, 34vw, 430px);
+    scroll-snap-align: start;
+  }
+
   /* ---------- footer ---------- */
   footer {
     position: relative; overflow: hidden;
@@ -1118,23 +1131,23 @@
       <p class="deck">A chatbot answers questions. A tool does the work.</p>
     </div>
 
-    <div class="bento">
-      <a class="tile w7 shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/local-image">
+    <div class="carousel">
+      <a class="tile shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/local-image">
         <img src="assets/showcase/local-image.jpg" width="760" height="470" loading="lazy" decoding="async"
              alt="The Local Image Generation app, turning a text prompt into a picture on this machine.">
         <div class="cap"><b>Local Image Generation</b><span>Describe a picture and watch it appear.</span></div>
       </a>
-      <a class="tile w5 shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/open-tv">
+      <a class="tile shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/open-tv">
         <img src="assets/showcase/open-tv.jpg" width="760" height="470" loading="lazy" decoding="async"
              alt="The OpenTV app, playing a live channel from a channel list.">
         <div class="cap"><b>OpenTV</b><span>Watch live channels in one window.</span></div>
       </a>
-      <a class="tile w5 shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/open-mail">
+      <a class="tile shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/open-mail">
         <img src="assets/showcase/open-mail.jpg" width="760" height="470" loading="lazy" decoding="async"
              alt="The OpenMail app, an inbox with AI triage beside the messages.">
         <div class="cap"><b>OpenMail</b><span>Your inbox, triaged on your machine.</span></div>
       </a>
-      <a class="tile w7 shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/py-top">
+      <a class="tile shot hoverable" rel="noopener" href="https://github.com/fusedio/fused-render-community-apps/tree/main/py-top">
         <img src="assets/showcase/py-top.jpg" width="760" height="470" loading="lazy" decoding="async"
              alt="The PyTop app, a live table of running processes with memory and CPU per process.">
         <div class="cap"><b>PyTop</b><span>Watch what your machine is running, live.</span></div>
