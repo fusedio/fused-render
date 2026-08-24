@@ -1,6 +1,7 @@
 # Template engines as server-managed subprocesses, served through :1777
 
-**Status: implemented** (`server/engine_host.py`, `server/routers/engines.py`).
+**Status: implemented** (`server/engine_host.py`, `server/engine_forward.py`,
+`server/routers/engines.py`).
 A template that needs a long-lived worker (the map viewer's tile daemon is the
 first) hands its ownership to the fused-render server and serves its bytes
 through the stable `:1777` origin, so a daemon death or restart never
@@ -14,10 +15,13 @@ The server owns a reusable subsystem keyed by an opaque `engine_id`:
   child per engine id; validates the interpreter (home venv store) and daemon
   path (`<templates-root>/<engine_id>/daemon.py`); replays opaque *reinit*
   requests on restart. Knows nothing about tiles or descriptors.
+- `server/engine_forward.py` — forwards one request to a child: the per-child
+  keep-alive pool, heal-on-failure retry, cancel-on-disconnect, and the per-call
+  budget. Shared by both engine routers, so neither reaches into the other.
 - `server/routers/engines.py` — `POST /api/engines/{id}/ensure`, `/reinit`,
   `/forget`, and an opaque `ANY /api/engines/{id}/proxy/{path...}` passthrough
-  (heal-on-failure, cancel-on-disconnect; proxied POST needs `X-Fused`, GET is
-  an open read; `..`/backslash path segments are rejected).
+  (forwarded via `engine_forward`; proxied POST needs `X-Fused`, GET is an open
+  read; `..`/backslash path segments are rejected).
 
 All map-specific knowledge lives in the template: `templates/map/map_render.py`
 posts to `/api/engines/map/…`, rewrites its own descriptor URLs to
@@ -80,7 +84,7 @@ Abandoned work used to keep computing: pan/zoom away and the daemon finished the
 old viewport, parking the browser's six connections and head-of-line-blocking
 `VTILE_POOL`.
 
-- **Server proxy** (`server/routers/engines.py`): the proxy is async; the child
+- **Server proxy** (`server/engine_forward.py`): the proxy is async; the child
   fetch runs in a thread while a second task awaits `request.receive()` until
   `http.disconnect`. (A polled `request.is_disconnected()` never fires — uvicorn's
   h11 pauses reading once the request is complete; an awaited receive resumes it.)
