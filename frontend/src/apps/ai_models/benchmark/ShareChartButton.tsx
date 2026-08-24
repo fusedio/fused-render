@@ -33,9 +33,22 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
   const [error, setError] = useState<string | null>(null);
   // A card takes a beat to encode; a component unmounted in between (a
   // capability switch remounts the section) must not set state afterwards.
+  //
+  // Set on the way IN as well as cleared on the way out — `useRef(true)`'s
+  // initializer only ever runs on the FIRST render, so leaving it out here
+  // was a flag only ever cleared: a dev double-mount (which reuses this same
+  // instance and its refs — this app does not run under StrictMode today, but
+  // `TranscribeStage.tsx`'s `aliveRef` documents the identical hazard for
+  // when it does) runs mount -> cleanup -> mount again with no render in
+  // between, so `alive.current` latches `false` on that synthetic cleanup and
+  // the button never clears `busy` or shows a receipt again for the rest of
+  // the session, even though the component is genuinely still mounted.
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
   useEffect(() => {
