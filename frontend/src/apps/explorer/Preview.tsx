@@ -55,7 +55,7 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
-import { takeClaudeAsk } from "@apps/explorer/lib/claude-ask";
+import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -937,10 +937,7 @@ function TemplatePreview({
   // The git sidebar's "Fix with AI" button has no chat of its own — it hands the
   // prompt it built to whichever ancestor owns a Claude sidebar, through the
   // runtime's ancestor-window hop (static/runtime.js `noteAskClaude`), the same
-  // idiom `_fusedRevSelected` above uses for `_rev`. Installed under the same
-  // guard for the same reason: only the splitting surface HAS a sidebar to open,
-  // and two instances racing for one window global would have the last mount
-  // win the callback for all of them.
+  // idiom `_fusedRevSelected` above uses for `_rev`.
   //
   // THIS IS A PULL, NOT A PARAM ON THE SRC (review #804 round 2). It used to be
   // the latter — a `_fused_ask` query baked into the claude iframe's URL, kept
@@ -962,27 +959,103 @@ function TemplatePreview({
   // cache has to reconstruct from a src string. `sideSrcFor` below carries
   // nothing about this at all any more.
   const claudeSeedRef = useRef<string | null>(null);
-  // A new ask can arrive while the sidebar is ALREADY showing claude — a
-  // second "Fix with AI" click without leaving the sidebar first — and that is
-  // the one case a plain ref cannot handle: `PreviewSidebar`'s iframe is
-  // `key`ed on the mode, so if the mode does not change, NEITHER does the key,
-  // and nothing remounts the frame to make it boot and pull again. This state
-  // exists to force exactly that remount: bumped on every incoming ask (see
-  // the hook below) and folded into the key `sideSrcFor`'s caller passes down
-  // (`claudeFrameKey`, further down), so a second ask on an already-open
-  // sidebar gets a fresh document the same as a first one does.
+  // A new ask can arrive while claude is ALREADY showing — a second "Fix with
+  // AI" click without leaving it first — and that is the one case a plain ref
+  // cannot handle: whatever frame is showing claude (sidebar OR content pane)
+  // is `key`ed on the mode alone, so if the mode does not change, NEITHER does
+  // the key, and nothing remounts the frame to make it boot and pull again.
+  // This state exists to force exactly that remount: bumped on every incoming
+  // ask (see the ref below) and folded into the key `sideSrcFor`'s caller
+  // passes down (`claudeFrameKey`, further down), so a second ask on an
+  // already-open sidebar gets a fresh document the same as a first one does.
   const [claudeAskInstance, setClaudeAskInstance] = useState(0);
+  // --- review #804 round 3: is claude actually going to be SHOWN? ----------
+  // `window._fusedAskClaude`'s return value has to mean that, not merely "a
+  // callback exists" (finding 4) — and answering it honestly is also what
+  // closes finding 1 (a target with no sidebar at all, a directory opened at
+  // `?_mode=git` as Preview's MAIN BODY, still has a real route to claude:
+  // its own content-mode switch) and finding 3 (a seed is only ever STORED
+  // once we already know it is about to be delivered, so there is nothing
+  // left to leak into an unrelated later boot).
+  //
+  // `claudeSideEntry`/`claudeContentEntry` ask the exact question `resolveSide`/
+  // `setMode`'s own gate would ask of a click doing this by hand — `split.all`
+  // is what `_side` may NAME (preview-side.ts), `contentModes` is what
+  // `setMode` may switch to — with `claudeEntryReady` additionally requiring
+  // the gate to have SETTLED (not merely exist): a pending verdict is not a
+  // "no", but promising delivery for it would be exactly finding 3's hole
+  // again, so it reads as "not ready yet" and the click can be retried once
+  // the gate lands.
+  const claudeSideEntry = split.all.find((e) => e.mode === "claude") ?? null;
+  const claudeSideReady = claudeEntryReady(
+    claudeSideEntry,
+    !!claudeSideEntry && isSidePending(claudeSideEntry)
+  );
+  const claudeContentEntry = contentModes.find((t) => t.mode === "claude") ?? null;
+  const claudeContentReady = claudeEntryReady(
+    claudeContentEntry,
+    !!claudeContentEntry && isPending(claudeContentEntry)
+  );
+  const claudeAskRoute = resolveClaudeAskRoute({
+    splitCapable,
+    sideReady: claudeSideReady,
+    contentReady: claudeContentReady,
+  });
+  // The action this render would take, kept in a ref updated on EVERY render
+  // (no dependency array) rather than folded straight into the installed
+  // export below — review #804 round 3 finding 6. The export itself is
+  // installed ONCE (empty deps) and stays a stable function forever; without
+  // this indirection it would have to be reinstalled whenever anything it
+  // closes over changes (`claudeAskRoute`, `setSide`, `setMode`) to stay
+  // current, and the ORIGINAL version of this hook — reinstalled only on
+  // `splitCapable` changing — proved that "this closure doesn't need to
+  // react" is exactly the kind of claim that goes stale quietly: `setSide`
+  // reads `split.defaultSide`, which resolves asynchronously from the
+  // companion gates and can legitimately change without `splitCapable` doing
+  // so, and an ask handled through the stale closure would write the wrong
+  // `_side` spelling (explicit when it should be the clean/default form, or
+  // the reverse) — invisible in the moment (`sideReq` still paints correctly)
+  // and wrong only on a later reload or bookmark. Delegating through a ref
+  // updated every render is what makes "always current" true without paying
+  // for a reinstall on every one of those renders too.
+  const claudeAskActionRef = useRef<(text: string) => boolean>(() => false);
   useEffect(() => {
-    if (!splitCapable) return;
-    window._fusedClaudeAsk = (text: unknown) => {
-      if (typeof text !== "string" || !text) return;
+    claudeAskActionRef.current = (text: string) => {
+      if (claudeAskRoute === null) return false;
       claudeSeedRef.current = text;
       setClaudeAskInstance((n) => n + 1);
-      // Switches the sidebar to Claude — REPLACING whatever companion (most
-      // often `git`, the one that just failed) was showing. Two sidebars is not
-      // a layout this column has, and it is not a loss here: the error and the
-      // repo state the git pane knew are already folded into `text`.
-      setSide("claude");
+      if (claudeAskRoute === "side") {
+        // Switches the sidebar to Claude — REPLACING whatever companion (most
+        // often `git`, the one that just failed) was showing. Two sidebars is
+        // not a layout this column has, and it is not a loss here: the error
+        // and the repo state the git pane knew are already folded into `text`.
+        setSide("claude");
+      } else {
+        // No sidebar exists for this target (review #804 round 3 finding 1) —
+        // most commonly a DIRECTORY opened at `?_mode=git` as Preview's own
+        // main body, where `splitCapable` is false because `stat.is_dir` is
+        // true. Claude is still one of this target's ordinary content modes,
+        // so switch the whole pane to it the same way clicking its own
+        // switcher entry would.
+        void setMode("claude");
+      }
+      return true;
+    };
+  });
+  // A directory's `_listing` mode embeds its OWN `<Listing>` (the folder
+  // peek, below) — the same window, a CHILD component — and that component
+  // installs its own copy of this pair for its OWN companion pane
+  // (Listing.tsx, gated on `paneEnabled`). Two installers in one window would
+  // just be a last-mount-wins race for the property assignment, so this one
+  // stands down entirely while `_listing` owns the screen, and reclaims the
+  // export the moment the mode moves to anything else (including back to a
+  // route this component itself can serve, like `claude` or `git` directly).
+  const suppressForListing = entry.mode === "_listing";
+  useEffect(() => {
+    if (suppressForListing) return;
+    window._fusedClaudeAsk = (text: unknown) => {
+      if (typeof text !== "string" || !text) return false;
+      return claudeAskActionRef.current(text);
     };
     // The other half of the pull: the claude template's own boot calls this
     // (through the runtime's `pullClaudeAsk`) to collect whatever is pending.
@@ -993,19 +1066,20 @@ function TemplatePreview({
       delete window._fusedClaudeAsk;
       delete window._fusedClaudeAskTake;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `setSide` closes
-    // over per-render state (`split.defaultSide`, `sideReq`) that this hook does
-    // not need to react to; re-running it on every one of those renders would
-    // just reinstall the same function.
-  }, [splitCapable]);
-  // A still-pending ask abandoned by a file navigation (the user asked, then
-  // moved on before the sidebar ever settled on `claude` — a gate still
-  // pending, or one that denies claude for this file — so nothing ever pulled
-  // it) must not survive into an unrelated later boot on a DIFFERENT file:
-  // `fsPath` carries no key of its own into `PreviewSidebar`'s iframe (unlike
-  // the folder pane's `paneKey`, which already includes it), so without this
-  // the ref would sit there until the next file's claude sidebar opened and
-  // pulled someone else's error.
+    // The only thing this effect needs to re-run for is `suppressForListing`
+    // itself — everything the wrapper function DOES is read fresh out of
+    // `claudeAskActionRef.current` at call time (see that ref's own comment),
+    // so the wrapper never goes stale just by staying installed.
+  }, [suppressForListing]);
+  // A still-pending ask abandoned by a file navigation that lands BETWEEN
+  // storing the seed (once `claudeAskRoute` confirmed it was about to be
+  // delivered) and the switch actually completing — the target changes out
+  // from under a `setSide`/`setMode` call already in flight — must not
+  // survive into an unrelated later boot on a DIFFERENT file: `fsPath` carries
+  // no key of its own into `PreviewSidebar`'s iframe (unlike the folder pane's
+  // `paneKey`, which already includes it), so without this the ref would sit
+  // there until the next file's claude sidebar opened and pulled someone
+  // else's error.
   useEffect(() => {
     claudeSeedRef.current = null;
   }, [fsPath]);

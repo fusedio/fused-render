@@ -28,3 +28,52 @@ export function takeClaudeAsk(pending: { current: string | null }): string | nul
   pending.current = null;
   return value;
 }
+
+// --- honesty (review #804 round 3, findings 1/3/4/6) -----------------------
+//
+// `window._fusedAskClaude`'s return value has to mean "claude will actually
+// be shown", not "a callback happens to exist" (finding 4) — the runtime's
+// `noteAskClaude` is a transparent conduit for whatever this returns. Getting
+// that right turns out to also be what closes finding 3 (a seed that can
+// never be delivered must never be STORED in the first place, so there is
+// nothing left to go stale) and finding 1 (a target with no sidebar at all —
+// a directory opened at `?_mode=git`, Preview's main body — still has a real
+// route to claude, through the ordinary content-mode switch rather than the
+// `_side` split).
+//
+// `claudeEntryReady` is the one fact every caller needs the same way: an
+// entry is only "ready" when it EXISTS and its gate has SETTLED — a pending
+// verdict (CT-12) is not a "no", but it is not a "yes" either, and answering
+// `true` for it would store a seed nothing is about to pull (finding 3's
+// exact hole) while answering `false` for it costs nothing but one narrow,
+// self-correcting false negative (the same click, or the next one, succeeds
+// once the gate lands).
+export function claudeEntryReady(
+  entry: { mode: string } | null | undefined,
+  pending: boolean
+): boolean {
+  return !!entry && entry.mode === "claude" && !pending;
+}
+
+// Where an ask should go, given what THIS RENDER already knows: the file
+// sidebar's split (`side`) when the surface has one, else the folder-less
+// content pane's own mode switch (`content`) — Preview.tsx's only route when
+// `splitCapable` is false (no file preview to sit beside), which is exactly
+// the shape a directory opened at `?_mode=git` has (finding 1). `null` means
+// "not ready anywhere, right now" — the honest answer `_fusedAskClaude`
+// reports back through the ancestor hop as `false` (finding 4), and the one
+// answer that guarantees nothing gets stored for later (finding 3).
+//
+// Pure: the caller has already reduced its own render's state to two
+// booleans, which is what makes this testable with no React tree, no
+// `stat`, no `conditions` map — only the question that matters.
+export type ClaudeAskRoute = "side" | "content" | null;
+
+export function resolveClaudeAskRoute(opts: {
+  splitCapable: boolean;
+  sideReady: boolean;
+  contentReady: boolean;
+}): ClaudeAskRoute {
+  if (opts.splitCapable) return opts.sideReady ? "side" : null;
+  return opts.contentReady ? "content" : null;
+}

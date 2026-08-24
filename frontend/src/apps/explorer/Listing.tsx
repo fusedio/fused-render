@@ -79,7 +79,7 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
-import { takeClaudeAsk } from "@apps/explorer/lib/claude-ask";
+import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
@@ -936,10 +936,29 @@ export default function Listing({
   // folded into the key passed down (below), the same fix Preview.tsx's
   // `claudeAskInstance` is for the sidebar's copy of this gap.
   const [claudeAskInstance, setClaudeAskInstance] = useState(0);
+  // Whether claude is confirmed showable for THIS folder right now — the
+  // exact question `selectSide("claude")` would answer by hand, with
+  // `claudeEntryReady` additionally requiring the gate to have SETTLED, not
+  // merely exist (review #804 round 3 finding 3: a still-PENDING verdict is
+  // not a "no", but promising delivery for it would store a seed nothing is
+  // about to pull — see lib/claude-ask.ts's own header for the full argument,
+  // shared with Preview.tsx's copy of this problem).
+  const claudeReady = claudeEntryReady(sideEntries.claude, !!sideEntries.claudePending);
+  // The action this render would take if an ask arrives, kept in a ref
+  // updated on EVERY render (no dependency array) — review #804 round 3
+  // finding 6. The export installed below is a stable wrapper that only ever
+  // reads `claudeAskActionRef.current` at CALL time, so it never needs
+  // reinstalling to stay current; the ORIGINAL version of this hook
+  // (reinstalled only when `paneEnabled` changed) called a `selectSide`
+  // closed over whatever `paneSides` was at THAT install — a list that
+  // resolves asynchronously from the companion gates and can legitimately
+  // change without `paneEnabled` doing so, which risked exactly the same
+  // "wrong `_side` spelling written on a later reload/bookmark" bug
+  // Preview.tsx's copy of this fix documents in full.
+  const claudeAskActionRef = useRef<(text: string) => boolean>(() => false);
   useEffect(() => {
-    if (!paneEnabled) return;
-    window._fusedClaudeAsk = (text: unknown) => {
-      if (typeof text !== "string" || !text) return;
+    claudeAskActionRef.current = (text: string) => {
+      if (!claudeReady) return false;
       claudeSeedRef.current = text;
       setClaudeAskInstance((n) => n + 1);
       // Switches the pane to Claude — REPLACING whatever companion (most often
@@ -947,6 +966,14 @@ export default function Listing({
       // the git pane knew are already folded into `text`, so nothing is lost
       // by the git pane going away.
       selectSide("claude");
+      return true;
+    };
+  });
+  useEffect(() => {
+    if (!paneEnabled) return;
+    window._fusedClaudeAsk = (text: unknown) => {
+      if (typeof text !== "string" || !text) return false;
+      return claudeAskActionRef.current(text);
     };
     // The other half of the pull: the claude template's own boot calls this to
     // collect whatever is pending. `takeClaudeAsk` (lib/claude-ask.ts, shared
@@ -956,14 +983,13 @@ export default function Listing({
       delete window._fusedClaudeAsk;
       delete window._fusedClaudeAskTake;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectSide`
-    // closes over per-render state (`paneSides`) this hook does not need to
-    // react to; re-running it on every one of those renders would just
-    // reinstall the same function.
+    // The wrapper itself never goes stale just by staying installed — see
+    // `claudeAskActionRef`'s own comment just above.
   }, [paneEnabled]);
-  // A still-pending ask abandoned by a folder navigation (the user asked, then
-  // moved on before the pane ever settled on `claude`) must not survive into
-  // an unrelated later boot on a DIFFERENT folder.
+  // A still-pending ask abandoned by a folder navigation that lands BETWEEN
+  // storing the seed (once `claudeReady` confirmed it was about to be
+  // delivered) and the switch actually completing must not survive into an
+  // unrelated later boot on a DIFFERENT folder.
   useEffect(() => {
     claudeSeedRef.current = null;
   }, [fsPath]);
