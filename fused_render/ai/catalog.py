@@ -707,8 +707,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-large-v3-mlx",
             "params": "1.5B",
-            "label": "Whisper Large-v3",
-            "nickname": "Whisper large-v3",
+            "label": "Whisper large-v3 (MLX)",
+            "nickname": "Whisper Large-v3",
             "size_gb": 3.1,
             "note": "The full model, for a recording turbo handles badly — "
                     "twice turbo's disk and several times its decoding.",
