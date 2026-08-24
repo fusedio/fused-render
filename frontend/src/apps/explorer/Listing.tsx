@@ -79,6 +79,7 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { resolveClaudeAskSeed, type ClaudeAskCache } from "@apps/explorer/lib/claude-ask-seed";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
@@ -905,11 +906,17 @@ export default function Listing({
   // `splitCapable` — a snapshot or panel pane with no pane at all has nothing
   // to open this into.
   //
-  // A REF, not state, and for the same reason ListingPreviewPane's caller
-  // needs it read exactly once per mount: it must survive from the moment it
-  // arrives to the one render that builds the companion iframe's `src`
-  // (`ListingPreviewPane`'s `CHAT_ONLY_PARAM` sibling), and must never itself
-  // cause a render — `selectSide` already does that.
+  // A REF, not state: it must survive from the moment it arrives to the one
+  // render that builds the companion prop below, and must never itself cause a
+  // render — `selectSide` already does that.
+  //
+  // What makes it ONE-SHOT is the consumption below, not an effect guessing
+  // when it has gone stale — an effect keyed on "left claude" was tried here
+  // first (mirroring what Preview.tsx tried first) and had the same hole: a
+  // folder navigation that stays on `claude` changes `fsPath` without ever
+  // firing that effect, so the seed survived into `ListingPreviewPane`'s NEXT
+  // mount (`key={paneKey(paneSide, fsPath)}` — the folder changed, so this IS a
+  // new mount) and re-sent the old repo's error into the new folder's chat.
   const claudeSeedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!paneEnabled) return;
@@ -930,12 +937,19 @@ export default function Listing({
     // react to; re-running it on every one of those renders would just
     // reinstall the same function.
   }, [paneEnabled]);
-  // Left `claude` (closed the pane, switched companion, or the folder changed
-  // under `paneEnabled`'s guard above): any seed left over is stale, exactly as
-  // Preview.tsx's copy of this effect argues.
-  useEffect(() => {
-    if (paneSide !== "claude") claudeSeedRef.current = null;
-  }, [paneSide]);
+  // The seed actually handed to THIS render's `ListingPreviewPane`, resolved
+  // through the same one-shot logic Preview.tsx's copy of this problem uses
+  // (lib/claude-ask-seed — read its header for the full case analysis).
+  // `ListingPreviewPane` does NOT always remount when this component
+  // re-renders (only `paneKey(paneSide, fsPath)` changing remounts it), so
+  // clearing `claudeSeedRef` unconditionally on every read would flip the prop
+  // from the seed text to `null` on the very next unrelated Listing re-render
+  // (a selection change, a sort) while the SAME companion iframe is still
+  // mounted — which drops `_fused_ask` from its src and reloads it.
+  const claudeAskCacheRef = useRef<ClaudeAskCache | null>(null);
+  const claudeSeedForPane = paneSide === "claude"
+    ? resolveClaudeAskSeed(claudeSeedRef, claudeAskCacheRef, paneKey(paneSide, fsPath))
+    : null;
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
@@ -1925,7 +1939,7 @@ export default function Listing({
                 sideEntries={sideEntries}
                 onSelectSide={selectSide}
                 onClose={closeSide}
-                claudeSeed={paneSide === "claude" ? claudeSeedRef.current : null}
+                claudeSeed={claudeSeedForPane}
               />
             </div>
           </>

@@ -55,6 +55,7 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { resolveClaudeAskSeed, type ClaudeAskCache } from "@apps/explorer/lib/claude-ask-seed";
 import {
   sideSplit,
   parseSide,
@@ -937,13 +938,26 @@ function TemplatePreview({
   //
   // A REF, not state: the text has to survive from the moment it arrives to the
   // one render that builds the claude iframe's `src` (below, `sideSrcFor`), and
-  // it must never cause a render of its own — `setSide` already does that. It is
-  // also the thing that makes the seed ONE-SHOT (see `sideSrcFor`'s comment):
-  // read once into that src string, then left to go stale for every later
-  // render of the SAME mount (the string it produced does not change, so the
-  // iframe never re-navigates), and cleared the moment the sidebar leaves
-  // `claude` so a later, unrelated switch back to it starts clean.
+  // it must never cause a render of its own — `setSide` already does that.
+  //
+  // What makes the seed ONE-SHOT is NOT this ref by itself — an effect keyed on
+  // "did we leave claude" was tried here first and was wrong: it left the seed
+  // sitting in this ref through every render where the sidebar STAYED on
+  // claude, including a file navigation that changes nothing about `activeSide`
+  // at all, and would have re-sent a stale error into a conversation about a
+  // different file. `sideSrcFor` below is what actually consumes it (clears it
+  // in the same step that bakes it into a src), which is what makes "used at
+  // most once" true regardless of WHY the sidebar re-rendered — a switch away
+  // and back, a different file while staying on claude, or a second ask on the
+  // same file — rather than an accident of which of those an effect happened
+  // to be watching.
   const claudeSeedRef = useRef<string | null>(null);
+  // What the last call into `resolveClaudeAskSeed` (lib/claude-ask-seed)
+  // resolved, and for which claude src's ASK-LESS base — see that module for
+  // why this is the thing that makes the seed one-shot, not an effect. A ref,
+  // not `useMemo`: the decision has to run inside `sideSrcFor`'s own body,
+  // which is what actually consumes `claudeSeedRef`.
+  const claudeAskCacheRef = useRef<ClaudeAskCache | null>(null);
   useEffect(() => {
     if (!splitCapable) return;
     window._fusedClaudeAsk = (text: unknown) => {
@@ -963,15 +977,6 @@ function TemplatePreview({
     // not need to react to; re-running it on every one of those renders would
     // just reinstall the same function.
   }, [splitCapable]);
-  // Left `claude` (closed the sidebar, switched to `git`/`mcp`, or the file
-  // changed under `splitCapable`'s guard above): any seed left over is now
-  // stale, because reopening or re-choosing Claude from here on is a fresh
-  // request the user made, not a continuation of the ask that is done. Not
-  // fired on ENTERING `claude` — that is precisely the render the seed has to
-  // survive into `sideSrcFor` below.
-  useEffect(() => {
-    if (activeSide !== "claude") claudeSeedRef.current = null;
-  }, [activeSide]);
 
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
@@ -1224,26 +1229,25 @@ function TemplatePreview({
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
+    const base =
+      `/render?path=${encodeURIComponent(t.path)}` +
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`;
+    if (m !== "claude") return base;
     // `_fused_ask`: the one-shot prompt from `window._fusedClaudeAsk`, above.
     // Rides the iframe src exactly as `chat_only=1` and `_file` do, for the same
     // "never in the address bar" reason lib/preview-rev states for the content
     // frame's own revision param — and it is stronger here, because this value
     // has no page identity at all to preserve; it is one failed command's error
-    // text, gone the instant Claude has read it. `claudeSeedRef` is read but
-    // not cleared here:
-    // clearing on read would change this string on the very next unrelated
-    // re-render (a resize, a sibling state update) while the SAME iframe is
-    // still mounted, which is a second, seed-less navigation of a document that
-    // already loaded once — see the ref's own comment above for why leaving it
-    // means the string, and so the mounted iframe's `src`, stays stable until
-    // `activeSide` actually leaves `claude`.
-    const ask = m === "claude" && claudeSeedRef.current
-      ? "&_fused_ask=" + encodeURIComponent(claudeSeedRef.current)
-      : "";
-    return (
-      `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${ask}${thumbFlags}`
-    );
+    // text, gone the instant Claude has read it.
+    //
+    // `base` is the key `resolveClaudeAskSeed` (lib/claude-ask-seed) resolves
+    // against: it already carries everything that makes this a genuinely NEW
+    // claude document (the target file, `_remote`, `chat_only`), so "does the
+    // seed belong here" reduces to "has this exact string been asked for
+    // before" — see that module for the full case analysis (a stray re-render
+    // vs. a real navigation vs. a second ask on the same target).
+    const seed = resolveClaudeAskSeed(claudeSeedRef, claudeAskCacheRef, base);
+    return seed ? base + "&_fused_ask=" + encodeURIComponent(seed) : base;
   };
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
