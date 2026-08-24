@@ -1181,11 +1181,26 @@ async def _ai_relay(body: dict):
                               _claude_seconds(data))
             _report_remote(state="done", detail=f"Replied via {model}")
             return JSONResponse({"ok": True, "result": payload})
+        except asyncio.CancelledError:
+            # A genuine cancellation — the client went away mid-call. The
+            # only exit that is honestly "cancelled".
+            _report_remote(state="cancelled")
+            raise
+        except Exception:
+            # Anything else escaping the block above (a bug in
+            # `_ai_result_payload`, or any other unhandled exception) is a
+            # real server error, not something the user did — reporting it
+            # as "cancelled" would tell the corner a lie about what
+            # happened. Let it keep propagating (still a 500) after marking
+            # the row accordingly.
+            _report_remote(state="error", message="internal error")
+            raise
         finally:
-            # Any exit not already reported above — most notably the client
-            # disconnecting and the awaited call raising CancelledError — is
-            # a call that ended without a terminal report; close the row as
-            # cancelled rather than leaving it running forever in the corner.
+            # Belt-and-suspenders: anything that reaches here without one of
+            # the terminal reports above closes the row as cancelled rather
+            # than leaving it running forever. A no-op once a real terminal
+            # state (done/error/cancelled) was already reported, thanks to
+            # `_report_remote`'s own dedup.
             _report_remote(state="cancelled")
 
     # Streaming: NDJSON over a chunked 200. Anything that goes wrong after
@@ -1256,6 +1271,17 @@ async def _ai_relay(body: dict):
             _report_remote(state="done", detail=f"Replied via {model}")
             yield json.dumps(
                 {"type": "done", "ok": True, "result": payload}) + "\n"
+        except asyncio.CancelledError:
+            # A genuine cancellation — the client went away mid-stream. The
+            # only exit that is honestly "cancelled".
+            _report_remote(state="cancelled")
+            raise
+        except Exception:
+            # Anything else escaping the block above is a real server bug,
+            # not something the user did — reporting it as "cancelled" would
+            # tell the corner a lie about what happened.
+            _report_remote(state="error", message="internal error")
+            raise
         finally:
             if not task.done():
                 # Client went away mid-stream: cancel AND await, so

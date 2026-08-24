@@ -402,6 +402,26 @@ def test_relay_stream_remote_job_row_closes_on_error(monkeypatch):
     assert row["state"] == "error"
 
 
+def test_relay_remote_job_row_reports_error_not_cancelled_on_unexpected_bug(
+        monkeypatch):
+    # Code review finding: an exception OUTSIDE the three types the
+    # non-streaming branch explicitly catches (asyncio.TimeoutError,
+    # OSError, _AiProcFailure) — e.g. a bug inside _ai_result_payload —
+    # used to be reported to the corner as "cancelled", as if the USER had
+    # stopped the call, when really the server broke. It must show "error"
+    # instead, and the exception must still propagate (still a real 500).
+    _cli_ok(monkeypatch, _CLI_RESULT)
+
+    def _boom(data, model):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_server_ai, "_ai_result_payload", _boom)
+    with pytest.raises(RuntimeError):
+        _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
 def test_relay_stream_never_iterated_leaves_no_running_row(monkeypatch):
     # Code review finding (the more serious one): the row used to be opened
     # BEFORE `StreamingResponse(ndjson(), ...)` was even returned. `ndjson()`
