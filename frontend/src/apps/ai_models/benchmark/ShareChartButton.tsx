@@ -37,7 +37,19 @@ import {
 export function ShareChartButton({ card }: { card: ShareCardInput }) {
   const [busy, setBusy] = useState(false);
   // A card takes a beat to encode; a component unmounted in between (a
-  // capability switch remounts the section) must not set state afterwards.
+  // capability switch remounts the section) must not set its OWN LOCAL
+  // state afterwards — that is all `alive` still guards. It used to guard
+  // the receipt too, back when the receipt WAS local state (an inline
+  // `<span>` next to this button); now that the receipt is a global
+  // `pushToast` (D480), gating it on `alive` silently drops it in exactly
+  // the case the comment below names — a capability switch remounts this
+  // component while the PNG is still encoding, `alive.current` goes false,
+  // and the toast that should have said where the card went never fires,
+  // leaving the reader with no idea whether the share succeeded. The toast
+  // does not live in this component's render tree at all (`NotificationHost`
+  // at the app root), so it has nothing to protect against by waiting on
+  // `alive` — only `setBusy` below, a real `useState` on THIS instance,
+  // still needs the guard.
   //
   // Set on the way IN as well as cleared on the way out — `useRef(true)`'s
   // initializer only ever runs on the FIRST render, so leaving it out here
@@ -46,8 +58,8 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
   // `TranscribeStage.tsx`'s `aliveRef` documents the identical hazard for
   // when it does) runs mount -> cleanup -> mount again with no render in
   // between, so `alive.current` latches `false` on that synthetic cleanup and
-  // the button never clears `busy` or shows a receipt again for the rest of
-  // the session, even though the component is genuinely still mounted.
+  // the button never clears `busy` again for the rest of the session, even
+  // though the component is genuinely still mounted.
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -61,14 +73,16 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
     try {
       const blob = await renderShareCard(card);
       const outcome = await deliverShareCard(blob, shareCardFilename(card.capability, card.metric));
-      if (!alive.current) return;
       // A dismissed share sheet has no receipt to show — the reader is the
       // one who cancelled it, and `shareOutcomeNote` says so by returning "":
-      // that empty string must not become an empty toast.
+      // that empty string must not become an empty toast. Pushed
+      // unconditionally (no `alive` check) — see the guard's own comment
+      // above for why a global toast survives this component unmounting.
       const msg = shareOutcomeNote(outcome);
       if (msg) pushToast({ msg, tone: "info" });
     } catch (e) {
-      if (alive.current) pushToast({ msg: (e as Error).message, tone: "error" });
+      // Also unconditional, for the same reason the success path is.
+      pushToast({ msg: (e as Error).message, tone: "error" });
     } finally {
       if (alive.current) setBusy(false);
     }
