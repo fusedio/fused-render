@@ -251,8 +251,14 @@ def _spawn(child: Child) -> None:
     status = os.path.join(child.cache, f"engine-{child.uid}.json")
     log = os.path.join(child.cache, "daemon.log")
     env = dict(os.environ)
-    for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
-        env.pop(name, None)
+    # A venv-based child must not inherit the app's Python env (it would break
+    # the venv's hermeticity). An app warm worker running on the app's OWN
+    # sys.executable is the exception: like the built-in executor (which spawns
+    # [sys.executable, _child.py] with the environment intact), a packaged /
+    # bundled interpreter needs PYTHONHOME to locate its runtime, so leave it be.
+    if not (child.module and child.python == sys.executable):
+        for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
+            env.pop(name, None)
     argv = [child.python, child.daemon,
             "--status", status, "--cache", child.cache, "--version", child.version]
     # A warm app worker is told which module to serve; a template daemon isn't.

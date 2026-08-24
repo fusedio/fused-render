@@ -149,12 +149,19 @@ async def _proxy(child, request: Request, path: str, body: bytes):
                     await fetch_task
                 return _GONE
             answer, payload = fetch_task.result()
-        except (OSError, http.client.HTTPException):
+        except (OSError, http.client.HTTPException) as exc:
             connection.close()
-            # Only replay a stale pooled connection for an idempotent request: a
-            # POST may already have run main() before the keep-alive dropped, so
-            # re-sending it could double-execute a side-effecting call.
-            if reused and request.method in ("GET", "HEAD"):
+            # A pooled keep-alive the child dropped after its idle timeout raises
+            # RemoteDisconnected *before* the request is handled — main() never
+            # ran — so retry it on a fresh connection to the same, still-warm
+            # child rather than declaring the child gone (which would restart it
+            # and throw away its warm state). Idempotent GET/HEAD retry on any
+            # failure; a POST that failed any other way may already have run
+            # main(), so report the child unreachable and let _forward heal it
+            # instead of risking a double-execution.
+            retryable = (request.method in ("GET", "HEAD")
+                         or isinstance(exc, http.client.RemoteDisconnected))
+            if reused and retryable:
                 continue  # stale pooled connection — retry with a fresh one
             return None
         finally:

@@ -52,8 +52,10 @@ def main(action, account_id="", bucket="", prefix="", **kw):
 
 `POST /api/engine`, `X-Fused: 1` guarded, body `{ py, html, params }`:
 
-- `py` — absolute, or relative to `html` (resolved exactly as `run.py` does; a
-  `..` that climbs out is rejected).
+- `py` — absolute, or relative to `html`, resolved exactly as `run.py` does
+  (`os.path.normpath(join(dirname(html), py))`). Like `/api/run`, this is an
+  `X-Fused`-gated local endpoint that runs a local `.py`, so it carries the same
+  trust as `/api/run` and adds no path-traversal guard over it.
 - `html` — the calling page's path, used to resolve a relative `py`.
 - `params` — the object splatted into `main(**params)`.
 
