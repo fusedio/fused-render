@@ -2586,7 +2586,20 @@ function askClaudeOnError(message) {
       + ", " + (repo.ahead || 0) + " ahead / " + (repo.behind || 0) + " behind"
       + ", working tree " + (repo.dirty ? "dirty" : "clean") + ".");
   }
-  parts.push("This repository/working directory is " + file + ".");
+  // `file` is the SCOPE `_file` named this view onto -- correct for the
+  // main-body case (a directory) but, in the file preview's sidebar,
+  // BORROWED from the file's parent folder for git/mcp, never the opened file
+  // itself (lib/preview-side.ts's own header: "git AND mcp ARE IN NO FILE'S
+  // TEMPLATE LIST", enforced server-side by templates.py's dir-only match on
+  // the universal "/" key) -- EXCEPT when a user's own registry rebinds git
+  // onto a file extension directly (an explicit, deliberate override this
+  // codebase documents as possible), where `file` names that FILE, not a
+  // directory an agent could `cd` into. `repo.root` is what `log.py` already
+  // resolved as the actual repository root for every one of these shapes, so
+  // it is unambiguous regardless of which one `file` happens to be -- prefer
+  // it, and fall back to `file` only on the read failing entirely (no repo).
+  const workingDir = (repo && repo.root) || file || ".";
+  parts.push("This repository/working directory is " + workingDir + ".");
   parts.push("Explain what the error means, then fix it: run whatever is "
     + "needed to get this repository out of the failure and back to a good "
     + "state.");

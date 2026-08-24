@@ -378,8 +378,15 @@ def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
     assert "repo.upstream" in fn
     assert "repo.ahead" in fn and "repo.behind" in fn
     assert "repo.dirty" in fn
-    # It names the repository/working directory the error is about.
-    assert " file " in fn or "+ file +" in fn or "file +" in fn
+    # It names the repository/working directory the error is about, and
+    # prefers `repo.root` (review #804 round 3 finding 2) over `file`: `file`
+    # is only reliably a DIRECTORY in the main-body case, and in the sidebar
+    # case is BORROWED from the file's parent for git/mcp -- except when a
+    # user's own registry rebinds git onto a file extension, where `file`
+    # names that file, not something an agent could `cd` into. `repo.root`
+    # (already resolved by log.py) is unambiguous across all of those shapes.
+    assert "const workingDir = (repo && repo.root) || file || " in fn
+    assert "workingDir" in fn
     # It asks for a fix, not just an explanation.
     assert "fix it" in fn
     # And it leaves via the ancestor hop — checking the CALL'S RETURN VALUE
