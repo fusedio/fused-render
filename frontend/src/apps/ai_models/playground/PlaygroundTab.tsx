@@ -435,7 +435,7 @@ export default function PlaygroundTab() {
   };
 
   return (
-    <div className="pg-scope flex min-h-0 flex-1 overflow-hidden rounded-xl border bg-background text-foreground">
+    <div className="pg-scope flex min-h-0 flex-1 overflow-hidden text-foreground">
       {/* -- the model rail ------------------------------------------------ */}
       <aside
         className="flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3 md:w-64"
