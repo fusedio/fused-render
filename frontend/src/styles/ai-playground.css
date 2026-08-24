@@ -645,7 +645,6 @@
 
 .pg-cog.active {
   color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.1);
 }
 
 /* The glyph turns one notch while the panel opens. 45deg and not some other
@@ -914,10 +913,22 @@
   gap: 8px;
 }
 
+/* One row each, never a ragged second line: the card's column is narrow, so
+   overflow scrolls sideways instead of wrapping. Scrollbar hidden — the cut-off
+   chip at the edge is the affordance. */
 .pg-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pg-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.pg-chip {
+  flex: none;
 }
 
 .pg-chip {
@@ -940,7 +951,6 @@
 .pg-chip.active {
   color: var(--fg);
   border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.1);
 }
 
 /* -- shared stage furniture ---------------------------------------------------- */
