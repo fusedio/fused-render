@@ -50,17 +50,28 @@
 // as if it were a save. Only the pressed capability's buttons go dead; the rest
 // of the page stays live.
 //
-// **A benchmark opens no download-manager row, and this tab must not reach for
-// one.** Server job rows are keyed by TITLE (`useCacheScan` maps
-// `job.title -> job`) and `supervisor.load` already owns the row titled with the
-// model id, so a benchmark row either cannot be found or shadows the load's —
-// which put the manager's only ✕ on the load and let a cold run spin to its
-// hour-long timeout. So the in-progress state is a plain spinner in the row, and
-// through a COLD run the load's own row shows up in the manager with real byte
-// counts, which is the progress that was always worth watching. See
-// `ai/benchmark.py`.
+// **A benchmark now opens its OWN download-manager row for the measurement
+// phase, titled distinctly from the load's** (`ai/benchmark.py`'s
+// `_MeasurementRow`/`_bench_job_title`) — the fourth design, after three that
+// collided on TITLE. Server job rows are keyed by TITLE (`useCacheScan` maps
+// `job.title -> job`) and `supervisor.load` already owns the row titled with
+// the bare model id; a benchmark row sharing that title either could not be
+// found or SHADOWED the load's, which put the manager's only ✕ on the load and
+// let a cold run spin to its hour-long timeout. `_bench_job_title` fixes the
+// title rather than removing the row, so through a COLD run the load's own row
+// still shows up first, with real byte counts, and once loading ends this
+// module's own row takes over — the phase that used to be total silence.
+//
+// **This tab's OWN busy row is a second, complementary view of the same run —
+// phase plus a REAL elapsed clock, never an invented percentage** (see
+// `busyRowText` in lib/benchmark.ts, and the ai-models.css comment near line
+// 1282 for the house rule against invented bars). It reuses `lib/aiRuntime.ts`'s
+// already-polled table rather than adding a second poll: while that table
+// still reports the model loading, the row says so; once it does not, the row
+// switches to "Measuring — mm:ss" ticking from the moment Run was pressed.
 import { useEffect, useRef, useState } from "react";
 import { ComparisonChart } from "./ComparisonChart";
+import { ShareChartButton } from "./ShareChartButton";
 import { ModelTrendChart } from "./ModelTrendChart";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
@@ -76,6 +87,7 @@ import {
   formatLoad,
   formatMemory,
   benchmarkableCapabilities,
+  busyRowText,
   formatMetricSpecValue,
   formatPrimary,
   latestByModel,
@@ -121,9 +133,12 @@ import {
   deleteAiBenchmarks,
   getAiBenchmarks,
   runAiBenchmark,
+  type AiBenchmarkMachine,
   type AiBenchmarkRun,
+  type AiRuntime,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { MenuIcons } from "@platform/ui/MenuIcons";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
 export function BenchmarkTab({ scan }: { scan: CacheScan }) {
@@ -137,6 +152,15 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // render that reads `all` until `runs` and this land together out of the
   // same response.
   const [workloadCapabilities, setWorkloadCapabilities] = useState<string[]>([]);
+  // THIS machine, as the server sees it now — the caption the share card is
+  // unshareable without ("62 tok/s" means nothing without the laptop that
+  // produced it). Read from the history rather than from each run, because it
+  // travels there for exactly this reason (`AiBenchmarkHistory.machine`): the
+  // page has to caption a comparison spanning several runs, and picking one
+  // run's block would caption every bar with whichever model happened to be
+  // last. `null` until the first fetch answers — `hardwareLine` draws what it
+  // has, so a card made in that window is short a line rather than broken.
+  const [machine, setMachine] = useState<AiBenchmarkMachine | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Which capability has a run in flight, and on which model. **Keyed by
   // capability, not a single slot**, because that is the unit the server
@@ -145,6 +169,27 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // explicitly permitted. A single slot greyed out every other section under a
   // tooltip claiming a per-capability rule, making a legal action unreachable.
   const [inFlight, setInFlight] = useState<RunsInFlight>({});
+  // WHEN the currently in-flight run was pressed, epoch ms, keyed by
+  // capability like `inFlight` itself — the busy row's elapsed clock
+  // (`busyRowText`, lib/benchmark.ts) counts from here, not from whenever the
+  // load happens to finish, so "Measuring — 1:24" means what it says: time
+  // actually spent, including the load, matching the wall clock a person
+  // watching the tab experienced.
+  const [runStartedAt, setRunStartedAt] = useState<Record<string, number>>({});
+  // Ticks once a second while ANYTHING is in flight, for no reason but to
+  // force the busy row's elapsed clock to re-render — `busyRowText` is pure
+  // and reads `Date.now()` itself, so this state's VALUE is never read,
+  // only its change. Stopped the moment `inFlight` empties: an idle tab
+  // re-rendering every second for a clock nothing is showing would be the
+  // exact kind of waste `useAiRuntime`'s own idle/active split (aiRuntime.ts)
+  // exists to avoid elsewhere on this page.
+  const [, setClockTick] = useState(0);
+  const anyInFlight = Object.keys(inFlight).length > 0;
+  useEffect(() => {
+    if (!anyInFlight) return;
+    const timer = window.setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [anyInFlight]);
   // A run that came back STOPPED rather than measured. Its own state, not
   // `error`: this is not a request failure and must not draw the ErrorBanner —
   // see `stoppedNote`. Cleared when the next run starts, rather than on a timer:
@@ -193,6 +238,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
         if (!alive) return;
         setRuns(history.runs);
         setWorkloadCapabilities(history.workloadCapabilities);
+        setMachine(history.machine);
         setError(null);
       },
       (e) => {
@@ -222,6 +268,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     // and a `{...inFlight}` closed over at click time would drop whichever one
     // started in between.
     setInFlight((prev) => ({ ...prev, [capability]: model }));
+    setRunStartedAt((prev) => ({ ...prev, [capability]: Date.now() }));
     try {
       const { run, cancelled } = await runAiBenchmark(model, capability);
       // Stopped from outside — say so. Silence here was finding 6: nothing
@@ -353,6 +400,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
       const history = await deleteAiBenchmarks([id]);
       setRuns(history.runs);
       setWorkloadCapabilities(history.workloadCapabilities);
+      setMachine(history.machine);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -506,12 +554,15 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           metricSpecs={metricSpecs}
           onSelectMetric={setMetricParam}
           runs={capabilityRuns}
+          machine={machine}
           ranked={ranked}
           gone={gone}
           selectedModel={selectedModel}
           trendRuns={trendRuns}
           onSelectModel={setModelParam}
           inFlight={inFlight}
+          runStartedAt={runStartedAt}
+          runtime={scan.runtime}
           onRun={start}
           onForget={forget}
           queue={queues[selected]}
@@ -529,12 +580,15 @@ function CapabilitySection({
   metricSpecs,
   onSelectMetric,
   runs,
+  machine,
   ranked,
   gone,
   selectedModel,
   trendRuns,
   onSelectModel,
   inFlight,
+  runStartedAt,
+  runtime,
   onRun,
   onForget,
   queue,
@@ -555,6 +609,10 @@ function CapabilitySection({
   onSelectMetric: (key: string) => void;
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
+  /** This machine, for the share card's caption — null until the history has
+   *  answered. Nothing on screen reads it: a reader looking at their own
+   *  laptop does not need it spelled out, but a card leaving the laptop does. */
+  machine: AiBenchmarkMachine | null;
   /** Every model this capability knows about, ranked best-first — computed by
    *  `BenchmarkTab` (`leaderboard`), since its length already answers "is
    *  there anything to show" (repos + history, deleted models included). */
@@ -574,6 +632,17 @@ function CapabilitySection({
    *  reads its own key out, which keeps the "which capability blocks which"
    *  rule in one tested place rather than in each section's props. */
   inFlight: RunsInFlight;
+  /** When the in-flight run on THIS capability was pressed, epoch ms — absent
+   *  for a capability with nothing running. Feeds the busy row's elapsed
+   *  clock (`busyRowText`); `BenchmarkTab` is the one place that knows when a
+   *  click happened, so it owns this rather than each row inventing its own
+   *  start time. */
+  runStartedAt: Record<string, number>;
+  /** The AI runtime table (`lib/aiRuntime.ts`), already polled by the page —
+   *  read here ONLY to answer "is the in-flight model still loading, or is it
+   *  measuring now" (`busyRowText`'s `stillLoading`). Reusing this poll is
+   *  why the busy row does not need one of its own. */
+  runtime: AiRuntime;
   onRun: (model: string, capability: string) => void;
   onForget: (id: string) => void;
   /** This capability's own "Run all" queue, or undefined before one has ever
@@ -607,6 +676,21 @@ function CapabilitySection({
   // queue's own `start()` calls do, and the server allows only one resident
   // model per capability either way.
   const busy = inFlight[capability] !== undefined;
+  // The busy row's own text, computed here rather than in `BenchmarkRow`:
+  // this is where `capability` and `inFlight` are both already in scope, and
+  // a single site keeps "which phase" (the runtime's own answer) and "how
+  // long" (this tab's own click timestamp) from drifting into two different
+  // readings for two different rows of the same run.
+  const busyModel = inFlight[capability];
+  const stillLoading = busyModel
+    ? runtime.loaded.some(
+        (m) => m.model === busyModel && m.capability === capability &&
+          m.state !== "ready" && m.state !== "error",
+      )
+    : false;
+  const busyText = busyModel
+    ? busyRowText(stillLoading, runStartedAt[capability] ?? Date.now(), Date.now())
+    : null;
   // The device most of THIS section's models last ran on — the hardware
   // doesn't change per model, so a row's own detail line (`BenchmarkRow`
   // below, via `rowDetail`) drops it whenever it MATCHES this, and keeps it
@@ -614,6 +698,12 @@ function CapabilitySection({
   const expectedDevice = commonDevice(
     ranked.map((r) => r.row).filter((row): row is ModelLatest => row !== null),
   );
+  // The app version the plotted numbers were MEASURED under — the newest run's
+  // (`runs` is oldest-first), not the running build. The app is part of what a
+  // benchmark measures, so a card drawn after an upgrade must keep naming the
+  // version that produced the bars. Only the share card reads this; nothing on
+  // screen does (a per-run "Details" expander already shows each run's own).
+  const measuredVersion = runs && runs.length > 0 ? runs[runs.length - 1]!.appVersion : null;
 
   return (
     <section className="am-section">
@@ -647,24 +737,46 @@ function CapabilitySection({
           this select does not need it restated a few lines down. */}
       <div className="am-section-head am-bench-section-head">
         <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
-        {metricSpecs.length > 0 && (
-          <div className="am-bench-metricsel">
-            <label htmlFor={`am-bench-metric-${capability}`}>Metric</label>
-            <select
-              id={`am-bench-metric-${capability}`}
-              className="field-control am-bench-capsel-input"
-              value={metric?.key ?? ""}
-              onChange={(e) => onSelectMetric(e.target.value)}
-            >
-              {metricSpecs.map((spec) => (
-                <option key={spec.key} value={spec.key}>
-                  {spec.label}
-                </option>
-              ))}
-            </select>
-            {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
-          </div>
-        )}
+        {/* The head's controls, as one group: the Metric select and — only
+            when there is actually a chart to send — Share. Share sits HERE
+            rather than over the chart because what it shares is this
+            section's current selection (capability + metric), which is
+            precisely what these two controls between them decide. */}
+        <div className="am-bench-headtools">
+          {metricSpecs.length > 0 && (
+            <div className="am-bench-metricsel">
+              <label htmlFor={`am-bench-metric-${capability}`}>Metric</label>
+              <select
+                id={`am-bench-metric-${capability}`}
+                className="field-control am-bench-capsel-input"
+                value={metric?.key ?? ""}
+                onChange={(e) => onSelectMetric(e.target.value)}
+              >
+                {metricSpecs.map((spec) => (
+                  <option key={spec.key} value={spec.key}>
+                    {spec.label}
+                  </option>
+                ))}
+              </select>
+              {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
+            </div>
+          )}
+          {/* Rendered on exactly the condition the chart itself is (below): a
+              Share button above "no runs recorded yet" offers to send an empty
+              axis. */}
+          {metric && bars.length > 0 && (
+            <ShareChartButton
+              card={{
+                capability,
+                metric,
+                bars,
+                machine,
+                device: expectedDevice,
+                appVersion: measuredVersion,
+              }}
+            />
+          )}
+        </div>
       </div>
 
       {runs === null ? (
@@ -734,8 +846,14 @@ function CapabilitySection({
                     Running {queue.started} of {queue.models.length} —{" "}
                     {shortModelName(queue.current!)}
                   </span>
-                  <button type="button" className="cc-btn" onClick={() => onStopAll(capability)}>
-                    Stop
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    onClick={() => onStopAll(capability)}
+                    title="Stop"
+                    aria-label="Stop"
+                  >
+                    {MenuIcons.stop}
                   </button>
                 </>
               ) : (
@@ -804,6 +922,7 @@ function CapabilitySection({
                   metric={metric}
                   expectedDevice={expectedDevice}
                   button={button}
+                  busyText={model === busyModel ? busyText : null}
                   gone={gone.has(model)}
                   selected={model === selectedModel}
                   onSelect={() => onSelectModel(model)}
@@ -869,6 +988,7 @@ function BenchmarkRow({
   metric,
   expectedDevice,
   button,
+  busyText,
   gone,
   selected,
   onSelect,
@@ -888,6 +1008,11 @@ function BenchmarkRow({
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
    *  which has no button at all. */
   button?: RunButtonState;
+  /** `busyRowText`'s own answer for THIS model, or null when it is not the one
+   *  running — computed once in `CapabilitySection` (`busyRowText`,
+   *  lib/benchmark.ts) from the AI runtime's own phase plus the tab's own
+   *  click timestamp, never invented here. */
+  busyText?: string | null;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
   /** This row is the one the trend chart above is currently showing. */
@@ -938,14 +1063,19 @@ function BenchmarkRow({
       </div>
       <div className="am-bench-latest">
         {button?.busy ? (
-          // A plain spinner, not `ModelProgress`: that component draws a JOB
-          // row's detail and byte counts, and a benchmark has no row. There is
-          // genuinely nothing to report until the request returns — the server
-          // is holding it open — so pretending otherwise with an invented
-          // percentage is what makes live work read as frozen.
+          // A plain spinner, not `ModelProgress`: that component draws a
+          // download-manager row's OWN detail and byte counts, and reading it
+          // here would be a second, possibly-stale copy of exactly what the
+          // corner already shows for `ai/benchmark.py`'s own measurement row
+          // (see that module's docstring). This is a DIFFERENT view of the
+          // same run: phase plus a real elapsed clock (`busyText`,
+          // `busyRowText` in lib/benchmark.ts) rather than an invented
+          // percentage — "Loading weights into memory…" while the AI runtime
+          // still reports this model coming up, then "Measuring — 1:24"
+          // ticking from the moment Run was pressed.
           <span className="am-bench-busy" role="status">
             <span className="am-runtime-dot" />
-            Benchmarking… this takes minutes
+            {busyText}
           </span>
         ) : row ? (
           <>
@@ -971,7 +1101,20 @@ function BenchmarkRow({
                 // on a row you did NOT mean to select would select it anyway.
                 onClick={(e) => e.stopPropagation()}
               >
-                <summary>{row.latest.ok ? "Details" : "Failed — details"}</summary>
+                {/* Icon-only, per the icon-buttons pass — but still a real
+                    `<summary>`, so the disclosure semantics (native toggle,
+                    keyboard, screen-reader "expanded/collapsed" state) are
+                    untouched. `aria-label`/`title` carry the exact words the
+                    icon replaced; `am-bench-rowdetail-chevron` is what rotates
+                    the glyph 90° on `[open]` (ai-models.css) rather than
+                    swapping to a second path. */}
+                <summary
+                  className="am-bench-rowdetail-chevron"
+                  aria-label={row.latest.ok ? "Details" : "Failed — details"}
+                  title={row.latest.ok ? "Details" : "Failed — details"}
+                >
+                  {MenuIcons.chevron}
+                </summary>
                 <p>{detail}</p>
               </details>
             )}
@@ -989,12 +1132,21 @@ function BenchmarkRow({
         // there is nothing here for the two handlers to disagree about.
         <button
           type="button"
-          className="cc-btn"
+          className="cc-iconbtn"
           disabled={button.blocked}
           onClick={onRun}
           title={button.title}
+          aria-label={button.label}
         >
-          {button.label}
+          {/* `button.busy`'s spinner is still disabled (`button.blocked` is
+              true whenever `busy` is — `runButtonState`, lib/benchmark.ts) —
+              this is a status glyph on a dead button, not a second way to
+              start or stop the run. `.am-icon-spin` (ai-models.css) is the
+              only thing that turns the static ring into motion; the glyph
+              itself does not encode spinning. */}
+          <span className={button.busy ? "am-icon-spin" : undefined}>
+            {button.busy ? MenuIcons.spinner : MenuIcons.play}
+          </span>
         </button>
       )}
     </div>

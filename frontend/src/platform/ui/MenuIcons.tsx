@@ -213,4 +213,54 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M6.5 15h.01M10 15h.01" />
     </svg>
   ),
+
+  // ---- Benchmark tab buttons (SPEC AI-14) ----------------------------------
+  // These four replace text labels with icons on the Benchmark tab; each
+  // caller keeps the word it replaced as both `aria-label` and `title`, so the
+  // glyph is a shorthand for the label rather than its only carrier.
+
+  // Run — a plain outline play triangle. Doubles for both "Run benchmark" and
+  // "Run again": the action is identical, only the tooltip's wording differs.
+  play: (
+    <svg {...svgProps}>
+      <path d="M8 5l11 7-11 7z" />
+    </svg>
+  ),
+  // Running — a partial ring, spun by `.am-icon-spin` (ai-models.css) rather
+  // than baked into the path, so the SAME glyph works in a static context
+  // (none today, but a second consumer should not need a second path). Not
+  // `refresh` (a full two-arrow loop, already meaning "fetch this again") —
+  // this is a plainer arc, the shape most spinners actually use.
+  spinner: (
+    <svg {...svgProps}>
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+    </svg>
+  ),
+  // Details disclosure — a chevron. Rotated 90° by `[open] > summary` in
+  // ai-models.css rather than swapped for a second path: a `<details>` is
+  // already the open/closed state, and a CSS rotation of one glyph is a
+  // smaller vocabulary than a "closed" and an "open" glyph that must always
+  // agree with each other.
+  chevron: (
+    <svg {...svgProps}>
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  ),
+  // Share — an upward arrow lifting out of a tray. The mirror image of
+  // `download`'s arrow dropping INTO one: sharing a chart is sending
+  // something out, not pulling something in.
+  share: (
+    <svg {...svgProps}>
+      <path d="M12 15V4" />
+      <path d="M7.5 8.5L12 4l4.5 4.5" />
+      <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+    </svg>
+  ),
+  // Stop — a plain filled-outline square, the universal "halt" glyph and
+  // distinct from `trash` (this does not delete anything that ran).
+  stop: (
+    <svg {...svgProps}>
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
+  ),
 };
