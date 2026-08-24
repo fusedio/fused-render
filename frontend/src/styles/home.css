@@ -211,13 +211,16 @@
   cursor: inherit;
 }
 
-/* .field-control's focus rule sets `outline: none` and colours the BORDER,
-   which is not a thing this control has any more — so the keyboard indicator
-   has to be drawn back, and only for keyboard: an outline on every click puts a
-   ring around a pill the mouse is already washing. */
-.home-composer .home-composer-pick-sel:focus-visible {
-  outline: 1px solid var(--fg-muted);
-  outline-offset: 1px;
+/* Focus is the HOVER WASH, on the whole pill, and no ring at all. An outline
+   drawn on the <select> traces the select alone — the glyph is the label's
+   child, not the select's, so the ring cut the pill in half and boxed the word
+   while the icon sat outside it. Washing the label instead marks the same thing
+   the pointer marks, at the size the control actually is. `:has(:focus-visible)`
+   and not `:focus-within`: a click already gets the hover wash, so keyboard is
+   the only case that still needs saying. */
+.home-composer-pick:has(:focus-visible) {
+  color: var(--fg);
+  background-color: var(--bg-alt);
 }
 
 /* The "Auto" option is muted by fields.css's placeholder rule (it is the
