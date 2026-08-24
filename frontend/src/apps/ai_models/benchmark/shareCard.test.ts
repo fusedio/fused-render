@@ -7,12 +7,14 @@
 import { describe, expect, it } from "bun:test";
 import type { AiBenchmarkMachine } from "@platform/lib/api";
 import { availableMetrics } from "@apps/ai_models/lib/benchmark";
+import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import {
   hardwareLine,
   metricSubtitle,
   provenanceLine,
   shareCardFilename,
   shareCardHeight,
+  titleSuffix,
 } from "./shareCard";
 
 const MAC: AiBenchmarkMachine = {
@@ -83,8 +85,24 @@ describe("shareCardHeight", () => {
   });
 
   it("leaves room for the chrome even with a single bar", () => {
-    // Header, title, subtitle, axis and footer are all unconditional — a
-    // one-bar card that came out row-height tall would have cropped them.
-    expect(shareCardHeight(1)).toBeGreaterThan(200);
+    // Title, subtitle, axis and footer are all unconditional — a one-bar
+    // card that came out row-height tall would have cropped them. There is
+    // no separate brand row any more (the caption folded onto the title
+    // line, the mark moved to the footer), so the floor here is lower than
+    // it used to be — this pins the exact arithmetic rather than a loose
+    // bound, so a stale term left behind by a future edit would fail here.
+    expect(shareCardHeight(1)).toBe(198);
+  });
+});
+
+describe("titleSuffix", () => {
+  it("reads as one natural phrase after any capability label", () => {
+    // The user's own wording: "speech to text local ai benchmark" — sentence
+    // case, appended right after the label with no separator of its own
+    // (the drawing code supplies the single space between them).
+    const phrase = (capability: string) => `${capabilityLabel(capability)} ${titleSuffix()}`;
+    expect(phrase("automatic-speech-recognition")).toBe("Speech to text local AI benchmark");
+    expect(phrase("text-generation")).toBe("Text generation local AI benchmark");
+    expect(phrase("text-to-image")).toBe("Image generation local AI benchmark");
   });
 });
