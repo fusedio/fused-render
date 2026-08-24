@@ -15,8 +15,8 @@ is built, and how tokens come out. Downloading, reporting, the port handshake,
 the auth check and the state machine are the base's, because they are the
 supervisor's contract rather than this backend's behaviour.
 
-Deliberately mlx-lm only. No FastAPI, no requests — this process must start fast
-and its dependency list is a thing users download.
+Deliberately mlx-vlm only. No FastAPI, no requests — this process must start
+fast and its dependency list is a thing users download.
 """
 
 import os
@@ -108,17 +108,20 @@ def download(model_id):
 
 
 def _mlx_load():
-    """`mlx_lm.load`, or an error that names the ENVIRONMENT rather than a module.
+    """`mlx_vlm.load`, or an error that names the ENVIRONMENT rather than a module.
 
-    An ImportError out of mlx-lm is never about the model being loaded, and by
+    An ImportError out of mlx-vlm is never about the model being loaded, and by
     the time it reaches the AI Models page it has lost every trace of that: what
     the user read was `Could not import module 'AutoTokenizer'`, printed beside
     the name of a Qwen repo that was downloaded correctly, while the real
     exception — three frames down, wrapped by transformers' lazy-module
     machinery — was `ModuleNotFoundError: No module named 'filecmp'` out of the
-    bundled interpreter's incomplete stdlib.
+    bundled interpreter's incomplete stdlib. That transformers-lazy-module point
+    survives the mlx-lm -> mlx-vlm switch unchanged: mlx-vlm resolves a
+    checkpoint's processor through the same lazy-import machinery, so the same
+    misdirection is possible from the same place.
 
-    So this says what is TRUE at this level and no more: mlx-lm could not be
+    So this says what is TRUE at this level and no more: mlx-vlm could not be
     imported, here is the environment, and here is the original error. What that
     error MEANS is `worker_base.describe_failure`'s job, because it is not
     specific to MLX — it walks the chain to the root and, for a stdlib module,
@@ -131,12 +134,12 @@ def _mlx_load():
     installed perfectly.
     """
     try:
-        from mlx_lm import load as mlx_load
+        from mlx_vlm import load as mlx_load
     except ImportError as e:
         raise RuntimeError(
-            f"mlx-lm could not be imported from the runner environment at "
+            f"mlx-vlm could not be imported from the runner environment at "
             f"{sys.prefix} ({e.__class__.__name__}: {e}). That is an environment "
-            "failure rather than a problem with this model — mlx-lm imports "
+            "failure rather than a problem with this model — mlx-vlm imports "
             "transformers for the tokenizer, so the import that fails is rarely "
             "the one named first."
         ) from e
@@ -153,9 +156,17 @@ def load(model_id, path):
     # one that will generate. See `_pin_stream`.
     _pin_stream()
 
-    model, tokenizer = mlx_load(path)
+    # `lazy=True` is the measurement this switch is built on: eager loading
+    # materialises the vision tower too — +0.67GB on Qwen3.5-4B-OptiQ-4bit,
+    # resident at 3.937GB against mlx-lm's 3.270GB — even though a text-only
+    # chat never touches it. `lazy=True` defers those arrays until something
+    # actually reads them (the image path, commit 3), which lands a plain
+    # text generation at 3.275GB: within measurement noise of what mlx-lm's
+    # language-tower-only load cost, rather than paying for a tower nobody
+    # asked to use.
+    model, processor = mlx_load(path, lazy=True)
     _loaded["model"] = model
-    _loaded["tokenizer"] = tokenizer
+    _loaded["processor"] = processor
 
 
 def memory():
@@ -187,23 +198,42 @@ def memory():
 # ------------------------------------------------------------------ generation
 
 
-def _messages_to_prompt(tokenizer, messages, prompt):
+def _messages_to_prompt(processor, messages, prompt):
     """The model's own chat template, never a hand-rolled one.
 
     Every instruct model has its own turn markers, and getting them wrong
     produces output that looks almost right — which is worse than an error.
     `apply_chat_template` is the tokenizer's own answer; a model without one
     falls back to the raw prompt.
+
+    **Deliberately still the tokenizer's/processor's OWN `apply_chat_template`,
+    never `mlx_vlm.prompt_utils.apply_chat_template`** — this is the one place
+    the mlx-lm -> mlx-vlm switch must NOT reach for the new library's helper.
+    Verified by hand: `mlx_vlm.prompt_utils.apply_chat_template` emits
+    `<think>\\n\\n</think>\\n\\n` on a reasoning model — a CLOSED, empty think
+    block, which is thinking turned OFF — where the tokenizer's own template
+    leaves `<think>\\n` open. Calling mlx-vlm's helper here would silently flip
+    every reasoning model in the catalog into non-thinking mode: no error, and
+    `playground/think.ts` would simply stop finding a think block to render.
+    mlx-vlm's own helper is reached for only on the path that actually carries
+    an image (`generate`, commit 3), where the image placeholder tokens it
+    inserts are the point of using it at all.
+
+    `processor` rather than `tokenizer` in the parameter name only — the
+    getattr dance below is unchanged, and it keeps working because a
+    transformers `ProcessorMixin` exposes `apply_chat_template` and
+    `chat_template` itself (forwarding to the tokenizer it wraps), the same
+    shape mlx-lm's plain tokenizer had.
     """
     if prompt:
         return prompt
-    template = getattr(tokenizer, "apply_chat_template", None)
-    if template and getattr(tokenizer, "chat_template", None):
+    template = getattr(processor, "apply_chat_template", None)
+    if template and getattr(processor, "chat_template", None):
         return template(messages, tokenize=False, add_generation_prompt=True)
     return "\n\n".join(m.get("content", "") for m in messages if isinstance(m, dict))
 
 
-def _prompt_tokens(tokenizer, text):
+def _prompt_tokens(processor, text):
     """How long the prompt is, in the model's OWN tokens — or None.
 
     The number the API reports as `input_tokens` (SPEC AI-3). Counted here
@@ -215,8 +245,16 @@ def _prompt_tokens(tokenizer, text):
     differently, or refuses this string, must cost the count and not the
     completion — `None` means "not reported", which every reader already
     handles (a worker that predates this said nothing at all).
+
+    **`processor` may not have `.encode` itself.** mlx-vlm's `load()` returns a
+    transformers `ProcessorMixin`, which usually wraps the actual tokenizer at
+    `.tokenizer` rather than exposing `encode` directly — so this reaches for
+    the wrapped tokenizer only when the processor itself has nothing to offer,
+    preferring the processor's own `encode` where one exists.
     """
-    encode = getattr(tokenizer, "encode", None)
+    encode = getattr(processor, "encode", None)
+    if encode is None:
+        encode = getattr(getattr(processor, "tokenizer", None), "encode", None)
     if encode is None:
         return None
     try:
@@ -228,17 +266,17 @@ def _prompt_tokens(tokenizer, text):
 def generate(body, write):
     """Stream one completion as NDJSON: {chunk} lines, then {done}."""
     _pin_stream()
-    from mlx_lm import stream_generate
-    from mlx_lm.sample_utils import make_sampler
+    from mlx_vlm import stream_generate
+    from mlx_vlm.sample_utils import make_sampler
 
     model = _loaded.get("model")
-    tokenizer = _loaded.get("tokenizer")
-    if model is None or tokenizer is None:
+    processor = _loaded.get("processor")
+    if model is None or processor is None:
         write({"type": "done", "ok": False, "error": "no model is loaded"})
         return
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
-    text = _messages_to_prompt(tokenizer, messages, body.get("prompt") or "")
+    text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
     max_tokens = int(body.get("max_tokens") or 1024)
     sampler = make_sampler(
         temp=float(body.get("temperature", 0.7)),
@@ -247,11 +285,11 @@ def generate(body, write):
 
     # Counted BEFORE the first token, so a cancelled generation reports it too:
     # the prompt was read whether or not the answer was wanted by the end.
-    prompt_tokens = _prompt_tokens(tokenizer, text)
+    prompt_tokens = _prompt_tokens(processor, text)
 
     count = 0
     started = time.time()
-    for response in stream_generate(model, tokenizer, text, max_tokens=max_tokens,
+    for response in stream_generate(model, processor, text, max_tokens=max_tokens,
                                     sampler=sampler):
         if worker_base.CANCEL.is_set():
             write({"type": "done", "ok": True, "cancelled": True, "tokens": count,

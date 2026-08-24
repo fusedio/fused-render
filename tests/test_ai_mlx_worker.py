@@ -60,7 +60,7 @@ class FakeMlxCore(types.ModuleType):
 
 
 def load_worker(monkeypatch, mlx_core=None):
-    """A fresh import of the mlx-lm worker, `worker_base` primed in
+    """A fresh import of the mlx-vlm worker, `worker_base` primed in
     `sys.modules` exactly as `tests/test_ai_mlx_whisper_worker.py`'s
     `load_worker` does — the runner finds its base off `sys.path` in an
     interpreter of its own, so importing it the packaged way
@@ -98,13 +98,13 @@ def worker(monkeypatch):
 def test_an_unimportable_runner_environment_is_named_as_the_cause(worker, monkeypatch):
     """`Could not import module 'AutoTokenizer'` is not about the model.
 
-    mlx-lm imports transformers for the tokenizer, so the import that fails is
-    rarely the one named first — and what reached the AI Models page was that
-    sentence, printed beside the name of a Qwen repo that was downloaded
+    mlx-vlm imports transformers for the processor, so the import that fails
+    is rarely the one named first — and what reached the AI Models page was
+    that sentence, printed beside the name of a Qwen repo that was downloaded
     correctly and is not the problem. A user has no way to get from it to the
     thing that is actually broken.
 
-    So this layer says only what it knows: mlx-lm did not import, out of THIS
+    So this layer says only what it knows: mlx-vlm did not import, out of THIS
     environment (`sys.prefix` — in a runner, this process is the venv the app
     built), with the original error kept. Diagnosing what that error means is
     `worker_base.describe_failure`'s job, one level up, because it is not
@@ -112,14 +112,14 @@ def test_an_unimportable_runner_environment_is_named_as_the_cause(worker, monkey
     """
     # `None` in sys.modules is what makes an import raise ImportError on demand,
     # which is the same shape as a package whose files are half-written.
-    monkeypatch.setitem(sys.modules, "mlx_lm", None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", None)
 
     with pytest.raises(RuntimeError) as caught:
         worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
     message = str(caught.value)
 
     assert sys.prefix in message, "the environment has to be named to be reported"
-    assert "mlx-lm could not be imported" in message
+    assert "mlx-vlm could not be imported" in message
     assert "rather than a problem with this model" in message
     assert "Qwen" not in message, "the model is not the subject"
     # And no invented cause: claiming an interrupted install sent a user to
@@ -133,13 +133,13 @@ def test_the_import_error_itself_survives_into_the_message(worker, monkeypatch):
     """Wrapping must not swallow the original text: `AutoTokenizer` vs a missing
     `mlx` are the same class of failure with different repairs upstream, and the
     log is where that difference has to stay visible."""
-    broken = types.ModuleType("mlx_lm")
+    broken = types.ModuleType("mlx_vlm")
 
     def _explode(name):
         raise ImportError("cannot import name 'AutoTokenizer' from 'transformers'")
 
     broken.__getattr__ = _explode
-    monkeypatch.setitem(sys.modules, "mlx_lm", broken)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", broken)
 
     with pytest.raises(RuntimeError) as caught:
         worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
@@ -152,23 +152,28 @@ def test_the_import_error_itself_survives_into_the_message(worker, monkeypatch):
 
 
 def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
-    """The wrapper is an error path only: a real `mlx_lm.load` reaches the model
-    untouched, and its own failures (a corrupt snapshot, an unsupported
+    """The wrapper is an error path only: a real `mlx_vlm.load` reaches the
+    model untouched, and its own failures (a corrupt snapshot, an unsupported
     architecture) are not relabelled as an environment problem."""
     loaded = {}
 
-    def _load(path):
+    def _load(path, lazy=False):
         loaded["path"] = path
-        return "MODEL", "TOKENIZER"
+        loaded["lazy"] = lazy
+        return "MODEL", "PROCESSOR"
 
-    fake = types.ModuleType("mlx_lm")
+    fake = types.ModuleType("mlx_vlm")
     fake.load = _load
-    monkeypatch.setitem(sys.modules, "mlx_lm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
 
     worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
 
     assert loaded["path"] == "/snapshots/qwen"
-    assert worker._loaded == {"model": "MODEL", "tokenizer": "TOKENIZER"}
+    # The measured trade this switch is built on (worker.py's own comment):
+    # eager loading materialises the vision tower a text-only chat never
+    # touches (+0.67GB on Qwen3.5-4B), and `lazy=True` defers it to first use.
+    assert loaded["lazy"] is True
+    assert worker._loaded == {"model": "MODEL", "processor": "PROCESSOR"}
 
 
 # -- what the prompt cost ------------------------------------------------------
@@ -189,32 +194,61 @@ class _Tokenizer:
         return self._ids
 
 
-def test_the_prompt_is_counted_in_the_models_own_tokens(worker):
-    assert worker._prompt_tokens(_Tokenizer(ids=(5, 6, 7)), "hello") == 3
+class _ProcessorWithOwnEncode:
+    """The rare processor that exposes `encode` itself — must be preferred
+    over `.tokenizer.encode` when both exist, since it is the more specific
+    answer."""
+
+    def __init__(self, ids=(1, 2, 3, 4)):
+        self._ids = list(ids)
+        # A `.tokenizer` that would answer differently, so a test using this
+        # class can tell WHICH one `_prompt_tokens` actually read.
+        self.tokenizer = _Tokenizer(ids=(99,))
+
+    def encode(self, text):
+        return self._ids
+
+
+class _ProcessorWrappingATokenizer:
+    """The ordinary shape: mlx-vlm's `load()` returns a `ProcessorMixin`, which
+    wraps a tokenizer at `.tokenizer` and does not expose `encode` itself."""
+
+    def __init__(self, ids=(1, 2, 3, 4), raises=False):
+        self.tokenizer = _Tokenizer(ids=ids, raises=raises)
+
+
+def test_the_prompt_is_counted_off_the_processors_own_encode_when_it_has_one(worker):
+    assert worker._prompt_tokens(_ProcessorWithOwnEncode(ids=(5, 6, 7)), "hello") == 3
+
+
+def test_the_prompt_is_counted_off_the_wrapped_tokenizer_when_the_processor_has_none(worker):
+    """mlx-vlm's processor does not usually implement `encode` itself — it
+    wraps a tokenizer at `.tokenizer`, and that is where the count comes from
+    once the processor itself has nothing to offer."""
+    assert worker._prompt_tokens(_ProcessorWrappingATokenizer(ids=(5, 6, 7)), "hello") == 3
 
 
 def test_a_tokenizer_that_cannot_count_costs_the_metric_not_the_completion(worker):
     """None means "not reported", which every reader already handles — a
     generation must not fail because a counter did."""
-    assert worker._prompt_tokens(_Tokenizer(raises=True), "hello") is None
+    assert worker._prompt_tokens(_ProcessorWrappingATokenizer(raises=True), "hello") is None
     assert worker._prompt_tokens(object(), "hello") is None
 
 
 def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
     """Including the CANCELLED one: the prompt was read whether or not the
     answer was still wanted by the end."""
-    import types
 
     class _Response:
         text = "hi"
 
-    mlx_lm = types.ModuleType("mlx_lm")
-    mlx_lm.stream_generate = lambda *a, **kw: iter([_Response(), _Response()])
-    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = lambda *a, **kw: iter([_Response(), _Response()])
+    sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
-    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
-    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
-    worker._loaded.update(model=object(), tokenizer=_Tokenizer(ids=(1, 2, 3)))
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.sample_utils", sample_utils)
+    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(ids=(1, 2, 3)))
 
     frames = []
     worker.generate({"prompt": "hello"}, frames.append)
@@ -236,14 +270,14 @@ def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
 # -- the MLX stream pin, shared with mlx_whisper and mflux_image --------------
 
 
-def _fake_mlx_lm(monkeypatch, responses=()):
-    mlx_lm = types.ModuleType("mlx_lm")
-    mlx_lm.load = lambda path: ("MODEL", _Tokenizer())
-    mlx_lm.stream_generate = lambda *a, **kw: iter(responses)
-    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+def _fake_mlx_vlm(monkeypatch, responses=()):
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.load = lambda path, lazy=False: ("MODEL", _ProcessorWrappingATokenizer())
+    mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
-    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
-    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.sample_utils", sample_utils)
 
 
 def test_the_load_and_the_generate_share_ONE_mlx_stream_PER_DEVICE(monkeypatch):
@@ -260,7 +294,7 @@ def test_the_load_and_the_generate_share_ONE_mlx_stream_PER_DEVICE(monkeypatch):
     thread touches the new model's weights.
     """
     mlx_core = FakeMlxCore()
-    _fake_mlx_lm(monkeypatch)
+    _fake_mlx_vlm(monkeypatch)
     worker = load_worker(monkeypatch, mlx_core=mlx_core)
 
     loader = threading.Thread(
@@ -288,7 +322,7 @@ def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch):
     runner that insisted on the newer call would turn a version skew into a
     worker that cannot generate at all."""
     mlx_core = types.SimpleNamespace(cpu="CPU", gpu="GPU")
-    _fake_mlx_lm(monkeypatch)
+    _fake_mlx_vlm(monkeypatch)
     worker = load_worker(monkeypatch, mlx_core=mlx_core)
 
     worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
