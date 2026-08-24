@@ -1914,6 +1914,42 @@
   max-width: 1000px;
 }
 
+/* -- more width on a big screen, WITHOUT reopening the concern above (D482) -
+   1000px was never really a limit on the whole tab — it was a limit on the
+   ONE instrument that actually separates a name from its number as it
+   grows: the comparison chart's bar plot (`.am-bench-compare-body` below),
+   whose name column is FIXED (`flex: 0 0 26ch`) while its plot area is
+   `flex: 1 1 auto` — every extra pixel of width lengthens the bars, and the
+   value label sitting right after each bar drifts that much further from
+   the name column it belongs to. The leaderboard rows do NOT have this
+   problem: a row's model-name and headline-value columns are adjacent grid
+   tracks with a fixed 12px gap between them regardless of the row's own
+   total width, so widening the row only grows blank space before the Run
+   button — annoying at the extreme, never "opposite ends of the window".
+   Neither does the per-model trend chart or the run archive table, which
+   both read MORE easily with more room (a longer time axis, less column
+   truncation) and carry no name-column-vs-drifting-value pairing to break.
+
+   So: raise `.am-bench`'s own ceiling for a genuinely large viewport, but
+   give `.am-bench-compare-body` (below) its OWN, separate, unraised cap —
+   the freed width becomes blank trailing space beside the chart rather
+   than additional bar length, which is exactly the "cap the column, let a
+   spacer absorb the surplus" shape this needed. 1440px is the trigger
+   because it is the point real 13"-16" laptops and small external
+   monitors stop being the majority case and an unscaled 24"+ desktop
+   display becomes the reader — narrower than that, the original 1000px
+   was already a comfortable fit and raising it would just be page filler.
+   1320px is the new ceiling: wide enough to give the trend chart and the
+   archive table a real, noticeable amount of extra breathing room (+32%
+   over 1000px) without approaching the width at which even THOSE start
+   reading as an uncomfortably long line, and comfortably short of 1440px
+   so the panel never touches the viewport's own edges. */
+@media (min-width: 1440px) {
+  .am-bench {
+    max-width: 1320px;
+  }
+}
+
 /* Each capability is now a distinct PANEL, not just a heading with a rule
    under it — the four capabilities used to blur into one scroll of sections
    that differed only by their headings. The card face is the same one
@@ -1949,10 +1985,55 @@
    capability select (same select skin via `.am-bench-capsel-input`, reused
    rather than redeclared), visually subordinate to the `<h3>` beside it
    because IT chooses within a section the heading already named, not a
-   sibling heading in its own right. Unlike the capability select, this one
-   keeps a visible "Metric" caption — it sits beside a card's `<h3>`, not
-   alone in the page-level toolbar, so the two are not read as a matched pair
-   and the caption stays legible chrome here rather than redundant chrome. */
+   sibling heading in its own right. Unlabelled on screen, like the capability
+   select — an option's own text names the metric, so a "Metric" caption was
+   repeating it — and now UNBADGED as well: the unit and direction cue live
+   inside the option text (`metricOptionLabel`, lib/benchmark.ts), so this is a
+   one-child flex box today. It stays a flex box rather than becoming a bare
+   `<select>`: `.am-bench-headtools` above already spaces the head's controls,
+   and this wrapper is what keeps the select a group of its own if a per-metric
+   mark ever earns its place beside it again. */
+/* The heading plus its info glyph (D483), as one group — the same reason
+   `.am-bench-headtools` below is one group for the Metric select and Share:
+   `.am-section-head`'s `justify-content: space-between` expects exactly TWO
+   children, the heading end and the controls end, and a bare THIRD child
+   between them would get its own share of that spacing instead of sitting
+   flush against the `<h3>` it explains. */
+.am-bench-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The info glyph itself — icon-only, the same reset every other icon-only
+   control on this tab uses (no border/background of its own, sized to its
+   16×16 svg). Muted at rest, same as `.am-bench-rowdetail-chevron`'s own
+   ink: this is reference material, not a call to action, and should not
+   outweigh the `<h3>` it sits beside. `data-hint`/`aria-label` carry the
+   actual explanation (BenchmarkTab.tsx) — nothing here draws it, this is
+   layout and colour only. */
+.am-bench-workload-info {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.am-bench-workload-info:hover,
+.am-bench-workload-info:focus-visible {
+  color: var(--fg);
+}
+
+.am-bench-workload-info:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
 /* The section head's control group — the Metric select and the Share button.
    One flex group rather than two children of the head itself, so
    `.am-section-head`'s own `justify-content: space-between` keeps holding the
@@ -1960,52 +2041,42 @@
    select into the middle of the row once a second control appeared. */
 .am-bench-headtools {
   display: flex;
-  align-items: baseline;
+  /* CENTRE, not baseline. An icon-only button's baseline is the BOTTOM EDGE of
+     its `<svg>` (an inline-flex box with no text in it has no text baseline of
+     its own), so under `baseline` the Share glyph was pulled up until its
+     bottom sat on the select's TEXT baseline — a few pixels above the select's
+     own box centre, which is what read as "not aligned with the rest". These
+     are two boxes of known height (a `.field-control` select and a 26px
+     `.cc-iconbtn`), and what a reader lines up is their centres; baseline was
+     inherited from when this row held a text badge, where it was the right
+     rule and there was a second run of text to line up with. `.am-engine-row`
+     above already made this exact call for the same reason ("the select is a
+     32px box and the two text runs beside it should sit on its middle, not
+     hang off the text baseline inside it") — this row is that lesson arriving
+     a second time, now that the badge is gone and the only thing beside the
+     select is a glyph with no text baseline at all. */
+  align-items: center;
   flex-wrap: wrap;
   gap: 12px;
 }
 
-/* Share: the chart, this machine's hardware and the fused render mark as one
-   PNG (benchmark/shareCard.ts). The receipt beside it says WHERE the card went
-   — the three delivery channels (share sheet, clipboard, download) leave it in
-   three different places, and a silent success sends the reader hunting for a
-   file that is actually on their clipboard. */
-.am-bench-share {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.am-bench-share-note {
-  color: var(--fg-muted);
-}
-
-.am-bench-share-error {
-  color: var(--error);
-}
+/* Share (D480): the chart, this machine's hardware and the fused render mark
+   as one PNG (benchmark/shareCard.ts). The receipt for where it went used to
+   be an inline note living right here, in `.am-bench-share` — a wrapper that
+   existed only to hold the button and that note side by side. It is gone now:
+   the receipt is a global toast (`ShareChartButton.tsx`'s file-top comment
+   has the measured layout-shift and heading-collision reasons it moved), and
+   with nothing left to sit beside, the button needs no wrapper of its own —
+   `<ShareChartButton>` renders the `<button>` directly into
+   `.am-bench-headtools`'s flex row, so this class and its two receipt-colour
+   rules (`.am-bench-share-note` / `.am-bench-share-error`) are deleted rather
+   than kept pointing at a wrapper that no longer exists. */
 
 .am-bench-metricsel {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--fg-muted);
-}
-
-/* The unit, and — for exactly the metrics where the ordinary "longer bar /
-   bigger number wins" habit reads backwards — the word that says so
-   (`metricUnitAndCue`, lib/benchmark.ts). A small badge rather than plain
-   text: it is metadata about the current selection, not a second heading, and
-   a pill face says so at a glance. Never the metric's own NAME — the select
-   right beside it already shows that. */
-.am-bench-metric {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  font-size: 11px;
   color: var(--fg-muted);
 }
 
@@ -2025,6 +2096,24 @@
    which is the normal case. */
 .am-bench-compare {
   margin-bottom: var(--am-gap-head);
+  /* Capped independently of `.am-bench`'s own ceiling (D482) — this is the
+     one instrument on the tab where more width is actively harmful: its
+     name column (`.am-bench-compare-namecol`, below) is fixed-width while
+     its plot area stretches, so extra width lengthens every bar and drags
+     the value label after it further from the name it belongs to. On the
+     WHOLE wrapper, not just `.am-bench-compare-body` — `.am-bench-compare-
+     foot`'s tick labels are positioned by percentage relative to THEIR OWN
+     element's width, and body/foot are separate block-level children of
+     this one; capping only the body would let the foot's axis row stay
+     wide while the plot above it narrowed, misaligning every gridline from
+     the tick that names it. 900px keeps this chart at roughly the same
+     footprint it always had (`.am-bench`'s pre-D482 1000px, minus the
+     panel's own horizontal padding — `.am-bench .am-section`'s
+     `padding: 16px 20px 20px` above), no matter how wide `.am-bench`
+     itself is allowed to grow at a large viewport; the extra room becomes
+     blank trailing space to the chart's right rather than additional bar
+     length. */
+  max-width: 900px;
 }
 
 .am-bench-compare-body {
@@ -2147,7 +2236,11 @@
 
 /* -- Run all: one queue per capability, driven by BenchmarkTab's runAllFor --
    Sits between the two chart instruments and the ledger rows it drives —
-   right above `.am-bench-rows`, since that is exactly the list it acts on. */
+   right above `.am-bench-rows`, since that is exactly the list it acts on.
+   The full `--am-gap-head` above stays: that break is what separates this
+   instrument from the comparison chart, and is still owed. What changes
+   (D479) is BELOW: see `.am-bench-runall + .am-bench-rows` — the button and
+   the rows it drives now close ranks into one block. */
 .am-bench-runall {
   display: flex;
   flex-wrap: wrap;
@@ -2155,6 +2248,50 @@
   gap: 10px;
   margin-top: var(--am-gap-head);
   font-size: 12px;
+}
+
+/* The idle Run All button (D479) — see the long comment in BenchmarkTab.tsx
+   above this button's JSX for the full rationale; this is just the chrome
+   that carries it out. `--fg` border and text, transparent plate: no accent
+   (that ink is spoken for as chart/value/selection data on this tab) and no
+   fill (reserved by the D475 precedent for the one truly consequential
+   action beside a cheaper one — here Run All has no cheaper sibling to sit
+   next to, but it IS the single most expensive press on this page, so it
+   gets the same restraint a fill would violate). Glyph then label, one
+   inline-flex row, so `MenuIcons.play` sits on the same baseline as the
+   text rather than floating above or below it. */
+.am-bench-runall-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Hover/focus wash in `--fg` at the same 12% a Try button's accent hover
+   uses (`.am-card-try:hover` in this file's Models-tab neighbour) — the
+   fill stays a wash, never solid, for the identical reason: a solid --fg
+   fill here would BECOME the filled plate the comment above just rejected.
+   `disabled` gets no hover at all; `busy`'s title already explains why. */
+.am-bench-runall-btn:hover:not(:disabled),
+.am-bench-runall-btn:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.am-bench-runall-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.am-bench-runall-btn svg {
+  flex: none;
 }
 
 .am-bench-runall-progress {
@@ -2181,43 +2318,108 @@
   margin-top: var(--am-gap-head);
 }
 
+/* D479: when a Run All button precedes the rows, it IS that list's control
+   — the two should read as one block, not two instruments sharing a gap
+   that belongs to neither. Collapse `.am-bench-rows`'s own `--am-gap-head`
+   down to the same 6px the rows already use between each other, but only
+   when the button is actually there: `runnable.length === 0` still hides
+   `.am-bench-runall` entirely, and in that case the rows keep their full
+   head gap under the chart above, same as always. */
+.am-bench-runall + .am-bench-rows {
+  margin-top: 6px;
+}
+
 /* One model, one line: who, the bar, the number, the button. Compacted from a
    two-line row (a headline plus a full sentence of detail) specifically so a
    failed run's error paragraph — which used to dump straight into this row —
-   cannot dominate the section; it lives behind `.am-bench-rowdetail` now. */
+   cannot dominate the section; it lives behind the row's own disclosure now
+   (click the row to open `.am-bench-rowexpand` below it — the chevron,
+   `.am-bench-rowdetail-chevron`, is only that state's indicator, not the
+   control). */
 .am-bench-row {
   display: grid;
-  /* Wide enough that two repos differing only in a variant suffix
-     ("whisper-large-v3-mlx" vs. "-turbo") both fit whole — the old 16ch
-     column truncated both to the identical "whisper-large-v3…", which
-     defeats a LEADERBOARD: two rows a reader cannot tell apart. There was
-     also just unused space here (the middle column already flexes), so
-     widening this one costs nothing. */
-  grid-template-columns: minmax(0, 30ch) minmax(0, 1fr) auto;
+  /* FOUR columns, not three — a leading one reserved for the chevron
+     (D481), sized to its own 16×16 glyph (`MenuIcons`' `svgProps`) rather
+     than `auto`: `auto` would size to content, and an EMPTY cell (a
+     non-expandable row draws no glyph — see `.am-bench-rowdetail-chevron`
+     below) would collapse to zero width, pulling that row's model name
+     left of every other row's. A fixed column keeps every row's chevron —
+     drawn or not — at the identical x, which is the whole point of an
+     accordion's disclosure indicator living in a column of its own rather
+     than wherever the text before it happens to end (D481's own history:
+     it used to sit after the headline and delta, and visibly drifted
+     row to row with how long those were). Not the trailing column either —
+     the Run `▷` button already owns that end, and a second triangle there
+     would read as a second run control.
+     The 30ch model-name column is wide enough that two repos differing
+     only in a variant suffix ("whisper-large-v3-mlx" vs. "-turbo") both
+     fit whole — the old 16ch column truncated both to the identical
+     "whisper-large-v3…", which defeats a LEADERBOARD: two rows a reader
+     cannot tell apart. There was also just unused space here (the third
+     column already flexes), so widening this one costs nothing. */
+  grid-template-columns: 16px minmax(0, 30ch) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  /* A `role="button"` div now (BenchmarkTab.tsx) — it picks the trend chart's
-     model — so it needs its own focus ring and pointer affordance, the two
-     things a native `<button>` gives away for free and a bare div does not. */
+  /* No `cursor`/focus ring here any more — those are conditional on
+     `.expandable` (below) and on the row's own focusable descendant
+     respectively. This is a plain container: BenchmarkTab.tsx puts NO
+     `role`/`tabIndex` on it, since a `<button>` (the Run button, always
+     inside) cannot contain another `<button>`, and the row's own click
+     handler is enough to make it clickable without also making it
+     ITSELF a focus stop — the model-name button inside is that stop. */
+}
+
+/* The whole-row accordion header (D481) — a hand cursor for the entire row,
+   not a stray div-as-button rule any more, and gated so a row with nothing
+   to expand (`row === null`, "Never benchmarked") never LOOKS clickable:
+   BenchmarkTab.tsx only adds this class when `row !== null`. */
+.am-bench-row.expandable {
   cursor: pointer;
 }
 
-.am-bench-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+/* Hover says "this row CAN be opened" — a small step toward the border, far
+   short of the accent treatment `.selected` below uses, and the two states
+   must stay visually distinct rather than one bleeding into the other.
+   `:not(.selected)` is what keeps them apart: without it this rule's THREE
+   simple selectors would outrank `.selected`'s two on specificity alone and
+   win regardless of source order, downgrading an already-OPEN row's accent
+   border to this muted hover tint the instant a pointer passed over it —
+   exactly the "two states blurring together" this rule exists to prevent.
+   So hover only ever does anything on a CLOSED expandable row; an open
+   row's border stays accent no matter where the pointer is, which is
+   itself the distinguishing behaviour a reader can rely on. Never drawn on
+   a non-expandable row either (gated on `.expandable`, same as the cursor
+   above) — hovering a never-benchmarked row must not promise an action its
+   click will refuse to perform. */
+.am-bench-row.expandable:hover:not(.selected) {
+  border-color: color-mix(in srgb, var(--fg) 35%, var(--border));
 }
 
-/* The row whose history the trend chart above is currently showing. Border
-   plus a light accent wash rather than either alone — the same idiom
-   `.bar-menu-item.active` (explorer.css) uses for its own "which one is this"
-   state, kept stronger than a hover tint so the two never blur. */
+/* The row whose expansion (detail text + trend, D481) is open right below
+   it. Border plus a light accent wash rather than either alone — the same
+   idiom `.bar-menu-item.active` (explorer.css) uses for its own "which one
+   is this" state, kept stronger than the hover tint above so the two never
+   blur into each other.
+
+   **Also: one card that grew, not a header with a floating block under
+   it.** This row is ALWAYS immediately followed by its own
+   `.am-bench-rowexpand` whenever `.selected` is set (both are driven by
+   the identical `model === selectedModel && row !== null` test in
+   BenchmarkTab.tsx), so the pairing is a real invariant, not a guess —
+   square the row's own bottom corners and drop its bottom border, and
+   `.am-bench-rowexpand` below picks up the matching side/bottom border,
+   radius and background so the two read as one continuous card rather
+   than two stacked with a seam between them. */
 .am-bench-row.selected {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
 }
 
 .am-bench-model {
@@ -2231,6 +2433,32 @@
      The full id is the row's `title`. */
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* This cell is a real `<button>` for an EXPANDABLE row (BenchmarkTab.tsx) —
+   the row's one focusable disclosure control, carrying `aria-expanded`/
+   `aria-controls` — so it needs the usual reset off native button chrome:
+   no border/background of its own (the row already draws both), text-align
+   left rather than centred, and the same font this cell always had rather
+   than the browser's own button font. A non-expandable row keeps a plain
+   `<div>` here instead (no rule needed — a div has none of this chrome to
+   reset in the first place). */
+button.am-bench-model {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: inherit;
+}
+
+button.am-bench-model:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* A model whose weights are gone but whose runs are not. Not an error colour —
@@ -2297,51 +2525,57 @@
   color: var(--fg-muted);
 }
 
-/* The detail tucked behind "Details"/"Failed — details" — TTFT, load time,
-   device, or a failed run's full error text. Collapsed by default for the
-   same reason the run archive below is: it is evidence for a row whose
-   headline already gave the answer, not something every reader needs open. */
-.am-bench-rowdetail {
-  flex: 0 0 auto;
-  font-size: 11px;
-}
+/* The row's open/closed STATE INDICATOR (D481) — a plain `<span
+   aria-hidden>` now, not a button: the whole row is the disclosure control
+   (its model-name cell carries the actual `aria-expanded`/`aria-controls`),
+   so a second independently-focusable, independently-clickable chevron
+   would just be a smaller, harder-to-hit copy of the same control — which
+   is exactly the design this class used to BE (a 16px glyph as the only
+   thing on a 36px row that actually opened it) and exactly what "let's make
+   the entire row have a dropdown" replaces.
 
-.am-bench-rowdetail > summary {
-  cursor: pointer;
+   **Lives in the row's own LEADING grid column now, not beside the
+   headline and delta.** It used to sit after them, inside `.am-bench-
+   latest`, which put its x-position at the mercy of however long that
+   row's own text happened to be — a chevron that visibly drifted row to
+   row is not a column, it is noise near the middle of the row. An
+   accordion's disclosure indicator belongs at the leading edge, and the
+   trailing edge is already the Run `▷` button's — a second triangle there
+   would read as a second run control. This element is now rendered for
+   EVERY row, expandable or not, so every row's chevron — drawn or empty —
+   shares the identical x (`.am-bench-row`'s fixed leading column, above);
+   it is simply left with no glyph inside it for a non-expandable row
+   rather than the column disappearing and pulling that row's name left of
+   its neighbours'. */
+.am-bench-rowdetail-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--fg-muted);
 }
 
-.am-bench-rowdetail > summary:hover {
-  color: var(--fg);
-}
-
-/* The icon-only disclosure summary (icon-buttons pass): no default marker —
-   the chevron glyph itself IS the marker — and a plain inline-flex box so the
-   16×16 SVG doesn't inherit `<summary>`'s own list-item box model, which pads
-   asymmetrically in a way a tiny icon makes obvious. */
-.am-bench-rowdetail-chevron {
-  display: inline-flex;
-  align-items: center;
-  list-style: none;
-}
-
-.am-bench-rowdetail-chevron::-webkit-details-marker {
-  display: none;
-}
-
-/* Rotated open rather than swapped for a second "collapse" glyph — the
-   `<details>` element already IS the open/closed state (MenuIcons.tsx's own
-   comment on `chevron`), so a second path would just be a second place that
-   state could get out of sync with what is actually shown. */
-.am-bench-rowdetail[open] > .am-bench-rowdetail-chevron {
+/* Rotated open rather than swapped for a second "collapse" glyph. Keyed off
+   `.am-bench-row.selected` — the ROW's own open/closed class — rather than
+   an `aria-expanded` this element no longer carries (that attribute now
+   lives on the model-name button, not here): the row's class is the one
+   place this open/closed fact lives, so every visual dependent on it,
+   chevron included, reads off the SAME flag rather than a copy that could
+   drift from it. */
+.am-bench-row.selected .am-bench-rowdetail-chevron {
   transform: rotate(90deg);
 }
 
-.am-bench-rowdetail > p {
-  margin: 4px 0 0;
+/* The detail text, now inside the row's full-width expansion rather than a
+   `<details>`'s own `<p>` — TTFT, load time, device, or a failed run's full
+   error text. Same typography as before the move: it is evidence for a row
+   whose headline already gave the answer, not something that needs to shout
+   once it is finally visible. */
+.am-bench-rowexpand-detail {
+  margin: 0 0 10px;
   max-width: 60ch;
   color: var(--fg-muted);
   white-space: pre-wrap;
+  font-size: 11px;
 }
 
 /* -- icon-only buttons: the spinner glyph's motion (SPEC AI-14) --------------
@@ -2394,8 +2628,10 @@
    visible caption of its own (an option's text already names the capability,
    e.g. "Text generation", so a "Capability" label beside it repeated that);
    `aria-label` on the element (BenchmarkTab.tsx) keeps it named for assistive
-   tech. Metric moved into each capability's own card below and keeps its
-   caption there (`.am-bench-metricsel`) — see BenchmarkTab.tsx for why native
+   tech. Metric moved into each capability's own card below and is now
+   captionless too (`.am-bench-metricsel`), carrying its unit and direction cue
+   inside its own option text rather than in a badge — see BenchmarkTab.tsx for
+   why native
    selects rather than a segmented control: this count of options does not
    earn a second control vocabulary on this page, and a THIRD control for the
    model picker is avoided entirely — a leaderboard row IS the model picker,
@@ -2418,47 +2654,76 @@
   min-width: 220px;
 }
 
-/* -- the trend instrument, and its two possible shapes -----------------------
-   Chart-first: this sits ABOVE the leaderboard rows in the DOM (BenchmarkTab's
-   `CapabilitySection`), because the trend is the first question this tab
-   answers and the ranked list — which doubles as its model picker — is the
-   second. */
+/* -- the row's expansion: detail text, then the trend, one control (D481) --
+   A plain flex child of `.am-bench-rows`, directly after the one row whose
+   model is `selectedModel` — not in its own block below the whole
+   leaderboard, which is where the trend half used to live on its own. At N
+   models that block-below position put the trend a full screen away from
+   the click that changed it.
 
-/* The trend instrument's own title: the MODEL alone now — no metric badge
-   here any more. The section head above already names the metric, right
-   beside the `<select>` that chose it (`.am-bench-metricsel`, unit and
-   direction cue included), and this heading used to repeat it a few lines
-   down; that was the duplicated ink moving the select into the card was
-   meant to end. */
-/* Separated from the leaderboard rows above it by MORE than the ordinary
-   `--am-gap-head` used everywhere else on this page — deliberately, this is
-   the boundary between the second instrument and the third, the same rank of
-   break as the one between the comparison chart and the rows (that pair
-   already spends TWO `--am-gap-head`s, one as the chart's own
-   `margin-bottom`, one as the rows' own `margin-top`), and it was reading as
-   a caption on the last row rather than a break at all — so this one goes
-   further still, plus a rule: the rows above are each their own bordered
-   card, and the comparison chart above THAT has a gridlined plot box, so a
-   heading with no border of its own had nothing marking it as a new
-   instrument. */
-.am-bench-trend-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-top: calc(var(--am-gap-head) * 2);
-  padding-top: var(--am-gap-head);
-  border-top: 1px solid var(--border);
-  margin-bottom: 6px;
+   **This block also carries the per-row detail/failure text** that used to
+   open behind its own `<details>` inside the row's grid cell — one
+   disclosure for both, rather than two independent expanders on the same
+   row (the hazard this decision has been through several rounds of
+   fixing). Detail text first (`.am-bench-rowexpand-detail`), the trend
+   after — the text explains what the row's own headline had no room for,
+   the chart elaborates on it.
+
+   **Drawn as ONE continuous card with the row above it, not a floating
+   block under a header.** The row it follows is ALWAYS `.am-bench-row
+   .selected` (same `model === selectedModel && row !== null` test drives
+   both, in BenchmarkTab.tsx) — that row's own bottom corners are squared
+   and its bottom border dropped (see `.am-bench-row.selected`), so this
+   element supplies the matching left/right/bottom border, the bottom
+   radius the row's TOP corners already have, and the identical accent
+   wash, with `margin-top` cancelling `.am-bench-rows`'s own 6px `gap` so
+   there is no seam between "the header" and "the part that opened". */
+.am-bench-rowexpand {
+  /* Full row width for free: this is a SIBLING of `.am-bench-row`'s grid, not
+     a cell inside it, so it never has to fight that row's
+     `grid-template-columns` for room the chart needs in full. */
+  padding: 10px 12px 12px;
+  /* Cancels `.am-bench-rows`' own 6px flex `gap` between this and the row
+     above it — a negative margin equal to the gap is the standard way to
+     opt ONE pair of flex/grid siblings out of an otherwise-uniform gap
+     without touching the container itself (the gap must still separate
+     every OTHER pair of rows normally). */
+  margin-top: -6px;
+  border: 1px solid var(--accent);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
 }
 
-.am-bench-trend-title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
+/* `.am-group-note` is a widely shared class (Local tab section notes, the
+   empty-leaderboard note, the no-chart note above the rows) whose base rule
+   (near the top of this file) carries a `--am-gap-head` bottom margin sized
+   for a section-level caption clearing space before the cards under it.
+   The "no {metric} recorded for this model yet" note is the ONE usage of
+   it that lives INSIDE this expansion instead — there is no card under it
+   to clear, only `.am-bench-rowexpand`'s own bottom padding, so that margin
+   just opened the same stale gap `.am-bench-chart`/`.am-bench-trend-single`
+   used to. Scoped to this one descendant context rather than touched on
+   the shared base rule, which every OTHER `.am-group-note` still needs. */
+.am-bench-rowexpand .am-group-note {
+  margin-bottom: 0;
 }
 
+/* No bottom margin here any more — checked (grep) and `ModelTrendChart.tsx`
+   is this class's ONE consumer, and that component is itself only ever
+   rendered inside `.am-bench-rowexpand` now (D481 moved the trend chart
+   off its own page-level section and into the row's expansion); it is NOT
+   shared with `ComparisonChart` (the section-level hero chart), which
+   carries its own, entirely separate `.am-bench-compare*` classes and
+   never touches this one. So the old `--am-gap-head` (16px) bottom margin
+   — sized for when this WAS a page-level section that needed to clear
+   space before the archive table below it — had nothing left to clear:
+   `.am-bench-rowexpand`'s own padding is the expansion's bottom edge now,
+   and the old margin only opened an extra gap between the expansion and
+   the NEXT row, breaking `.am-bench-rows`' 6px rhythm between every other
+   pair of rows. */
 .am-bench-chart {
-  margin-bottom: var(--am-gap-head);
+  margin-bottom: 0;
 }
 
 /* The ONE-RUN state: no trend to draw (a single point has no before to read
@@ -2466,16 +2731,19 @@
    was a lone dot in an otherwise empty chart, reading as the page being
    broken rather than as "here is the one number we have". A fraction of the
    chart's own height, the value stated as plainly as the leaderboard states
-   it, with the fix in the same breath. */
+   it, with the fix in the same breath.
+
+   **No border/background/margin of its own any more.** Like `.am-bench-
+   chart` above, this class's one consumer (BenchmarkTab.tsx) is inside
+   `.am-bench-rowexpand` — the row's own card — so a second bordered,
+   `--bg`-filled box here drew a box inside a box, with a visible band of
+   plain `--bg` sitting inside the expansion's accent wash around it. The
+   card is the container now; this is one of its children, not a second
+   container of its own. */
 .am-bench-trend-single {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 14px 16px;
-  margin-bottom: var(--am-gap-head);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .am-bench-trend-value {
@@ -2530,14 +2798,22 @@
 
 /* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
    plot fills whatever width the column has without the component measuring
-   anything (see ModelTrendChart.tsx). */
+   anything (see ModelTrendChart.tsx).
+
+   **No `background`/`border`/`border-radius` of its own any more** — this
+   was the actual "box inside a box": a `--bg`-filled, bordered rectangle
+   floating inside `.am-bench-rowexpand`'s own accent-tinted card, with a
+   visible plain band around the plot where the two backgrounds disagreed.
+   `ModelTrendChart` (this class's only consumer, confirmed by grep — it is
+   NOT shared with `ComparisonChart`, which draws its own `.am-bench-
+   compare-plot`) already delineates the plot with its OWN gridlines and
+   baseline (`.am-bench-gridline`/`.am-bench-axis-line`, drawn inside the
+   SVG) — a second, outer rectangle around all of that was doing the same
+   job twice. */
 .am-bench-plot {
   display: block;
   width: 100%;
   height: var(--am-bench-plot-h);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .am-bench-axis-line {

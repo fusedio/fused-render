@@ -23,9 +23,61 @@
 // `capabilityLabel`, sizes from `formatSize`, and the section order from the
 // Local tab's own `CAPABILITY_ORDER`. A second copy of any of those is how one
 // page comes to disagree with itself.
-import type { AiBenchmarkMetrics, AiBenchmarkRun } from "@platform/lib/api";
+import type { AiBenchmarkMetrics, AiBenchmarkRun, AiBenchmarkWorkload } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
+
+/** What a run under this capability actually DOES, in one sentence — server
+ *  fact, never a frontend guess (D483). The Benchmark tab's only other words
+ *  about the workload were the tab subtitle ("a fixed workload per
+ *  capability, timed on this machine"), which never said WHAT the fixed
+ *  work actually was; a reader had no way to learn that a text run decodes
+ *  128 tokens greedily, or that a speech run transcribes a 30-second tone,
+ *  without reading `ai/benchmark.py` themselves.
+ *
+ *  Built from `workload.params` — the SAME object the server sends, built by
+ *  `Workload.as_dict()` — never a second, hand-copied table of those facts
+ *  on this side: `tests/test_ai_benchmark_workload_note.py` pins every
+ *  param name used below against the server's own `WORKLOADS` so a new
+ *  param added there fails a test here rather than drifting silently, the
+ *  same class of guard D470 already gives `_IMAGE_WIRE_KEYS`/
+ *  `_TRANSCRIBE_WIRE_KEYS`.
+ *
+ *  **`prompt` and `texts` are read but never echoed verbatim** — a reader
+ *  comparing two models needs to know the prompt/texts are FIXED, not the
+ *  words themselves, which would turn one line into a paragraph for no
+ *  comparison anybody is making. `_CONTENT_PARAMS_WITH_NO_LITERAL_ECHO` in
+ *  that same drift test is the explicit, narrow exemption for those two —
+ *  every OTHER param name in `workload.params` must appear literally
+ *  somewhere in the strings this function returns.
+ *
+ *  Returns null for a capability this function does not know how to
+ *  describe (there is currently one for one — every capability with a
+ *  workload at all has a case below) rather than a generic fallback
+ *  sentence that would say nothing. */
+export function workloadNote(capability: string, workload: AiBenchmarkWorkload | null): string | null {
+  if (!workload) return null;
+  const p = workload.params;
+  const provenance = `${workload.name} · rev ${workload.revision}`;
+  switch (capability) {
+    case "text-generation":
+      return `Decodes ${p.maxTokens} tokens from a fixed prompt, greedy (temperature ${p.temperature}) — ${provenance}.`;
+    case "text-to-image":
+      // `steps` is deliberately ABSENT from `params` (ai/benchmark.py's own
+      // module docstring) — each model contributes its own catalog default,
+      // recorded per run rather than fixed here, and that omission is
+      // exactly the fact a reader comparing two image models needs, so it
+      // is said in words rather than silently leaving `steps` out of this
+      // sentence with no explanation.
+      return `Renders a fixed ${p.width}×${p.height} prompt at guidance ${p.guidance}, seed ${p.seed} — each model's own step count (not fixed here) is recorded per run — ${provenance}.`;
+    case "automatic-speech-recognition":
+      return `Transcribes ${p.audioSeconds}s of a generated ${p.toneHz} Hz tone at ${p.sampleRate} Hz — ${provenance}.`;
+    case "embeddings":
+      return `Encodes ${p.batch} fixed texts as one batch — ${provenance}.`;
+    default:
+      return null;
+  }
+}
 
 /** What an unmeasured number renders as. One constant, so a table cell, a
  *  summary line and a chart caption cannot each pick a different dash. */
@@ -266,15 +318,42 @@ export function formatMetricSpecValue(value: number | null, spec: MetricSpec): s
  *  correctly for a higher-is-better metric under the ordinary "longer bar /
  *  bigger number wins" habit — labelling that case too would be noise that
  *  makes the one case actually worth flagging (a SHORTER bar winning) stop
- *  standing out. One badge, read by both instruments below it (the
- *  comparison chart and the per-model trend chart both invert the same way),
- *  rather than a copy of the same words drawn twice.
+ *  standing out. Said ONCE, where the metric is chosen — folded into the select's
+ *  own option text by `metricOptionLabel` and read from there by both
+ *  instruments below it (the comparison chart and the per-model trend chart
+ *  both invert the same way) rather than drawn again beside either. The share
+ *  card (`shareCard.ts`) calls this directly, since a PNG leaving this app has
+ *  no select to carry it.
  */
 export function metricUnitAndCue(metric: MetricSpec): string {
   const parts: string[] = [];
   if (metric.unit) parts.push(metric.unit);
   if (!metric.higherIsBetter) parts.push("lower is better");
   return parts.join(" · ");
+}
+
+/** One `<option>` in the Metric select: the metric's name with its unit and
+ *  direction cue in parentheses behind it — "Speed (× realtime)", "Peak memory
+ *  (lower is better)", "Throughput (tok/s)".
+ *
+ *  **This replaced a separate badge beside the select**, and the reason is the
+ *  transcription unit: `× realtime` is a multiplier SUFFIX, which parses only
+ *  when it trails a number ("1.4× realtime"). Alone in a bordered pill next to
+ *  a control it stops being a unit and becomes a stray operator — it read as
+ *  the dismiss ✕ of a removable filter chip, which is a shape this app uses
+ *  elsewhere for exactly that meaning (the Tasks filter pills). Inside the
+ *  option it is back to trailing words that give it a subject.
+ *
+ *  It also answers the metric whose unit is EMPTY: `Peak memory` formats
+ *  through the byte formatter and carries no unit string, so the badge there
+ *  drew a chip containing nothing but "lower is better".
+ *
+ *  A metric with neither a unit nor a cue (none today — every
+ *  higher-is-better metric here has a unit) gets no parenthetical rather than
+ *  an empty pair of brackets. */
+export function metricOptionLabel(metric: MetricSpec): string {
+  const suffix = metricUnitAndCue(metric);
+  return suffix ? `${metric.label} (${suffix})` : metric.label;
 }
 
 /** The primary metric as the page shows it — "42.1 tok/s", or a dash. */
@@ -1111,12 +1190,51 @@ export function defaultModel(models: string[], counts: Record<string, number>): 
   return mostRuns(models, counts);
 }
 
+/** The sentinel `resolveModel` reads as "the reader explicitly closed the
+ *  open row" (D481's toggle) — carrying the CAPABILITY it was closed
+ *  under, rather than a bare `""`. `BenchmarkTab`'s `modelParam` is one
+ *  piece of state shared across every capability (only the LEADERBOARD it
+ *  is resolved against changes when `?benchCap=` does), so a bare `""`
+ *  written while closing a row under "text-generation" would still read as
+ *  "closed" the instant the reader switched to "embeddings" — collapsing a
+ *  capability that was never actually closed, rather than opening its own
+ *  default model. Prefixed with a token no real `?benchModel=` value can
+ *  ever collide with (a capability id, never a model id), so a sentinel
+ *  closed under one capability fails the equality check under any OTHER
+ *  capability and falls through to `resolveFromRuns`'s ordinary default —
+ *  self-correcting with no separate "clear this on capability switch"
+ *  effect required anywhere. */
+export function closedModelSentinel(capability: string): string {
+  return `__closed__${capability}`;
+}
+
 /** The trend chart's actual model: the URL's `?benchModel=` when it names a
  *  model in THIS capability's leaderboard, `defaultModel`'s pick otherwise.
  *  See `resolveFromRuns` — a model belonging to a DIFFERENT capability (the
  *  reader just switched `?cap=`) falls through to the default exactly like a
- *  stale or foreign value would. */
-export function resolveModel(models: string[], param: string | null, counts: Record<string, number>): string | null {
+ *  stale or foreign value would.
+ *
+ *  **`param === closedModelSentinel(capability)` is a THIRD state, distinct
+ *  from absent (`null`) — the reader explicitly closed the open row for
+ *  THIS capability, and that must NOT fall through to `defaultModel`'s pick
+ *  the way an absent or unrecognised param does.** `null` means "no opinion
+ *  yet, pick the usual default"; the sentinel means "there WAS a pick FOR
+ *  THIS CAPABILITY, and it was closed" — a plain landing on this tab (or a
+ *  shared link with no `?benchModel=` at all) still opens the best-ranked
+ *  row, exactly as before, but a reader who closed it and then reloads
+ *  gets the closed state back rather than the row silently re-opening
+ *  under them. A sentinel closed under a DIFFERENT capability (stale
+ *  `modelParam` state a capability switch does not itself clear) is
+ *  neither this capability's own sentinel NOR a real model id, so it falls
+ *  through to the ordinary default exactly like any other foreign value —
+ *  the cross-capability leak this signature change exists to close. */
+export function resolveModel(
+  models: string[],
+  param: string | null,
+  counts: Record<string, number>,
+  capability: string | null,
+): string | null {
+  if (capability !== null && param === closedModelSentinel(capability)) return null;
   return resolveFromRuns(models, param, counts);
 }
 

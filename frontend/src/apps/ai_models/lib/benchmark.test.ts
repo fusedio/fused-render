@@ -20,6 +20,7 @@ import {
   formatRunTime,
   latestByModel,
   leaderboard,
+  metricOptionLabel,
   metricUnitAndCue,
   metricValueForSpec,
   middleEllipsis,
@@ -31,6 +32,7 @@ import {
   primaryValue,
   resolveCapability,
   resolveMetric,
+  closedModelSentinel,
   resolveModel,
   rowDetail,
   rowHeadline,
@@ -43,6 +45,7 @@ import {
   stoppedNote,
   summaryLine,
   trendKind,
+  workloadNote,
   yAxisTicks,
   type MetricSpec,
   type ModelLatest,
@@ -367,7 +370,7 @@ describe("orderCapabilities", () => {
   it("sorts the four into the same order the rest of the page uses", () => {
     expect(
       orderCapabilities(["embeddings", "automatic-speech-recognition", "text-to-image", "text-generation"]),
-    ).toEqual(["text-to-image", "text-generation", "automatic-speech-recognition", "embeddings"]);
+    ).toEqual(["text-generation", "text-to-image", "automatic-speech-recognition", "embeddings"]);
   });
 
   it("keeps a capability the frontend has never heard of, after the known ones", () => {
@@ -1232,9 +1235,39 @@ describe("metricUnitAndCue", () => {
     expect(metricUnitAndCue(MEMORY)).toBe("lower is better");
   });
 
-  it("never states the metric's own name — the select beside it already does", () => {
+  it("never states the metric's own name — `metricOptionLabel` is what pairs the two", () => {
     expect(metricUnitAndCue(REALTIME)).not.toContain("Speed");
     expect(metricUnitAndCue(MEMORY)).not.toContain("Peak memory");
+  });
+});
+
+describe("metricOptionLabel", () => {
+  // The whole reason the unit moved out of a badge and into the option text:
+  // "× realtime" is a multiplier SUFFIX and only parses trailing something.
+  // Alone in a pill beside the select it read as a filter chip's dismiss ✕.
+  it("gives the multiplier unit a subject to trail", () => {
+    expect(metricOptionLabel(REALTIME)).toBe("Speed (× realtime)");
+  });
+
+  it("carries the direction cue for a lower-is-better metric", () => {
+    expect(metricOptionLabel(DECODE_TIME)).toBe("Decode time (s · lower is better)");
+  });
+
+  // The badge's other bad case: a chip holding no unit at all, because peak
+  // memory's is dynamic (bytes through the platform formatter).
+  it("reads as a sentence for the metric with no unit of its own", () => {
+    expect(metricOptionLabel(MEMORY)).toBe("Peak memory (lower is better)");
+  });
+
+  it("never leaves empty brackets when a metric has neither unit nor cue", () => {
+    const bare: MetricSpec = { ...REALTIME, unit: "", higherIsBetter: true };
+    expect(metricOptionLabel(bare)).toBe(bare.label);
+  });
+
+  it("always starts with the metric's own name — it IS the option's label", () => {
+    for (const spec of availableMetrics("text-generation", [run()])) {
+      expect(metricOptionLabel(spec).startsWith(spec.label)).toBe(true);
+    }
   });
 });
 
@@ -1282,13 +1315,47 @@ describe("defaultModel", () => {
 
 describe("resolveModel", () => {
   it("keeps an explicit ?benchModel= naming a real model in this capability", () => {
-    expect(resolveModel(["a", "b"], "b", { a: 5 })).toBe("b");
+    expect(resolveModel(["a", "b"], "b", { a: 5 }, "text-generation")).toBe("b");
   });
 
   it("falls back to the default when the param names a model from a DIFFERENT capability", () => {
     // The reader switched ?cap=; a model that belonged to the old one is
     // exactly like a stale or foreign param.
-    expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 })).toBe("a");
+    expect(resolveModel(["a", "b"], "some/other-capabilitys-model", { a: 5, b: 1 }, "text-generation")).toBe("a");
+  });
+
+  it("treats THIS capability's own closed sentinel as closed, not as absent", () => {
+    // The sentinel is the reader having closed the open row — a real third
+    // state, distinct from `null` (no opinion yet). Falling through to the
+    // default here would make a closed row re-open itself on every reload,
+    // which is the exact bug this case pins.
+    expect(resolveModel(["a", "b"], closedModelSentinel("text-generation"), { a: 5, b: 1 }, "text-generation")).toBeNull();
+  });
+
+  it("still opens the default when there is no ?benchModel= at all", () => {
+    // `null` — a fresh landing, or a shared link that never mentioned a
+    // model — is NOT the same as an explicit close, and must keep the
+    // existing default-opens behaviour.
+    expect(resolveModel(["a", "b"], null, { a: 5, b: 1 }, "text-generation")).toBe("a");
+  });
+
+  it("does NOT let a row closed under one capability collapse a different one", () => {
+    // The real bug: `modelParam` is one piece of React state shared across
+    // every capability, so closing a row under "text-generation" and then
+    // switching `?benchCap=` to "embeddings" must NOT leave "embeddings"
+    // reading as closed too — its own default model should still open. A
+    // bare "" sentinel could not tell these apart; a capability-scoped one
+    // can, by construction (`closedModelSentinel`'s own comment).
+    const closedElsewhere = closedModelSentinel("text-generation");
+    expect(resolveModel(["a", "b"], closedElsewhere, { a: 5, b: 1 }, "embeddings")).toBe("a");
+  });
+
+  it("is null-safe when there is no current capability to scope the sentinel to", () => {
+    // Defensive only — `BenchmarkTab` never calls this with a null
+    // capability while also holding a real sentinel — but a null
+    // capability must not accidentally equal a closed marker for some
+    // OTHER falsy-ish capability string and misreport "closed".
+    expect(resolveModel(["a", "b"], closedModelSentinel("text-generation"), { a: 5, b: 1 }, null)).toBe("a");
   });
 });
 
@@ -1405,3 +1472,59 @@ describe("niceAxisMax", () => {
   });
 });
 
+
+describe("workloadNote", () => {
+  const workload = (params: Record<string, unknown>) => ({
+    name: "text-128-tokens",
+    revision: 1,
+    params,
+  });
+
+  it("names the tokens, greedy decode and provenance for text generation", () => {
+    const note = workloadNote(
+      "text-generation",
+      workload({ prompt: "…", maxTokens: 128, temperature: 0.0 }),
+    );
+    expect(note).toContain("128");
+    expect(note).toContain("greedy");
+    expect(note).toContain("text-128-tokens");
+    expect(note).toContain("rev 1");
+    // The prompt's own words are never echoed — see the function's own
+    // comment for why (a reader needs to know it is FIXED, not what it says).
+    expect(note).not.toContain("…");
+  });
+
+  it("names the size, guidance and seed for image generation, and says steps are per-model", () => {
+    const note = workloadNote(
+      "text-to-image",
+      workload({ prompt: "…", width: 512, height: 512, seed: 0, guidance: 4.0 }),
+    );
+    expect(note).toContain("512");
+    expect(note).toContain("guidance");
+    expect(note).toContain("seed");
+    // `steps` is deliberately absent from the server's own params — the
+    // note has to say THAT in words, not just quietly omit it.
+    expect(note?.toLowerCase()).toContain("step");
+  });
+
+  it("names the duration, tone and sample rate for speech", () => {
+    const note = workloadNote(
+      "automatic-speech-recognition",
+      workload({ audioSeconds: 30.0, sampleRate: 16000, toneHz: 440.0 }),
+    );
+    expect(note).toContain("30");
+    expect(note).toContain("440");
+    expect(note).toContain("16000");
+  });
+
+  it("names the batch size for embeddings, without echoing the texts themselves", () => {
+    const note = workloadNote("embeddings", workload({ texts: ["a", "b"], batch: 8 }));
+    expect(note).toContain("8");
+    expect(note).not.toContain("\"a\"");
+  });
+
+  it("is null with no workload, or for a capability it has no case for", () => {
+    expect(workloadNote("text-generation", null)).toBeNull();
+    expect(workloadNote("text-to-video", workload({}))).toBeNull();
+  });
+});

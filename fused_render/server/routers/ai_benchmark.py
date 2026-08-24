@@ -152,11 +152,25 @@ def _history() -> dict:
     that short of a hardcoded capability name that would go stale the day a
     workload actually lands. The server stays the one place that decision is
     made; the tab reads it rather than repeating it.
+
+    `workloads` is the actual fixed-work table those capabilities name,
+    keyed the same way and each entry built by `Workload.as_dict()` — the
+    IDENTICAL method a run record's own `workload` block is built from
+    (`benchmark.py`'s `Workload`), so there is no second serialization to
+    drift from the first. Added so the tab can tell a reader WHAT a run
+    actually measures (128 greedy-decoded tokens, a 30-second tone, eight
+    embedded texts, a 512×512 image at each model's own catalog step count)
+    without that prose living in the frontend as a copy of server facts —
+    exactly the class of duplication `_IMAGE_WIRE_KEYS`/`_TRANSCRIBE_WIRE_KEYS`
+    (D470) already guard elsewhere on this API. Backward-compatible: an
+    additive field, so a client that has never heard of `workloads` reads
+    exactly the payload it always has.
     """
     return {
         "runs": bench_store.read(),
         "machine": benchmark.machine(),
         "workloadCapabilities": sorted(benchmark.WORKLOADS),
+        "workloads": {cap: w.as_dict() for cap, w in benchmark.WORKLOADS.items()},
     }
 
 

@@ -3000,6 +3000,15 @@ export interface AiBenchmarkHistory {
    *  capability selector to this set rather than hardcoding the gap, so a
    *  future workload lights the section up with no frontend change. */
   workloadCapabilities: string[];
+  /** The FIXED workload each of `workloadCapabilities` actually runs, keyed
+   *  by capability — same shape as a RUN's own `workload` block
+   *  (`AiBenchmarkWorkload`, above), because the server builds both from the
+   *  identical `Workload.as_dict()` (D483). This is what lets the Benchmark
+   *  tab say WHAT a run measures (128 greedy-decoded tokens, a 30-second
+   *  tone, …) as server fact rather than a frontend copy of
+   *  `ai/benchmark.py`'s `WORKLOADS` table that could silently drift from
+   *  it. */
+  workloads: Record<string, AiBenchmarkWorkload>;
 }
 
 export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {

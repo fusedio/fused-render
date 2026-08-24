@@ -29,24 +29,31 @@ export const UNRECOGNISED = "unrecognised";
  *  `capabilityLabel`, so there is one place where a capability is put into
  *  words.
  *
- *  **THIS IS THE PLAYGROUND'S ORDER, and the Playground no longer keeps its own
- *  copy** (Akshil, 2026-08-24: "check playground list, just follow the order
- *  from playground list into the models section"). The two disagreed for a
- *  while — this list led with text on the argument that a catalogue reads
- *  differently from a set of things you can do, and the Playground led with
- *  images because the picture is the result you can judge at a glance. Whatever
- *  each argument was worth separately, the page they add up to is one whose
- *  tabs put the same five sections in two orders, and a reader moving between
- *  them has to re-find every one. So the tab a reader USES the models on sets
- *  the order, and the tabs that inventory them follow it.
+ *  **ONE list, read by all three tabs — Playground, Models, Benchmark —**
+ *  and no tab keeps a private copy (D475): each used to disagree about
+ *  where a capability landed, and the page they added up to put the same
+ *  five sections in two (then three) orders, so a reader moving between
+ *  tabs had to re-find every one. This is still true after the reorder
+ *  below — the fix was never about WHICH order won, only that there is
+ *  exactly one.
  *
- *  VIDEO IS LISTED, and that is the one substantive change rather than a
- *  re-shuffle. The Playground's private copy named four capabilities and video
- *  was not among them, so it fell through to the end and landed after
- *  Embeddings — not by anybody's decision, but because an unlisted capability
- *  sorts last. It sits after Embeddings here too, which is where it has been
- *  appearing all along; the difference is that it now does so on purpose and
- *  lands in the same place on every machine.
+ *  **TEXT GENERATION LEADS NOW** (2026-08-24), moved up from second: it is
+ *  the capability a reader arrives at this app FOR — the one every other
+ *  capability here is compared against by reputation — so it is what a
+ *  reader should find first on all three tabs, not the second thing after
+ *  image generation. This changes what Playground opens on by default,
+ *  which capability's card is first on the Models tab, and which section
+ *  the Benchmark tab draws first — deliberately, since keeping one shared
+ *  list (rather than reintroducing a per-tab order) is the entire point
+ *  D475 already settled; a change here is a change everywhere on purpose.
+ *  Everything else keeps its PRIOR relative order (image, then speech,
+ *  then embeddings, then video) — this was a promotion of one entry, not
+ *  a fresh ranking of all five.
+ *
+ *  VIDEO IS LISTED, deliberately, rather than left to fall through to the
+ *  end by accident (its own history, from when the Playground had no
+ *  private copy naming it at all) — it sorts last of the five named here,
+ *  which is where it has always ended up, now on purpose.
  *
  *  A capability missing from this list is still not missing from the page: it
  *  sorts after these, in the order the server sent it (see `groupRepos`), which
@@ -59,8 +66,8 @@ export const UNRECOGNISED = "unrecognised";
  *  reading order are two reading orders one edit apart.
  */
 export const CAPABILITY_ORDER = [
-  "text-to-image",
   "text-generation",
+  "text-to-image",
   "automatic-speech-recognition",
   "embeddings",
   "text-to-video",
