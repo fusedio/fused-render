@@ -86,6 +86,8 @@ def test_every_registered_runner_appears_in_loaders():
     from a branch below it would otherwise look absent. The NeMo ASR branch
     also short-circuits but, since D406, names no code — so it contributes
     nothing to `seen` and is exercised by the dedicated tests below instead.
+    The `FL2VA/` branch is in the same position since D468 dropped
+    `h3-video`, and is likewise covered on its own below.
     """
     seen = set()
     for repo_id in formats.MFLUX_VARIANTS:
@@ -104,9 +106,6 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names={"model.gguf"}, dirnames=set(), config={},
         torch_weights=False, gguf_architecture="qwen35"))
-    seen |= set(formats.loaders(
-        repo_id="x/y", names=set(), dirnames={formats.H3_COMPONENT},
-        config={}, torch_weights=False))
     seen |= set(formats.loaders(
         repo_id="x/y",
         names={formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"},
@@ -292,6 +291,34 @@ def test_has_ltx_split_layout_needs_both_signals():
     assert not formats.has_ltx_split_layout({"transformer-dev.safetensors"})
     assert formats.has_ltx_split_layout(
         {formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"})
+
+
+def test_an_FL2VA_snapshot_is_recognised_and_matches_no_runner():
+    """D468 dropped `h3-video`, the only runner that read this layout, so
+    recognising it now means matching NO runner — the same shape D406 left
+    the NeMo ASR branch in. THE TRAP (see `loaders()`'s own comment on the
+    branch): the real `MiniMaxAI/MiniMax-H3` repo carries a root-level
+    `model_index.json` of its own — h3.c's bookkeeping, not a diffusers
+    pipeline manifest — so without the early return a snapshot somebody
+    already fetched would fall through to the diffusers branch and the AI
+    Models page would offer a Load button pointed at a layout diffusers
+    cannot read."""
+    codes = formats.loaders(
+        repo_id="MiniMaxAI/MiniMax-H3",
+        names={formats.DIFFUSERS_INDEX}, dirnames={formats.H3_COMPONENT},
+        config={}, torch_weights=True)
+    assert codes == ()
+    assert not (_IMAGE & set(codes)), codes
+
+
+def test_a_video_binary_runner_is_no_longer_in_DECISIVE():
+    """`h3-video` was dropped (D468) and must not be left in `DECISIVE` —
+    there is no code for that table to name. The `FL2VA/` format is still
+    decisive about matching nothing, which `loaders()`'s early return
+    enforces directly rather than through this table (the same argument
+    `test_a_parakeet_repo_is_no_longer_in_DECISIVE` makes)."""
+    assert "h3-video" not in formats.DECISIVE
+    assert "ltx-video" in formats.DECISIVE
 
 
 def test_a_parakeet_repo_is_no_longer_in_DECISIVE():

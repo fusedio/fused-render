@@ -65,8 +65,6 @@ from __future__ import annotations
 import glob
 import os
 import platform
-import shutil
-import sys
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -90,7 +88,7 @@ EMBEDDINGS = "embeddings"
 #: The Hub's own tag, like `IMAGE_GENERATION` and `SPEECH_TO_TEXT` are — a
 #: diffusers text-to-video pipeline's `_class_name` folds onto "video
 #: generation" (`hub_cache.py`'s `_diffusers_task`), and that label maps here.
-#: The FIRST capability with no "everywhere" row: h3.c is Metal-only, so
+#: The FIRST capability with no "everywhere" row: its only engine is MLX, so
 #: unlike text/image/speech/embeddings there is no cross-platform fallback —
 #: off Apple Silicon this capability has zero runners able to serve it, and
 #: `catalog()` reports `default: null` for it there.
@@ -290,50 +288,6 @@ def _apple_silicon() -> Availability:
         False,
         f"needs Apple Silicon — MLX runs on Metal only (this is {system.lower()}/{machine})",
     )
-
-
-def h3_bin() -> str | None:
-    """Path to the bundled `h3.c` (antirez) Metal binary, or None if this
-    machine has none.
-
-    Resolution order, modeled on `rclone_bin()` (`shell/mounts/rcd.py:571`):
-    1. `FUSED_RENDER_H3_BIN`, a real file — the supervisor's
-       `child_environment` sets this to the payload's copy in a packaged
-       build; an override that is not a file is ignored so it cannot shadow a
-       real binary in a dev checkout.
-    2. The packaged macOS app bundle (`sys.frozen == "macosx_app"`):
-       `Contents/Resources/bin/h3`, staged by `build_dmg.sh` the same way
-       rclone is.
-    3. `shutil.which("h3")` — a dev checkout that built the binary by hand.
-    """
-    override = os.environ.get("FUSED_RENDER_H3_BIN")
-    if override and os.path.isfile(override):
-        return override
-    if getattr(sys, "frozen", None) == "macosx_app":
-        contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-        bundled = os.path.join(contents, "Resources", "bin", "h3")
-        if os.path.isfile(bundled):
-            return bundled
-    return shutil.which("h3")
-
-
-def _h3_available() -> Availability:
-    """`h3-video`'s gate: Apple Silicon AND a resolvable binary.
-
-    Two independent conditions, so the reason names both — a Mac with no
-    binary staged is not the same failure as an Intel Mac, and a page showing
-    the wrong one sends someone down the wrong fix.
-    """
-    silicon = _apple_silicon()
-    if not silicon.ok:
-        return silicon
-    if h3_bin() is None:
-        return Availability(
-            False,
-            "the h3 binary is not available (bundled build missing, and no "
-            "h3 on PATH)",
-        )
-    return Availability(True)
 
 
 def _always() -> Availability:
@@ -1326,39 +1280,27 @@ _RUNNERS: tuple[Runner, ...] = (
         _available=_torch_platform,
     ),
     # Video generation, the fifth capability and the first with no
-    # "everywhere" row: h3.c is a Metal binary and the only engine that can
-    # run MiniMax H3 (see the plan's "Engine = h3.c, bundled" decision — mlx-
-    # video cannot run H3, ComfyUI on MPS falls back to bf16 speed, h3.c-ane's
-    # compile cache is ~19GB per shape, Phosphene is an app whose deps do not
-    # survive a bare `uv sync`). Two rows, both Apple-Silicon-only, ordered so
-    # a bare `fused.ai.video()` reaches the one that fits on a laptop.
+    # "everywhere" row: its one engine is MLX, so this capability is
+    # Apple-Silicon-only and has no cross-platform fallback at all.
     #
-    # **`ltx-video` sits FIRST.** It is LTX-2.3 run through `ltx-2-mlx`, a
-    # pure-MLX, MIT-licensed port that keeps AUDIO (mlx-video's own LTX and
-    # Wan paths either want the 57-108 GB bf16 trees or render silent video —
-    # see the plan's "ltx-2-mlx, not mlx-video" decision) at an int4-distilled
-    # ~30 GB download that a 16 GB Mac can hold. Gated on the SAME
-    # `_apple_silicon` check `mlx-embed` above uses, not `_h3_available`: this
-    # row has no bundled binary to resolve, just a `uv sync`-able git package
-    # (Task 2), so "can this machine run MLX at all" is the whole gate.
+    # `ltx-video` is LTX-2.3 run through `ltx-2-mlx`, a pure-MLX, MIT-licensed
+    # port that keeps AUDIO (mlx-video's own LTX and Wan paths either want the
+    # 57-108 GB bf16 trees or render silent video — see the plan's
+    # "ltx-2-mlx, not mlx-video" decision) at an int4-distilled ~30 GB
+    # download that a 16 GB Mac can hold. Gated on the SAME `_apple_silicon`
+    # check `mlx-embed` above uses: this row has no bundled binary to resolve,
+    # just a `uv sync`-able git package, so "can this machine run MLX at all"
+    # is the whole gate.
     #
-    # **`h3-video` stays exactly as it was, one row down.** MiniMax H3's 144.1
-    # GB checkpoint and 64 GB-class RAM floor make it the wrong "just try
-    # video" default on most of the Apple Silicon fleet, but it remains
-    # reachable for whoever wants its ceiling instead of `ltx-video`'s floor —
-    # through the ENGINE PREFERENCE (the Engines tab), not by naming
-    # `MiniMaxAI/MiniMax-H3` in a request. Resolution here is by capability
-    # plus stored preference (`resolve()`, below), never by `model` — a
-    # request that names H3's repo while the preference (or the ordering,
-    # absent one) resolves to `ltx-video` reaches the ltx-video worker
-    # instead and is refused, by `server/routers/ai_runtime.py`'s own
-    # cached-format check, before a byte moves. One row, gated on BOTH Apple
-    # Silicon and a resolvable binary (`_h3_available`), so off a Mac — or
-    # on a Mac whose build never staged
-    # the binary — the capability falls through to `ltx-video`'s own gate
-    # instead of disappearing outright, which is the change from before: only
-    # a machine that is not Apple Silicon at all now sees `default: null`
-    # for video generation.
+    # There was a second row here, `h3-video` (MiniMax H3 via antirez/h3.c, a
+    # bundled Metal binary), removed in D468. It could not work on macOS
+    # 14 on two independent counts — the binary built with an implicit
+    # minos 15.0, and h3.c's attention path calls MPSGraph's
+    # scaledDotProductAttention plus MTLCompileOptions.mathMode, both
+    # macOS 15.0+ with no pre-15 fallback — and bundling it forced the whole
+    # release build onto a macos-15 runner, which is what shipped a
+    # macOS-15-only pyexpat.so and broke app launch on macOS 14 outright.
+    # LTX-2.3 already served this capability as the default row.
     Runner(
         code="ltx-video",
         capability=VIDEO_GENERATION,
@@ -1370,20 +1312,8 @@ _RUNNERS: tuple[Runner, ...] = (
         short_label="LTX-2.3",
         family_label="LTX-2.3",
         note="Text-to-video with audio, distilled to 8 steps. Needs 16 GB+ "
-             "of RAM; MiniMax H3 below is the higher-fidelity, higher-cost "
-             "alternative.",
+             "of RAM.",
         _available=_apple_silicon,
-    ),
-    Runner(
-        code="h3-video",
-        capability=VIDEO_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "h3_video"),
-        label="H3 (Apple Silicon)",
-        short_label="H3",
-        family_label="H3",
-        note="Text-to-video with audio, on the GPU. No fallback exists on "
-             "other platforms.",
-        _available=_h3_available,
     ),
 )
 
@@ -1392,18 +1322,18 @@ _RUNNERS: tuple[Runner, ...] = (
 class VideoTraits:
     """The shape of a video request, for the one runner that will actually
     serve it — the three facts `server/routers/ai_runtime.py`'s route used
-    to hardcode as H3's own numbers before a second video runner existed:
-    the frame-count grid, the default canvas, and the default step count.
+    to hardcode before this table existed: the frame-count grid, the default
+    canvas, and the default step count.
 
     **The frame grid is `frames_base + frames_step * n`**, `n` starting at 0
     — `_snap_frames` (`ai_runtime.py`) rounds a request UP to the nearest
-    point on it, never down, mirroring whichever engine's own alignment rule
-    it is (h3.c's `h3_align_frame_count` for H3; LTX has no compiled binary
-    to align against, but its VAE's temporal compression is 8, so `8n + 1`
-    is the natural grid its own upstream CLI defaults to). Side clamps and
+    point on it, never down, mirroring the engine's own alignment rule
+    (LTX has no compiled binary to align against, but its VAE's temporal
+    compression is 8, so `8n + 1` is the natural grid its own upstream CLI
+    defaults to). Side clamps and
     the overall pixel budget stay SHARED across every video runner — those
-    are values the app itself chose as a safety rail, not a fact about
-    either engine's weights — so only the canvas DEFAULT is a trait here.
+    are values the app itself chose as a safety rail, not a fact about the
+    engine's weights — so only the canvas DEFAULT is a trait here.
 
     Not a dict of bare ints: the fields are named exactly once (here) and
     read by name everywhere else, the same argument `Runner`'s own fields
@@ -1429,12 +1359,12 @@ class VideoTraits:
 #: lookup rather than an entry that says nothing.
 #:
 #: `video_traits_for` is the only reader outside this file, and it falls
-#: back to H3's own row for a code THIS table has never heard of — a runner
-#: registered by a test (`fake_video_runner`), or one written before this
-#: table existed. That fallback is not a guess: it is the exact request
-#: shape every video call got before a second engine existed, so a caller
-#: this table cannot name gets the behaviour it always had rather than a
-#: KeyError or an arbitrary new default.
+#: back to `ltx-video`'s row for a code THIS table has never heard of — a
+#: runner registered by a test (`fake_video_runner`), or one written before
+#: this table existed. The fallback is the SHIPPING video runner's own row
+#: rather than an engine-neutral guess, so a caller this table cannot name
+#: gets a request shape some real engine actually accepts rather than a
+#: KeyError. It was H3's row until that runner was dropped (D468).
 VIDEO_TRAITS: dict[str, VideoTraits] = {
     # 97 = 1 + 8*12 — upstream's own CLI default (`--frames 97`), and this
     # runner's own `worker.py` default. 704x480 and 8 steps are that same
@@ -1442,27 +1372,19 @@ VIDEO_TRAITS: dict[str, VideoTraits] = {
     "ltx-video": VideoTraits(
         frames_base=1, frames_step=8, default_frames_n=12,
         default_width=704, default_height=480, default_steps=8),
-    # VERIFIED against the built `h3` binary — see `ai_runtime.py`'s own
-    # comments beside `_FRAMES_STEP`/`_FRAMES_BASE` and the 864x480 default,
-    # which this row's numbers are copied from verbatim. Unchanged by this
-    # runner's addition; also serves as `video_traits_for`'s fallback.
-    "h3-video": VideoTraits(
-        frames_base=5, frames_step=17, default_frames_n=5,
-        default_width=864, default_height=480, default_steps=20),
 }
 
 
 def video_traits_for(code: str | None) -> VideoTraits:
-    """The request shape for `code`, falling back to H3's own numbers.
+    """The request shape for `code`, falling back to `ltx-video`'s numbers.
 
-    See `VIDEO_TRAITS`'s docstring for why the fallback is H3's row
-    specifically rather than some engine-neutral guess: it is the shape
-    every video request already had before this table existed, for a runner
-    this table does not name at all — `code=None` (nothing can serve this
+    See `VIDEO_TRAITS`'s docstring for why the fallback is the shipping
+    runner's row rather than some engine-neutral guess, for a runner this
+    table does not name at all — `code=None` (nothing can serve this
     capability at all, checked separately before a route ever gets here)
     included.
     """
-    return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["h3-video"])
+    return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["ltx-video"])
 
 
 #: `n` ranges over this window on EVERY video runner's own grid — an
@@ -1471,8 +1393,7 @@ def video_traits_for(code: str | None) -> VideoTraits:
 #: a public constant rather than duplicated as a private one in every place
 #: that needs the ACTUAL min/max frame count a runner's grid offers:
 #: `server/routers/ai_runtime.py`'s `_snap_frames` and `catalog.py`'s own
-#: video-traits payload for the Playground (SPEC §40's LTX-2.3 plan, the
-#: fix for Task 5 leaving the client hardcoded to H3's grid).
+#: video-traits payload for the Playground.
 MIN_VIDEO_FRAMES_N = 1
 MAX_VIDEO_FRAMES_N = 21
 
@@ -1495,7 +1416,7 @@ def video_frame_bounds(traits: VideoTraits) -> tuple[int, int]:
 # through: see that module's docstring. This module keeps the CAPABILITY
 # constants above, which is the half `tasks.py` imports — VIDEO_GENERATION
 # included, so `tasks.py`'s "text-to-video" row maps to it rather than sitting
-# in NO_RUNNER now that `h3-video` actually serves it.
+# in NO_RUNNER now that `ltx-video` actually serves it.
 
 
 def all_runners() -> tuple[Runner, ...]:

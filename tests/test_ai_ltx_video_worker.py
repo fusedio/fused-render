@@ -7,7 +7,7 @@ fakes injected into `sys.modules` — no Metal, no weights, no real ffmpeg. What
 is pinned here is the CONTRACT: which repos `download` asks for and with what
 patterns, what `load` refuses and why, and that `generate` drives
 `DistilledPipeline.generate_and_save` with this worker's defaults and returns
-the same reply shape `h3_video.generate` does.
+the reply shape the video job has always emitted.
 """
 import fnmatch
 import importlib.util
@@ -468,8 +468,8 @@ def test_load_accepts_the_versioned_distilled_transformer(monkeypatch, base, tmp
 
 def test_load_makes_ffmpeg_resolvable_via_PATH(monkeypatch, base, tmp_path):
     """`ltx_core_mlx.utils.ffmpeg.find_ffmpeg()` is a bare `shutil.which
-    ("ffmpeg")` with no environment-variable override (unlike h3.c's own
-    `H3_FFMPEG` convention) — the only lever this process has is PATH, and
+    ("ffmpeg")` with no environment-variable override — the only lever this
+    process has is PATH, and
     `shutil.which` matches on the exact basename.
 
     Asserted through `shutil.which("ffmpeg")` itself — the actual call `find_

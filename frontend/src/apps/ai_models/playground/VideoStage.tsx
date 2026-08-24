@@ -30,29 +30,34 @@ import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 // across every video runner — are both enforced server-side regardless).
 const DEFAULTS = { width: 512, height: 512 };
 const SIZE_RANGE = [256, 1344] as const;
-// [2, 50]: h3's own hard floor is 2 -- 1 step is refused outright
-// ("denoising steps must be in [2, 1000]") -- the ceiling (50) is this
-// app's own choice, far inside h3's actual [2, 1000]. Shared across every
-// engine, same as `SIZE_RANGE` — an app-chosen safety rail, not a fact
-// about either engine's weights (`registry.py`'s own `MIN_VIDEO_FRAMES_N`
+// [2, 50]: the floor of 2 came from the dropped `h3-video` runner, which
+// refused 1 step outright ("denoising steps must be in [2, 1000]"), and is
+// kept as the app's own on that runner's removal (D468) — 1 step is not a
+// meaningfully faster render on any engine. Both ends are shared across
+// every engine, same as `SIZE_RANGE` — an app-chosen safety rail, not a
+// fact about the engine's weights (`registry.py`'s own `MIN_VIDEO_FRAMES_N`
 // comment makes the identical argument about the frame grid's own window).
 const STEPS_RANGE = [2, 50] as const;
 
 // **The fallback when the server sends no traits at all** — a capability row
 // from a build old enough to predate this field, or one the caller built by
-// hand for a test. Deliberately H3's own numbers: `registry.video_traits_for`
-// falls back to the exact same row for a runner code IT doesn't recognise,
-// so a missing payload here degrades to the request shape every video call
-// already had before a second engine existed, rather than an invented range.
+// hand for a test. **It must stay byte-for-byte the row
+// `registry.video_traits_for` falls back to** (`ltx-video`'s, since D468
+// dropped `h3-video` and with it the 5 + 17n / 864x480 / 20-step row both
+// sides used to name): a client that guesses a different grid than the
+// server snaps to draws a slider whose every value the render then moves,
+// which is the exact "a control that lies about what will run" failure the
+// `videoTraits` payload exists to close. If that server-side fallback moves
+// again, this moves with it.
 const FALLBACK_TRAITS: NonNullable<AiCatalogCapability["videoTraits"]> = {
-  framesBase: 5,
-  framesStep: 17,
-  minFrames: 22,
-  maxFrames: 362,
-  defaultFrames: 90,
-  defaultWidth: 864,
+  framesBase: 1,
+  framesStep: 8,
+  minFrames: 9,
+  maxFrames: 169,
+  defaultFrames: 97,
+  defaultWidth: 704,
   defaultHeight: 480,
-  defaultSteps: 20,
+  defaultSteps: 8,
 };
 
 // Eight authored examples — two pages of four (D465). Every one names a

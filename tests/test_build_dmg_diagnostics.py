@@ -10,9 +10,10 @@ nothing else can check it.
 import os
 import re
 
-_SCRIPTS = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"
-)
+import pytest
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SCRIPTS = os.path.join(_REPO, "scripts")
 _DMG = os.path.join(_SCRIPTS, "build_dmg.sh")
 
 
@@ -107,139 +108,40 @@ def test_the_force_list_reconciliation_does_not_repin_the_shipped_payload():
         )
 
 
-def test_h3_commit_pin_is_single_sourced():
-    """H3_COMMIT must come from scripts/h3_commit.txt, not a literal.
+# The macOS runner image is load-bearing, not incidental -- see the comment at
+# each workflow's own `runs-on`. `build_dmg.sh` bundles Homebrew's python@3.12
+# FRAMEWORK, and Homebrew ships prebuilt PER-OS bottles, so the image the DMG
+# is built on decides which OS's system libraries the bundled interpreter's C
+# extensions link against. Building on macos-15 shipped a `pyexpat.so`
+# referencing `XML_SetReparseDeferralEnabled` -- a symbol macOS 14's
+# /usr/lib/libexpat.1.dylib does not export -- so `import plistlib` failed at
+# launch and py2app showed only its generic "Launch error" dialog. The app's
+# own MACOSX_DEPLOYMENT_TARGET was correct throughout and did not help: it
+# governs code WE compile, not bottles we bundle.
+_MACOS_WORKFLOW_JOBS = (
+    ("release.yml", "build-sign-notarize-release"),
+    ("test.yml", "macos-desktop"),
+)
 
-    scripts/dev.sh builds the same antirez/h3.c pin (for the h3-video runner in
-    a dev checkout) and MUST read the identical commit — a second hardcoded sha
-    is exactly the drift this repo has been bitten by elsewhere (see
-    RCLONE_VERSION, duplicated across build_dmg.sh and
-    build_linux_appimage.sh). scripts/h3_commit.txt is the one place a pin bump
-    may be written.
+
+@pytest.mark.parametrize("workflow,job", _MACOS_WORKFLOW_JOBS)
+def test_the_macos_build_runs_on_the_oldest_supported_image(workflow, job):
+    """Checked on the SOURCE rather than by running the build, for the same
+    reason the diagnostics above are: the failure is silent on the machine
+    that builds (where every symbol resolves) and only shows up on a user's
+    older Mac.
     """
-    src = _script()
-    assert 'H3_COMMIT="$(tr -d \'[:space:]\' < "$REPO_ROOT/scripts/h3_commit.txt")"' in src, (
-        "build_dmg.sh must read H3_COMMIT from scripts/h3_commit.txt, not a "
-        "hardcoded sha, so a pin bump cannot drift out of sync with dev.sh"
-    )
-    # No leftover 40-hex-char literal assignment anywhere else in the script.
-    assert not re.search(r'H3_COMMIT="[0-9a-f]{40}"', src), (
-        "found a hardcoded H3_COMMIT sha literal — the pin must live only in "
-        "scripts/h3_commit.txt"
-    )
-
-    commit_file = os.path.join(_SCRIPTS, "h3_commit.txt")
-    with open(commit_file, encoding="utf-8") as f:
-        pinned = f.read().strip()
-    assert re.fullmatch(r"[0-9a-f]{40}", pinned), (
-        f"scripts/h3_commit.txt must hold exactly one 40-char hex sha, got: {pinned!r}"
-    )
-
-    dev_sh = os.path.join(_SCRIPTS, "dev.sh")
-    with open(dev_sh, encoding="utf-8") as f:
-        dev_src = f.read()
-    assert "scripts/h3_commit.txt" in dev_src, (
-        "dev.sh must read the same scripts/h3_commit.txt file build_dmg.sh reads"
-    )
-    assert not re.search(r'h3_commit="[0-9a-f]{40}"', dev_src), (
-        "found a hardcoded h3 commit literal in dev.sh — it must read "
-        "scripts/h3_commit.txt like build_dmg.sh does"
-    )
-
-
-def test_h3_license_is_staged_and_shipped():
-    """h3.c is MIT: the notice must travel with every copy of the binary.
-
-    A dev-only local build (dev.sh) is not redistribution, but this script
-    ships the compiled h3 binary inside the DMG — that IS redistribution, so
-    the upstream LICENSE has to be staged alongside the cached binary and
-    copied into the app bundle next to it, the same as the binary itself.
-    """
-    src = _script()
-    assert 'cp "$H3_SRC_DIR/LICENSE" "$H3_STAGE_DIR/LICENSE"' in src, (
-        "the h3.c LICENSE must be staged into the build cache alongside the "
-        "compiled binary"
-    )
-    assert 'cp "$H3_STAGED_LICENSE" "$APP_DIR/Contents/Resources/bin/h3-LICENSE"' in src, (
-        "the staged h3.c LICENSE must be copied into the app bundle next to "
-        "the h3 binary it accompanies"
-    )
-
-
-def test_dev_sh_h3_build_is_soft_fail_with_an_opt_out():
-    """dev.sh's h3 build must never be able to abort the dev server start.
-
-    `_h3_maybe_build` is the SYNCHRONOUS gate (opt-out, Apple Silicon, git/
-    clang presence, cache-hit) — every early-exit path there has to `return 0`
-    under dev.sh's own `set -euo pipefail`, and it must never call a bare
-    `exit`, which WOULD take the whole of dev.sh down with it. The actual
-    clone/build/install runs in `_h3_build_in_background`, backgrounded via
-    `( … ) &` — that one legitimately calls `exit 0` on a clone/checkout/
-    compile failure, and that is fine: it only exits the backgrounded
-    subshell dev.sh forked for it, never dev.sh itself.
-
-    There must also be an env var to skip the compile entirely, in the
-    FUSED_RENDER_* naming convention this script already uses for its other
-    knobs (FUSED_RENDER_NO_RELOAD, etc).
-    """
-    dev_sh = os.path.join(_SCRIPTS, "dev.sh")
-    with open(dev_sh, encoding="utf-8") as f:
+    path = os.path.join(_REPO, ".github", "workflows", workflow)
+    with open(path, encoding="utf-8") as f:
         src = f.read()
-    assert "FUSED_RENDER_SKIP_H3_BUILD" in src, (
-        "dev.sh needs an opt-out env var to skip the h3 compile"
+    assert "runs-on: macos-14" in src, (
+        f"{workflow}'s {job} job must build on macos-14, the oldest macOS "
+        f"image GitHub offers: a newer image stages a Homebrew python@3.12 "
+        f"bottle whose C extensions link that newer OS's system libraries, "
+        f"which is what broke app launch on macOS 14 in v0.4.49-v0.4.51"
     )
-    assert "export FUSED_RENDER_H3_BIN=" in src, (
-        "dev.sh must export FUSED_RENDER_H3_BIN so registry.h3_bin() (its "
-        "first resolution step) finds the freshly-built/cached binary"
-    )
-    gate_match = re.search(
-        r"\n_h3_maybe_build\(\) \{(.*?)\n\}\n", src, re.DOTALL
-    )
-    assert gate_match, "expected an _h3_maybe_build function in dev.sh"
-    gate_body = gate_match.group(1)
-    assert "exit 1" not in gate_body and re.search(r"\bexit\b", gate_body) is None, (
-        "_h3_maybe_build must never call `exit` — only `return 0` on failure — "
-        "or a failure would abort the whole dev server start"
-    )
-    assert gate_body.count("return 0") >= 5, (
-        "expected a `return 0` soft-fail on each of: opt-out, non-Apple-Silicon, "
-        "missing git, missing clang/cc, and a cache hit"
-    )
-    # The build itself is backgrounded, not called synchronously with a `||`
-    # guard: a background job's failure can never register against dev.sh's
-    # own `set -e` regardless, so there is nothing for `||` to protect here
-    # (unlike the earlier synchronous version of this step).
-    assert re.search(r"\(\s*_h3_build_in_background .*\)\s*&", src), (
-        "expected the actual clone/build to be launched as a backgrounded "
-        "explicit subshell, `( _h3_build_in_background … ) &`"
-    )
-    assert re.search(r"_h3_maybe_build \|\|", src), (
-        "the call to _h3_maybe_build must be guarded with `||` so a failing "
-        "command inside it cannot abort dev.sh under set -e"
-    )
-
-
-def test_dev_sh_h3_build_is_atomic_and_cleans_up_on_exit():
-    """The install must be temp-then-rename, and the lock/temp state must be
-    released on every exit path of the background build — not just success.
-
-    `h3_bin()` (fused_render/ai/registry.py) resolves `FUSED_RENDER_H3_BIN`
-    with a bare `os.path.isfile` check, so a half-written binary at the cache
-    path would be exec'd by whichever server resolves it next. And a build
-    killed with dev.sh (or one that lost a lock race) must not leave a
-    half-built temp directory or a stale lock behind for a later run to trip
-    over.
-    """
-    dev_sh = os.path.join(_SCRIPTS, "dev.sh")
-    with open(dev_sh, encoding="utf-8") as f:
-        src = f.read()
-    assert re.search(r'mv -f "\$tmp_bin" "\$bin_path"', src), (
-        "the built binary must be moved into place with `mv` (a same-"
-        "filesystem rename is atomic), not written directly to the cache path"
-    )
-    # The cleanup trap must be installed for EXIT, INT and TERM alike — TERM
-    # is what dev.sh's own shutdown sends this subshell's process tree.
-    assert re.search(r'trap "rm -rf .*" EXIT INT TERM', src), (
-        "expected an EXIT/INT/TERM trap that removes the temp build dir, "
-        "temp binary and lock dir on every exit path"
+    assert "macos-15" not in src, (
+        f"{workflow} pins a macos-15 runner somewhere — see this test's own "
+        f"comment for why the macOS build image may not move forward without "
+        f"also making build_dmg.sh stop bundling a per-OS Homebrew bottle"
     )

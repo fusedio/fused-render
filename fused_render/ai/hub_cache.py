@@ -1196,7 +1196,7 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | Non
         # runners are DECISIVE about the format regardless — so this branch
         # used to answer "text-to-image" and put a Load button on it.
         # `text-to-video` itself stopped being an example of a ruled-out
-        # task once `h3-video`/`ltx-video` shipped (SPEC §40's LTX-2.3 plan;
+        # task once `ltx-video` shipped (SPEC §40's LTX-2.3 plan;
         # `ai/tasks.py` maps it to `VIDEO_GENERATION` now, genuinely
         # SUPPORTED), but the guard is unchanged and still needed: `image-
         # to-video` is a still-ruled-out sibling tag (no runner here is
@@ -1290,9 +1290,9 @@ class CacheReading(NamedTuple):
     to link to the glossary rather than reprint a sentence.
 
     `runner_code`/`runner_reason` are `_engine`'s own answer to "which BACKEND
-    reads this file", carried past `capability` for a capability two runners
-    can share (video generation, since Task 1 of the LTX-2.3 plan: `ltx-video`
-    and `h3-video` read mutually unloadable layouts). `capability` alone
+    reads this file", carried past `capability` because a capability CAN be
+    shared by runners reading mutually unloadable layouts (video generation
+    was two such runners until D468 dropped one). `capability` alone
     cannot tell a caller whether the SERVING runner is the one that reads
     this repo — `runner_code` is that runner's code, and it can differ from
     whichever runner `registry.for_capability(capability)` resolves to right

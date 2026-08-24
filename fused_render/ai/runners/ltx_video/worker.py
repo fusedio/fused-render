@@ -1,12 +1,11 @@
 """Text-to-video (+ audio) on LTX-2.3, through `ltx-2-mlx` (SPEC §40).
 
-The accessible video engine (see the plan's "ltx-2-mlx, not mlx-video"
-decision) — a pure-MLX, MIT-licensed port of LTX-2 that renders joint
-audio+video from int4-distilled weights on a 16 GB Mac, where `h3-video`'s
-144.1 GB checkpoint needs 64 GB-class RAM. Unlike `h3_video/worker.py`, this
-runner loads a model INTO its own interpreter, the same shape `mflux_image`'s
-worker uses — `ltx_pipelines_mlx.DistilledPipeline` reads MLX safetensors
-directly rather than shelling out to a bundled binary.
+The video engine, and since D468 the only one (see the plan's "ltx-2-mlx,
+not mlx-video" decision) — a pure-MLX, MIT-licensed port of LTX-2 that
+renders joint audio+video from int4-distilled weights on a 16 GB Mac. It
+loads a model INTO its own interpreter, the same shape `mflux_image`'s worker
+uses — `ltx_pipelines_mlx.DistilledPipeline` reads MLX safetensors directly
+rather than shelling out to a bundled binary.
 
 **Two repos, not one, and both are reported downloads.** `DistilledPipeline`
 needs the LTX weights AND a Gemma-3 text encoder it does not ship — upstream's
@@ -30,8 +29,7 @@ does not offer). `_curated_file_set` names exactly the files read by
 `DistilledPipeline.load()`, `_load_vae_encoder`/`_load_decoders` and
 `_load_upsampler` (verified by reading `ltx_pipelines_mlx/_base.py`,
 `distilled.py` and `ti2vid_two_stages.py` at the pinned commit) — fetching the
-rest would be silent waste, the same trade `h3_video/worker.py`'s own
-`FL2VA/*`-only download makes against the FL2VA/Ref2VA split.
+rest would be silent waste.
 
 **Exactly ONE transformer file, chosen from the repo's own LISTING, not a
 glob.** `dgrauet/ltx-2.3-mlx-q4` ships BOTH `transformer-distilled.
@@ -43,8 +41,7 @@ hub` would fetch both — 11.3 GB (q4) to 20.6 GB (q8) of dead weight this
 runner would never load. `_resolve_versioned_name` mirrors `_resolve_
 safetensors`'s own rule against the Hub's file LISTING instead of a local
 directory, so `download` asks for the one file the loader will actually
-open — the same reasoning `h3_video/worker.py`'s own `download` already
-applies to check the repo's shape before a byte moves, one step further.
+open — checking the repo's shape before a byte moves.
 """
 
 import fnmatch
@@ -191,7 +188,7 @@ def _distilled_transformer_filename(names):
 
 
 #: Checked by NAME before construction, the same "refuse by name before
-#: touching the library" trade `mflux_image.load` and `h3_video.load` both
+#: touching the library" trade `mflux_image.load` also
 #: make — the alternative is a `FileNotFoundError` deep inside `DistilledPipeline.
 #: load()` on the FIRST render, minutes into a job, rather than at Download time.
 _DISTILLED_TRANSFORMER_GLOB = "transformer-distilled*.safetensors"
@@ -220,7 +217,7 @@ def download(model_id):
     a single prompt is not a render this runner can offer, unlike the VAD
     detector `mlx_whisper/worker.py` shrugs off.
 
-    The listing call is the same trade `h3_video/worker.py`'s own `download`
+    The listing call is the same trade `download`
     makes before a single byte moves: cheap, and it is what lets this
     function refuse a repo with no distilled transformer — or build a
     patterns list that names exactly one real file per group — before
@@ -263,9 +260,9 @@ def download(model_id):
 def _put_ffmpeg_on_path():
     """Make `imageio_ffmpeg`'s bundled binary resolvable as plain `ffmpeg`.
 
-    **Not the same mechanism `h3_video/worker.py` uses, and it cannot be** —
-    that worker points an environment variable (`H3_FFMPEG`) at the binary
-    because h3.c reads that variable by its own convention. `ltx_core_mlx.
+    **Not an environment-variable handoff.** A worker shelling out to a
+    compiled binary can point one at it by that binary's own convention;
+    `ltx_core_mlx.
     utils.ffmpeg.find_ffmpeg()` has no such override; it is a bare `shutil.
     which("ffmpeg")` (verified by reading it at the pinned commit), so the
     only lever this process has is PATH itself.
@@ -322,7 +319,7 @@ def load(model_id, fetched):
     No weights are loaded here — `DistilledPipeline.__init__` composes the
     lazy blocks and nothing more, and the actual DiT/VAE/upsampler load
     happens inside `generate_and_save`, once per render. What this DOES do,
-    once, is the same refusal `mflux_image.load` and `h3_video.load` make for
+    once, is the same refusal `mflux_image.load` makes for
     a repo in the wrong shape: a snapshot with no distilled transformer under
     either name is not something this pipeline can open, and finding that out
     now — with a sentence — beats a `FileNotFoundError` raised deep inside the
@@ -433,7 +430,7 @@ class _StepTicker:
     therefore moves twice, restarting at 0 for stage 2: that is the two-stage
     pipeline's own shape (`DistilledPipeline` is inherently two internal
     passes for any request), not a bug in this shim, and it is the same
-    "bare done/total, no clock" trade `h3_video.generate` already makes for
+    "bare done/total, no clock" trade already made for
     its own subprocess's progress lines.
 
     Ticks BEFORE each step's work rather than after: `tqdm.__iter__` yields
@@ -441,7 +438,7 @@ class _StepTicker:
     finished" moment to hook without wrapping the loop body itself, which is
     exactly the private, upstream-owned code this shim must not reach into.
     `done=N` therefore reads as "N steps completed so far, about to start the
-    next" — the same reading `h3_video.generate`'s own pre-spawn "step 0/N"
+    next" — the same reading a pre-spawn "step 0/N"
     tick gives its row before a single frame has rendered.
     """
 
@@ -461,7 +458,7 @@ class _StepTicker:
 
 def generate(body):
     """Render one video. Returns `{path, seconds, seed, width, height, frames,
-    steps}` — `h3_video.generate`'s own shape, so a page cannot tell which
+    steps}` — the shape the video job has always emitted, so a page cannot tell which
     engine rendered for it.
 
     `steps` maps to `stage1_steps` — the one denoising-step count this API
