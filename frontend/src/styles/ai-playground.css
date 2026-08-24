@@ -452,22 +452,21 @@
      only what keeps an empty box from growing a scrollbar. `clip`, not
      `hidden`: there is nothing here to scroll to sideways, and `hidden` leaves
      a programmatically scrollable box that a stray focus or anchor jump can
-     shove sideways. The apps strip scrolls in its own box (`.pg-apps-row`), so
-     nothing legitimate is lost. */
+     shove sideways. Nothing in the stage scrolls sideways — the apps strip is
+     a wrapping grid measured to this box's width, not a scroller — so nothing
+     legitimate is lost. */
   overflow-x: hidden;
   overflow-x: clip;
 }
 
 /* The stage header as a banner — the model introducing itself before the work
    below it. Wider than the 680px column it heads, and on a 16px gutter rather
-   than 32px, because it is a header rather than part of the API surface. Its
-   max is exactly the pair below at its widest (column + gap + settings card),
-   so the banner spans everything the stage can ever put under it and its own
-   edges never move when the cog is clicked — the model's name stays a fixed
-   landmark while the column slides. Still a min(), not a bare max-width: the
-   gutter has to survive a narrow stage too. */
+   than 32px, because it is a header rather than part of the API surface. On
+   --pg-band, so the banner spans everything the stage can ever put under it
+   and its own edges never move when the cog is clicked — the model's name
+   stays a fixed landmark while the column slides. */
 .pg-hero {
-  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
+  width: var(--pg-band);
   /* Extra room below: the stage's own gap reads too tight under a card this
      heavy, and the work column needs to start as its own thing. */
   margin: 0 auto 16px;
@@ -873,6 +872,13 @@ a.pg-hero-repo:hover {
     100cqw - 680px - var(--pg-gap) - 32px,
     var(--pg-card-max)
   );
+  /* The stage's full-width band: exactly the pair below it at its widest
+     (column + gap + settings card), on the header's 16px gutter rather than
+     the column's 32px. The hero wears it and so does the apps strip — one
+     declaration rather than two identical min()s that read as independent and
+     can be edited apart. Still a min(), not a bare max-width: the gutter has to
+     survive a narrow stage too. */
+  --pg-band: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
 }
 
 /* Wide enough for the whole PAIR — column plus card at its NARROWEST — to sit
@@ -2500,10 +2506,12 @@ a.pg-hero-repo:hover {
  * concurrent redesign (#760) and this block must merge clean. ---- */
 .pg-apps {
   /* The banner's own gutters, so the stage's top and bottom bands share one
-   * pair of edges — the same min() expression, not a number copied. Auto side
-   * margins centre it; `margin-top: auto` is untouched by them and still does
-   * its main-axis job below. */
-  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
+   * pair of edges — literally the same declaration (--pg-band), not a number
+   * copied. This is also the box the card grid measures itself against: how
+   * many cards fit per row is a question about THIS width. Auto side margins
+   * centre it; `margin-top: auto` is untouched by them and still does its
+   * main-axis job below. */
+  width: var(--pg-band);
   margin-left: auto;
   margin-right: auto;
   /* Pinned to the bottom of the stage's viewport when the content above is
@@ -2514,27 +2522,43 @@ a.pg-hero-repo:hover {
   margin-top: auto;
   padding-top: 28px;
 }
-/* One horizontal row, never wrapping: overflow scrolls sideways inside the
- * strip. The card wrappers are display:contents, so the .app-pcard anchors
- * themselves are the flex items — fixed at the hub grid's minimum width. */
+/* A wrapping grid of fixed-width tracks, never a sideways scroller: matches
+ * are a handful of cards, and a card the reader has to discover by dragging
+ * horizontally is a card they do not open. PlaygroundApps writes the TRACK
+ * COUNT inline from its own measurement of this box (useRowCapacity, the same
+ * arithmetic /home's strips use) — CSS cannot express "as many 300px tracks as
+ * fit, but never more than there are cards", which is what makes a short row
+ * centre instead of stretching. `justify-content: center` is what centres it;
+ * with a full track count the tracks span the band and the same rule is a
+ * no-op, so a partial last row still starts hard left under the first card.
+ * The card wrappers are display:contents, so the .app-pcard anchors are the
+ * grid items and take their track's width. */
 .pg-apps-row {
-  display: flex;
+  display: grid;
+  justify-content: center;
   gap: 18px;
-  overflow-x: auto;
-  /* `overflow-x: auto` clips the BLOCK axis too, and .app-pcard's hover lifts
-   * the card 1px and casts an 18px-blur shadow — with the cards flush against
-   * this box the lifted top border reads as sliced off. So the strip carries
-   * padding on every side that the hover state can spill into, and negative
-   * margins hand the same amount back to the layout: the cards sit exactly
-   * where they did, only the clipping box grew. The side inset is 16px, which
-   * is precisely the slack .pg-apps' `100% - 32px` leaves, so the stage never
-   * gains a horizontal scrollbar. Bottom nets out at the 6px that keeps the
-   * scrollbar off the cards' edge. */
-  padding: 16px 16px 20px;
-  margin: -16px -16px -14px;
 }
-.pg-apps-row .app-pcard {
-  flex: 0 0 300px;
+/* The two-row fold's "Show more": the same quiet pill /files uses under its
+ * own folded grid (.fhb-more), restated here rather than imported — this
+ * section is deliberately self-contained, and fifteen lines of pill is a
+ * cheaper coupling than a shared component reaching across two apps. */
+.pg-apps-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px auto 0;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.pg-apps-more:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
 }
 /* Sentence case, at reading size: "Use it in an app" is an invitation, and
  * caps-plus-tracking turns a sentence into a section label. */
