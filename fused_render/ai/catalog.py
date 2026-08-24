@@ -284,7 +284,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "OptiQ 4-bit",
             "recommended": True,
             "label": "Qwen3.5 4B (OptiQ 4-bit)",
-            "nickname": "Qwen3.5",
+            "nickname": "Qwen 3.5",
             "size_gb": 4.0,
             "note": "The best all-round pick: strong on reasoning and code, and "
                     "comfortable on 16GB.",
@@ -364,7 +364,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "9B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.5 9B (OptiQ 4-bit)",
-            "nickname": "Qwen3.5",
+            "nickname": "Qwen 3.5",
             "size_gb": 8.2,
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
@@ -378,7 +378,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "MLX 4-bit",
             "label": "Qwen3.8 27B (MLX 4-bit)",
-            "nickname": "Qwen3.8",
+            "nickname": "Qwen 3.8",
             # Measured from the repo's blob sizes, not estimated.
             "size_gb": 16.1,
             "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
@@ -399,7 +399,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "OptiQ 4-bit",
             "label": "Qwen3.6 27B (OptiQ 4-bit)",
-            "nickname": "Qwen3.6",
+            "nickname": "Qwen 3.6",
             "size_gb": 20.0,
             "note": "The best answers here, and it needs 32GB — on a 16GB "
                     "machine this swaps rather than runs.",
@@ -523,7 +523,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "quantization": "GGUF Q4_K_M",
             "recommended": True,
             "label": "Qwen3.5 4B (Q4_K_M)",
-            "nickname": "Qwen3.5",
+            "nickname": "Qwen 3.5",
             "size_gb": 2.7,
             "note": "The first row here strong enough for real work: current-"
                     "gen Qwen, and a fifth of the unquantized 4B's download.",
@@ -572,7 +572,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "27B",
             "quantization": "GGUF UD-Q3_K_XL",
             "label": "Qwen3.8 27B (UD-Q3_K_XL)",
-            "nickname": "Qwen3.8",
+            "nickname": "Qwen 3.8",
             "size_gb": 13.1,
             "note": "The newest and largest model here, quantized hard to fit "
                     "the download — expect a bigger quality hit than the "
@@ -677,7 +677,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "39M",
             "quantization": "MLX 8-bit",
             "label": "Whisper tiny English (MLX 8-bit)",
-            "nickname": "Whisper tiny English",
+            "nickname": "Whisper Tiny en",
             "recommended": True,
             "size_gb": 0.05,
             "note": "The quickest download and decode here, English only — "
@@ -688,7 +688,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "mlx-community/whisper-small-mlx",
             "params": "244M",
             "label": "Whisper small (MLX)",
-            "nickname": "Whisper small",
+            "nickname": "Whisper Small",
             "size_gb": 0.5,
             "note": "The smallest here, and what a bare transcribe call loads — "
                     "quick, but it drops names and punctuation turbo gets "
@@ -698,7 +698,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "mlx-community/whisper-large-v3-turbo",
             "params": "809M",
             "label": "Whisper large-v3 turbo (MLX)",
-            "nickname": "Whisper large-v3 turbo",
+            "nickname": "Whisper Large-v3 turbo",
             "size_gb": 1.6,
             "note": "The best value here: large-v3 accuracy at a fraction of "
                     "its decoding cost, and faster than real time by a wide "
@@ -707,7 +707,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "mlx-community/whisper-large-v3-mlx",
             "params": "1.5B",
-            "label": "Whisper large-v3 (MLX)",
+            "label": "Whisper Large-v3",
             "nickname": "Whisper large-v3",
             "size_gb": 3.1,
             "note": "The full model, for a recording turbo handles badly — "
@@ -739,7 +739,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "Systran/faster-whisper-tiny.en",
             "params": "39M",
             "label": "Whisper tiny English (CT2)",
-            "nickname": "Whisper tiny English",
+            "nickname": "Whisper Tiny en",
             "size_gb": 0.08,
             "note": "The quickest download and decode here, English only — "
                     "fine for a rough draft of clear speech, below small on "
@@ -749,7 +749,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "Systran/faster-whisper-small",
             "params": "244M",
             "label": "Whisper small (CT2)",
-            "nickname": "Whisper small",
+            "nickname": "Whisper Small",
             "size_gb": 0.5,
             "note": "Light enough for an old machine, but it drops names and "
                     "punctuation turbo gets right.",
@@ -759,7 +759,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "809M",
             "recommended": True,
             "label": "Whisper large-v3 turbo (CT2)",
-            "nickname": "Whisper large-v3 turbo",
+            "nickname": "Whisper Large-v3 turbo",
             "size_gb": 1.6,
             "note": "The best value here: large-v3 accuracy at roughly a "
                     "quarter of its decoding cost. Usable on CPU — a laptop "
@@ -809,6 +809,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "375M",
             "recommended": True,
             "label": "SigLIP2 base (384px)",
+            "nickname": "SigLIP2 base",
             "size_gb": 1.5,
             "note": "The smallest here and what a bare embed call loads — "
                     "768-dim vectors, multilingual, and quick enough to index a "
@@ -818,6 +819,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "google/siglip2-so400m-patch14-384",
             "params": "1.1B",
             "label": "SigLIP2 so400m (384px)",
+            "nickname": "SigLIP2 so400m",
             "size_gb": 4.6,
             "note": "Noticeably better matches than the base model, for three "
                     "times the download and 1152-dim vectors to store.",
@@ -844,7 +846,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "dgrauet/ltx-2.3-mlx-q4",
             "recommended": True,
             "label": "LTX-2.3 int4 distilled",
-            "nickname": "LTX-2.3 (int4)",
+            "nickname": "LTX-2.3",
             # Both video tiers shipped with no `params` and no `quantization`,
             # so the playground's model card had two of its four facts blank
             # beside every text and image entry. Filled from the PUBLISHERS,
@@ -880,7 +882,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "dgrauet/ltx-2.3-mlx-q8",
             "label": "LTX-2.3 int8 distilled",
-            "nickname": "LTX-2.3 (int8)",
+            "nickname": "LTX-2.3",
             # Same 22B upstream, the other tier of the same conversion ("Int8
             # quantization (group_size 64, transformer block Linear weights
             # only)") — see the int4 entry for where both strings come from.
