@@ -142,25 +142,52 @@ function Section({
   );
 }
 
-// Skeleton for one card while a strip's fetch is in flight: the same
-// `.fhb-card` head-row-over-body-well shell a real card draws (icon tile +
-// two shimmer bars over a 16/10 well), so the row that replaces it does not
-// change height or card count out from under the reader. Pure decoration —
-// `aria-hidden`, with the row wrapper (below) carrying the one `role="status"`
-// announcement for the whole strip, the way the old "Loading apps" line
-// (a single ~18px paragraph) used to speak for the row rather than each line
-// in it.
-function SkeletonCard() {
+// Skeleton for one card while a strip's fetch is in flight. Two variants,
+// because Home's two async strips draw two DIFFERENT real cards and a single
+// shared shape would be wrong for one of them:
+//   - "app"    mirrors AppPreviewCard/`.app-pcard` (apps.css) — title + a meta
+//     row (tag pill, timestamp) OVER a full-bleed thumb. No icon: the real
+//     card has none.
+//   - "folder" mirrors FolderPreviewCard/`.fhb-card` (preferences.css) — a
+//     head row over an inset thumb well. The real card's head DOES carry an
+//     icon, but it's a static decorative folder glyph, identical on every
+//     card and independent of the fetch — shimmering it (or even placing an
+//     inert placeholder for it) would claim something is loading that isn't,
+//     so both variants render NO icon.
+// Built by reusing the real card's own classes rather than a bespoke shimmer
+// shape with hand-measured dimensions: the browser lays both variants out
+// with the exact same box model (padding, border, font metrics) the real
+// card gets, so the skeleton's height tracks the real card's automatically —
+// including through a CSS change neither this file nor a hand-derived
+// constant would notice. Pure decoration — `aria-hidden`, with the row
+// wrapper (below) carrying the one `role="status"` announcement for the
+// whole strip, the way the old "Loading apps" line (a single ~18px
+// paragraph) used to speak for the row rather than each line in it.
+function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
+  if (variant === "app") {
+    return (
+      <span className="app-pcard home-skel-card" aria-hidden="true">
+        <span className="app-pcard-body">
+          <span className="skel-bar" style={{ width: "58%" }} />
+          <span className="app-pcard-meta">
+            <span className="skel-bar" style={{ width: "46px" }} />
+            <span className="skel-bar" style={{ width: "64px" }} />
+          </span>
+        </span>
+        <span className="app-pcard-thumb home-skel-body" />
+      </span>
+    );
+  }
   return (
     <span className="fhb-card home-skel-card" aria-hidden="true">
       <span className="fhb-card-head">
-        <span className="home-skel-icon" />
         {/* `.fh-card-text` is a shrink-to-fit flex item everywhere else (its
-            real content — the name/path text — decides its width); a
-            percentage-width `.skel-bar` inside it has nothing to shrink-to-fit
-            against, so `home-skel-text` grows it to fill the head row like the
-            real text effectively does once it's long enough to need the
-            ellipsis. */}
+            real content — the name/path text — decides its width, and here
+            it's the head row's ONLY child, since the icon is deliberately
+            gone); a percentage-width `.skel-bar` inside it has nothing to
+            shrink-to-fit against, so `home-skel-text` grows it to fill the
+            head row like the real text effectively does once it's long
+            enough to need the ellipsis. */}
         <span className="fh-card-text home-skel-text">
           {/* Wider bar on top: a name reads longer than the path underneath it
               on every real card head, and matching that keeps the skeleton
@@ -177,12 +204,22 @@ function SkeletonCard() {
 // A skeleton row is sized by `shown`, not by a guess or the section's peak
 // `limit` — the same number of cards the real row will draw once the fetch
 // lands (Home.tsx slices every strip to `shown`), so the swap from skeleton to
-// content never changes the row's card count or width.
-function SkeletonRow({ count, label }: { count: number; label: string }) {
+// content never changes the row's card count or width. Floored at 1: `shown`
+// is 0 before the wrapper has been measured (see useStripCount), and a row of
+// zero skeleton cards would render as nothing at all rather than as "loading".
+function SkeletonRow({
+  count,
+  label,
+  variant,
+}: {
+  count: number;
+  label: string;
+  variant: "app" | "folder";
+}) {
   return (
     <div className="home-row" role="status" aria-busy="true" aria-label={label}>
-      {Array.from({ length: count }, (_, i) => (
-        <SkeletonCard key={i} />
+      {Array.from({ length: Math.max(1, count) }, (_, i) => (
+        <SkeletonCard key={i} variant={variant} />
       ))}
     </div>
   );
@@ -427,7 +464,7 @@ export default function Home({ config }: { config: Config }) {
             <ClaudeHealthStrip />
             <Section title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
-                <SkeletonRow count={shown} label="Loading apps" />
+                <SkeletonRow count={shown} label="Loading apps" variant="app" />
               ) : apps.length ? (
                 <div className="home-row">
                   {apps.slice(0, shown).map((app) => (
@@ -451,7 +488,7 @@ export default function Home({ config }: { config: Config }) {
 
             <Section title="Claude Sessions" seeAllHref="/explorer?tab=sessions">
               {sessions === null ? (
-                <SkeletonRow count={shown} label="Loading Claude sessions" />
+                <SkeletonRow count={shown} label="Loading Claude sessions" variant="folder" />
               ) : sessions.length ? (
                 <div className="home-row">
                   {sessions.slice(0, shown).map((f) => (
