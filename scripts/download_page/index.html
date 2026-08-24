@@ -1143,7 +1143,9 @@
     <span class="version" id="version" hidden></span>
   </section>
 
-  <section class="trouble-sec" id="troubleshooting">
+  <!-- Hidden for now; the app's error screens deep-link here, so a
+       #troubleshooting-* hash (or #troubleshooting) unhides it. -->
+  <section class="trouble-sec" id="troubleshooting" hidden>
     <h2>Troubleshooting</h2>
     <p>Something not working? Pick what's happening on the left — the fix is
     on the right.</p>
@@ -1336,10 +1338,12 @@
       b.addEventListener("click", function () { activate(b.dataset.err); });
     });
     function honorHash() {
-      var m = location.hash.match(/^#troubleshooting-(\w+)$/);
-      if (!m || !document.querySelector('.terr[data-err="' + m[1] + '"]')) return;
-      activate(m[1]);
-      document.getElementById("troubleshooting").scrollIntoView();
+      var sec = document.getElementById("troubleshooting");
+      var m = location.hash.match(/^#troubleshooting(?:-(\w+))?$/);
+      if (!m) return;
+      sec.hidden = false;
+      if (m[1] && document.querySelector('.terr[data-err="' + m[1] + '"]')) activate(m[1]);
+      sec.scrollIntoView();
     }
     window.addEventListener("hashchange", honorHash);
     honorHash();
