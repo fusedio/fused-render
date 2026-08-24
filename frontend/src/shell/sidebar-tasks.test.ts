@@ -298,7 +298,34 @@ describe("one poll behind both readers", () => {
   });
 });
 
-describe("the Tasks entry's two marks", () => {
+describe("one nav dot, worn by two rows", () => {
+  // Akshil, 2026-08-24: "the dots in left sidebar are not consistent, make dot on
+  // ai models page similar to one we have in tasks page [that one is perfect]".
+  //
+  // The AI Models row wore `.account-signedin-dot` — a class from account.css
+  // that happens to be 7px too, and that is where the resemblance stopped. It
+  // positions at `top: -2px; right: -3px`, which against the 28px rail BUTTON
+  // lands outside its corner rather than on the glyph, so the mark floated off to
+  // the right while the Tasks dot hugged its icon; and it is border-box against
+  // the other's content-box, so its 1px ring ate the dot down to 5px of fill
+  // beside a 7px neighbour.
+  it("is the same class on both rows, differing only in hue", () => {
+    expect(SIDEBAR).toContain('className="sidebar-rail-dot is-resident"');
+    expect(SIDEBAR).not.toContain('className="account-signedin-dot"');
+    // The resident dot keeps `--success-bright` — the hue it already had, and the
+    // one the Loaded badge on the cards wears — rather than joining `is-unread`'s
+    // `--status-done`. Those are two different claims (work nobody has read,
+    // versus memory being held) and the rows are far enough apart that the shared
+    // SHAPE is what had to match.
+    const resident = SIDEBAR_CSS.slice(
+      SIDEBAR_CSS.indexOf(".sidebar-rail-dot.is-resident {"),
+    );
+    expect(resident.slice(0, resident.indexOf("}"))).toContain("var(--success-bright)");
+    // Nothing in the sidebar wears the old class, so its sidebar-only override is
+    // gone with it — a rule left pointing at nothing is how dead CSS starts.
+    expect(SIDEBAR_CSS).not.toContain(".sidebar-prefs-menu .account-signedin-dot {");
+  });
+
   it("draws ONE dot on the icon, yellow winning over green", () => {
     // One dot: two in a corner is not a state this can draw, and "something is
     // running" is the fact that outranks "something is ready".

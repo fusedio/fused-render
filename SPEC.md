@@ -6809,13 +6809,39 @@ an AI Models page that could say what was on disk but not what was *running*.
   taking a colour this app cannot justify. Colour is never the only channel — the
   tag says the engine's name, and the UNAVAILABLE state keeps its dashed border and
   warning hue, where the state outranks the identity.
-  **"Try" is the card's one FILLED control** — accent background, `--on-accent`
-  ink, and a `--fg` focus ring because an accent ring on an accent plate is no
-  ring at all (D461). A deliberate exception to the house rule that accent is for
-  focus and selection and a primary button fills with `--fg`: the card's other
-  three controls are quiet `.cc-iconbtn` glyphs, and "use this model now" is the
-  one thing a reader opened the card to do. One filled control per card is a card
-  with an obvious next step; two would be a card with none.
+  **EVERY tag is a pill, in every state** (D475). The unavailable, unrecognised,
+  partial and component tags tint their BORDER and carry a 10% wash from the same
+  token their ink comes from, exactly as the available one does — a state that set
+  only the ink and the dash left `border-color` at `--border`, and a dashed hairline
+  in the border token at 11px over the card's own wash is invisible, so the tags
+  with something to say were the ones that did not read as tags at all. The dash
+  stays as the channel that says WHICH kind, and the component tag stays solid
+  because nothing is missing there.
+  **"Try" is OUTLINED in accent, not filled with it** (D475): transparent ground,
+  accent ink, a 1px accent border, and a 12% accent wash on hover. It shipped
+  filled for a day — the case being that "use this model now" is the one thing a
+  reader opened the card to do — and what that missed is the card it sits on. Load
+  is the control immediately beside it and the one that costs memory, so a filled
+  plate made the cheap navigation the loudest mark on the card and the
+  consequential button the quiet one. Outlined, Try is still the most visible of
+  the four controls (it is the only one with a border) while the page keeps the
+  house rule it briefly excepted itself from: accent for focus, selection and
+  emphasis, `--fg` for a true primary fill. The forced `--fg` focus ring goes with
+  the fill that needed it — on a transparent plate the inherited accent ring is
+  the highest-contrast one available.
+  **A refused Load says why ON the card, in one line, with the remedy as a link**
+  (D475). `loadRefusal`'s full sentence stays in the disabled button's `title` and
+  accessible name; the card prints `loadRefusalShort` beside it — the first clause
+  of the registry's reason, cut at its own comma or dash — because the long form
+  wrapped to three lines and became the largest block of text on a 300px card. A
+  disabled button is the one control a pointer user has no reason to hover, so a
+  reason that lives only in a hover is a page that holds the answer and shows a
+  greyed word. The remedy is a LINK to the Engines tab, offered only where the
+  engine is unavailable and decided on `engine.available` rather than by matching
+  words in the prose. The line is not drawn where the refused Load is not the
+  button on the card: a partly-downloaded repo's primary control is an enabled
+  "Continue downloading", and a line saying the download did not finish would
+  explain a control that is not there.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second

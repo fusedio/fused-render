@@ -2990,7 +2990,8 @@
   .list-tab:hover { color: var(--fg); }
   .list-tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
   .list-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .list-tab .tab-count { font-weight: 400; letter-spacing: 0; }
+  /* No `.list-tab .tab-count` rule any more (2026-08-24): it un-bolded the count
+     the Artifacts tab used to carry, and no tab carries one now. */
   /* A tab is drawn only for a list that has rows (syncLists), and `display: flex`
      on the bar means the UA's `[hidden]` rule needs no help here — the buttons
      set no display of their own. */
@@ -3921,9 +3922,17 @@
                aria-label="Past chats, published pages and snapshots">
             <button class="list-tab" type="button" role="tab" id="tab-recent"
                     aria-selected="true" aria-controls="recent">Recent chats</button>
+            <!-- NO COUNT ON THIS TAB (Akshil, 2026-08-24: "we have artifacts in
+                 tab view, we have count next to it, remove it"). It carried one
+                 because in the tabbed dress the section heading that also states
+                 it is not drawn — true, and not a reason: neither sibling tab
+                 states its own number, so the one that did read as the odd tab
+                 rather than as the informative one, and a tab strip whose labels
+                 are not the same shape is a strip you re-read. The count is still
+                 on the section's own heading, one click away, where it sits next
+                 to the rows it counts. -->
             <button class="list-tab" type="button" role="tab" id="tab-artifacts"
-                    aria-selected="false" aria-controls="artifacts">Artifacts<span
-                    class="tab-count" id="tabartcount"></span></button>
+                    aria-selected="false" aria-controls="artifacts">Artifacts</button>
             <button class="list-tab" type="button" role="tab" id="tab-snaps"
                     aria-selected="false" aria-controls="snaps">Claude snapshots</button>
           </div>
@@ -10888,6 +10897,21 @@ fused.params.onChange(() => { applySplit(); applyLeftMode(); applyNarrowView(); 
 // the next showSession tries again.
 const taskIds = new Map();
 let taskIdBusy = "";
+// WHETHER THIS SESSION HAS A TASK, AND WHICH WAY IT IS FILED — session id → true
+// (archived) / false (not) / null (no task behind this chat).
+//
+// It rides along on the fetch above rather than having one of its own (2026-08-24).
+// The kebab's Archive item used to learn this on OPEN, from its own /api/tasks
+// read, which is why it "shows a bit late and the whole dropdown shifts" (Akshil):
+// the menu painted with one item, the listing landed a moment later, and a second
+// item appeared under the pointer. The listing was already being read here, on
+// every showSession, with `task.status` sitting in the same object this pulls the
+// number out of — so the answer exists before the menu is ever opened, and the
+// item can paint with its siblings.
+//
+// Declared BESIDE `taskIds` rather than down with the menu code, so it is
+// initialised before `showSession()` runs a few lines below.
+const archiveStates = new Map();
 
 function showSession() {
   const id = fused.params.get("session_id");
@@ -10906,6 +10930,15 @@ async function loadTaskId(id) {
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
+    // Recorded BEFORE the `!num` bail below, and that ordering matters: a task
+    // with no allocated number yet is still a task the kebab can archive, and
+    // returning first would leave the menu with nothing cached for exactly the
+    // newest conversations. `null` is the real answer "this chat is not a task",
+    // which is what hides the item rather than leaving it unknown.
+    archiveStates.set(id, task ? task.status === "archived" : null);
+    // The item may be on screen right now with a stale reading (a menu left open
+    // across a session switch), so paint what we just learned.
+    applyArchiveOpt();
     const num = task && task.task_id ? String(task.task_id) : "";
     if (!num) return;
     taskIds.set(id, num);
@@ -11272,33 +11305,75 @@ const terminalOpt = document.getElementById("terminalopt");
 // something they can act on from this menu.
 const archiveOpt = document.getElementById("archiveopt");
 let archiveKey = "";
+/** A press is in flight, or its confirmation is still on screen. Guards
+ *  `applyArchiveOpt` — see the note there. */
+let archiveBusy = false;
 
+/** Draw the item from what is already KNOWN (`archiveStates`), synchronously.
+ *
+ *  Split out of the fetch below on 2026-08-24 so that opening the menu paints
+ *  this item in the same frame as the terminal one above it. It used to be one
+ *  async function that hid the row, awaited a listing and then revealed it —
+ *  which is the flicker Akshil reported: two paints, and the second one taller.
+ *
+ *  Three states, and the third is why this is not a boolean: `true`/`false` are
+ *  "there is a task, filed / not filed", and `undefined` — nothing cached for
+ *  this session yet — is NOT the same as `null`, "there is no task". Unknown
+ *  keeps the item hidden, exactly as before, because inventing a verb for a task
+ *  we have not confirmed is how a menu offers to archive something that is not
+ *  there. The difference is that unknown is now rare: the listing is read on
+ *  every showSession, so by the time a menu is opened the answer is normally in.
+ */
+function applyArchiveOpt() {
+  // A PRESS IN FLIGHT OWNS THIS ITEM. The click handler below writes its own
+  // words into the button ("Archived — 2 pending runs cancelled") and holds them
+  // for 1100ms before the menu leaves; this function is now called from the
+  // showSession listing read as well as from open, so without this guard a reply
+  // landing in that window would overwrite the confirmation with a resting
+  // label — and re-enable a button mid-action.
+  if (archiveBusy) return;
+  const id = fused.params.get("session_id");
+  const filed = id ? archiveStates.get(id) : undefined;
+  if (!id || filed === undefined || filed === null) {
+    archiveKey = "";
+    archiveOpt.hidden = true;
+    return;
+  }
+  archiveKey = id;
+  archiveOpt.textContent = filed ? "Unarchive this task" : "Archive this task";
+  archiveOpt.dataset.filed = filed ? "1" : "";
+  archiveOpt.disabled = false;
+  archiveOpt.hidden = false;
+}
+
+/** Re-read the listing and correct the item. Never HIDES what is already shown
+ *  on its way to an answer — that is the whole point of the split above. */
 async function refreshArchiveOpt() {
   const id = fused.params.get("session_id");
-  archiveKey = "";
-  archiveOpt.hidden = true;
-  archiveOpt.disabled = false;
-  if (!id) return;
+  if (!id) {
+    applyArchiveOpt();
+    return;
+  }
   try {
     const res = await fetch("/api/tasks");
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
     const task = ((data && data.tasks) || []).find((t) => t && t.key === id);
-    if (!task) return;
     // The session can change while this is in flight (the reader clicked a
     // recent chat as the menu opened); a stale answer must not label the item
     // for a conversation nobody is looking at any more.
     if (fused.params.get("session_id") !== id) return;
-    archiveKey = id;
-    archiveOpt.textContent = task.status === "archived"
-      ? "Unarchive this task" : "Archive this task";
-    archiveOpt.dataset.filed = task.status === "archived" ? "1" : "";
-    archiveOpt.hidden = false;
+    archiveStates.set(id, task ? task.status === "archived" : null);
+    applyArchiveOpt();
   } catch (err) {
     /* FAILS CLOSED, unlike the task-number read above: that one costs a nicer
        label and falls back to the hash, where this one is an ACTION. An item
        offered on a listing we could not read is an item whose verb we are
-       guessing at. */
+       guessing at.
+       Nothing is written to the cache on this path, so a previously confirmed
+       reading STANDS rather than being withdrawn — a network blip must not make
+       an item the reader is looking at disappear. An unconfirmed one stays
+       hidden, which is the same fail-closed posture as before. */
   }
 }
 
@@ -11306,6 +11381,7 @@ archiveOpt.addEventListener("click", async () => {
   if (!archiveKey) return;
   const filed = archiveOpt.dataset.filed === "1";
   archiveOpt.disabled = true;
+  archiveBusy = true;
   try {
     const res = await fetch(filed ? "/api/tasks/unarchive" : "/api/tasks/archive", {
       method: "POST",
@@ -11327,12 +11403,27 @@ archiveOpt.addEventListener("click", async () => {
       ? "Unarchived"
       : (off ? `Archived — ${off} pending run${off === 1 ? "" : "s"} cancelled`
              : "Archived");
-    setTimeout(() => { kebabClose(); archiveOpt.disabled = false; }, 1100);
+    // The listing this page caches is now WRONG for this session, and the next
+    // menu open would paint the old verb from it before the re-read corrects it
+    // — which is the flicker this change exists to remove, arriving by the back
+    // door. So the cache learns what the press just did.
+    archiveStates.set(archiveKey, !filed);
+    setTimeout(() => {
+      kebabClose();
+      archiveOpt.disabled = false;
+      archiveBusy = false;
+      // The menu is closed by now, so this repaints for the NEXT open rather
+      // than under the reader's pointer.
+      applyArchiveOpt();
+    }, 1100);
   } catch (err) {
     archiveOpt.disabled = false;
     archiveOpt.textContent = "Could not " + (filed ? "unarchive" : "archive")
       + " — " + (err && err.message || err);
-    setTimeout(() => { void refreshArchiveOpt(); }, 2500);
+    // `archiveBusy` stays UP until the message has had its 2.5s: it is the thing
+    // keeping a listing read from wiping the failure off the button before the
+    // reader has read it.
+    setTimeout(() => { archiveBusy = false; void refreshArchiveOpt(); }, 2500);
   }
 });
 function kebabClose() {
@@ -11347,9 +11438,16 @@ function kebabOpen() {
   terminalOpt.disabled = false;
   // Same rule, one step further: the archive item's very PRESENCE depends on
   // there being a task, and its word on which way that task is filed — both of
-  // which the Tasks page can change while this menu sits closed. Asked fresh on
-  // every open rather than cached; a menu is opened rarely and a wrong verb
-  // here files something the user meant to unfile.
+  // which the Tasks page can change while this menu sits closed.
+  //
+  // TWO CALLS, and the order is the fix (2026-08-24). `applyArchiveOpt` is
+  // synchronous and draws from what the page already learned on showSession, so
+  // the item is in the menu's FIRST paint alongside the terminal one — Akshil:
+  // "just show it instantly with other options". `refreshArchiveOpt` then
+  // re-reads the listing and corrects it, because a wrong verb here files
+  // something the user meant to unfile; it no longer hides the row while it
+  // waits, so a correction changes a word rather than the menu's height.
+  applyArchiveOpt();
   void refreshArchiveOpt();
   kebabPop.hidden = false;
   kebabBtn.setAttribute("aria-expanded", "true");
@@ -16191,9 +16289,8 @@ async function loadArtifacts() {
     for (const a of artifacts || []) addArtifactRow(list, a);
     const count = "· " + artCount;
     document.getElementById("artifactscount").textContent = count;
-    // The tab carries the count too, because in the tabbed case the heading that
-    // used to carry it is not drawn.
-    document.getElementById("tabartcount").textContent = " " + count;
+    // The TAB no longer carries it (2026-08-24) — see the markup for why. Nothing
+    // to write, and no element to write it to.
   } catch (err) {
     // No visible failure: an unreachable index is not news on a landing page
     // whose subject is the composer above it.

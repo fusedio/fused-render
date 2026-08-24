@@ -16,6 +16,7 @@ import {
   runnersByCapability,
   groupRepos,
   loadRefusal,
+  loadRefusalShort,
   mergeSections,
   noEngineReason,
   partialNote,
@@ -144,8 +145,8 @@ describe("the four buckets", () => {
   it("sub-groups models by capability, in the reading order", () => {
     const g = groupRepos(ALL);
     expect(g.models.groups.map((s) => s.label)).toEqual([
-      "Text generation",
       "Image generation",
+      "Text generation",
       "Speech to text",
       "Unrecognised",
     ]);
@@ -405,8 +406,8 @@ describe("a capability's row is disk then recommended", () => {
     expect(sections.flatMap((s) => s.recommended)).toEqual([]);
     // …and the disk half is untouched by that: what is here is here.
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
+      "text-generation",
       "automatic-speech-recognition",
       UNRECOGNISED,
     ]);
@@ -414,9 +415,13 @@ describe("a capability's row is disk then recommended", () => {
 });
 
 describe("video generation's place in the reading order", () => {
-  // CAPABILITY_ORDER puts text-to-video beside text-to-image — the two visual
-  // generation capabilities together, ahead of speech and embeddings.
-  it("sorts between text-to-image and automatic-speech-recognition", () => {
+  // CAPABILITY_ORDER puts text-to-video LAST of the five (2026-08-24), and it is
+  // listed there rather than left to fall through. It used to sit beside
+  // text-to-image on the argument that the two visual capabilities belong
+  // together — but the order is the Playground's now, and the Playground had
+  // never named video at all, so it had been rendering last-by-accident on that
+  // tab the whole time. This pins the place, so the two tabs cannot drift again.
+  it("sorts last of the named capabilities", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
       capability("automatic-speech-recognition", [curated("mlx-community/whisper-tiny")]),
       capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
@@ -430,10 +435,10 @@ describe("video generation's place in the reading order", () => {
       groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
     );
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
-      "text-to-video",
+      "text-generation",
       "automatic-speech-recognition",
+      "text-to-video",
     ]);
   });
 
@@ -487,8 +492,8 @@ describe("which rows exist at all", () => {
   it("renders a capability with no disk models but something to recommend", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
+      "text-generation",
       "automatic-speech-recognition",
     ]);
     expect(sections.every((s) => s.disk.length === 0)).toBe(true);
@@ -523,8 +528,8 @@ describe("which rows exist at all", () => {
       WHISPER,
     ]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
+      "text-generation",
       "automatic-speech-recognition",
       "text-ranking",
       UNRECOGNISED,
@@ -577,8 +582,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
   it("carries the catalog's runner so a recommended card can wear its engine tag", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.runner?.shortLabel)).toEqual([
-      "MLX LM",
       "MLX FLUX",
+      "MLX LM",
       "MLX Whisper",
     ]);
     expect(sections.every((s) => s.runner?.available)).toBe(true);
@@ -605,8 +610,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
 
   it("labels a recommended-only capability the way every other heading is labelled", () => {
     expect(sectionsOf([]).map((s) => s.label)).toEqual([
-      "Text generation",
       "Image generation",
+      "Text generation",
       "Speech to text",
     ]);
   });
@@ -668,6 +673,56 @@ describe("why Load is refused", () => {
 
   it("refuses a dataset without pretending it has an engine problem", () => {
     expect(loadRefusal(repo({ id: "squad", kind: "dataset" }))).toContain("dataset");
+  });
+});
+
+// The CARD-length form of the same verdicts (D475): one line, cause only, the
+// remedy carried by the link beside it. Same arms as `loadRefusal`, so the two
+// cannot disagree about WHICH problem a card has — only about how much of it
+// fits on the card.
+describe("the short refusal on the card", () => {
+  it("is null exactly where the long form is", () => {
+    expect(loadRefusalShort(QWEN_LOADABLE)).toBeNull();
+    expect(loadRefusalShort(repo({ id: "a/live", capability: "text-generation",
+      engine: engine({ available: true }) }))).toBeNull();
+  });
+
+  it("keeps only the first clause of the registry's reason", () => {
+    const off = repo({
+      id: "black-forest-labs/FLUX.2-klein-4B",
+      capability: "text-to-image",
+      engine: engine({
+        code: "diffusers-image",
+        shortLabel: "Diffusers",
+        available: false,
+        reason: "text-to-image is set to MLX FLUX, which does not read this format — switch it on the Engines tab",
+      }),
+    });
+    // Capitalised to stand alone, cut at the sentence's own comma: the middle
+    // clause is what the dashed amber tag already says, and everything past the
+    // dash is the remedy, which is the link's job.
+    expect(loadRefusalShort(off)).toBe("Text-to-image is set to MLX FLUX.");
+  });
+
+  // Bugbot, PR #794: the first cut of this function returned the weight-format
+  // line for EVERY engine-less repo, including the ones `loadRefusal` itself
+  // says are a different problem — an unrecognised model's formats may be
+  // perfectly readable, there is just nothing to load them AS.
+  it("does not blame the format for a repo it cannot identify at all", () => {
+    const short = loadRefusalShort(WESPEAKER) ?? "";
+    expect(short).not.toContain("format");
+    expect(short).toContain("not supported");
+    // …and the format line survives for the card it IS true of.
+    expect(loadRefusalShort(QWEN_NO_ENGINE)).toContain("format");
+  });
+
+  it("leads with the server's own per-task sentence when it sent one", () => {
+    const tts = repo({
+      id: "coqui/tts",
+      capability: null,
+      supportReason: "Text to speech is not supported yet, and nothing here can serve it",
+    });
+    expect(loadRefusalShort(tts)).toBe("Text to speech is not supported yet.");
   });
 });
 

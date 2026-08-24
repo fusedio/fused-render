@@ -34,6 +34,7 @@ import { EmbedStage } from "./EmbedStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
+import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
 import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppAnnotation, modelName } from "./appSeed";
 import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
@@ -193,39 +194,39 @@ export default function PlaygroundTab() {
   // model that silently is not in it reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
-  // The RAIL's reading order, which this tab now sets for itself: images lead.
-  // It diverges from `CAPABILITY_ORDER` (lib/aiModelGroups.ts) deliberately.
-  // That list is the order of the tabs that INVENTORY — Models and Benchmark
-  // draw one section per capability and must agree with each other — and its
-  // reasoning is about where a capability sits in a catalogue. This tab is not
-  // a catalogue: it is four things you can DO, and the picture is the one whose
-  // result you can judge at a glance, which is what earns it the top of the
-  // rail. Text is not demoted for being lesser; it is the one everybody
-  // already knows they can have.
+  // The RAIL's reading order — images lead, and this tab's own reasoning is why:
+  // it is not a catalogue but a set of things you can DO, and the picture is the
+  // result you can judge at a glance. Text is not demoted for being lesser; it is
+  // the one everybody already knows they can have.
   //
-  // A capability missing from this list still draws — it sorts after these, in
-  // the order the server sent it — so a capability added server-side needs no
-  // edit here.
+  // **THE LIST ITSELF NOW LIVES IN `CAPABILITY_ORDER`** (Akshil, 2026-08-24).
+  // This tab kept a private copy for exactly as long as it took to notice what
+  // two copies cost. Two things were wrong with it. The Models and Benchmark
+  // tabs sorted by the other list, so the same five sections appeared in two
+  // orders on one page and a reader moving between tabs re-found every one. And
+  // this copy named FOUR capabilities: video was not in it, so it fell through
+  // to the end and landed after Embeddings by accident rather than by anybody's
+  // decision. So the argument above won — the tab a reader uses the models on
+  // sets the order — and the shared constant is where it won: `CAPABILITY_ORDER`
+  // holds this order now, video listed explicitly, and the inventory tabs follow
+  // it. One list, three tabs.
+  //
+  // A capability missing from that list still draws — it sorts after the named
+  // ones, in the order the server sent it — so a capability added server-side
+  // needs no edit anywhere.
   //
   // This is also what the FALLBACK SELECTION reads, so a bare visit to
   // /ai-models/playground opens on the first section of the rail rather than on
-  // whichever capability the server happened to list first. The two were worth
-  // separating for exactly one commit — where the sections sit and what the
-  // page opens on are different decisions — and the answer to the second one
-  // is that a page whose first section is images and whose stage is a chat box
-  // is a page arguing with itself. `pickPlaygroundModel` needs no change: its
-  // rule was always "the first usable row" (pick.ts), and this is now the order
-  // that phrase is about.
+  // whichever capability the server happened to list first. Where the sections
+  // sit and what the page opens on are different decisions, and the answer to
+  // the second is that a page whose first section is images and whose stage is a
+  // chat box is a page arguing with itself. `pickPlaygroundModel` needs no
+  // change: its rule was always "the first usable row" (pick.ts), and this is
+  // the order that phrase is about.
   const railRows = useMemo(() => {
-    const order = [
-      "text-to-image",
-      "text-generation",
-      "automatic-speech-recognition",
-      "embeddings",
-    ];
     const rank = (c: string) => {
-      const i = order.indexOf(c);
-      return i === -1 ? order.length : i;
+      const i = CAPABILITY_ORDER.indexOf(c);
+      return i === -1 ? CAPABILITY_ORDER.length : i;
     };
     return [...capabilities].sort((a, b) => rank(a.capability) - rank(b.capability));
   }, [capabilities]);

@@ -9,7 +9,9 @@
 // two differently-grouped sections.
 import { Revisions } from "./Revisions";
 import { hubUrl } from "./hub";
-import { CancelButton } from "@apps/ai_models/shared/CancelButton";
+// No `CancelButton` import any more: this card's stop moved into the progress
+// row on 2026-08-24 (see the headstone in the actions strip). The component is
+// alive and still serves the recommended and search cards.
 import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { engineHueStyle, unloadCountdown } from "@apps/ai_models/lib/engines";
 import {
@@ -17,13 +19,14 @@ import {
   type AiModelRepo,
   type AiModelRevision,
 } from "@platform/lib/api";
-import { type Job } from "@platform/lib/jobs";
+import { isRunning, type Job } from "@platform/lib/jobs";
 import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
   PARTIAL_TAG,
   emptyShell,
   jobFraction,
+  loadRefusalShort,
   noEngineReason,
   partialFraction,
   partialNote,
@@ -99,7 +102,19 @@ function DeviceNote({ device }: { device: string }) {
   );
 }
 
-function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
+function RuntimeChip({
+  loaded,
+  job,
+  stop,
+}: {
+  loaded?: AiLoadedModel;
+  job?: Job;
+  /** Passed straight through to `ModelProgress` — see the note there on why the
+   *  cancel lives in the progress row and not in the actions strip. Only the
+   *  BUSY arm below takes it: a ready model's row is a memory figure, and a
+   *  failed one's is an error, and neither is work anybody can stop. */
+  stop?: { label: string; onStop: () => void };
+}) {
   if (loaded?.state === "ready") {
     // The badge above already said "loaded"; this row carries the two things a
     // badge cannot — the number, and the device. Nothing at all when the worker
@@ -139,7 +154,7 @@ function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
       </div>
     );
   }
-  return <ModelProgress detail={loaded?.detail} job={job} />;
+  return <ModelProgress detail={loaded?.detail} job={job} stop={stop} />;
 }
 
 export function RepoCard({
@@ -213,6 +228,11 @@ export function RepoCard({
   // endpoint), so the card states the date this machine actually knows.
   const added = timeAgo(repo.added);
   const live = loaded?.state === "ready";
+  // WEIGHTS ARE COMING INTO MEMORY RIGHT NOW — not resident, not failed, not a
+  // disk fetch. `starting`, `venv`, `downloading` and `loading` all land here
+  // (supervisor.Worker.state), because from this card's side they are one fact:
+  // a load has been asked for and has not answered yet.
+  const loading = !!loaded && !live && loaded.state !== "error";
   // Why Delete is not offered right now, or "". Deleting files a worker is
   // reading or holding open corrupts a load in progress, and on a RESIDENT
   // model it is quieter and worse — the weights are already mapped, so the
@@ -257,6 +277,32 @@ export function RepoCard({
       : part === null
         ? " am-card-part am-card-part-unknown"
         : " am-card-part";
+  // -- the one way out of work in flight (2026-08-24) -------------------------
+  // Both kinds of busy get a stop, and they are DIFFERENT calls to different
+  // things, which is the whole reason this is decided here rather than inside
+  // the progress row: a download is a job the manager owns and cancels, while a
+  // load is a worker process, and the thing that stops one of those is `unload`.
+  //
+  // A DOWNLOAD FIRST, when there is one, because a load that is currently
+  // pulling weights is reporting the pull — the bytes on the row are the job's —
+  // and the button beside them has to stop the work the row is describing.
+  // `cancelJob`'s own eligibility rule is kept verbatim (it was CancelButton's,
+  // see the headstone in the actions strip below): a job its reporter never
+  // marked cancellable gets no control rather than a dead one, and a cancel
+  // already asked for is not asked twice.
+  //
+  // `supervisor.unload()` really does stop a loading worker — it filters by
+  // model with no state check and terminates what it claims. The `state ===
+  // "ready"` rule that reads like a bar on this is the IDLE REAPER's predicate
+  // (`_is_idle`), which is a different question: whether to unload a worker
+  // nobody asked about. Asked directly, mid-load, the answer is yes.
+  const stoppableJob =
+    job && isRunning(job) && job.cancellable && !job.cancel_requested && !job.stalled ? job : null;
+  const stop = stoppableJob
+    ? { label: `Stop downloading ${repo.id}`, onStop: () => onCancel(stoppableJob) }
+    : loading
+      ? { label: `Stop loading ${repo.id}`, onStop: onUnload }
+      : undefined;
   return (
     <div
       className={
@@ -503,7 +549,7 @@ export function RepoCard({
       {/* What this model is doing RIGHT NOW, as opposed to what it is. Absent
           when the answer is "sitting on disk", which is what every card would
           otherwise say — a row of identical chips carries no information. */}
-      {(loaded || job) && <RuntimeChip loaded={loaded} job={job} />}
+      {(loaded || job) && <RuntimeChip loaded={loaded} job={job} stop={stop} />}
       <div className="cc-mdcard-foot">
         {/* ONE fact, not five. "15 files · main · used 4h ago · added 4h ago"
             was four numbers competing for the same glance, and only one of
@@ -537,7 +583,18 @@ export function RepoCard({
               text-to-image. Gating both halves on the inference stranded it: the
               card said Loaded and offered no way to get the memory back. What is
               resident can always be unloaded. */}
-          {loaded ? (
+          {/* RESIDENT only, since 2026-08-24 — it was `loaded ?`, which is any
+              worker at all including one still starting up. Two things were
+              wrong with offering Unload mid-load. It is the wrong VERB: nothing
+              is loaded yet, so the reader is being offered to undo a state the
+              card is not in. And it displaced the control that state does need
+              — the way to stop the load — which then had to be squeezed in
+              beside it as a ✕ that shifted the strip every time a job came and
+              went (see the headstone below). Mid-load the button reads
+              `Loading…` and is disabled, exactly like the download arm's own
+              in-flight label, and the stop lives on the progress row where the
+              bar is. */}
+          {live ? (
             <button
               type="button"
               className="am-card-power am-card-power-on"
@@ -546,6 +603,16 @@ export function RepoCard({
               onClick={onUnload}
             >
               Unload
+            </button>
+          ) : loading ? (
+            <button
+              type="button"
+              className="am-card-power"
+              disabled
+              title={`${repo.id} is loading into memory — the ✕ on the progress row stops it`}
+              aria-label={`${repo.id} is loading`}
+            >
+              Loading…
             </button>
           ) : resumable(repo) && !resumeCapability ? (
             /* THE DEAD END, given a way out (D437). A user hit this in the
@@ -619,15 +686,22 @@ export function RepoCard({
               {job ? "Loading…" : "Load"}
             </button>
           )}
-          {/* The way OUT of a running download, which this card did not have
-              (D440). While a pull is live the button above reads "Downloading…"
-              and is disabled, the trash is disabled too (deleting files a fetch
-              holds open is what `inUse` exists to stop) — so the card offered
-              nothing at all, and a 40GB fetch started by mistake had to be
-              cancelled from the download manager or waited out. The recommended
-              and search cards have had this ✕ all along; it is the same
-              component and the same manager-owned rule about when it appears. */}
-          <CancelButton id={repo.id} job={job} onCancel={onCancel} />
+          {/* THERE IS NO CancelButton HERE ANY MORE (2026-08-24). It was the way
+              out of a running download (D440) — necessary, because while a pull
+              is live the button above is disabled and the trash is disabled too
+              (`inUse`), so without it a 40GB fetch started by mistake had to be
+              cancelled from the download manager or waited out.
+              Nothing about that need changed; only where the control sits. In
+              this strip it was rendered conditionally, so it grew and shrank the
+              row on every job transition — a 26px target that MOVES while being
+              aimed at, next to a button whose label was `Unload`. Akshil, on
+              trying to cancel a load: "I don't notice it and I cannot click it
+              because it is fast." It is now the trailing control of the progress
+              row (`stop`, above, and ModelProgress's own note), which is drawn
+              only while there is work and therefore costs no layout when there
+              is none. `CancelButton` itself is untouched and still serves the
+              recommended and search cards, whose actions row has no in-flight
+              label to collide with. */}
           {/* Into the Playground, pre-selected — the tab whose whole job is
               "use it now". Only where the playground could actually serve it:
               the same loadability verdict the Load button rests on, since a
@@ -756,6 +830,78 @@ export function RepoCard({
           </button>
         </span>
       </div>
+      {/* WHY LOAD IS DEAD, ON THE CARD (Akshil, 2026-08-24: "let's have a
+          user-friendly way of telling them why we cannot load it and what they
+          should do to load it").
+
+          The sentence already existed and was already good — `loadRefusal`
+          writes four different ones for four different problems, precisely so
+          that none of them is a flat "cannot load". It was in the button's
+          `title`, which is to say it was in a hover on a DISABLED control: the
+          one kind of button a pointer user has no reason to visit, since nothing
+          happens when they get there. So the page held the answer and showed the
+          reader a greyed word.
+
+          Drawn only when there IS a refusal, so no card in a normal state grows
+          a line, and BELOW the actions rather than beside them — it is a
+          sentence, and a sentence in the actions row would either wrap the row
+          or ellipsise itself back into a hover.
+
+          The REMEDY is a link when the remedy is a place. `repo.engine` present
+          and unavailable is the case where something on this machine can be
+          changed — the server's reason for it already ends "switch it on the
+          Engines tab" (hub_cache) — so the tab it names is a click away instead
+          of an instruction to follow. Decided STRUCTURALLY, on the engine's own
+          `available` flag, never by matching words in the reason: the reason is
+          prose from the registry and reading it for keywords would silently stop
+          working the day it is reworded. The other three refusals — a component,
+          a dataset, a format nothing reads — have no destination that would help,
+          and a link to somewhere unhelpful is worse than none. */}
+      {/* …AND ONLY WHERE THE DISABLED LOAD IS THE BUTTON IT EXPLAINS. `refusal`
+          is non-null in more states than that: a partly-downloaded repo gets
+          `partialNote` from it, and that card's primary control is an enabled
+          "Continue downloading", not a dead Load. A line reading "this download
+          did not finish" under a button offering to finish it explains a control
+          that is not there, and the `partly downloaded` tag above it has already
+          said so. The three arms that DO draw a disabled Load — a component, a
+          dataset, a format no engine here reads — keep the line. */}
+      {refusal && !live && !loading && !resumable(repo) && (
+        <p className="am-card-refusal">
+          {/* The SHORT form. `refusal` is still what the disabled button's hover
+              and accessible name carry — the full sentence, for a reader who has
+              stopped to ask — and this is the one-line version of it, because at
+              card width the long one wrapped to three lines and became the
+              largest block of text on the card. Cause here, remedy in the link. */}
+          {loadRefusalShort(repo) ?? refusal}
+          {repo.engine && !repo.engine.available && (
+            <>
+              {" "}
+              <a
+                className="am-card-refusal-link"
+                href={tabHref("engines", "")}
+                onClick={(e) => {
+                  if (
+                    e.defaultPrevented ||
+                    e.button !== 0 ||
+                    e.metaKey ||
+                    e.ctrlKey ||
+                    e.shiftKey ||
+                    e.altKey
+                  )
+                    return;
+                  e.preventDefault();
+                  navigateUrl(tabHref("engines", ""));
+                }}
+              >
+                {/* Two words, not five ("Open the Engines tab"). It has to fit on
+                    the same line as the cause, and a link is already read as a
+                    place to go — the verb was doing no work. */}
+                Engines tab
+              </a>
+            </>
+          )}
+        </p>
+      )}
       {/* The drawer. Everything the card's face used to state in a four-clause
           meta line, plus the revision list when there is more than one — the
           facts are not gone, they are one click away instead of on every card

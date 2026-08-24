@@ -24,6 +24,7 @@ import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
+import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
@@ -418,6 +419,14 @@ export default function App({ config }: { config: Config }) {
   // cause a flash, and it only ever writes an attribute — no re-render reaches
   // a live iframe.
   useThemeSync();
+
+  // The app's ONE instant tooltip (platform/lib/hints.ts). Installed here
+  // because it is a document-level listener set rather than anything React
+  // renders: every `data-hint` on the page is served by the same panel, and the
+  // installer is idempotent so a re-render or a second caller cannot double it.
+  useEffect(() => {
+    installHints();
+  }, []);
 
   // Adopt files copied in the native file manager (SPEC §3). Returning to the
   // app is the only moment the system clipboard can have changed from the

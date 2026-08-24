@@ -2674,6 +2674,25 @@ input.schedule-when-field {
   transition-delay: 0.3s;
 }
 
+/* THE TASK ROW'S MARKS ARE NOT `data-tip` USERS, and were for exactly one day
+   (2026-08-24). The row's title, the scope glyph, the folder chip, the message
+   count and the times all wore this panel for one pass — consistency was the
+   argument — and it took FOUR support rules to keep honest: a z-index lift so a
+   later sibling could not paint over the panel, a right-edge anchor so the last
+   cell's panel was not clipped by the scroller, a `:has()` so the row's caption
+   and a mark's did not draw six pixels apart, and a per-class fast-delay list.
+   Even with all four it drew DISPLACED: the panel is positioned under its
+   ELEMENT, so on the list's first row it opened over the row below, captioning
+   a different task's title (Akshil, screenshot: "it is displaced completely
+   from the title" — "I don't want you to use custom tooltip").
+   So the marks carry native `title`s instead. The browser's tooltip follows the
+   POINTER, which is the one placement that cannot caption the wrong row, and it
+   needs none of the four rules — what fixed the original wrong-tooltip bug was
+   never the panel, it was each mark having a title OF ITS OWN so the browser
+   stops walking up to the row's. This panel stays for what it was built for:
+   the status ring's unread count, a fast tip on a COLUMN of identical marks,
+   where the 300ms guard above is the point. */
+
 /* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
    that was one blink too many (Akshil, 2026-08-17): the lane is a column of
    them, so a full board flickered, and the ring already says "in progress" by

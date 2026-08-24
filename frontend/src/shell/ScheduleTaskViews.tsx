@@ -235,9 +235,17 @@ const ICON_RERUN = icon(
 // fact this button asserts. Deliberately NOT the single `ICON_CHECK` above: that
 // one means "this filter is on" in the popovers, and a row action wearing the
 // same glyph would read as a toggle that is currently checked.
-/** A speech bubble, for the thread count on a List row (D448). */
+/** A speech bubble, for the thread count on a List row (D448).
+ *
+ *  SQUARE-CORNERED (Akshil, 2026-08-24: "make this icon boxy icon for
+ *  messages"). It was lucide `message-circle` — a round bubble whose outline is
+ *  one continuous curve — and at 12px beside a digit that curve is a blob. This
+ *  is `message-square`: a rectangle with a tail, whose corners give the glyph
+ *  the same flat edges as everything else on the row (the id chip, the folder
+ *  pill, the file mark), so it reads as a mark in this row's vocabulary rather
+ *  than as the one round thing in it. Same 12px, same stroke, same box. */
 const ICON_MSG = icon(
-  <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" />,
+  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
   12,
 );
 
@@ -380,9 +388,23 @@ export function StatusIcon({
    restoring a mark for it later is a rendering decision, not a data one — it just
    cannot be a filled dot after a title. */
 
-/** The folder a task's work happens in — a plain folder glyph and the folder's
- * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
- * not an initials avatar: that stands for a PERSON, and a directory is not one. */
+/** The folder a task's work happens in — the folder's own name, with the whole
+ * path (with ~ for home) as the tooltip. Deliberately not an initials avatar:
+ * that stands for a PERSON, and a directory is not one.
+ *
+ * NO GLYPH ANY MORE (Akshil, 2026-08-24: "in folder name we have folder icon,
+ * let's remove that"). The chip carried a 12px folder in front of its name, and
+ * the name is already the name of a folder — the glyph restated the one thing the
+ * chip could not be mistaken about, on the busiest end of the row, on every row.
+ * What it cost was width the title needed and a second small mark next to the
+ * message bubble and the file mark, which are marks that DO say something the
+ * text does not.
+ *
+ * The glyph is not gone from the row, it MOVED: it follows the title now, in the
+ * same slot the file mark uses, on the tasks that have no file mark to wear
+ * (`.tasks-row-file` in the row below). There it answers a question the row
+ * otherwise cannot — is this task about the whole folder, or one document in it
+ * — which is worth a mark, where "this folder chip contains a folder" was not. */
 export function IdentityChip({ name, title, onPick, active = false }: {
   name: string;
   title?: string;
@@ -398,34 +420,66 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   onPick?: () => void;
 }) {
   if (!name) return null;
-  const body = (
-    <>
-      <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-      <span className="schedule-tv-id-name">{name}</span>
-    </>
-  );
+  const body = <span className="schedule-tv-id-name">{name}</span>;
   if (!onPick) {
     return (
-      <span className="schedule-tv-id" title={title || name}>{body}</span>
+      <span className="schedule-tv-id" data-hint={title || name}>{body}</span>
     );
   }
+  // A SHIELD around the tag, and the tag back at its own size (Akshil,
+  // 2026-08-24, final pass on this chip).
+  //
+  // The problem it solves is what the row does with the gap AROUND the pill. The
+  // row is one big stretched link, so the few pixels above, below and beside the
+  // chip belonged to the ROW: hovering them raised the task's title and clicking
+  // them opened the task — a click a pixel outside a filter chip navigating away
+  // is the worst possible outcome for a near-miss. Two earlier passes tried to
+  // fix it by growing the BUTTON to the row's full height, and both were wrong in
+  // the same way: `border-radius` draws on the padding box, so the hover wash
+  // grew with the target into a slab around an 11px word ("that is such a bad
+  // design and hover").
+  //
+  // So the two jobs are split across two elements. This span is the shield: it
+  // occupies the band, it sits above the stretched link so the link never
+  // receives a pointer there, and it does NOTHING — `title=""` stops the
+  // browser walking up to the row's tooltip, `cursor: default` says it is not a
+  // control, and `stopPropagation` covers the row's own click handler on the arm
+  // that has one. The button inside is the whole live target: its own size, its
+  // own wash, its own tooltip, its own press.
   return (
-    <button
-      type="button"
-      className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
-      // The tooltip says what the press DOES, on top of the path it already
-      // said: a chip that only ever labelled something gives the reader no
-      // reason to try clicking it. On an ON chip it says the opposite thing,
-      // because that is what the press now does.
-      title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
-      aria-pressed={active}
-      onClick={(e) => {
-        e.stopPropagation();
-        onPick();
-      }}
+    <span
+      className="schedule-tv-id-shield"
+      /* EMPTY, not absent, and it is the whole reason the band says nothing: the
+         ROW carries `data-hint={task.title}`, and `hints.ts` resolves a hint by
+         walking up with `closest("[data-hint]")` — so without this the band
+         would answer with the task's name, which is exactly what it must not
+         do. An empty value is found first and resolves to no hint, the same job
+         `title=""` used to do against the native tooltip. */
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
     >
-      {body}
-    </button>
+      <button
+        type="button"
+        className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
+        // The tooltip says what the press DOES, on top of the path it already
+        // said: a chip that only ever labelled something gives the reader no
+        // reason to try clicking it. On an ON chip it says the opposite thing,
+        // because that is what the press now does.
+        //
+        // A NATIVE `title`, by owner call after the custom panel drew displaced
+        // from the chip it captioned. Having one OF ITS OWN is also what stops
+        // the walk up to the row's, which is what put the task's name here.
+        data-hint={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+        aria-label={active ? `${name} — showing only this folder, press to clear` : `Show only ${name}`}
+        aria-pressed={active}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPick();
+        }}
+      >
+        {body}
+      </button>
+    </span>
   );
 }
 
@@ -534,11 +588,24 @@ function popStyle(el: HTMLElement | null): React.CSSProperties {
 function FilterMenu({
   label,
   count,
+  icon: glyph,
   onClear,
   children,
 }: {
   label: string;
   count: number;
+  /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
+   *  mark — that is the vocabulary this page states a status in, so on that menu
+   *  the ring is the label said twice and it belongs there.
+   *
+   *  It was the default for BOTH menus, and hardcoded (Akshil, 2026-08-24: "this
+   *  icon next to project in filters is not accurate, change the icon to
+   *  something related to projects"). A ring beside the word Project claims a
+   *  status is being filtered — the one thing the ring means everywhere else on
+   *  this page — so the two menus read as two status filters, one of them
+   *  mislabelled. A prop rather than a `label === "Project"` branch inside:
+   *  which glyph belongs to a filter is the caller's fact, not this popover's. */
+  icon?: React.ReactNode;
   /** Drop THIS menu's selections. Given one, the trigger becomes a split
    *  control — `[ ⊙ Project 1 | ✕ ]` — whenever the count is non-zero.
    *
@@ -595,7 +662,7 @@ function FilterMenu({
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
-          {ICON_CIRCLE_DOT} {label}
+          {glyph ?? ICON_CIRCLE_DOT} {label}
           {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
         {splittable && (
@@ -731,6 +798,11 @@ export function TaskFilterControls({
         <FilterMenu
           label="Project"
           count={filters.projects.length}
+          /* A FOLDER, because a project on this page IS a folder — it is
+             auto-detected from where each task's work happens, and the same
+             glyph now marks a folder-scoped task at the end of its title and
+             every folder row in the New-task picker. One mark, one meaning. */
+          icon={ICON_FOLDER}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
           {() =>
@@ -1912,7 +1984,17 @@ function TaskNode({
         // claimed (`is-inert` turns the cursor and the hover tint off).
         role={pressable && !href ? "button" : undefined}
         tabIndex={pressable && !href ? 0 : undefined}
-        title={task.title}
+        /* NO CAPTION ON THE ROW ITSELF (Akshil, 2026-08-24: "the tooltip of
+           title should only show up if I am on title text"). It lived here
+           through three passes — as a native `title`, as the CSS panel, as the
+           instant one — and a caption on the row is a caption on ALL of it: the
+           id chip, the status ring, the empty space between the title and the
+           folder, and every band around a mark answered with the task's name
+           because `closest()` walks up to whatever the row is holding. The
+           TITLE is the thing whose text can be cut off and therefore the only
+           thing here worth captioning, so it carries its own (see
+           `.tasks-title` below). Every other mark on the row already carries the
+           one fact its own ink cannot show. */
         onClick={href ? undefined : pressable ? activate : undefined}
         onKeyDown={
           href
@@ -1986,7 +2068,12 @@ function TaskNode({
           <a
             className="tasks-rowlink"
             href={href}
-            title={task.title}
+            /* NO `title` OF ITS OWN (2026-08-24). This <a> is stretched over the
+               whole row and sits above it, so a title here is the one actually
+               shown — and the row div already carries the same words, one walk
+               up, which is where the browser lands when this link stays silent.
+               One copy of the caption, not two. `aria-label` stays: it is this
+               link's accessible NAME, not a tooltip. */
             aria-label={label}
             onClick={(e) => {
               if (opensElsewhere(e)) return;
@@ -2086,7 +2173,18 @@ function TaskNode({
             the ring, the folder and the time all stay at full strength, because
             fading the whole row would say "archived", which is a different fact
             with a lane of its own. */}
-        <span className={"tasks-title" + (ahead ? " is-upcoming" : "")}>{label}</span>
+        {/* THE CAPTION LIVES HERE, not on the row (see the row's own note).
+            This element is the one on the row that ELLIPSISES — `overflow:
+            hidden` in tasks.css — so it is the one whose full text a reader can
+            actually be missing, which is the whole job of a tooltip. The panel
+            is `position: fixed` on <body>, so this element's own clipping has no
+            say in whether the caption is readable. */}
+        <span
+          className={"tasks-title" + (ahead ? " is-upcoming" : "")}
+          data-hint={task.title}
+        >
+          {label}
+        </span>
         {/* The one thing that follows the title (Akshil, 2026-08-23): a file
             mark, on the tasks whose target is a FILE rather than the folder.
             The row already says which project the work happened in; what it
@@ -2104,15 +2202,47 @@ function TaskNode({
             The live ping used to sit here (see LivePulse's headstone above): a
             blue disc in the one position, and the one shape, that means unread
             everywhere else. This is a hollow outline and never blue. */}
-        {taskFile_ && (
+        {/* ONE MARK, EITHER WAY (Akshil, 2026-08-24): the file glyph on a task
+            about a document, the folder glyph on a task about its folder — "if
+            there is a file icon already there then we don't add folder icon, if
+            file icon not present then we add a folder icon". Never both, because
+            they are two answers to the SAME question and a row wearing both
+            would be claiming both.
+
+            This is the other half of taking the glyph off the folder chip
+            (IdentityChip's note). There it was decoration on a word that already
+            said "folder"; here it is the row's answer to what the task is about,
+            in the position the file mark already held — so the mark a reader
+            learns is "the thing after the title tells me the scope", with two
+            values instead of one-value-or-nothing.
+
+            The FOLDER arm is the common case, so its tooltip has to be worth
+            having on nearly every row: it names the project path, the same
+            string the chip at the far end of the row carries — deliberately,
+            because the two are one hover habit.
+
+            A NATIVE `title`, like every caption on this row (2026-08-24, third
+            pass): the custom panel drew displaced from what it captioned, and
+            its own `title` is also what stops the browser walking up to the
+            row's — the walk is the bug that showed the task's name over every
+            mark that carried no title of its own. */}
+        {taskFile_ ? (
           <span
             className="tasks-row-file"
-            title={tildePath(taskFile_, home)}
+            data-hint={tildePath(taskFile_, home)}
             aria-label={`This task is about ${basename(taskFile_)}`}
           >
             {ICON_FILE}
           </span>
-        )}
+        ) : task.project ? (
+          <span
+            className="tasks-row-file"
+            data-hint={tildePath(task.project, home)}
+            aria-label={`This task is about the folder ${basename(task.project)}`}
+          >
+            {ICON_FOLDER}
+          </span>
+        ) : null}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
@@ -2259,21 +2389,49 @@ function TaskNode({
             right is not that number. The noun survives for anything that cannot
             see the glyph, as this element's `aria-label`.
 
-            Drawn only when the server has counted at least one — zero is a task
-            whose thread has not started, and a "0 messages" is worse than the
-            space it would fill. */}
-        {task.message_count > 0 && (
-          <span
-            className="tasks-row-msgs"
-            /* The noun the glyph replaces, for anything that cannot see it. A
-               bare "5" to a screen reader is the same unlabelled number the
-               comment above objected to on screen. */
-            aria-label={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}
-          >
-            {task.message_count}
-            <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
-          </span>
-        )}
+            ALWAYS DRAWN, AND NEVER BELOW ONE (Akshil, 2026-08-24). It used to be
+            gated on `> 0`, on the reasoning that zero is a thread that has not
+            started and "0 messages" is worse than the space it fills. The gate
+            was right about the words and wrong about the rows: the tasks that
+            count zero are the EMPTY SESSIONS — a session holding only a `/clear`,
+            a 97-byte file holding only a title record — and they are scattered
+            through the list, so the column of counts had holes in it exactly
+            where the odd rows were. A hole in a column reads as a broken row (the
+            same argument the time beside it settled on 2026-08-18), and it drew
+            attention to the rows that least deserved it.
+            So the floor is one. A session that exists is a conversation somebody
+            opened; a count of zero is an artefact of what this app declines to
+            COUNT — slash commands, skill injections, tool results are all real
+            entries that are not prose — rather than a fact about the row. Showing
+            "1" for them is the honest reading of "there is something in here",
+            and it is what the ask asked for.
+            (The deeper bug is real and is NOT fixed here, by decision: one
+            session on this machine holds 25 assistant turns and counts zero
+            because none of its user entries is typed prose. This default is the
+            preventive fix; the counter is a separate job.) */}
+        {(() => {
+          const shown = Math.max(1, task.message_count);
+          return (
+            <span
+              className="tasks-row-msgs"
+              /* The noun the glyph replaces, for anything that cannot see it. A
+                 bare "5" to a screen reader is the same unlabelled number the
+                 comment above objected to on screen. */
+              aria-label={`${shown} message${shown === 1 ? "" : "s"}`}
+              /* A `title` OF ITS OWN is the fix for the screenshot bug ("if i
+                 hover over button/tag of folder it shows me task title instead
+                 of path"): an element with none lets the browser walk up to the
+                 row's, whose title is the task's name — and it was never about
+                 the folder chip alone, every mark here without its own title
+                 was borrowing the row's. Native, like everything on this row
+                 (third pass — the custom panel drew displaced and was pulled). */
+              data-hint={`${shown} message${shown === 1 ? "" : "s"} in this task`}
+            >
+              {shown}
+              <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
+            </span>
+          );
+        })()}
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session
             holding only a `/clear` — which left the last cell of that row blank
@@ -2302,11 +2460,11 @@ function TaskNode({
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
         {soon && (
-          <span className="tasks-row-next" title={soon.title}>
+          <span className="tasks-row-next" data-hint={soon.title}>
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" title={when.title}>
+        <span className="tasks-row-time" data-hint={when.title}>
           {when.text}
         </span>
       </div>
@@ -2347,7 +2505,6 @@ function TaskNode({
                   // that opens a modal keeps them here.
                   role={to ? undefined : "button"}
                   tabIndex={to ? undefined : 0}
-                  title={m.body}
                   // One handler for both ways in, the same rule the task row obeys:
                   // `pressMessage` opens the form on a message that has not gone out
                   // and the transcript turn on one that has.
@@ -2372,7 +2529,6 @@ function TaskNode({
                     <a
                       className="tasks-rowlink"
                       href={to}
-                      title={m.body}
                       aria-label={firstLine(m.body) || "(empty)"}
                       onClick={(e) => {
                         if (opensElsewhere(e)) return;
@@ -2401,7 +2557,13 @@ function TaskNode({
                       distinction the row's own words and time make anyway. The
                       id and the body lead now. */}
                   <IdChip id={m.message_id} kind="message" />
-                  <span className="tasks-msg-body">{firstLine(m.body) || "(empty)"}</span>
+                  {/* The message's own caption, on the text and not on the row —
+                      the same rule the task row above follows, and for the same
+                      reason: this is the element that ellipsises. The hint is the
+                      WHOLE body where the ink is only its first line. */}
+                  <span className="tasks-msg-body" data-hint={m.body}>
+                    {firstLine(m.body) || "(empty)"}
+                  </span>
                   {/* No dot after the body any more (2026-08-18). It trailed the
                       title here, and led the row in a reserved rail slot before
                       that, and both arrangements were arguing about WHERE to put a
@@ -2466,7 +2628,7 @@ function TaskNode({
                       (messageWhenTitle). The "ran 07:12 today" label that used to
                       sit beside this is gone: 2026-08-17, "I don't think I need this
                       as well, the RAND Today stuff". */}
-                  <span className="tasks-msg-time" title={messageWhenTitle(m)}>
+                  <span className="tasks-msg-time" data-hint={messageWhenTitle(m)}>
                     {relativeWhen(m.at)}
                   </span>
                 </div>
@@ -3043,7 +3205,11 @@ function TaskCard({
           (draggable ? " is-draggable" : "") +
           (isDragging ? " is-dragging" : "")
         }
-        title={task.title}
+        /* The Board card's own caption, on the same instant panel as the List's
+           (hints.ts). It is the same page and the same fact; a card that waited
+           four seconds while the rows beside it answered at once would read as a
+           different kind of thing. */
+        data-hint={task.title}
         draggable={draggable}
         onDragStart={(ev) => {
           // Some data is required for Firefox to start a drag at all; the task
