@@ -73,7 +73,7 @@ def test_ruled_out_and_unknown_are_tellable_apart():
     # The tag a SigLIP or CLIP repo actually carries: a dual encoder, named
     # after one thing you can do with its two towers.
     ("zero-shot-image-classification", registry.EMBEDDINGS),
-    # `h3-video` serves this one prompt-only; its image-conditioned siblings
+    # `ltx-video` serves this one prompt-only; its image-conditioned siblings
     # (image-to-video, image-text-to-video) stay unmapped below.
     ("text-to-video", registry.VIDEO_GENERATION),
 ])

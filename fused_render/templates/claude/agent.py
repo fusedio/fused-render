@@ -1511,7 +1511,7 @@ _MACHINERY_DROP = (
 # that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
 # constant on this side at all — only template.html, which writes the block,
 # names it.)
-_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
@@ -1552,12 +1552,52 @@ def _task_notification(text: str) -> dict | None:
     return {"summary": summary, "status": status}
 
 
-# `formatAnnotations`' preamble, which has no tag at all — the inverse of
-# template.html's `stripAnnBlock`, anchored on the json fence for the same
-# reason it is.
+# `formatAnnotations`' block as it is written TODAY: an `<annotations>` tag
+# holding one markdown stanza per pin. The tag is in `_MACHINERY_STRIP` above, so
+# `_LEADING_MACHINERY` peels it like the other two blocks and there is no strip
+# code of its own — but `_ann_notes` still has to read the user's words back out,
+# and prose has no `content` key to ask for. A MIRROR of `tasks_store.py`'s
+# `_ann_notes_md`, pinned to it over the shared corpus (D166: a template may not
+# import fused_render, so the rule is written twice and tested once).
+#
+# The shape rules are the ones `formatAnnotations` writes and nothing else:
+# stanzas separated by a blank line (the writer collapses any blank line INSIDE a
+# note, so that boundary is unambiguous even though the composer takes a newline
+# on Shift+Enter), the first paragraph the block's preamble (the only one not
+# opening with `**A** — `), and inside a stanza the first line is the heading,
+# the no-badge caveat and the no-words placeholder are OURS — matched exactly
+# rather than as "any wholly-italic line", since a note that is one emphasised
+# word is still a note — and what is left is what the user said.
+_ANN_TAG = "annotations"
+_ANN_BLOCK = re.compile(r"<%s>(.*?)</%s>" % (_ANN_TAG, _ANN_TAG), re.DOTALL)
+_ANN_STANZA_HEAD = re.compile(r"^\*\*(.+?)\*\* — ")
+_ANN_NO_WORDS = "_(no words for this spot)_"
+_ANN_OFFSCREEN = re.compile(r"^_no badge on the overview: .+_$", re.DOTALL)
+
+# The same block as it was written BEFORE that tag existed: a prose preamble and
+# a fenced json payload, recognised at position ZERO because it has no tag —
+# exactly the fragility the tag ended. Sessions on disk carry it forever, so this
+# reader never goes away.
 _ANN_PREAMBLE = "The user annotated "
 _ANN_FENCE_OPEN = "\n```json\n"
 _ANN_FENCE_CLOSE = "\n```"
+
+
+def _ann_notes_md(block: str) -> str:
+    """The user's words from one `<annotations>` block's stanzas, joined.
+
+    Flattened with spaces, unlike the page's own reader (which rejoins with
+    newlines): this builds a row TITLE, and a title is one line."""
+    notes = []
+    for para in re.split(r"\n\s*\n", block.strip()):
+        lines = [ln.strip() for ln in para.strip().splitlines() if ln.strip()]
+        if not lines or not _ANN_STANZA_HEAD.match(lines[0]):
+            continue            # the preamble paragraph, or something we did not write
+        said = [ln for ln in lines[1:]
+                if ln != _ANN_NO_WORDS and not _ANN_OFFSCREEN.match(ln)]
+        if said:
+            notes.append(" ".join(said))
+    return " · ".join(notes)
 
 
 def _strip_ann_block(text: str) -> str:
@@ -1597,6 +1637,12 @@ def _ann_notes(text: str) -> str:
     to name it with, which is the one case the empty answer was always for.
     """
     out = (text or "").strip()
+    # TODAY'S shape first, and searched rather than anchored: the tag made this
+    # block position-independent, so it is found wherever the send put it — no
+    # peeling loop needed to expose it, unlike the untagged form below.
+    found = _ANN_BLOCK.search(out)
+    if found:
+        return _ann_notes_md(found.group(1))
     while True:
         match = _LEADING_MACHINERY.match(out)
         if not match:

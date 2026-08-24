@@ -52,14 +52,63 @@ STATES = (RUNNING,) + TERMINAL_STATES
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
 
-# How long a finished job stays on screen. Long enough to be noticed by someone
-# who was not staring at the corner when it landed, short enough that the
-# manager is a picture of what is happening NOW and empties itself.
+# How long a finished job stays on screen ONCE SOMEONE HAS READ IT — the
+# retention clock starts at first READ (`Job.first_read_at`), not at
+# completion. The corner is meant to answer "is my work done", not to be read
+# as a log — once a `done`/`cancelled` row has had a moment to register, it
+# should clear itself so the manager stays a picture of what is happening NOW,
+# not an accumulating list of what already happened. The client
+# (`pollInterval` in jobs.ts) holds a matching grace window on ACTIVE-cadence
+# polling after the last running job disappears, so the row is swept close to
+# on-schedule instead of lagging behind a slow poll.
+#
+# **Why read-gated rather than a flat clock from `finished_at`.** A job that
+# starts AND finishes entirely server-side — a scheduled run, or a Python
+# reporter POSTing straight to `/api/jobs` with no `fused.trackJob()` handle —
+# runs no JS, so it never calls `pingJobs()`, the only thing that nudges the
+# shell's poll out of its idle cadence (jobs.ts `POLL_IDLE_MS`, 5s). A flat
+# `finished_at + FINISHED_TTL_S` clock could then expire the row entirely
+# between two idle polls: anything under roughly `POLL_IDLE_MS` of work could
+# be born and swept with NOBODY ever having seen it, which is precisely the
+# guarantee this constant exists to give ("noticed by someone who was not
+# watching the corner", SPEC BG-6). Gating the clock on the first successful
+# `list_jobs()` read — the same call the dock's poll and `fused.watchJob` both
+# make — guarantees every reader gets a real `FINISHED_TTL_S` window from the
+# moment THEY could first have seen the row, at the cost of an unread row
+# living arbitrarily long (bounded by `FINISHED_UNREAD_DROP_S` below, not by
+# this constant).
+#
+# **Known limitation, accepted rather than solved:** the clock starts on the
+# FIRST read by ANY client, not per-client — so a second, slower reader (a
+# background tab, a client that only polls occasionally) can still open the
+# dock after the fast reader's `FINISHED_TTL_S` has elapsed and find the row
+# already gone. Per-client retention would need a per-client read log, which
+# is a much larger feature for a case this rare; "seen by the first reader
+# to look" is the guarantee actually being made.
+#
+# Two rejected alternatives (see DECISIONS.md D469): a shorter fixed TTL from
+# `finished_at` (does not fix the "never read at all" case, only shrinks its
+# window) and dropping `POLL_IDLE_MS` to ~2s (a permanent background request
+# every 2s for the life of every session, to cover a rare case a read gate
+# covers for free).
 #
 # An `error` is exempt: it is the one outcome the user may need to act on, so
 # it stays until dismissed — the same rule the persistent-error toast follows
 # (lib/toast's ttlMs=0). MAX_JOBS is what bounds it.
-FINISHED_TTL_S = 30.0
+FINISHED_TTL_S = 3.0
+
+# The backstop for a terminal row that is NEVER read at all — a headless
+# server, a `fused-render` run with no browser ever attached, a closed tab
+# whose dock never polls again. Without this, such a row would sit in
+# `_jobs` for the life of the process: `FINISHED_TTL_S` only starts counting
+# once something reads the row, so an unread row is otherwise unbounded, and
+# `MAX_JOBS` is a DIFFERENT rule (capacity pressure, not "this work is over"
+# — see `_sweep`'s docstring) that only bites once 64 rows have piled up.
+# Same magnitude as `STALE_DROP_S` below and for the same reason: ten minutes
+# is long enough that any UI actually watching the corner would have read the
+# row by now, and a process that has run headless for that long is not about
+# to grow a viewer.
+FINISHED_UNREAD_DROP_S = 600.0
 
 # A running job with no update in this long is reported as `stalled`. Above
 # every reporter's poll cadence by a wide margin (the examples report at
@@ -168,6 +217,13 @@ class Job:
     started_at: float = 0.0
     updated_at: float = 0.0
     finished_at: float | None = None
+    # When this row was first READ (via `list_jobs`) while in a TERMINAL
+    # state — not when it finished. `FINISHED_TTL_S` counts from here, not
+    # from `finished_at`; see that constant's own comment for why. Set for
+    # every terminal state uniformly, `error` included, even though `error`
+    # is exempt from the sweep that reads it — a per-state exception here
+    # would buy nothing and cost a second code path to reason about.
+    first_read_at: float | None = None
 
 
 _lock = threading.Lock()
@@ -409,16 +465,60 @@ def reset() -> None:
 # --------------------------------------------------------------------- reading
 
 
-def list_jobs(*, now: float | None = None) -> list[dict]:
+def list_jobs(*, now: float | None = None, mark_read: bool = False) -> list[dict]:
     """Every live record, oldest first.
 
     Ascending by start time so rows never reorder under the pointer: a new job
     appends at the BOTTOM of the column, nearest the screen edge the eye is
     already on — the same ordering rule the toast stack above it follows.
+
+    **`mark_read` defaults to False, and that default is deliberate, not an
+    oversight to fix later.** This function is not only the shell's `GET
+    /api/jobs` — `grep -rn "list_jobs(" fused_render/` also finds
+    `supervisor._cancel_state` (polled every `_CANCEL_CHECK_INTERVAL_S`,
+    0.5s, for the whole duration of every model load) and
+    `capture._cancel_requested` (an internal cancel poll of its own), neither
+    of which is a person looking at the corner. If this function marked rows
+    read by default, a scheduled run finishing while any model happened to be
+    loading would get `first_read_at` stamped by the supervisor's own poll
+    within half a second, with no browser anywhere — the row would sweep
+    `FINISHED_TTL_S` later with nobody having seen it, which is exactly the
+    failure the read gate exists to prevent, reached through a different
+    door, and silently: the same scheduled run would be visible or invisible
+    depending on whether a model happened to be loading. Only
+    `routers/jobs.py`'s `GET /api/jobs` — the one client-facing read of this
+    list — passes `mark_read=True`.
+
+    **The asymmetry that decides the default:** a row that never gets marked
+    lingers for up to `FINISHED_UNREAD_DROP_S` (10 minutes) before the
+    backstop takes it — a cosmetic cost, an extra row on screen. A row marked
+    by a caller that was never actually looking loses the outcome entirely
+    within `FINISHED_TTL_S` (3s) — not cosmetic, the exact failure this whole
+    feature exists to prevent. Between "row lingers too long" and "row
+    vanishes before anyone saw it", the safe default is the one that can only
+    ever err toward lingering.
+
+    This is the ONE place `first_read_at` CAN be set — not `upsert`'s own
+    `_public` call when a reporter's tick lands it on a terminal state,
+    which is a WRITE the reporter sees, not a READ the corner made. Setting
+    it there would restart the exact bug FINISHED_TTL_S's read-gating
+    exists to fix: the retention clock ticking down from the moment of
+    completion again, just relabelled.
+
+    **Order matters**: `_sweep` runs FIRST, against whatever `first_read_at`
+    values already existed from an EARLIER call, and only THEN does this
+    function (when `mark_read`) mark newly-terminal rows as read for THIS
+    call. A row can therefore never be swept in the same call that first
+    reveals it — the sweep that could act on today's read already ran before
+    today's read happened.
     """
     now = time.time() if now is None else now
     with _lock:
         _sweep(now)
+        if mark_read:
+            for job in _jobs.values():
+                if job.state != RUNNING and job.first_read_at is None:
+                    job.first_read_at = now
         jobs = sorted(_jobs.values(), key=lambda j: (j.started_at, j.id))
         return [_public(job, now) for job in jobs]
 
@@ -455,8 +555,17 @@ def _sweep(now: float) -> None:
     no `fused.trackJob()` handle to remember it already finished) would otherwise
     re-create the record from scratch the moment it aged out, and keep doing so
     every FINISHED_TTL_S for as long as it kept posting — a finished download
-    blinking back onto the screen every 30 seconds. Only a fresh opening report
-    reopens a forgotten id, which is the one case that should.
+    blinking back onto the screen every few seconds. Only a fresh opening
+    report reopens a forgotten id, which is the one case that should. This
+    protection is unchanged by the read-gating below: `_forget` is still what
+    every age-out path funnels through.
+
+    **A terminal non-`error` row ages out `FINISHED_TTL_S` after it was first
+    READ (`job.first_read_at`), not `FINISHED_TTL_S` after it finished.** See
+    `FINISHED_TTL_S`'s own comment for why. Until it has been read at all, it
+    is bounded instead by `FINISHED_UNREAD_DROP_S` — a much longer ceiling,
+    because an unread row might simply have nobody watching yet, where a read
+    one has been SEEN and is allowed to clear itself.
     """
     for job_id, job in list(_jobs.items()):
         if job.state == RUNNING:
@@ -464,7 +573,10 @@ def _sweep(now: float) -> None:
                 _forget(job_id, now)
         elif job.state == "error":
             continue  # kept until dismissed — see FINISHED_TTL_S
-        elif (now - (job.finished_at or job.updated_at)) > FINISHED_TTL_S:
+        elif job.first_read_at is not None:
+            if (now - job.first_read_at) > FINISHED_TTL_S:
+                _forget(job_id, now)
+        elif (now - (job.finished_at or job.updated_at)) > FINISHED_UNREAD_DROP_S:
             _forget(job_id, now)
 
     # **The cap counts only what it could actually shed.** Measuring it against

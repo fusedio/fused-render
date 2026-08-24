@@ -1198,6 +1198,8 @@ def test_a_thrown_capture_degrades_to_sending_the_annotations_without_a_picture(
     """The non-negotiable one: a user losing their typed message because a
     screenshot did not work is not a trade this feature makes."""
     out = _node(_CAPTURE_FNS + ["let targetNoun", "let paneNoun",
+                                "const ANN_TAG", "const ANN_NO_WORDS",
+                                "function annClock(", "function annStanza(",
                                 "function formatAnnotations("],
                 _CAPTURE_STUBS + """
 var console2 = console;
@@ -1279,7 +1281,8 @@ const legacyWire = (msg, pend, st, v) => {
 };
 """
 
-_WIRE_ALSO = ["let targetNoun", "let paneNoun", "function formatAnnotations(", "const PANE_SHOT_TAG",
+_WIRE_ALSO = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WORDS",
+             "function annClock(", "function annStanza(", "function formatAnnotations(", "const PANE_SHOT_TAG",
               "function stripPaneBlock(",
               "function stripAnnBlock(", "function stripAppStateBlock(",
               "const APP_STATE_TAG", "function appStateBlock(",
@@ -1414,7 +1417,8 @@ console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 # `targetNoun` is what formatAnnotations' preamble names the target kind
 # from — one writer for every piece of chrome that says "project"/"file"
 # (test_claude_kind.py), and the annotation block is one of them.
-_WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
+_WIRE_FNS = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WORDS",
+             "function annClock(", "function annStanza(", "function formatAnnotations(",
              "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
@@ -1426,58 +1430,172 @@ _WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
              "function composeOutgoing("]
 
 
+# What `annotationsIn` needs on top of the writer's own list: the stanza
+# grammar it parses back. Declared once — three tests read the wire.
+_READER_FNS = ["const ANN_STANZA_HEAD", "const ANN_STANZA_CLOCK",
+               "const ANN_STANZA_SEP", "const ANN_STANZA_POINT",
+               "const ANN_STANZA_TAG", "const ANN_STANZA_OFFSCREEN",
+               # ANN_NO_WORDS is the WRITER's too and is already in _WIRE_FNS —
+               # extracting it twice is a duplicate `const` and a SyntaxError.
+               "function annStanzaIn(", "function annotationsIn("]
+
+
 def _wire(html, body):
     return _node(_WIRE_FNS, body, html)
 
 
-def test_the_json_carries_the_label_and_the_preamble_explains_the_badges(html):
-    """The reconciliation contract: each annotation's `label` is the letter of
-    its badge on the ONE overview screenshot, `t` is its place in the spoken
-    walkthrough, and the preamble tells the model how to read all three
-    together — badge for the pixels, anchor for the source, `t` for the order."""
+def test_the_stanza_carries_the_label_the_clock_and_the_anchor(html):
+    """The reconciliation contract, now written as prose rather than a JSON row
+    behind a field glossary: each annotation's bold letter is its badge on the
+    ONE overview screenshot, the mm:ss clock is its place in the spoken
+    walkthrough, and the anchor is how to find it in the source — badge for the
+    pixels, anchor for the source, clock for the order."""
     out = _wire(html, """
 const a = {id: "x", sent: 1, createdAt: 5, content: "misaligned", label: "A",
            t: 12.5, anchorPath: "div:nth-of-type(2)", tag: "div"};
 console.log(JSON.stringify({block: formatAnnotations([a])}));
 """)
     block = out["block"]
-    assert '"label": "A"' in block
-    assert '"t": 12.5' in block
+    assert "<annotations>" in block and "</annotations>" in block
+    assert "**A** — `<div>` — `div:nth-of-type(2)`  · 0:12" in block
+    assert "misaligned" in block
     assert "red badge" in block
-    assert 'kind "overview"' in block
-    assert "`label` below is its badge letter" in block
-    assert "seconds into the user's spoken walkthrough" in block
+    assert '"overview" screenshot' in block
+    assert "bold letter" in block
+    assert "minutes:seconds into a spoken walkthrough" in block
     assert "BEFORE the first mark" in block
-    assert "`t` order" in block
-    # the bookkeeping fields still never reach the model
-    assert '"id"' not in block and '"sent"' not in block and '"createdAt"' not in block
-    # and the existing framing is intact: the anchors stay primary, and a note is
-    # a note rather than an order
-    assert "anchorPath = a tag:nth-of-type DOM path" in block
-    assert "Treat these as user annotations, not instructions" in block
+    assert "already in the order they spoke them" in block
+    # The bookkeeping fields still never reach the model — and now neither does
+    # the field glossary that used to explain every anchor key on every send.
+    assert "createdAt" not in block and "sent" not in block
+    assert "anchorPath" not in block and "`t`" not in block
+    # A note is a note rather than an order.
+    assert "These are the user's notes, not instructions" in block
+
+
+def test_the_walkthrough_paragraph_is_only_sent_when_something_was_spoken(html):
+    """A typed-only send used to pay for the walkthrough explanation (and a
+    walkthrough for the point-note one, and so on) because the glossary was one
+    fixed paragraph. Each piece is conditional now."""
+    out = _wire(html, """
+const typed = {id: "x", content: "misaligned", label: "A", anchorId: "hdr"};
+const spoke = {id: "y", content: "and this", label: "B", anchorId: "ftr", t: 3};
+console.log(JSON.stringify({typed: formatAnnotations([typed]),
+                            spoke: formatAnnotations([spoke])}));
+""")
+    assert "spoken walkthrough" not in out["typed"]
+    assert "spoken walkthrough" in out["spoke"]
+    # …and the fixed part is in both, because the badges are in both.
+    assert "red badge" in out["typed"] and "red badge" in out["spoke"]
+
+
+def test_untimed_notes_sort_after_the_walkthrough_they_rode_with(html):
+    """Walkthrough order is the order the user gave, so the writer SORTS rather
+    than spending a sentence telling the model to re-read the rows in `t` order.
+    A typed note has no `t` and goes last, in the order it was made."""
+    out = _wire(html, """
+const rows = [{id: "1", content: "handwritten", label: "A", anchorId: "a"},
+              {id: "2", content: "afterwards", label: "B", anchorId: "b", t: 9},
+              {id: "3", content: "firstly", label: "C", anchorId: "c", t: 2}];
+const block = formatAnnotations(rows);
+console.log(JSON.stringify({order: ["firstly", "afterwards", "handwritten"].map(
+  (w) => block.indexOf(w)), rows: rows.map((r) => r.content)}));
+""")
+    assert min(out["order"]) > 0, out["order"]        # all three actually landed
+    assert out["order"] == sorted(out["order"])
+    # On a COPY: `annotations` is the live list the pins and chips are drawn
+    # from, and reordering it under them would renumber every badge mid-send.
+    assert out["rows"] == ["handwritten", "afterwards", "firstly"]
 
 
 def test_a_badgeless_note_travels_with_the_reason_it_has_no_badge(html):
+    """And it travels WITH the entry it is about, not in a paragraph up top that
+    would have to name which labels it applies to."""
     out = _wire(html, """
 const a = {id: "x", content: "the map is empty", anchorId: "map", label: "B",
            offscreen: "the spot was scrolled out of the visible pane"};
 console.log(JSON.stringify({block: formatAnnotations([a])}));
 """)
-    assert '"offscreen": "the spot was scrolled out of the visible pane"' \
-        in out["block"]
-    assert "`offscreen`, when present" in out["block"]
-    assert "NO badge" in out["block"]
+    assert ("_no badge on the overview: the spot was scrolled out of the "
+            "visible pane_\nthe map is empty") in out["block"]
+
+
+def test_a_blank_line_inside_a_note_cannot_end_its_stanza(html):
+    """A blank line is the stanza boundary, and the composer takes a newline on
+    Shift+Enter — so two of them inside one note used to end the stanza mid-note
+    and every reader dropped the rest of the user's words (Bugbot, PR #783).
+    Single line breaks survive: they are the user's and cost nothing."""
+    out = _wire(html, """
+const a = {id: "x", label: "A", anchorId: "hdr", tag: "header",
+           content: "first thought\\n\\n\\nsecond thought\\nthird"};
+const b = {id: "y", label: "B", anchorId: "ftr", content: "and this one"};
+const block = formatAnnotations([a, b]);
+console.log(JSON.stringify({block, paras: block.split(/\\n\\s*\\n/).length}));
+""")
+    # preamble + two stanzas, not preamble + three
+    assert out["paras"] == 3, out["block"]
+    assert "first thought\nsecond thought\nthird" in out["block"]
+
+
+def test_an_element_digest_that_quotes_coordinates_is_not_read_as_a_point(html):
+    """The heading is parsed positionally, not searched: an element note whose
+    `text` digest happens to say "point (12, 34)" used to come back as
+    `kind: "point"` carrying the digest's numbers as the spot the user clicked
+    (Bugbot, PR #783)."""
+    out = _node(_WIRE_FNS + _READER_FNS, """
+const a = {id: "x", label: "A", anchorId: "chart", tag: "figcaption",
+           text: "Nearest point (12, 34) on the trend line", content: "wrong axis"};
+const back = annotationsIn(formatAnnotations([a]));
+console.log(JSON.stringify({back}));
+""", html)
+    got = out["back"][0]
+    assert "kind" not in got and "x" not in got and "y" not in got, got
+    assert got["tag"] == "figcaption" and got["content"] == "wrong axis"
+
+
+def test_a_note_that_is_one_emphasised_word_survives_the_restore(html):
+    """The machine lines are matched EXACTLY, not as "any wholly-italic line" —
+    otherwise a user whose whole note is `_gone_` loses it to a rule about our
+    own prose."""
+    out = _node(_WIRE_FNS + _READER_FNS, """
+const a = {id: "x", label: "A", anchorId: "hdr", tag: "h1", content: "_gone_"};
+const b = {id: "y", label: "B", anchorId: "ftr", tag: "p", content: ""};
+const back = annotationsIn(formatAnnotations([a, b]));
+console.log(JSON.stringify({back}));
+""", html)
+    assert out["back"][0]["content"] == "_gone_"
+    # …and the real placeholder still reads as "no words", not as the words.
+    assert out["back"][1]["content"] == ""
+
+
+def test_a_point_note_names_what_it_landed_inside(html):
+    """The spot is the note, but a spot is usually inside something — and a
+    point with nothing under it says so rather than going out as bare
+    coordinates the model can only look at."""
+    out = _wire(html, """
+const inside = {id: "x", kind: "point", x: 412, y: 690, label: "A",
+                content: "no chart here", nearPath: "div:nth-of-type(3)"};
+const bare = {id: "y", kind: "point", x: 40, y: 40, label: "B",
+              content: "wrong margin"};
+console.log(JSON.stringify({inside: formatAnnotations([inside]),
+                            bare: formatAnnotations([bare])}));
+""")
+    assert "**A** — point (412, 690) inside `div:nth-of-type(3)`" in out["inside"]
+    assert "**B** — point (40, 40) — no element under it" in out["bare"]
 
 
 def test_annotations_with_no_capture_carry_no_picture_fields_at_all(html):
-    """The degrade path's wire shape: no `offscreen` (and no legacy `shot`) key
-    at all — a turn where the capture failed carries clean anchors only."""
+    """The degrade path's wire shape: no badge caveat (and no legacy `shot`) at
+    all — a turn where the capture failed carries clean anchors only."""
     out = _wire(html, """
 const a = {id: "x", content: "hi", anchorId: "b", tag: "button"};
 console.log(JSON.stringify({block: formatAnnotations([a]), n: 1}));
 """)
-    assert '"shot"' not in out["block"]
-    assert '"offscreen"' not in out["block"]
+    # "screenshot" is in the preamble, so the absence to pin is the FIELD, not
+    # the substring: no crop path, no per-note note about one, no badge caveat.
+    assert "shotNote" not in out["block"]
+    assert "/tmp" not in out["block"] and ".png" not in out["block"]
+    assert "no badge on the overview" not in out["block"]
 
 
 def test_a_send_with_no_annotations_composes_nothing_about_shots(html):
@@ -1487,17 +1605,22 @@ console.log(JSON.stringify({out: composeOutgoing("just words", [], null)}));
     assert out["out"] == "just words"
 
 
-def test_shot_paths_never_reach_the_transcript_the_user_reads(html, agent):
-    """Both strips, over one wire message carrying BOTH blocks. `shot` is for the
-    model; a user who annotated three elements must see their sentence, not a
-    screenful of temp paths."""
+def test_a_legacy_per_note_crop_never_reaches_the_wire_at_all(html, agent):
+    """`shot`/`shotNote` were the OLD wire format's per-note crops, and a note
+    hydrated from a param written back then still carries them —
+    `annApplyOverview` deletes them before every send for staleness, and the
+    markdown writer has no field for them either. So the path cannot reach the
+    transcript for the strongest possible reason: it never goes out.
+
+    The live picture path rides the pane-shot block instead, and never leaving
+    THAT one behind is the sibling test above."""
     out = _wire(html, """
 const a = {id: "x", content: "misaligned", anchorId: "hdr", tag: "header",
            shot: "/tmp/fr/shots/20260804-A.png"};
 const wire = composeOutgoing("fix this", [a], {entry: "/p/index.html"});
 console.log(JSON.stringify({wire: wire, stripped: stripBlocks(wire)}));
 """)
-    assert "/tmp/fr/shots/20260804-A.png" in out["wire"]
+    assert "/tmp/fr/shots/20260804-A.png" not in out["wire"]
     assert out["stripped"] == "fix this"
     # agent.py's half of the same wire: it strips the app-state block for
     # meta.json (the session-list preview, the commit subject, the re-attach match),
@@ -1505,7 +1628,7 @@ console.log(JSON.stringify({wire: wire, stripped: stripBlocks(wire)}));
     # path behind in what it hands on.
     meta = agent._strip_app_state(out["wire"])
     assert not meta.startswith("<%s>" % agent.APP_STATE_TAG)
-    assert meta.startswith("The user annotated ")
+    assert meta.startswith("<annotations>")
 
 
 def test_an_annotation_only_send_still_collapses_to_a_marker(html):
@@ -1521,10 +1644,20 @@ console.log(JSON.stringify({stripped: stripBlocks(composeOutgoing("", [a], null)
 
 def test_the_annotation_wire_reader_is_the_exact_counterpart_of_the_writer(html):
     """Round trip: what composeOutgoing writes, annotationsIn reads back — with
-    `label`, `t` and `offscreen` intact — so a reloaded session can rebuild the
-    receipt rows and the "what was sent" popup instead of collapsing a send to
-    the bare marker. Unparseable blocks answer an empty list, never a throw."""
-    out = _node(_WIRE_FNS + ["function annotationsIn("], """
+    `label`, `t`, `tag`, the point coordinates and `offscreen` intact — so a
+    reloaded session can rebuild the receipt rows and the "what was sent" popup
+    instead of collapsing a send to the bare marker. Unparseable blocks answer an
+    empty list, never a throw.
+
+    Read back out of PROSE now, which is lossless for everything the two readers
+    of these objects render (annReceiptRow: label, content, tag; the popup adds
+    kind, x, y, t, offscreen) and lossy for exactly one thing: `t`'s tenth of a
+    second, because the stanza prints mm:ss. Nothing reads the tenth — the popup
+    renders `annRecClock(c.t)`, which is that same mm:ss — and the ANCHOR does
+    not come back either, for the same reason: no reader shows it. Both are
+    pinned below so a future reader that DOES want them fails here rather than
+    silently rendering blanks."""
+    out = _node(_WIRE_FNS + _READER_FNS, """
 const a = {id: "x", sent: 1, createdAt: 5, content: "misaligned", label: "A",
            t: 12.5, anchorPath: "div:nth-of-type(2)", tag: "div"};
 const b = {id: "y", content: "the map is empty", label: "B", kind: "point",
@@ -1540,8 +1673,13 @@ console.log(JSON.stringify({
 """, html)
     back = out["back"]
     assert [c["label"] for c in back] == ["A", "B"]
-    assert back[0]["t"] == 12.5
-    assert back[0]["anchorPath"] == "div:nth-of-type(2)"
+    assert [c["content"] for c in back] == ["misaligned", "the map is empty"]
+    assert back[0]["tag"] == "div"
+    # mm:ss, so 12.5 comes home as 12 — see the docstring
+    assert back[0]["t"] == 12
+    assert "anchorPath" not in back[0]
+    assert back[1]["kind"] == "point"
+    assert (back[1]["x"], back[1]["y"]) == (40, 50)
     assert back[1]["offscreen"] == "the spot was scrolled out of the visible pane"
     # the bookkeeping fields were never written, so they cannot come back
     assert all("id" not in c and "sent" not in c and "createdAt" not in c
@@ -2114,7 +2252,7 @@ def test_the_shot_belongs_to_exactly_one_message(html):
     this one is still running must not inherit the picture. And the chip goes at
     the same moment, which is what a user reads as "it went with that one"."""
     send = _between(html, "async function sendMessage(message)", "\n}\n")
-    head = send[:send.index("const state = appStateSnapshot();")]
+    head = send[:send.index("const state = appStatePush();")]
     assert "const pics = shotAttached;" in head
     assert "shotAttached = [];" in head
     assert "renderAnn();" in head

@@ -142,6 +142,18 @@ export function cancelGeneration(capability?: string): Promise<{ cancelled: bool
  *  spinner nobody can dismiss. The throw lands in each caller's own catch. */
 const MAX_POLL_FAILURES = 10;
 
+/** How many CONSECUTIVE polls may fail to find the row before the watch calls
+ *  it `gone`, rather than firing on the very first miss. `FINISHED_TTL_S`
+ *  (`fused_render/jobs.py`) is a few seconds against this watch's 1s poll, so
+ *  a single slow tick, a re-render stall, or a background-tab timer throttle
+ *  can miss the row's whole window with margin to spare — and `gone` is read
+ *  as success by every caller (`ImageStage`, `TranscribeStage`, `TextStage`,
+ *  `EmbedStage` all treat it as "done, no artefact to distrust"), so firing on
+ *  the first miss risks rendering a path nothing was ever written to. Matches
+ *  `runtime.js`'s own `watchJob`, which has tolerated 5 for the same reason
+ *  since before this one existed. */
+const GONE_MISS_TOLERANCE = 5;
+
 /** Why a watch ended. Three outcomes, not two, because the callers genuinely
  *  need to tell them apart and a `Job | null` cannot say it:
  *
@@ -149,10 +161,12 @@ const MAX_POLL_FAILURES = 10;
  *                  if the job makes one, is on disk.
  *  - `cancelled` — somebody stopped it. NO artefact was written, so a caller
  *                  must not render an output path or claim a saved file.
- *  - `gone`      — the row vanished between polls. `FINISHED_TTL_S` is 30s
- *                  against a 1s poll, so this is the manager retiring a row we
- *                  simply took too long to read; treat it as `done` unless the
- *                  caller can check the artefact itself.
+ *  - `gone`      — the row was missing from `GONE_MISS_TOLERANCE` consecutive
+ *                  polls in a row, not just one. `FINISHED_TTL_S` is a few
+ *                  seconds against a 1s poll, so a single missed poll is not
+ *                  enough evidence the manager retired the row rather than us
+ *                  just being slow to read it once; treat `gone` as `done`
+ *                  unless the caller can check the artefact itself.
  *
  *  A FAILED poll is none of these and never ends the watch — that conflation
  *  is what made a single flaky `/api/jobs` read resolve as success. Rejects on
@@ -169,6 +183,7 @@ export async function watchJob(
   onTick?: (job: Job) => void,
 ): Promise<WatchOutcome> {
   let failures = 0;
+  let missingPolls = 0;
   for (;;) {
     if (signal.aborted) throw new DOMException("aborted", "AbortError");
     let row: Job | undefined;
@@ -177,11 +192,15 @@ export async function watchJob(
       failures = 0;
       row = snapshot.jobs.find((j) => j.id === jobId);
       if (row && onTick) onTick(row);
-      // Read, and the row is not there: the manager retired it.
-      if (!row) return { state: "gone" };
-      if (row.state !== "running") {
-        if (row.state === "error") throw new Error(row.message || "the job failed");
-        return { state: row.state === "cancelled" ? "cancelled" : "done", job: row };
+      if (!row) {
+        // One miss is not evidence the row is gone — see GONE_MISS_TOLERANCE.
+        if (++missingPolls >= GONE_MISS_TOLERANCE) return { state: "gone" };
+      } else {
+        missingPolls = 0;
+        if (row.state !== "running") {
+          if (row.state === "error") throw new Error(row.message || "the job failed");
+          return { state: row.state === "cancelled" ? "cancelled" : "done", job: row };
+        }
       }
     } catch (e) {
       if ((e as Error).name === "AbortError") throw e;

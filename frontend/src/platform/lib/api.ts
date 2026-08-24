@@ -1885,8 +1885,21 @@ export interface NewAppResult {
   session_error: string | null;
 }
 
-export function createApp(name: string, prompt: string): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+// `model`/`effort` are the hero composer's pickers — short model names
+// from the same set as DefaultModel, effort from the claude template's own
+// EFFORTS list. "" means "don't pass the flag": the scaffolding session keeps
+// whatever a chat opened by hand would detect for this project. Anything else
+// is a 400 rather than a silent substitution, so a typo can't quietly buy a
+// different model than the one asked for.
+export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export function createApp(
+  name: string,
+  prompt: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
@@ -2766,9 +2779,10 @@ export interface AiCatalogCapability {
    *  canvas default and the step default (`registry.VideoTraits`, server
    *  side). `null` for every capability but video generation: it is the
    *  first (only) one whose request shape varies by which runner resolved
-   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps against `h3-video`'s
-   *  `5 + 17n` at 864×480/20), so the Playground's frame/canvas/step
-   *  sliders read this rather than a hardcoded grid — a slider that
+   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps; the dropped
+   *  `h3-video` used `5 + 17n` at 864×480/20), so the Playground's
+   *  frame/canvas/step sliders read this rather than a hardcoded grid — a
+   *  slider that
    *  disagreed with the server would snap on every render and land off by
    *  up to half its own travel. */
   videoTraits: {

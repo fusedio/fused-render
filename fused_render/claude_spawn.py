@@ -104,22 +104,26 @@ def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
 #
 # `session_id` rides through as a real parameter because a scheduled message may
 # target an EXISTING conversation ("" is a fresh one, which is all the apps API
-# ever wants). model/effort stay empty: neither caller has a picker, so the
-# session takes the same defaults a chat opened by hand would.
+# ever wants). model/effort ride through the same way now that the /apps hero
+# composer has a picker for them: empty means "no --model/--effort flag
+# at all", which is what leaves the session on the same defaults a chat opened
+# by hand would detect for itself. `.get` and not `[...]`: the request dict is
+# built by whichever caller ran, and the ones with no picker send neither key.
 SESSION_HELPER = """\
 import importlib.util, json, sys
 req = json.load(sys.stdin)
 spec = importlib.util.spec_from_file_location("claude_agent", req["agent"])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print(json.dumps(mod._start(req["file"], req["message"], req["session_id"], "", "",
+print(json.dumps(mod._start(req["file"], req["message"], req["session_id"],
+                            req.get("model", ""), req.get("effort", ""),
                             permission_mode=req["permission_mode"],
                             message_via_stdin=True)))
 """
 
 
 def spawn_helper(target: str, prompt: str, permission_mode: str,
-                 session_id: str = "") -> dict:
+                 session_id: str = "", model: str = "", effort: str = "") -> dict:
     """Run `agent._start` in the fork-safe helper; return its result dict.
 
     close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
@@ -143,7 +147,8 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
         [sys.executable, "-c", SESSION_HELPER],
         input=json.dumps(
             {"agent": agent_path(), "file": target, "message": prompt,
-             "session_id": session_id, "permission_mode": permission_mode}),
+             "session_id": session_id, "permission_mode": permission_mode,
+             "model": model, "effort": effort}),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=60, close_fds=False,
     )

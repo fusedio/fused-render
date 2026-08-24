@@ -267,7 +267,8 @@ def test_new_app_requires_the_fused_header(client):
 def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     called = []
     monkeypatch.setattr(apps_mod, "_start_app_session",
-                        lambda entry, prompt: called.append((entry, prompt)) or ("r-1", None))
+                        lambda entry, prompt, *rest:
+                        called.append((entry, prompt)) or ("r-1", None))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 200
     body = r.json()
@@ -293,7 +294,7 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
 
     claude_dir = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
-    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: (None, "x"))
+    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p, *rest: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
     assert not (workspace / "local" / "demo" / ".claude").exists()
@@ -306,9 +307,11 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     seen = {}
 
-    def fake_start(app_dir, prompt):
+    def fake_start(app_dir, prompt, model="", effort=""):
         seen["target"] = app_dir
         seen["prompt"] = prompt
+        seen["model"] = model
+        seen["effort"] = effort
         return "run-42", None
 
     monkeypatch.setattr(apps_mod, "_start_app_session", fake_start)
@@ -322,11 +325,68 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     # so its transcript lands where the split view lists sessions from.
     assert seen["target"] == str(workspace / "local" / "demo")
     assert seen["prompt"] == "build a todo app"
+    # no pickers touched: "" both, i.e. no --model/--effort on the spawn, so the
+    # session keeps whatever a chat opened by hand would have detected
+    assert (seen["model"], seen["effort"]) == ("", "")
+
+
+def test_the_composers_model_and_effort_reach_the_session(client, workspace,
+                                                          monkeypatch):
+    """The hero composer's two pickers are what the scaffolding turn runs
+    with, so they have to arrive at the spawn — a create that accepted them and
+    started a default session is the whole feature missing."""
+    seen = {}
+    monkeypatch.setattr(apps_mod, "_start_app_session",
+                        lambda e, p, model="", effort="":
+                        seen.update(model=model, effort=effort) or ("r-1", None))
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "build it",
+                          "model": "opus", "effort": "xhigh"}, headers=HDRS)
+    assert r.status_code == 200
+    assert seen == {"model": "opus", "effort": "xhigh"}
+
+
+@pytest.mark.parametrize("body", [
+    {"model": "gpt-4"},          # not in the claude template's vocabulary
+    {"model": "claude-opus-5"},  # a full API id, not the short name
+    {"effort": "maximum"},
+    {"effort": "ultra"},
+    {"model": 7},
+    {"effort": None},
+])
+def test_an_unknown_model_or_effort_is_a_400_not_a_substitution(client, workspace,
+                                                               monkeypatch, body):
+    """A caller that asked for `opus` and silently got the default has been
+    handed the wrong session — worse than being told the value is unknown. Our
+    own UI can only send list values, so this only fires for a hand-rolled
+    request. And nothing is created: the folder must not survive a rejected
+    request any more than a bad name's does."""
+    monkeypatch.setattr(apps_mod, "_start_app_session",
+                        lambda *a, **k: pytest.fail("must not spawn"))
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", **body}, headers=HDRS)
+    assert r.status_code == 400
+    assert not (workspace / "local" / "demo").exists()
+
+
+def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
+        client, workspace, monkeypatch):
+    """"" is a first-class value in both lists, not a rejected one — it is what
+    the pickers' "Auto" option sends and what a client predating them omits."""
+    seen = []
+    monkeypatch.setattr(apps_mod, "_start_app_session",
+                        lambda e, p, model="", effort="":
+                        seen.append((model, effort)) or ("r-1", None))
+    for body in ({"model": "", "effort": ""}, {}):
+        client.post("/api/apps/new",
+                    json={"name": f"demo{len(seen)}", "prompt": "hi", **body},
+                    headers=HDRS)
+    assert seen == [("", ""), ("", "")]
 
 
 def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, monkeypatch):
     monkeypatch.setattr(apps_mod, "_start_app_session",
-                        lambda e, p: (None, "claude CLI not found"))
+                        lambda e, p, *rest: (None, "claude CLI not found"))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"}, headers=HDRS)
     assert r.status_code == 200
     assert r.json()["session_started"] is False
@@ -638,6 +698,9 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     assert req["permission_mode"] == "auto"
     # an app is being scaffolded: there is no prior conversation to resume
     assert req["session_id"] == ""
+    # no pickers used: both empty, which the helper turns into NO --model /
+    # --effort flag rather than into a hardcoded default
+    assert (req["model"], req["effort"]) == ("", "")
     # posix_spawn preconditions on the helper spawn (the crash was fork+exec)
     assert seen["kwargs"]["close_fds"] is False
     assert "cwd" not in seen["kwargs"]
@@ -649,6 +712,30 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     assert seen["kwargs"]["encoding"] == "utf-8"
     assert seen["kwargs"]["errors"] == "replace"
     assert started_threads  # the session-recording poll thread was kicked off
+
+
+def test_the_picked_model_and_effort_reach_the_helper_request(tmp_path, workspace,
+                                                             monkeypatch):
+    """The other half: the pickers' values have to survive the fork-safe hop
+    into the helper, which is where agent._start turns them into --model /
+    --effort."""
+    def fake_run(cmd, **kwargs):
+        seen.update(json.loads(kwargs["input"]))
+        return type("R", (), {"returncode": 0,
+                              "stdout": '{"run_id": "r-1"}', "stderr": ""})()
+
+    seen = {}
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
+    monkeypatch.setattr(apps_mod.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda s: None})())
+
+    run_id, err = apps_mod._start_app_session("/x/index.html", "hi", "haiku", "low")
+    assert (run_id, err) == ("r-1", None)
+    assert (seen["model"], seen["effort"]) == ("haiku", "low")
+    # still the apps API's own policy, unchanged by the new args
+    assert seen["permission_mode"] == "auto"
+    assert seen["session_id"] == ""
 
 
 def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):

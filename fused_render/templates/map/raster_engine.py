@@ -40,6 +40,17 @@ from raster_categories import classify_categories, read_pam_aux_xml, resolve_ren
 AUTO_OPTIMIZE_MAX_BYTES = int(
     os.environ.get("MAP_VIEWER_AUTO_OPTIMIZE_MAX_BYTES", str(512 << 20))
 )
+# A remote raster with no overview pyramid has to be read whole to show at all;
+# below this size that download happens quietly, above it the user is asked
+# first (see `awaiting_confirm` in `_describe`).
+DOWNLOAD_CONFIRM_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_DOWNLOAD_CONFIRM_BYTES", str(50 << 20))
+)
+# Cap the on-disk COG/preview derivative cache. Least-recently-opened entries
+# are evicted past this; a derivative backing a live layer is never removed.
+OPTIMIZED_CACHE_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_OPTIMIZED_CACHE_MAX_BYTES", str(2 << 30))
+)
 PREVIEW_MAX_SIZE = int(os.environ.get("MAP_VIEWER_PREVIEW_MAX_SIZE", "512"))
 PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
@@ -393,11 +404,18 @@ class _ReaderPool:
     blocks — a fresh Reader is opened when no idle handle is available — and idle
     handles are reused, bounded per locator and overall. The caller supplies the
     GDAL environment so a freshly opened handle picks up the same options.
+
+    A local original is never pooled (gated by ``poolable``): a kept-open handle
+    locks the user's file on Windows until they quit the app, and reopening a
+    local file is cheap. Only remote ``/vsi`` sources and cache derivatives —
+    costly to reopen, and never the user's file — stay warm.
     """
 
-    def __init__(self, max_idle_per_locator: int, max_idle: int):
+    def __init__(self, max_idle_per_locator: int, max_idle: int,
+                 poolable=None):
         self.max_idle_per_locator = max_idle_per_locator
         self.max_idle = max_idle
+        self.poolable = poolable
         self.lock = threading.Lock()
         self.idle: OrderedDict[str, list[Any]] = OrderedDict()
         self.idle_count = 0
@@ -430,7 +448,7 @@ class _ReaderPool:
 
     def _return(self, locator: str, reader: Any, healthy: bool) -> None:
         pooled = False
-        if healthy:
+        if healthy and (self.poolable is None or self.poolable(locator)):
             with self.lock:
                 stack = self.idle.setdefault(locator, [])
                 if len(stack) < self.max_idle_per_locator:
@@ -467,12 +485,65 @@ class RasterEngine:
         self.upstreams: dict[str, tuple[str, str]] = {}
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
-        self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
+        self.readers = _ReaderPool(
+            MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS, poolable=self._poolable
+        )
         # One persistent worker: an ephemeral /vsicurl thread deadlocks at exit
         # on Windows (loader lock vs the GIL - see daemon.RENDER_POOL).
         self.prepare_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="prepare"
         )
+        self._evict_optimized()
+
+    def _poolable(self, locator: str) -> bool:
+        """Whether a Reader for *locator* may stay open between tiles: remote
+        ``/vsi`` sources and cache derivatives may; a local original may not —
+        pooling it would lock the user's file (see the pool docstring)."""
+        if locator.startswith("/vsi"):
+            return True
+        try:
+            return Path(locator).resolve().is_relative_to(self.cache_dir.resolve())
+        except OSError:
+            return False
+
+    def _evict_optimized(self) -> None:
+        """Keep the on-disk derivative cache under OPTIMIZED_CACHE_MAX_BYTES,
+        deleting least-recently-opened entries first. A derivative that backs a
+        live layer is never removed, and _describe touches a reused derivative's
+        mtime so the order reflects last open rather than build time."""
+        if OPTIMIZED_CACHE_MAX_BYTES <= 0:
+            return
+        try:
+            entries = [
+                (entry.path, entry.stat())
+                for entry in os.scandir(self.optimized_dir)
+                if entry.is_file()
+                and entry.name.endswith(".tif")
+                and ".tmp" not in entry.name
+                and ".stage" not in entry.name
+            ]
+        except OSError:
+            return
+        total = sum(stat.st_size for _, stat in entries)
+        if total <= OPTIMIZED_CACHE_MAX_BYTES:
+            return
+        with self.lock:
+            protected = {
+                os.path.abspath(path)
+                for record in self.sources.values()
+                for path in (record.optimized_path, record.preview_path)
+                if path
+            }
+        for path, stat in sorted(entries, key=lambda item: item[1].st_mtime):
+            if total <= OPTIMIZED_CACHE_MAX_BYTES:
+                break
+            if os.path.abspath(path) in protected:
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= stat.st_size
 
     @staticmethod
     def _needs_relay(url: str) -> bool:
@@ -636,6 +707,23 @@ class RasterEngine:
                 raise
         return self._describe(**arguments)
 
+    def _derivative_ready(self, path: Path, width: int, height: int) -> bool:
+        """Whether a cached derivative exists and matches the source grid.
+
+        A stale or truncated file at the fingerprint path is not "already
+        downloaded" — the confirm gate must still fire — so mere existence is
+        not enough.
+        """
+        import rasterio
+
+        if not path.exists():
+            return False
+        try:
+            with rasterio.open(path) as cached:
+                return cached.width == width and cached.height == height
+        except Exception:
+            return False
+
     def _describe(
         self, target: str, source: str, artifact_id: str, opts: dict[str, Any]
     ) -> dict[str, Any]:
@@ -695,11 +783,39 @@ class RasterEngine:
             indexes = tuple(index_list) if len(index_list) > 1 else index_list[0]
             render_bands = len(index_list)
             true_color = _is_true_color(dataset, index_list)
+            # The size decides both whether to build a local pyramid and whether
+            # displaying a remote source means downloading the whole file; a
+            # source that already has overviews needs neither, so skip the HTTP
+            # HEAD when it cannot matter.
+            source_size = (
+                None if overviews and is_remote_path(source) else _source_size(source)
+            )
+            fingerprint = _source_fingerprint(target, source, source_size, locator)
+            derivative = self.optimized_dir / f"{fingerprint}.tif"
+            # A remote raster with no overview pyramid cannot be read cheaply at
+            # any zoom — even a coarse preview reads it at full resolution — so
+            # past a size threshold, stop before touching a pixel and let the
+            # user decide rather than silently pulling the whole file. A local
+            # copy already built, a local source, or a cloud-optimized one never
+            # reaches this.
+            awaiting_confirm = (
+                is_remote_path(source)
+                and not overviews
+                and not crosses_antimeridian
+                and not self._derivative_ready(
+                    derivative, dataset.width, dataset.height
+                )
+                and source_size is not None
+                and source_size > DOWNLOAD_CONFIRM_MAX_BYTES
+            )
             # A declared mask or alpha band already answers "which pixels are
-            # real", so there is nothing to infer from the collar.
+            # real", so there is nothing to infer from the collar. An unconfirmed
+            # download infers nothing either — that read is the whole file.
             inferred_nodata = (
                 _infer_background(dataset, index_list)
-                if dataset.nodata is None and not _has_own_mask(dataset)
+                if dataset.nodata is None
+                and not _has_own_mask(dataset)
+                and not awaiting_confirm
                 else None
             )
             requested = opts.get("rescale")
@@ -738,7 +854,7 @@ class RasterEngine:
             categories = None
             category_colors: dict[int, tuple[int, ...]] = {}
             embedded_colormap = None
-            if render_bands == 1:
+            if render_bands == 1 and not awaiting_confirm:
                 if sample_data is None:
                     try:
                         with Reader(locator) as reader:
@@ -779,13 +895,6 @@ class RasterEngine:
                             reader.tms, bounds, dataset.width, dataset.height
                         )
 
-            # The size only decides whether to build a local pyramid, which a
-            # source that already has overviews never needs. Asking for it costs
-            # a separate HTTP HEAD, so skip it when the answer cannot matter.
-            source_size = None if overviews and is_remote_path(source) else _source_size(source)
-            fingerprint = _source_fingerprint(
-                target, source, source_size, locator
-            )
             record = RasterSource(
                 source_id=fingerprint,
                 target=target,
@@ -818,7 +927,6 @@ class RasterEngine:
                 category_colors=category_colors,
             )
 
-        derivative = self.optimized_dir / f"{fingerprint}.tif"
         preview_derivative = self.optimized_dir / (
             f"{fingerprint}.preview-{PREVIEW_VERSION}.tif"
         )
@@ -833,6 +941,8 @@ class RasterEngine:
                             "progress": 100,
                             "path": str(derivative),
                         }
+                        with contextlib.suppress(OSError):
+                            os.utime(derivative, None)
             except Exception:
                 pass
         if record.optimized_path is None and preview_derivative.exists():
@@ -840,6 +950,8 @@ class RasterEngine:
                 with rasterio.open(preview_derivative) as cached:
                     if cached.crs is not None and cached.count:
                         record.preview_path = str(preview_derivative)
+                        with contextlib.suppress(OSError):
+                            os.utime(preview_derivative, None)
                         if record.auto_rescale:
                             record.rescale = band_ranges(cached.read(masked=True))
                         record.optimization = {
@@ -860,10 +972,19 @@ class RasterEngine:
         # so a crossing source stays on the original via tile()'s shifted read.
         if record.crosses_antimeridian:
             record.optimization = {"status": "not_needed", "progress": 100}
+        # An oversized remote source with no pyramid waits for the user to accept
+        # the download before anything is fetched or built.
+        if awaiting_confirm:
+            record.optimization = {
+                "status": "confirm_download",
+                "progress": 0,
+                "download_bytes": source_size,
+            }
         needs_preparation = (
             not record.has_overviews
             and not record.preview_path
             and not record.crosses_antimeridian
+            and not awaiting_confirm
         )
         auto_optimize = (
             needs_preparation
@@ -905,6 +1026,11 @@ class RasterEngine:
         if existing is not None:
             return self.descriptor(existing, artifact_id, existing_notices)
 
+        if awaiting_confirm:
+            notices.append(
+                "This raster is not cloud-optimized, so displaying it means "
+                "downloading the whole file. Confirm to continue."
+            )
         if needs_preparation:
             notices.append(
                 "A cached coarse preview is being prepared so the raster "
@@ -1226,6 +1352,7 @@ class RasterEngine:
                     "finished_at": time.time(),
                 }
                 self._drop_source_tiles(source_id)
+            self._evict_optimized()
         except Exception as error:
             with self.lock:
                 record.optimization = {
@@ -1316,10 +1443,23 @@ class RasterEngine:
             record = self.sources.get(source_id)
             if record is None:
                 return None
+            # Reading a tile of an unconfirmed source is the download the gate
+            # exists to withhold, so draw nothing until the user accepts it.
+            if record.optimization.get("status") == "confirm_download":
+                return self.transparent_tile()
+            # While a preparation is pulling a remote source and no coarse copy
+            # exists yet, an on-demand read would re-fetch the same bytes _prepare
+            # is already downloading, so draw nothing until a preview or the
+            # pyramid lands. A local source has no such duplicate fetch, so it
+            # keeps serving live reads at native zoom during preparation.
+            preparing_remote = (
+                record.optimization.get("status") in {"queued", "running"}
+                and is_remote_path(record.source)
+            )
             if (
                 not record.has_overviews
                 and not record.preview_path
-                and z < record.minzoom
+                and (z < record.minzoom or preparing_remote)
             ):
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)

@@ -150,19 +150,89 @@
   padding: 6px 10px 10px 16px;
 }
 
+/* The bar's left end: the model/effort pickers, then the create phase text.
+   Wraps rather than squeezing the two selects, since the hero is as narrow as
+   the sidebar leaves it on a small window. (The ↵ / ⇧↵ hint that used to live
+   here is gone, and its `kbd` rule with it.) */
+.home-composer-picks {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The pickers are UNBORDERED and unfilled at rest — glyph, word, chevron, and
+   nothing drawn around them. They are settings ON the send, not things to
+   press: the box already has a border, the send button is already filled, and
+   two more outlined pills inside that same box turned its footer into a row of
+   competing buttons. The wash arrives on hover, which is where a reader is
+   asking whether this is a control at all. */
+.home-composer-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.home-composer-pick:hover:not(:has(:disabled)) {
+  color: var(--fg);
+  background-color: var(--bg-alt);
+}
+
+.home-composer-pick:has(:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.home-composer-pick-glyph {
+  display: inline-flex;
+  /* Optical only: the 24-box glyphs sit a hair low against 12px type. */
+  margin-top: -1px;
+}
+
+/* `background-COLOR`, never the `background` shorthand: the chevron is a
+   background-image on .field-control, and a shorthand here would erase it and
+   leave the select with no affordance at all now that the border is gone. The
+   right padding is the space that glyph is drawn in. */
+.home-composer .home-composer-pick-sel {
+  height: auto;
+  padding: 3px 18px 3px 2px;
+  font-size: 12px;
+  color: inherit;
+  background-color: transparent;
+  background-position: right 4px center;
+  border: none;
+  border-radius: 999px;
+  cursor: inherit;
+}
+
+/* Focus is the HOVER WASH, on the whole pill, and no ring at all. An outline
+   drawn on the <select> traces the select alone — the glyph is the label's
+   child, not the select's, so the ring cut the pill in half and boxed the word
+   while the icon sat outside it. Washing the label instead marks the same thing
+   the pointer marks, at the size the control actually is. `:has(:focus-visible)`
+   and not `:focus-within`: a click already gets the hover wash, so keyboard is
+   the only case that still needs saying. */
+.home-composer-pick:has(:focus-visible) {
+  color: var(--fg);
+  background-color: var(--bg-alt);
+}
+
+/* The "Auto" option is muted by fields.css's placeholder rule (it is the
+   `value=""` one). Here that fights the pill's own hover, which lifts the whole
+   control to --fg — so the select keeps `inherit` and the pill decides. */
+.home-composer .home-composer-pick-sel:has(option[value=""]:checked) {
+  color: inherit;
+}
+
 .home-composer-hint {
   font-size: 11.5px;
   color: var(--fg-muted);
-}
-
-.home-composer-hint kbd {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  padding: 1px 5px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: var(--bg-alt);
 }
 
 .home-composer-send {

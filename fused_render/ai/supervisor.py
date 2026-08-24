@@ -98,8 +98,9 @@ TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
 
 # How long a video request will wait for the worker to finish rendering.
 # `TRANSCRIBE_TIMEOUT_S`'s reasoning restated for the other job that can
-# genuinely run for hours on ordinary hardware: a 768-class H3 render on an
-# M3 can far exceed the image path's `GENERATE_TIMEOUT_S` (900s), and the
+# genuinely run for hours on ordinary hardware: a high-resolution video
+# render on an M3 can far exceed the image path's `GENERATE_TIMEOUT_S`
+# (900s), and the
 # precedent for a carve-out this wide is transcription's own four hours. Two,
 # not four, because a render — unlike a multi-hour recording — is bounded by
 # `frames`/`steps` this app itself clamps (`ai_runtime.py`'s video route), so
@@ -285,6 +286,20 @@ _fetch_workers: dict[str, Worker] = {}
 #: environment, presented back in a header. Tokens are dropped the moment the
 #: worker they belong to stops.
 _worker_tokens: set[str] = set()
+
+#: An evicted worker, for as long as `_start_resident` is tearing it down
+#: outside `_lock` (see that function). Popped from `_workers` the instant its
+#: replacement is published, so for the ~9s worst case `_terminate` can take,
+#: it exists nowhere `unload_all()` (walking `_workers` at shutdown) would ever
+#: find it — quitting the app in that window used to leave the OLD process
+#: running with nothing left tracking it to stop, the same orphan-holding-
+#: gigabytes failure `unload_all`'s own docstring exists to prevent for
+#: weights-only fetches. Added under the SAME lock hold that pops the worker
+#: from `_workers`, removed under `_lock` once its `_terminate` call returns
+#: (successfully or not); `unload_all` waits on it rather than re-terminating
+#: it itself, since two threads calling `_terminate` on the same `Worker`
+#: concurrently is its own hazard.
+_draining: dict[str, Worker] = {}
 
 #: `envinstall` key -> how many bring-ups are currently WAITING on that install.
 #:
@@ -692,16 +707,6 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
-    # `h3_video/worker.py` spawns the h3 binary itself and has no resolution
-    # ladder of its own to run — `registry.h3_bin()` already ran once, when
-    # `_runner_or_raise` decided this capability was available at all, and
-    # this hands that ANSWER down rather than asking the worker to derive it
-    # again (the same reason no Hub token is minted here: the parent already
-    # knows and a second derivation could only disagree with the first).
-    if capability == registry.VIDEO_GENERATION:
-        resolved = registry.h3_bin()
-        if resolved:
-            env["FUSED_RENDER_H3_BIN"] = resolved
     return env
 
 
@@ -865,6 +870,13 @@ def _cancel_state(job: str) -> bool | None:
 
     Callers that can act on the distinction take the tri-state; the rest keep
     the boolean below, whose behaviour is unchanged.
+
+    Deliberately calls `jobs.list_jobs()` with its default `mark_read=False`:
+    this is a poll of our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole
+    duration of every model load), not a person looking at the corner, and
+    marking a terminal row read here would start its retention clock from a
+    poll nobody ever saw — see `list_jobs`'s own docstring, which names this
+    exact function as the reason `mark_read` defaults to False.
     """
     for record in jobs.list_jobs():
         if record["id"] == job:
@@ -952,6 +964,12 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     raise SupervisorError(f"the environment for {runner.short} did not build")
 
 
+#: How often `_bring_up`'s health-poll loop checks `jobs.list_jobs()` for a
+#: cancel, independent of the loop's own health-poll cadence. See the comment
+#: where it is used.
+_CANCEL_CHECK_INTERVAL_S = 0.5
+
+
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
     """Venv -> spawn -> wait for ready. Runs on its own thread."""
     try:
@@ -966,16 +984,35 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
         # From here the WORKER is the one that knows what is happening — it is
         # doing the downloading and the loading — so its /health is the source
         # of truth and it reports its own byte counts to the same job row.
+        #
+        # `_cancel_requested` is checked on its own WALL-CLOCK cadence
+        # (`_CANCEL_CHECK_INTERVAL_S`), not every health-poll tick: it calls
+        # `jobs.list_jobs()`, which takes the global jobs lock, runs a sweep,
+        # and `asdict()`s up to `MAX_JOBS` records — cheap once, but tying it
+        # to the health poll's own interval means a future change to THAT
+        # (this loop's `time.sleep` below went 0.5s -> 0.1s for load latency,
+        # nothing to do with cancel responsiveness) silently changes how often
+        # this contends with every `_report` call from every other loading
+        # worker. Expressed in seconds for the same reason `_ERROR_GRACE_S`
+        # in benchmark.py is: a poll-count budget silently tracks whatever the
+        # poll interval happens to be.
+        last_cancel_check = 0.0  # forces a check on the very first iteration
         while True:
             # BOTH, and the second is the one a user actually presses. `stopping`
             # is set by an eviction or an explicit unload — things the server
-            # decided. The ✕ on the download row sets `cancel_requested` on the
-            # JOB, which the env-build loop above already honours; without it
-            # here, pressing ✕ during the phase that actually takes the time —
-            # the multi-GB fetch the worker is doing — did nothing at all, and
-            # the download ran to completion under a row that said cancelled.
-            if worker.stopping or _cancel_requested(job):
+            # decided, and reading it costs nothing (an in-memory attribute).
+            # The ✕ on the download row sets `cancel_requested` on the JOB,
+            # which the env-build loop above already honours; without it here,
+            # pressing ✕ during the phase that actually takes the time — the
+            # multi-GB fetch the worker is doing — did nothing at all, and the
+            # download ran to completion under a row that said cancelled.
+            if worker.stopping:
                 raise SupervisorError("cancelled")
+            now = time.monotonic()
+            if now - last_cancel_check >= _CANCEL_CHECK_INTERVAL_S:
+                last_cancel_check = now
+                if _cancel_requested(job):
+                    raise SupervisorError("cancelled")
             if not _alive(worker):
                 raise SupervisorError("the model process exited while loading")
             health = _health(worker)
@@ -1012,7 +1049,14 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
-            time.sleep(0.5)
+            # 0.1s: `_health` is a local loopback GET, not a real network
+            # call, so tightening THAT part of this loop costs nothing — and
+            # `benchmark.py`'s own `_LOAD_POLL_S` wait sits on top of this
+            # one, so the two used to stack into up to a full second of extra
+            # latency per load at the old 0.5s each. The cancel check above is
+            # deliberately NOT tied to this cadence any more — see
+            # `_CANCEL_CHECK_INTERVAL_S`.
+            time.sleep(0.1)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see below
         # EVERYTHING, not just SupervisorError. This is the top of a thread, so
         # an exception that escapes it is not raised to anyone — it kills the
@@ -1173,19 +1217,62 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # bring-up and the switch never happened. A mismatch falls through
             # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
-        if current is not None:
+        evicting = current is not None
+        if evicting:
             # Eviction: the weights of the old model must be released BEFORE the
-            # new ones start loading, or the machine holds both at once — which
-            # on 16GB of unified memory is the difference between a load and a
-            # swap storm.
+            # new one's process is spawned, or the machine holds both at once —
+            # which on 16GB of unified memory is the difference between a load
+            # and a swap storm. `current.stopping = True` and popping it out of
+            # `_workers` happen HERE, in the same locked block that inserts the
+            # new worker below — so no other thread ever reads the capability
+            # slot as briefly empty (and mints a competing worker into it) or
+            # sees two workers resident for one capability at once. What moves
+            # outside the lock is only the actual teardown I/O below
+            # (`_terminate`, ~9s worst case: a `/quit` POST, SIGTERM+wait,
+            # SIGKILL+wait, `proc.wait`) and the new worker's `_bring_up`
+            # thread, which this function deliberately does not start until
+            # AFTER that teardown returns — so the memory-overlap invariant
+            # holds even though the lock is no longer what's enforcing the
+            # ordering. `RLock`, not a plain `Lock`, so `_terminate`
+            # re-acquiring `_lock` for its own bookkeeping below is not a
+            # deadlock either way; this was always a latency problem
+            # (everything else queued behind the ~9s teardown), not a
+            # correctness one.
             current.stopping = True
-            _terminate(current)
             _workers.pop(capability, None)
+            # Made visible to `unload_all` here — the SAME lock hold that pops
+            # it from `_workers` — so there is no instant where the old worker
+            # exists in neither table (see `_draining`'s own comment).
+            _draining[current.token] = current
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24))
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
+
+    if evicting:
+        try:
+            _terminate(current)
+        except Exception:  # noqa: BLE001 - best-effort; see below
+            # `_terminate` is best-effort internally (its own `/quit` call is
+            # guarded), but not blanket-guarded: `_release_install` ->
+            # `envinstall.cancel` and `_cleanup_files`'s callees can still
+            # raise. Every OTHER caller of `_terminate` pops its target from
+            # `_workers` BEFORE calling it, so a raise there never poisons a
+            # live slot. This is the one call site where the NEW worker is
+            # already published into `_workers[capability]` by the time this
+            # runs — an uncaught raise here would leave that worker resident
+            # in the table with its `_bring_up` thread never started, so
+            # every later `load()` for this capability takes the join branch
+            # above, hands back that permanently-"starting" record, and
+            # `_wait_ready` blocks for `LOAD_WAIT_TIMEOUT_S` (an hour). The
+            # eviction's job — releasing the OLD worker's resources — is done
+            # as well as it can be; a failure in that best-effort cleanup
+            # must not also break the NEW load it was clearing room for.
+            logger.exception("failed to terminate evicted worker %r", current.model)
+        finally:
+            with _lock:
+                _draining.pop(current.token, None)
 
     _report(job, title=model, state="running", kind="download", cancellable=True,
             detail="Preparing…", done=None, total=None)
@@ -1678,6 +1765,35 @@ def start_reaper() -> None:
     _reaper_thread.start()
 
 
+#: How long `unload_all` waits for an in-progress eviction's `_terminate` to
+#: clear `_draining` before giving up on it. Generous over the ~9s worst case
+#: (a 2s `/quit`, SIGTERM + 3s wait, SIGKILL + 3s wait, `proc.wait` + 1s) —
+#: this only ever fires during the narrow shutdown-during-eviction race, and a
+#: shutdown that gives up a little late is a much smaller failure than one
+#: that walks away from a worker mid-teardown.
+_DRAIN_WAIT_TIMEOUT_S = 15.0
+
+
+def _wait_for_draining(timeout: float = _DRAIN_WAIT_TIMEOUT_S) -> None:
+    """Block until no `_start_resident` eviction is mid-teardown.
+
+    An evicted worker is popped from `_workers` (so a new load for its
+    capability never joins it) before its `_terminate` call, which can take
+    ~9s, runs OUTSIDE `_lock` — so for that window it exists in neither
+    `_workers` nor anywhere else `unload_all` would find it, unless it is
+    made visible here (see `_draining`'s own comment). Polling rather than
+    re-terminating what it finds: the thread already mid-eviction is already
+    calling `_terminate` on that exact `Worker`, and a second, concurrent
+    call from here racing the first is its own hazard, not a fix.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _lock:
+            if not _draining:
+                return
+        time.sleep(0.05)
+
+
 def unload_all() -> None:
     """Server shutdown: nothing may outlive the app.
 
@@ -1690,7 +1806,15 @@ def unload_all() -> None:
     Its thread notices `stopping` within its half-second poll and reports the
     row cancelled, but shutdown does not wait for that: `_terminate` is what
     makes the process actually go, and the row is about to be forgotten anyway.
+
+    Waits for `_draining` to clear FIRST: a worker mid-eviction is invisible to
+    `unload()`'s `_workers` walk (it was already popped so its replacement
+    could take the slot), so shutting down inside that ~9s window used to leave
+    the outgoing process running with nothing left tracking it — the same
+    orphan-holding-gigabytes failure this function's own weights-only-fetch
+    handling below exists to prevent.
     """
+    _wait_for_draining()
     unload()
     with _lock:
         fetching = list(_fetch_workers.values())
@@ -1918,8 +2042,8 @@ def start_video(model: str, request: dict, job: str) -> None:
     """Open `job` and render a video on a thread. See `_start_render`.
 
     Raises before starting if it cannot — a request this machine cannot
-    serve (no Apple Silicon, or no h3 binary staged) answers with the
-    reason instead of opening a row that immediately dies.
+    serve (no Apple Silicon) answers with the reason instead of opening a
+    row that immediately dies.
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
                   noun="video", thread_name="ai-video")
@@ -1971,8 +2095,9 @@ def generate_image(model: str, request: dict, job: str) -> dict:
 def generate_video(model: str, request: dict, job: str) -> dict:
     """Render one video. See `_generate_via_worker`.
 
-    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a 768-class
-    H3 render can run for far longer than any image request.
+    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a
+    high-resolution video render can run for far longer than any image
+    request.
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
@@ -2263,3 +2388,7 @@ def reset() -> None:
         # A stray count would silently disable the next cancel — `_release_install`
         # would think somebody was still waiting on a key nobody holds.
         _install_waiters.clear()
+        # A stray entry here would make the NEXT test's `unload_all` (or any
+        # direct `_wait_for_draining` call) block for the full drain timeout
+        # waiting on a `Worker` that no longer exists.
+        _draining.clear()

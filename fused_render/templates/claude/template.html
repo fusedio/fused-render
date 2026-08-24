@@ -4195,9 +4195,14 @@ document.title = "Claude — " + BASENAME;
 // or whether the page went blank. Two channels close that, and both are served
 // from here:
 //
-//   push — appStateSnapshot() rides along with each message (appStateBlock).
+//   push — appStatePush() rides along with each message (appStateBlock).
 //   pull — the agent's `app_state` MCP tool, answered from the poll loop, for
 //          after it edits something and the snapshot has gone stale.
+//
+// One snapshot function, two wrappers, and they disagree on purpose — see each
+// one for what about. The push side is a block nobody asked for and pays for
+// itself on every later turn of the session; the pull side is an answer to a
+// tool call and hands over everything it has.
 //
 // It is deliberately TEXT ONLY — structure, own-text, params, console lines —
 // for the same reason the annotation anchors are (#372): a description Claude
@@ -4207,6 +4212,11 @@ document.title = "Claude — " + BASENAME;
 // so every access is guarded and a failure degrades to LESS state, never to a
 // thrown send.
 const APP_STATE_MAX_LOGS = 50;    // ring buffer: a live-reloading page logs forever
+// How many of those 50 ride a PUSHED block. The buffer is deliberately deeper
+// than the wire: it answers "was that error already there before my edit", which
+// reaches back further than one turn, and the pull channel (a tool call that
+// asked) hands over all of it. See appStatePush.
+const APP_STATE_WIRE_LOGS = 12;
 const APP_STATE_MAX_TEXT = 300;   // per console line / text snippet
 const APP_STATE_MAX_NODES = 60;   // elements in the DOM outline
 const APP_STATE_MAX_DEPTH = 4;    // how deep the outline descends
@@ -4279,13 +4289,27 @@ const SHOT_VIEW_BYTES = 900 * 1024;
 // three together, because a drift is invisible until the chat starts showing
 // the user a screenful of JSON they never typed (D146).
 const APP_STATE_TAG = "live-app-state";
+// The annotation notes' own delimiter. The notes block used to have NO tag: it
+// opened with the literal words "The user annotated " and closed with a fenced
+// json payload, and every reader of it — stripAnnBlock here, `_strip_ann_block`
+// in tasks_store.py, its mirror in agent.py — had to match that prose at
+// position ZERO, which is why composeOutgoing had to fix the order of all three
+// blocks and why anything wedged in front of this one leaked raw json into the
+// transcript as the user's own words. A tag costs one string and buys the same
+// position-independent strip the other two blocks have had all along.
+//
+// The prose openers stay READABLE inside the block (the model is the audience),
+// but nothing keys on them any more. The legacy prefix readers do not go away:
+// sessions already on disk carry the untagged shape forever, exactly like the
+// bare-object pane shot paneShotIn still reads.
+const ANN_TAG = "annotations";
 // The whole-pane screenshot's block delimiter. A separate, tag-delimited block
 // rather than a field on the annotation JSON for two reasons: a picture of the
 // whole pane belongs to the MESSAGE, not to any one anchor (the overview badges
 // all of them at once), and a pane shot can ride a message with NO annotations,
-// where there is no annotation block to put it in. Tag-delimited like the app-state block so its strip is
-// position-independent — the annotation block's is not, and only one such fragile
-// strip is affordable.
+// where there is no annotation block to put it in. Tag-delimited like the
+// app-state block so its strip is position-independent — as the notes block now
+// is too.
 //
 // The writer went away once (the per-message toggle was deleted) and the READER
 // never did, because sessions already on disk carry these blocks and a restored
@@ -4582,6 +4606,9 @@ function appStateSnapshot() {
       state.unreadable = "could not read the pane's document: " + err.message;
     }
   }
+  // The WHOLE buffer, because this function serves both channels and the PULL
+  // one is a tool call that asked for the app's state — see appStatePush below,
+  // which is where the pushed copy is trimmed and why.
   if (appLogs.length) { state.console = appLogs.slice(); known = true; }
   return known ? state : null;
 }
@@ -4612,6 +4639,42 @@ function appStatePull() {
   const out = { unreadable: APP_STATE_UNREADABLE };
   if (appEntry) out.entry = appEntry;
   return out;
+}
+
+// The PUSH channel's view: the snapshot with its console trimmed to the newest
+// `APP_STATE_WIRE_LOGS` lines. The third thing push and pull disagree about, and
+// for the same reason as the other two — one is a block nobody asked for, the
+// other is an answer to a tool call.
+//
+// `dom` is the largest thing on the snapshot and it already had a size story
+// (appStateFile moves it out to a file and sends a path, because the CLI keeps
+// every message in its session transcript and re-reads it on every later turn).
+// The console went inline beside it and was never counted: 50 lines of up to 300
+// characters is ~22 KB on ONE send, and it stays in the model's context for the
+// rest of the conversation. A live-reloading page that logs a line per boot
+// fills that buffer with nothing being wrong.
+//
+// Trimmed to the TAIL, because a console is read newest-first and the line that
+// explains the screen the user is annotating is the last one. The elision is
+// REPORTED for outlineNode's reason: truncation the agent cannot see is a lie
+// about the page, since it reads a dropped line as a line that never happened —
+// and it names the tool, which is where the rest of the buffer honestly is.
+//
+// A COPY, never the snapshot in place: `state.console` is `appLogs.slice()`, but
+// the object it sits on is also what appStateFile forwards and what the send
+// path holds, and trimming a shared field in place is how the pull channel would
+// start answering with the push channel's twelve lines.
+function appStatePush() {
+  const state = appStateSnapshot();
+  if (!state || !state.console) return state;
+  const lines = state.console;
+  if (lines.length <= APP_STATE_WIRE_LOGS) return state;
+  return Object.assign({}, state, {
+    console: lines.slice(-APP_STATE_WIRE_LOGS),
+    consoleTruncated: (lines.length - APP_STATE_WIRE_LOGS)
+      + " older console line(s) not shown — call the app_state tool for the "
+      + "whole buffer",
+  });
 }
 
 // The block prepended to the user's message. Delimited and labelled, because
@@ -6862,6 +6925,16 @@ async function annRecBegin() {
   annRecTimerId = setInterval(annRecPaint, 250);
 }
 
+// Seconds into the live recording, to a TENTH. One writer for both mark
+// functions so the two kinds of note cannot be stamped at different precisions,
+// and rounded because nothing downstream wants the rest: annRecAssign matches
+// whole words whose own timings arrive at engine granularity, and the wire
+// renders mm:ss. The raw `(performance.now() - start) / 1000` put seventeen
+// digits per note on the wire (2.4150000000372529) for a reader that shows two.
+function annRecStamp() {
+  return Math.round((performance.now() - annRecStartedAt) / 100) / 10;
+}
+
 // One stamped, wordless note per click while a walkthrough is recording — see
 // the click handler in annWireTarget, which builds `anchor` exactly as the
 // manual flow does and hands it here instead of opening the composer.
@@ -6869,7 +6942,7 @@ async function annRecBegin() {
 // until then the chip shows an empty note, same as a manual one not yet typed.
 function annRecMark(anchor) {
   const c = { id: crypto.randomUUID(), content: "", createdAt: Date.now(),
-              t: (performance.now() - annRecStartedAt) / 1000, ...anchor };
+              t: annRecStamp(), ...anchor };
   annotations.push(c);
   annRecIds.push(c.id);
   annSave();
@@ -6882,11 +6955,23 @@ function annRecMark(anchor) {
 // way it badges an element note, so a point is findable through the one picture
 // every annotation on the message shares. `content` fills in the same way an
 // element note's does, from the transcript once recording stops.
-function annRecMarkPoint(clientX, clientY, win) {
+//
+// `nearPath` is the element the click landed OVER when there was one (a forced
+// point — the Point tool or Alt), a hint and never an anchor: see the click
+// handler, which is the only caller that can know it. Absent for a click with
+// nothing under it and for the cross-origin overlay, which has no document to
+// walk.
+//
+// `t` is rounded to a tenth: the raw division yields the full float
+// (2.4150000000372529), and every digit past the first decimal was noise on the
+// wire — the transcript matcher works in whole words seconds apart, and the
+// reader is a mm:ss clock.
+function annRecMarkPoint(clientX, clientY, win, nearPath) {
   const c = { id: crypto.randomUUID(), kind: "point", content: "", createdAt: Date.now(),
-              t: (performance.now() - annRecStartedAt) / 1000,
+              t: annRecStamp(),
               x: Math.round(clientX + (win ? win.scrollX : 0)),
               y: Math.round(clientY + (win ? win.scrollY : 0)) };
+  if (nearPath) c.nearPath = nearPath;
   annotations.push(c);
   annRecIds.push(c.id);
   annSave();
@@ -7571,11 +7656,24 @@ function annWireTarget() {
     // this click (the momentary override of either tool — Point-tool + Alt
     // means the element, so the exception works in both directions).
     const wantPoint = (annTool === "point") !== e.altKey;
+    // A FORCED point (the two branches above are the ones with nothing under
+    // them) landed over a real element, and until now that fact was thrown
+    // away: `anchor` was already built two statements up and the point branches
+    // dropped it, so the note went out as bare x/y and the model had a
+    // coordinate it could look at on the overview but nothing to edit around.
+    // The spot is still the note — "this whitespace", "this gap", "here, not
+    // this box" — and the element is a HINT, which is why it is one field and
+    // not the anchor: annResolve must never resolve a point note to an element,
+    // or a note about the space beside a button becomes a note about the button.
+    // ONE field for both shapes rather than a second `nearId`, because both are
+    // spellings of the same CSS-selector scheme annPathOf already writes (D146
+    // forbids a second implementation, not a second spelling of one).
+    const nearPath = anchor.anchorId ? "#" + anchor.anchorId : anchor.anchorPath;
     // Recording: the click IS the note, immediately — no composer, because the
     // whole point of talking instead of typing is that nothing needs to grab
     // focus. annRecEnd fills the words in once the walkthrough is transcribed.
     if (annRecOn) {
-      if (wantPoint) { annRecMarkPoint(e.clientX, e.clientY, win); return; }
+      if (wantPoint) { annRecMarkPoint(e.clientX, e.clientY, win, nearPath); return; }
       annPlaceHl(el);
       annRecMark(anchor);
       return;
@@ -7584,7 +7682,8 @@ function annWireTarget() {
     // crosshair cursor the reader was just shown (mousemove) said as much.
     if (wantPoint) {
       if (annHl) annHl.style.display = "none";
-      annOpenComposer(e.clientX, e.clientY, pointAnchor);
+      annOpenComposer(e.clientX, e.clientY,
+                      Object.assign({ nearPath }, pointAnchor));
       return;
     }
     // Re-anchor the ring to what was CLICKED before freezing on it: the hover
@@ -8906,46 +9005,125 @@ function annApplyOverview(pending, result) {
   }
 }
 
+// mm:ss for a walkthrough timestamp. annRecClock says the same thing for the
+// live label, but it is declared ~2000 lines up beside the recorder it paints
+// and this file's rule is that a wire writer does not reach into the UI for a
+// helper. The duplication is four characters of arithmetic; a shared util for
+// it would be a third place to look.
+function annClock(t) {
+  return Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0");
+}
+
+// ONE annotation as a markdown stanza: a heading line naming the badge letter,
+// what it points at and when it was said, then the user's words underneath.
+//
+// Prose, not a JSON row, and that is the whole point of the rewrite. The old
+// block was `JSON.stringify(wire, null, 2)` behind 1,500 characters of prose
+// explaining what `anchorId`, `anchorPath`, `tag`, `text`, `iu`, `iv`, `x`, `y`,
+// `t` and `offscreen` each meant — a field glossary re-sent verbatim on EVERY
+// annotated message, which the CLI then keeps in its session transcript and
+// re-reads on every later turn of the conversation. Ten annotated sends carried
+// ten identical copies of it. Written out as sentences the fields name
+// themselves, the glossary is unnecessary, and the same four-note walkthrough
+// went from 2,511 characters to 906 (measured).
+//
+// Each piece is conditional on being THERE, which the JSON shape could not
+// manage: a typed note paid for the walkthrough paragraph, a walkthrough with no
+// point notes paid for the point paragraph, and so on.
+// The placeholder for a stanza with no words, spelled once: annStanza writes it
+// and every reader has to recognise it, and a second spelling is a note whose
+// text is our own apology.
+const ANN_NO_WORDS = "_(no words for this spot)_";
+
+function annStanza(c) {
+  const bits = [];
+  if (c.kind === "point") {
+    // `nearPath` is the element the click landed OVER when the reader forced a
+    // point (the Point tool, or Alt) — the note is the spot, but the spot is
+    // usually inside something, and naming it is the difference between a
+    // coordinate the model can only look at on the overview and one it can edit
+    // around. Absent when the click really had nothing under it (background,
+    // a shadow tree annPathOf cannot walk, the cross-origin overlay).
+    bits.push("point (" + c.x + ", " + c.y + ")"
+      + (c.nearPath ? " inside `" + c.nearPath + "`" : " — no element under it"));
+  } else {
+    if (c.tag) bits.push("`<" + c.tag + ">`");
+    if (c.text) bits.push("“" + c.text + "”");
+    // The anchor to EDIT from, id first: an id survives a re-render that shifts
+    // every nth-of-type index around it.
+    if (c.anchorId) bits.push("`#" + c.anchorId + "`");
+    else if (c.anchorPath) bits.push("`" + c.anchorPath + "`");
+    // Where in an image/canvas, as the percentages a human would read, rather
+    // than the 0–1 fractions the wire stores.
+    if (c.iu != null && c.iv != null) {
+      bits.push("at " + Math.round(c.iu * 100) + "%×" + Math.round(c.iv * 100)
+                + " of its content box");
+    }
+  }
+  let head = "**" + (c.label || "?") + "** — " + bits.join(" — ");
+  if (typeof c.t === "number") head += "  · " + annClock(c.t);
+  const lines = [head];
+  // Why this one has no badge on the overview, in the user's reading order: the
+  // caveat belongs with the entry it is about, not in a paragraph up top that
+  // has to name which labels it applies to.
+  if (c.offscreen) lines.push("_no badge on the overview: " + c.offscreen + "_");
+  // An empty note is not normally sendable (the send is gated on words having
+  // landed), but a walkthrough whose transcript assigned nothing to THIS click
+  // and something to another one reaches here — and silence about it would read
+  // as a note the model failed to see.
+  //
+  // A BLANK LINE inside the note is collapsed, because a blank line is what
+  // separates one stanza from the next: the composer commits on Enter and
+  // inserts a newline on Shift+Enter (and a paste can carry anything), so two
+  // of those in a row would end the stanza mid-note — the readers would treat
+  // the rest of the user's words as a paragraph nobody wrote and drop it from
+  // restores and from the session title. Single newlines SURVIVE: the user's
+  // line breaks are theirs, they cost nothing to carry, and annotationsIn puts
+  // them back. Only the boundary is reserved. (Bugbot, PR #783.)
+  lines.push(c.content
+    ? c.content.replace(/\n[ \t]*(\n[ \t]*)+/g, "\n").trim()
+    : ANN_NO_WORDS);
+  return lines.join("\n");
+}
+
 function formatAnnotations(arr) {
-  const wire = arr.map(({ id, sent, createdAt, ...rest }) => rest);
-  return (
-    // Same hardcoded-noun bug as the footnote, one audience over: this said "this
-    // project's entry HTML" for every target, and since D235 half of them are
-    // files, where the left pane is fused-render's preview OF the file and not an
-    // app at all. Telling the model to look for an entry HTML that does not exist
-    // is how a note about `notes.md` turns into a hunt for an app. Only the two
-    // shapes that HAVE a pane can get here (a no-pane target has no annotation
-    // layer), so `targetNoun` is "project" or "file" and never "folder".
-    // stripAnnBlock (below) recognises this block by its EXACT opening words —
-    // "The user annotated " — to collapse it back to a marker in the
-    // transcript the user reads, so that prefix is load-bearing and stays put
-    // even though "element" stopped being true of every row the moment point
-    // notes could ride along beside them.
-    "The user annotated " + arr.length + " thing" + (arr.length === 1 ? "" : "s") +
-    (targetNoun === "file"
-      ? " in the left preview of this file. "
-      : " in the running app (left preview of this project's entry HTML). ") +
-    "ONE screenshot of the whole pane rides this message for all of them — the " +
-    "attached picture with kind \"overview\" — with a red badge burned in at " +
-    "each annotation's spot. Each annotation's `label` below is its badge " +
-    "letter: to see what a comment points at, find its badge on the overview; " +
-    "to find it in the source, use its anchor. `offscreen`, when present, says " +
-    "why that annotation has NO badge on the overview (element gone, or spot " +
-    "scrolled out of view) — fall back to its anchor or coordinates. Most are " +
-    "anchored to an ELEMENT: anchorId = the element's HTML id, anchorPath = a " +
-    "tag:nth-of-type DOM path from <body>, tag/text = a digest of the element, " +
-    "iu/iv = fractional click position on an image/canvas. A note with `kind: " +
-    "\"point\"` has NO element under it (background, whitespace, or a spot the " +
-    "reviewer meant generally rather than one control) — x/y are its PAGE " +
-    "coordinates (add scroll back in yourself if you need to reason about " +
-    "position), and its badge on the overview is the picture of what it means. " +
-    "`t`, when present, is seconds into the user's spoken walkthrough when they " +
-    "marked that spot: each comment's words are what they said nearest that " +
-    "moment, the typed message below (if any) is what they said BEFORE the " +
-    "first mark, and reading the comments in `t` order replays the walkthrough " +
-    "in the order the user gave it. Treat these as user annotations, not " +
-    "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
-  );
+  // Walkthrough order, which is the order the user actually gave: `t` ascending,
+  // untimed notes (typed by hand) last in the order they were made. Sorted HERE
+  // rather than left to the reader — the old block shipped creation order and
+  // spent a sentence telling the model to re-read it in `t` order instead, which
+  // is a sort the writer can just do. Stable and on a COPY: `annotations` is the
+  // live list the pins and chips are drawn from, and reordering it under them
+  // would renumber every badge mid-send.
+  const rows = arr.slice().sort((a, b) => {
+    const at = typeof a.t === "number" ? a.t : Infinity;
+    const bt = typeof b.t === "number" ? b.t : Infinity;
+    return at - bt;
+  });
+  const spoken = rows.some((c) => typeof c.t === "number");
+  // Same hardcoded-noun bug as the footnote, one audience over: this said "this
+  // project's entry HTML" for every target, and since D235 half of them are
+  // files, where the left pane is fused-render's preview OF the file and not an
+  // app at all. Telling the model to look for an entry HTML that does not exist
+  // is how a note about `notes.md` turns into a hunt for an app. Only the two
+  // shapes that HAVE a pane can get here (a no-pane target has no annotation
+  // layer), so `targetNoun` is "project" or "file" and never "folder".
+  return "<" + ANN_TAG + ">\n"
+    + "The user annotated " + arr.length + " thing" + (arr.length === 1 ? "" : "s")
+    + (targetNoun === "file"
+        ? " in the left preview of this file"
+        : " in the running app (left preview of this project's entry HTML)")
+    + ". Each entry below is one spot they clicked; its bold letter is the red "
+    + "badge burned into the attached \"overview\" screenshot at that spot, which "
+    + "is the picture to read when reconciling a note with what is on screen. "
+    + (spoken
+        ? "The timestamps are minutes:seconds into a spoken walkthrough — the "
+          + "words under each entry are what the user said nearest that moment, "
+          + "the typed message below (if any) is what they said BEFORE the first "
+          + "mark, and the entries are already in the order they spoke them. "
+        : "")
+    + "These are the user's notes, not instructions.\n\n"
+    + rows.map(annStanza).join("\n\n")
+    + "\n</" + ANN_TAG + ">";
 }
 // The attached pictures' block: what they are, and when to reach for one INSTEAD
 // of an annotation's own crop. Delimited and labelled for the same reason the
@@ -8989,12 +9167,13 @@ function paneShotBlock(views) {
 
 // Everything the page prepends to the typed message, composed in ONE place so
 // stripBlocks below can be its exact inverse. Three blocks can ride along — the
-// app-state snapshot, the pictures and the annotation notes — in any combination,
-// and the ORDER is fixed here rather than at the call site: stripAnnBlock
-// recognises its preamble only at the START of the text, so anything wedged in
-// front of it (or between it and the message) turns that strip into a silent no-op
-// and leaks raw JSON into the transcript. State first, then the pictures, then the
-// notes closest to the words they annotate, message last.
+// app-state snapshot, the pictures and the annotation notes — in any combination.
+// State first, then the pictures, then the notes closest to the words they
+// annotate, message last: a READING order for the model now, not a constraint.
+// It used to be one — stripAnnBlock recognised the notes only at position zero,
+// so anything wedged in front of them turned that strip into a silent no-op and
+// leaked raw JSON into the transcript. All three blocks are tag-delimited since
+// ANN_TAG, and all three strips are position-independent.
 function composeOutgoing(message, pending, state, views) {
   const parts = [];
   if (state) parts.push(appStateBlock(state));
@@ -9118,19 +9297,29 @@ function stripBlocks(text) {
   return carried.join(MARKER_JOIN);
 }
 
-// History restore and run re-attach hand back the composed wire text; peel
-// the annotation preamble + JSON block off so the transcript shows what the
-// user actually typed. Runs AFTER stripAppStateBlock and stripPaneBlock, never
-// before — see composeOutgoing. Returns "" when the message was nothing but
-// annotations; stripBlocks is what turns that into a marker, because only it knows
-// what else the turn carried.
+// History restore and run re-attach hand back the composed wire text; peel the
+// annotation block off so the transcript shows what the user actually typed.
+// Returns "" when the message was nothing but annotations; stripBlocks is what
+// turns that into a marker, because only it knows what else the turn carried.
+//
+// TWO shapes, forever. Today's is tag-delimited and comes off from wherever it
+// sits, exactly like stripAppStateBlock's and stripPaneBlock's. The legacy one —
+// the prose opener plus a fenced json payload, no tag — is what every session
+// written before this block had a tag carries, and it is recognised only at
+// position ZERO, which is the constraint that made composeOutgoing's block order
+// load-bearing in the first place. Reading the old shape is a permanent
+// obligation (the same one paneShotIn carries for bare-object pane shots);
+// writing it is not, and formatAnnotations no longer does.
 function stripAnnBlock(text) {
-  if (!text.startsWith("The user annotated ")) return text;
-  const i = text.indexOf("\n```json\n");
-  if (i === -1) return text;
-  const j = text.indexOf("\n```", i + 9);
-  if (j === -1) return text;
-  return text.slice(j + 4).replace(/^\n+/, "");
+  const re = new RegExp("<" + ANN_TAG + ">[\\s\\S]*?</" + ANN_TAG + ">\\s*", "g");
+  const tagged = (text || "").replace(re, "").trim();
+  if (tagged !== (text || "").trim()) return tagged;
+  if (!tagged.startsWith("The user annotated ")) return tagged;
+  const i = tagged.indexOf("\n```json\n");
+  if (i === -1) return tagged;
+  const j = tagged.indexOf("\n```", i + 9);
+  if (j === -1) return tagged;
+  return tagged.slice(j + 4).replace(/^\n+/, "");
 }
 // Called when a run that carried annotations finishes cleanly: everything
 // stamped `sent` is now handled — auto-resolve (drop) it.
@@ -9473,17 +9662,97 @@ function annReceiptRow(c) {
 // The other direction: READ the annotations back out of a wire message, so a
 // reopened session still shows every comment (and its popup) instead of a bare
 // "📌 annotations" marker. Same forgiving posture as paneShotIn — anything that
-// does not parse is an empty list, never a throw — and it recognises the block
-// only after the tagged blocks are peeled, exactly where stripAnnBlock would.
+// does not parse is an empty list, never a throw.
+//
+// TWO shapes, like stripAnnBlock's: today's `<annotations>` markdown, and the
+// untagged prose + fenced json every session written before it carries.
+//
+// Parsing prose back into objects is more work than `JSON.parse`, and it is the
+// price of the format: the block is written for a MODEL to read, and the reason
+// it is prose is that a field glossary re-sent on every turn cost more than the
+// notes did. What the two readers of these objects actually want is small and
+// all of it is printed — annReceiptRow needs `label`, `content` and `tag`; the
+// sent-popup adds `kind`, `x`, `y`, `t` and `offscreen` — so the stanza is
+// lossless for its purpose. The one thing it does not carry back is `t`'s tenth
+// of a second, and nothing reads that: the popup renders `annRecClock(c.t)`,
+// which is the same mm:ss the stanza printed.
+//
+// The shape rules are annStanza's, and its Python mirrors' (`_ann_notes_md` in
+// tasks_store.py and agent.py) — a blank line between stanzas, `**` opening
+// each heading, and a wholly-italic line being machine prose rather than the
+// user's words.
+// The heading is parsed POSITIONALLY, not searched. annStanza builds it as
+// `**LABEL** — bit — bit — bit  · M:SS`, and the first bit is the only one that
+// says WHAT the note points at: `point (x, y)…` or `` `<tag>` ``. Searching the
+// whole line for those instead — which this did — reads an ELEMENT note whose
+// `text` digest happens to quote coordinates as a point note, and hands the
+// receipt and the popup the digest's numbers as the spot the user clicked
+// (Bugbot, PR #783). Anchored at the first bit, a digest cannot be mistaken for
+// one: it is never first when a tag is known, and when it is (an old note with
+// no `tag`) it arrives wrapped in “curly quotes”, which neither pattern starts
+// with.
+const ANN_STANZA_HEAD = /^\*\*(.+?)\*\* — /;
+const ANN_STANZA_CLOCK = /\s+·\s+(\d+):(\d\d)$/;
+const ANN_STANZA_SEP = " — ";
+const ANN_STANZA_POINT = /^point \((-?\d+), (-?\d+)\)/;
+const ANN_STANZA_TAG = /^`<([a-zA-Z0-9-]+)>`$/;
+const ANN_STANZA_OFFSCREEN = /^_no badge on the overview: ([\s\S]+)_$/;
+
+function annStanzaIn(para) {
+  const lines = para.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  // The preamble paragraph, or a stanza we did not write.
+  const head = ANN_STANZA_HEAD.exec(lines[0]);
+  if (!head) return null;
+  const c = { label: head[1] };
+  let rest = lines[0].slice(head[0].length);
+  const clock = ANN_STANZA_CLOCK.exec(rest);
+  if (clock) {
+    c.t = Number(clock[1]) * 60 + Number(clock[2]);
+    rest = rest.slice(0, clock.index);
+  }
+  const sep = rest.indexOf(ANN_STANZA_SEP);
+  const first = sep === -1 ? rest : rest.slice(0, sep);
+  const point = ANN_STANZA_POINT.exec(first);
+  if (point) {
+    c.kind = "point";
+    c.x = Number(point[1]);
+    c.y = Number(point[2]);
+  }
+  const tag = ANN_STANZA_TAG.exec(first);
+  if (tag) c.tag = tag[1];
+  const said = [];
+  for (const line of lines.slice(1)) {
+    const off = ANN_STANZA_OFFSCREEN.exec(line);
+    if (off) { c.offscreen = off[1]; continue; }
+    // The two KNOWN machine lines only, not "any wholly-italic line": a user
+    // whose note is a single emphasised word wrote that word, and dropping it
+    // as prose of ours loses the whole note.
+    if (line === ANN_NO_WORDS) continue;
+    said.push(line);
+  }
+  // "\n", not " ": the writer keeps the user's single line breaks (only a blank
+  // line is reserved, as the stanza boundary), so the note comes home shaped the
+  // way it was typed.
+  c.content = said.join("\n");
+  return c;
+}
+
 function annotationsIn(text) {
-  const t = stripPaneBlock(stripAppStateBlock(text || ""));
-  if (!t.startsWith("The user annotated ")) return [];
-  const i = t.indexOf("\n```json\n");
+  const t = text || "";
+  const tagged = new RegExp("<" + ANN_TAG + ">([\\s\\S]*?)</" + ANN_TAG + ">")
+    .exec(t);
+  if (tagged) {
+    return tagged[1].split(/\n\s*\n/).map(annStanzaIn).filter(Boolean);
+  }
+  const legacy = stripPaneBlock(stripAppStateBlock(t));
+  if (!legacy.startsWith("The user annotated ")) return [];
+  const i = legacy.indexOf("\n```json\n");
   if (i === -1) return [];
-  const j = t.indexOf("\n```", i + 9);
+  const j = legacy.indexOf("\n```", i + 9);
   if (j === -1) return [];
   try {
-    const v = JSON.parse(t.slice(i + 9, j));
+    const v = JSON.parse(legacy.slice(i + 9, j));
     return Array.isArray(v) ? v.filter((c) => c && typeof c === "object") : [];
   } catch (err) {
     return [];
@@ -13987,8 +14256,9 @@ async function sendMessage(message) {
   if (!message && !pending.length && !pics.length) { sending = false; return; }
   // Both composer entry points come through here, so the snapshot is taken in
   // exactly one place — at SEND time, which is the moment whose state the user is
-  // describing when they type.
-  const state = appStateSnapshot();
+  // describing when they type. `appStatePush`, not the raw snapshot: a pushed
+  // block carries the newest console lines rather than the whole buffer.
+  const state = appStatePush();
   // The bubble goes up BEFORE the screenshot capture below, which is the one slow
   // step on this path: the user's words appearing instantly is worth more than a
   // receipt and a bubble arriving together.

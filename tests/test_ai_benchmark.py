@@ -925,6 +925,46 @@ def test_a_load_that_fails_is_recorded_as_the_real_failure(loading, monkeypatch)
     assert [r["id"] for r in bench_store.read()] == [record["id"]]
 
 
+def test_the_error_grace_window_is_wall_clock_not_a_poll_count(loading, monkeypatch):
+    """`_ERROR_GRACE_S` must not silently shrink just because `_LOAD_POLL_S`
+    gets tightened elsewhere for latency reasons — that coupling is exactly
+    what turned a 2.0s window into 0.4s when `_LOAD_POLL_S` dropped from 0.5
+    to 0.1. Many polls elapse here (more than the old poll-count budget of 4
+    would have tolerated) while real time barely moves, and the real reason
+    still arrives in time — proving the window is wall-clock, not a count."""
+    clock, pending = loading
+    pending.state = "error"
+    pending.error = ""
+    calls = {"n": 0}
+
+    def ready_worker(capability, model=None):
+        calls["n"] += 1
+        clock.advance(0.01)  # 10 polls per 0.1s of wall clock
+        if calls["n"] == 20:  # 0.2s elapsed — comfortably under _ERROR_GRACE_S
+            pending.error = "the model process is gone"
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["error"] == "the model process is gone"
+
+
+def test_the_error_grace_window_still_expires_eventually(loading, monkeypatch):
+    """A record genuinely stuck at `error` with nothing ever written must still
+    be answered — just on a wall-clock budget rather than a poll-count one."""
+    clock, pending = loading
+    pending.state = "error"
+    pending.error = ""
+
+    def ready_worker(capability, model=None):
+        clock.advance(benchmark._ERROR_GRACE_S / 2)
+        return None
+
+    monkeypatch.setattr(benchmark.supervisor, "ready_worker", ready_worker)
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["error"] == "the model failed to load"
+
+
 def test_a_cancelled_load_records_nothing(loading, monkeypatch):
     """`_bring_up` reports a cancel as `state="error"` with the literal
     "cancelled" (`_failure_text`), so it arrives down the same channel as a real

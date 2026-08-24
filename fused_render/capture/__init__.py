@@ -468,6 +468,11 @@ def _cancel_requested(session: _Session) -> bool:
     take the watchdog down, which would strand the recording with no cap either
     (see `_watch`). So an unreadable store answers "no" and the next tick asks
     again.
+
+    Calls `jobs.list_jobs()` with its default `mark_read=False`: this is our
+    own cancel poll, not a client reading the corner, and marking a terminal
+    row read here would start its retention clock from a poll nobody ever
+    saw — see `list_jobs`'s own docstring.
     """
     try:
         records = jobs.list_jobs()

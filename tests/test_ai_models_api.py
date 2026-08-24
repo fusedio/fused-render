@@ -1693,13 +1693,15 @@ def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub,
     """The general gate, exercised against a still-ruled-out video task.
 
     `text-to-video` stopped being an example of a ruled-out task once
-    `h3-video` and `ltx-video` shipped (SPEC §40's LTX-2.3 plan) — every
+    `ltx-video` shipped (SPEC §40's LTX-2.3 plan) — every
     diffusers class name containing "video" maps to that tag
     (`_diffusers_task`), and it is genuinely SUPPORTED now (see the test
     right below this one for that new, correct shape). `image-to-video` is
     still ruled out — no runner here is image-conditioned — so it is the
-    example now: h3-video's own `FL2VA/` layout is DECISIVE about the
-    format, and without this guard `_engine`'s "let the format answer"
+    example now: the `FL2VA/` layout is DECISIVE about the format (D468
+    dropped the runner that read it, but `formats.loaders` still returns
+    early on it — see that function's own comment), and without this guard
+    `_engine`'s "let the format answer"
     branch would resurrect the ruled-out task into video generation just
     because a decisive format happens to sit beside it. The branch itself is
     not removed — it fires for a real case (a CT2 conversion carries no tag,
@@ -1729,14 +1731,14 @@ def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub,
 @requires_symlinks
 def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, monkeypatch):
     """The NEW, correct shape for a diffusers video pipeline, now that
-    `text-to-video` genuinely has runners (`h3-video`, `ltx-video`).
+    `text-to-video` genuinely has a runner (`ltx-video`).
 
     A `StableVideoDiffusionPipeline` snapshot's `_class_name` maps to
     `text-to-video` (`_diffusers_task`) — a real, SUPPORTED task, unlike the
     ruled-out case above. But `meta.loaders` for a `model_index.json` repo is
-    `DIFFUSERS_RUNNERS` (image generation), and neither video runner reads
-    THAT format at all (`has_h3_components`/`has_ltx_split_layout` each check
-    for a layout this repo does not have) — so `_engine` finds no
+    `DIFFUSERS_RUNNERS` (image generation), and the video runner does not
+    read THAT format at all (`has_ltx_split_layout` checks for a layout this
+    repo does not have) — so `_engine` finds no
     VIDEO_GENERATION candidate among the format's own readers and correctly
     returns no engine. This is `_engine`'s own "task supported, format
     unreadable" trap (its docstring's `openai/whisper-large-v3` example),
