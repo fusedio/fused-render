@@ -504,20 +504,6 @@ export default function PlaygroundTab() {
                     )}
                     {name}
                   </span>
-                  {/* Parameter count, left of the download weight: the two
-                      numbers a reader compares rows by, and they mean
-                      different things — how much model, then how much to
-                      fetch. Printed as the curator wrote it ("4B", "8B (~1B
-                      active)"), never shortened here: catalog.py's AI-2c rule
-                      is that this string is a value somebody owns.
-                      Absent on a cached entry nobody curated, and the slot
-                      then draws nothing rather than a "—" the stage header
-                      would have to explain. */}
-                  {model.params && (
-                    <span className="pg-model-chip" title="Parameters">
-                      {model.params}
-                    </span>
-                  )}
                   <span
                     className="pg-model-size"
                     title={

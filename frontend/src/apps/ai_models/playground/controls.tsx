@@ -112,12 +112,12 @@ const CONFIG_EXIT_MS = 160;
  *  Closed by default on purpose: the surface it hides behind has to read as a
  *  simple call. Unmounted while closed, not hidden — every control inside is
  *  driven by stage state, so nothing is lost by not rendering it. */
-/** The panel's open state, as the one hook every stage uses: open by default,
- *  and `touched` remembers whether the cog has ever been clicked. ConfigPanel
- *  animates its entry only when it has — the card that is simply there when
- *  the page loads must not fade in a beat after everything else. */
+/** The panel's open state, as the one hook every stage uses: closed by
+ *  default, and `touched` remembers whether the cog has ever been clicked.
+ *  ConfigPanel animates its entry only when it has — a card already open at
+ *  page load must not fade in a beat after everything else. */
 export function useConfigOpen() {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const touched = useRef(false);
   const toggle = useCallback(() => {
     touched.current = true;
