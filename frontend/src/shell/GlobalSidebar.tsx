@@ -252,9 +252,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
+  // `.sidebar-rail-dot`, the SAME dot the Tasks row wears, since 2026-08-24
+  // (Akshil: "the dots in left sidebar are not consistent, make dot on ai models
+  // page similar to one we have in tasks page"). It wore
+  // `.account-signedin-dot` before — a class from account.css that happens to be
+  // 7px too, and that is where the resemblance stopped. Two differences, both
+  // visible on the collapsed rail: that class positions at `top: -2px; right:
+  // -3px`, which against the 28px rail BUTTON lands outside its corner instead of
+  // on the glyph, so the mark floated off to the right while the Tasks dot hugged
+  // its icon; and it is border-box against the other's `content-box`, so its 1px
+  // ring ate the dot down to 5px of fill beside a 7px neighbour. One dot
+  // vocabulary in this sidebar, one class that draws it.
   const residentDot = residentModels.length ? (
     <span
-      className="account-signedin-dot"
+      className="sidebar-rail-dot is-resident"
       title={
         `In memory: ${residentModels.map((m) => m.model).join(", ")}` +
         (aiRuntime.totalResidentBytes ? ` — ${formatSize(aiRuntime.totalResidentBytes)}` : "")

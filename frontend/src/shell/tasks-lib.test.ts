@@ -4219,9 +4219,97 @@ describe("the folder chip on a row and a card", () => {
     expect(CARD).toMatch(
       /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
-    // The path is still on the row itself, so nothing is unreachable: the row's
-    // `title` is the task's own, and the chip's tooltip was never the only copy.
-    expect(ROW).toContain("title={task.title}");
+    // The task's own name is still captioned on the row, so nothing is
+    // unreachable — via `data-tip` since 2026-08-24, not `title`. It was the last
+    // NATIVE tooltip on this row, kept deliberately because the row's own name is
+    // the one caption nobody is waiting on and the browser's delay suited it. The
+    // delay still suits it and is kept (this element gets no fast class); what
+    // changed is that a native tooltip is a different-LOOKING object from the
+    // panel every mark beside it draws, so one row could show two unrelated kinds
+    // of tooltip depending on which pixel the pointer was over.
+    expect(ROW).toContain("data-tip={task.title}");
+    expect(ROW).not.toContain("title={task.title}");
+  });
+});
+
+describe("one tooltip, one look", () => {
+  // Akshil, 2026-08-24, on a screenshot of the native panel beside ours: "why are
+  // these aria label and tooltip kind of thing different?" Because the row's title
+  // was the last native `title` on the row while every mark on it drew the custom
+  // panel — two unrelated-looking objects on one row.
+  it("leaves no native title on the row or its stretched link", () => {
+    // The <a> is the one that mattered most: it is stretched over the whole row
+    // and sits ABOVE it, so its tooltip was the one actually shown.
+    const link = ROW.slice(ROW.indexOf('className="tasks-rowlink"'));
+    expect(link.slice(0, link.indexOf("/>"))).not.toContain("title=");
+    // …and its accessible NAME stays. A tooltip and an accessible name are not
+    // the same thing, and nothing about the hover changes what is announced.
+    expect(ROW).toContain("aria-label={label}");
+  });
+
+  it("lifts the hovered element so its panel is not painted under a sibling", () => {
+    // Every mark carries `z-index: 2` to clear the stretched row link, and a
+    // `::before` cannot outrank a LATER sibling from inside its own element — so
+    // the folder chip's panel was overlapped by the count and the time drawn
+    // after it. That is the "transparent and below the text" report; the panel
+    // was never transparent (`--bg-popover` is opaque), it was behind something.
+    expect(SCHEDULE_CSS).toMatch(
+      /\[data-tip\]:not\(\[data-tip=""\]\):hover,\s*\[data-tip\]:not\(\[data-tip=""\]\):focus-visible \{\s*z-index: 40/,
+    );
+  });
+
+  it("anchors the trailing marks' panels to their right edge", () => {
+    // Centred on its element is right for a mark with room either side and wrong
+    // for the last cell in a row: the time sits against the list's right edge, so
+    // half of an absolute instant hung outside the scroller and was clipped.
+    const rule = SCHEDULE_CSS.slice(
+      SCHEDULE_CSS.indexOf('.tasks-row-time[data-tip]:not([data-tip=""])::before'),
+    );
+    const body = rule.slice(0, rule.indexOf("}"));
+    expect(body).toContain("right: 0");
+    expect(body).toContain("left: auto");
+    expect(body).toContain("transform: none");
+  });
+
+  it("shows the mark's panel or the row's, never both", () => {
+    // The row is the ANCESTOR of every mark in it, so pointing at the folder chip
+    // hovers both and both panels would draw — two captions six pixels apart
+    // saying different things. The mark is what the reader aimed at, so it wins.
+    expect(SCHEDULE_CSS).toContain(
+      '.tasks-row:has([data-tip]:not([data-tip=""]):hover)::before',
+    );
+  });
+
+  it("keeps the row's own caption SLOW, and the marks instant", () => {
+    // The original ask was "for title you can keep as is" — that was about the
+    // DELAY, and the delay is what is kept. The row is not in the fast list.
+    // Sliced from the END of the block's comment, not from its start: the prose
+    // in it quotes `transition-delay: 0s` while explaining the choice, so a slice
+    // that stops at the first occurrence never reaches the selectors.
+    const block = SCHEDULE_CSS.slice(SCHEDULE_CSS.indexOf("NO DELAY AT ALL"));
+    const selectors = block.slice(block.indexOf("*/"), block.indexOf("{"));
+    expect(selectors).toContain(".tasks-row-msgs[data-tip]");
+    expect(selectors).toContain(".tasks-row-time[data-tip]");
+    expect(selectors).toContain(".tasks-row-file[data-tip]");
+    // The row itself is absent — `.tasks-row-*` are different selectors, so this
+    // asserts on the exact one that would opt the row in.
+    expect(selectors).not.toContain('.tasks-row[data-tip]');
+  });
+});
+
+describe("the Project filter's glyph", () => {
+  it("is a folder, not the status ring", () => {
+    // Akshil, 2026-08-24: "this icon next to project in filters is not accurate".
+    // A ring beside the word Project claims a STATUS is being filtered — the one
+    // thing the ring means everywhere else on this page — so the two menus read
+    // as two status filters, one of them mislabelled.
+    const project = VIEWS.slice(VIEWS.indexOf('label="Project"'));
+    expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
+    // A prop with the ring as its default, so the Status menu is untouched — there
+    // the ring IS the vocabulary a status is stated in.
+    expect(VIEWS).toContain("{glyph ?? ICON_CIRCLE_DOT} {label}");
+    const status = VIEWS.slice(VIEWS.indexOf('label="Status"'));
+    expect(status.slice(0, status.indexOf("onClear"))).not.toContain("icon=");
   });
 });
 
@@ -4373,8 +4461,13 @@ describe("the time a task row prints", () => {
     // used to render `{when && (…)}`, which is what turned a null into a missing
     // cell. taskWhen no longer returns null and the element is no longer guarded.
     expect(ROW).not.toContain("{when && (");
+    // `data-tip` since 2026-08-24, not `title`: the instant is what a reader
+    // hovers this cell FOR, and the browser's one-to-two second hold before
+    // showing a native tooltip is the same as not offering it. `title=""` is not
+    // decoration either — without it the browser walks up to the ROW's title and
+    // answers with the task's name. See the fast-tip rules in schedule.css.
     expect(ROW).toMatch(
-      /<span className="tasks-row-time" title=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
+      /<span className="tasks-row-time" data-tip=\{when\.title\} title="">\s*\{when\.text\}\s*<\/span>/,
     );
     // And the dash takes the column's own register rather than a class of its own —
     // it IS one of the column's values, not a different kind of thing.
@@ -6794,11 +6887,21 @@ describe("the list row's message count", () => {
     expect(time).toBeGreaterThan(count);
   });
 
-  it("is drawn only when there is something to count", () => {
-    // "0" is worse than the space it would fill: a task whose thread has not
-    // started has nothing to say here, and a column of zeroes is noise on the
-    // row's busiest edge.
-    expect(VIEWS).toContain("{task.message_count > 0 && (");
+  it("is always drawn, and never reads below one", () => {
+    // Reversed 2026-08-24 (Akshil). It was gated on `> 0`, on the argument that
+    // "0" is worse than the space it fills — right about the words, wrong about
+    // the rows. The tasks that count zero are the EMPTY SESSIONS (one holding
+    // nothing but a `/clear`, one whose whole file is a lone title record), and
+    // they are scattered through the list, so the column had holes in it exactly
+    // where the odd rows were. A hole in a column reads as a broken row, which is
+    // the argument the TIME beside it settled the same way on 2026-08-18.
+    //
+    // The floor is the fix: a session that exists is a conversation somebody
+    // opened, and a count of zero is an artefact of what this app declines to
+    // COUNT — slash commands, skill injections and tool results are all real
+    // entries that are not prose — rather than a fact about the row.
+    expect(VIEWS).toContain("const shown = Math.max(1, task.message_count);");
+    expect(VIEWS).not.toContain("{task.message_count > 0 && (");
   });
 
   it("draws the glyph after the number, and keeps the noun for readers", () => {
@@ -6812,9 +6915,21 @@ describe("the list row's message count", () => {
     expect(VIEWS).toContain("{ICON_MSG}");
     // …and the noun is not gone, it moved to where a screen reader finds it: a
     // bare digit is exactly as unlabelled to a reader who cannot see the glyph.
+    // Off `shown`, not off the raw count, so the spoken number and the drawn one
+    // are the same on an empty session (see the floor above).
     expect(VIEWS).toContain(
-      'aria-label={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}',
+      'aria-label={`${shown} message${shown === 1 ? "" : "s"}`}',
     );
+  });
+
+  it("is a SQUARE bubble", () => {
+    // Akshil, 2026-08-24: "make this icon boxy icon for messages". lucide
+    // `message-square` in place of `message-circle` — at 12px beside a digit a
+    // continuous curve is a blob, and every other mark on this row (the id chip,
+    // the folder pill, the scope glyph) has flat edges.
+    const glyph = VIEWS.slice(VIEWS.indexOf("const ICON_MSG = icon("));
+    const body = glyph.slice(0, glyph.indexOf(");"));
+    expect(body).toContain("M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z");
   });
 
   it("reads in the same register as the chip beside it", () => {
@@ -6859,8 +6974,13 @@ describe("the folder chip as a filter tag", () => {
     expect(VIEWS).toContain("pinned={pinnedProjects.includes(task.project)}");
     expect(VIEWS).toContain("active={pinned}");
     expect(VIEWS).toContain("aria-pressed={active}");
-    // Legible at REST, not on hover: it is a state, not an affordance.
-    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag.is-on {");
+    // Legible at REST, not on hover: it is a state, not an affordance. Painted on
+    // the NAME since 2026-08-24 — the button is the full-height hit area now and
+    // paints nothing, so an ON state drawn there would be an accent slab the
+    // height of the row.
+    expect(TASKS_CSS).toContain(
+      ".tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name {",
+    );
   });
 
   it("looks like a control only when it is pointed at", () => {
@@ -6870,10 +6990,52 @@ describe("the folder chip as a filter tag", () => {
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("background: none");
     expect(body).toContain("cursor: pointer");
-    // Negative margins matched by padding, so growing the box costs no layout.
-    expect(body).toContain("margin: -3px -5px");
-    expect(body).toContain("padding: 3px 5px");
+    // THE BUTTON IS THE HIT AREA AND PAINTS NOTHING (2026-08-24, second pass).
+    // It was 3px of padding — a 17px target on a 36px row, so a pointer aimed at
+    // a folder name landed in the row's own padding and the ROW answered, with
+    // the task's title. Growing the padding fixed the aim and broke the look:
+    // `border-radius` draws on the padding box, so the wash became a 36px pill
+    // around an 11px word. So the box reaches the row's full height and the pill
+    // is drawn on the NAME instead.
+    //
+    // `align-self: stretch` + the row's own `--tasks-row-pad-y`, not a guessed
+    // number: the marks are three different heights, and a flat 7px left a ~4px
+    // strip of row along the top and bottom of each of them.
+    expect(body).toContain("align-self: stretch");
+    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
+    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
+    // Horizontally the 5px it always had, moved onto the name — so the ink has
+    // not shifted: -5px of margin on the button, +5px of padding on the name.
+    expect(body).toContain("margin-inline: -5px");
+    const pill = TASKS_CSS.slice(
+      TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag .schedule-tv-id-name {"),
+    );
+    const pillBody = pill.slice(0, pill.indexOf("}"));
+    expect(pillBody).toContain("padding: 3px 5px");
+    expect(pillBody).toContain("border-radius: 5px");
+    // …and the pill's own 3px must not grow the ROW: the button is stretched, so
+    // its hypothetical height is this element plus the button's padding, which
+    // made every row 39px instead of 36px until this went in.
+    expect(pillBody).toContain("margin-block: -3px");
     expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:focus-visible");
+  });
+
+  it("reaches the row's full height, like every other mark", () => {
+    // Akshil, 2026-08-24, after the first pass: "the hover area is still the same
+    // — if I am on a task edge below the button, it still hovers as the task title
+    // instead of the button path". Measured after: row 36px, and the scope mark,
+    // the chip, the count and the time each 36px with zero gap top and bottom.
+    const marks = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-msgs,\n.tasks-row-time,"));
+    const body = marks.slice(0, marks.indexOf("}"));
+    expect(body).toContain("align-self: stretch");
+    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
+    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
+    // The scope glyph carries it too, with its margin-left left alone — that is a
+    // deliberate pull toward the title and a shorthand would drop it.
+    const file = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const fileBody = file.slice(0, file.indexOf("}"));
+    expect(fileBody).toContain("align-self: stretch");
+    expect(fileBody).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
   });
 
   it("sits above the row's stretched link, or it is not clickable at all", () => {
@@ -6909,12 +7071,24 @@ describe("the file mark after a task's title", () => {
     // opposite reason: a count is a number that needs a unit to be read at
     // all, and a filename is prose. A column of prose is the crowding this
     // row has twice been trimmed for.
-    expect(VIEWS).toContain("{taskFile_ && (");
     expect(VIEWS).toContain('className="tasks-row-file"');
-    expect(VIEWS).toContain("title={tildePath(taskFile_, home)}");
+    expect(VIEWS).toContain("data-tip={tildePath(taskFile_, home)}");
     expect(VIEWS).toContain("{ICON_FILE}");
-    // The same hover habit the folder chip's path already taught.
-    expect(VIEWS).toContain("title={tildePath(task.project, home)}");
+  });
+
+  it("falls back to a FOLDER glyph in the same slot, never both", () => {
+    // Akshil, 2026-08-24: the folder icon came off the folder chip (where it
+    // restated the one thing that chip cannot be mistaken about) and landed
+    // here, on the tasks that have no file mark — "if there is a file icon
+    // already there then we don't add folder icon, if file icon not present then
+    // we add a folder icon". A ternary, not two guards, because the two are
+    // answers to the SAME question (what is this task about) and a row wearing
+    // both would be claiming both.
+    expect(VIEWS).toContain("{taskFile_ ? (");
+    expect(VIEWS).toContain("{ICON_FOLDER}");
+    expect(VIEWS).toContain("data-tip={tildePath(task.project, home)}");
+    // The glyph really is gone from inside the chip: its body is the name alone.
+    expect(VIEWS).toContain('const body = <span className="schedule-tv-id-name">{name}</span>;');
   });
 
   it("sits above the row's stretched link, like every other hoverable", () => {

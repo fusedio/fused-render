@@ -144,8 +144,8 @@ describe("the four buckets", () => {
   it("sub-groups models by capability, in the reading order", () => {
     const g = groupRepos(ALL);
     expect(g.models.groups.map((s) => s.label)).toEqual([
-      "Text generation",
       "Image generation",
+      "Text generation",
       "Speech to text",
       "Unrecognised",
     ]);
@@ -405,8 +405,8 @@ describe("a capability's row is disk then recommended", () => {
     expect(sections.flatMap((s) => s.recommended)).toEqual([]);
     // …and the disk half is untouched by that: what is here is here.
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
+      "text-generation",
       "automatic-speech-recognition",
       UNRECOGNISED,
     ]);
@@ -414,9 +414,13 @@ describe("a capability's row is disk then recommended", () => {
 });
 
 describe("video generation's place in the reading order", () => {
-  // CAPABILITY_ORDER puts text-to-video beside text-to-image — the two visual
-  // generation capabilities together, ahead of speech and embeddings.
-  it("sorts between text-to-image and automatic-speech-recognition", () => {
+  // CAPABILITY_ORDER puts text-to-video LAST of the five (2026-08-24), and it is
+  // listed there rather than left to fall through. It used to sit beside
+  // text-to-image on the argument that the two visual capabilities belong
+  // together — but the order is the Playground's now, and the Playground had
+  // never named video at all, so it had been rendering last-by-accident on that
+  // tab the whole time. This pins the place, so the two tabs cannot drift again.
+  it("sorts last of the named capabilities", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
       capability("automatic-speech-recognition", [curated("mlx-community/whisper-tiny")]),
       capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
@@ -430,10 +434,10 @@ describe("video generation's place in the reading order", () => {
       groupRepos([]).models.groups, catalogWithVideo, resident(), new Map(),
     );
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
-      "text-to-video",
+      "text-generation",
       "automatic-speech-recognition",
+      "text-to-video",
     ]);
   });
 
@@ -487,8 +491,8 @@ describe("which rows exist at all", () => {
   it("renders a capability with no disk models but something to recommend", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
+      "text-generation",
       "automatic-speech-recognition",
     ]);
     expect(sections.every((s) => s.disk.length === 0)).toBe(true);
@@ -523,8 +527,8 @@ describe("which rows exist at all", () => {
       WHISPER,
     ]);
     expect(sections.map((s) => s.key)).toEqual([
-      "text-generation",
       "text-to-image",
+      "text-generation",
       "automatic-speech-recognition",
       "text-ranking",
       UNRECOGNISED,
@@ -577,8 +581,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
   it("carries the catalog's runner so a recommended card can wear its engine tag", () => {
     const sections = sectionsOf([]);
     expect(sections.map((s) => s.runner?.shortLabel)).toEqual([
-      "MLX LM",
       "MLX FLUX",
+      "MLX LM",
       "MLX Whisper",
     ]);
     expect(sections.every((s) => s.runner?.available)).toBe(true);
@@ -605,8 +609,8 @@ describe("what a merged row says it costs, and which engine loads it", () => {
 
   it("labels a recommended-only capability the way every other heading is labelled", () => {
     expect(sectionsOf([]).map((s) => s.label)).toEqual([
-      "Text generation",
       "Image generation",
+      "Text generation",
       "Speech to text",
     ]);
   });

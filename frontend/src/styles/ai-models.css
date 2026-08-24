@@ -452,45 +452,52 @@
 /* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
  * chrome beside Explore, widened for a word instead of a glyph.
  *
- * ACCENT-FILLED, and the one place on this page that is (Akshil). The house rule
- * is that accent stays for focus and selection and a primary button fills with
- * --fg (see .btn-primary) — this is a deliberate exception, not a drift, because
- * the card's other three controls are all quiet .cc-iconbtn glyphs and "use this
- * model now" is the one thing a reader came to the card to do. One filled
- * control per card is still a card with an obvious next step; two would be a
- * card with none.
+ * OUTLINED IN ACCENT, not filled with it (Akshil, 2026-08-24). It shipped filled
+ * for a day — the argument being that "use this model now" is the one thing a
+ * reader came to the card to do, so it earns the page's one solid control. What
+ * that argument left out is the card it sits on: Load is RIGHT NEXT TO IT, and
+ * Load is the control that costs memory and does the irreversible thing. A lime
+ * plate beside it made the cheap navigation the loudest mark on the card and the
+ * consequential button the quiet one. An outline keeps Try the most VISIBLE of
+ * the four controls — it is the only one with a border at all — while leaving the
+ * one filled weight on the card unspent, which is the state badges' (Loaded) and
+ * nobody else's.
  *
- * --on-accent, not --bg: the accent is bright lime in dark and dark olive in
- * light, so the readable ink on it flips, and that token is the flip. */
+ * It also puts the page back inside the house rule rather than beside it: accent
+ * for focus, selection and emphasis, `--fg` for a true primary fill
+ * (.btn-primary). An accent OUTLINE was never the exception; the fill was. */
 .am-card-try {
   width: auto;
   padding: 0 8px;
   font-size: 12px;
   font-weight: 600;
   text-decoration: none;
-  background: var(--accent);
-  color: var(--on-accent);
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
 }
 
 /* Doubled selector to outrank `.cc-iconbtn:hover`, which is the same weight and
    would otherwise be decided by import order alone — it paints a translucent
-   --tint wash and --fg text, which on an accent fill is a smear and unreadable
-   ink. Hover moves the fill TOWARD the ink in both themes (brighter lime on
-   dark, deeper olive on light), the same "one step further" idiom .btn-primary's
-   hover uses. */
+   --tint wash and --fg text, and --fg ink is the one thing this button must not
+   take, since the accent border would then be labelling text of a different
+   colour. Hover WASHES rather than fills: 12% is enough to read as pressed-able
+   against the card, and stopping short of a fill is the whole point of the
+   change above. */
 .am-card .am-card-try:hover,
 .am-card .am-card-try:focus-visible {
-  background: color-mix(in srgb, var(--accent) 82%, var(--fg));
-  color: var(--on-accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
-/* …and the focus ring has to change with the fill. `.cc-iconbtn:focus-visible`
-   draws an --accent outline, which on an --accent plate is an invisible focus
-   ring — the keyboard user's one indicator, gone. --fg is the highest-contrast
-   thing available against either theme's accent. */
-.am-card .am-card-try:focus-visible {
-  outline-color: var(--fg);
-}
+/* No `outline-color` override any more, and that is a consequence of the fill
+   going rather than an oversight. `.cc-iconbtn:focus-visible` draws a 2px
+   --accent outline; on an --accent PLATE that was an invisible focus ring and
+   had to be forced to --fg. On a transparent plate it is the highest-contrast
+   ring available and needs nothing said about it — so the rule that said it is
+   deleted rather than kept pointing at a fill that no longer exists.
+   `outline-offset` from .cc-iconbtn keeps the ring clear of the new border. */
 
 /* A card's controls are ALWAYS visible — the delete ✕ and the revisions
    chevron included, which were hidden at `opacity: 0` until the card was
@@ -612,10 +619,24 @@
    of colour blindness, so nothing here depends on distinguishing yellow from
    the accent green beside it. `--warning-soft` is the stylesheet's existing
    attention token and measures 8.4:1 on the card in dark and 4.9:1 in light,
-   both past AA for text this size. */
+   both past AA for text this size.
+
+   **THE BORDER AND THE WASH ARE TINTED TOO, and until 2026-08-24 they were
+   not.** This is the bug Akshil reported as "diffusers and transformer
+   embeddings don't have a tag": they always had one, it just did not look like
+   one. The rule set the ink and the dash and left `border-color` at the base
+   class's `var(--border)` — and a dashed hairline in the border token, at 11px,
+   over the card's own wash, is invisible. `-family` beside it tints its border
+   AND carries a 10% wash, so the LOADABLE tags read as pills while these read as
+   loose orange text, which is exactly backwards: this is the state with
+   something to say. Both channels now come from the same token the ink does, so
+   every tag on the card is a pill, and the DASH goes on being what says which
+   kind of pill. */
 .am-card-engine-off {
   color: var(--warning-soft);
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--warning-soft) 40%, transparent);
+  background: color-mix(in srgb, var(--warning-soft) 10%, transparent);
 }
 
 /* The reason lives in the title attribute, and a tag nobody can focus is a
@@ -627,11 +648,16 @@
 }
 
 /* And the honest dead end. Quiet, because it is a fact about the repo rather
-   than a warning to act on — there is nothing to press. */
+   than a warning to act on — there is nothing to press.
+   Tinted like the two above (2026-08-24) so it is a pill and not floating text,
+   but from `--fg-muted` rather than the warning token: the point of this state
+   is that it is NOT asking for anything. The `opacity` goes — it was doing the
+   quietening on its own, and stacked under a wash it dulled the wash too. */
 .am-card-engine-none {
   color: var(--fg-muted);
   border-style: dashed;
-  opacity: 0.85;
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
 }
 
 /* "partly downloaded" — a fetch that stopped (D424). DASHED like the two dead
@@ -644,6 +670,8 @@
 .am-card-engine-partial {
   color: var(--warning-soft);
   border-style: dashed;
+  border-color: color-mix(in srgb, var(--warning-soft) 40%, transparent);
+  background: color-mix(in srgb, var(--warning-soft) 10%, transparent);
 }
 
 /* "part of FLUX.2 klein 4B" — a repo this app fetched as a piece of something
@@ -653,6 +681,8 @@
    supposed to. Same two channels, the other way round. */
 .am-card-engine-component {
   color: var(--fg-muted);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
 }
 
 /* Sentence case, not Title Case: `capitalize` would render the Hub's
@@ -1088,6 +1118,42 @@
 .am-card-runtime-ready { color: var(--fg); }
 .am-card-runtime-error { color: var(--error); }
 
+/* WHY LOAD IS DISABLED, said on the card instead of in the disabled button's
+   hover (2026-08-24 — see RepoCard for the argument). A sentence, so it wraps
+   and is allowed to: the four refusals run from eight words to about thirty, and
+   ellipsising the long ones would put the answer back behind a hover, which is
+   the thing this line exists to undo.
+
+   MUTED, not warning-coloured. The tag above it is already carrying the state in
+   the warning hue and the dash, and a second amber element two lines down would
+   read as a second problem rather than as the first one's explanation. This is
+   the prose under a mark, and prose under a mark is body text.
+
+   `--warning-soft` does appear, as a 2px rail on the leading edge: enough to
+   bind the sentence to the tag that raised it without repeating its weight. */
+.am-card-refusal {
+  margin: 8px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid color-mix(in srgb, var(--warning-soft) 55%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+/* The remedy, where the remedy is a place. Accent because it is the one thing in
+   this block that can be pressed, and underlined on hover rather than at rest so
+   a card at rest grows no second emphasis beside the Try button's outline. */
+.am-card-refusal-link {
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.am-card-refusal-link:hover,
+.am-card-refusal-link:focus-visible {
+  text-decoration: underline;
+}
+
 .am-runtime-mem {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
@@ -1278,9 +1344,15 @@
   background: var(--success-bright);
 }
 
-/* Bytes only: a download knows its total, so it gets a real bar. Loading
-   weights into memory does NOT, and an invented percentage there is what makes
-   live work read as frozen — so that state shows text and a pulse, no bar. */
+/* The track is drawn for BOTH kinds of work now (2026-08-24). It used to be
+   bytes-only — a download knows its total, so it got a real bar, while loading
+   weights into memory got text and a pulse and nothing else — on the argument
+   that an invented percentage is what makes live work read as frozen. That
+   argument is still right about the FILL and is why there is still no fake
+   percentage below; it was wrong about the track. A load that says "Preparing…"
+   beside a dot for thirty seconds reads as a card that has stalled, and the row
+   changed height between the two states, so a load followed by nothing looked
+   like a different component. One track, two fills. */
 .am-runtime-bar {
   flex: 1 1 auto;
   min-width: 40px;
@@ -1295,6 +1367,45 @@
   height: 100%;
   background: var(--accent);
   transition: width 200ms linear;
+}
+
+/* The measureless fill: a short stripe that travels the track. It says "moving"
+   and declines to say how far, which is exactly what this app knows while a
+   worker brings weights up — the supervisor reports a STATE (`venv`,
+   `downloading`, `loading`), never a fraction.
+
+   `width` is a third of the track and the travel is `translateX` on a multiple
+   of its own box, so the animation is one composited transform and never a
+   layout. No `transition: width` inherited surprise either — the fill above
+   animates width, this one never sets it after the first paint.
+
+   reduced-motion.css already blankets `animation-duration: 0.01ms` over
+   everything, which parks this stripe at its start position: a static third of a
+   bar, which still reads as an unmeasured amount rather than as a stalled
+   percentage. Nothing to add there. */
+.am-runtime-bar-indeterminate {
+  width: 34%;
+  animation: am-runtime-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes am-runtime-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(295%); }
+}
+
+/* The stop, at the end of the progress row. `.cc-iconbtn` is 26px square, which
+   is taller than this row's 11px text — so it is scaled down to sit in the line
+   without setting the row's height, and given back the negative margin the box
+   would otherwise add to the row's right edge. Still a 22px target, which is the
+   point of moving it here: the old one was a 26px box that appeared and
+   vanished, and a target that moves is smaller than any of its pixels. */
+.am-runtime-stop {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-right: -4px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* Load / Unload. A word, not an icon: this is the one control on the page that

@@ -830,11 +830,48 @@ def test_the_kebab_can_file_this_conversations_task(template):
     # reader to work out what would enable it, and the answer is not something
     # they can act on from this menu.
     assert "hidden></button>" in pop
+    # The HIDING lives in `applyArchiveOpt` since 2026-08-24, when this item was
+    # split into a synchronous paint and an async correction — see
+    # test_the_archive_item_paints_with_its_siblings for why. `refreshArchiveOpt`
+    # deliberately hides nothing now; that was the flicker.
+    paint = template[template.index("function applyArchiveOpt() {"):]
+    paint = paint[:paint.index("\n}")]
+    assert "archiveOpt.hidden = true;" in paint
     body = template[template.index("async function refreshArchiveOpt("):]
     body = body[:body.index("\n}")]
-    assert "archiveOpt.hidden = true;" in body
     assert 't.key === id' in body
     assert 'task.status === "archived"' in body
+
+
+def test_the_archive_item_paints_with_its_siblings(template):
+    """It used to appear a beat after the menu did, and the menu grew under the
+    pointer — Akshil, 2026-08-24: "the archive button in kebab menu shows a bit
+    late and the whole dropdown shifts/flickers … just show it instantly with
+    other options".
+
+    The fix is that the answer is already in hand when the menu opens: the
+    /api/tasks read this page already does on every `showSession` (for the task
+    NUMBER) now also records whether there is a task and which way it is filed,
+    so opening the menu is a synchronous paint from that cache."""
+    # The cache is filled by the read that was already happening, not by a second
+    # one, and it is written BEFORE that function's `!num` bail — a task with no
+    # number yet is still a task this menu can file.
+    loader = template[template.index("async function loadTaskId(id) {"):]
+    loader = loader[:loader.index("\n}")]
+    assert "archiveStates.set(id, task ? task.status === \"archived\" : null);" in loader
+    assert loader.index("archiveStates.set(") < loader.index("if (!num) return;")
+    # Opening paints from the cache FIRST and corrects after, in that order.
+    opener = template[template.index("function kebabOpen() {"):]
+    opener = opener[:opener.index("\n}")]
+    assert opener.index("applyArchiveOpt()") < opener.index("refreshArchiveOpt()")
+    # Three states, and unknown is not the same as absent: only a confirmed "no
+    # task" hides the item, so an unread listing never invents a verb.
+    paint = template[template.index("function applyArchiveOpt() {"):]
+    paint = paint[:paint.index("\n}")]
+    assert "filed === undefined || filed === null" in paint
+    # A press in flight owns the button — its confirmation must not be wiped by a
+    # listing read landing in the same window.
+    assert "if (archiveBusy) return;" in paint
 
 
 def test_the_filing_verb_is_read_fresh_every_time_the_menu_opens(template):

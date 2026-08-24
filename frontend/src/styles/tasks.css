@@ -492,6 +492,77 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* -- THE ROW MARKS' HIT ZONES (Akshil, 2026-08-24) ----------------------------
+   "the hover area is messed up … increase [the] hover area — not the actual
+   visual ui area, only hover of that part up down and left right".
+
+   Every one of these is 11px text or a 12px glyph, which is a 4-to-11 pixel tall
+   target on a 30px row: a pointer aimed at the message count lands in the row's
+   own padding above or below it, and the row is what answers. Combined with the
+   tooltip walking up to the row's title (see the marks' own notes in
+   ScheduleTaskViews), that is the whole of the reported bug — the reader aims at
+   the folder and gets the task's name, because they missed and did not know it.
+
+   PADDING OUT, MARGIN BACK IN, in equal measure: the box grows to the row's full
+   height and a few pixels either side, and the negative margin returns exactly
+   what the padding took, so not one pixel of ink moves. Same technique as
+   `.tasks-caret` above, which grew its hit zone this way on 2026-08-18 — this is
+   that lesson applied to the four marks at the other end of the row.
+
+   `position: relative; z-index: 2` is NOT decoration here either: `.tasks-rowlink`
+   is an invisible <a> stretched over the whole row at `z-index: 1`, and an
+   element that has to receive a pointer must sit above it or the link swallows
+   the hover. `.tasks-row-file` and the folder tag already carry this for the same
+   reason; the count and the times were the two that did not, which is why they
+   were the two showing the wrong tooltip.
+
+   `.schedule-tv-id` is excluded — it is a real button with real padding and it
+   already sits above the link. It gets the vertical growth only, below.
+
+   NO PER-ELEMENT COMPENSATION, and the arithmetic is why: the row's flex gap is
+   10px and each of these grows 5px into it from either side, so two neighbouring
+   zones meet exactly in the middle of the gap and never overlap. Every pixel
+   between the folder and the time now belongs to whichever mark is nearer, which
+   is what a pointer expects, and no mark can answer for its neighbour.
+
+   VERTICALLY THEY REACH THE ROW'S EDGE, and that took a second pass (Akshil,
+   2026-08-24: "the hover area is still the same — if I am on a task edge below
+   the button, it still hovers as the task title"). It was a flat `7px`, guessed;
+   the row is 36px and these marks are 12–13px of ink, so 7px each way left a
+   ~4px strip along the top and bottom of the row that still belonged to the ROW,
+   and the row answers with the task's title. A guessed number cannot close that
+   gap — the marks are three different heights.
+
+   `align-self: stretch` is what closes it exactly: the mark's box becomes the
+   row's CONTENT height, whatever that is, and `padding-block` of the row's own
+   `--tasks-row-pad-y` then carries it out over the row's padding to its very
+   edge. The matching negative `margin-block` gives all of it back, so the row's
+   height is unchanged and the ink has not moved a pixel. No magic numbers, and it
+   stays correct if the row's padding or font ever changes.
+
+   `align-items: center` re-centres the ink inside the now-taller box — without it
+   a stretched flex item's content sits at the top. */
+.tasks-row-msgs,
+.tasks-row-time,
+.tasks-row-next {
+  position: relative;
+  z-index: 2;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding-block: var(--tasks-row-pad-y);
+  margin-block: calc(var(--tasks-row-pad-y) * -1);
+  padding-inline: 5px;
+  margin-inline: -5px;
+}
+
+/* The folder tag grows too, VERTICALLY ONLY — and it does it in its own rule
+   further down (`.schedule-tv-id--tag`), not here, because that rule already owns
+   this chip's padding/margin pair and a second declaration of them would be
+   decided by source order. Its horizontal padding is already a pill's and
+   growing it sideways would push its zone under the message count beside it,
+   which would make the two trade tooltips: the bug, not the fix. */
+
 /* HOW MANY MESSAGES the task holds — the chip between the folder and the time
    (2026-08-23). Sized and spaced as the folder chip's twin: same 11px, same
    muted register, same `flex: 0 0 auto` so the TITLE is still the only thing
@@ -546,14 +617,32 @@ button.tasks-caret,
      10px on both sides plus a 5px margin of its own — it read as a third
      element floating between the title and the folder rather than as something
      the title wears. It belongs to the title, so it sits against it and keeps
-     the full gap only on the folder side. */
-  margin-left: calc(var(--tasks-row-gap) * -1 + 4px);
+     the full gap only on the folder side.
+
+     …and the 4px it used to carry as margin is now the box's left PADDING (see
+     the hit zone below), so the ink lands exactly where it did — the margin pulls
+     the box one full gap left, the padding puts the glyph 4px back into it. */
+  margin-left: calc(var(--tasks-row-gap) * -1);
   color: var(--fg-muted);
   opacity: 0.75;
   /* NO `cursor: help` (Akshil, 2026-08-23). The whole row is a link and reads
      as one under the pointer; a question-mark cursor over one glyph inside it
      announces a different kind of thing to press and looks broken beside the
      row's own pointer. The tooltip needs no cursor to advertise it. */
+  /* THE HIT ZONE (2026-08-24, and see the note above the message count for the
+     full argument). A 12px glyph is the smallest target on this row, and
+     `align-self: stretch` plus the row's own `--tasks-row-pad-y` is what takes it
+     to the row's exact full height rather than to a guessed 7px that left a strip
+     of row along the top and bottom. Every pixel is given back by the matching
+     negative margins.
+     `margin-left` above is set separately and left alone: it is a deliberate pull
+     toward the title, and a `margin` shorthand here would silently drop it. */
+  align-self: stretch;
+  padding-block: var(--tasks-row-pad-y);
+  margin-block: calc(var(--tasks-row-pad-y) * -1);
+  padding-right: 4px;
+  padding-left: 4px;
+  margin-right: -4px;
 }
 .tasks-row-file:hover { opacity: 1; }
 
@@ -573,10 +662,27 @@ button.tasks-caret,
   background: none;
   font: inherit;
   cursor: pointer;
-  margin: -3px -5px;
-  padding: 3px 5px;
-  border-radius: 5px;
-  transition: background-color 120ms ease;
+  /* THE BUTTON IS THE HIT AREA AND PAINTS NOTHING; the pill is drawn on the NAME
+     inside it (Akshil, 2026-08-24: "not the actual visual ui area, only hover").
+     Two passes to get here. It was 3px of padding, which made the chip a 17px
+     target on a 36px row — a pointer aimed at a folder name landed in the row's
+     own padding and the ROW answered, with the task's title. Growing the padding
+     fixed the aim and broke the look: `border-radius` draws on the padding box,
+     so the hover wash grew with the zone into a 36px-tall pill around an 11px
+     word.
+     Splitting them is what satisfies both. `align-self: stretch` plus the row's
+     own `--tasks-row-pad-y` takes this box to the row's exact full height (no
+     guessed number, and no strip of row left along the top or bottom), the
+     negative `margin-block` gives every pixel back, and the wash below is sized
+     to the text instead. Horizontally the 5px it always had now lives on the name
+     too, so the ink has not moved: -5px of margin here, +5px of padding there. */
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding-block: var(--tasks-row-pad-y);
+  margin-block: calc(var(--tasks-row-pad-y) * -1);
+  padding-inline: 0;
+  margin-inline: -5px;
   /* ABOVE THE STRETCHED ROW LINK, like the caret and the hover actions — and
      for the reason those two carry the same pair. `.tasks-rowlink` is an
      absolutely positioned <a> over the whole row at `z-index: 1`, so a control
@@ -589,15 +695,41 @@ button.tasks-caret,
   z-index: 2;
 }
 
+/* THE PILL, drawn on the NAME rather than on the button (2026-08-24 — see the
+   button's own note for why they were split). This is the box a reader sees: it
+   hugs the word at the size it always did, while the pressable area around it is
+   the full height of the row. */
+.tasks-row .schedule-tv-id--tag .schedule-tv-id-name {
+  padding: 3px 5px;
+  border-radius: 5px;
+  transition: background-color 120ms ease;
+  /* …and the pill's own 3px does not get to grow the ROW. The button around it is
+     `align-self: stretch`, so its hypothetical height is this element plus the
+     button's padding — which made the flex line 3px taller than the tallest real
+     content and every task row 39px instead of 36px. The negative margin puts
+     this element's CONTRIBUTION back to its ink height while leaving the box it
+     paints alone: same trick as everywhere else on this row, one level in. */
+  margin-block: -3px;
+}
+
 /* `--ctl-quiet-bg-hover` is the app's own "a control is under the pointer" wash,
    the one the quiet toolbar buttons wear — the tag is one of those, drawn inside
-   a row rather than on a bar. */
-.tasks-row .schedule-tv-id--tag:hover,
-.tasks-row .schedule-tv-id--tag:focus-visible {
+   a row rather than on a bar.
+   Triggered by the BUTTON's hover and painted on the NAME, which is the whole
+   point of the split: anywhere in the row's height counts as pointing at this
+   control, and the feedback still appears around the word. */
+.tasks-row .schedule-tv-id--tag:hover .schedule-tv-id-name,
+.tasks-row .schedule-tv-id--tag:focus-visible .schedule-tv-id-name {
   background: var(--ctl-quiet-bg-hover);
 }
 
+/* The focus ring goes on the name too, for the same reason the wash does: a ring
+   around the full-height hit box would be a 36px outline around an 11px word. */
 .tasks-row .schedule-tv-id--tag:focus-visible {
+  outline: none;
+}
+
+.tasks-row .schedule-tv-id--tag:focus-visible .schedule-tv-id-name {
   outline: 1px solid var(--accent);
   outline-offset: 0;
 }
@@ -620,21 +752,29 @@ button.tasks-caret,
    list (Akshil): at 55% it drew a hard ring around every folder in a filtered
    column and became the loudest thing in the row — the WASH is what marks the
    state, and the border is only there to give it an edge. 22% keeps that edge
-   without competing with the titles beside it. */
-.tasks-row .schedule-tv-id--tag.is-on {
+   without competing with the titles beside it.
+
+   ON THE NAME, like the hover wash above (2026-08-24): the button is the
+   full-height hit area now and paints nothing, so an ON state drawn there would
+   be an accent slab the height of the row. */
+.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* Hover must not wash the accent away — the quiet rule above is a plain
    `background`, and on the ON chip it would win by source order. */
-.tasks-row .schedule-tv-id--tag.is-on:hover,
-.tasks-row .schedule-tv-id--tag.is-on:focus-visible {
+.tasks-row .schedule-tv-id--tag.is-on:hover .schedule-tv-id-name,
+.tasks-row .schedule-tv-id--tag.is-on:focus-visible .schedule-tv-id-name {
   background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
-.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name,
-.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-folder-icon {
+/* `.schedule-tv-folder-icon` is off this selector (2026-08-24): IdentityChip
+   stopped drawing a glyph inside the chip — it moved to the title's mark slot —
+   so the chip's only child is its name. The class itself is still live for the
+   OTHER folder rows in this file's neighbour (the recents list), which draw their
+   own glyph. */
+.tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name {
   color: var(--fg);
   opacity: 1;
 }

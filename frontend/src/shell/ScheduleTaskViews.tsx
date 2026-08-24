@@ -235,9 +235,17 @@ const ICON_RERUN = icon(
 // fact this button asserts. Deliberately NOT the single `ICON_CHECK` above: that
 // one means "this filter is on" in the popovers, and a row action wearing the
 // same glyph would read as a toggle that is currently checked.
-/** A speech bubble, for the thread count on a List row (D448). */
+/** A speech bubble, for the thread count on a List row (D448).
+ *
+ *  SQUARE-CORNERED (Akshil, 2026-08-24: "make this icon boxy icon for
+ *  messages"). It was lucide `message-circle` — a round bubble whose outline is
+ *  one continuous curve — and at 12px beside a digit that curve is a blob. This
+ *  is `message-square`: a rectangle with a tail, whose corners give the glyph
+ *  the same flat edges as everything else on the row (the id chip, the folder
+ *  pill, the file mark), so it reads as a mark in this row's vocabulary rather
+ *  than as the one round thing in it. Same 12px, same stroke, same box. */
 const ICON_MSG = icon(
-  <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z" />,
+  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
   12,
 );
 
@@ -380,9 +388,23 @@ export function StatusIcon({
    restoring a mark for it later is a rendering decision, not a data one — it just
    cannot be a filled dot after a title. */
 
-/** The folder a task's work happens in — a plain folder glyph and the folder's
- * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
- * not an initials avatar: that stands for a PERSON, and a directory is not one. */
+/** The folder a task's work happens in — the folder's own name, with the whole
+ * path (with ~ for home) as the tooltip. Deliberately not an initials avatar:
+ * that stands for a PERSON, and a directory is not one.
+ *
+ * NO GLYPH ANY MORE (Akshil, 2026-08-24: "in folder name we have folder icon,
+ * let's remove that"). The chip carried a 12px folder in front of its name, and
+ * the name is already the name of a folder — the glyph restated the one thing the
+ * chip could not be mistaken about, on the busiest end of the row, on every row.
+ * What it cost was width the title needed and a second small mark next to the
+ * message bubble and the file mark, which are marks that DO say something the
+ * text does not.
+ *
+ * The glyph is not gone from the row, it MOVED: it follows the title now, in the
+ * same slot the file mark uses, on the tasks that have no file mark to wear
+ * (`.tasks-row-file` in the row below). There it answers a question the row
+ * otherwise cannot — is this task about the whole folder, or one document in it
+ * — which is worth a mark, where "this folder chip contains a folder" was not. */
 export function IdentityChip({ name, title, onPick, active = false }: {
   name: string;
   title?: string;
@@ -398,15 +420,10 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   onPick?: () => void;
 }) {
   if (!name) return null;
-  const body = (
-    <>
-      <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-      <span className="schedule-tv-id-name">{name}</span>
-    </>
-  );
+  const body = <span className="schedule-tv-id-name">{name}</span>;
   if (!onPick) {
     return (
-      <span className="schedule-tv-id" title={title || name}>{body}</span>
+      <span className="schedule-tv-id" data-tip={title || name} title="">{body}</span>
     );
   }
   return (
@@ -417,7 +434,14 @@ export function IdentityChip({ name, title, onPick, active = false }: {
       // said: a chip that only ever labelled something gives the reader no
       // reason to try clicking it. On an ON chip it says the opposite thing,
       // because that is what the press now does.
-      title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+      //
+      // `data-tip` and an EMPTY `title` (2026-08-24). Both halves matter. The
+      // empty title stops the browser walking up to the row's own — which is
+      // what put the task's name over this chip, the thing Akshil screenshotted
+      // — and `data-tip` is the fast tip, because a path is what a reader hovers
+      // this chip FOR and a two-second hold makes them give up first.
+      data-tip={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+      title=""
       aria-pressed={active}
       onClick={(e) => {
         e.stopPropagation();
@@ -534,11 +558,24 @@ function popStyle(el: HTMLElement | null): React.CSSProperties {
 function FilterMenu({
   label,
   count,
+  icon: glyph,
   onClear,
   children,
 }: {
   label: string;
   count: number;
+  /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
+   *  mark — that is the vocabulary this page states a status in, so on that menu
+   *  the ring is the label said twice and it belongs there.
+   *
+   *  It was the default for BOTH menus, and hardcoded (Akshil, 2026-08-24: "this
+   *  icon next to project in filters is not accurate, change the icon to
+   *  something related to projects"). A ring beside the word Project claims a
+   *  status is being filtered — the one thing the ring means everywhere else on
+   *  this page — so the two menus read as two status filters, one of them
+   *  mislabelled. A prop rather than a `label === "Project"` branch inside:
+   *  which glyph belongs to a filter is the caller's fact, not this popover's. */
+  icon?: React.ReactNode;
   /** Drop THIS menu's selections. Given one, the trigger becomes a split
    *  control — `[ ⊙ Project 1 | ✕ ]` — whenever the count is non-zero.
    *
@@ -595,7 +632,7 @@ function FilterMenu({
           aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
         >
-          {ICON_CIRCLE_DOT} {label}
+          {glyph ?? ICON_CIRCLE_DOT} {label}
           {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
         {splittable && (
@@ -731,6 +768,11 @@ export function TaskFilterControls({
         <FilterMenu
           label="Project"
           count={filters.projects.length}
+          /* A FOLDER, because a project on this page IS a folder — it is
+             auto-detected from where each task's work happens, and the same
+             glyph now marks a folder-scoped task at the end of its title and
+             every folder row in the New-task picker. One mark, one meaning. */
+          icon={ICON_FOLDER}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
           {() =>
@@ -1912,7 +1954,19 @@ function TaskNode({
         // claimed (`is-inert` turns the cursor and the hover tint off).
         role={pressable && !href ? "button" : undefined}
         tabIndex={pressable && !href ? 0 : undefined}
-        title={task.title}
+        /* THE SAME PANEL AS EVERY OTHER TIP ON THIS ROW (Akshil, 2026-08-24:
+           "why are these aria label and tooltip kind of thing different?").
+           It was a native `title` — a deliberate exception, on the reasoning that
+           the row's own name is the one caption nobody is waiting on and a slow
+           tooltip is the right speed for it. That reasoning was about the DELAY
+           and it is kept: this has no fast class, so it still waits 300ms while
+           the marks answer instantly. What it got wrong is that the native
+           tooltip is a different-LOOKING object — the OS panel, its own font,
+           its own corner, drawn at the pointer — so one row could show two
+           unrelated kinds of tooltip depending on which pixel you were over.
+           Same panel, two speeds; not two panels. */
+        data-tip={task.title}
+        title=""
         onClick={href ? undefined : pressable ? activate : undefined}
         onKeyDown={
           href
@@ -1986,7 +2040,13 @@ function TaskNode({
           <a
             className="tasks-rowlink"
             href={href}
-            title={task.title}
+            /* NO `title` (2026-08-24). This <a> is stretched over the whole row
+               and sits above it, so its native tooltip was the one actually
+               shown for the row — and it would have gone on being shown next to
+               the row's new panel, which is the inconsistency being fixed. The
+               row's `data-tip` above is the caption now. `aria-label` stays: it
+               is this link's accessible NAME, not a tooltip, and nothing about
+               the hover changes what a screen reader should hear. */
             aria-label={label}
             onClick={(e) => {
               if (opensElsewhere(e)) return;
@@ -2104,15 +2164,44 @@ function TaskNode({
             The live ping used to sit here (see LivePulse's headstone above): a
             blue disc in the one position, and the one shape, that means unread
             everywhere else. This is a hollow outline and never blue. */}
-        {taskFile_ && (
+        {/* ONE MARK, EITHER WAY (Akshil, 2026-08-24): the file glyph on a task
+            about a document, the folder glyph on a task about its folder — "if
+            there is a file icon already there then we don't add folder icon, if
+            file icon not present then we add a folder icon". Never both, because
+            they are two answers to the SAME question and a row wearing both
+            would be claiming both.
+
+            This is the other half of taking the glyph off the folder chip
+            (IdentityChip's note). There it was decoration on a word that already
+            said "folder"; here it is the row's answer to what the task is about,
+            in the position the file mark already held — so the mark a reader
+            learns is "the thing after the title tells me the scope", with two
+            values instead of one-value-or-nothing.
+
+            The FOLDER arm is the common case, so its tooltip has to be worth
+            having on nearly every row: it names the project path, which is the
+            same string the chip at the far end of the row carries — deliberately,
+            because the two are now one habit (`data-tip` on both, and see A4's
+            note in tasks.css on why neither is a native `title`). */}
+        {taskFile_ ? (
           <span
             className="tasks-row-file"
-            title={tildePath(taskFile_, home)}
+            data-tip={tildePath(taskFile_, home)}
+            title=""
             aria-label={`This task is about ${basename(taskFile_)}`}
           >
             {ICON_FILE}
           </span>
-        )}
+        ) : task.project ? (
+          <span
+            className="tasks-row-file"
+            data-tip={tildePath(task.project, home)}
+            title=""
+            aria-label={`This task is about the folder ${basename(task.project)}`}
+          >
+            {ICON_FOLDER}
+          </span>
+        ) : null}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
@@ -2259,21 +2348,50 @@ function TaskNode({
             right is not that number. The noun survives for anything that cannot
             see the glyph, as this element's `aria-label`.
 
-            Drawn only when the server has counted at least one — zero is a task
-            whose thread has not started, and a "0 messages" is worse than the
-            space it would fill. */}
-        {task.message_count > 0 && (
-          <span
-            className="tasks-row-msgs"
-            /* The noun the glyph replaces, for anything that cannot see it. A
-               bare "5" to a screen reader is the same unlabelled number the
-               comment above objected to on screen. */
-            aria-label={`${task.message_count} message${task.message_count === 1 ? "" : "s"}`}
-          >
-            {task.message_count}
-            <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
-          </span>
-        )}
+            ALWAYS DRAWN, AND NEVER BELOW ONE (Akshil, 2026-08-24). It used to be
+            gated on `> 0`, on the reasoning that zero is a thread that has not
+            started and "0 messages" is worse than the space it fills. The gate
+            was right about the words and wrong about the rows: the tasks that
+            count zero are the EMPTY SESSIONS — a session holding only a `/clear`,
+            a 97-byte file holding only a title record — and they are scattered
+            through the list, so the column of counts had holes in it exactly
+            where the odd rows were. A hole in a column reads as a broken row (the
+            same argument the time beside it settled on 2026-08-18), and it drew
+            attention to the rows that least deserved it.
+            So the floor is one. A session that exists is a conversation somebody
+            opened; a count of zero is an artefact of what this app declines to
+            COUNT — slash commands, skill injections, tool results are all real
+            entries that are not prose — rather than a fact about the row. Showing
+            "1" for them is the honest reading of "there is something in here",
+            and it is what the ask asked for.
+            (The deeper bug is real and is NOT fixed here, by decision: one
+            session on this machine holds 25 assistant turns and counts zero
+            because none of its user entries is typed prose. This default is the
+            preventive fix; the counter is a separate job.) */}
+        {(() => {
+          const shown = Math.max(1, task.message_count);
+          return (
+            <span
+              className="tasks-row-msgs"
+              /* The noun the glyph replaces, for anything that cannot see it. A
+                 bare "5" to a screen reader is the same unlabelled number the
+                 comment above objected to on screen. */
+              aria-label={`${shown} message${shown === 1 ? "" : "s"}`}
+              /* `data-tip`, and `title=""` to stop the walk — without the empty
+                 title this element inherits the ROW's tooltip, which is the
+                 task's own name, and hovering the message count showed the
+                 title. That is the bug in Akshil's screenshot ("if i hover over
+                 button/tag of folder it shows me task title instead of path"),
+                 and it was never about the folder chip alone: every mark on this
+                 row that had no title of its own was borrowing the row's. */
+              data-tip={`${shown} message${shown === 1 ? "" : "s"} in this task`}
+              title=""
+            >
+              {shown}
+              <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
+            </span>
+          );
+        })()}
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session
             holding only a `/clear` — which left the last cell of that row blank
@@ -2302,11 +2420,15 @@ function TaskNode({
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
         {soon && (
-          <span className="tasks-row-next" title={soon.title}>
+          <span className="tasks-row-next" data-tip={soon.title} title="">
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" title={when.title}>
+        {/* Fast tip, same as its neighbours (2026-08-24). This one DID have a
+            title of its own, so it never showed the row's — what it had was the
+            browser's one-to-two second hold before showing it, which for
+            "Tue 19 Aug, 14:22 — last run" is the same as not offering it. */}
+        <span className="tasks-row-time" data-tip={when.title} title="">
           {when.text}
         </span>
       </div>

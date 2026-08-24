@@ -27,32 +27,43 @@ export const UNRECOGNISED = "unrecognised";
  *
  *  Hardcoded, and only for ORDER — every label still comes from
  *  `capabilityLabel`, so there is one place where a capability is put into
- *  words. A capability missing from this list is not missing from the page: it
+ *  words.
+ *
+ *  **THIS IS THE PLAYGROUND'S ORDER, and the Playground no longer keeps its own
+ *  copy** (Akshil, 2026-08-24: "check playground list, just follow the order
+ *  from playground list into the models section"). The two disagreed for a
+ *  while — this list led with text on the argument that a catalogue reads
+ *  differently from a set of things you can do, and the Playground led with
+ *  images because the picture is the result you can judge at a glance. Whatever
+ *  each argument was worth separately, the page they add up to is one whose
+ *  tabs put the same five sections in two orders, and a reader moving between
+ *  them has to re-find every one. So the tab a reader USES the models on sets
+ *  the order, and the tabs that inventory them follow it.
+ *
+ *  VIDEO IS LISTED, and that is the one substantive change rather than a
+ *  re-shuffle. The Playground's private copy named four capabilities and video
+ *  was not among them, so it fell through to the end and landed after
+ *  Embeddings — not by anybody's decision, but because an unlisted capability
+ *  sorts last. It sits after Embeddings here too, which is where it has been
+ *  appearing all along; the difference is that it now does so on purpose and
+ *  lands in the same place on every machine.
+ *
+ *  A capability missing from this list is still not missing from the page: it
  *  sorts after these, in the order the server sent it (see `groupRepos`), which
- *  is how a capability added server-side shows up here without a frontend
- *  change.
+ *  is how a capability added server-side shows up without a frontend change.
  *
- *  Embeddings sits LAST of the five, the same place it sits in
- *  `engines.CAPABILITY_LABELS`: it is the one capability whose output is not
- *  something a reader looks at, so it belongs behind the four that produce
- *  text, an image, a video and a transcript. Video sits beside image — the
- *  two visual-generation capabilities together — rather than after speech, so
- *  the two things a reader LOOKS AT lead the list. Listed rather than left to
- *  fall through, because a first-class capability that sorted itself by the
- *  accident of listing order would land in a different place on two machines.
- *
- *  **Exported for the Benchmark tab**, which draws one section per capability
- *  and has to draw them in the same order this tab does — a page whose two tabs
- *  disagree about where Embeddings goes reads as two pages. Imported there
- *  rather than re-declared, because two copies of a reading order are two
- *  reading orders one edit apart.
+ *  **Exported for the Benchmark and Playground tabs**, which draw one section
+ *  per capability and have to draw them in the same order this one does — a
+ *  page whose three tabs disagree about where Embeddings goes reads as three
+ *  pages. Imported there rather than re-declared, because two copies of a
+ *  reading order are two reading orders one edit apart.
  */
 export const CAPABILITY_ORDER = [
-  "text-generation",
   "text-to-image",
-  "text-to-video",
+  "text-generation",
   "automatic-speech-recognition",
   "embeddings",
+  "text-to-video",
 ];
 
 export interface RepoGroup {
@@ -692,4 +703,62 @@ export function loadRefusal(repo: AiModelRepo): string | null {
     );
   }
   return null;
+}
+
+/** The same refusal, at CARD length — one line, no remedy.
+ *
+ *  `loadRefusal` above is written for a HOVER, where there is room to explain and
+ *  a reader who has stopped to ask. Printed on the card it ran to three wrapped
+ *  lines and a link (Akshil, 2026-08-24: "this is too big of a message, shorten
+ *  it, one line or less"), which on a 300px card is a paragraph under a button —
+ *  more ink than the model's own name and description together.
+ *
+ *  So the card gets the CAUSE and the card's link gets the remedy. Both halves of
+ *  the long sentence survive, in the two places a reader looks for them: the
+ *  short line says which fact is in the way, the "Open the Engines tab" beside it
+ *  says what to do, and the full prose is still one hover away on the disabled
+ *  button that raised it (`title`/`aria-label`, unchanged).
+ *
+ *  Null wherever the long form is null, so a caller cannot draw one and not the
+ *  other.
+ */
+export function loadRefusalShort(repo: AiModelRepo): string | null {
+  if (loadRefusal(repo) === null) return null;
+  // "Part of X" — the owner is the whole point, and the tag above the button
+  // already says it, so this says the part the tag does not: there is no model.
+  if (repo.component) return `Part of ${repo.component.owner} — not a model on its own.`;
+  if (repo.kind !== "model") return `This is a ${repo.kind}, not a model.`;
+  // A partial repo never draws this line (RepoCard gates it), but the function
+  // stays total — a short form that lied on one input would be worse than none.
+  if (repo.partial) return "This download did not finish.";
+  if (!repo.engine) return "No local engine reads this weight format.";
+  if (!repo.engine.available) {
+    // THE FIRST CLAUSE ONLY. The registry writes this as "<capability> is set to
+    // <engine>, which does not read this format — switch it on the Engines tab"
+    // (hub_cache): three clauses, of which the card needs one. Everything from the
+    // dash on is the REMEDY, which is the link's job now; the middle clause
+    // ("which does not read this format") is what the engine TAG two lines above
+    // already says by being dashed and amber. What is left is the one fact
+    // neither of them carries — which engine this capability is pointed at.
+    //
+    // Cut at the first comma or dash, whichever comes first, because those are
+    // the sentence's own joints; nothing here matches on words, so a reworded
+    // reason degrades to "keep more of it" rather than to a wrong answer.
+    const reason = repo.engine.reason ?? "";
+    const cut = Math.min(
+      ...[",", "—"].map((c) => (reason.includes(c) ? reason.indexOf(c) : reason.length)),
+    );
+    const cause = reason.slice(0, cut).trim();
+    if (cause) return `${capitalise(cause)}.`;
+    return `${repo.engine.shortLabel} cannot load here.`;
+  }
+  return null;
+}
+
+/** First letter up, rest untouched — the registry writes its reasons mid-sentence
+ *  ("text-to-image is set to…") because they were always a clause inside a longer
+ *  one, and standing alone they need a capital. Deliberately not `toUpperCase` on
+ *  a word: `MLX` must survive. */
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
