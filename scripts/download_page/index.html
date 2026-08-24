@@ -181,6 +181,7 @@
     font-size: clamp(2rem, 3.55vw, 3.6rem);
     line-height: 1.02; letter-spacing: -0.045em; font-weight: 700;
     text-wrap: balance;
+    text-align: center;
   }
   .points {
     display: grid; grid-template-columns: minmax(0, 1fr);
@@ -217,7 +218,7 @@
     .points { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   }
   .acts {
-    display: flex; align-items: center; gap: var(--s3);
+    display: flex; align-items: center; justify-content: center; gap: var(--s3);
     flex-wrap: wrap; margin-top: clamp(40px, 5.2vw, 60px);
   }
   /* The one accent in the first viewport. */
@@ -881,7 +882,6 @@
     </ol>
     <div class="acts">
       <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
-      <a class="link-plain" href="#apps">See the apps</a>
     </div>
     <p class="fine">Supported on macOS, Windows and Linux. No account to create.</p>
   </section>
