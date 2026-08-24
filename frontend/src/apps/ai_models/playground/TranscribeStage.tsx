@@ -401,6 +401,38 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
 
+        <ConfigPanel open={configOpen} animated={configTouched.current}>
+          <RailField label="Task">
+            <RailSelect
+              value={task}
+              onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
+            >
+              <option value="transcribe">Transcribe — same language</option>
+              <option value="translate">Translate into English</option>
+            </RailSelect>
+          </RailField>
+          <RailField label="Language" hint="Set it only when detection gets it wrong.">
+            <Input
+              type="text"
+              value={language}
+              placeholder="Detected automatically"
+              onChange={(e) => setLanguage(e.target.value)}
+            />
+          </RailField>
+          <RailCheck
+            label="Skip silence"
+            hint="Much faster on recordings with gaps. Turn off if it clips speech."
+            checked={vad}
+            onChange={setVad}
+          />
+          <RailCheck
+            label="Word timestamps"
+            hint="Per-word timings in the saved transcript. Slower."
+            checked={words}
+            onChange={setWords}
+          />
+        </ConfigPanel>
+
 
         {error && <p className="pg-error">{error}</p>}
 
@@ -484,38 +516,6 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
       </Card>
-
-      <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <RailField label="Task">
-          <RailSelect
-            value={task}
-            onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
-          >
-            <option value="transcribe">Transcribe — same language</option>
-            <option value="translate">Translate into English</option>
-          </RailSelect>
-        </RailField>
-        <RailField label="Language" hint="Set it only when detection gets it wrong.">
-          <Input
-            type="text"
-            value={language}
-            placeholder="Detected automatically"
-            onChange={(e) => setLanguage(e.target.value)}
-          />
-        </RailField>
-        <RailCheck
-          label="Skip silence"
-          hint="Much faster on recordings with gaps. Turn off if it clips speech."
-          checked={vad}
-          onChange={setVad}
-        />
-        <RailCheck
-          label="Word timestamps"
-          hint="Per-word timings in the saved transcript. Slower."
-          checked={words}
-          onChange={setWords}
-        />
-      </ConfigPanel>
     </div>
   );
 }

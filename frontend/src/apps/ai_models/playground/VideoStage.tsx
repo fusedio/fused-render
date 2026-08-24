@@ -311,6 +311,61 @@ export function VideoStage({
         </div>
       </div>
 
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
+        <RailSlider
+          label="Width"
+          hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={32}
+          value={width}
+          fallback={DEFAULTS.width}
+          onChange={setWidth}
+        />
+        <RailSlider
+          label="Height"
+          hint="Bigger is slower and needs more memory."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={32}
+          value={height}
+          fallback={DEFAULTS.height}
+          onChange={setHeight}
+        />
+        <RailSlider
+          label="Frames"
+          hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
+          min={framesRange[0]}
+          max={framesRange[1]}
+          step={engineTraits.framesStep}
+          value={frames}
+          fallback={engineTraits.defaultFrames}
+          onChange={setFrames}
+        />
+        <RailSlider
+          label="Steps"
+          hint="Denoising passes — more is slower and usually cleaner."
+          min={STEPS_RANGE[0]}
+          max={STEPS_RANGE[1]}
+          step={1}
+          value={steps}
+          fallback={modelSteps}
+          onChange={setSteps}
+        />
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same video."
+        >
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+          />
+        </RailField>
+      </ConfigPanel>
+
       {/* Examples first, under the box they fill; hidden once a clip is on
           screen, which is what that space is then for. */}
       {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
@@ -411,61 +466,6 @@ export function VideoStage({
         </div>
       )}
       </Card>
-
-      <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <RailSlider
-          label="Width"
-          hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={width}
-          fallback={DEFAULTS.width}
-          onChange={setWidth}
-        />
-        <RailSlider
-          label="Height"
-          hint="Bigger is slower and needs more memory."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={height}
-          fallback={DEFAULTS.height}
-          onChange={setHeight}
-        />
-        <RailSlider
-          label="Frames"
-          hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
-          min={framesRange[0]}
-          max={framesRange[1]}
-          step={engineTraits.framesStep}
-          value={frames}
-          fallback={engineTraits.defaultFrames}
-          onChange={setFrames}
-        />
-        <RailSlider
-          label="Steps"
-          hint="Denoising passes — more is slower and usually cleaner."
-          min={STEPS_RANGE[0]}
-          max={STEPS_RANGE[1]}
-          step={1}
-          value={steps}
-          fallback={modelSteps}
-          onChange={setSteps}
-        />
-        <RailField
-          label="Seed"
-          hint="Same seed + same prompt + same settings = the same video."
-        >
-          <Input
-            type="text"
-            inputMode="numeric"
-            value={seed}
-            placeholder="Random each time"
-            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-          />
-        </RailField>
-      </ConfigPanel>
     </div>
   );
 }

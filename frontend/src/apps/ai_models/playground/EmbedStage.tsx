@@ -276,6 +276,18 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
           </div>
         </div>
 
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
+        <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
+          <Textarea
+            className="min-h-0 resize-y text-xs leading-relaxed"
+            rows={7}
+            value={lines}
+            placeholder="One line per entry"
+            onChange={(e) => setLines(e.target.value)}
+          />
+        </RailField>
+      </ConfigPanel>
+
 
         {/* Until there is a ranking to read, the examples. Each one sets both
             halves of the scenario and runs it — see `run`'s arguments. */}
@@ -326,18 +338,6 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
           />
         )}
       </Card>
-
-      <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
-          <Textarea
-            className="min-h-0 resize-y text-xs leading-relaxed"
-            rows={7}
-            value={lines}
-            placeholder="One line per entry"
-            onChange={(e) => setLines(e.target.value)}
-          />
-        </RailField>
-      </ConfigPanel>
     </div>
   );
 }

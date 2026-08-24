@@ -59,7 +59,6 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@platform/shadcn/ui/card";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
-import { Separator } from "@platform/shadcn/ui/separator";
 import { Binary, Check, Copy, Cpu, HardDriveDownload, Sparkles } from "lucide-react";
 
 // What the groups are called HERE: the capability vocabulary is exact
@@ -822,50 +821,56 @@ export default function PlaygroundTab() {
                   </Button>
                 </CardAction>
               </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                {(selected.model.params ||
-                  selected.model.quantization ||
-                  selected.model.size_gb != null) && (
-                  <>
-                    <dl className="m-0 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-                      {[
-                        selected.model.params
-                          ? {
-                              icon: Cpu,
-                              label: "Parameters",
-                              value: selected.model.params,
-                            }
-                          : null,
-                        selected.model.quantization
-                          ? {
-                              icon: Binary,
-                              label: "Quantization",
-                              value: selected.model.quantization,
-                            }
-                          : null,
-                        selected.model.size_gb != null
-                          ? {
-                              icon: HardDriveDownload,
-                              label: "Download",
-                              value: modelSizeLabel(selected.model.size_gb, jobForSelected),
-                            }
-                          : null,
-                      ]
-                        .filter((f) => f !== null)
-                        .map((f, i) => (
-                          <div key={f.label} className="flex items-center gap-4">
-                            {i > 0 && <Separator orientation="vertical" className="h-4!" />}
-                            <div className="flex items-center gap-2">
-                              <f.icon className="size-4 shrink-0 text-muted-foreground" />
-                              <dt className="text-muted-foreground">{f.label}</dt>
-                              <dd className="m-0 font-medium tabular-nums">{f.value}</dd>
-                            </div>
-                          </div>
-                        ))}
-                    </dl>
-                  </>
-                )}
-              </CardContent>
+              {/* No facts, no CardContent: an empty one still takes the card's
+                  flex gap and leaves blank space under the header. */}
+              {(selected.model.params ||
+                selected.model.quantization ||
+                selected.model.size_gb != null) && (
+                <CardContent className="flex flex-col gap-4">
+                  {/* Every fact carries its own divider bar, drawn by ::before
+                      in the gap to its LEFT — and `overflow-x-clip` on the
+                      list clips the bar off whichever fact starts a line, the
+                      first included. A per-item `i > 0` separator can't do
+                      that: when the row wraps, the wrapped item would open its
+                      line with a stray bar. */}
+                  <dl className="relative m-0 flex flex-wrap items-center gap-x-4 gap-y-2 overflow-x-clip text-sm">
+                    {[
+                      selected.model.params
+                        ? {
+                            icon: Cpu,
+                            label: "Parameters",
+                            value: selected.model.params,
+                          }
+                        : null,
+                      selected.model.quantization
+                        ? {
+                            icon: Binary,
+                            label: "Quantization",
+                            value: selected.model.quantization,
+                          }
+                        : null,
+                      selected.model.size_gb != null
+                        ? {
+                            icon: HardDriveDownload,
+                            label: "Download",
+                            value: modelSizeLabel(selected.model.size_gb, jobForSelected),
+                          }
+                        : null,
+                    ]
+                      .filter((f) => f !== null)
+                      .map((f) => (
+                        <div
+                          key={f.label}
+                          className="relative flex items-center gap-2 before:absolute before:top-1/2 before:-left-2 before:h-4 before:w-px before:-translate-y-1/2 before:bg-border"
+                        >
+                          <f.icon className="size-4 shrink-0 text-muted-foreground" />
+                          <dt className="text-muted-foreground">{f.label}</dt>
+                          <dd className="m-0 font-medium tabular-nums">{f.value}</dd>
+                        </div>
+                      ))}
+                  </dl>
+                </CardContent>
+              )}
             </Card>
             {selected.row.capability === "text-generation" ? (
               <TextStage

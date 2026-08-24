@@ -327,51 +327,6 @@ export function TextStage({
         </div>
       </div>
 
-      {/* Examples first, under the box they fill; hidden once there is a
-          reply to read, which is what that space is then for. */}
-      {!reply && !status && (
-        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
-      )}
-
-      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
-
-      {status && <p className="pg-status">{status}</p>}
-      {error && <p className="pg-error">{error}</p>}
-
-      {!(reply && shown) ? (
-        <ResultSlot
-          label="Response"
-          capability="text-generation"
-          note="The reply appears here. Ask something above, then Run."
-        />
-      ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Response</p>
-          <div className="pg-answer">
-          {!reply.pending && reply.text && (
-            <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
-          )}
-          {shown.think !== null && (
-            <details className="pg-think">
-              <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
-              <div className="pg-think-body">{shown.think}</div>
-            </details>
-          )}
-          {shown.answer ? (
-            renderMarkdown(shown.answer)
-          ) : reply.pending && !shown.thinking ? (
-            <span className="pg-cursor" aria-label="Generating" />
-          ) : null}
-          {!reply.pending && stats && (
-            <div className="pg-turn-foot">
-              <span>{stats}</span>
-            </div>
-          )}
-          </div>
-        </div>
-      )}
-      </Card>
-
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Temperature"
@@ -420,6 +375,51 @@ export function TextStage({
           onChange={setTopP}
         />
       </ConfigPanel>
+
+      {/* Examples first, under the box they fill; hidden once there is a
+          reply to read, which is what that space is then for. */}
+      {!reply && !status && (
+        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
+      )}
+
+      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
+
+      {status && <p className="pg-status">{status}</p>}
+      {error && <p className="pg-error">{error}</p>}
+
+      {!(reply && shown) ? (
+        <ResultSlot
+          label="Response"
+          capability="text-generation"
+          note="The reply appears here. Ask something above, then Run."
+        />
+      ) : (
+        <div className="pg-answer-block">
+          <p className="pg-answer-label">Response</p>
+          <div className="pg-answer">
+          {!reply.pending && reply.text && (
+            <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
+          )}
+          {shown.think !== null && (
+            <details className="pg-think">
+              <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
+              <div className="pg-think-body">{shown.think}</div>
+            </details>
+          )}
+          {shown.answer ? (
+            renderMarkdown(shown.answer)
+          ) : reply.pending && !shown.thinking ? (
+            <span className="pg-cursor" aria-label="Generating" />
+          ) : null}
+          {!reply.pending && stats && (
+            <div className="pg-turn-foot">
+              <span>{stats}</span>
+            </div>
+          )}
+          </div>
+        </div>
+      )}
+      </Card>
     </div>
   );
 }

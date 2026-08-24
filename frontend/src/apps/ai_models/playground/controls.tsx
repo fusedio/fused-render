@@ -5,11 +5,11 @@
 // stage's title row asks for them (D430, D431, reshaped). Each control is a
 // slider+number pair with a one-line hint, defaults baked in and a
 // per-control reset once a value moves.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Card, CardContent, CardHeader, CardTitle } from "@platform/shadcn/ui/card";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
-import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "@platform/shadcn/ui/field";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Slider } from "@platform/shadcn/ui/slider";
 import { capabilityIcon } from "./capabilityIcons";
@@ -142,7 +142,7 @@ export function ConfigPanel({
   // under it is the half-animated version, and reads worse than no animation
   // at all. This unmount is also what STARTS the column's glide back: the
   // stylesheet holds the open geometry for as long as a closing card is
-  // mounted (`:has(> .pg-config-card.is-closing)`, ai-playground.css), because
+  // mounted (`:has(.pg-config-card.is-closing)`, ai-playground.css), because
   // the card's open place and the column's closed place overlap — a card
   // fading over a column already in motion can only be clipped by the stage or
   // laid on top of the composer.
@@ -328,8 +328,10 @@ export function RailField({
   );
 }
 
-/** A boolean setting: checkbox beside its name-and-hint, all one click
- *  target (the FieldLabel wrapper is what makes the text toggle it). */
+/** A boolean setting: checkbox beside its name-and-hint. The label is tied to
+ *  the checkbox by id, NOT by wrapping the Field in a FieldLabel — a
+ *  FieldLabel with a Field child is shadcn's choice-card composition, and
+ *  brings the card's border, padding and checked-highlight with it. */
 export function RailCheck({
   label,
   hint,
@@ -341,20 +343,22 @@ export function RailCheck({
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  const id = useId();
   return (
-    <FieldLabel className="font-normal">
-      <Field orientation="horizontal" className="items-start gap-2">
-        <Checkbox
-          className="mt-0.5"
-          checked={checked}
-          onCheckedChange={(next) => onChange(!!next)}
-        />
-        <FieldContent className="gap-0.5">
-          <FieldTitle className="text-xs font-semibold">{label}</FieldTitle>
-          <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>
-        </FieldContent>
-      </Field>
-    </FieldLabel>
+    <Field orientation="horizontal" className="items-start gap-2">
+      <Checkbox
+        id={id}
+        className="mt-0.5"
+        checked={checked}
+        onCheckedChange={(next) => onChange(!!next)}
+      />
+      <FieldContent className="gap-0.5">
+        <FieldLabel htmlFor={id} className="text-xs font-semibold">
+          {label}
+        </FieldLabel>
+        <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>
+      </FieldContent>
+    </Field>
   );
 }
 

@@ -712,7 +712,7 @@
      animation-delay below), and the glide back waits for the fade on the way
      out — so the card never paints over a content track still in motion. */
   .pg-work.has-config,
-  .pg-work:has(> .pg-config-card.is-closing) {
+  .pg-work:has(.pg-config-card.is-closing) {
     grid-template-columns: calc(100% - var(--pg-gap) - var(--pg-card)) var(--pg-card);
     column-gap: var(--pg-gap);
   }
@@ -724,27 +724,38 @@
     grid-column: 1;
   }
 
-  /* Absolutely positioned INTO the second column rather than placed in it: an
-     in-flow card would size its own grid row, so opening the cog would push
-     the composer down by the card's height. An abspos grid child takes its
-     grid area as its containing block, with the row edges falling back to the
-     container's padding box when the row placement is auto, so `inset: 0` is a
-     full-height rail in the --pg-card track. The track holds its width whether
-     anything is in it or not.
+  /* The panel lives INSIDE the work card in the DOM — between the composer
+     and the result, which is where the narrow fallback needs it in flow — and
+     escapes here on the wide layout: absolutely positioned against .pg-work
+     (the `position: relative` above), pinned to the right edge at the track's
+     width, which is exactly the geometry the reserved second grid column
+     draws. The work card must not clip it — see the overflow override on
+     .pg-work-card below this block.
+
+     An in-flow panel would instead size its own row inside the card, so
+     opening the cog would push the composer down by the panel's height.
 
      No open-state qualifier on the selector, and none needed: the card exists
      only while the open rule above is in force — open, or closing and not yet
      unmounted — so the two-track geometry it positions into is always there. */
-  .pg-work > .pg-config-card {
-    grid-column: 2;
+  .pg-work .pg-config-card {
     position: absolute;
-    inset: 0;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: var(--pg-card);
+  }
+
+  /* The shadcn Card ships `overflow-hidden`; kept, the rail above would be
+     clipped at the work card's edge instead of escaping into the side track. */
+  .pg-work > .pg-work-card {
+    overflow: visible;
   }
 
   /* The card rides the rail: it stays on screen while a long result scrolls
      past it. Sticky cannot live on the rail itself — an abspos box has nothing
      to stick within — which is why the rail and the card are two boxes. */
-  .pg-work > .pg-config-card > .pg-config-inner {
+  .pg-work .pg-config-card > .pg-config-inner {
     position: sticky;
     top: 0;
   }
@@ -754,7 +765,7 @@
      exists. Not on the way out (`:not`) — the exit fades at once, and this
      delay landing on it would hold the card still past its own unmount timer,
      dropping it with no fade at all. */
-  .pg-work > .pg-config-card:not(.is-closing) > .pg-config-inner {
+  .pg-work .pg-config-card:not(.is-closing) > .pg-config-inner {
     animation-delay: var(--pg-glide);
   }
 }

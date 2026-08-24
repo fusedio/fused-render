@@ -823,6 +823,116 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         </div>
       </div>
 
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
+        <div className="pg-config-chips">
+          {/* Hidden, not disabled, while the attached image decides the size:
+              a chip row where nothing is lit and a slider parked on 480 are
+              both controls saying something about a render that will come back
+              at the photo's own size instead. One line replaces them, and it
+              is also the way back to picking a size by hand. */}
+          {!sizeIsTheImages && (
+            <RailChips
+              options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
+              active={aspect}
+              onPick={(value) => {
+                const pick = ASPECTS.find((a) => a.value === value);
+                if (pick) {
+                  setWidth(pick.width);
+                  setHeight(pick.height);
+                }
+              }}
+            />
+          )}
+          {speedChips && (
+            <RailChips
+              options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
+              active={speed}
+              onPick={(value) => {
+                const pick = speedChips.find((c) => c.value === value);
+                if (pick) setSteps(pick.steps);
+              }}
+            />
+          )}
+        </div>
+        {sizeIsTheImages ? (
+          <RailField
+            label="Size"
+            action={<RailReset onClick={() => setSizeFromImage(false)}>Set a size</RailReset>}
+            hint={
+              fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
+                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
+                  "size takes minutes. Set a size to render it bigger."
+                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`
+            }
+          >
+            <span className="text-xs">
+              {fitted
+                ? `${fitted.width} × ${fitted.height} — the picture's shape`
+                : "Read from the attached picture"}
+            </span>
+          </RailField>
+        ) : (
+          <>
+            <RailSlider
+              label="Width"
+              hint="Snapped to a multiple of 16 by the server."
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
+              step={16}
+              value={width}
+              fallback={DEFAULTS.width}
+              onChange={setWidth}
+            />
+            <RailSlider
+              label="Height"
+              hint="Bigger is slower and needs more memory."
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
+              step={16}
+              value={height}
+              fallback={DEFAULTS.height}
+              onChange={setHeight}
+            />
+          </>
+        )}
+        <RailSlider
+          label="Steps"
+          hint={
+            entry.defaults?.steps != null
+              ? "This model is distilled for few steps — more is slower, rarely better."
+              : "Denoising passes — more is slower and usually cleaner."
+          }
+          min={STEPS_RANGE[0]}
+          max={STEPS_RANGE[1]}
+          step={1}
+          value={steps}
+          fallback={modelSteps}
+          onChange={setSteps}
+        />
+        <RailSlider
+          label="Guidance"
+          hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
+          min={GUIDANCE_RANGE[0]}
+          max={GUIDANCE_RANGE[1]}
+          step={0.5}
+          value={guidance}
+          fallback={DEFAULTS.guidance}
+          onChange={setGuidance}
+        />
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same picture."
+        >
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+          />
+        </RailField>
+      </ConfigPanel>
+
       {/* The attached picture at full size. Deliberately the whole modal: an
           image and a way out, no title bar, no filename, no actions — the ✕ on
           the row below already removes it, and this is only here because a
@@ -964,116 +1074,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           </div>
         )}
       </Card>
-
-      <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <div className="pg-config-chips">
-          {/* Hidden, not disabled, while the attached image decides the size:
-              a chip row where nothing is lit and a slider parked on 480 are
-              both controls saying something about a render that will come back
-              at the photo's own size instead. One line replaces them, and it
-              is also the way back to picking a size by hand. */}
-          {!sizeIsTheImages && (
-            <RailChips
-              options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
-              active={aspect}
-              onPick={(value) => {
-                const pick = ASPECTS.find((a) => a.value === value);
-                if (pick) {
-                  setWidth(pick.width);
-                  setHeight(pick.height);
-                }
-              }}
-            />
-          )}
-          {speedChips && (
-            <RailChips
-              options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
-              active={speed}
-              onPick={(value) => {
-                const pick = speedChips.find((c) => c.value === value);
-                if (pick) setSteps(pick.steps);
-              }}
-            />
-          )}
-        </div>
-        {sizeIsTheImages ? (
-          <RailField
-            label="Size"
-            action={<RailReset onClick={() => setSizeFromImage(false)}>Set a size</RailReset>}
-            hint={
-              fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
-                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
-                  "size takes minutes. Set a size to render it bigger."
-                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`
-            }
-          >
-            <span className="text-xs">
-              {fitted
-                ? `${fitted.width} × ${fitted.height} — the picture's shape`
-                : "Read from the attached picture"}
-            </span>
-          </RailField>
-        ) : (
-          <>
-            <RailSlider
-              label="Width"
-              hint="Snapped to a multiple of 16 by the server."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={width}
-              fallback={DEFAULTS.width}
-              onChange={setWidth}
-            />
-            <RailSlider
-              label="Height"
-              hint="Bigger is slower and needs more memory."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={height}
-              fallback={DEFAULTS.height}
-              onChange={setHeight}
-            />
-          </>
-        )}
-        <RailSlider
-          label="Steps"
-          hint={
-            entry.defaults?.steps != null
-              ? "This model is distilled for few steps — more is slower, rarely better."
-              : "Denoising passes — more is slower and usually cleaner."
-          }
-          min={STEPS_RANGE[0]}
-          max={STEPS_RANGE[1]}
-          step={1}
-          value={steps}
-          fallback={modelSteps}
-          onChange={setSteps}
-        />
-        <RailSlider
-          label="Guidance"
-          hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
-          min={GUIDANCE_RANGE[0]}
-          max={GUIDANCE_RANGE[1]}
-          step={0.5}
-          value={guidance}
-          fallback={DEFAULTS.guidance}
-          onChange={setGuidance}
-        />
-        <RailField
-          label="Seed"
-          hint="Same seed + same prompt + same settings = the same picture."
-        >
-          <Input
-            type="text"
-            inputMode="numeric"
-            value={seed}
-            placeholder="Random each time"
-            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-          />
-        </RailField>
-      </ConfigPanel>
     </div>
   );
 }
