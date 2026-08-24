@@ -382,7 +382,7 @@ export async function deliverShareCard(blob: Blob, filename: string): Promise<Sh
   return "downloaded";
 }
 
-/** What the toast (D478) says after a delivery — the outcomes differ in WHERE
+/** What the toast (D480) says after a delivery — the outcomes differ in WHERE
  *  the card went, and a single "Done" would leave a reader hunting for a file
  *  that is actually on their clipboard. Each string names the DESTINATION,
  *  not the format: a toast lands away from the button, with no page context

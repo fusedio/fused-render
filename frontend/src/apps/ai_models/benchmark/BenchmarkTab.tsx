@@ -841,7 +841,7 @@ function CapabilitySection({
               manual one are indistinguishable to the server and to the
               history. Sits between the two chart instruments and the ledger
               rows it drives, since it acts on exactly that list — and now
-              (D477) sits FLUSH against those rows in the markup's own order
+              (D479) sits FLUSH against those rows in the markup's own order
               (see `.am-bench-runall + .am-bench-rows` in ai-models.css): the
               button is that list's control, not a third, orphaned instrument
               floating in the gap the chart and the rows each already own a
@@ -856,7 +856,7 @@ function CapabilitySection({
               honest for a Run All button to say when every model is
               already `gone`.
 
-              **Idle branch is `--fg`-outlined, glyph-led, plain text (D477)**
+              **Idle branch is `--fg`-outlined, glyph-led, plain text (D479)**
               — not the accent outline `.am-card-try` wears on the Models tab,
               and not a filled plate. Accent on THIS tab is already spoken
               for as DATA ink: the comparison chart's bars, the metric values

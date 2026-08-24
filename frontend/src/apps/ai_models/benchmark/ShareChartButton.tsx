@@ -9,7 +9,7 @@
 // rule the chart itself follows: a Share button above "no runs recorded yet"
 // offers to send an empty axis.
 //
-// **The outcome is SAID, not assumed — but through the global toast (D478),
+// **The outcome is SAID, not assumed — but through the global toast (D480),
 // not an inline note beside the button.** An inline `<span>` here used to sit
 // inside `.am-bench-share`, inside `.am-bench-headtools`, inside the
 // right-aligned `.am-section-head` row — so the instant a receipt like "Copied

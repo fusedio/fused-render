@@ -1983,7 +1983,7 @@
   gap: 12px;
 }
 
-/* Share (D478): the chart, this machine's hardware and the fused render mark
+/* Share (D480): the chart, this machine's hardware and the fused render mark
    as one PNG (benchmark/shareCard.ts). The receipt for where it went used to
    be an inline note living right here, in `.am-bench-share` — a wrapper that
    existed only to hold the button and that note side by side. It is gone now:
@@ -2144,7 +2144,7 @@
    right above `.am-bench-rows`, since that is exactly the list it acts on.
    The full `--am-gap-head` above stays: that break is what separates this
    instrument from the comparison chart, and is still owed. What changes
-   (D477) is BELOW: see `.am-bench-runall + .am-bench-rows` — the button and
+   (D479) is BELOW: see `.am-bench-runall + .am-bench-rows` — the button and
    the rows it drives now close ranks into one block. */
 .am-bench-runall {
   display: flex;
@@ -2155,7 +2155,7 @@
   font-size: 12px;
 }
 
-/* The idle Run All button (D477) — see the long comment in BenchmarkTab.tsx
+/* The idle Run All button (D479) — see the long comment in BenchmarkTab.tsx
    above this button's JSX for the full rationale; this is just the chrome
    that carries it out. `--fg` border and text, transparent plate: no accent
    (that ink is spoken for as chart/value/selection data on this tab) and no
@@ -2223,7 +2223,7 @@
   margin-top: var(--am-gap-head);
 }
 
-/* D477: when a Run All button precedes the rows, it IS that list's control
+/* D479: when a Run All button precedes the rows, it IS that list's control
    — the two should read as one block, not two instruments sharing a gap
    that belongs to neither. Collapse `.am-bench-rows`'s own `--am-gap-head`
    down to the same 6px the rows already use between each other, but only
