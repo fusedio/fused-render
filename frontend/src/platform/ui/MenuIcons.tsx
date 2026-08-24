@@ -268,4 +268,17 @@ export const MenuIcons: Record<string, ReactNode> = {
       <rect x="6" y="6" width="12" height="12" rx="1.5" />
     </svg>
   ),
+  // Info — a circle with a dot above a stem, the universal "there is more to
+  // read here" glyph. Its one consumer (the Benchmark tab's per-capability
+  // workload explanation, D483) wraps it in a real `<button>` carrying
+  // `data-hint` (platform/lib/hints.ts, D474) rather than a native `title` —
+  // this glyph is the announced control, never the caption itself, so it
+  // stays the plain outline every other glyph here is.
+  info: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
+    </svg>
+  ),
 };

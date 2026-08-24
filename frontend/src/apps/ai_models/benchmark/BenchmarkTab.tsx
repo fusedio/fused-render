@@ -161,12 +161,12 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // The fixed workload EACH capability above actually runs (D483) — what a
   // Run press measures, in the server's own words: a fixed prompt and token
   // budget, a generated tone of a fixed length, a fixed image size and
-  // guidance, eight fixed texts. Rendered by `CapabilitySection` as a single
-  // line under its own heading (`workloadNote`, below) rather than restated
-  // here as frontend prose that could silently drift from
-  // `fused_render/ai/benchmark.py`'s `WORKLOADS` table — see that function's
-  // own comment for why the drift is guarded by a Python-side test rather
-  // than trusted to stay in sync by hand.
+  // guidance, eight fixed texts. Turned into one sentence by `CapabilitySection`
+  // (`workloadNote`, below) and carried on the section heading's info glyph
+  // as a `data-hint` rather than restated here as frontend prose that could
+  // silently drift from `fused_render/ai/benchmark.py`'s `WORKLOADS` table —
+  // see that function's own comment for why the drift is guarded by a
+  // Python-side test rather than trusted to stay in sync by hand.
   const [workloads, setWorkloads] = useState<Record<string, AiBenchmarkWorkload>>({});
   // THIS machine, as the server sees it now — the caption the share card is
   // unshareable without ("62 tok/s" means nothing without the laptop that
@@ -670,8 +670,9 @@ function CapabilitySection({
   /** This capability's own fixed workload (D483) — null while the history
    *  has not answered, or for a capability with none (`NO_WORKLOAD_YET`
    *  server-side, video generation today, which draws no Run button either
-   *  and therefore has nothing here to caption). Rendered as `workloadNote`
-   *  below, once, under the section heading. */
+   *  and therefore has nothing here to caption). Turned into one sentence by
+   *  `workloadNote` and carried on the section heading's info glyph as a
+   *  `data-hint`, not drawn on screen — see that glyph's own comment. */
   workload: AiBenchmarkWorkload | null;
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
@@ -832,7 +833,50 @@ function CapabilitySection({
           per-model-name-plus-unit pill on the trend heading below is GONE
           too. */}
       <div className="am-section-head am-bench-section-head">
-        <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+        <div className="am-bench-section-heading">
+          <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+          {/* What a Run press on this capability actually DOES (D483) — the
+              page's only other words about this were the tab-level subtitle,
+              "a fixed workload per capability, timed on this machine", which
+              said THAT the work is fixed without ever saying what it is.
+              Behind an info glyph now, not a visible line: the first version
+              put the sentence directly under the heading, unconditionally,
+              and the user's own call was that an EXPLICIT glyph is the ink
+              this data earns, rather than a line every reader scans past on
+              every visit whether they want it or not.
+
+              `data-hint` (platform/lib/hints.ts, D474), never a native
+              `title` — D474 measured the browser's own tooltip delay at
+              four to five seconds on a session's first hover, which reads
+              as "no tooltip" to whoever is waiting on it. A real
+              `<button>` is what makes `hints.ts`'s FOCUS path find this
+              (`onFocus`, anchored to the element rather than a pointer that
+              is not there) — a `<span>` or a `<div role="button">` would
+              have the hint but not the Tab stop, which is a control a
+              keyboard cannot reach let alone understand. `aria-label`
+              carries what the control IS ("what this benchmark
+              measures"); `data-hint` carries the answer itself — the exact
+              sentence the visible line used to say, workload name and
+              revision included, unchanged.
+
+              Placed beside the HEADING, not inside `.am-bench-headtools`
+              with the Metric select and Share: it explains the SECTION as
+              a whole (what a Run press on ANY row here measures), not
+              those two controls, and that group is already this row's
+              busy end. Rendered only when there is a workload to explain
+              (`note` — a capability with none, video generation today,
+              gets no dead glyph pointing at nothing). */}
+          {note && (
+            <button
+              type="button"
+              className="am-bench-workload-info"
+              data-hint={note}
+              aria-label="What this benchmark measures"
+            >
+              {MenuIcons.info}
+            </button>
+          )}
+        </div>
         {/* The head's controls, as one group: the Metric select and — only
             when there is actually a chart to send — Share. Share sits HERE
             rather than over the chart because what it shares is this
@@ -873,20 +917,6 @@ function CapabilitySection({
           )}
         </div>
       </div>
-      {/* What a Run press on this capability actually DOES (D483) — the
-          page's only other words about this were the tab-level subtitle,
-          "a fixed workload per capability, timed on this machine", which
-          said THAT the work is fixed without ever saying what it is. One
-          plain line under the heading, not a disclosure: this is reference
-          material read once and skimmed past every other time, not
-          something worth a click to reveal, and a THIRD kind of expander
-          on this tab (after the row accordion and the archive's own
-          `<details>`) would be one expander too many for what is, at most,
-          a sentence. `.am-group-note` is the same "one caption under a
-          heading" idiom the empty-state notes on this very tab already
-          use, so a reader who has seen either reads this one for free. */}
-      {note && <p className="am-group-note">{note}</p>}
-
       {runs === null ? (
         <SkeletonLines rows={2} label={`Loading ${capabilityLabel(capability)} benchmarks`} />
       ) : ranked.length === 0 ? (

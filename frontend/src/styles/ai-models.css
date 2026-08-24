@@ -1993,6 +1993,47 @@
    `<select>`: `.am-bench-headtools` above already spaces the head's controls,
    and this wrapper is what keeps the select a group of its own if a per-metric
    mark ever earns its place beside it again. */
+/* The heading plus its info glyph (D483), as one group — the same reason
+   `.am-bench-headtools` below is one group for the Metric select and Share:
+   `.am-section-head`'s `justify-content: space-between` expects exactly TWO
+   children, the heading end and the controls end, and a bare THIRD child
+   between them would get its own share of that spacing instead of sitting
+   flush against the `<h3>` it explains. */
+.am-bench-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The info glyph itself — icon-only, the same reset every other icon-only
+   control on this tab uses (no border/background of its own, sized to its
+   16×16 svg). Muted at rest, same as `.am-bench-rowdetail-chevron`'s own
+   ink: this is reference material, not a call to action, and should not
+   outweigh the `<h3>` it sits beside. `data-hint`/`aria-label` carry the
+   actual explanation (BenchmarkTab.tsx) — nothing here draws it, this is
+   layout and colour only. */
+.am-bench-workload-info {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.am-bench-workload-info:hover,
+.am-bench-workload-info:focus-visible {
+  color: var(--fg);
+}
+
+.am-bench-workload-info:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
 /* The section head's control group — the Metric select and the Share button.
    One flex group rather than two children of the head itself, so
    `.am-section-head`'s own `justify-content: space-between` keeps holding the
