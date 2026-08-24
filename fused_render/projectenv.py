@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import threading
 
 from fused_render.shell.storage import home_dir
@@ -300,6 +301,24 @@ def project_env_for(path: str) -> str | None:
     if root and has_project_env(root):
         return root
     return None
+
+
+def interpreter_for(project_dir: str | None) -> str:
+    """The interpreter a script in *project_dir* runs on: the app's own
+    `sys.executable` when the folder declares no environment (PY-17), else that
+    folder's venv python — the built-in executor's choice. (The fused engine may
+    probe a wrapped interpreter for the no-env case; the warm worker mirrors the
+    executor, which is a valid python on every platform.) Pass
+    `project_env_for(path)`: None ⇒ app interpreter, a root ⇒ its venv.
+
+    Only names the venv python; it does not build it, so an uninstalled folder
+    yields a path that does not exist yet and spawning it fails at the caller.
+    """
+    if not project_dir:
+        return sys.executable
+    from fused_render import envinstall
+
+    return envinstall.venv_python_for(project_dir)
 
 
 def display_name(project_dir: str) -> str:
