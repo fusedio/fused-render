@@ -2243,13 +2243,26 @@
    control). */
 .am-bench-row {
   display: grid;
-  /* Wide enough that two repos differing only in a variant suffix
-     ("whisper-large-v3-mlx" vs. "-turbo") both fit whole — the old 16ch
-     column truncated both to the identical "whisper-large-v3…", which
-     defeats a LEADERBOARD: two rows a reader cannot tell apart. There was
-     also just unused space here (the middle column already flexes), so
-     widening this one costs nothing. */
-  grid-template-columns: minmax(0, 30ch) minmax(0, 1fr) auto;
+  /* FOUR columns, not three — a leading one reserved for the chevron
+     (D481), sized to its own 16×16 glyph (`MenuIcons`' `svgProps`) rather
+     than `auto`: `auto` would size to content, and an EMPTY cell (a
+     non-expandable row draws no glyph — see `.am-bench-rowdetail-chevron`
+     below) would collapse to zero width, pulling that row's model name
+     left of every other row's. A fixed column keeps every row's chevron —
+     drawn or not — at the identical x, which is the whole point of an
+     accordion's disclosure indicator living in a column of its own rather
+     than wherever the text before it happens to end (D481's own history:
+     it used to sit after the headline and delta, and visibly drifted
+     row to row with how long those were). Not the trailing column either —
+     the Run `▷` button already owns that end, and a second triangle there
+     would read as a second run control.
+     The 30ch model-name column is wide enough that two repos differing
+     only in a variant suffix ("whisper-large-v3-mlx" vs. "-turbo") both
+     fit whole — the old 16ch column truncated both to the identical
+     "whisper-large-v3…", which defeats a LEADERBOARD: two rows a reader
+     cannot tell apart. There was also just unused space here (the third
+     column already flexes), so widening this one costs nothing. */
+  grid-template-columns: 16px minmax(0, 30ch) minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
@@ -2424,18 +2437,25 @@ button.am-bench-model:focus-visible {
    would just be a smaller, harder-to-hit copy of the same control — which
    is exactly the design this class used to BE (a 16px glyph as the only
    thing on a 36px row that actually opened it) and exactly what "let's make
-   the entire row have a dropdown" replaces. Icon-only sizing carries over
-   unchanged: a plain inline-flex box, no border/background of its own, so
-   the 16×16 SVG is the whole visible mark. Font size matches the OLD
-   `.am-bench-rowdetail` wrapper's own 11px — that wrapper is gone (the
-   detail text moved into `.am-bench-rowexpand-detail` below), but the glyph
-   still sits at the same scale beside the headline and delta it always
-   has. */
+   the entire row have a dropdown" replaces.
+
+   **Lives in the row's own LEADING grid column now, not beside the
+   headline and delta.** It used to sit after them, inside `.am-bench-
+   latest`, which put its x-position at the mercy of however long that
+   row's own text happened to be — a chevron that visibly drifted row to
+   row is not a column, it is noise near the middle of the row. An
+   accordion's disclosure indicator belongs at the leading edge, and the
+   trailing edge is already the Run `▷` button's — a second triangle there
+   would read as a second run control. This element is now rendered for
+   EVERY row, expandable or not, so every row's chevron — drawn or empty —
+   shares the identical x (`.am-bench-row`'s fixed leading column, above);
+   it is simply left with no glyph inside it for a non-expandable row
+   rather than the column disappearing and pulling that row's name left of
+   its neighbours'. */
 .am-bench-rowdetail-chevron {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  flex: 0 0 auto;
-  font-size: 11px;
+  justify-content: center;
   color: var(--fg-muted);
 }
 

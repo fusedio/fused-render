@@ -1213,15 +1213,17 @@ function BenchmarkRow({
   onRun?: () => void;
 }) {
   // Whether this row has ANYTHING to expand — the one fact that decides
-  // three things at once: whether the model-name cell becomes a real
-  // disclosure button or stays a plain, inert label; whether the row's own
-  // click does anything; and whether the row gets the `expandable` class
-  // that turns on its pointer cursor and hover hint. A model with no
-  // history (`row === null`, "Never benchmarked") must not LOOK openable —
-  // no chevron (already true: the chevron only ever renders in the `row ?`
-  // branch below), no hand cursor, no `aria-expanded` implying a state that
-  // does not exist, and a click that does nothing rather than writing a
-  // pointless selection.
+  // four things at once: whether the leading chevron column draws a glyph
+  // or stays empty; whether the model-name cell becomes a real disclosure
+  // button or stays a plain, inert label; whether the row's own click does
+  // anything; and whether the row gets the `expandable` class that turns
+  // on its pointer cursor and hover hint. A model with no history
+  // (`row === null`, "Never benchmarked") must not LOOK openable — no
+  // chevron glyph (the column itself still reserves its width, so the
+  // model name stays aligned with every other row's — see
+  // `.am-bench-rowdetail-chevron` in ai-models.css), no hand cursor, no
+  // `aria-expanded` implying a state that does not exist, and a click
+  // that does nothing rather than writing a pointless selection.
   const expandable = row !== null;
   // `selected` can only be true here when `expandable` is too (see its own
   // doc comment), but computing this once, locally, means every use below
@@ -1258,6 +1260,17 @@ function BenchmarkRow({
       className={"am-bench-row" + (open ? " selected" : "") + (expandable ? " expandable" : "")}
       onClick={expandable ? onToggle : undefined}
     >
+      {/* The row's LEADING column, reserved on every row (ai-models.css'
+          `.am-bench-row` grid-template gives it a fixed width, not `auto`)
+          so an accordion indicator sits at one consistent x down the whole
+          list rather than drifting with the length of the headline/delta
+          text that used to precede it. Empty, not omitted, for a
+          non-expandable row — see `.am-bench-rowdetail-chevron`'s own
+          comment for why the column still has to exist even with nothing
+          drawn inside it. */}
+      <span className="am-bench-rowdetail-chevron" aria-hidden="true">
+        {expandable && MenuIcons.chevron}
+      </span>
       {expandable ? (
         // The row's ONE focusable disclosure control. A real `<button>`,
         // not the row div itself (which has no `tabIndex`/`role` any more)
@@ -1303,7 +1316,12 @@ function BenchmarkRow({
             {/* No bar here any more — the comparison chart above draws the
                 SAME proportional comparison once, properly, with a real
                 axis. Two copies of it (a mini-bar per row AND a chart) was
-                the duplicated ink this row is compacted to remove. */}
+                the duplicated ink this row is compacted to remove. The
+                chevron that used to trail this cluster now lives in the
+                row's own LEADING column instead (see above) — its x used
+                to drift with how long this headline/delta text happened to
+                be, which is the opposite of what a disclosure indicator's
+                column is supposed to give a reader. */}
             <span className="am-bench-headline">{rowHeadline(row.latest, metric)}</span>
             {row.delta && (
               // The sign is not the meaning — on a lower-is-better metric a
@@ -1314,22 +1332,6 @@ function BenchmarkRow({
                 {row.delta.percent.toFixed(1)}%
               </span>
             )}
-            {/* A pure STATE INDICATOR now, not a control — the model-name
-                button above carries `aria-expanded`/`aria-controls` and is
-                the row's one focusable disclosure target, so this glyph
-                would otherwise be a second, redundant way to say the exact
-                same thing (and, before this pass, a second independently
-                clickable/focusable target for what is now one accordion
-                header). `aria-hidden` and no `tabIndex`: a screen reader
-                already hears the row's open/closed state from the button
-                above, and a sighted reader gets the same fact from this
-                glyph's own 90° rotation, which is keyed off `.am-bench-row
-                .selected` — the row's OWN open/closed class — in
-                ai-models.css, rather than an `aria-expanded` this element no
-                longer carries. */}
-            <span className="am-bench-rowdetail-chevron" aria-hidden="true">
-              {MenuIcons.chevron}
-            </span>
           </>
         ) : (
           <span className="am-bench-never">Never benchmarked</span>
