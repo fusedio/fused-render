@@ -509,7 +509,12 @@ function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
    the run ahead. This is a fact about the task, so it goes with the id. */
 function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
   return (
-    <span className="tasks-outcome-pill" title={outcome.title}>
+    // On the instant panel like every other caption on this page (hints.ts).
+    // It is drawn on both views — beside the id on a List row, in a Board card's
+    // head — so a native `title` here would have been the one mark on either
+    // view that answered slowly, and (until the card's own hint moved onto its
+    // title) the one whose caption a container-level hint spoke over.
+    <span className="tasks-outcome-pill" data-hint={outcome.title}>
       {outcome.text}
     </span>
   );
@@ -3205,11 +3210,12 @@ function TaskCard({
           (draggable ? " is-draggable" : "") +
           (isDragging ? " is-dragging" : "")
         }
-        /* The Board card's own caption, on the same instant panel as the List's
-           (hints.ts). It is the same page and the same fact; a card that waited
-           four seconds while the rows beside it answered at once would read as a
-           different kind of thing. */
-        data-hint={task.title}
+        /* NO CAPTION ON THE CARD ITSELF (bugbot, PR #794). It had one for a
+           commit, and it was the List row's mistake repeated one view over: a
+           hint on the container is a hint on ALL of it, because `hints.ts`
+           resolves by walking up — so the outcome pill and the next-run chip in
+           the foot, which carry their own captions, were answered with the
+           TASK's name instead. The card's title carries it, like the row's. */
         draggable={draggable}
         onDragStart={(ev) => {
           // Some data is required for Firefox to start a drag at all; the task
@@ -3316,7 +3322,15 @@ function TaskCard({
             not an `aria-label` on this span either: a role-less span's label is not
             reliably announced (the same reason ScheduleCalendar gives its own dot a
             `role="img"`), where real text always is. */}
-        <span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>
+        {/* The card's caption, on its title — the same rule the List row follows
+            (hints.ts, and the row's own note): the title is what gets cut off, so
+            it is what is worth captioning, and a container-level hint would speak
+            over every child that has one of its own. `task.title` and not the
+            drawn text, because the ink here is only its FIRST line. */}
+        <span
+          className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}
+          data-hint={task.title}
+        >
           {firstLine(task.title) || "(untitled)"}
           {unread > 0 && (
             <span className="tasks-said">{`, ${taskUnreadLabel(unread)}`}</span>
@@ -3335,7 +3349,7 @@ function TaskCard({
                 (tasks-lib.nextRunChip): a settled card whose task is due again
                 would otherwise show nothing about the run ahead. */}
             {soon && (
-              <span className="tasks-row-next" title={soon.title}>
+              <span className="tasks-row-next" data-hint={soon.title}>
                 {soon.text}
               </span>
             )}

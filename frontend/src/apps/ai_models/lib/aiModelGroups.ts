@@ -738,11 +738,20 @@ export function loadRefusalShort(repo: AiModelRepo): string | null {
     // fact — and the first cut of this function blamed the weight format for
     // it, which is a verdict about a different problem: an unrecognised repo's
     // formats may be perfectly readable, there is just nothing to load them AS.
-    // The server's own per-task sentence leads when it sent one, at card
-    // length; the flat fallback agrees with the group heading above the card.
+    // The server's own per-task sentence when it sent one; the flat fallback
+    // agrees with the group heading above the card.
+    //
+    // WHOLE, and NOT cut at its first joint (bugbot, PR #794). `firstClause` is
+    // written for the registry's engine-preference prose, where the opening
+    // clause IS the cause and everything past the dash is the remedy a link now
+    // carries. These sentences are built the other way round — `ai/tasks.py`
+    // writes "A chat model does this from a prompt — no separate runner ships
+    // for it", where the lead-in is the consolation and the REFUSAL is after the
+    // dash — so cutting at the joint kept the soft half and dropped why Load is
+    // dead. They are one or two lines at card width as written, and a correct
+    // two-line sentence beats a one-line one that says the wrong thing.
     if (repo.capability === null) {
-      const cause = firstClause(repo.supportReason ?? "");
-      return cause ? `${capitalise(cause)}.` : "The model type is not supported.";
+      return repo.supportReason?.trim() || "The model type is not supported.";
     }
     return "No local engine reads this weight format.";
   }
