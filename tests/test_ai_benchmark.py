@@ -1034,6 +1034,32 @@ def test_close_flushes_detail_without_re_forwarding_a_stale_cancel(bench, monkey
     assert jobs.list_jobs()[0]["detail"] == "Decoding — 100/128 tokens"
 
 
+def test_a_queued_transcription_does_not_rename_the_measurement_row(bench,
+                                                                    monkeypatch):
+    """Regression for the finding that handing this row's OWN job to
+    `generate_transcript` would let a real transcription's queue wait
+    (`_await_turn`'s `_transcribe_row(title, ...)`, `title` being the audio
+    file's basename) overwrite "Benchmark · <model>" for as long as the wait
+    lasted, with nothing to restore it. `_measure_transcript` now never hands
+    out its row's real job at all — this simulates exactly what a contended
+    `_TRANSCRIBE_LOCK` would do to whatever id it IS given, and the
+    measurement row must come through untouched."""
+    def generate_transcript(model, request, job):
+        jobs.upsert({"id": job, "title": os.path.basename(request["path"]),
+                     "state": "running", "kind": "task", "cancellable": True,
+                     "unit": "s", "detail": "Queued behind another transcription…"},
+                    server=True)
+        bench.advance(1.0)
+        return {"text": "beep"}
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_transcript",
+                        generate_transcript)
+    benchmark.run("org/whisper", ai_registry.SPEECH_TO_TEXT)
+    ours = [r for r in jobs.list_jobs() if r["title"] == "Benchmark · org/whisper"]
+    assert len(ours) == 1, "the measurement row's title was renamed or lost"
+    assert ours[0]["state"] == "done"
+
+
 
 # -- cancellation is not a measurement ------------------------------------------
 #

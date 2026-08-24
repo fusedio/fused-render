@@ -770,6 +770,24 @@ def _measure_transcript(model: str, workload: Workload, *, timed: bool,
     A phase word, not a percentage: the worker's own decode has no per-chunk
     tick this module reads (unlike the image path's step callback), so a bar
     here would be invented rather than measured.
+
+    **`row.job` is NEVER handed to `generate_transcript`, on either pass, and
+    that is deliberate rather than an oversight.** `_TRANSCRIBE_LOCK`
+    (`supervisor.py`) serialises EVERY transcription in the process — real
+    ones from the Playground included — regardless of whether this model is
+    already resident, so `generate_transcript` always goes through
+    `_transcribe_turn`/`_await_turn` first. If that lock is held by a real,
+    concurrent transcription, `_await_turn` reports the QUEUED wait onto
+    whatever `job` it was given, using `_transcribe_row(title, ...)` — and
+    `title` there is the audio FILE's basename, not this row's identity.
+    Handing it this row's real `job` would let that queued-wait report
+    OVERWRITE "Benchmark · <model>" with "fused-benchmark-tone.wav" for as
+    long as the wait lasts (which can be minutes), with nothing to restore it
+    afterwards — destroying the one property `_bench_job_title` exists to
+    guarantee. A private, disposable id absorbs that rename harmlessly instead,
+    exactly as it always has; `row.set_detail` above already put the real
+    phase text on THIS row through its own channel, independent of whatever
+    `generate_transcript` does with the id it is given.
     """
     params = workload.params
     seconds = float(params["audioSeconds"])
@@ -795,25 +813,21 @@ def _measure_transcript(model: str, workload: Workload, *, timed: bool,
             "outText": os.path.join(tmp, "fused-benchmark-tone.txt"),
             # No `row` REQUEST KEY: that is how a caller gives the worker a
             # QUEUE-WAIT row to restate its identity onto (`_await_turn`'s own
-            # `row=` parameter), a different thing from the `_MeasurementRow`
-            # below — this benchmark already confirmed the model ready before
-            # calling here (`run`'s own ordering), so it is never queued
-            # behind anything and has no wait row to restate.
+            # `row=` parameter) — a benchmark has none to give, on either
+            # pass, for the same reason `job` below is always disposable.
         }
-        job = row.job if row is not None else _unwatched_job()
+        # ALWAYS disposable — see the docstring's own note on why this is the
+        # one measurement function that never hands the real `_MeasurementRow`
+        # its job, on either the warm-up or the timed pass.
+        job = _unwatched_job()
         start = _now()
         try:
             supervisor.generate_transcript(model, request, job)
         except BaseException as e:
-            # `row is None` on the warm-up pass — see `_measure_image`'s
-            # identical guard for why the timed pass's own row is closed once,
-            # by `run()`, after memory/device sampling, rather than here.
-            if row is None:
-                _close_any_row(job, e)
+            _close_any_row(job, e)
             raise
         else:
-            if row is None:
-                _close_any_row(job)
+            _close_any_row(job)
         total = _now() - start
     if not timed:
         return {}
