@@ -249,7 +249,7 @@ export function VideoStage({
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(5)]">
+      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
