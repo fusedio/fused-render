@@ -281,6 +281,7 @@
   let meta = null;
   let viewer = null;           // pannellum instance
   let viewerKey = "";          // panorama url the viewer was built for
+  let viewerKind = "";         // classification the viewer was built for (haov/etc)
   let renderSeq = 0;           // stale-response guard
   let lastView = null;         // {path,w,h,ms,cached} of current converted view
 
@@ -457,7 +458,44 @@
   }
 
   function destroyViewer() {
-    if (viewer) { try { viewer.destroy(); } catch (e) {} viewer = null; viewerKey = ""; }
+    if (viewer) { try { viewer.destroy(); } catch (e) {} viewer = null; viewerKey = ""; viewerKind = ""; }
+  }
+
+  // Comparison key for a file path, not the URL used to fetch it: the same
+  // absolute path can come through as forward slashes (a URL param, as typed
+  // in _file) or backslashes (pano.py's os.path.abspath, on Windows) — normalize
+  // before comparing so those two spellings of the same file don't look like a
+  // change and force a pointless viewer rebuild.
+  const pathKey = (p) => p.replace(/\\/g, "/");
+
+  function buildSphere(panoUrl, kind, key) {
+    if (viewerKey === key && viewerKind === kind) return;
+    destroyViewer();
+    viewerKey = key;
+    viewerKind = kind;
+    viewer = pannellum.viewer("pano360", {
+      type: "equirectangular",
+      panorama: panoUrl,
+      autoLoad: true, showControls: true, compass: false,
+      hfov: 100, friction: 0.12, backgroundColor: [0.94, 0.94, 0.95],
+      haov: kind === "equirect_180" ? 180 : 360,
+      minYaw: kind === "equirect_180" ? -90 : -180,
+      maxYaw: kind === "equirect_180" ? 90 : 180,
+    });
+    setViewStatus(`360° sphere · WebGL`, "");
+  }
+
+  // First paint, before pano.py's classification has come back: op_open only
+  // produces a different answer than "the file itself" for edge cases
+  // (non-browser format, >8192px, EXIF-rotated, cube layout) — for a plain
+  // upright equirect JPEG/PNG it just hands back the same path. So assume
+  // that common case and start the sphere straight from the raw file; draw360
+  // corrects it (rebuilds the viewer) once the real classification lands and
+  // disagrees (half-pano haov, or a cube layout that needs reprojecting).
+  function drawOptimistic(file) {
+    show("pano");
+    buildSphere(fused.rawUrl(file), "equirect", pathKey(file));
+    lastView = { path: file };
   }
 
   async function draw360(m) {
@@ -465,28 +503,18 @@
     // pano.py hands back absolute cache paths, so these go straight through
     // fused.rawUrl (no BASE_DIR join, unlike the vendored static assets above)
     let panoUrl = fused.rawUrl(m.display_path);
+    let key = pathKey(m.display_path);
     if (m.kind === "cube_dice" || m.kind === "cube_horizon") {
       // cube layouts must be reprojected to equirect for the sphere viewer
       busy(true, "reprojecting cube → equirect…");
       try {
         const r = await py({ action: "convert", mode: "equirect" });
         panoUrl = fused.rawUrl(r.path);
+        key = pathKey(r.path);
       } catch (err) { busy(false); toast(err.message, true); return; }
       busy(false);
     }
-    if (viewerKey === panoUrl) return;
-    destroyViewer();
-    viewerKey = panoUrl;
-    viewer = pannellum.viewer("pano360", {
-      type: "equirectangular",
-      panorama: panoUrl,
-      autoLoad: true, showControls: true, compass: false,
-      hfov: 100, friction: 0.12, backgroundColor: [0.94, 0.94, 0.95],
-      haov: m.kind === "equirect_180" ? 180 : 360,
-      minYaw: m.kind === "equirect_180" ? -90 : -180,
-      maxYaw: m.kind === "equirect_180" ? 90 : 180,
-    });
-    setViewStatus(`360° sphere · WebGL`, "");
+    buildSphere(panoUrl, m.kind, key);
     lastView = { path: m.display_path };
   }
 
@@ -590,11 +618,19 @@
   // ------------------------------------------------------------- boot
   $("fname").textContent = file.split(/[\\/]/).pop();
   fused.params.onChange(draw);
-  try {
+
+  // Kick off classification immediately, but don't block the first paint on
+  // it in the common view360 case — see drawOptimistic() above.
+  const metaPromise = py({ action: "open" });
+  if (mode() === "view360") {
+    drawOptimistic(file);
+  } else {
     skeleton(true);
     busy(true, "loading image…");
-    const r = await py({ action: "open" });
-    meta = r.asset;
+  }
+
+  try {
+    meta = (await metaPromise).asset;
     busy(false);
     skeleton(false);
     draw();
