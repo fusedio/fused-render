@@ -47,9 +47,7 @@ import {
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
-import { X } from "lucide-react";
 import { Button } from "@platform/shadcn/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import {
   canEdit,
   fitToImage,
@@ -388,6 +386,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showBase]);
+
+  // Escape cancels the webcam, the same way it closes the preview overlay.
+  useEffect(() => {
+    if (!camera) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && stopCamera();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [camera]);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -773,52 +779,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 {StarterIcons.landscape}
                 <span>{base ? "Replace" : "Add an image"}</span>
               </button>
-              {/* The live view rides a popover over the button, not the
-                  composer: the composer is the prompt's box, and a camera
-                  feed inside it shoved everything below around. Controlled by
-                  `camera`, which only turns true once getUserMedia has a
-                  stream — the trigger's click asks for the camera, the
-                  popover opens when it answers. Esc and the ✕ both land in
-                  onOpenChange, which is the one place the stream is stopped. */}
-              <Popover
-                open={camera}
-                onOpenChange={(next) => {
-                  if (next) void openCamera();
-                  else stopCamera();
-                }}
+              <button
+                type="button"
+                className={"pg-attach-btn" + (camera ? " active" : "")}
+                title="Take one with the webcam"
+                disabled={attaching}
+                onClick={() => (camera ? stopCamera() : void openCamera())}
               >
-                <PopoverTrigger
-                  render={
-                    <button
-                      type="button"
-                      className={"pg-attach-btn" + (camera ? " active" : "")}
-                      title="Take one with the webcam"
-                      disabled={attaching}
-                    />
-                  }
-                >
-                  {StarterIcons.camera}
-                  <span>Webcam</span>
-                </PopoverTrigger>
-                <PopoverContent side="top" align="start" className="w-80 gap-2 p-2">
-                  <div className="flex items-center justify-between">
-                    <span className="px-1 text-xs font-semibold">Webcam</span>
-                    <button
-                      type="button"
-                      className="cursor-pointer appearance-none rounded-sm border-0 bg-transparent p-1 text-muted-foreground transition-colors hover:text-foreground"
-                      title="Close without a picture"
-                      aria-label="Close without a picture"
-                      onClick={stopCamera}
-                    >
-                      <X className="size-4" />
-                    </button>
-                  </div>
-                  <video ref={videoRef} className="pg-webcam-video w-full rounded-md" playsInline muted />
-                  <Button variant="outline" size="sm" onClick={capture}>
-                    Capture
-                  </Button>
-                </PopoverContent>
-              </Popover>
+                {StarterIcons.camera}
+                <span>Webcam</span>
+              </button>
               {attaching && <span className="pg-attach-note">Working…</span>}
             </div>
           )}
@@ -870,6 +840,30 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             title="Close"
             aria-label="Close"
             onClick={() => setShowBase(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* The webcam, over everything — the lightbox's own shape: a scrim, the
+          live view where the picture goes, one ✕. Capture is the only action.
+          Click the backdrop or press Escape to cancel, the two things anybody
+          tries; both land in stopCamera, the one place the stream stops. */}
+      {camera && (
+        <div className="pg-lightbox" role="dialog" aria-label="Webcam" onClick={stopCamera}>
+          <div className="pg-webcam-box" onClick={(e) => e.stopPropagation()}>
+            <video ref={videoRef} className="pg-webcam-video" playsInline muted />
+            <Button variant="outline" onClick={capture}>
+              Capture
+            </Button>
+          </div>
+          <button
+            type="button"
+            className="pg-lightbox-close"
+            title="Close without a picture"
+            aria-label="Close without a picture"
+            onClick={stopCamera}
           >
             ✕
           </button>

@@ -1229,13 +1229,31 @@
   color: var(--fg-muted);
 }
 
-/* The webcam popover's preview, mirrored the way every video-call self-view
-   is: an unmirrored preview makes aiming the camera feel inverted. Only the
-   PREVIEW is flipped — the capture draws the raw frame, so what lands on disk
-   is what the lens saw. */
+/* The webcam overlay's inner column: viewfinder, then Capture. Swallows the
+   backdrop's click-to-close (and its zoom-out cursor) the way the lightbox's
+   img does. */
+.pg-webcam-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+  cursor: default;
+}
+
+/* The live view, mirrored the way every video-call self-view is: an
+   unmirrored preview makes aiming the camera feel inverted. Only the PREVIEW
+   is flipped — the capture draws the raw frame, so what lands on disk is what
+   the lens saw. */
 .pg-webcam-video {
   transform: scaleX(-1);
   background: var(--scrim-letterbox);
+  max-width: 100%;
+  max-height: calc(100vh - 180px);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px var(--scrim-lift);
 }
 
 .pg-ghost-btn {
