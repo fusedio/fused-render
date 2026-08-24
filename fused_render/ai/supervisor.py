@@ -811,26 +811,6 @@ def _report(job: str, **fields) -> None:
         pass
 
 
-def _finish(job: str) -> None:
-    """Success only: report done, then drop the row immediately — jobs.dismiss,
-    not the 3s sweep — so a successful bring-up/render/transcription does not
-    sit showing a "done" state at all. Errors and cancellations are NOT this:
-    they still call `_report(job, state="error"/"cancelled", ...)` and stay
-    visible, because only a success is meant to just vanish.
-
-    `job`'s id is deterministic for these callers (`job_id_for`,
-    `image_job_id`, the transcribe job id) and gets reused across calls —
-    unlike the remote-Claude relay's fresh uuid4 per call. That is fine:
-    `jobs.dismiss` poisons the id into `jobs._dismissed`, but `jobs.upsert`
-    already clears that poisoning the moment a FRESH `state="running"` report
-    comes in for the same id (a new call opening its own row, not a late tick
-    from the one just dismissed) — see `jobs.upsert`'s own handling of
-    `_dismissed`, and `test_a_dismissed_load_row_reopens_for_a_later_load`.
-    """
-    _report(job, state="done")
-    jobs.dismiss(job)
-
-
 def _require_build_tools() -> None:
     """Refuse a load this machine cannot possibly build an environment for.
 
@@ -1065,7 +1045,7 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                     # window between becoming ready and someone asking —
                     # which is exactly the window a slow bring-up ate.
                     worker.last_activity = time.monotonic()
-                    _finish(job)
+                    _report(job, state="done", detail="Model loaded")
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
@@ -1345,16 +1325,14 @@ def image_job_id(uid: str) -> str:
 
 
 def _start_render(capability: str, model: str, request: dict, job: str,
-                   generate, *, thread_name: str) -> None:
+                   generate, *, noun: str, thread_name: str) -> None:
     """Open `job` and render `generate(model, request, job)` on a thread.
     Raises before starting if it cannot.
 
     Shared by `start_image` and `start_video`, which were near-byte-copies
     of this body differing only in the capability, which `generate` to call,
-    and the thread's name — a genuine format, not two things that happened
-    to look alike once. (Used to also differ in the noun of a terminal
-    "Saved …" detail; a success now dismisses the row instead of reporting
-    one, so that detail — and the parameter that fed it — is gone.)
+    and the noun in the terminal "Saved …" detail and the thread's name — a
+    genuine format, not two things that happened to look alike once.
 
     The runner check happens HERE, synchronously, so a request asked of a
     machine with no runner for `capability` answers with the reason instead
@@ -1376,7 +1354,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
 
     def run() -> None:
         try:
-            generate(model, request, job)
+            result = generate(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -1384,7 +1362,8 @@ def _start_render(capability: str, model: str, request: dict, job: str,
             else:
                 _report(job, state="error", message=message)
             return
-        _finish(job)
+        _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
+                detail=f"Saved {os.path.basename(result.get('path') or noun)}")
 
     threading.Thread(target=run, name=thread_name, daemon=True).start()
 
@@ -1392,7 +1371,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
 def start_image(model: str, request: dict, job: str) -> None:
     """Open `job` and render an image on a thread. See `_start_render`."""
     _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
-                  thread_name="ai-image")
+                  noun="image", thread_name="ai-image")
 
 
 #: What a queued transcription's row says while it waits.
@@ -1497,7 +1476,7 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
         # never finishes for a transcript that is already on disk.
         fields = transcribe_row_fields(title, model)
         try:
-            generate_transcript(model, request, job)
+            result = generate_transcript(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -1505,10 +1484,9 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
             else:
                 _report(job, **fields, state="error", message=message)
             return
-        # Success: dismissed immediately (`_finish`), not restated with
-        # `fields` and a terminal "Saved …" detail — there is no row left by
-        # the time anyone could read it, evicted-and-rebuilt or not.
-        _finish(job)
+        duration = result.get("duration")
+        _report(job, **fields, state="done", done=duration, total=duration,
+                detail=f"Saved {os.path.basename(result.get('output') or 'transcript')}")
 
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
@@ -2078,7 +2056,7 @@ def start_video(model: str, request: dict, job: str) -> None:
     row that immediately dies.
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
-                  thread_name="ai-video")
+                  noun="video", thread_name="ai-video")
 
 
 def _generate_via_worker(capability: str, model: str, request: dict, job: str,
