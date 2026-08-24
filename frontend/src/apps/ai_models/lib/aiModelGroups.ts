@@ -520,6 +520,20 @@ export function runnersByCapability(
  *  posture the download cards take, since a recommendation is a claim that this
  *  machine does not have the model.
  *
+ *  **The lookup is by `repo`, not by `id`, and that is what makes the filter
+ *  able to fire at all for llama.cpp.** Those curated ids are bare GGUF
+ *  FILENAMES (`AiCatalogModel.repo` says why), and `diskCards` is keyed by REPO
+ *  id — so `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` never matched
+ *  `LiquidAI/LFM2.5-1.2B-Instruct-GGUF`, and every downloaded GGUF suggestion
+ *  stayed recommended forever, wearing a Download button next to the finished
+ *  disk card its own bytes had made. Pressing it re-ran a download that
+ *  completed instantly with nothing left to fetch and changed nothing on
+ *  screen, which is indistinguishable from a download that does not work. This
+ *  is the same duplicate the server already drops from its "cached" tail
+ *  (`curated_repo_ids`, ai_runtime.py) — resolved here through the identity it
+ *  puts on the wire for exactly this, rather than through a second copy of
+ *  `GGUF_RECIPES` in TypeScript.
+ *
  *  Client side for the reason `groupRepos` above is: which rows sit in which
  *  order is a question about this page's layout, and every field it reads is
  *  already in two payloads the page has.
@@ -549,7 +563,12 @@ export function mergeSections(
     if (!onDisk) return [];
     const entry = byCapability.get(key);
     if (!entry) return [];
-    return entry.models.filter((m) => m.source === "curated" && !onDisk.has(m.id));
+    return entry.models.filter(
+      // `m.repo ?? m.id`, so an older server that does not send the field still
+      // filters correctly for every entry whose id IS its repo id — which is
+      // every entry but a llama.cpp one.
+      (m) => m.source === "curated" && !onDisk.has(m.repo ?? m.id),
+    );
   };
 
   const sections: MergedSection[] = groups.map((group) => ({

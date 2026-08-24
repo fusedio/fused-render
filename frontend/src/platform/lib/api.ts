@@ -2686,6 +2686,24 @@ export function getAiRuntime(): Promise<AiRuntime> {
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
 export interface AiCatalogModel {
   id: string;
+  /** The repo id whose cache folder holds this model — equal to `id` for every
+   *  entry but a llama.cpp one, whose curated id is the GGUF's bare FILENAME so
+   *  that one repo's several quantizations can be curated separately
+   *  (`formats.GGUF_RECIPES`, server side).
+   *
+   *  **Read this, not `id`, against anything keyed by repo id** — above all the
+   *  Local tab's `diskCards` map, built from `/api/ai-models`. Matching on `id`
+   *  there could never hit for a filename-keyed entry, so a finished
+   *  `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` stayed "recommended" and kept its
+   *  Download button beside the very disk card its own bytes had produced.
+   *  `downloaded` is NOT the substitute: it is the server's verdict at scan
+   *  time, and `mergeSections` deliberately answers on-disk from the page's own
+   *  walk instead so one page cannot hold two definitions of it. This field is
+   *  the missing IDENTITY, which is a different question from the verdict.
+   *
+   *  Optional only because an older server does not send it; fall back to `id`,
+   *  which is correct for every entry that is not filename-keyed. */
+  repo?: string;
   label: string;
   /** The short human name the Playground sidebar shows — the model without its
    *  quantization/engine qualifier. A curated field beside `label`, never a

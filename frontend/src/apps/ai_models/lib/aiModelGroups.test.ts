@@ -567,6 +567,71 @@ describe("which rows exist at all", () => {
   });
 });
 
+// The llama.cpp half of the curation is keyed by the GGUF's own FILENAME, and
+// the disk map is keyed by repo id — so the filter that drops a downloaded
+// recommendation had nothing to match on and dropped nothing. Every cached GGUF
+// suggestion kept its Download button next to the finished disk card its own
+// bytes had made, and pressing it re-ran a fetch that completed instantly
+// having nothing to fetch, changing nothing on screen.
+describe("a curated entry keyed by filename rather than by repo id", () => {
+  const GGUF_ON_DISK = repo({
+    id: "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+    size: 730_895_208,
+    capability: "text-generation",
+    engine: engine({
+      code: "llamacpp-text-vulkan",
+      shortLabel: "llama.cpp (Vulkan)",
+      label: "llama.cpp (Vulkan)",
+    }),
+  });
+  // Its own filename as the id, its repo in `repo` — the shape the server sends
+  // for every `GGUF_RECIPES` entry.
+  const GGUF_CATALOG: AiCatalogCapability[] = [
+    capability("text-generation", [
+      curated("LFM2.5-1.2B-Instruct-Q4_K_M.gguf", {
+        repo: "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+        // The verdict is seeded WRONG on purpose, like every other fixture
+        // here: the fix must ride on the identity, not on this flag.
+        downloaded: false,
+      }),
+      curated("LFM2.5-8B-A1B-Q4_K_M.gguf", { repo: "LiquidAI/LFM2.5-8B-A1B-GGUF" }),
+    ]),
+  ];
+
+  const textRow = (repos: AiModelRepo[], cat = GGUF_CATALOG) =>
+    mergeSections(groupRepos(repos).models.groups, cat, resident(), disked(repos)).find(
+      (s) => s.key === "text-generation",
+    );
+
+  it("stops recommending it once its REPO has a disk card", () => {
+    const text = textRow([GGUF_ON_DISK]);
+    expect(text?.disk.map((r) => r.id)).toEqual(["LiquidAI/LFM2.5-1.2B-Instruct-GGUF"]);
+    // The one still absent is still offered; the downloaded one is gone from the
+    // recommendations rather than drawn twice under two different ids.
+    expect(text?.recommended.map((m) => m.id)).toEqual(["LFM2.5-8B-A1B-Q4_K_M.gguf"]);
+  });
+
+  it("still recommends it when nothing of its repo is on the disk", () => {
+    expect(textRow([])?.recommended.map((m) => m.id)).toEqual([
+      "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+      "LFM2.5-8B-A1B-Q4_K_M.gguf",
+    ]);
+  });
+
+  // An older server sends no `repo`, and the fallback has to be the id — which
+  // is the correct repo id for every entry that is not filename-keyed, so a
+  // stale server loses this one fix and nothing else.
+  it("falls back to the id when the server sends no repo", () => {
+    const noRepo: AiCatalogCapability[] = [
+      capability("text-generation", [curated("mlx-community/Qwen3.5-9B-OptiQ-4bit")]),
+    ];
+    expect(textRow([QWEN_LOADABLE], noRepo)?.recommended).toEqual([]);
+    expect(textRow([], noRepo)?.recommended.map((m) => m.id)).toEqual([
+      "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+    ]);
+  });
+});
+
 describe("what a merged row says it costs, and which engine loads it", () => {
   // D249/D251: the figure beside a heading is a claim about THIS DISK. A
   // recommended model is not on it, so it cannot be in the number — otherwise
