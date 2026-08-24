@@ -664,6 +664,11 @@ export default function PlaygroundTab() {
       </aside>
 
       <div className="pg-stage">
+      {/* One frame owns the width story for everything on the stage: capped at
+          840px, centered, gutters below that. The hero spans it fully and the
+          work column and apps strip share the same box, so top and bottom can
+          never drift apart. */}
+      <div className="pg-frame">
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
         {blockedAsk && selected && (
           // Not an ErrorBanner: nothing failed and nothing the user did is
@@ -925,6 +930,7 @@ export default function PlaygroundTab() {
             <PlaygroundApps capability={selected.row.capability} modelId={selected.model.id} />
           </>
         )}
+      </div>
       </div>
     </div>
   );

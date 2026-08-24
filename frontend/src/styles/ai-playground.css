@@ -5,7 +5,7 @@
  * pg-.
  *
  * Every stage is the SAME shape: one centered column on the hero card's
- * gutter (min(630px, 100% - 64px)) reading as an API surface — input, Run,
+ * frame (min(840px, 100% - 32px)) reading as an API surface — input, Run,
  * the result of that run. Every parameter is behind the cog in the stage's
  * title row, which opens a narrow settings card in the column's right gutter.
  * The old right rail, the chat transcript and the image gallery died in this
@@ -459,15 +459,11 @@
 }
 
 /* The stage header as a banner — the model introducing itself before the work
-   below it. Wider than the 680px column it heads, and on a 16px gutter rather
-   than 32px, because it is a header rather than part of the API surface. Its
-   max is exactly the pair below at its widest (column + gap + settings card),
-   so the banner spans everything the stage can ever put under it and its own
-   edges never move when the cog is clicked — the model's name stays a fixed
-   landmark while the column slides. Still a min(), not a bare max-width: the
-   gutter has to survive a narrow stage too. */
+   below it. It simply spans the frame; its edges never move when the cog is
+   clicked, so the model's name stays a fixed landmark while the tracks below
+   trade width. */
 .pg-hero {
-  width: min(calc(630px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
+  width: 100%;
   /* Extra room below: the stage's own gap reads too tight under a card this
      heavy, and the work column needs to start as its own thing. The box itself
      (border, padding, radius) is the shadcn Card's now — this rule is only the
@@ -593,8 +589,7 @@
    stage lines up under the header it belongs to. */
 
 .pg-work {
-  width: min(630px, calc(100% - 64px));
-  margin: 0 auto;
+  width: 100%;
   /* A grid rather than a flex column: the settings card takes a second column
      — a reserved track it is positioned into, see `.has-config` below — while
      every other child stays in the first. One column, the closed state, lays
@@ -683,45 +678,33 @@
    read it would fall over. */
 .pg-stage {
   --pg-gap: 16px;
-  /* The card's band, not one number. A single 240px card put the side-by-side
-     threshold at 1000cqw, which a ~1000px window misses by a hair — the stage
-     gets ~950 of it — so a window with obvious room beside the column still
-     stacked the settings under it. Letting the card give up width instead of
-     the column moves the threshold down to where that window lands, and hands
-     the full 240 back as soon as there is room for it. */
-  --pg-card-min: 192px;
-  --pg-card-max: 240px;
-  /* The fold's two beats, and they never overlap: the column glides, THEN the
-     card fades in; the card fades out, THEN the column glides back. Same two
-     numbers each way, in the other order — the reason they cannot run together
-     is geometry rather than taste, and it is written out at the open-state rule
-     in the @container block. `--pg-fade` is mirrored by `CONFIG_EXIT_MS` in
-     controls.tsx, which is the timer that unmounts the card; the two have to
-     agree or the fade is cut off (too short) or an invisible card stays mounted
-     (too long). */
+  /* The settings card's track. One number now: the frame below caps everything
+     at 840px, so the content track is what flexes, not the card. */
+  --pg-card: 240px;
+  /* The fold's two beats, and they never overlap: the track glides, THEN the
+     card fades in; the card fades out, THEN the track glides back. `--pg-fade`
+     is mirrored by `CONFIG_EXIT_MS` in controls.tsx, which is the timer that
+     unmounts the card; the two have to agree or the fade is cut off (too
+     short) or an invisible card stays mounted (too long). */
   --pg-glide: 240ms;
   --pg-fade: 160ms;
 }
 
-/* The card's actual width, resolved on the stage's CHILDREN rather than the
-   stage: `cqw` on the container itself measures the container's own ANCESTOR,
-   the same trap as the vars above, and every box that reads --pg-card (hero,
-   work column, apps strip, and the card itself by inheritance) is a descendant
-   of .pg-stage, so each one resolves it against the stage. It is one shared
-   expression, so all four still agree to the pixel — the hero and the apps
-   strip keep spanning exactly the pair below them. */
-.pg-stage > * {
-  --pg-card: clamp(
-    var(--pg-card-min),
-    100cqw - 630px - var(--pg-gap) - 32px,
-    var(--pg-card-max)
-  );
+/* THE width story, in one place: every box on the stage — hero, work column,
+   apps strip — lives inside this frame and simply spans it. 840px cap,
+   centered, a 32px gutter below that. */
+.pg-frame {
+  width: min(840px, calc(100% - 32px));
+  margin: 0 auto;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-/* Wide enough for the whole PAIR — column plus card at its NARROWEST — to sit
-   centered with the stage's own 32px edges: 630 + 16 gap + 192 card + 32 =
-   870cqw. Above it the clamp above widens the card until it reaches 240 and
-   holds. Below it the card stays in flow under the input. */
+/* Wide enough for the pair: at 870cqw the frame is 838px, which leaves a
+   ~580px content track beside the 240px card. Below it the card stays in flow
+   under the input. */
 @container (min-width: 870px) {
   /* The column always spans the hero's full width — closed or open, its box is
      the header's box, so the bottom of the stage stays in sync with the top.
@@ -732,8 +715,7 @@
      old D464 invariant (the input used to keep its width and slide instead) —
      syncing the column to the hero was judged worth the input resize. */
   .pg-work {
-    width: calc(630px + var(--pg-gap) + var(--pg-card));
-    grid-template-columns: calc(630px + var(--pg-gap) + var(--pg-card)) 0px;
+    grid-template-columns: 100% 0px;
     column-gap: 0px;
     transition:
       grid-template-columns var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1),
@@ -750,7 +732,7 @@
      out — so the card never paints over a content track still in motion. */
   .pg-work.has-config,
   .pg-work:has(> .pg-config-card.is-closing) {
-    grid-template-columns: 630px var(--pg-card);
+    grid-template-columns: calc(100% - var(--pg-gap) - var(--pg-card)) var(--pg-card);
     column-gap: var(--pg-gap);
   }
 
@@ -2168,8 +2150,7 @@
 
   /* The 64px gutter is hero-card breathing room; on a phone it is dead
      space. */
-  .pg-hero,
-  .pg-work {
+  .pg-frame {
     width: 100%;
   }
 }
@@ -2194,9 +2175,7 @@
    * pair of edges — the same min() expression, not a number copied. Auto side
    * margins centre it; `margin-top: auto` is untouched by them and still does
    * its main-axis job below. */
-  width: min(calc(630px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
-  margin-left: auto;
-  margin-right: auto;
+  width: 100%;
   /* Pinned to the bottom of the stage's viewport when the content above is
    * short (`auto` soaks up the spare space — .pg-stage is a flex column),
    * and pushed below the fold when it isn't: .pg-stage is the scroller, so
