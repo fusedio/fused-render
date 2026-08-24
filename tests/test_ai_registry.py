@@ -6,6 +6,9 @@ Platform gating is driven the same way `test_ai_models_api.py` drives it:
 `monkeypatch.setattr(registry.platform, "system"/"machine", ...)` rather than
 running on whatever machine CI happens to be.
 """
+import os
+import re
+
 from fused_render.ai import registry, tasks
 
 
@@ -239,3 +242,46 @@ def test_video_traits_for_ltx_video():
     assert traits.default_frames_n == 12  # 1 + 8*12 = 97, upstream's own default
     assert (traits.default_width, traits.default_height) == (704, 480)
     assert traits.default_steps == 8
+
+
+#: `VideoStage.tsx`'s own copy of the fallback request shape. Kept in sync by
+#: the test below rather than by the comment above each literal, which is how
+#: the two DID drift: D468 moved `video_traits_for`'s fallback from the
+#: dropped `h3-video` row to `ltx-video`'s and left the client drawing a
+#: `5 + 17n` slider at 864x480/20 steps for a payload-less row (caught in
+#: review, not by a test). A client that guesses a different grid than the
+#: server snaps to draws a control whose every value the render then moves —
+#: the exact failure the `videoTraits` payload exists to close.
+_VIDEO_STAGE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "frontend", "src", "apps", "ai_models", "playground", "VideoStage.tsx")
+
+
+def test_the_playgrounds_fallback_traits_match_the_servers_own_fallback():
+    """Checked on the SOURCE, like `test_ai_runtime.py`'s bridge-whitelist
+    guards: nothing at runtime ever compares these two, because the client
+    only reaches its literal when the server sent no payload at all — so a
+    mismatch is invisible in every test that has a real catalog row.
+    """
+    with open(_VIDEO_STAGE, encoding="utf-8") as f:
+        src = f.read()
+    block = re.search(
+        r"const FALLBACK_TRAITS[^{]*\{(.*?)\n\};", src, re.DOTALL)
+    assert block, f"no FALLBACK_TRAITS object literal in {_VIDEO_STAGE}"
+    client = {k: int(v) for k, v in re.findall(r"(\w+):\s*(\d+)", block.group(1))}
+
+    traits = registry.video_traits_for("no-such-runner")   # the fallback itself
+    low, high = registry.video_frame_bounds(traits)
+    assert client == {
+        "framesBase": traits.frames_base,
+        "framesStep": traits.frames_step,
+        "minFrames": low,
+        "maxFrames": high,
+        "defaultFrames": traits.frames_base + traits.frames_step * traits.default_frames_n,
+        "defaultWidth": traits.default_width,
+        "defaultHeight": traits.default_height,
+        "defaultSteps": traits.default_steps,
+    }, (
+        "VideoStage.tsx's FALLBACK_TRAITS has drifted from "
+        "`registry.video_traits_for`'s own fallback row — see this test's "
+        "docstring for why that is invisible at runtime")
