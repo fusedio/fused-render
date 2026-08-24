@@ -3899,22 +3899,39 @@ def test_a_page_cannot_post_to_a_server_owned_id(client):
     assert "reserved" in response.json()["error"]
 
 
-def test_a_worker_can_report_to_its_own_reserved_row(client, fake_runner):
+def test_a_worker_can_report_to_its_own_reserved_row(client, fake_runner,
+                                                     monkeypatch):
     """The other side of the reserved prefix, and the reason it needs a key.
 
     The worker is the process doing the downloading, so it is the only thing
     that knows the byte counts — but its row is under `sys:`, which pages may
     not write. Without a way to tell a worker from a page, every progress tick
     from a multi-GB download is silently rejected and the bar never moves.
+
+    `FAKE_LOAD_SECONDS` held open deliberately, not a race left to chance: a
+    successful load now dismisses its row the instant it goes ready
+    (supervisor._finish), and on a loaded machine (this was CI-only, never
+    reproduced locally in 30+ runs) the fake worker's default 0.1s "ready" can
+    beat this test's own synchronous statements to the punch — the load
+    finishes and its row is gone before the manual POST below ever lands,
+    which is a TEST-TIMING gap, not the product silently dropping a real
+    worker's report: every real reporter on this path (`worker_base.tick`)
+    sends `state="running"` on every call, which `jobs.upsert` treats as a
+    fresh open rather than a dropped late tick, and the render/transcribe
+    paths' own worker ticks are strictly ordered before their dismiss (the
+    supervisor blocks on one synchronous `/generate` call that the worker's
+    ticks happen inside of). See the investigation this comment summarizes
+    for the full analysis. Holding the load open here removes the race
+    without touching what is being asserted.
     """
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "5")
     supervisor.load("org/reports", registry.TEXT_GENERATION)
-    # Grabbed right away, not after `_wait_ready`: the token is live from the
-    # moment the worker record exists, well before it becomes ready, and the
-    # row itself is now dismissed the instant the load SUCCEEDS
-    # (supervisor._finish) — unrelated to what this test is pinning, a
-    # worker's own token opening its own reserved row.
     worker = supervisor._workers[registry.TEXT_GENERATION]
     row_id = supervisor.job_id_for("org/reports")
+    # The row itself, proven open (not merely inferred from timing) before the
+    # worker's own tick is sent below.
+    row = next(j for j in jobs.list_jobs() if j["id"] == row_id)
+    assert row["state"] == "running"
 
     response = client.post(
         "/api/jobs",
