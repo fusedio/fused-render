@@ -7885,23 +7885,35 @@ an AI Models page that could say what was on disk but not what was *running*.
   DATA a curator edits, so no test names one — none is an empty Playground group
   on a fresh machine, and two is the comparison this was cut down to remove.
 - **AI-11j** **`acceptsImage` is a THIRD additive field on a catalog entry: can
-  this model be handed a base image to EDIT (AI-9f), on this machine, right
-  now** (D467). Computed per entry by `/api/ai/catalog`, never curated, and a
-  mirror of `api_ai_image`'s own two refusals in the same order: the resolved
-  ENGINE (`engine_options` — the diffusers image codes refuse `image`, mflux
-  honours it) and then, for mflux, the model's own edit variant
-  (`formats.mflux_edit_recipe`, since a repo can be renderable and not
-  editable). **False on every non-image capability rather than True by
-  vacancy**: the engine table is an exception list, so a text runner "refuses
-  nothing" and a flag read off that answer alone would have every chat model in
-  the payload claiming it takes a photo. The field exists because a PICKER
-  cannot ask this question any other way — the two facts live in two runner-side
-  modules, one of them keyed on a table of variant classes — and the cost of
-  guessing is a visible affordance whose every request comes back 400. The
-  Playground's image composer is the first consumer: it draws its attachment row
-  (pick a file, or the webcam) only where this is true, and
-  `tests/test_ai_runtime.py` asserts the flag and the endpoint agree per entry
-  rather than pinning a list of repo ids on either side.
+  this model be handed an image, on this machine, right now — and it is no
+  longer image-capability-only.** Originally only "can this model be handed a
+  base image to EDIT" (AI-9f, D467); the mlx_text runner's switch to mlx-vlm
+  (loading every checkpoint `lazy=True`, reading a vision tower only on
+  demand) made a TEXT_GENERATION entry a real second case — "can this model be
+  ASKED ABOUT a picture" — rather than dead weight mlx-lm never touched.
+  Computed per entry by `/api/ai/catalog`, never curated, on two branches:
+  IMAGE_GENERATION mirrors `api_ai_image`'s own two refusals in the same
+  order — the resolved ENGINE (`engine_options` — the diffusers image codes
+  refuse `image`, mflux honours it) and then, for mflux, the model's own edit
+  variant (`formats.mflux_edit_recipe`, since a repo can be renderable and not
+  editable); TEXT_GENERATION is True only when the resolved runner is
+  `mlx-text` AND `hub_cache.has_vision_tower` finds a `vision_config`/
+  `image_token_id` in the cached checkpoint's own `config.json` — read off
+  disk, with no model load involved, so an attach button never draws ahead of
+  a request that would 400. **False on every other capability rather than True
+  by vacancy**: the engine table is an exception list, so a text runner
+  "refuses nothing" and a flag read off that answer alone would have every
+  chat model in the payload claiming it takes a photo, and a llama.cpp GGUF
+  text model comes back False whatever its cached repo's config says, because
+  that runner has no path to a vision tower at all. The field exists because a
+  PICKER cannot ask this question any other way — the facts live in
+  runner-side modules, one of them keyed on a table of variant classes and one
+  a config.json read — and the cost of guessing is a visible affordance whose
+  every request comes back 400. The Playground's image composer is the first
+  consumer on the image side; the text stage's own attach affordance is the
+  second, on the exact same flag. `tests/test_ai_runtime.py` asserts the flag
+  and the endpoint agree per entry rather than pinning a list of repo ids on
+  either side.
 - **AI-12** **What `/api/ai` is doing is COUNTED, in memory, and drawn as a
   graph** (D327). `fused.ai` is the only thing in this app that spends model
   time, and it spent it invisibly: a page re-asking the model on every

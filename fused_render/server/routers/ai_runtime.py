@@ -57,7 +57,7 @@ from fused_render.server.common import _error, _require_fused
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
 from fused_render.ai.hub_cache import (
-    CachedModel, cached_capability, cached_models, is_downloaded,
+    CachedModel, cached_capability, cached_models, has_vision_tower, is_downloaded,
 )
 
 router = APIRouter()
@@ -862,34 +862,55 @@ def _fit_verdict(size_gb: float | None) -> str | None:
 
 
 def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
-    """Can `model_id` be handed a BASE IMAGE to edit on this machine (AI-9f)?
+    """Can `model_id` be handed an image on this machine — to EDIT (AI-9f) or,
+    since the mlx_text runner switched to mlx-vlm, to be ASKED ABOUT (AI-11j)?
 
-    A mirror of `api_ai_image`'s own two refusals, in the same order, so a
-    picker that draws an attach button and the endpoint that would 400 the
-    resulting request cannot disagree:
+    **No longer image-capability-only.** SPEC AI-11j originally read this
+    field as True only where the model could be an EDIT base, because mlx-lm
+    loaded only a checkpoint's language tower and the vision half of every MLX
+    text model was dead weight it never touched. `mlx_text/worker.py` now
+    loads through mlx-vlm instead (`lazy=True`), which CAN read that tower —
+    on demand, only when a request actually attaches an image — so a
+    TEXT_GENERATION entry is a real candidate here too, provided the
+    checkpoint it names actually has a tower to feed one to.
 
-    1. the ENGINE — `engine_options` is the one place that says which backends
-       honour `image` (every diffusers image code refuses it, mflux honours
-       it), and it is asked here rather than restated;
-    2. the MODEL — mflux additionally needs an edit variant class named for the
-       repo (`formats.mflux_edit_recipe`), since a repo can be renderable and
-       not editable. A future engine that honours `image` with no per-model
-       table is True on the engine's answer alone, exactly as the endpoint
-       treats it.
+    Two branches, one principle kept from before: **computed, never curated,
+    and False rather than True-by-vacancy.**
 
-    False on every non-image capability rather than True-by-vacancy: the
-    engine table is an exception list, so a text runner "refuses nothing" and
-    would otherwise come back claiming a chat model takes a photo.
+    - IMAGE_GENERATION — unchanged, and still a mirror of `api_ai_image`'s own
+      two refusals in the same order, so a picker's attach button and the
+      route that would 400 the resulting request cannot disagree: the ENGINE
+      (`engine_options` is the one place that says which backends honour
+      `image`) and then the MODEL (mflux additionally needs an edit variant
+      class named for the repo, `formats.mflux_edit_recipe`, since a repo can
+      render and not edit).
+    - TEXT_GENERATION — True only when the resolved runner is `mlx-text` (the
+      one runner here that reads a checkpoint through mlx-vlm at all — a
+      llama.cpp GGUF text model has no vision tower to speak of and must come
+      back False the same as before) AND `hub_cache.has_vision_tower` finds a
+      `vision_config`/`image_token_id` in the cached checkpoint's own
+      `config.json`. Read straight off disk, with no model load involved —
+      an attach button whose request then 400s is exactly the failure this
+      field exists to prevent, so "cannot tell" answers False rather than
+      guessing True.
+    - Every other capability: False. `engine_options` is an exception list
+      for the image route alone, so treating "refuses nothing" as evidence
+      would have every non-image, non-mlx-text model in the payload claiming
+      it takes a photo.
     """
-    if capability != registry.IMAGE_GENERATION or runner_code is None:
+    if runner_code is None:
         return False
-    try:
-        engine_options.unsupported_or_raise(runner_code, image="probe")
-    except ValueError:
-        return False
-    if runner_code == "mflux-image":
-        return formats.mflux_edit_recipe(model_id) is not None
-    return True
+    if capability == registry.IMAGE_GENERATION:
+        try:
+            engine_options.unsupported_or_raise(runner_code, image="probe")
+        except ValueError:
+            return False
+        if runner_code == "mflux-image":
+            return formats.mflux_edit_recipe(model_id) is not None
+        return True
+    if capability == registry.TEXT_GENERATION and runner_code == "mlx-text":
+        return has_vision_tower(model_id)
+    return False
 
 
 @router.get("/api/ai/catalog")

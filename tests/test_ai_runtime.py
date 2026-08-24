@@ -4998,12 +4998,21 @@ def test_the_diffusers_engine_marks_NO_image_model_as_editable(
     assert "Diffusers image engine" in refused.json()["error"]
 
 
-def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, monkeypatch):
+def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, hub, monkeypatch):
     """False on every non-image capability rather than True by vacancy.
 
     `engine_options` is an exception list, so a text runner "refuses nothing"
     — and a flag computed off that answer alone would have every chat model in
     the payload claiming it takes a photo.
+
+    **`hub` (an empty, isolated cache) is load-bearing here since AI-11j grew
+    a second way to earn True**: none of the curated suggestions in this test
+    is actually downloaded, so every one should read False for having no
+    cached `config.json` to answer from at all — but on a real dev machine
+    that HAS `mlx-community/Qwen3.5-4B-OptiQ-4bit` on disk (a unified
+    checkpoint with a real vision tower), the un-isolated cache made this
+    assertion machine-dependent: true here, false on a fresh checkout. The
+    claim this test makes is about VACANCY, not about a lucky empty disk.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
@@ -5013,6 +5022,49 @@ def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, monkeypatch):
         for model in row["models"]:
             assert model["acceptsImage"] is False, (
                 f"{row['capability']}/{model['id']} claims to accept an image")
+
+
+# -- `acceptsImage` on TEXT_GENERATION: mlx-vlm reads a tower on demand -------
+#
+# AI-11j's other half. mlx_text/worker.py loads every checkpoint through
+# mlx-vlm now (`lazy=True`), which CAN read a vision tower — but only a
+# checkpoint that actually has one, and only on the ONE runner that goes
+# through mlx-vlm at all. Both halves are asserted directly against
+# `ai_runtime._accepts_image` rather than through the whole catalog endpoint,
+# because the fact under test is the FUNCTION's own gate, not the endpoint's
+# plumbing (already covered above).
+
+
+def test_accepts_image_is_true_for_an_mlx_text_model_with_a_vision_tower(hub):
+    _cached_repo(hub, "org/vlm", files=("model.safetensors",),
+                config={"model_type": "qwen3_5", "vision_config": {"depth": 4}})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/vlm") is True
+
+
+def test_accepts_image_is_false_for_an_mlx_text_model_with_no_vision_tower(hub):
+    """The ordinary chat repo: a real cached checkpoint, `mlx-text` resolved
+    it, and it still has nothing to attach a picture to."""
+    _cached_repo(hub, "org/plain-chat", files=("model.safetensors",),
+                config={"model_type": "llama"})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/plain-chat") is False
+
+
+def test_accepts_image_is_false_for_a_llamacpp_text_model_even_with_a_vision_config(hub):
+    """The RUNNER gate, not only the checkpoint's own config: llama.cpp's GGUF
+    loader has no path to a vision tower at all here, whatever a cached
+    repo's `config.json` happens to say — a model that resolves to
+    `llamacpp-text` must come back False exactly as it did before this
+    build."""
+    _cached_repo(hub, "org/vlm", files=("model.safetensors",),
+                config={"model_type": "qwen3_5", "vision_config": {"depth": 4}})
+    assert ai_runtime._accepts_image(
+        registry.TEXT_GENERATION, "llamacpp-text", "org/vlm") is False
+
+
+def test_accepts_image_is_false_with_no_runner_resolved(hub):
+    """`runner_code=None` — a capability with nothing to serve it — must not
+    be read as vacancy meaning yes."""
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, None, "org/whatever") is False
 
 
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
