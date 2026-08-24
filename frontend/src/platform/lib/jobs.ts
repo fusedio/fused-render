@@ -22,6 +22,13 @@ export interface Job {
   id: string;
   title: string;
   detail: string;
+  // The model running this row, as a dimmed suffix on the TITLE — never
+  // folded into title or detail, because detail is a worker's progress
+  // ticks' own line and a model name concatenated there would get
+  // overwritten by the next tick. "" means no model to show (a download, a
+  // scheduled run, a page's own `fused.trackJob()`) and JobRow renders
+  // nothing for it, not an empty element.
+  model: string;
   kind: JobKind;
   state: JobState;
   // null means "no number to show": an indeterminate bar, not zero progress.

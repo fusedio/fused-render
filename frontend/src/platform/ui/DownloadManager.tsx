@@ -276,7 +276,11 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
-function JobRow({
+// Exported for jobrow.test.tsx only — every other caller goes through
+// DownloadManager itself. react-test-renderer (the hook-harness.ts pattern)
+// is the only thing in this suite that can render a component with no DOM,
+// and it needs the component, not just the pure functions it's built on.
+export function JobRow({
   job,
   onChanged,
   onPatch,
@@ -328,6 +332,7 @@ function JobRow({
         <span className="dl-title" title={job.page || undefined}>
           {job.title}
         </span>
+        {job.model && <span className="dl-model">{job.model}</span>}
         {amount && <span className="dl-amount">{amount}</span>}
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>

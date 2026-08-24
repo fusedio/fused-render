@@ -279,6 +279,18 @@
   font-weight: 600;
 }
 
+/* The model running this row (JobRow's `.dl-model`), a dimmed suffix after
+   the title — never part of `title` itself, so it needs its own truncation
+   story. `.dl-title` is the row's only `flex-shrink`able child (flex: 1 1
+   auto); this, like `.dl-amount`/`.dl-pct`/`.dl-x` beside it, is `flex: 0 0
+   auto` and so cannot be squeezed — a long prompt ellipsizes in `.dl-title`
+   long before this would ever be asked to give up room. */
+.dl-model {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 .dl-amount,
 .dl-pct {
   flex: 0 0 auto;

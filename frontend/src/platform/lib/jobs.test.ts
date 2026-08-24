@@ -21,6 +21,7 @@ function job(over: Partial<Job> = {}): Job {
     id: "j1",
     title: "FLUX.2-klein-4B",
     detail: "",
+    model: "",
     kind: "download",
     state: "running",
     done: null,
