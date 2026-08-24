@@ -493,6 +493,7 @@ class RasterEngine:
         self.prepare_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="prepare"
         )
+        self._evict_optimized()
 
     def _poolable(self, locator: str) -> bool:
         """Whether a Reader for *locator* may stay open between tiles: remote
@@ -504,7 +505,6 @@ class RasterEngine:
             return Path(locator).resolve().is_relative_to(self.cache_dir.resolve())
         except OSError:
             return False
-        self._evict_optimized()
 
     def _evict_optimized(self) -> None:
         """Keep the on-disk derivative cache under OPTIMIZED_CACHE_MAX_BYTES,
