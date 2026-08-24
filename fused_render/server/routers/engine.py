@@ -11,7 +11,6 @@ import asyncio
 import json
 import os
 import sys
-import time
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import Response
@@ -74,15 +73,18 @@ async def api_engine(request: Request, x_fused: str | None = Header(default=None
                       f"{os.path.basename(resolved)}: {e}", status=502)
 
     # Forward to the worker's /call; it returns the /api/run envelope verbatim.
-    # inflight keeps the idle reaper from retiring a worker mid-call, and stamps
-    # last_used at completion so idle is timed from the call's end, not its start.
+    # Mark the engine busy (by id, so a heal-restart mid-call still counts) to
+    # keep the idle reaper from retiring it, and stamp last_used at completion so
+    # idle is timed from the call's end, not its start. APP_CALL_TIMEOUT_S caps a
+    # wedged main() at the /api/run budget rather than the long template timeout.
     payload = json.dumps(params).encode("utf-8")
-    child.inflight += 1
+    engine_id = child.engine_id
+    engine_host.mark_busy(engine_id)
     try:
-        return await _forward(child.engine_id, request, "/call", payload)
+        return await _forward(engine_id, request, "/call", payload,
+                              timeout=engine_host.APP_CALL_TIMEOUT_S)
     finally:
-        child.inflight -= 1
-        child.last_used = time.monotonic()
+        engine_host.mark_idle(engine_id)
 
 
 @router.post("/api/engine/forget")

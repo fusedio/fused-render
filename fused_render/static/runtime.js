@@ -2012,12 +2012,15 @@
         cleanup();
         if (opts.signal && opts.signal.aborted) throw err;
         if (controller._supersededByKey) return new Promise(() => {});
-        // Degrade to per-call runPython when the WORKER couldn't serve the call:
-        // server unreachable (TypeError), or an engine-level failure (venv not
-        // built, worker won't spawn, proxy error — all typed engine_error). A
-        // script error (data.ok:false) carries the Python exception type, not
-        // engine_error, so it propagates instead of being silently re-run.
-        if (err && (err.name === "TypeError" || err.type === "engine_error"))
+        // Degrade to per-call runPython ONLY when the local server is
+        // unreachable — a fetch TypeError, never an HTTP status (a warm worker
+        // is pure optimization; the page must keep working). An HTTP-status
+        // failure means the server answered: the proxy may already have run
+        // main() (a post-heal 502) or the venv needs building (409), so
+        // re-running here could double-execute a side-effecting main(). Surface
+        // it instead. A script error carries the Python exception type and
+        // propagates the same way.
+        if (err && err.name === "TypeError")
           return runPython(pyPath, params, opts);
         throw err;
       }

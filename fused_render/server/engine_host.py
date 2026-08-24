@@ -71,6 +71,10 @@ APP_WORKER_VERSION = "1"
 APP_IDLE_RETIRE_S = 15 * 60.0
 #: How often the idle sweeper wakes.
 _APP_REAP_INTERVAL_S = 60.0
+#: Per-call budget for a warm app worker, enforced parent-side by the proxy: the
+#: same ~60s /api/run gives a script (executor.DEFAULT_TIMEOUT), not the long
+#: template-describe POST timeout. The worker does not kill its own thread.
+APP_CALL_TIMEOUT_S = 60.0
 
 
 class EngineError(RuntimeError):
@@ -96,9 +100,6 @@ class Child:
     #: Last call routed to this child (monotonic); drives idle-retire of warm app
     #: workers only.
     last_used: float = field(default_factory=time.monotonic)
-    #: Calls currently in flight through this child; a busy warm worker is never
-    #: idle-retired, however long its `main()` runs.
-    inflight: int = 0
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
@@ -114,6 +115,9 @@ _spawn_lock = threading.Lock()
 _children: dict[str, Child] = {}
 #: engine_id -> {key -> {"path": str, "payload": dict}}, in insertion order.
 _reinit: dict[str, "OrderedDict[str, dict]"] = {}
+#: engine_id -> count of calls in flight. Keyed by id (not the Child object) so a
+#: heal-restart mid-call still counts the live call; guards warm-app idle-retire.
+_busy: dict[str, int] = {}
 
 SPAWN_KWARGS = (
     {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
@@ -472,6 +476,27 @@ def _reap_loop() -> None:
             logger.exception("warm app worker idle sweep failed")
 
 
+def mark_busy(engine_id: str) -> None:
+    """Register a call in flight for *engine_id* so idle-retire skips it. Keyed by
+    id, so a heal-restart mid-call keeps the live call counted."""
+    with _lock:
+        _busy[engine_id] = _busy.get(engine_id, 0) + 1
+
+
+def mark_idle(engine_id: str) -> None:
+    """Balance a `mark_busy`; stamp the current child's last_used so idle is timed
+    from the call's end, whichever child served it after a heal."""
+    with _lock:
+        remaining = _busy.get(engine_id, 0) - 1
+        if remaining > 0:
+            _busy[engine_id] = remaining
+        else:
+            _busy.pop(engine_id, None)
+        child = _children.get(engine_id)
+        if child is not None:
+            child.last_used = time.monotonic()
+
+
 def reap_idle_app_workers(now: float | None = None) -> int:
     """Terminate every warm app worker idle past APP_IDLE_RETIRE_S, returning the
     count reaped. Only app workers (module set) are eligible. Exposed so a test
@@ -479,7 +504,7 @@ def reap_idle_app_workers(now: float | None = None) -> int:
     now = time.monotonic() if now is None else now
     with _lock:
         stale = [c for c in _children.values()
-                 if c.module and c.inflight == 0
+                 if c.module and _busy.get(c.engine_id, 0) == 0
                  and (now - c.last_used) >= APP_IDLE_RETIRE_S]
         for child in stale:
             _children.pop(child.engine_id, None)
@@ -530,6 +555,7 @@ def stop(engine_id: str) -> None:
     with _lock:
         child = _children.pop(engine_id, None)
         _reinit.pop(engine_id, None)
+        _busy.pop(engine_id, None)
     if child is not None:
         _terminate(child)
 
@@ -540,5 +566,6 @@ def stop_all() -> None:
         children = list(_children.values())
         _children.clear()
         _reinit.clear()
+        _busy.clear()
     for child in children:
         _terminate(child)

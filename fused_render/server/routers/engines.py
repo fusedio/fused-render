@@ -91,9 +91,13 @@ async def _client_hangup(request: Request) -> None:
             return
 
 
-async def _proxy(child, request: Request, path: str, body: bytes):
+async def _proxy(child, request: Request, path: str, body: bytes,
+                 timeout: float | None = None):
     """Forward one request to the child. None when the child cannot be reached
     at all — the healing trigger; an HTTP error from a live child is an answer.
+
+    `timeout` overrides the per-method default (warm app /call passes the ~60s
+    /api/run budget rather than the long template-describe POST timeout).
 
     A browser that pans/zooms away resolves _client_hangup, which closes the
     child connection: that frees the fetch thread here immediately and shows
@@ -101,7 +105,8 @@ async def _proxy(child, request: Request, path: str, body: bytes):
     urllib proxy parked a threadpool thread for up to the timeout per abandoned
     request — a viewport of those saturated the browser's six connections per
     origin and blocked every other tab."""
-    timeout = POST_TIMEOUT_S if request.method == "POST" else GET_TIMEOUT_S
+    if timeout is None:
+        timeout = POST_TIMEOUT_S if request.method == "POST" else GET_TIMEOUT_S
     separator = "&" if "?" in path else "?"
     target = f"{path}{separator}t={quote(child.token, safe='')}"
 
@@ -173,13 +178,14 @@ async def _proxy(child, request: Request, path: str, body: bytes):
     return None
 
 
-async def _forward(engine_id: str, request: Request, path: str, body: bytes):
+async def _forward(engine_id: str, request: Request, path: str, body: bytes,
+                   timeout: float | None = None):
     child = engine_host.current(engine_id)
     if child is None:
         return _error(
             f"the {engine_id} engine is not running; register the layer again",
             status=409)
-    response = await _proxy(child, request, path, body)
+    response = await _proxy(child, request, path, body, timeout)
     if response is None:
         try:
             child = await asyncio.to_thread(engine_host.restart, engine_id, child)
@@ -189,7 +195,7 @@ async def _forward(engine_id: str, request: Request, path: str, body: bytes):
             return _error(
                 f"the {engine_id} engine is not running; register the layer again",
                 status=409)
-        response = await _proxy(child, request, path, body)
+        response = await _proxy(child, request, path, body, timeout)
     if response is _GONE:
         return Response(status_code=204)
     if response is None:

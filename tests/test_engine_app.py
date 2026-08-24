@@ -2,6 +2,7 @@
 validation, and the worker's warm-state / mtime-reload / error envelope."""
 import os
 import sys
+import time
 
 import pytest
 
@@ -38,6 +39,37 @@ def test_ensure_app_rejects_foreign_interpreter(tmp_path):
     app.write_text("def main():\n    return {}\n", encoding="utf-8")
     with pytest.raises(engine_host.EngineError):
         engine_host.ensure_app(str(app), "/definitely/not/a/real/python")
+
+
+def test_idle_reaper_skips_a_busy_engine(monkeypatch):
+    # A call in flight (mark_busy) must stop idle-retire from killing the worker,
+    # and mark_idle must refresh last_used so idle is timed from the call's end —
+    # keyed by engine_id so a heal-restart mid-call keeps the live call counted.
+    eid = engine_host.app_engine_id("/tmp/reaper-test/app.py")
+    child = engine_host.Child(
+        engine_id=eid, python=sys.executable, daemon=engine_host.APP_WORKER,
+        cache="unused", version=engine_host.APP_WORKER_VERSION,
+        module="/tmp/reaper-test/app.py")
+    stale = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
+    child.last_used = stale
+    reaped = []
+    monkeypatch.setattr(engine_host, "_terminate",
+                        lambda c: reaped.append(c.engine_id))
+    engine_host._children[eid] = child
+    try:
+        engine_host.mark_busy(eid)
+        assert engine_host.reap_idle_app_workers() == 0  # busy: not reaped
+        assert eid in engine_host._children
+
+        engine_host.mark_idle(eid)  # balances busy AND stamps last_used = now
+        assert engine_host.reap_idle_app_workers() == 0  # freshly used
+
+        child.last_used = stale  # now genuinely idle
+        assert engine_host.reap_idle_app_workers() == 1
+        assert reaped == [eid]
+    finally:
+        engine_host._children.pop(eid, None)
+        engine_host._busy.pop(eid, None)
 
 
 def test_warm_target_persists_then_reloads_on_mtime(tmp_path):
