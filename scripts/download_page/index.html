@@ -458,12 +458,16 @@
 
   /* ---------- §how : the how-it-works app's flow diagram, geometry copied
      verbatim, colours mapped onto the page tokens so both themes hold. ---------- */
-  #how h2 { max-width: none; }
+  #how h2, #under-the-hood h2 { max-width: none; }
   #how .deck { max-width: none; }
   #how .deck .hl { color: var(--accent-text); font-weight: 600; }
   .howflow {
     background: var(--tile); border: 1px solid var(--rule);
     border-radius: 16px; padding: 26px 26px 20px;
+  }
+  .howrow.duo { display: grid; grid-template-columns: 1fr 156px 1fr; align-items: center; }
+  @media (max-width: 900px) {
+    .howrow.duo { grid-template-columns: 1fr; gap: 14px; }
   }
   .howrow.hub {
     display: grid;
@@ -881,6 +885,41 @@
   </section>
 
   <!-- ============ §1 · THE EXPLORER ============ -->
+  <section id="under-the-hood">
+    <div class="sec-head rule-top">
+      <h2>Under the hood: a web page and Python.</h2>
+    </div>
+
+    <div class="howflow">
+      <div class="howrow duo">
+        <div class="howside pg">
+          <h3><span class="dot" aria-hidden="true"></span>The page</h3>
+          <div class="what">What you see</div>
+          <div class="eg">Sliders, maps, charts &mdash; the interface.</div>
+          <div class="loc">runs in the browser</div>
+        </div>
+        <div class="howconn" aria-hidden="true">
+          <div class="howarrow">
+            <div class="lbl">your inputs &rarr;</div>
+            <div class="track fwd"><span class="head"></span><span class="pulse pf"></span></div>
+          </div>
+          <div class="howarrow">
+            <div class="lbl">&larr; the result</div>
+            <div class="track back"><span class="head"></span><span class="pulse pb"></span></div>
+          </div>
+        </div>
+        <div class="howside py">
+          <h3><span class="dot" aria-hidden="true"></span>The Python</h3>
+          <div class="what">What does the work</div>
+          <div class="eg">pandas, DuckDB, your files &amp; APIs.</div>
+          <div class="loc">runs on your machine</div>
+        </div>
+      </div>
+      <div class="bridge">The page hands inputs to Python and gets JSON back &mdash; that whole
+      arrow is one call to <code class="mono">fused.runPython()</code>.</div>
+    </div>
+  </section>
+
   <section id="how">
     <div class="sec-head rule-top">
       <h2>Ecosystem</h2>
