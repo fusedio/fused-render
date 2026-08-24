@@ -1360,6 +1360,25 @@ button.tasks-caret,
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  /* THE SAME HIT-ZONE TREATMENT AS THE TASK ROW'S TIME (Akshil, 2026-08-24:
+     "the same should be applied in the messages time — I should be able to
+     hover and see what is the time"). Two halves, both load-bearing. The LIFT:
+     a message row is a stretched-link row like the task row above it, so
+     without `z-index` the link swallows the pointer and the browser answers
+     with the link's own title — the message BODY — instead of this element's
+     absolute instant (messageWhenTitle). The STRETCH: 11px of ink on a padded
+     row is a target a pointer misses above and below, and the row answers for
+     the miss; the row's own padding token takes the box to the row's edge and
+     the negative margin gives every pixel back, so nothing moves. */
+  position: relative;
+  z-index: 2;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding-block: var(--tasks-msg-pad-y);
+  margin-block: calc(var(--tasks-msg-pad-y) * -1);
+  padding-inline: 5px;
+  margin-inline: -5px;
 }
 
 /* No `.tasks-msg-ran` any more. It printed "ran 07:12 today" beside the due time

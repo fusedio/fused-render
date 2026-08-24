@@ -4220,80 +4220,62 @@ describe("the folder chip on a row and a card", () => {
       /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
     // The task's own name is still captioned on the row, so nothing is
-    // unreachable — via `data-tip` since 2026-08-24, not `title`. It was the last
-    // NATIVE tooltip on this row, kept deliberately because the row's own name is
-    // the one caption nobody is waiting on and the browser's delay suited it. The
-    // delay still suits it and is kept (this element gets no fast class); what
-    // changed is that a native tooltip is a different-LOOKING object from the
-    // panel every mark beside it draws, so one row could show two unrelated kinds
-    // of tooltip depending on which pixel the pointer was over.
-    expect(ROW).toContain("data-tip={task.title}");
-    expect(ROW).not.toContain("title={task.title}");
+    // unreachable: the row's `title` is the task's own, and the chip's tooltip
+    // was never the only copy.
+    expect(ROW).toContain("title={task.title}");
   });
 });
 
-describe("one tooltip, one look", () => {
-  // Akshil, 2026-08-24, on a screenshot of the native panel beside ours: "why are
-  // these aria label and tooltip kind of thing different?" Because the row's title
-  // was the last native `title` on the row while every mark on it drew the custom
-  // panel — two unrelated-looking objects on one row.
-  it("leaves no native title on the row or its stretched link", () => {
-    // The <a> is the one that mattered most: it is stretched over the whole row
-    // and sits ABOVE it, so its tooltip was the one actually shown.
+describe("every caption on a row is a NATIVE title", () => {
+  // Akshil, 2026-08-24, third pass — final. The custom `[data-tip]` panel had a
+  // day here and was pulled the same day: it is positioned under its ELEMENT, so
+  // on the list's first row it opened over the row below, captioning a different
+  // task ("it is displaced completely from the title — I don't want you to use
+  // custom tooltip"). It also needed four support rules (a z-index lift, a
+  // right-edge anchor, a `:has()` suppression, a fast-delay list) to survive the
+  // row at all. The browser's tooltip follows the POINTER — the one placement
+  // that cannot caption the wrong row — and needs none of them.
+  it("uses no data-tip anywhere on the task row", () => {
+    // The one legitimate data-tip user in this file is the status ring's unread
+    // count (StatusIcon), which predates all of this — a fast tip on a COLUMN of
+    // identical marks, where the 300ms guard is the point. Everything the row
+    // itself captions is a native title.
+    const row = ROW.slice(0, ROW.indexOf("tasks-thread"));
+    expect(row).not.toContain("data-tip={task.title}");
+    expect(row).not.toContain('data-tip={tildePath');
+    expect(row).not.toContain("data-tip={when.title}");
+    // …and the four support rules are gone from the stylesheet with it.
+    expect(SCHEDULE_CSS).not.toContain('.tasks-row[data-tip]');
+    expect(SCHEDULE_CSS).not.toContain('.tasks-row:has([data-tip]');
+    expect(SCHEDULE_CSS).not.toContain('.tasks-row-time[data-tip]');
+  });
+
+  it("gives every mark a title OF ITS OWN, which is the actual bug fix", () => {
+    // What fixed "hovering the folder chip shows the task title" was never the
+    // panel — it was each mark carrying its own title, so the browser stops
+    // walking up to the row's. That survives the panel's removal.
+    expect(ROW).toContain("title={tildePath(taskFile_, home)}");
+    expect(ROW).toContain("title={tildePath(task.project, home)}");
+    expect(ROW).toContain('title={`${shown} message${shown === 1 ? "" : "s"} in this task`}');
+    expect(ROW).toContain("title={when.title}");
+    // The stretched link stays silent so the row's own title is the one copy of
+    // the caption; its accessible NAME is not a tooltip and stays.
     const link = ROW.slice(ROW.indexOf('className="tasks-rowlink"'));
     expect(link.slice(0, link.indexOf("/>"))).not.toContain("title=");
-    // …and its accessible NAME stays. A tooltip and an accessible name are not
-    // the same thing, and nothing about the hover changes what is announced.
     expect(ROW).toContain("aria-label={label}");
   });
 
-  it("lifts the hovered element so its panel is not painted under a sibling", () => {
-    // Every mark carries `z-index: 2` to clear the stretched row link, and a
-    // `::before` cannot outrank a LATER sibling from inside its own element — so
-    // the folder chip's panel was overlapped by the count and the time drawn
-    // after it. That is the "transparent and below the text" report; the panel
-    // was never transparent (`--bg-popover` is opaque), it was behind something.
-    expect(SCHEDULE_CSS).toMatch(
-      /\[data-tip\]:not\(\[data-tip=""\]\):hover,\s*\[data-tip\]:not\(\[data-tip=""\]\):focus-visible \{\s*z-index: 40/,
-    );
-  });
-
-  it("anchors the trailing marks' panels to their right edge", () => {
-    // Centred on its element is right for a mark with room either side and wrong
-    // for the last cell in a row: the time sits against the list's right edge, so
-    // half of an absolute instant hung outside the scroller and was clipped.
-    const rule = SCHEDULE_CSS.slice(
-      SCHEDULE_CSS.indexOf('.tasks-row-time[data-tip]:not([data-tip=""])::before'),
-    );
-    const body = rule.slice(0, rule.indexOf("}"));
-    expect(body).toContain("right: 0");
-    expect(body).toContain("left: auto");
-    expect(body).toContain("transform: none");
-  });
-
-  it("shows the mark's panel or the row's, never both", () => {
-    // The row is the ANCESTOR of every mark in it, so pointing at the folder chip
-    // hovers both and both panels would draw — two captions six pixels apart
-    // saying different things. The mark is what the reader aimed at, so it wins.
-    expect(SCHEDULE_CSS).toContain(
-      '.tasks-row:has([data-tip]:not([data-tip=""]):hover)::before',
-    );
-  });
-
-  it("keeps the row's own caption SLOW, and the marks instant", () => {
-    // The original ask was "for title you can keep as is" — that was about the
-    // DELAY, and the delay is what is kept. The row is not in the fast list.
-    // Sliced from the END of the block's comment, not from its start: the prose
-    // in it quotes `transition-delay: 0s` while explaining the choice, so a slice
-    // that stops at the first occurrence never reaches the selectors.
-    const block = SCHEDULE_CSS.slice(SCHEDULE_CSS.indexOf("NO DELAY AT ALL"));
-    const selectors = block.slice(block.indexOf("*/"), block.indexOf("{"));
-    expect(selectors).toContain(".tasks-row-msgs[data-tip]");
-    expect(selectors).toContain(".tasks-row-time[data-tip]");
-    expect(selectors).toContain(".tasks-row-file[data-tip]");
-    // The row itself is absent — `.tasks-row-*` are different selectors, so this
-    // asserts on the exact one that would opt the row in.
-    expect(selectors).not.toContain('.tasks-row[data-tip]');
+  it("lets the THREAD's time answer its own hover too", () => {
+    // Akshil: "the same should be applied in the messages time". The message row
+    // is a stretched-link row like the task row, so without the lift the link
+    // swallows the pointer and answers with the message BODY; and 11px of ink on
+    // a padded row is a target a pointer misses above and below.
+    expect(VIEWS).toContain('className="tasks-msg-time" title={messageWhenTitle(m)}');
+    const time = block(TASKS_CSS, ".tasks-msg-time");
+    expect(time).toContain("z-index: 2");
+    expect(time).toContain("align-self: stretch");
+    expect(time).toContain("padding-block: var(--tasks-msg-pad-y)");
+    expect(time).toContain("margin-block: calc(var(--tasks-msg-pad-y) * -1)");
   });
 });
 
@@ -4461,13 +4443,10 @@ describe("the time a task row prints", () => {
     // used to render `{when && (…)}`, which is what turned a null into a missing
     // cell. taskWhen no longer returns null and the element is no longer guarded.
     expect(ROW).not.toContain("{when && (");
-    // `data-tip` since 2026-08-24, not `title`: the instant is what a reader
-    // hovers this cell FOR, and the browser's one-to-two second hold before
-    // showing a native tooltip is the same as not offering it. `title=""` is not
-    // decoration either — without it the browser walks up to the ROW's title and
-    // answers with the task's name. See the fast-tip rules in schedule.css.
+    // A native `title` of its own — which is also what stops the browser walking
+    // up to the ROW's title and answering with the task's name.
     expect(ROW).toMatch(
-      /<span className="tasks-row-time" data-tip=\{when\.title\} title="">\s*\{when\.text\}\s*<\/span>/,
+      /<span className="tasks-row-time" title=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
     );
     // And the dash takes the column's own register rather than a class of its own —
     // it IS one of the column's values, not a different kind of thing.
@@ -7072,7 +7051,7 @@ describe("the file mark after a task's title", () => {
     // all, and a filename is prose. A column of prose is the crowding this
     // row has twice been trimmed for.
     expect(VIEWS).toContain('className="tasks-row-file"');
-    expect(VIEWS).toContain("data-tip={tildePath(taskFile_, home)}");
+    expect(VIEWS).toContain("title={tildePath(taskFile_, home)}");
     expect(VIEWS).toContain("{ICON_FILE}");
   });
 
@@ -7086,7 +7065,7 @@ describe("the file mark after a task's title", () => {
     // both would be claiming both.
     expect(VIEWS).toContain("{taskFile_ ? (");
     expect(VIEWS).toContain("{ICON_FOLDER}");
-    expect(VIEWS).toContain("data-tip={tildePath(task.project, home)}");
+    expect(VIEWS).toContain("title={tildePath(task.project, home)}");
     // The glyph really is gone from inside the chip: its body is the name alone.
     expect(VIEWS).toContain('const body = <span className="schedule-tv-id-name">{name}</span>;');
   });

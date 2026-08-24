@@ -423,7 +423,7 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   const body = <span className="schedule-tv-id-name">{name}</span>;
   if (!onPick) {
     return (
-      <span className="schedule-tv-id" data-tip={title || name} title="">{body}</span>
+      <span className="schedule-tv-id" title={title || name}>{body}</span>
     );
   }
   return (
@@ -435,13 +435,13 @@ export function IdentityChip({ name, title, onPick, active = false }: {
       // reason to try clicking it. On an ON chip it says the opposite thing,
       // because that is what the press now does.
       //
-      // `data-tip` and an EMPTY `title` (2026-08-24). Both halves matter. The
-      // empty title stops the browser walking up to the row's own — which is
-      // what put the task's name over this chip, the thing Akshil screenshotted
-      // — and `data-tip` is the fast tip, because a path is what a reader hovers
-      // this chip FOR and a two-second hold makes them give up first.
-      data-tip={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
-      title=""
+      // A NATIVE `title` (2026-08-24, third pass — it spent a day as the custom
+      // `[data-tip]` panel and came back). The panel drew displaced from the
+      // chip it captioned, which is worse than slow. Having a title OF ITS OWN
+      // is what fixes the bug from the screenshots: an element with none lets
+      // the browser walk up to the row's, so hovering this chip showed the
+      // task's name instead of the path.
+      title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
       aria-pressed={active}
       onClick={(e) => {
         e.stopPropagation();
@@ -1954,19 +1954,19 @@ function TaskNode({
         // claimed (`is-inert` turns the cursor and the hover tint off).
         role={pressable && !href ? "button" : undefined}
         tabIndex={pressable && !href ? 0 : undefined}
-        /* THE SAME PANEL AS EVERY OTHER TIP ON THIS ROW (Akshil, 2026-08-24:
-           "why are these aria label and tooltip kind of thing different?").
-           It was a native `title` — a deliberate exception, on the reasoning that
-           the row's own name is the one caption nobody is waiting on and a slow
-           tooltip is the right speed for it. That reasoning was about the DELAY
-           and it is kept: this has no fast class, so it still waits 300ms while
-           the marks answer instantly. What it got wrong is that the native
-           tooltip is a different-LOOKING object — the OS panel, its own font,
-           its own corner, drawn at the pointer — so one row could show two
-           unrelated kinds of tooltip depending on which pixel you were over.
-           Same panel, two speeds; not two panels. */
-        data-tip={task.title}
-        title=""
+        /* NATIVE `title`, and so is every caption on this row (Akshil,
+           2026-08-24, third pass — final). The custom `[data-tip]` panel had a
+           turn here and was pulled the same day: it is an absolutely positioned
+           box under its element, so on the FIRST ROW of the list it opened over
+           the row below, a caption sitting on a different task's title — "it is
+           displaced completely from the title". The browser's tooltip follows
+           the POINTER, which is the one placement that cannot caption the wrong
+           row, and it costs no stacking rules, no anchoring rules and no
+           suppression rules. The delay is the price, accepted by the owner —
+           what mattered was the wrong-tooltip bug, and that was never the
+           delay: it was marks with no `title` of their own inheriting this one,
+           which each mark now stops by carrying its own. */
+        title={task.title}
         onClick={href ? undefined : pressable ? activate : undefined}
         onKeyDown={
           href
@@ -2040,13 +2040,12 @@ function TaskNode({
           <a
             className="tasks-rowlink"
             href={href}
-            /* NO `title` (2026-08-24). This <a> is stretched over the whole row
-               and sits above it, so its native tooltip was the one actually
-               shown for the row — and it would have gone on being shown next to
-               the row's new panel, which is the inconsistency being fixed. The
-               row's `data-tip` above is the caption now. `aria-label` stays: it
-               is this link's accessible NAME, not a tooltip, and nothing about
-               the hover changes what a screen reader should hear. */
+            /* NO `title` OF ITS OWN (2026-08-24). This <a> is stretched over the
+               whole row and sits above it, so a title here is the one actually
+               shown — and the row div already carries the same words, one walk
+               up, which is where the browser lands when this link stays silent.
+               One copy of the caption, not two. `aria-label` stays: it is this
+               link's accessible NAME, not a tooltip. */
             aria-label={label}
             onClick={(e) => {
               if (opensElsewhere(e)) return;
@@ -2179,15 +2178,19 @@ function TaskNode({
             values instead of one-value-or-nothing.
 
             The FOLDER arm is the common case, so its tooltip has to be worth
-            having on nearly every row: it names the project path, which is the
-            same string the chip at the far end of the row carries — deliberately,
-            because the two are now one habit (`data-tip` on both, and see A4's
-            note in tasks.css on why neither is a native `title`). */}
+            having on nearly every row: it names the project path, the same
+            string the chip at the far end of the row carries — deliberately,
+            because the two are one hover habit.
+
+            A NATIVE `title`, like every caption on this row (2026-08-24, third
+            pass): the custom panel drew displaced from what it captioned, and
+            its own `title` is also what stops the browser walking up to the
+            row's — the walk is the bug that showed the task's name over every
+            mark that carried no title of its own. */}
         {taskFile_ ? (
           <span
             className="tasks-row-file"
-            data-tip={tildePath(taskFile_, home)}
-            title=""
+            title={tildePath(taskFile_, home)}
             aria-label={`This task is about ${basename(taskFile_)}`}
           >
             {ICON_FILE}
@@ -2195,8 +2198,7 @@ function TaskNode({
         ) : task.project ? (
           <span
             className="tasks-row-file"
-            data-tip={tildePath(task.project, home)}
-            title=""
+            title={tildePath(task.project, home)}
             aria-label={`This task is about the folder ${basename(task.project)}`}
           >
             {ICON_FOLDER}
@@ -2377,15 +2379,14 @@ function TaskNode({
                  bare "5" to a screen reader is the same unlabelled number the
                  comment above objected to on screen. */
               aria-label={`${shown} message${shown === 1 ? "" : "s"}`}
-              /* `data-tip`, and `title=""` to stop the walk — without the empty
-                 title this element inherits the ROW's tooltip, which is the
-                 task's own name, and hovering the message count showed the
-                 title. That is the bug in Akshil's screenshot ("if i hover over
-                 button/tag of folder it shows me task title instead of path"),
-                 and it was never about the folder chip alone: every mark on this
-                 row that had no title of its own was borrowing the row's. */
-              data-tip={`${shown} message${shown === 1 ? "" : "s"} in this task`}
-              title=""
+              /* A `title` OF ITS OWN is the fix for the screenshot bug ("if i
+                 hover over button/tag of folder it shows me task title instead
+                 of path"): an element with none lets the browser walk up to the
+                 row's, whose title is the task's name — and it was never about
+                 the folder chip alone, every mark here without its own title
+                 was borrowing the row's. Native, like everything on this row
+                 (third pass — the custom panel drew displaced and was pulled). */
+              title={`${shown} message${shown === 1 ? "" : "s"} in this task`}
             >
               {shown}
               <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
@@ -2420,15 +2421,11 @@ function TaskNode({
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
         {soon && (
-          <span className="tasks-row-next" data-tip={soon.title} title="">
+          <span className="tasks-row-next" title={soon.title}>
             {soon.text}
           </span>
         )}
-        {/* Fast tip, same as its neighbours (2026-08-24). This one DID have a
-            title of its own, so it never showed the row's — what it had was the
-            browser's one-to-two second hold before showing it, which for
-            "Tue 19 Aug, 14:22 — last run" is the same as not offering it. */}
-        <span className="tasks-row-time" data-tip={when.title} title="">
+        <span className="tasks-row-time" title={when.title}>
           {when.text}
         </span>
       </div>

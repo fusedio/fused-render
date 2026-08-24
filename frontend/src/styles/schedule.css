@@ -2674,98 +2674,24 @@ input.schedule-when-field {
   transition-delay: 0.3s;
 }
 
-/* THE HOVERED ELEMENT IS LIFTED ABOVE ITS SIBLINGS — and without this the panel
-   is drawn UNDER them (Akshil, 2026-08-24: "that is transparent and below the
-   text or something like that, said index issues probably"). Exactly right, and
-   the panel was never transparent: `--bg-popover` is opaque, and what showed
-   through it was a sibling painting on top.
-   The `::before` lives inside its own element's stacking context, so its
-   `z-index: 30` only ranks it against that element's own children — it cannot
-   outrank a LATER sibling that has a z-index of its own. Every mark on a task row
-   has `z-index: 2` (they must, to clear the stretched row link), so the folder
-   chip's tip was overlapped by the message count and the time drawn after it.
-   Raising the hovered element itself is what puts the whole subtree, panel
-   included, in front. Only while hovered, so the resting order is untouched. */
-[data-tip]:not([data-tip=""]):hover,
-[data-tip]:not([data-tip=""]):focus-visible {
-  z-index: 40;
-}
-
-/* NO DELAY AT ALL, for the row marks (Akshil, 2026-08-24: "hover over the list
-   item should show stuff fast … you have to make the aria label/tooltip pop
-   instantly").
-
-   Why a variant rather than dropping the 300ms everywhere: the delay exists for
-   a real case, and it is the one directly above — a pointer crossing a COLUMN of
-   status rings on its way somewhere else must not strobe a panel per row. The
-   marks this class is worn by are not in a column. They are five different
-   things spread along one row (the scope mark, the folder, the count, the time),
-   each a deliberate stop, and each holding the one fact its ink cannot show — a
-   full path, an absolute instant. There is nothing to strobe and nothing to
-   protect the reader from; the reader is asking.
-
-   `transition-delay: 0s` and not `transition: none`: the 0.1s fade stays, so the
-   panel appears rather than snapping into place. Instant means "no wait before
-   it starts", which is the complaint, and 100ms of fade is not a wait.
-
-   LISTED BY CLASS rather than switched on with an attribute, and the exclusion is
-   the reason: `.tasks-row` also contains `.schedule-ring`, which is the column
-   the 300ms was written for. A blanket `.tasks-row [data-tip]` would take the
-   guard off the one element that needs it. So the four marks name themselves. */
-.tasks-row-file[data-tip]:not([data-tip=""]):hover::before,
-.tasks-row-file[data-tip]:not([data-tip=""]):focus-visible::before,
-.tasks-row-msgs[data-tip]:not([data-tip=""]):hover::before,
-.tasks-row-msgs[data-tip]:not([data-tip=""]):focus-visible::before,
-.tasks-row-time[data-tip]:not([data-tip=""]):hover::before,
-.tasks-row-time[data-tip]:not([data-tip=""]):focus-visible::before,
-.tasks-row-next[data-tip]:not([data-tip=""]):hover::before,
-.tasks-row-next[data-tip]:not([data-tip=""]):focus-visible::before,
-.tasks-row .schedule-tv-id[data-tip]:not([data-tip=""]):hover::before,
-.tasks-row .schedule-tv-id[data-tip]:not([data-tip=""]):focus-visible::before {
-  transition-delay: 0s;
-}
-
-/* -- and the panels near the row's END anchor to their RIGHT edge --------------
-   The default is centred on its element (`left: 50%; translateX(-50%)`), which is
-   right for a mark with room either side and wrong for the last cell in a row:
-   the time sits against the list's right edge, so half of a 200-character
-   absolute instant hung outside the scroller and was clipped (Akshil,
-   2026-08-24: "the tooltip or area label on time gets clipped as well").
-   Anchored right, the panel grows LEFTWARDS into the row it belongs to, where
-   there is always room. Applied to the whole trailing group rather than the time
-   alone, because which of them is last depends on the row — a task with no
-   pending run has no `.tasks-row-next`, and the folder chip is last when the list
-   is filtered to one project and the count is absent. */
-.tasks-row-time[data-tip]:not([data-tip=""])::before,
-.tasks-row-next[data-tip]:not([data-tip=""])::before,
-.tasks-row-msgs[data-tip]:not([data-tip=""])::before {
-  left: auto;
-  right: 0;
-  transform: none;
-}
-
-/* -- one tip at a time --------------------------------------------------------
-   The row's own panel carries the task's title, and the row is the ANCESTOR of
-   every mark in it — so pointing at the folder chip hovers the chip and the row
-   at once, and both panels would draw, two captions six pixels apart saying
-   different things. The mark is the more specific answer and the one the reader
-   aimed at, so it wins and the row stands down. `:has()` is the whole mechanism;
-   there is no JS anywhere in this tooltip. */
-.tasks-row:has([data-tip]:not([data-tip=""]):hover)::before,
-.tasks-row:has([data-tip]:not([data-tip=""]):focus-visible)::before {
-  opacity: 0;
-  visibility: hidden;
-  transition-delay: 0s;
-}
-
-/* The row's own tip is anchored to the row's LEADING edge, not centred on it: a
-   row is the full width of the list, and a panel centred under one is a caption
-   floating in the middle of nothing, several hundred pixels from the title it is
-   captioning. Under the title is where it belongs. */
-.tasks-row[data-tip]:not([data-tip=""])::before {
-  left: var(--tasks-rail-x, 12px);
-  transform: none;
-}
+/* THE TASK ROW'S MARKS ARE NOT `data-tip` USERS, and were for exactly one day
+   (2026-08-24). The row's title, the scope glyph, the folder chip, the message
+   count and the times all wore this panel for one pass — consistency was the
+   argument — and it took FOUR support rules to keep honest: a z-index lift so a
+   later sibling could not paint over the panel, a right-edge anchor so the last
+   cell's panel was not clipped by the scroller, a `:has()` so the row's caption
+   and a mark's did not draw six pixels apart, and a per-class fast-delay list.
+   Even with all four it drew DISPLACED: the panel is positioned under its
+   ELEMENT, so on the list's first row it opened over the row below, captioning
+   a different task's title (Akshil, screenshot: "it is displaced completely
+   from the title" — "I don't want you to use custom tooltip").
+   So the marks carry native `title`s instead. The browser's tooltip follows the
+   POINTER, which is the one placement that cannot caption the wrong row, and it
+   needs none of the four rules — what fixed the original wrong-tooltip bug was
+   never the panel, it was each mark having a title OF ITS OWN so the browser
+   stops walking up to the row's. This panel stays for what it was built for:
+   the status ring's unread count, a fast tip on a COLUMN of identical marks,
+   where the 300ms guard above is the point. */
 
 /* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
    that was one blink too many (Akshil, 2026-08-17): the lane is a column of

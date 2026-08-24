@@ -731,7 +731,21 @@ export function loadRefusalShort(repo: AiModelRepo): string | null {
   // A partial repo never draws this line (RepoCard gates it), but the function
   // stays total — a short form that lied on one input would be worse than none.
   if (repo.partial) return "This download did not finish.";
-  if (!repo.engine) return "No local engine reads this weight format.";
+  if (!repo.engine) {
+    // TWO different facts behind "no engine", and the split mirrors
+    // `noEngineReason`'s exactly (bugbot, PR #794). A null capability means
+    // nothing here can say what this model IS — the Unrecognised heading's own
+    // fact — and the first cut of this function blamed the weight format for
+    // it, which is a verdict about a different problem: an unrecognised repo's
+    // formats may be perfectly readable, there is just nothing to load them AS.
+    // The server's own per-task sentence leads when it sent one, at card
+    // length; the flat fallback agrees with the group heading above the card.
+    if (repo.capability === null) {
+      const cause = firstClause(repo.supportReason ?? "");
+      return cause ? `${capitalise(cause)}.` : "The model type is not supported.";
+    }
+    return "No local engine reads this weight format.";
+  }
   if (!repo.engine.available) {
     // THE FIRST CLAUSE ONLY. The registry writes this as "<capability> is set to
     // <engine>, which does not read this format — switch it on the Engines tab"
@@ -740,19 +754,22 @@ export function loadRefusalShort(repo: AiModelRepo): string | null {
     // ("which does not read this format") is what the engine TAG two lines above
     // already says by being dashed and amber. What is left is the one fact
     // neither of them carries — which engine this capability is pointed at.
-    //
-    // Cut at the first comma or dash, whichever comes first, because those are
-    // the sentence's own joints; nothing here matches on words, so a reworded
-    // reason degrades to "keep more of it" rather than to a wrong answer.
-    const reason = repo.engine.reason ?? "";
-    const cut = Math.min(
-      ...[",", "—"].map((c) => (reason.includes(c) ? reason.indexOf(c) : reason.length)),
-    );
-    const cause = reason.slice(0, cut).trim();
+    const cause = firstClause(repo.engine.reason ?? "");
     if (cause) return `${capitalise(cause)}.`;
     return `${repo.engine.shortLabel} cannot load here.`;
   }
   return null;
+}
+
+/** The text up to its first joint — comma, em dash or full stop, whichever comes
+ *  first. Cutting at the sentence's own punctuation rather than searching for
+ *  words is what lets a reworded reason degrade to "keep more of it" instead of
+ *  to a wrong answer. */
+function firstClause(text: string): string {
+  const cut = Math.min(
+    ...[",", "—", "."].map((c) => (text.includes(c) ? text.indexOf(c) : text.length)),
+  );
+  return text.slice(0, cut).trim();
 }
 
 /** First letter up, rest untouched — the registry writes its reasons mid-sentence
