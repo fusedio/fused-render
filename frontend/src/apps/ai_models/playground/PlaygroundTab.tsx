@@ -39,7 +39,6 @@ import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppAnnotation, modelName } from "./appSeed";
 import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
-import { PlaygroundApps } from "./PlaygroundApps";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -666,7 +665,7 @@ export default function PlaygroundTab() {
       <div className="pg-stage">
       {/* One frame owns the width story for everything on the stage: capped at
           840px, centered, gutters below that. The hero spans it fully and the
-          work column and apps strip share the same box, so top and bottom can
+          work column share the same box, so top and bottom can
           never drift apart. */}
       <div className="pg-frame">
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
@@ -927,7 +926,6 @@ export default function PlaygroundTab() {
                 still load and manage this model.
               </p>
             )}
-            <PlaygroundApps capability={selected.row.capability} modelId={selected.model.id} />
           </>
         )}
       </div>

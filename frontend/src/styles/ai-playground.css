@@ -452,8 +452,7 @@
      only what keeps an empty box from growing a scrollbar. `clip`, not
      `hidden`: there is nothing here to scroll to sideways, and `hidden` leaves
      a programmatically scrollable box that a stray focus or anchor jump can
-     shove sideways. The apps strip scrolls in its own box (`.pg-apps-row`), so
-     nothing legitimate is lost. */
+     shove sideways. */
   overflow-x: hidden;
   overflow-x: clip;
 }
@@ -690,8 +689,8 @@
   --pg-fade: 160ms;
 }
 
-/* THE width story, in one place: every box on the stage — hero, work column,
-   apps strip — lives inside this frame and simply spans it. 840px cap,
+/* THE width story, in one place: every box on the stage — hero, work column —
+   lives inside this frame and simply spans it. 840px cap,
    centered, a 32px gutter below that. */
 .pg-frame {
   width: min(840px, calc(100% - 32px));
@@ -1439,10 +1438,7 @@
    background either, for the same reason: it stays quieter than .pg-answer and
    .pg-image-frame, which are the boxes with something in them.
 
-   One height for all five stages. 200px is the floor that makes the column
-   read as complete without pushing the app strip below the fold on a laptop —
-   .pg-apps is pinned to the stage's bottom with `margin-top: auto`, so every
-   pixel here is a pixel taken out of that void, not added to the page. */
+   One height for all five stages. */
 .pg-slot {
   display: flex;
   flex-direction: column;
@@ -2165,52 +2161,3 @@
   color: var(--fg-muted);
 }
 
-/* ---- The showcase-app strip under the stage (PlaygroundApps.tsx). The
- * cards themselves are the hub's own .app-pcard (styles/apps.css) — this
- * block only places the section and lays them out as one scrollable row. Appended at file
- * end under its own `.pg-apps-` prefix: the rest of this sheet is under
- * concurrent redesign (#760) and this block must merge clean. ---- */
-.pg-apps {
-  /* The banner's own gutters, so the stage's top and bottom bands share one
-   * pair of edges — the same min() expression, not a number copied. Auto side
-   * margins centre it; `margin-top: auto` is untouched by them and still does
-   * its main-axis job below. */
-  width: 100%;
-  /* Pinned to the bottom of the stage's viewport when the content above is
-   * short (`auto` soaks up the spare space — .pg-stage is a flex column),
-   * and pushed below the fold when it isn't: .pg-stage is the scroller, so
-   * tall stage content simply scrolls down to the strip. The padding is the
-   * floor spacing `auto` would otherwise collapse to zero. */
-  margin-top: auto;
-  padding-top: 28px;
-}
-/* One horizontal row, never wrapping: overflow scrolls sideways inside the
- * strip. The card wrappers are display:contents, so the .app-pcard anchors
- * themselves are the flex items — fixed at the hub grid's minimum width. */
-.pg-apps-row {
-  display: flex;
-  gap: 18px;
-  overflow-x: auto;
-  /* `overflow-x: auto` clips the BLOCK axis too, and .app-pcard's hover lifts
-   * the card 1px and casts an 18px-blur shadow — with the cards flush against
-   * this box the lifted top border reads as sliced off. So the strip carries
-   * padding on every side that the hover state can spill into, and negative
-   * margins hand the same amount back to the layout: the cards sit exactly
-   * where they did, only the clipping box grew. The side inset is 16px, which
-   * is precisely the slack .pg-apps' `100% - 32px` leaves, so the stage never
-   * gains a horizontal scrollbar. Bottom nets out at the 6px that keeps the
-   * scrollbar off the cards' edge. */
-  padding: 16px 16px 20px;
-  margin: -16px -16px -14px;
-}
-.pg-apps-row .app-pcard {
-  flex: 0 0 300px;
-}
-/* Sentence case, at reading size: "Use it in an app" is an invitation, and
- * caps-plus-tracking turns a sentence into a section label. */
-.pg-apps-head {
-  margin: 0 0 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-muted);
-}
