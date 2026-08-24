@@ -4,7 +4,7 @@
 returns the same envelope, but the worker running `main(**params)` is kept alive
 between calls. Everything is resolved server-side exactly as `run.py` does, so
 this adds no code-execution surface over `/api/run`. The worker is supervised by
-`engine_host`; the call is forwarded via `routers/engines._forward` (which brings
+`engine_host`; the call is forwarded via `engine_forward._forward` (which brings
 heal-on-failure + cancel-on-disconnect).
 """
 import asyncio
@@ -18,7 +18,7 @@ from fastapi.responses import Response
 from fused_render import projectenv
 from fused_render.server import engine_host
 from fused_render.server.common import _error, _require_fused, resolve_py
-from fused_render.server.routers.engines import _forward
+from fused_render.server.engine_forward import _forward
 from fused_render.shell import prefs as shell_prefs
 
 router = APIRouter()

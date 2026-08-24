@@ -63,7 +63,7 @@ from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
-from fused_render.server.routers.engine import router as engine_router
+from fused_render.server.routers.app_engine import router as app_engine_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
@@ -535,9 +535,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(fs_mutate_router)
     app.include_router(render_router)
     app.include_router(run_router)
-    # The warm variant of /api/run (routers/engine.py): POST /api/engine keeps
-    # the script's worker alive between calls. Opt-in via fused.engine().
-    app.include_router(engine_router)
+    # The warm variant of /api/run (routers/app_engine.py): POST /api/engine
+    # keeps the script's worker alive between calls. Opt-in via fused.engine().
+    app.include_router(app_engine_router)
     # The script-venv install loader (routers/env.py): /api/env/install,
     # /api/env/progress, /api/env/cancel — what the page shell drives after
     # /api/run's pre-flight answers `needs_install` (PY-18 / D173).

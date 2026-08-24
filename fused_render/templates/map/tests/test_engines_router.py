@@ -123,9 +123,9 @@ def test_killing_the_child_heals_the_same_proxy_url(
 def test_a_wedged_child_is_restarted_by_the_retry(
     client, stub_python, stub_daemon, tmp_path, engine_host, monkeypatch, child_post,
 ):
-    from fused_render.server.routers import engines
+    from fused_render.server import engine_forward
 
-    monkeypatch.setattr(engines, "GET_TIMEOUT_S", 3.0)
+    monkeypatch.setattr(engine_forward, "GET_TIMEOUT_S", 3.0)
     _ensure(client, stub_python, stub_daemon, tmp_path)
     descriptor = _describe(client)
     url = _proxy_tile(descriptor)

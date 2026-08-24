@@ -61,7 +61,7 @@ def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
     # its concurrent calls, and re-run main()).
     import asyncio
 
-    from fused_render.server.routers import engines
+    from fused_render.server import engine_forward
 
     child = engine_host.Child(
         engine_id="app_timeouttest", python=sys.executable,
@@ -74,13 +74,13 @@ def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
 
     async def fake_proxy(c, request, path, body, call_timeout=None,
                          at_most_once=False):
-        return engines._TIMEOUT
+        return engine_forward._TIMEOUT
 
-    monkeypatch.setattr(engines, "_proxy", fake_proxy)
+    monkeypatch.setattr(engine_forward, "_proxy", fake_proxy)
 
     resp = asyncio.run(
-        engines._forward("app_timeouttest", None, "/call", b"{}",
-                         call_timeout=60.0, at_most_once=True))
+        engine_forward._forward("app_timeouttest", None, "/call", b"{}",
+                                call_timeout=60.0, at_most_once=True))
     assert resp.status_code == 504
     assert healed == []  # the worker was never restarted
 
