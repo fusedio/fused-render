@@ -1,21 +1,37 @@
-"""The claude template's half of "Fix with AI": a one-shot seeded prompt.
+"""The claude template's half of "Fix with AI": a one-shot seeded prompt,
+PULLED from the shell at boot rather than read off this document's own URL.
 
-The git sidebar's "Fix with AI" button (fused_render/templates/git/template.html
-`askClaudeOnError`) has no chat of its own, so it hands its prompt to whichever
-ancestor owns a Claude sidebar through the runtime's ancestor-window hop
-(static/runtime.js `noteAskClaude` / `window._fusedClaudeAsk`, installed by
-Preview.tsx and Listing.tsx). By the time it reaches THIS document it has
-become `_fused_ask` on the iframe's own src — see test_git_scope.py and
-test_sessions_inbox_open_dir.py for the shell's half of that hop.
+review #804 round 1: the git sidebar's "Fix with AI" button
+(fused_render/templates/git/template.html `askClaudeOnError`) has no chat of
+its own, so it hands its prompt to whichever ancestor owns a Claude sidebar
+through the runtime's ancestor-window hop (static/runtime.js `noteAskClaude` /
+`window._fusedClaudeAsk`, installed by Preview.tsx and Listing.tsx).
+
+review #804 round 2: the prompt used to become `_fused_ask` on this iframe's
+own src, read directly off `location.search` — a one-shot query param, kept
+one-shot by a shell-side cache keyed on "has the src's ask-less base changed".
+That shape had a hole no cache design closed: ANY remount of this iframe for a
+reason that has nothing to do with a new ask (the sidebar toggled away and
+back, the folder pane closed and reopened) rebuilds the identical cached src
+and replays a stale error into a brand-new conversation — a `src` is an
+address, and "follow this part of the address only the first time" cannot be
+expressed by a URL however it is cached.
+
+So the prompt is no longer a URL param anywhere. It lives on the HOST as
+plain in-memory state, and THIS document PULLS it at its own boot through the
+runtime's other ancestor hop (`window._fusedTakeClaudeAsk`, static/runtime.js
+`pullClaudeAsk`) — a query that also CLEARS whatever it returns, in the host,
+in the same step. Consumption is then a property of WHEN a pull happens (this
+frame's own boot, the one moment it can matter) rather than something a src
+string has to encode and a cache has to keep stable. See
+tests/test_ask_claude_hop.py for `pullClaudeAsk`'s own behavior, and
+test_git_scope.py / test_sessions_inbox_open_dir.py for the shell's (push)
+half of the hop.
 
 Structural assertions over the template source, the same approach
 test_claude_message_anchor.py and test_claude_schedule_pill.py take: inline
 vanilla JS in a very large document, so what is pinned is that the wiring
-exists and that the properties easy to get wrong stay true — chiefly that the
-param is read as a HOST fact (`location.search`, never `fused.params`, the same
-distinction `chat_only`/`_file` already make and the same reason: it describes
-how this document was opened, not state that belongs on the shell's own URL)
-and that it is one-shot (read exactly once, at boot).
+exists and that the properties easy to get wrong stay true.
 """
 import os
 import re
@@ -43,33 +59,40 @@ def code(source) -> str:
     return re.sub(r"^\s*//.*$", "", without_html, flags=re.M)
 
 
-def test_the_ask_is_read_off_this_frames_own_url(code):
-    """Through `location.search`, not `fused.params` — the same distinction
-    `CHAT_ONLY` makes a few lines above it, and for the same reason: this param
-    says how the HOST built this one iframe, which is exactly wrong to read
-    through the params helper that targets the shell's own URL."""
-    assert 'const ASK = new URLSearchParams(location.search).get("_fused_ask")' in code
-    assert 'fused.params.get("_fused_ask")' not in code
+def _boot(code: str) -> str:
+    boot = code[code.rindex("(async () => {"):]
+    return boot[:boot.index("\n})();")]
 
 
-def test_the_ask_is_stripped_from_a_framed_apps_own_params(code):
-    """Left out of CHAT_PARAMS it would reach the model as a param the framed
-    app is running with — the same mistake `_file` and `chat_only` are in that
-    set to avoid (test_claude_message_anchor.py pins `msg` the same way)."""
-    params = code[code.index("const CHAT_PARAMS"):]
-    params = params[:params.index("]);")]
-    assert '"_fused_ask"' in params
+def test_the_ask_is_pulled_from_the_host_not_read_off_this_documents_url(code):
+    """No `_fused_ask` query param anywhere — the whole point of round 2's
+    redesign is that this text never touches a URL at all."""
+    assert "_fused_ask" not in code
+    boot = _boot(code)
+    assert (
+        "const ask = typeof window._fusedTakeClaudeAsk === \"function\"\n"
+        "    ? window._fusedTakeClaudeAsk()\n"
+        "    : null;"
+    ) in boot
+
+
+def test_the_pull_is_guarded_the_same_way_every_ancestor_hop_call_is(code):
+    """A window with no `_fusedTakeClaudeAsk` hook (this template opened
+    standalone, under the hosted runtime, or in a frame the shell's ancestor
+    plumbing was never injected into) has nothing to pull — guarded exactly
+    like the git template's own call to `window._fusedAskClaude` is."""
+    boot = _boot(code)
+    assert 'typeof window._fusedTakeClaudeAsk === "function"' in boot
 
 
 def test_a_present_ask_starts_a_fresh_chat_and_sends_it(code):
-    """The boot IIFE: `ASK` wins outright, ahead of the session_id/run resume
-    branch."""
-    boot = code[code.rindex("(async () => {"):]
-    boot = boot[:boot.index("\n})();")]
-    assert "if (ASK) {" in boot
-    ask_branch = boot[boot.index("if (ASK) {"):boot.index("} else if (session_id")]
+    """The boot IIFE: a pulled `ask` wins outright, ahead of the session_id/run
+    resume branch."""
+    boot = _boot(code)
+    assert "if (ask) {" in boot
+    ask_branch = boot[boot.index("if (ask) {"):boot.index("} else if (session_id")]
     assert "enterChat();" in ask_branch
-    assert "sendMessage(ASK);" in ask_branch
+    assert "sendMessage(ask);" in ask_branch
 
 
 def test_the_ask_branch_disowns_a_leftover_session_before_sending(code):
@@ -81,57 +104,66 @@ def test_the_ask_branch_disowns_a_leftover_session_before_sending(code):
     `fused.params.get("session_id")` independently at send time (its own
     `agent.py` "start" call) regardless of anything decided in the boot IIFE.
 
-    Without disowning them first, a present `ASK` would still boot an empty
+    Without disowning them first, a pulled ask would still boot an empty
     transcript (this branch never calls loadHistory/resumeRun) while silently
     appending the fresh ask's message to the STALE conversation server-side,
     and would abandon any real in-flight `run` with nothing re-attaching it.
     Enforced the same way "New chat" enforces it before starting one (the
     `back` button's click handler): disown both with
-    `{history: "replace", default: ""}`, in the ASK branch, before
+    `{history: "replace", default: ""}`, in the ask branch, before
     `sendMessage` runs.
     """
-    boot = code[code.rindex("(async () => {"):]
-    boot = boot[:boot.index("\n})();")]
-    ask_branch = boot[boot.index("if (ASK) {"):boot.index("} else if (session_id")]
+    boot = _boot(code)
+    ask_branch = boot[boot.index("if (ask) {"):boot.index("} else if (session_id")]
     clear_session = 'fused.params.set("session_id", "", { history: "replace", default: "" });'
     clear_run = 'fused.params.set("run", "", { history: "replace", default: "" });'
     assert clear_session in ask_branch
     assert clear_run in ask_branch
     # And both clears land BEFORE sendMessage — clearing after the send has
     # already read the (still stale) session_id would be no fix at all.
-    assert ask_branch.index(clear_session) < ask_branch.index("sendMessage(ASK)")
-    assert ask_branch.index(clear_run) < ask_branch.index("sendMessage(ASK)")
+    assert ask_branch.index(clear_session) < ask_branch.index("sendMessage(ask)")
+    assert ask_branch.index(clear_run) < ask_branch.index("sendMessage(ask)")
 
 
-def test_the_ask_branch_awaits_model_and_effort_detection_before_sending(code):
+def test_the_ask_branch_bounds_its_wait_for_model_and_effort_detection(code):
     """`curModel()`/`curEffort()` (inside `sendMessage`'s `agent.py` "start"
     call) rank `detectedModel`/`prefModel` above the DEFAULT_MODEL/
     DEFAULT_EFFORT constants, but both are filled by ASYNC calls
     (`action: "defaults"` and `GET /api/prefs`) that are only kicked off, never
     awaited, at the top of the script. An ordinary visit never notices: a
     person reads the page and types before their first send, which is normally
-    slower than either settling. The ASK branch has no person in between — it
+    slower than either settling. The ask branch has no person in between — it
     sends the instant boot reaches it — so without awaiting the same two
-    promises first, every "Fix with AI" run would launch on the bare defaults,
-    silently ignoring the project's detected config and the user's
-    Preferences → Default model.
+    promises first, every "Fix with AI" run would launch on the bare defaults.
+
+    review #804 round 2 finding 7: an UNBOUNDED await here is its own defect —
+    `action: "defaults"` is a `fused.runPython` call that can take tens of
+    seconds on a cold project venv, during which the user would see an empty
+    transcript with no indication anything is queued. So the wait is bounded
+    by `ASK_DETECTION_TIMEOUT_MS` — sending on whatever is known so far once
+    the bound passes, rather than waiting indefinitely for detection.
     """
     assert "const detectionReady = fused.runPython(AGENT, { action: \"defaults\"" in code
     assert 'const prefsReady = fetch("/api/prefs")' in code
-    boot = code[code.rindex("(async () => {"):]
-    boot = boot[:boot.index("\n})();")]
-    ask_branch = boot[boot.index("if (ASK) {"):boot.index("} else if (session_id")]
-    assert "await Promise.all([detectionReady, prefsReady]);" in ask_branch
+    assert re.search(r"const ASK_DETECTION_TIMEOUT_MS = \d+;", code)
+    boot = _boot(code)
+    ask_branch = boot[boot.index("if (ask) {"):boot.index("} else if (session_id")]
+    assert "Promise.race([" in ask_branch
+    assert "Promise.all([detectionReady, prefsReady])" in ask_branch
+    assert "setTimeout(resolve, ASK_DETECTION_TIMEOUT_MS)" in ask_branch
     # And the wait happens BEFORE the send it exists to fix.
-    assert (ask_branch.index("await Promise.all([detectionReady, prefsReady]);")
-            < ask_branch.index("sendMessage(ASK)"))
+    assert ask_branch.index("Promise.race([") < ask_branch.index("sendMessage(ask)")
 
 
 def test_the_ask_is_never_reported_to_the_model_as_an_app_param(source):
-    """Same guarantee test_the_ask_is_stripped_from_a_framed_apps_own_params
-    pins on the stripped-comments `code` fixture; re-checked on raw `source`
-    (with comments) so a future rewrite that only updates the doc comment above
-    CHAT_PARAMS and forgets the set itself is still caught."""
+    """There is nothing to strip any more (round 2): the ask is not a URL
+    param at all, so it cannot leak into a framed app's reported params
+    through CHAT_PARAMS the way `_file`/`chat_only` are guarded against —
+    re-checked on raw `source` so a stray reintroduction as a param is still
+    caught. (The bare mention of `_fused_ask` survives in this file's own
+    history-recording comments — see this module's docstring — so the literal
+    QUOTED param form is what is checked, not the bare word.)"""
+    assert '"_fused_ask"' not in source
     params = source[source.index("const CHAT_PARAMS"):]
     params = params[:params.index("]);")]
-    assert '"_fused_ask"' in params
+    assert '"_fused_ask"' not in params

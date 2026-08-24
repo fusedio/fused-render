@@ -79,7 +79,7 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
-import { resolveClaudeAskSeed, type ClaudeAskCache } from "@apps/explorer/lib/claude-ask-seed";
+import { takeClaudeAsk } from "@apps/explorer/lib/claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
@@ -119,12 +119,15 @@ const FLIP_BUDGET = 2;
 
 // The window global the injected runtime calls to hand this pane a prompt the
 // git companion's "Fix with AI" button built for a failed operation
-// (static/runtime.js `noteAskClaude`, reached from the git template as
-// `window._fusedAskClaude`). Same ancestor-global shape Preview.tsx declares
-// for the file sidebar's copy of this hook — this is the folder pane's.
+// (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
+// template as `window._fusedAskClaude` and from the claude template as
+// `window._fusedTakeClaudeAsk`). Same ancestor-global shape Preview.tsx
+// declares for the file sidebar's copy of this pair — this is the folder
+// pane's.
 declare global {
   interface Window {
     _fusedClaudeAsk?: (text: unknown) => void;
+    _fusedClaudeAskTake?: () => string | null;
   }
 }
 
@@ -906,50 +909,64 @@ export default function Listing({
   // `splitCapable` — a snapshot or panel pane with no pane at all has nothing
   // to open this into.
   //
-  // A REF, not state: it must survive from the moment it arrives to the one
-  // render that builds the companion prop below, and must never itself cause a
-  // render — `selectSide` already does that.
+  // THIS IS A PULL, NOT A PARAM ON THE COMPANION IFRAME'S SRC (review #804
+  // round 2) — see Preview.tsx's copy of this comment for the full argument.
+  // In short: a param baked into `ListingPreviewPane`'s src, kept "one-shot" by
+  // a cache keyed on `paneKey(paneSide, fsPath)`, still replayed on any
+  // remount that key comparison could not tell apart from a genuinely new ask
+  // — closing and reopening the pane on the SAME folder is a fresh mount with
+  // an unchanged key, and so is toggling `git` -> `claude` -> `git` -> `claude`
+  // without a second click. So the prompt lives here as plain state instead,
+  // and the CLAUDE TEMPLATE pulls it at its own boot
+  // (`window._fusedClaudeAskTake`, via the claude template's
+  // `_fusedTakeClaudeAsk` / static/runtime.js `pullClaudeAsk`) — consumption is
+  // then a property of WHEN a pull happens, not something a cache reconstructs
+  // from a key.
   //
-  // What makes it ONE-SHOT is the consumption below, not an effect guessing
-  // when it has gone stale — an effect keyed on "left claude" was tried here
-  // first (mirroring what Preview.tsx tried first) and had the same hole: a
-  // folder navigation that stays on `claude` changes `fsPath` without ever
-  // firing that effect, so the seed survived into `ListingPreviewPane`'s NEXT
-  // mount (`key={paneKey(paneSide, fsPath)}` — the folder changed, so this IS a
-  // new mount) and re-sent the old repo's error into the new folder's chat.
+  // A REF, not state: it must survive from the moment it arrives to whichever
+  // later boot pulls it, and must never itself cause a render —
+  // `selectSide` already does that.
   const claudeSeedRef = useRef<string | null>(null);
+  // A new ask can arrive while the pane is ALREADY showing claude on the SAME
+  // folder — a second "Fix with AI" click without switching companion or
+  // folder first — and `paneKey(paneSide, fsPath)` alone cannot tell that
+  // apart from an unrelated re-render: neither `paneSide` nor `fsPath` changed,
+  // so `ListingPreviewPane`'s key would not either, and nothing would remount
+  // it to make its boot pull the new text. Bumped on every incoming ask and
+  // folded into the key passed down (below), the same fix Preview.tsx's
+  // `claudeAskInstance` is for the sidebar's copy of this gap.
+  const [claudeAskInstance, setClaudeAskInstance] = useState(0);
   useEffect(() => {
     if (!paneEnabled) return;
     window._fusedClaudeAsk = (text: unknown) => {
       if (typeof text !== "string" || !text) return;
       claudeSeedRef.current = text;
+      setClaudeAskInstance((n) => n + 1);
       // Switches the pane to Claude — REPLACING whatever companion (most often
       // `git`, the one that just failed) was showing. The error and repo state
       // the git pane knew are already folded into `text`, so nothing is lost
       // by the git pane going away.
       selectSide("claude");
     };
+    // The other half of the pull: the claude template's own boot calls this to
+    // collect whatever is pending. `takeClaudeAsk` (lib/claude-ask.ts, shared
+    // with Preview.tsx's copy of this hook) is what actually reads-and-clears.
+    window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);
     return () => {
       delete window._fusedClaudeAsk;
+      delete window._fusedClaudeAskTake;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectSide`
     // closes over per-render state (`paneSides`) this hook does not need to
     // react to; re-running it on every one of those renders would just
     // reinstall the same function.
   }, [paneEnabled]);
-  // The seed actually handed to THIS render's `ListingPreviewPane`, resolved
-  // through the same one-shot logic Preview.tsx's copy of this problem uses
-  // (lib/claude-ask-seed — read its header for the full case analysis).
-  // `ListingPreviewPane` does NOT always remount when this component
-  // re-renders (only `paneKey(paneSide, fsPath)` changing remounts it), so
-  // clearing `claudeSeedRef` unconditionally on every read would flip the prop
-  // from the seed text to `null` on the very next unrelated Listing re-render
-  // (a selection change, a sort) while the SAME companion iframe is still
-  // mounted — which drops `_fused_ask` from its src and reloads it.
-  const claudeAskCacheRef = useRef<ClaudeAskCache | null>(null);
-  const claudeSeedForPane = paneSide === "claude"
-    ? resolveClaudeAskSeed(claudeSeedRef, claudeAskCacheRef, paneKey(paneSide, fsPath))
-    : null;
+  // A still-pending ask abandoned by a folder navigation (the user asked, then
+  // moved on before the pane ever settled on `claude`) must not survive into
+  // an unrelated later boot on a DIFFERENT folder.
+  useEffect(() => {
+    claudeSeedRef.current = null;
+  }, [fsPath]);
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
@@ -1928,9 +1945,17 @@ export default function Listing({
                   mode does — never when the selection moves — which is what stops
                   arrow-keying down the listing remounting the chat/git/mcp iframe
                   (a `git status`/`git log` fork, or a second `agent.py` spawn) on
-                  every keystroke. */}
+                  every keystroke.
+
+                  `claudeAskInstance` rides along ONLY for `claude` (see its own
+                  comment above): a second "Fix with AI" ask on the same folder
+                  changes neither `paneSide` nor `fsPath`, so without it the key
+                  would not change either, and the claude template's next boot
+                  would never fire to pull the new prompt. */}
               <ListingPreviewPane
-                key={paneKey(paneSide, fsPath)}
+                key={paneSide === "claude"
+                  ? `${paneKey(paneSide, fsPath)}:${claudeAskInstance}`
+                  : paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
                 appEntry={appEntryPath}
                 onOpenApp={openAppEntry}
@@ -1939,7 +1964,6 @@ export default function Listing({
                 sideEntries={sideEntries}
                 onSelectSide={selectSide}
                 onClose={closeSide}
-                claudeSeed={claudeSeedForPane}
               />
             </div>
           </>

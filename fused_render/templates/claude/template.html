@@ -4189,20 +4189,19 @@ const BASENAME = FILE.split("/").pop();
 const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
 
 // A one-shot prompt the git sidebar's "Fix with AI" button built for a failed
-// operation, handed here through the runtime's ancestor-window hop rather than
-// through the shell (static/runtime.js `noteAskClaude`, the explorer's
-// `window._fusedClaudeAsk` — see Preview.tsx/Listing.tsx). By the time it
-// reaches THIS document it has already become the query param the host built
-// the iframe src with: `_fused_ask`, read directly off `location.search` for
-// the same reason `_file` is, a few lines up — a leading underscore is
-// reserved and unreadable through `fused.params`, and this is a HOST fact
-// about how this one document was opened, not view state that belongs on the
-// shell's own URL. It is also, even more than `_file`, a value with no address
-// worth keeping: it is one failed command's error text, meant to be read and
-// acted on once and then forgotten, and a shell URL (or a bookmark of one)
-// that could replay a stale error into a fresh conversation would be actively
-// wrong. Consumed once, at boot, below — never re-read afterwards.
-const ASK = new URLSearchParams(location.search).get("_fused_ask") || "";
+// operation is NOT read off this document's URL at all (review #804 round 2 —
+// it used to be a `_fused_ask` query param here, the same "host fact, read off
+// location.search" shape as `_file`/`chat_only` above, and that shape had a
+// hole: ANY remount of this iframe for a reason that has nothing to do with a
+// new ask — the sidebar toggled away and back, the pane closed and reopened —
+// rebuilds the identical src and replays a stale error into a brand-new
+// conversation, because a `src` is an address and "follow this part of the
+// address only the first time" is not something a URL can express). The boot
+// IIFE below PULLS it instead, through the runtime's ancestor-window hop
+// (static/runtime.js `pullClaudeAsk`, `window._fusedTakeClaudeAsk`) — a query
+// to the host that ALSO clears whatever it returns, so consumption happens in
+// this frame, at the one moment (its own boot) that can matter, rather than
+// being reconstructed from a src string a cache had to keep stable.
 
 if (!FILE) {
   document.body.innerHTML = '<div id="msg">No file selected (missing _file param).</div>';
@@ -4513,14 +4512,16 @@ function searchParamsOf(search) {
 // `msg` is here for the `session_id` reason: it is this chat's own bookkeeping
 // (which turn a Tasks-list link asked to land on), and reporting it to the model
 // as a param the APP is running with describes our navigation as its state.
-// `_fused_ask` is the `_file`/`chat_only` case twice over: it names how THIS
-// DOCUMENT was opened (see ASK, above), not a param the app itself defined,
-// and it is consumed once at boot and gone — reporting it as a param the app
-// is "running with" would describe a one-shot instruction as ongoing state.
+//
+// The git sidebar's "Fix with AI" seed is NOT in this set (and does not need
+// to be, as of review #804 round 2): it is no longer a URL param at all — the
+// boot IIFE PULLS it through the runtime's ancestor hop instead of reading it
+// off `location.search` — so there is nothing here for a framed app to
+// inherit in the first place.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
                              "annmode", "leftmode", "paneview", "chat_only",
-                             "_fused_ask", "path", "msg"]);
+                             "path", "msg"]);
 
 function appParamsOf(all) {
   const out = {};
@@ -16925,26 +16926,54 @@ async function loadSnapshots() {
   }
 }
 
+// The bound on how long the "Fix with AI" boot branch (below) will wait for
+// model/effort detection before sending anyway. Detection is a
+// `fused.runPython` call (`detectionReady`), and on a COLD project venv that
+// can mean a real environment install running for tens of seconds — an
+// ordinary visit never notices (nothing here is waiting on it, a person is
+// reading the page), but the boot branch has no person to keep the composer
+// company, so a blank transcript sitting for that long with no send and no
+// explanation is worse than sending on the fallback model a little early.
+// 1.5s is comfortably longer than the warm-venv case this whole wait exists
+// for (a local read or two) and short enough that a cold one still resolves
+// this fast, silently, most of the time; it does not need to be exact, only
+// bounded.
+const ASK_DETECTION_TIMEOUT_MS = 1500;
+
 // ── boot: resume from URL, or show the landing page ──
 (async () => {
   const session_id = fused.params.get("session_id");
   const run_id = fused.params.get("run");
-  if (ASK) {
+  // The git sidebar's "Fix with AI" seed, PULLED rather than read off this
+  // document's own URL (see the comment above CHAT_ONLY/CHAT_PARAMS) — a
+  // query to the host through the runtime's ancestor hop
+  // (`window._fusedTakeClaudeAsk`, static/runtime.js `pullClaudeAsk`) that
+  // also CLEARS whatever it returns in the host, in the same step, so this is
+  // the one and only place this text is ever read: calling it twice (nothing
+  // here does, but the guard costs nothing) would get the text once and
+  // `null` after. Guarded the same way every other ancestor-hop call in this
+  // codebase is (`typeof … === "function"`): a window with no
+  // `_fusedTakeClaudeAsk` hook is simply not a shell with a pending ask to
+  // give, hosted runtime included.
+  const ask = typeof window._fusedTakeClaudeAsk === "function"
+    ? window._fusedTakeClaudeAsk()
+    : null;
+  if (ask) {
     // The git sidebar's "Fix with AI" button opened THIS document fresh for
-    // exactly this ask (see ASK, above) — but `session_id`/`run` above are
-    // read through `fused.params`, which (this page sets no
-    // `_fusedParamBoundary`) targets the SHELL's own address bar, not this
-    // iframe's own src. That address bar is NOT guaranteed clean: closing the
-    // sidebar (Preview.tsx's `setSide`/Listing.tsx's `closeSide`) never clears
-    // it, so a `session_id`/`run` a PAST conversation on this same file left
-    // behind survives sitting right there — this branch used to assume
-    // otherwise ("never onto an existing session_id or run") and that was
-    // wrong: `sendMessage` below reads `fused.params.get("session_id")` again
-    // at send time (its own `agent.py` "start" call), independently of
-    // anything decided here, so a stale id would have appended this fresh
-    // ask's message to a DIFFERENT conversation server-side while this frame
-    // shows an empty transcript, and any leftover in-flight `run` would never
-    // be re-attached and would keep streaming invisibly.
+    // exactly this ask — but `session_id`/`run` above are read through
+    // `fused.params`, which (this page sets no `_fusedParamBoundary`) targets
+    // the SHELL's own address bar, not this iframe's own src. That address bar
+    // is NOT guaranteed clean: closing the sidebar (Preview.tsx's
+    // `setSide`/Listing.tsx's `closeSide`) never clears it, so a
+    // `session_id`/`run` a PAST conversation on this same file left behind
+    // survives sitting right there — this branch used to assume otherwise
+    // ("never onto an existing session_id or run") and that was wrong:
+    // `sendMessage` below reads `fused.params.get("session_id")` again at send
+    // time (its own `agent.py` "start" call), independently of anything
+    // decided here, so a stale id would have appended this fresh ask's
+    // message to a DIFFERENT conversation server-side while this frame shows
+    // an empty transcript, and any leftover in-flight `run` would never be
+    // re-attached and would keep streaming invisibly.
     //
     // So this branch does what "New chat" does before it starts one (the
     // `back` button's click handler, above) — disown both, the same way and
@@ -16967,11 +16996,16 @@ async function loadSnapshots() {
     // "Fix with AI" run would launch on `DEFAULT_MODEL`/`DEFAULT_EFFORT`,
     // silently ignoring the project's detected config and the user's
     // Preferences → Default model. Both already swallow their own failures
-    // (`.catch(() => {})`), so this never rejects and never blocks on a
-    // network error — only on however long the (normally fast) local reads
-    // actually take.
-    await Promise.all([detectionReady, prefsReady]);
-    sendMessage(ASK);
+    // (`.catch(() => {})`), so this can only be slow, never rejected — and
+    // `ASK_DETECTION_TIMEOUT_MS` bounds the slow case, so a cold-venv
+    // detection cannot leave the user staring at an empty transcript
+    // indefinitely; it sends on whatever is known so far once the bound
+    // passes.
+    await Promise.race([
+      Promise.all([detectionReady, prefsReady]),
+      new Promise((resolve) => setTimeout(resolve, ASK_DETECTION_TIMEOUT_MS)),
+    ]);
+    sendMessage(ask);
   } else if (session_id || run_id) {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.

@@ -55,7 +55,7 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
-import { resolveClaudeAskSeed, type ClaudeAskCache } from "@apps/explorer/lib/claude-ask-seed";
+import { takeClaudeAsk } from "@apps/explorer/lib/claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -87,15 +87,21 @@ import Listing from "@apps/explorer/Listing";
 // template as `window._fusedSelectRev`). Declared here, beside the assignment that
 // installs it, exactly as main.tsx declares `_fusedFsChanged` beside its own — the
 // other half of the same ancestor-global contract with that runtime.
-// The window global the injected runtime calls to hand this shell a prompt the
-// git sidebar's "Fix with AI" button built for a failed operation
-// (static/runtime.js `noteAskClaude`, reached from the git template as
-// `window._fusedAskClaude`). Same ancestor-global shape as `_fusedRevSelected`
-// above, and declared right beside it for the same reason.
+//
+// `_fusedClaudeAsk`/`_fusedClaudeAskTake` are the git sidebar's "Fix with AI"
+// hop (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
+// template as `window._fusedAskClaude` and from the claude template as
+// `window._fusedTakeClaudeAsk`). Two calls, not one, because this is a PULL:
+// `_fusedClaudeAsk` is the PUSH half — the git template hands over the prompt
+// and this shell remembers it and switches to Claude — and `_fusedClaudeAskTake`
+// is what the claude template's OWN boot calls to collect it, which is also
+// what CONSUMES it (see the effect below for why the prompt is never baked
+// into that iframe's `src`).
 declare global {
   interface Window {
     _fusedRevSelected?: (sha: unknown) => void;
     _fusedClaudeAsk?: (text: unknown) => void;
+    _fusedClaudeAskTake?: () => string | null;
   }
 }
 
@@ -936,47 +942,73 @@ function TemplatePreview({
   // and two instances racing for one window global would have the last mount
   // win the callback for all of them.
   //
-  // A REF, not state: the text has to survive from the moment it arrives to the
-  // one render that builds the claude iframe's `src` (below, `sideSrcFor`), and
-  // it must never cause a render of its own — `setSide` already does that.
+  // THIS IS A PULL, NOT A PARAM ON THE SRC (review #804 round 2). It used to be
+  // the latter — a `_fused_ask` query baked into the claude iframe's URL, kept
+  // one-shot by a cache keyed on "has the src's own base changed" — and that
+  // shape had a hole no amount of caching closed: ANY remount of that iframe
+  // for a reason that has NOTHING to do with a new ask (toggling the sidebar to
+  // `git` and back, closing and reopening the folder pane, a panel/tab
+  // reattaching) rebuilds the exact same cached src and replays the ask into a
+  // brand-new conversation. A `src` is an ADDRESS; "visit this document, but
+  // only follow this part of the address the first time" is not a thing a URL
+  // can express, however the cache around it is shaped.
   //
-  // What makes the seed ONE-SHOT is NOT this ref by itself — an effect keyed on
-  // "did we leave claude" was tried here first and was wrong: it left the seed
-  // sitting in this ref through every render where the sidebar STAYED on
-  // claude, including a file navigation that changes nothing about `activeSide`
-  // at all, and would have re-sent a stale error into a conversation about a
-  // different file. `sideSrcFor` below is what actually consumes it (clears it
-  // in the same step that bakes it into a src), which is what makes "used at
-  // most once" true regardless of WHY the sidebar re-rendered — a switch away
-  // and back, a different file while staying on claude, or a second ask on the
-  // same file — rather than an accident of which of those an effect happened
-  // to be watching.
+  // So the prompt lives here as plain in-memory state instead, and the CLAUDE
+  // TEMPLATE pulls it at its own boot (`window._fusedClaudeAskTake`, called
+  // through the claude template's `_fusedTakeClaudeAsk` export — see
+  // static/runtime.js `pullClaudeAsk`). Consumption is then a property of WHEN
+  // a pull happens (the one frame that is actually about to use the text, at
+  // the one moment — its own boot — that can matter) rather than something a
+  // cache has to reconstruct from a src string. `sideSrcFor` below carries
+  // nothing about this at all any more.
   const claudeSeedRef = useRef<string | null>(null);
-  // What the last call into `resolveClaudeAskSeed` (lib/claude-ask-seed)
-  // resolved, and for which claude src's ASK-LESS base — see that module for
-  // why this is the thing that makes the seed one-shot, not an effect. A ref,
-  // not `useMemo`: the decision has to run inside `sideSrcFor`'s own body,
-  // which is what actually consumes `claudeSeedRef`.
-  const claudeAskCacheRef = useRef<ClaudeAskCache | null>(null);
+  // A new ask can arrive while the sidebar is ALREADY showing claude — a
+  // second "Fix with AI" click without leaving the sidebar first — and that is
+  // the one case a plain ref cannot handle: `PreviewSidebar`'s iframe is
+  // `key`ed on the mode, so if the mode does not change, NEITHER does the key,
+  // and nothing remounts the frame to make it boot and pull again. This state
+  // exists to force exactly that remount: bumped on every incoming ask (see
+  // the hook below) and folded into the key `sideSrcFor`'s caller passes down
+  // (`claudeFrameKey`, further down), so a second ask on an already-open
+  // sidebar gets a fresh document the same as a first one does.
+  const [claudeAskInstance, setClaudeAskInstance] = useState(0);
   useEffect(() => {
     if (!splitCapable) return;
     window._fusedClaudeAsk = (text: unknown) => {
       if (typeof text !== "string" || !text) return;
       claudeSeedRef.current = text;
+      setClaudeAskInstance((n) => n + 1);
       // Switches the sidebar to Claude — REPLACING whatever companion (most
       // often `git`, the one that just failed) was showing. Two sidebars is not
       // a layout this column has, and it is not a loss here: the error and the
       // repo state the git pane knew are already folded into `text`.
       setSide("claude");
     };
+    // The other half of the pull: the claude template's own boot calls this
+    // (through the runtime's `pullClaudeAsk`) to collect whatever is pending.
+    // `takeClaudeAsk` (lib/claude-ask.ts) is what actually reads-and-clears —
+    // read its header for why that single step is the whole guarantee.
+    window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);
     return () => {
       delete window._fusedClaudeAsk;
+      delete window._fusedClaudeAskTake;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `setSide` closes
     // over per-render state (`split.defaultSide`, `sideReq`) that this hook does
     // not need to react to; re-running it on every one of those renders would
     // just reinstall the same function.
   }, [splitCapable]);
+  // A still-pending ask abandoned by a file navigation (the user asked, then
+  // moved on before the sidebar ever settled on `claude` — a gate still
+  // pending, or one that denies claude for this file — so nothing ever pulled
+  // it) must not survive into an unrelated later boot on a DIFFERENT file:
+  // `fsPath` carries no key of its own into `PreviewSidebar`'s iframe (unlike
+  // the folder pane's `paneKey`, which already includes it), so without this
+  // the ref would sit there until the next file's claude sidebar opened and
+  // pulled someone else's error.
+  useEffect(() => {
+    claudeSeedRef.current = null;
+  }, [fsPath]);
 
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
@@ -1222,6 +1254,11 @@ function TemplatePreview({
   //
   // Null while the mode's gate is unresolved — a pending borrowed entry has no
   // template path yet — and the column holds a spinner.
+  // No mention of the "Fix with AI" prompt anywhere in here (review #804 round
+  // 2): it is no longer a param this src carries at all — see the seed ref's
+  // own comment above for why, and `claudeFrameKey` below for the other half
+  // (forcing a fresh mount so the claude template's boot-time PULL actually
+  // fires when one is waiting).
   const sideSrcFor = (m: string): string | null => {
     const t = sidebarModes.find((e) => e.mode === m);
     if (!t || t.path === null) return null;
@@ -1229,26 +1266,24 @@ function TemplatePreview({
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
-    const base =
+    return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`;
-    if (m !== "claude") return base;
-    // `_fused_ask`: the one-shot prompt from `window._fusedClaudeAsk`, above.
-    // Rides the iframe src exactly as `chat_only=1` and `_file` do, for the same
-    // "never in the address bar" reason lib/preview-rev states for the content
-    // frame's own revision param — and it is stronger here, because this value
-    // has no page identity at all to preserve; it is one failed command's error
-    // text, gone the instant Claude has read it.
-    //
-    // `base` is the key `resolveClaudeAskSeed` (lib/claude-ask-seed) resolves
-    // against: it already carries everything that makes this a genuinely NEW
-    // claude document (the target file, `_remote`, `chat_only`), so "does the
-    // seed belong here" reduces to "has this exact string been asked for
-    // before" — see that module for the full case analysis (a stray re-render
-    // vs. a real navigation vs. a second ask on the same target).
-    const seed = resolveClaudeAskSeed(claudeSeedRef, claudeAskCacheRef, base);
-    return seed ? base + "&_fused_ask=" + encodeURIComponent(seed) : base;
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
+    );
   };
+  // The claude iframe's REMOUNT key, distinct from the mode name `active`
+  // everything else keys off of (the switcher's highlighted row, the title).
+  // Ordinarily the mode alone is the right key — switching to a DIFFERENT
+  // companion and back is exactly when a fresh document is wanted. The one
+  // gap is a second "Fix with AI" ask that arrives while claude is ALREADY
+  // active: the mode never changes, so a key of just the mode never would
+  // either, and nothing would remount the frame to make its boot pull the new
+  // text. `claudeAskInstance` (bumped on every incoming ask, above) closes
+  // that gap without disturbing the ordinary case: it only changes when an ask
+  // arrives, so toggling away to `git` and back with no new ask reuses the
+  // same instance number and still remounts on the mode change alone, exactly
+  // as before.
+  const claudeFrameKey = (m: string) => (m === "claude" ? `claude:${claudeAskInstance}` : m);
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
   // next one bare (`key={mode}`), so the user watched a blank pane for as long
@@ -1651,6 +1686,7 @@ function TemplatePreview({
               disabledReason: t.disabledReason,
             }))}
             active={activeSide}
+            frameKey={claudeFrameKey(activeSide)}
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             onSelect={setSide}
             onClose={() => setSide(null)}

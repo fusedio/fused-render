@@ -53,7 +53,6 @@ export default function ListingPreviewPane({
   onOpenApp,
   onSelectSide,
   onClose,
-  claudeSeed = null,
 }: {
   // The pane has NO MODE YET — the folder's companion probes are still out
   // (pane-side's paneSideList answers an empty list, and `side` is then only a
@@ -84,15 +83,6 @@ export default function ListingPreviewPane({
   // half of the affordance while the pane is down — SideChrome writes the split
   // between the two down.
   onClose: () => void;
-  // The git companion's "Fix with AI" one-shot prompt, or null — Listing's own
-  // `claudeSeedRef` value, already gated there to `side === "claude"` (so a
-  // git/mcp pane never sees a stale one from a companion it isn't). Baked into
-  // the claude iframe's `src` below exactly once: this component remounts
-  // (`Listing`'s `key={paneKey(...)}`) every time `side` actually changes, so
-  // the seed is fresh only for the render that creates a NEW claude mount, and
-  // Listing's own clearing effect is what keeps a later, unrelated remount from
-  // seeing the same text again.
-  claudeSeed?: string | null;
 }) {
   // Keep the keyboard on the listing when a companion iframe mounts (the pane's
   // focus contract — platform/lib/frame-focus.ts).
@@ -173,12 +163,12 @@ export default function ListingPreviewPane({
     // here: git/mcp's gates refuse a mount-backed directory outright, and
     // claude reads through the server either way.
     const chatOnly = paneChatOnly(side) ? CHAT_ONLY_PARAM : "";
-    // The one-shot seed, same param and same "read once, never re-derive it
-    // away" rule as Preview.tsx's `sideSrcFor` (see `claudeSeed`'s own comment
-    // above): only for `claude`, and only while Listing still holds it.
-    const ask = side === "claude" && claudeSeed
-      ? "&_fused_ask=" + encodeURIComponent(claudeSeed)
-      : "";
+    // No mention of the git companion's "Fix with AI" prompt here any more
+    // (review #804 round 2): it is not a param this src carries at all — the
+    // claude template PULLS it at its own boot instead (Listing.tsx's
+    // `_fusedClaudeAskTake`), and this component's `key` (Listing.tsx, folded
+    // with `claudeAskInstance` for exactly the claude case) is what makes sure
+    // a fresh ask gets a fresh mount to pull it into.
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
@@ -186,7 +176,7 @@ export default function ListingPreviewPane({
           className="pane-frame"
           src={withNoFocus(
             `/render?path=${encodeURIComponent(sideEntry.path)}` +
-              `&_file=${encodeURIComponent(folder)}${chatOnly}${ask}&_preview=1`
+              `&_file=${encodeURIComponent(folder)}${chatOnly}&_preview=1`
           )}
           title={modeTitle(side)}
         />
