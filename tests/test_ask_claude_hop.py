@@ -132,6 +132,29 @@ console.log(JSON.stringify({ calls, delivered }));
     assert result["delivered"] is False
 
 
+def test_the_hosts_own_answer_is_returned_verbatim_not_hardcoded_true(note_ask_claude_src):
+    """review #804 round 3 finding 4: a callback EXISTING is not the same fact
+    as "claude will actually be shown" — the host's own `_fusedClaudeAsk` can
+    find claude gate-denied or still pending for this file/folder and answer
+    `false`. `noteAskClaude` must be a transparent conduit for that answer,
+    not synthesize `true` the instant it finds a listener."""
+    harness = """
+const calls = [];
+const top = { parent: null, location: { href: "http://x/top" },
+              _fusedClaudeAsk: (t) => { calls.push(t); return false; } };
+top.parent = top;
+const window = { parent: top, location: { href: "http://x/leaf" } };
+%s
+const delivered = noteAskClaude("fix it");
+console.log(JSON.stringify({ calls, delivered }));
+""" % note_ask_claude_src
+    result = _run(harness)
+    # The host WAS called (a real listener exists) but declined to show
+    # claude right now — that must read as "not delivered", not "delivered".
+    assert result["calls"] == ["fix it"]
+    assert result["delivered"] is False
+
+
 def test_an_empty_ask_never_reaches_any_ancestor(note_ask_claude_src):
     harness = """
 const calls = [];

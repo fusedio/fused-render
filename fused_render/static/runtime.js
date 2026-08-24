@@ -1306,11 +1306,18 @@
   // delivery STARTS A REAL AGENT RUN with write access to the repository, so
   // two listeners in one chain would mean one click launches two concurrent,
   // uncoordinated sessions against the same working tree. So this STOPS at the
-  // first match, and RETURNS whether it found one — the caller (the git
-  // template's `askClaudeOnError`) uses that to tell "delivered" from "nobody
-  // is listening" instead of guessing from whether this export merely EXISTS
-  // (it always does — every framed template gets it, whether or not any
-  // ancestor is around to act on it).
+  // first match, and RETURNS WHATEVER THAT ANCESTOR'S OWN CALLBACK RETURNS —
+  // NOT a hardcoded `true` the instant one is found. A callback existing is
+  // not the same fact as "claude will actually be shown": the host's own
+  // `_fusedClaudeAsk` (Preview.tsx/Listing.tsx) can find claude gate-denied or
+  // still pending for this exact file/folder and answer `false` — this
+  // function is a transparent conduit for that answer, not a source of its
+  // own opinion. The caller (the git template's `askClaudeOnError`) uses the
+  // result to tell "delivered, and about to be shown" from "nobody is
+  // listening OR nobody can show it right now" — a distinction that whether
+  // this export merely EXISTS could never make (it always does — every framed
+  // template gets it, whether or not any ancestor is around to act on it, or
+  // able to).
   //
   // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
   // It used to (a `_fused_ask` query param baked into the claude iframe's URL,
@@ -1343,7 +1350,7 @@
     let t = window;
     try {
       for (;;) {
-        if (typeof t._fusedClaudeAsk === "function") { t._fusedClaudeAsk(value); return true; }
+        if (typeof t._fusedClaudeAsk === "function") { return !!t._fusedClaudeAsk(value); }
         if (!t.parent || t.parent === t) break;
         void t.parent.location.href; // throws when cross-origin — chain ends
         t = t.parent;
