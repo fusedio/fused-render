@@ -345,7 +345,7 @@ def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
     sample_utils.make_sampler = lambda **kw: object()
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.sample_utils", sample_utils)
-    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(ids=(1, 2, 3)))
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(ids=(1, 2, 3)))
 
     frames = []
     worker.generate({"prompt": "hello"}, frames.append)
@@ -518,7 +518,7 @@ def test_a_generation_with_no_images_is_the_text_path_exactly_unchanged(worker, 
         text = "hi"
 
     calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
-    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
                           config={"model_type": "qwen3_5"})
 
     frames = []
@@ -526,6 +526,73 @@ def test_a_generation_with_no_images_is_the_text_path_exactly_unchanged(worker, 
 
     assert not calls, "the template helper must be untouched on the text-only path"
     assert frames[-1]["ok"] is True
+
+
+# -- the MODEL axis: refuse when the LOADED checkpoint has no vision tower --
+# The server's `_accepts_image` tries to prevent this by reading a cached
+# `config.json`, but that is a PREDICTION and can disagree with reality (a
+# config declaring `vision_config` whose mlx-vlm architecture module exposes
+# no tower, a model swapped underneath, an older server with no gate at all,
+# or a caller reaching this worker directly). The worker is the one place
+# that knows what it actually loaded, so it asks the loaded object rather
+# than re-reading the config a second time.
+
+
+class _TextOnlyFakeModel:
+    """The loaded object for a checkpoint with a language tower and NO
+    vision tower — `language_model` present (as every mlx-vlm architecture's
+    is, VLM or plain text), `vision_tower` absent, exactly the shape a
+    text-only GGUF-adjacent MLX checkpoint loads as."""
+
+    def __init__(self):
+        self.language_model = _FakeTower("LANGUAGE_PARAMS")
+
+
+def test_images_are_refused_when_the_loaded_model_has_no_vision_tower(
+        worker, monkeypatch, tmp_path):
+    """The server's `acceptsImage` flag is a prediction off a cached
+    `config.json`; this is the worker's OWN check against what it actually
+    loaded, and it must fire whether or not the server's flag agreed."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+    calls = _fake_mlx_vlm_with_config(monkeypatch)
+    worker._loaded.update(model=_TextOnlyFakeModel(),
+                          processor=_ProcessorWrappingATokenizer(),
+                          model_id="org/text-only-chat",
+                          config={"model_type": "llama"})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}],
+         "images": [str(photo)]},
+        frames.append)
+
+    assert frames[-1]["ok"] is False
+    assert "org/text-only-chat" in frames[-1]["error"]
+    assert not calls, "apply_chat_template must never be reached for a tower-less model"
+
+
+def test_the_vision_tower_check_fires_before_any_path_is_even_looked_at(
+        worker, monkeypatch):
+    """Order matters: a model that cannot use a picture at all should not
+    make the caller wait on a filesystem check first."""
+    calls = _fake_mlx_vlm_with_config(monkeypatch)
+    worker._loaded.update(model=_TextOnlyFakeModel(),
+                          processor=_ProcessorWrappingATokenizer(),
+                          model_id="org/text-only-chat",
+                          config={"model_type": "llama"})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}],
+         "images": ["/this/path/does/not/exist/either.png"]},
+        frames.append)
+
+    assert frames[-1]["ok"] is False
+    assert "org/text-only-chat" in frames[-1]["error"]
+    # NOT the path-not-found message — the tower question is answered first.
+    assert "does/not/exist" not in frames[-1]["error"]
+    assert not calls
 
 
 def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monkeypatch, tmp_path):
@@ -539,7 +606,7 @@ def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monk
         text = "a cat"
 
     calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
-    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
                           config={"model_type": "qwen3_5"})
 
     frames = []
@@ -559,7 +626,7 @@ def test_a_missing_image_path_names_the_path_rather_than_crashing_in_the_model(
     is the check that stops a caller ever seeing one for a simple typo."""
     missing = str(tmp_path / "does-not-exist.png")
     calls = _fake_mlx_vlm_with_config(monkeypatch)
-    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
                           config={"model_type": "qwen3_5"})
 
     frames = []
@@ -582,7 +649,7 @@ def test_a_string_instead_of_a_list_is_not_iterated_as_characters(worker, monkey
         text = "hi"
 
     calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
-    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
                           config={"model_type": "qwen3_5"})
 
     frames = []
@@ -602,7 +669,7 @@ def test_an_empty_config_fails_named_rather_than_crashing_in_apply_chat_template
     photo = tmp_path / "cat.png"
     photo.write_bytes(b"not a real png, just bytes on disk")
     calls = _fake_mlx_vlm_with_config(monkeypatch)
-    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+    worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
                           config={})
 
     frames = []
@@ -629,7 +696,7 @@ def test_input_tokens_is_none_on_the_image_path_rather_than_an_undercount(
         text = "a cat"
 
     _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
-    worker._loaded.update(model=object(),
+    worker._loaded.update(model=_FakeVlmModel(),
                           processor=_ProcessorWrappingATokenizer(ids=(1, 2, 3)),
                           config={"model_type": "qwen3_5"})
 

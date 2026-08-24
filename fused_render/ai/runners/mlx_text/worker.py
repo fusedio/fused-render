@@ -268,6 +268,10 @@ def load(model_id, path):
 
     _loaded["model"] = model
     _loaded["processor"] = processor
+    # Stashed so `generate`'s image-path refusal can NAME the model rather
+    # than say "this checkpoint" about nothing in particular — the same
+    # reason `_unreadable_image` names the path instead of just failing.
+    _loaded["model_id"] = model_id
     # The SAME `config` read above (and already spent checking architecture
     # support with it) — stashed here rather than re-read per request:
     # `generate`'s image path needs it for `mlx_vlm.prompt_utils.
@@ -425,6 +429,28 @@ def generate(body, write):
     images = ([p for p in raw_images if isinstance(p, str) and p]
              if isinstance(raw_images, list) else [])
     if images:
+        # **The MODEL axis, checked FIRST, before a single path is even
+        # looked at.** `server/ai.py`'s `_images_problem`/`_accepts_image`
+        # already try to stop this at the door, but that gate reads a
+        # CACHED `config.json` — a prediction that can disagree with what is
+        # actually resident: the config could declare `vision_config` for an
+        # architecture whose mlx-vlm module builds no tower, the model on
+        # disk could have been swapped after the server last read it, an
+        # older server may carry no such gate at all, and nothing stops a
+        # caller reaching this worker directly. This process is the one
+        # place that KNOWS what it loaded, so it asks the loaded object
+        # itself — the same `language_model` sibling attribute `load()`
+        # already reaches for, since every mlx-vlm architecture that has a
+        # vision tower exposes it there.
+        #
+        # Silently answering about a picture the model cannot even see is
+        # the worst failure this app has: a confident reply about nothing.
+        # An explicit, named refusal is the whole point of this check.
+        if getattr(model, "vision_tower", None) is None:
+            write({"type": "done", "ok": False,
+                   "error": f"{_loaded.get('model_id') or 'this model'} has no "
+                            "vision tower to read an image with"})
+            return
         for path in images:
             problem = _unreadable_image(path)
             if problem:
