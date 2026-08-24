@@ -404,11 +404,18 @@ class _ReaderPool:
     blocks — a fresh Reader is opened when no idle handle is available — and idle
     handles are reused, bounded per locator and overall. The caller supplies the
     GDAL environment so a freshly opened handle picks up the same options.
+
+    A local original is never pooled (gated by ``poolable``): a kept-open handle
+    locks the user's file on Windows until they quit the app, and reopening a
+    local file is cheap. Only remote ``/vsi`` sources and cache derivatives —
+    costly to reopen, and never the user's file — stay warm.
     """
 
-    def __init__(self, max_idle_per_locator: int, max_idle: int):
+    def __init__(self, max_idle_per_locator: int, max_idle: int,
+                 poolable=None):
         self.max_idle_per_locator = max_idle_per_locator
         self.max_idle = max_idle
+        self.poolable = poolable
         self.lock = threading.Lock()
         self.idle: OrderedDict[str, list[Any]] = OrderedDict()
         self.idle_count = 0
@@ -441,7 +448,7 @@ class _ReaderPool:
 
     def _return(self, locator: str, reader: Any, healthy: bool) -> None:
         pooled = False
-        if healthy:
+        if healthy and (self.poolable is None or self.poolable(locator)):
             with self.lock:
                 stack = self.idle.setdefault(locator, [])
                 if len(stack) < self.max_idle_per_locator:
@@ -478,12 +485,25 @@ class RasterEngine:
         self.upstreams: dict[str, tuple[str, str]] = {}
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
-        self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
+        self.readers = _ReaderPool(
+            MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS, poolable=self._poolable
+        )
         # One persistent worker: an ephemeral /vsicurl thread deadlocks at exit
         # on Windows (loader lock vs the GIL - see daemon.RENDER_POOL).
         self.prepare_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="prepare"
         )
+
+    def _poolable(self, locator: str) -> bool:
+        """Whether a Reader for *locator* may stay open between tiles: remote
+        ``/vsi`` sources and cache derivatives may; a local original may not —
+        pooling it would lock the user's file (see the pool docstring)."""
+        if locator.startswith("/vsi"):
+            return True
+        try:
+            return Path(locator).resolve().is_relative_to(self.cache_dir.resolve())
+        except OSError:
+            return False
         self._evict_optimized()
 
     def _evict_optimized(self) -> None:
