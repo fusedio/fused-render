@@ -32,7 +32,16 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { ConfigPanel, RailChips, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
+import {
+  ConfigPanel,
+  RailChips,
+  RailSlider,
+  ResultSlot,
+  StageHeader,
+  StarterCards,
+  useAutoGrow,
+  type Starter,
+} from "./controls";
 import { StarterIcons } from "./starterIcons";
 import {
   canEdit,
@@ -979,7 +988,17 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
       {error && <p className="pg-error">{error}</p>}
 
-        {run && (
+        {!run ? (
+          <ResultSlot
+            label="Result"
+            capability="text-to-image"
+            note={
+              base
+                ? "The edited picture appears here. Describe the change above, then Generate."
+                : "Your picture appears here. Describe one above, then Generate."
+            }
+          />
+        ) : (
           <div className="pg-answer-block">
           <p className="pg-answer-label">Result</p>
           <figure className="pg-image-result">

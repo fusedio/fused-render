@@ -22,7 +22,16 @@ import {
 } from "./client";
 import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
-import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
+import {
+  ConfigPanel,
+  CopyButton,
+  RailSlider,
+  ResultSlot,
+  StageHeader,
+  StarterCards,
+  useAutoGrow,
+  type Starter,
+} from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
@@ -379,7 +388,13 @@ export function TextStage({
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
 
-      {reply && shown && (
+      {!(reply && shown) ? (
+        <ResultSlot
+          label="Response"
+          capability="text-generation"
+          note="The reply appears here. Ask something above, then Run."
+        />
+      ) : (
         <div className="pg-answer-block">
           <p className="pg-answer-label">Response</p>
           <div className="pg-answer">

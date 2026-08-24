@@ -1585,6 +1585,52 @@ a.pg-hero-repo:hover {
   color: var(--fg-muted);
 }
 
+/* The same block, before anything has run: the result canvas idle (ResultSlot
+   in controls.tsx). Dashed, not solid — a solid card at this size reads as a
+   real surface that failed to fill, while a dashed one reads as a slot. No
+   background either, for the same reason: it stays quieter than .pg-answer and
+   .pg-image-frame, which are the boxes with something in them.
+
+   One height for all five stages. 200px is the floor that makes the column
+   read as complete without pushing the app strip below the fold on a laptop —
+   .pg-apps is pinned to the stage's bottom with `margin-top: auto`, so every
+   pixel here is a pixel taken out of that void, not added to the page. */
+.pg-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 200px;
+  padding: 24px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+
+/* The capability's own sidebar glyph, at a size that carries a 200px box —
+   `capabilityIcon` draws at 16px, which is a section-header size, not a
+   centrepiece. Dimmed, because an empty state should not be the loudest mark
+   on the column. */
+.pg-slot-icon {
+  display: grid;
+  place-items: center;
+  color: var(--fg-muted);
+  opacity: 0.5;
+}
+.pg-slot-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.pg-slot-note {
+  margin: 0;
+  max-width: 34ch;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
 /* -- text ---------------------------------------------------------------------- */
 
 /* The one reply, rendered — the text stage's output card. */
