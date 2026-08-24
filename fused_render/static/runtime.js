@@ -1294,12 +1294,23 @@
     }
   }
 
-  // Tell every same-origin ancestor that owns a Claude sidebar to open it primed
-  // with a prompt, and send it. Same shape and the same climbing/try-catch
-  // discipline as noteRevSelected just above, for the same reasons (D3/D4: a
-  // global on the ancestor, not a postMessage) — underscore-prefixed because this
-  // too is plumbing between the built-in git template and the shell that ships
-  // with it, NOT a documented `fused.*` contract.
+  // Tell the NEAREST same-origin ancestor that owns a Claude sidebar to open it
+  // primed with a prompt, and send it. The climbing/try-catch discipline is
+  // noteRevSelected's (D3/D4: a global on the ancestor, not a postMessage) —
+  // underscore-prefixed for the same reason too, plumbing between the built-in
+  // git template and the shell that ships with it, NOT a documented `fused.*`
+  // contract — but the DELIVERY is deliberately NOT the same: noteRevSelected
+  // calls the hook on EVERY same-origin ancestor that has it, because "which
+  // commit is previewed" is idempotent to repeat — two listeners agreeing is
+  // harmless, and there is no way for two to disagree. Sending a prompt is not
+  // that: each delivery STARTS A REAL AGENT RUN with write access to the
+  // repository, so two listeners in one chain (an outer shell and an inner
+  // embed shell both installing the hook — nothing here can promise that never
+  // happens, only that IF it does, exactly one of them acts) would mean one
+  // click launches two concurrent, uncoordinated sessions against the same
+  // working tree. So this STOPS at the first match: the nearest ancestor that
+  // can act is also the one whose sidebar is actually beside this frame, and
+  // every ancestor further up is a shell the click was never about.
   //
   // Deliberately not a param, and not something this frame can do itself: the
   // git view has no chat of its own, only a working tree, so fixing an error it
@@ -1320,7 +1331,7 @@
     let t = window;
     try {
       for (;;) {
-        if (typeof t._fusedClaudeAsk === "function") t._fusedClaudeAsk(value);
+        if (typeof t._fusedClaudeAsk === "function") { t._fusedClaudeAsk(value); return; }
         if (!t.parent || t.parent === t) break;
         void t.parent.location.href; // throws when cross-origin — chain ends
         t = t.parent;
