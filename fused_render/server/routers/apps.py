@@ -52,6 +52,7 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render import app_listing, claude_spawn
 from fused_render.server.common import _error, _require_fused
+from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
@@ -458,19 +459,53 @@ _record_session_when_ready = claude_spawn.record_session_when_ready
 # the app's chat, which `run_id` in the response is there to let the UI do.
 _APP_SESSION_PERMISSION_MODE = "auto"
 
+# What the hero composer's two pickers may ask for. Models are the
+# default-model preference's own set — the claude template's MODELS vocabulary,
+# already written down once in shell/prefs.py — so a third copy of that list
+# cannot drift from the control it feeds. Efforts have no such home yet: the
+# template's EFFORTS list is JS, and this is the first Python caller that needs
+# it, so the tuple lives here until a second one does.
+#
+# `""` is a first-class member of both, exactly as it is in
+# VALID_DEFAULT_MODELS: it means NO --model/--effort flag on the spawn, i.e.
+# the session keeps whatever a chat opened by hand would have detected for
+# itself. That is what an absent key from an older client resolves to too.
+_VALID_SESSION_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 
-def _spawn_session_helper(target: str, prompt: str) -> dict:
+
+def _session_choice_error(field: str, value, allowed) -> str | None:
+    """Reject a model/effort the pickers cannot produce, rather than
+    substituting one. Our own UI only ever sends a list value, so this fires
+    for a hand-rolled request — and a caller that asked for `opus` and
+    silently got the default has been answered with the wrong session, which
+    is worse than a 400. (The claude template falls BACK for an unknown
+    permission mode instead, but there the safe direction is the strict one;
+    here there is no strict direction, only a different model.)"""
+    if not isinstance(value, str):
+        return f"{field!r} must be a string"
+    if value not in allowed:
+        return (f"invalid {field} {value!r}: expected one of "
+                + ", ".join(repr(v) for v in allowed))
+    return None
+
+
+def _spawn_session_helper(target: str, prompt: str,
+                          model: str = "", effort: str = "") -> dict:
     """Run agent._start in the fork-safe helper; return its result dict.
 
     Thin wrapper over claude_spawn.spawn_helper, which holds the posix_spawn
     discipline this call depends on. What stays here is the one policy choice:
     the permission mode above, and a FRESH session always — an app is being
-    scaffolded, so there is no prior conversation to resume."""
+    scaffolded, so there is no prior conversation to resume.
+
+    `model`/`effort` are the composer's picks, already validated by the route;
+    empty means "leave the session on its own defaults"."""
     return claude_spawn.spawn_helper(
-        target, prompt, _APP_SESSION_PERMISSION_MODE)
+        target, prompt, _APP_SESSION_PERMISSION_MODE, model=model, effort=effort)
 
 
-def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | None]:
+def _start_app_session(app_dir: str, prompt: str, model: str = "",
+                       effort: str = "") -> tuple[str | None, str | None]:
     """Start a detached Claude Code session on the new app's FOLDER.
 
     The seam the tests stub. Reuses the claude agent's _start (via the
@@ -483,7 +518,7 @@ def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | Non
     rides back so the UI isn't silent about it, and the run_id lets the
     caller attach to the live run."""
     try:
-        res = _spawn_session_helper(app_dir, prompt)
+        res = _spawn_session_helper(app_dir, prompt, model, effort)
     except Exception as exc:
         return None, f"failed to start Claude session: {exc}"
     if res.get("error") or not res.get("run_id"):
@@ -510,6 +545,17 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str):
         return _error("'prompt' must be a string")
+
+    # The composer's model/effort pickers. Both optional and both
+    # defaulting to "" — an older client that sends neither gets exactly the
+    # session it got before this existed.
+    model = body.get("model", "")
+    effort = body.get("effort", "")
+    for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
+                                  ("effort", effort, _VALID_SESSION_EFFORTS)):
+        err = _session_choice_error(field, value, allowed)
+        if err is not None:
+            return _error(err)
 
     root = fused_dir()
     dest = os.path.join(root, "local", name)
@@ -554,7 +600,7 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     entry_html = os.path.join(dest, "index.html")
     run_id, session_error = None, None
     if prompt.strip():
-        run_id, session_error = _start_app_session(dest, prompt)
+        run_id, session_error = _start_app_session(dest, prompt, model, effort)
 
     return {
         "path": os.path.abspath(dest),

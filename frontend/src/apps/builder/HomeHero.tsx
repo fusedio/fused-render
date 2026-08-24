@@ -3,13 +3,13 @@
 // new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { aiComplete, createApp } from "@platform/lib/api";
+import { aiComplete, createApp, type DefaultModel, type SessionEffort } from "@platform/lib/api";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
-import { TextArea } from "@platform/ui/field/fields";
+import { Select, TextArea } from "@platform/ui/field/fields";
 
 // URL of an app folder's claude chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
@@ -27,8 +27,20 @@ import { TextArea } from "@platform/ui/field/fields";
 // returned — including its Windows-backslash normalization, which the old
 // segment split had to do by hand or silently take the drive-rooted path as one
 // segment.
-export function claudeChatUrl(appDir: string, runId: string): string {
+// `model`/`effort` ride along when the composer's pickers were used, so
+// the chat's own pills open showing what the scaffolding turn actually ran with
+// and the NEXT turn keeps it. Omitted when empty: the template reads these
+// through fused.params, and an empty param would beat its own detection of what
+// this project is really being worked in.
+export function claudeChatUrl(
+  appDir: string,
+  runId: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): string {
   const params = new URLSearchParams({ _mode: "claude", run: runId });
+  if (model) params.set("model", model);
+  if (effort) params.set("effort", effort);
   return urlForFsPath(appDir.replace(/\/+$/, ""), "?" + params.toString());
 }
 
@@ -79,11 +91,16 @@ async function suggestAppName(prompt: string): Promise<string> {
 
 // Create the app under a collision-proof name: on 409 retry with -2, -3, …
 // Any other failure propagates.
-async function createAppUnderFreeName(name: string, prompt: string) {
+async function createAppUnderFreeName(
+  name: string,
+  prompt: string,
+  model: DefaultModel,
+  effort: SessionEffort,
+) {
   for (let i = 1; ; i++) {
     const attempt = i === 1 ? name : `${name}-${i}`;
     try {
-      return await createApp(attempt, prompt);
+      return await createApp(attempt, prompt, model, effort);
     } catch (e) {
       if ((e as { status?: number }).status !== 409 || i >= 20) throw e;
     }
@@ -176,11 +193,112 @@ const SAMPLE_PROMPTS: { label: string; prompt: string; glyph: ReactNode }[] = [
   },
 ];
 
+// The composer's two session pickers — what the scaffolding turn runs
+// with, and what the chat it lands in opens showing. Both lists are the claude
+// template's own vocabulary (template.html MODELS / EFFORTS, and the server
+// validates against the same sets), because these values are handed straight to
+// the CLI as --model / --effort.
+//
+// "" is the FIRST option of each and the default: it means no flag at all, so
+// the session keeps whatever the template would have detected for this project
+// from its own transcripts and settings. A composer that shipped `sonnet` /
+// `medium` preselected would silently override that detection for every app
+// built from here, which is a stronger claim than the picker is making.
+//
+// The labels are BARE — "Auto", "opus", "high" — and not "Auto model" / "high
+// effort": each pill's glyph names its axis, so repeating it in the text is the
+// same word twice in one control. It is also what keeps two pills quiet enough
+// to sit unbordered in the footer of the box rather than reading as buttons.
+const MODEL_CHOICES: { value: DefaultModel; label: string }[] = [
+  { value: "", label: "Auto" },
+  { value: "fable", label: "fable" },
+  { value: "opus", label: "opus" },
+  { value: "sonnet", label: "sonnet" },
+  { value: "haiku", label: "haiku" },
+];
+
+const EFFORT_CHOICES: { value: SessionEffort; label: string }[] = [
+  { value: "", label: "Auto" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+];
+
+// A glyph each, because the two pickers sit side by side with no border to tell
+// them apart: the icon is what says which control you are looking at before the
+// value is read — and it is what lets the labels stay bare words ("Auto",
+// "high") instead of spelling their own axis out. Drawn in the composer's own weight (13px,
+// 2px stroke) rather than borrowed from MenuIcons, which is tuned 1.5px for menu
+// rows — a menu glyph beside these chips reads thin and unrelated.
+const PICK_GLYPHS = {
+  // Model — the sparkle MenuIcons uses for "new", the app's existing mark for
+  // the AI doing something on your behalf.
+  model: (
+    <path d="M11 3.5l1.6 4.4 4.4 1.6-4.4 1.6L11 15.5 9.4 11.1 5 9.5l4.4-1.6L11 3.5zM17.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z" />
+  ),
+  // Effort — a gauge: a needle on a dial is the one figure that reads as "how
+  // hard is this being pushed" without a word beside it.
+  effort: (
+    <>
+      <path d="M4.5 17a8 8 0 1 1 15 0" />
+      <path d="M12 15l3.5-4" />
+    </>
+  ),
+};
+
+// One borderless picker: glyph, then a native select carrying its own chevron.
+// A <label> around both so the glyph is part of the control's hit area rather
+// than decoration beside it — the pill has no border to aim at, so the target
+// has to be the whole thing.
+function ComposerPick<T extends string>({
+  glyph,
+  label,
+  value,
+  choices,
+  disabled,
+  onPick,
+}: {
+  glyph: keyof typeof PICK_GLYPHS;
+  label: string;
+  value: T;
+  choices: { value: T; label: string }[];
+  disabled: boolean;
+  onPick: (next: T) => void;
+}) {
+  return (
+    <label className="home-composer-pick">
+      <span className="home-composer-pick-glyph" aria-hidden="true">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {PICK_GLYPHS[glyph]}
+        </svg>
+      </span>
+      <Select
+        className="home-composer-pick-sel"
+        aria-label={label}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onPick(e.target.value as T)}
+      >
+        {choices.map((c) => (
+          <option key={c.value} value={c.value}>
+            {c.label}
+          </option>
+        ))}
+      </Select>
+    </label>
+  );
+}
+
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
 // composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
 // lands in the new folder's claude chat exactly like the New-app panel does.
 function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [prompt, setPrompt] = useState("");
+  // Empty = "let the chat decide", the default; see MODEL_CHOICES.
+  const [model, setModel] = useState<DefaultModel>("");
+  const [effort, setEffort] = useState<SessionEffort>("");
   const [phase, setPhase] = useState<"idle" | "naming" | "creating">("idle");
   const [error, setError] = useState<string | null>(null);
   // Claude would not start for an app that WAS created — see the submit path.
@@ -233,7 +351,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
       const name = await suggestAppName(trimmed);
       if (!alive.current) return;
       setPhase("creating");
-      const res = await createAppUnderFreeName(name, trimmed);
+      const res = await createAppUnderFreeName(name, trimmed, model, effort);
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the session-error branch below stays on this page.
       onCreated();
@@ -250,7 +368,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
         }
         return;
       }
-      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id), { isDir: true });
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id, model, effort), { isDir: true });
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       if (alive.current) {
@@ -282,15 +400,35 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
           }}
         />
         <div className="home-composer-bar">
-          <span className="home-composer-hint">
-            {phase === "naming" && "Naming your app…"}
-            {phase === "creating" && "Creating the app…"}
-            {phase === "idle" && (
-              <>
-                <kbd>↵</kbd> to build · <kbd>⇧↵</kbd> for a new line
-              </>
-            )}
-          </span>
+          {/* The bar's left end used to spell out ↵ / ⇧↵. Those are the two
+              keystrokes every chat box on the machine already answers to, and
+              the space is worth more spent on the one thing this composer could
+              not say at all: WHICH Claude builds the app. The pickers
+              stay mounted while a create is in flight — disabled, like the
+              starter chips — and the phase text takes the space beside them
+              rather than replacing them, so nothing moves when it appears. */}
+          <div className="home-composer-picks">
+            <ComposerPick
+              glyph="model"
+              label="Model"
+              value={model}
+              choices={MODEL_CHOICES}
+              disabled={busy}
+              onPick={setModel}
+            />
+            <ComposerPick
+              glyph="effort"
+              label="Effort"
+              value={effort}
+              choices={EFFORT_CHOICES}
+              disabled={busy}
+              onPick={setEffort}
+            />
+            <span className="home-composer-hint">
+              {phase === "naming" && "Naming your app…"}
+              {phase === "creating" && "Creating the app…"}
+            </span>
+          </div>
           <button
             type="button"
             className="home-composer-send"

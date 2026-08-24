@@ -1885,8 +1885,21 @@ export interface NewAppResult {
   session_error: string | null;
 }
 
-export function createApp(name: string, prompt: string): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+// `model`/`effort` are the hero composer's pickers — short model names
+// from the same set as DefaultModel, effort from the claude template's own
+// EFFORTS list. "" means "don't pass the flag": the scaffolding session keeps
+// whatever a chat opened by hand would detect for this project. Anything else
+// is a 400 rather than a silent substitution, so a typo can't quietly buy a
+// different model than the one asked for.
+export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export function createApp(
+  name: string,
+  prompt: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
