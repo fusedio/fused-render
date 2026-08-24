@@ -28,6 +28,7 @@ function job(extra: Partial<Job> = {}): Job {
     id: "sys:ai-model:org-m",
     title: "org/m",
     detail: "Fetching weights…",
+    model: "",
     kind: "download",
     state: "running",
     done: 1_000,

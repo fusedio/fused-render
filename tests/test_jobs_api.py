@@ -84,6 +84,29 @@ def test_first_report_creates_a_row_and_later_ones_update_it(client):
     assert row["stalled"] is False
 
 
+def test_model_is_its_own_field_separate_from_title_and_detail(client):
+    """The model must reach the client as its OWN value, not folded into
+    `title` or `detail` — the UI dims it as a distinct element on the title
+    row (JobRow's `.dl-model`) and would have nothing to key that styling off
+    of if the model were just concatenated text. A tick that omits `model`
+    must not blank one a previous tick set, same as `title`."""
+    report(client, id="a", title="a red fox in snow", model="FLUX.1-schnell")
+    report(client, id="a", detail="Denoising — step 2/4 · ~2s left")
+
+    row = listing(client)[0]
+    assert row["title"] == "a red fox in snow"
+    assert row["model"] == "FLUX.1-schnell"
+    assert row["detail"] == "Denoising — step 2/4 · ~2s left"
+
+
+def test_model_defaults_to_empty_string_when_never_reported(client):
+    """A download, a scheduled run, or a page's own `fused.trackJob()` never
+    sends `model` at all — the row must render as it always has, which means
+    an empty string (falsy in the client), never a missing key or None."""
+    report(client, id="a", title="t")
+    assert listing(client)[0]["model"] == ""
+
+
 def test_a_report_answers_with_the_stored_record(client):
     """The reply is the cancel channel — see `request_cancel`."""
     res = report(client, id="a", title="t")

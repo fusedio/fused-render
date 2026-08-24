@@ -35,6 +35,7 @@ const JOB: Job = {
   id: "j1",
   title: "Rendering",
   detail: "",
+  model: "",
   kind: "task",
   state: "running",
   done: null,

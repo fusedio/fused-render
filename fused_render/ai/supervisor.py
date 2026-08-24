@@ -1274,8 +1274,8 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             with _lock:
                 _draining.pop(current.token, None)
 
-    _report(job, title=model, state="running", kind="download", cancellable=True,
-            detail="Preparing…", done=None, total=None)
+    _report(job, title=model, model=model, state="running", kind="download",
+            cancellable=True, detail="Preparing…", done=None, total=None)
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": worker.state}, worker
@@ -1306,8 +1306,9 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             return {"jobId": job, "model": model, "state": "downloading"}
         _downloads[model] = {"model": model, "capability": capability,
                              "jobId": job, "startedAt": time.time()}
-    _report(job, title=model, state="running", kind="download", cancellable=True,
-            unit="bytes", detail="Preparing…", done=None, total=None)
+    _report(job, title=model, model=model, state="running", kind="download",
+            cancellable=True, unit="bytes", detail="Preparing…", done=None,
+            total=None)
     threading.Thread(target=_fetch_only, args=(runner, model, job),
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
@@ -1344,8 +1345,12 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
-    _report(job, title=title[:80], state="running", kind="task", cancellable=True,
-            unit="", detail="Preparing…", done=None, total=None)
+    # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
+    # JobRow draws after the title — never folded into `title` (that's the
+    # prompt) or `detail` (that's the worker's progress ticks, which would
+    # overwrite a model name concatenated there on the very next tick).
+    _report(job, title=title[:80], model=model, state="running", kind="task",
+            cancellable=True, unit="", detail="Preparing…", done=None, total=None)
 
     def run() -> None:
         try:
@@ -1384,7 +1389,7 @@ _QUEUED_DETAIL = "Queued behind another transcription…"
 _JOINED_INSTALL_DETAIL = "Waiting for the {short} environment — another download is building it…"
 
 
-def transcribe_row_fields(title: str) -> dict:
+def transcribe_row_fields(title: str, model: str = "") -> dict:
     """Everything a report must carry for a transcription row to survive being
     RE-CREATED — the row's identity, as opposed to its progress.
 
@@ -1409,13 +1414,18 @@ def transcribe_row_fields(title: str) -> dict:
 
     `state` is deliberately NOT here: the terminal report needs `done`/`error`/
     `cancelled` and would have to override it. Callers say their own.
+
+    `model` rides along the same way, for the same reason: a dimmed suffix on
+    the title row (jobs.py `Job.model`) that a rebuilt row must not lose any
+    more than it may lose its title.
     """
-    return {"title": title, "kind": "task", "cancellable": True, "unit": "s"}
+    return {"title": title, "model": model, "kind": "task", "cancellable": True,
+            "unit": "s"}
 
 
-def _transcribe_row(title: str, detail: str) -> dict:
+def _transcribe_row(title: str, detail: str, model: str = "") -> dict:
     """`transcribe_row_fields` plus the progress of a row that has none yet."""
-    return {**transcribe_row_fields(title), "state": "running",
+    return {**transcribe_row_fields(title, model), "state": "running",
             "done": None, "total": None, "detail": detail}
 
 
@@ -1450,21 +1460,21 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     # relabels itself under the user. The payload is shared with the queue
     # ticks so an evicted row is rebuilt as the same row, not a partial one.
     title = _transcribe_title(request, model)
-    _report(job, **_transcribe_row(title, "Preparing…"))
+    _report(job, **_transcribe_row(title, "Preparing…", model))
     # The worker reports to this same row for the whole decode, so it needs the
     # row's identity to restate — it is a different PROCESS, and a tick of its
     # that arrives after an eviction would otherwise be dropped outright
     # (`upsert` refuses a first report with no title) and take the ✕, the
     # progress and the terminal state with it. Sent rather than re-spelled
     # there, so the two cannot disagree about what this row is.
-    request = {**request, "row": transcribe_row_fields(title)}
+    request = {**request, "row": transcribe_row_fields(title, model)}
 
     def run() -> None:
         # Every terminal report carries the identity too: the row may have been
         # evicted at any point during a decode that ran for hours, and a bare
         # `state="done"` would be refused, leaving the page watching a row that
         # never finishes for a transcript that is already on disk.
-        fields = transcribe_row_fields(title)
+        fields = transcribe_row_fields(title, model)
         try:
             result = generate_transcript(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
@@ -2103,7 +2113,7 @@ def generate_video(model: str, request: dict, job: str) -> dict:
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
 
 
-def _await_turn(job: str, title: str) -> None:
+def _await_turn(job: str, title: str, model: str = "") -> None:
     """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
 
     Returns holding the lock — the caller releases it. Raises
@@ -2124,7 +2134,7 @@ def _await_turn(job: str, title: str) -> None:
     request. A guard an optimisation can skip is a guard in the wrong place.
     """
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
-        _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+        _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
         warned = False
         next_tick = time.monotonic() + _QUEUE_TICK_S
         # POLLED often, REPORTED rarely — and rebuilt ON DETECTION, which is
@@ -2161,7 +2171,7 @@ def _await_turn(job: str, title: str) -> None:
                         "transcription row %s was evicted while queued; rebuilt, "
                         "but a cancel requested just before that is lost", job)
                     warned = True  # once per wait; the sweep may do this often
-                _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+                _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
                 next_tick = time.monotonic() + _QUEUE_TICK_S
                 continue
             if time.monotonic() < next_tick:
@@ -2170,7 +2180,7 @@ def _await_turn(job: str, title: str) -> None:
             # is nothing to say but "still waiting" — which is exactly what a
             # heartbeat is (AI-5h). Deliberately slower than the running row so
             # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
-            _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+            _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
             next_tick = time.monotonic() + _QUEUE_TICK_S
     # Guarded, because this runs while we HOLD the lock and before any caller's
     # `finally` exists to release it: `_cancel_state` walks `jobs.list_jobs()`,
@@ -2190,7 +2200,7 @@ def _await_turn(job: str, title: str) -> None:
 
 
 @contextlib.contextmanager
-def _transcribe_turn(job: str, title: str):
+def _transcribe_turn(job: str, title: str, model: str = ""):
     """`_await_turn` as a `with`, so the acquire and the release are one thing.
 
     The release used to live in a `try/finally` the CALLER opened after
@@ -2199,7 +2209,7 @@ def _transcribe_turn(job: str, title: str):
     the shape that cannot regress: there is no way to take this turn without
     also giving it back, and a future caller cannot forget.
     """
-    _await_turn(job, title)
+    _await_turn(job, title, model)
     try:
         yield
     finally:
@@ -2227,7 +2237,7 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     a handle to a process an unload may since have killed, so the request went
     to a dead port instead of re-resolving.
     """
-    with _transcribe_turn(job, _transcribe_title(request, model)):
+    with _transcribe_turn(job, _transcribe_title(request, model), model):
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:
             # The row identity travels into the wait too — it is the longest

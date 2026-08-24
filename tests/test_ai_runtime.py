@@ -3234,6 +3234,20 @@ def test_a_load_opens_a_server_owned_job_row(fake_runner):
     assert row["id"].startswith(jobs.SERVER_ID_PREFIX)
 
 
+def test_a_successful_load_reports_a_visible_done_state(fake_runner):
+    """Regression pin for PR #785: `supervisor._finish` used to `_report(job,
+    state="done")` and then `jobs.dismiss(job)` back to back on the same
+    thread, with no `/api/jobs` read in between — so the "done" state existed
+    for zero elapsed time and no poller could ever observe it (including
+    `fused_ai.py`'s `_wait_job`, which then mistook a real success for a
+    vanished row and raised). A successful job's terminal state must be
+    observable by a reader, exactly like an error or a cancellation is."""
+    started = supervisor.load("org/visible", registry.TEXT_GENERATION)
+    row = _row(started["jobId"])
+    assert row is not None, "the row disappeared before its done state could be read"
+    assert row["state"] == "done"
+
+
 def _row(job_id, timeout=10.0):
     """The job row for `job_id`, once it reaches a terminal state."""
     deadline = time.monotonic() + timeout
@@ -5126,6 +5140,21 @@ def test_a_video_renders_to_disk_and_the_job_finishes(client, fake_video_runner)
     assert open(started["path"], "rb").read(4) == b"\x00\x00\x00\x18"
 
 
+def test_a_video_row_is_server_owned_and_reserved(client, fake_video_runner):
+    """Mirrors test_an_image_row_is_server_owned_and_reserved — video had no
+    counterpart, so a broken video row (never opened, or opened under the
+    wrong owner) had nothing here that would catch it."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["jobId"].startswith(jobs.SERVER_ID_PREFIX)
+    row = _wait_job(started["jobId"])
+    assert row["owner"] == jobs.OWNER_SERVER
+    refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+    assert "reserved" in refused.json()["error"]
+
+
 def test_the_video_reply_describes_the_render_that_will_actually_happen(
         client, fake_video_runner):
     """Clamped and snapped, not echoed — same rule the image route's own
@@ -5815,8 +5844,8 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     started = _post_transcribe(client, path=recording).json()
     _wait_job(started["jobId"])
 
-    assert seen["row"] == {"title": os.path.basename(recording), "kind": "task",
-                           "cancellable": True, "unit": "s"}
+    assert seen["row"] == {"title": os.path.basename(recording), "model": "org/fake-whisper",
+                           "kind": "task", "cancellable": True, "unit": "s"}
 
 
 def test_the_terminal_report_can_rebuild_an_evicted_row(
@@ -6302,7 +6331,7 @@ def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monke
 def test_the_turn_is_released_even_when_the_body_raises(monkeypatch):
     """The pairing itself: acquisition and release are one construct, so a
     caller cannot take a turn and forget to give it back."""
-    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title: None)
+    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title, model="": None)
     supervisor._TRANSCRIBE_LOCK.acquire()
     with pytest.raises(ValueError):
         with supervisor._transcribe_turn("sys:ai-transcribe:x", "x.m4a"):

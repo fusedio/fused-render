@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import (
     FileResponse,
@@ -16,7 +17,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from fused_render import claude_health
+from fused_render import claude_health, jobs
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
 from fused_render.server.common import _require_fused
@@ -1050,6 +1051,74 @@ async def _ai_relay(body: dict):
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
 
+    # Bottom-right activity notification (fused_render/jobs.py's registry —
+    # see supervisor._report for the local-model twin of this write). Before
+    # this, only a LOCAL model ever produced a row there: a page calling
+    # fused.ai() against remote Claude did nothing visible in that corner, so
+    # a user watching it could not tell they were talking to Claude instead
+    # of a model on their own machine. There is no worker process to report
+    # from on this path, so the relay opens and closes the row itself — one
+    # per call (a fresh id, not a fixed one, because a second call queued
+    # behind the same-instance lock in _AiSession is a second call, not a
+    # progress tick on the first) — with wording that says "remote" up
+    # front, which is the whole point of adding it.
+    #
+    # `cancellable=False`: JobRow renders a ✕ on any running, cancellable row
+    # (DownloadManager.tsx), and pressing it only sets jobs.py's
+    # `cancel_requested` flag for a reporter to notice on its next tick.
+    # Nothing in this relay polls that flag, so advertising a ✕ here would
+    # ship a button that visibly does nothing when pressed.
+    #
+    # NOT opened here, before the stream/non-stream fork: `ndjson()` below is
+    # an async generator that Starlette only starts iterating once it
+    # actually sends the response body, so a client that disconnects before
+    # that first `__anext__` never runs the generator at all — including its
+    # `finally`. A row opened out here, unconditionally, would then never
+    # close: exactly the leak the streaming `finally` exists to prevent, just
+    # relocated one step earlier. Each branch below opens its own row as its
+    # own first action instead, so there is no window where a row exists
+    # with nothing yet committed to closing it.
+    _remote_job = jobs.SERVER_ID_PREFIX + "ai-claude:" + uuid.uuid4().hex
+    _remote_job_closed = False
+
+    def _report_remote(**fields) -> None:
+        """One tick on the remote-Claude row, best-effort (never breaks the
+        call — same discipline as supervisor._report)."""
+        nonlocal _remote_job_closed
+        if fields.get("state") in jobs.TERMINAL_STATES:
+            if _remote_job_closed:
+                return
+            _remote_job_closed = True
+        try:
+            jobs.upsert({"id": _remote_job, **fields}, server=True)
+        except (jobs.JobError, ValueError):
+            pass
+
+    def _open_remote_job() -> None:
+        # Same title convention as the local rows (supervisor._start_render):
+        # the PROMPT, trimmed and capped at 80 chars, falling back to the
+        # model when there is no usable prompt (unreachable today — `prompt`
+        # is already validated non-empty above this branch — but written the
+        # same way so the two shapes cannot drift). The model rides its own
+        # field (jobs.py `Job.model`) — a dimmed suffix JobRow draws after the
+        # title, same as a local row's — so the detail line is free to say
+        # only "Claude — remote", which is the one thing this row exists to
+        # say that a local row's detail never does.
+        title = str(prompt or model).strip() or model
+        _report_remote(title=title[:80], model=model, state="running", kind="task",
+                       cancellable=False, detail="Claude — remote")
+
+    def _finish_remote_job() -> None:
+        """Success only: drop the row immediately rather than leaving it at
+        a "done" state for the 3s sweep to clear later. `jobs.dismiss`, not a
+        terminal `_report_remote(state="done")` left sitting — the whole
+        point is that the corner shows nothing at all once the call
+        succeeded. Safe to poison this id into `jobs._dismissed`: it is a
+        fresh uuid4 per call (see `_remote_job` above), never reused, unlike
+        the local rows' deterministic `job_id_for(model)`."""
+        _report_remote(state="done")  # dismiss() refuses a still-running row
+        jobs.dismiss(_remote_job)
+
     async def run_once(on_delta=None):
         """One completion through the shared instance, start to finish.
 
@@ -1104,31 +1173,70 @@ async def _ai_relay(body: dict):
                     raise
 
     if not stream:
+        _open_remote_job()
         try:
-            data = await run_once()
-        except asyncio.TimeoutError:
-            return _ai_failed(
-                model, "timeout",
-                f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
-        except OSError as exc:
-            return _ai_failed(
-                model, "ai_unavailable", f"could not run the claude CLI: {exc}")
-        except _AiProcFailure as exc:
-            return _ai_failed(model, "ai_error", str(exc))
-        payload, err = _ai_result_payload(data, model)
-        if err is not None:
-            return _ai_failed(model, "ai_error", err)
-        # Under the RESOLVED id, not the alias the caller sent: "opus" and
-        # "claude-opus-5" are one model and must not be two rows in the
-        # breakdown. `_ai_result_payload` already did that resolution.
-        ai_metrics.record(payload["model"], payload["usage"],
-                          _claude_seconds(data))
-        return JSONResponse({"ok": True, "result": payload})
+            try:
+                data = await run_once()
+            except asyncio.TimeoutError:
+                _report_remote(state="error",
+                               message=f"timed out after {_AI_TIMEOUT_S:.0f}s")
+                return _ai_failed(
+                    model, "timeout",
+                    f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+            except OSError as exc:
+                _report_remote(state="error", message=str(exc))
+                return _ai_failed(
+                    model, "ai_unavailable",
+                    f"could not run the claude CLI: {exc}")
+            except _AiProcFailure as exc:
+                _report_remote(state="error", message=str(exc))
+                return _ai_failed(model, "ai_error", str(exc))
+            payload, err = _ai_result_payload(data, model)
+            if err is not None:
+                _report_remote(state="error", message=err)
+                return _ai_failed(model, "ai_error", err)
+            # Under the RESOLVED id, not the alias the caller sent: "opus" and
+            # "claude-opus-5" are one model and must not be two rows in the
+            # breakdown. `_ai_result_payload` already did that resolution.
+            ai_metrics.record(payload["model"], payload["usage"],
+                              _claude_seconds(data))
+            _finish_remote_job()
+            return JSONResponse({"ok": True, "result": payload})
+        except asyncio.CancelledError:
+            # A genuine cancellation — the client went away mid-call. The
+            # only exit that is honestly "cancelled".
+            _report_remote(state="cancelled")
+            raise
+        except Exception:
+            # Anything else escaping the block above (a bug in
+            # `_ai_result_payload`, or any other unhandled exception) is a
+            # real server error, not something the user did — reporting it
+            # as "cancelled" would tell the corner a lie about what
+            # happened. Let it keep propagating (still a 500) after marking
+            # the row accordingly.
+            _report_remote(state="error", message="internal error")
+            raise
+        finally:
+            # Belt-and-suspenders: anything that reaches here without one of
+            # the terminal reports above closes the row as cancelled rather
+            # than leaving it running forever. A no-op once a real terminal
+            # state (done/error/cancelled) was already reported, thanks to
+            # `_report_remote`'s own dedup.
+            _report_remote(state="cancelled")
 
     # Streaming: NDJSON over a chunked 200. Anything that goes wrong after
     # the first chunk left the wire cannot change the status code, so errors
     # become the terminal done frame instead.
     async def ndjson():
+        # First action, not before the StreamingResponse is constructed: this
+        # generator only starts running once Starlette actually sends the
+        # body (its first `__anext__`), so a client that disconnects before
+        # that point never runs this line — and, symmetrically, never runs
+        # the `finally` below either. Opening the row out here rather than
+        # before `return StreamingResponse(...)` keeps those two facts in
+        # sync: no code path can create a row without something guaranteed
+        # to run also being on the hook to close it.
+        _open_remote_job()
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.ensure_future(
             run_once(on_delta=queue.put_nowait))
@@ -1151,6 +1259,9 @@ async def _ai_relay(body: dict):
                 data = task.result()
             except asyncio.TimeoutError:
                 ai_metrics.record_failure(model, "timeout")
+                _report_remote(
+                    state="error",
+                    message=f"timed out after {_AI_TIMEOUT_S:.0f}s")
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "timeout",
                     "message": "claude CLI did not answer within "
@@ -1158,25 +1269,40 @@ async def _ai_relay(body: dict):
                 return
             except OSError as exc:
                 ai_metrics.record_failure(model, "ai_unavailable")
+                _report_remote(state="error", message=str(exc))
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_unavailable",
                     "message": f"could not run the claude CLI: {exc}"}}) + "\n"
                 return
             except _AiProcFailure as exc:
                 ai_metrics.record_failure(model, "ai_error")
+                _report_remote(state="error", message=str(exc))
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": str(exc)}}) + "\n"
                 return
             payload, err = _ai_result_payload(data, model)
             if err is not None:
                 ai_metrics.record_failure(model, "ai_error")
+                _report_remote(state="error", message=err)
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": err}}) + "\n"
                 return
             ai_metrics.record(payload["model"], payload["usage"],
                               _claude_seconds(data))
+            _finish_remote_job()
             yield json.dumps(
                 {"type": "done", "ok": True, "result": payload}) + "\n"
+        except asyncio.CancelledError:
+            # A genuine cancellation — the client went away mid-stream. The
+            # only exit that is honestly "cancelled".
+            _report_remote(state="cancelled")
+            raise
+        except Exception:
+            # Anything else escaping the block above is a real server bug,
+            # not something the user did — reporting it as "cancelled" would
+            # tell the corner a lie about what happened.
+            _report_remote(state="error", message="internal error")
+            raise
         finally:
             if not task.done():
                 # Client went away mid-stream: cancel AND await, so
@@ -1187,6 +1313,13 @@ async def _ai_relay(body: dict):
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            # Belt-and-suspenders, same reasoning as the non-streaming
+            # branch's own finally: any exit that reached here without one of
+            # the terminal reports above (mid-stream disconnect, an
+            # unexpected exception) still closes the row rather than leaving
+            # it running forever. `_report_remote`'s own dedup makes this a
+            # no-op once a real terminal state was already reported.
+            _report_remote(state="cancelled")
 
     return StreamingResponse(ndjson(), media_type="text/x-ndjson")
 
