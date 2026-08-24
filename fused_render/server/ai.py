@@ -1095,8 +1095,27 @@ async def _ai_relay(body: dict):
             pass
 
     def _open_remote_job() -> None:
-        _report_remote(title="Claude (remote)", state="running", kind="task",
-                       cancellable=False, detail=f"Talking to {model}…")
+        # Same title convention as the local rows (supervisor._start_render):
+        # the PROMPT, trimmed and capped at 80 chars, falling back to the
+        # model when there is no usable prompt (unreachable today — `prompt`
+        # is already validated non-empty above this branch — but written the
+        # same way so the two shapes cannot drift). The remote-ness that a
+        # fixed "Claude (remote)" title used to carry moves into the detail
+        # line instead, which is still unmistakable at a glance.
+        title = str(prompt or model).strip() or model
+        _report_remote(title=title[:80], state="running", kind="task",
+                       cancellable=False, detail=f"Claude ({model}) — remote")
+
+    def _finish_remote_job() -> None:
+        """Success only: drop the row immediately rather than leaving it at
+        a "done" state for the 3s sweep to clear later. `jobs.dismiss`, not a
+        terminal `_report_remote(state="done")` left sitting — the whole
+        point is that the corner shows nothing at all once the call
+        succeeded. Safe to poison this id into `jobs._dismissed`: it is a
+        fresh uuid4 per call (see `_remote_job` above), never reused, unlike
+        the local rows' deterministic `job_id_for(model)`."""
+        _report_remote(state="done")  # dismiss() refuses a still-running row
+        jobs.dismiss(_remote_job)
 
     async def run_once(on_delta=None):
         """One completion through the shared instance, start to finish.
@@ -1179,7 +1198,7 @@ async def _ai_relay(body: dict):
             # breakdown. `_ai_result_payload` already did that resolution.
             ai_metrics.record(payload["model"], payload["usage"],
                               _claude_seconds(data))
-            _report_remote(state="done", detail=f"Replied via {model}")
+            _finish_remote_job()
             return JSONResponse({"ok": True, "result": payload})
         except asyncio.CancelledError:
             # A genuine cancellation — the client went away mid-call. The
@@ -1268,7 +1287,7 @@ async def _ai_relay(body: dict):
                 return
             ai_metrics.record(payload["model"], payload["usage"],
                               _claude_seconds(data))
-            _report_remote(state="done", detail=f"Replied via {model}")
+            _finish_remote_job()
             yield json.dumps(
                 {"type": "done", "ok": True, "result": payload}) + "\n"
         except asyncio.CancelledError:

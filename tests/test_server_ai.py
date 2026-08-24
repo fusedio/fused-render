@@ -330,26 +330,49 @@ def test_is_local_model_recognises_both_id_shapes(model, expected):
 # the row reaches a terminal state once the call ends — never left running.
 
 
-def test_relay_opens_and_closes_a_remote_job_row(monkeypatch):
+def test_relay_dismisses_its_job_row_immediately_on_success(monkeypatch):
+    # A successful call must clear its row right away — no "done" dwell for
+    # the 3s sweep to clear later (jobs.dismiss, not a terminal "done" report
+    # left sitting). See the title/detail test below for what the row said
+    # while it was open.
     _cli_ok(monkeypatch, _CLI_RESULT)
     assert jobs.list_jobs() == []  # nothing before the call
     _relay({"prompt": "hello"})
-    rows = jobs.list_jobs()
-    assert len(rows) == 1
-    row = rows[0]
-    # Unmistakably remote, not a local model id or a generic "Claude" title.
-    assert "remote" in row["title"].lower() or "remote" in row["detail"].lower()
-    assert "claude" in row["title"].lower()
-    # Terminal by the time the call has returned — never left "running".
-    assert row["state"] == "done"
+    assert jobs.list_jobs() == []  # nothing left after it either
+
+
+def test_relay_remote_job_row_title_is_the_prompt_like_local_rows(monkeypatch):
+    # Change 1: local generation rows title on the PROMPT
+    # (supervisor._start_render) — a hardcoded "Claude (remote)" title was the
+    # odd one out. The remote-ness moves to the detail line instead, so a
+    # page calling fused.ai() against Claude still can't be mistaken for a
+    # local model at a glance. Checked on an ERRORED call — a successful one
+    # dismisses its row entirely (see the test above) — but the title and
+    # detail are set when the row OPENS, before the outcome is known, so an
+    # error shows exactly what a success would have too.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "summarize this doc for me"})
+    row = jobs.list_jobs()[0]
+    assert row["title"] == "summarize this doc for me"
+    assert "claude" in row["detail"].lower()
+    assert _server_ai._AI_DEFAULT_MODEL in row["detail"]
+
+
+def test_relay_remote_job_row_title_is_truncated_to_80_chars(monkeypatch):
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "x" * 200})
+    row = jobs.list_jobs()[0]
+    assert row["title"] == "x" * 80
 
 
 def test_relay_remote_job_row_does_not_advertise_a_dead_cancel(monkeypatch):
     # JobRow renders a ✕ Cancel affordance whenever cancellable=True on a
     # running row. Nothing in the remote-Claude path polls cancel_requested,
     # so a row claiming to be cancellable would ship a button that does
-    # nothing — the thing the brief explicitly forbids.
-    _cli_ok(monkeypatch, _CLI_RESULT)
+    # nothing — the thing the brief explicitly forbids. Checked on the
+    # errored path for the same reason as the title test above: a success
+    # dismisses the row before anything could inspect it.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     _relay({"prompt": "hello"})
     row = jobs.list_jobs()[0]
     assert row["cancellable"] is False
@@ -384,13 +407,12 @@ def test_relay_remote_job_row_closes_on_missing_binary(monkeypatch):
     assert jobs.list_jobs() == []
 
 
-def test_relay_stream_opens_and_closes_a_remote_job_row(monkeypatch):
+def test_relay_stream_dismisses_its_job_row_immediately_on_success(monkeypatch):
     _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
     resp, frames = _stream({"prompt": "hello", "stream": True})
     assert frames[-1]["ok"] is True
-    row = jobs.list_jobs()[0]
-    assert "remote" in (row["title"] + row["detail"]).lower()
-    assert row["state"] == "done"
+    # Same "no done dwell" rule as the non-streaming path.
+    assert jobs.list_jobs() == []
 
 
 def test_relay_stream_remote_job_row_closes_on_error(monkeypatch):
