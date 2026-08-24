@@ -8202,54 +8202,69 @@ an AI Models page that could say what was on disk but not what was *running*.
     measurement's real error.
 - **AI-15** **A fifth capability, `text-to-video`, and the first with no
   "everywhere" runner.** `fused.ai.video({prompt, ...})` renders text to a
-  short mp4 with audio through MiniMax H3, on `antirez/h3.c` — a standalone
-  Metal binary this app bundles the way it bundles rclone (D103's pattern;
-  `registry.h3_bin()` is `rcd.py::rclone_bin()`'s resolution ladder read
-  against a different binary, `build_dmg.sh` stages it the same way). The
-  `h3-video` runner's `worker.py` is therefore unlike every other runner
-  here: it loads no model into its own interpreter and calls no library —
-  it spawns the resolved binary as a subprocess per render (absolute exe
-  path, `close_fds=False`, no `cwd=` — the repo's PROJ-atfork subprocess
-  discipline), reads its stdout for `N/M` step lines, and kills the child
-  on a ✕. `POST /api/ai/video` mirrors `/api/ai/image` — job-backed,
-  server-decided path and seed — minus `guidance` (H3 is CFG-distilled and
-  takes no such parameter, so one is refused as an unknown option rather
-  than silently accepted) and minus a live preview (none exists in this
-  cut), plus `frames`: h3's own valid grid is `5 + 17n` (VERIFIED against
-  the built binary's `h3_align_frame_count`/`h3_valid_params`, see D458),
-  so a requested count is rounded UP to the next grid point rather than
-  merely clamped, and `steps`/canvas floors and ceilings ([2, 1000] steps,
-  32-multiple canvas up to 768×1344 pixels) are the binary's own hard
-  limits, not this app's guess at them. **No fallback exists anywhere
-  else** — h3.c is Metal-only, so off Apple Silicon (or on a Mac whose
-  build never staged the binary) `catalog()` reports `default: null` for
-  this capability for the first time, and every call answers 409 with the
-  reason rather than ever reaching a render.
-- **AI-15a** **ffmpeg reaches the subprocess through the runner's OWN venv,
-  never through the app or the system PATH** (D459). h3 needs a real
-  ffmpeg EXECUTABLE to mux the rendered frames and the generated audio
-  into one mp4 — dropping the mux step (`--frames-dir`, raw PPM frames)
-  drops the audio, which is H3's headline feature — and `imageio-ffmpeg`'s
-  wheel already carries one per platform; `worker.py` points `H3_FFMPEG`
-  at `imageio_ffmpeg.get_ffmpeg_exe()` before spawning h3, so the
-  subprocess never has to find one on a PATH a supervisor child may not
-  even have.
-- **AI-15b** **The curated catalog entry is metadata only, and stays that
-  way through every test in this build.** The real repo,
-  `MiniMaxAI/MiniMax-H3` (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist — a
-  401), is 498.5GB WHOLE: it carries both the FL2VA and Ref2VA checkpoints
-  (144.05GB each) plus a second, unused copy of their shared components at
-  the repo root (~210GB more). h3.c's own loader (VERIFIED by reading
-  h3.c's `h3_load_dir` at the pinned commit) never opens a path outside
-  `FL2VA/` or `Ref2VA/`, so this build's prompt-only FL2VA path downloads
-  ONLY the `FL2VA/` tree (`allow_patterns=["FL2VA/*"]` on
-  `h3_video/worker.py`'s `download()`) at its own measured 144.05GB
-  (`catalog.py`'s `size_gb: 144.1`), never the whole repo. No test, build
-  step, or CI run may fetch it or run a real render either way — every
-  worker test drives a REAL executable fake standing in for the h3 binary
-  (a script that writes a tiny mp4 and prints real progress lines over a
-  real pipe, never a canned subprocess result), and the one real
-  end-to-end render happens later, on an M3, by a human.
+  short mp4 WITH AUDIO through LTX-2.3, on `ltx-2-mlx` — a pure-MLX,
+  MIT-licensed port whose `DistilledPipeline` reads MLX safetensors directly,
+  so the `ltx-video` runner loads a model into its own interpreter the same
+  way `mflux-image` does. `POST /api/ai/video` mirrors `/api/ai/image` —
+  job-backed, server-decided path and seed — minus `guidance` (the engine is
+  CFG-distilled and takes no such parameter, so one is refused as an unknown
+  option rather than silently accepted) and minus a live preview (none exists
+  in this cut), plus `frames`: the engine's valid grid is `1 + 8n` (its VAE's
+  temporal compression is 8, the grid its own upstream CLI defaults to), so a
+  requested count is rounded UP to the next grid point rather than merely
+  clamped. **The request SHAPE is the resolved runner's own fact, not the
+  route's** — `registry.VideoTraits` carries the frame grid, canvas default
+  and step default per runner (`704×480` at 8 steps here), and
+  `catalog.describe`'s `videoTraits` hands the identical numbers to the
+  Playground's sliders so a control cannot show a value the render will not
+  use. The shared rails around them — `n` in [1, 21], steps in [2, 50], a
+  32-multiple canvas up to 768×1344 pixels — are the APP's choices, held
+  across every engine. **No fallback exists anywhere else**: the engine is
+  MLX, so off Apple Silicon `catalog()` reports `default: null` for this
+  capability for the first time, and every call answers 409 with the reason
+  rather than ever reaching a render.
+- **AI-15a** **Two repos are fetched, not one, and both are reported
+  downloads.** `DistilledPipeline` needs the LTX weights AND a Gemma-3 text
+  encoder it does not ship, so `download` fetches
+  `mlx-community/gemma-3-12b-it-4bit` explicitly rather than letting the
+  pipeline reach for it lazily on first render — a "Download" that leaves a
+  cache which cannot work offline has not done what the button said. Only a
+  narrow file set comes from the weights repo (`_curated_file_set` names
+  exactly the files the loader opens, and `_resolve_versioned_name` picks the
+  ONE transformer file off the repo's own listing rather than a glob that
+  would fetch a duplicate 11.3GB of dead weight). ffmpeg reaches the render
+  through the runner's OWN venv, never the app or the system PATH (D459):
+  `ltx_core_mlx.utils.ffmpeg.find_ffmpeg()` is a bare `shutil.which`, so
+  `worker.py` puts `imageio-ffmpeg`'s bundled executable on PATH.
+- **AI-15b** **The `h3-video` runner — MiniMax H3 on `antirez/h3.c`, a
+  bundled Metal binary — was DROPPED (D468), and the reasons are worth
+  keeping.** It could not run on macOS 14 on two independent counts: the
+  binary built with an implicit `minos 15.0` (its Makefile sets no
+  `-mmacosx-version-min`, so clang defaulted the deployment target to the
+  BUILD HOST's OS), and h3.c's attention path calls MPSGraph's
+  `scaledDotProductAttention` plus `MTLCompileOptions.mathMode`, both
+  macOS 15.0+ with no pre-15 fallback. Worse, bundling it required a macOS 26
+  SDK, which moved the whole release build to a `macos-15` runner — and
+  because `build_dmg.sh` bundles Homebrew's `python@3.12` FRAMEWORK, and
+  Homebrew ships prebuilt PER-OS bottles, that runner staged a `pyexpat.so`
+  referencing `XML_SetReparseDeferralEnabled`, a symbol macOS 14's system
+  libexpat does not export. `import plistlib` then failed at launch and
+  py2app showed only its generic "Launch error", so v0.4.49–v0.4.51 could not
+  start at all on macOS 14. **The app's own `MACOSX_DEPLOYMENT_TARGET` was
+  correct throughout and did not help** — it governs code WE compile, not
+  bottles we bundle. The macOS build jobs are therefore pinned to `macos-14`,
+  the oldest image GitHub offers, guarded by
+  `tests/test_build_dmg_diagnostics.py`; moving them forward requires first
+  making the build stop bundling a per-OS Homebrew bottle. `ltx-video`
+  already served this capability as the default row, so the removal cost the
+  high-fidelity option and not the capability. Two traces stay on purpose:
+  `formats.loaders` still returns early on a root `FL2VA/` tree while
+  claiming NO runner (the same shape D406's withdrawn Parakeet runner left
+  behind), because that repo carries a root `model_index.json` of h3.c's own
+  and would otherwise be mislabelled as diffusers-loadable for anyone who
+  already fetched its 144GB; and `/api/ai/video`'s cross-engine refusal is
+  kept as deliberately unreachable code, generic over runners, so a second
+  video engine's arrival does not have to remember to add it back.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

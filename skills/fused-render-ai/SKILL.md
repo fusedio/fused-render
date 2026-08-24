@@ -271,7 +271,7 @@ Every tick carries a ready-made URL for a **~32px thumbnail of the image so far*
 
 ## Video: `fused.ai.video({prompt, ...})`
 
-`fused.ai.image`'s twin — job-backed, resolves with a file — for text-to-video with audio, on MiniMax H3. **Apple Silicon only, with no fallback on any other platform**: this is the first local capability that can be genuinely unservable on the machine running your page, so always handle `.type === "unavailable"`.
+`fused.ai.image`'s twin — job-backed, resolves with a file — for text-to-video with audio, on LTX-2.3 (`ltx-2-mlx`). **Apple Silicon only, with no fallback on any other platform**: this is the first local capability that can be genuinely unservable on the machine running your page, so always handle `.type === "unavailable"`.
 
 ```js
 const vid = await fused.ai.video({
@@ -286,14 +286,16 @@ video.src = vid.url;   // ready-made /api/fs/raw url, with audio muxed in
 | Option | Default | Range | Notes |
 |---|---|---|---|
 | `prompt` | — | non-empty | trimmed; empty or non-string is `bad_request` **before** a job opens |
-| `model` | the `text-to-video` row's `default` (`null` if this machine cannot serve the capability at all) | the H3 FL2VA checkpoint | there is only one curated model in this build |
-| `width` / `height` | `864` / `480` — h3's own default | **256–1344**, and `width * height <= 768 * 1344` | clamped, then **snapped DOWN to a multiple of 32**; an over-large canvas is shrunk further to fit the pixel ceiling |
-| `frames` | `90` (~3.75s at 24fps) | h3's own grid, `5 + 17n`, `n` 1–21 (22–362 frames) | **rounded UP to the next valid value** — never down, and never to "nearest" — `100` becomes `107`, `30` becomes `39`; a value below 22 becomes 22 (h3 has no 5-frame render, only the grid's second point up) |
-| `steps` | `20` | **2–50** | clamped; not a number → 400. The floor is 2, not 1 — h3 refuses a 1-step request outright |
+| `model` | the `text-to-video` row's `default` (`null` if this machine cannot serve the capability at all) | the int4 LTX-2.3 tier | two curated tiers (int4 ~28.5 GB, int8 ~37.8 GB) |
+| `width` / `height` | `704` / `480` — the engine's own default | **256–1344**, and `width * height <= 768 * 1344` | clamped, then **snapped DOWN to a multiple of 32**; an over-large canvas is shrunk further to fit the pixel ceiling |
+| `frames` | `97` (~4s at 24fps) | the engine's grid, `1 + 8n`, `n` 1–21 (9–169 frames) | **rounded UP to the next valid value** — never down, and never to "nearest" — `100` becomes `105`, `30` becomes `33`; a value below 9 becomes 9 (the grid starts at its second point, `n=1`) |
+| `steps` | `8` | **2–50** | clamped; not a number → 400. The floor is 2, not 1 |
 | `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
 | `onProgress(job)` | — | — | per denoising step |
 
-**No `guidance`** — H3 is CFG-distilled and takes no such parameter; passing one is refused `bad_request` like any other unsupported option, the same envelope rule `fused.ai.image` documents (D413). **No live preview either** (`previewUrl`/`previewPath` do not exist on this reply) — v1 has no fitted projection for H3's latent space.
+**These numbers are the RESOLVED ENGINE's, not the route's** — the frame grid, canvas default and step default all come from whichever runner serves the request (`registry.VideoTraits`), and `fused.ai.models.catalog()`'s `videoTraits` hands you the same numbers if you need to draw a control that agrees with the server. The rails around them (`n` in 1–21, steps 2–50, the 32-multiple canvas and the pixel ceiling) are the app's own and hold for every engine.
+
+**No `guidance`** — the engine is CFG-distilled and takes no such parameter; passing one is refused `bad_request` like any other unsupported option, the same envelope rule `fused.ai.image` documents (D413). **No live preview either** (`previewUrl`/`previewPath` do not exist on this reply).
 
 Resolves with `{jobId, path, url, model, prompt, width, height, frames, steps, seed}` — the render that actually happened, not the one you asked for (dimensions may have shrunk, `frames` may have moved to the nearest grid value).
 
@@ -303,14 +305,14 @@ Resolves with `{jobId, path, url, model, prompt, width, height, frames, steps, s
 
 ### Availability: check it before you build the button
 
-Video generation has no "everywhere" runner — off Apple Silicon, or on a Mac with no `h3` binary staged, `fused.ai.models.catalog()` reports `default: null` for `text-to-video` and every call rejects `.type "unavailable"` with the reason ("needs Apple Silicon…" or "the h3 binary is not available…") in `.message`. Read `catalog()` first and hide or explain the feature rather than offering a button that always fails.
+Video generation has no "everywhere" runner — off Apple Silicon, `fused.ai.models.catalog()` reports `default: null` for `text-to-video` and every call rejects `.type "unavailable"` with the reason ("needs Apple Silicon…") in `.message`. Read `catalog()` first and hide or explain the feature rather than offering a button that always fails.
 
 ### Slow renders, and cancelling one
 
-- **Hours, not minutes are the honest expectation** — the server allows up to **2 hours** per render (`VIDEO_TIMEOUT_S`), far past the image path's 15-minute cap, because a 768-class H3 render on real hardware can take that long.
+- **Hours, not minutes are the honest expectation** — the server allows up to **2 hours** per render (`VIDEO_TIMEOUT_S`), far past the image path's 15-minute cap, because a high-resolution render on real hardware can take that long.
 - **Renders serialize**, exactly like images: one at a time per worker, and a second call waits with no queue message on its row.
 - **An aged-out row still answers off the file** — the same backgrounded-tab recovery `fused.ai.image` documents, and more likely to matter here given how long a render can run.
-- `fused.ai.cancel("text-to-video")` stops the render **by killing the h3 subprocess directly** — a real process kill, not merely an abandoned HTTP request — and keeps the model resident so the next call starts warm.
+- `fused.ai.cancel("text-to-video")` stops the render and keeps the model resident, so the next call starts warm.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"`.
 
 ## Transcription: `fused.ai.transcribe({path, ...})`
@@ -441,7 +443,7 @@ Ten runners, four capabilities, taking **either** a Hugging Face repo id **or** 
 | `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. The three Transformers rows that used to sit between them were withdrawn: llama.cpp reads a quantized GGUF of the same current-generation Qwen several times quicker, at roughly a third of the download and a third of the memory, so **local text ids are GGUF now** — the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
 | `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are opt-in and hardware-gated: offered only where the app sees a usable NVIDIA or AMD GPU, greyed out with the reason otherwise. |
 | `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
-| `text-to-video` | H3 (Apple Silicon) | **NOT everywhere — the first capability with no fallback row.** MiniMax H3 runs on `antirez/h3.c`, a bundled Metal binary; there is no CPU, CUDA or ROCm engine for it. Off Apple Silicon, or on a Mac whose build never staged the `h3` binary, `catalog()` reports `default: null` and every call to `fused.ai.video` rejects `.type "unavailable"`. |
+| `text-to-video` | LTX-2.3 (Apple Silicon) | **NOT everywhere — the first capability with no fallback row.** LTX-2.3 runs on `ltx-2-mlx`, which is MLX-only; there is no CPU, CUDA or ROCm engine for it. Off Apple Silicon, `catalog()` reports `default: null` and every call to `fused.ai.video` rejects `.type "unavailable"`. |
 
 Those four strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
