@@ -69,25 +69,43 @@ export function LivePreview({ src }: { src: string }) {
   src = withNoFocus(withPreviewFlag(src));
   const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   const { started, settled } = usePreviewStart(nearViewport);
+  // Separate from `started`/`settled`: those track the SCHEDULER's slot (freed
+  // on load OR error OR timeout, so a stuck preview doesn't starve the other
+  // one), while `loaded` tracks whether the iframe has actually PAINTED
+  // something — the two only coincide on the happy path. Gating the fade on
+  // `loaded` (not `started`) is what keeps the crossfade from handing the
+  // shimmer off to a raw white/blank frame mid-boot.
+  const [loaded, setLoaded] = useState(false);
   if (!started) {
-    return <span ref={previewRef} className="fhb-preview" aria-hidden="true" />;
+    return (
+      <span ref={previewRef} className="fhb-preview" aria-hidden="true">
+        <span className="fhb-preview-skel" />
+      </span>
+    );
   }
   return (
     <span ref={previewRef} className="fhb-preview" aria-hidden="true">
       {/* The near-viewport observer is the lazy gate; the shared scheduler is
           the concurrency gate. Keeping them separate means a browser-delayed
           iframe never holds one of the scheduler's two permits. */}
+      {!loaded && <span className="fhb-preview-skel" />}
       <iframe
         src={src}
+        loading="lazy"
         style={{
           width: `${100 / PREVIEW_SCALE}%`,
           height: `${100 / PREVIEW_SCALE}%`,
           transform: `scale(${PREVIEW_SCALE})`,
+          opacity: loaded ? 1 : 0,
+          transition: "opacity 0.15s ease",
         }}
         tabIndex={-1}
         scrolling="no"
         title=""
-        onLoad={settled}
+        onLoad={() => {
+          setLoaded(true);
+          settled();
+        }}
         onError={settled}
       />
       <span className="fhb-shield" />
@@ -248,6 +266,30 @@ function FolderStack({ path }: { path: string }) {
           not a bar floating over a separate panel). The whole stack waits
           for settled: painting an alphabetical stack mid-probe would let
           the front sheet reorder under the user once subPeek names it. */}
+      {/* Before settled: three placeholder sheets at the same depths the real
+          stack uses, so the silhouette (how many pages, which one is in
+          front) is on screen from first paint and only the ink — names,
+          the peeked body — arrives once listDir and the subfolder probe both
+          land. Reuses `.skel-bar.icon-skel` (explorer.css) for the row icon
+          rather than a bespoke square, and `.fhb-sheet-skel-body` for the
+          front sheet's body — the same slot `.fhb-sheet-d0 .fhb-preview`
+          fills below, sized to match without the specificity fight that
+          layering onto `.fhb-preview` itself would cause (see
+          preferences.css). */}
+      {!settled &&
+        [2, 1, 0].map((depth) => (
+          <span key={depth} className={`fhb-sheet fhb-sheet-d${depth}`}>
+            <span className="fhb-sheet-row">
+              <span className="skel-bar icon-skel" />
+              <span className="skel-bar" style={{ width: depth === 0 ? "55%" : "70%" }} />
+            </span>
+            {depth === 0 ? (
+              <span className="fhb-sheet-skel-body" />
+            ) : (
+              <span className="fhb-sheet-peek" />
+            )}
+          </span>
+        ))}
       {settled &&
         shown.map((e, i) => {
           const depth = shown.length - 1 - i;

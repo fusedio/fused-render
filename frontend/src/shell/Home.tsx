@@ -142,6 +142,52 @@ function Section({
   );
 }
 
+// Skeleton for one card while a strip's fetch is in flight: the same
+// `.fhb-card` head-row-over-body-well shell a real card draws (icon tile +
+// two shimmer bars over a 16/10 well), so the row that replaces it does not
+// change height or card count out from under the reader. Pure decoration —
+// `aria-hidden`, with the row wrapper (below) carrying the one `role="status"`
+// announcement for the whole strip, the way the old "Loading apps" line
+// (a single ~18px paragraph) used to speak for the row rather than each line
+// in it.
+function SkeletonCard() {
+  return (
+    <span className="fhb-card home-skel-card" aria-hidden="true">
+      <span className="fhb-card-head">
+        <span className="home-skel-icon" />
+        {/* `.fh-card-text` is a shrink-to-fit flex item everywhere else (its
+            real content — the name/path text — decides its width); a
+            percentage-width `.skel-bar` inside it has nothing to shrink-to-fit
+            against, so `home-skel-text` grows it to fill the head row like the
+            real text effectively does once it's long enough to need the
+            ellipsis. */}
+        <span className="fh-card-text home-skel-text">
+          {/* Wider bar on top: a name reads longer than the path underneath it
+              on every real card head, and matching that keeps the skeleton
+              from looking like a title-less placeholder. */}
+          <span className="skel-bar" style={{ width: "72%" }} />
+          <span className="skel-bar" style={{ width: "48%" }} />
+        </span>
+      </span>
+      <span className="fhb-thumb home-skel-body" />
+    </span>
+  );
+}
+
+// A skeleton row is sized by `shown`, not by a guess or the section's peak
+// `limit` — the same number of cards the real row will draw once the fetch
+// lands (Home.tsx slices every strip to `shown`), so the swap from skeleton to
+// content never changes the row's card count or width.
+function SkeletonRow({ count, label }: { count: number; label: string }) {
+  return (
+    <div className="home-row" role="status" aria-busy="true" aria-label={label}>
+      {Array.from({ length: count }, (_, i) => (
+        <SkeletonCard key={i} />
+      ))}
+    </div>
+  );
+}
+
 // The AI Playground strip's glyph vocabulary — plain strokes on the current
 // color, so the tinted body well colours them for free. Keyed by the THING a
 // task reads or writes rather than by the capability, because the card body
@@ -381,7 +427,7 @@ export default function Home({ config }: { config: Config }) {
             <ClaudeHealthStrip />
             <Section title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
-                <p className="fh-empty">Loading apps…</p>
+                <SkeletonRow count={shown} label="Loading apps" />
               ) : apps.length ? (
                 <div className="home-row">
                   {apps.slice(0, shown).map((app) => (
@@ -405,7 +451,7 @@ export default function Home({ config }: { config: Config }) {
 
             <Section title="Claude Sessions" seeAllHref="/explorer?tab=sessions">
               {sessions === null ? (
-                <p className="fh-empty">Looking for sessions…</p>
+                <SkeletonRow count={shown} label="Loading Claude sessions" />
               ) : sessions.length ? (
                 <div className="home-row">
                   {sessions.slice(0, shown).map((f) => (

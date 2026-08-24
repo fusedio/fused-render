@@ -211,6 +211,20 @@
   overflow: hidden;
 }
 
+/* Shimmer while the thumb has something coming (an undecoded still, or a live
+   iframe not yet painted) — see the condition in AppPreviewCard.tsx. Same
+   gradient/animation recipe as `.skel-bar` (explorer.css), restated here
+   rather than shared across files so this page's shimmer doesn't depend on
+   another page's stylesheet being loaded first. */
+.app-pcard-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
 .app-pcard-thumb iframe {
   position: absolute;
   top: 0;

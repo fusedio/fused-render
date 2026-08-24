@@ -64,3 +64,50 @@ test("Home sizes both row requests by the measured card count, never a constant"
   expect(home).toContain("limit: Math.max(prev.limit ?? 0, fits)");
   expect(home).not.toContain("useState(3)");
 });
+
+// The two async strips used to hold a single ~18px "Loading…" line while
+// their fetch was in flight, then jump to a row of ~268px cards — two
+// sections each pushing the whole page down once for the fetch and once more
+// if it resolved empty. A skeleton row of the same card shape holds that
+// height from first paint instead.
+test("Home's async sections render a skeleton row, not a bare loading line", () => {
+  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  expect(home).not.toContain("Loading apps…");
+  expect(home).not.toContain("Looking for sessions…");
+  expect(home.match(/apps === null \? \(\s*<SkeletonRow/)).not.toBeNull();
+  expect(home.match(/sessions === null \? \(\s*<SkeletonRow/)).not.toBeNull();
+});
+
+// Pixel-identical to the row it is replaced by: a skeleton sized by a
+// constant (or by `limit`, the PEAK count) would draw a different number of
+// cards than the row that lands once the fetch resolves, which is exactly the
+// shift this feature exists to remove.
+test("the skeleton row draws exactly as many cards as the real row", () => {
+  const home = readFileSync(join(import.meta.dir, "Home.tsx"), "utf8");
+  expect(home.match(/<SkeletonRow count={shown}/g)?.length).toBe(2);
+});
+
+// `started` only means the scheduler admitted the navigation — a raw iframe
+// mid-boot still paints its own blank/white frame before that. Gating the
+// fade on a separate `loaded` (set from onLoad) is what keeps the crossfade
+// from handing the shimmer off to a half-booted page.
+test("LivePreview crossfades on load rather than painting a booting frame", () => {
+  const cards = readFileSync(
+    join(import.meta.dir, "../apps/explorer/BookmarkCards.tsx"),
+    "utf8",
+  );
+  expect(cards).toContain("opacity: loaded ? 1 : 0");
+});
+
+// The 800px margin was set for a grid with roughly one row on screen; Home
+// stacks four rows in one scroller, so it made nearly every card "near" on
+// load and queued a whole embed-shell document for rows the reader had not
+// scrolled to. 300px is still roughly a row of lookahead.
+test("the near-viewport lookahead is the tighter one", () => {
+  const previewStart = readFileSync(
+    join(import.meta.dir, "../platform/lib/preview-start.ts"),
+    "utf8",
+  );
+  expect(previewStart).toContain("300px 0px");
+  expect(previewStart).not.toContain('"800px 0px"');
+});

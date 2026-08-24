@@ -365,10 +365,120 @@
   min-width: 0;
 }
 
+/* The measured height of one card at CARD_W=330px, read off the rules below
+   rather than guessed — every number here has to change in lockstep with the
+   ones it derives from:
+     content width  = 330 (card) - 2*(6px padding + 1px border)     = 316px
+     body well      = 316 * (10/16)  (.fhb-thumb/.fhb-stack aspect-ratio)
+                                                                     = 197.5px
+     head row       = 36 (.fhb-card .fh-card-icon height, the tallest
+                       thing in the row) + 7px top / 11px bottom padding
+                       (.fhb-card-head)                             = 54px
+     card chrome    = 2*(6px padding + 1px border) (.fhb-card)      = 14px
+     total          = 197.5 + 54 + 14                               = 265.5px
+   On `.home-section` (not `.home-row` itself) because the empty state below
+   needs it too, and an empty section renders a `.fh-empty` <p> instead of a
+   `.home-row` — the property has to live on their shared ancestor to reach
+   both. */
+.home-section {
+  --home-card-h: 265.5px;
+}
+
+/* The terminal empty state occupies the same box the skeleton row (and the
+   real row) did — the previous one-line text collapsed the section back down
+   the moment a fetch resolved to `[]`, undoing the skeleton's whole point of
+   holding geometry from first paint. The dashed well says "nothing here" the
+   way the loading skeleton said "something's coming"; the text itself is
+   unchanged. */
+.home-section .fh-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--home-card-h);
+  margin: 0;
+  padding: 0 16px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--fg-muted);
+}
+
 .fh-empty {
   margin: 0;
   font-size: 13.5px;
   color: var(--fg-muted);
+}
+
+/* Section skeleton row (Home.tsx SkeletonCard): the `.fhb-card` class gives
+   the shell its real box model (padding, border, radius, head row) for free —
+   these rules only neutralise its hover treatment, since a skeleton `<span>`
+   is decoration, not a link. */
+.home-skel-card {
+  cursor: default;
+}
+
+.home-skel-card:hover {
+  border-color: var(--border);
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  transform: none;
+}
+
+/* The icon tile placeholder: same 36px/10px-radius shape as `.fhb-card
+   .fh-card-icon`, stated standalone rather than layered onto that class,
+   because both it and `.fhb-thumb` (below) already declare their own
+   `background` — combining classes at equal specificity would leave the
+   winner decided by CSS file load order instead of by this rule. */
+.home-skel-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  flex: 0 0 auto;
+}
+
+/* `.fh-card-text` normally shrink-wraps its real name/path text; the skeleton
+   bars have nothing to shrink-to-fit against, so this grows the column to
+   take the rest of the head row instead of collapsing near 0. */
+.home-skel-text {
+  flex: 1 1 auto;
+}
+
+/* The two shimmer bars in a skeleton head — reuses `.skel-bar` (explorer.css)
+   as-is; only the widths are per-instance (inline style in Home.tsx). */
+
+/* Shimmer wash for a whole panel — same gradient/animation recipe as
+   `.skel-bar`'s (explorer.css), just filling a box instead of drawing a thin
+   bar. `.home-skel-icon` and the compound selectors below are the only
+   consumers; each is paired with the real box class in a COMPOUND selector
+   (not a second class on the same element) so the shimmer's `background`
+   wins over that class's own regardless of stylesheet order. */
+.home-skel-icon,
+.fhb-thumb.home-skel-body,
+.fhb-sheet-skel-body,
+.fhb-preview-skel {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+/* The folder-stack skeleton's front-sheet body: same slot `.fhb-sheet-d0
+   .fhb-preview` fills once settled (flex-grown, full width, a 60px floor) —
+   stated on its own class rather than reusing `.fhb-preview` itself, which
+   would hit the same cross-file specificity problem `.home-skel-body` avoids
+   above. */
+.fhb-sheet-skel-body {
+  flex: 1 1 auto;
+  min-height: 60px;
+  width: 100%;
+}
+
+/* `LivePreview`'s shimmer while `!started || !loaded` (BookmarkCards.tsx):
+   fills the same absolutely-positioned box the iframe does, and stays out of
+   the card's click target like every other decoration in `.fhb-preview`. */
+.fhb-preview-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 /* Search results: a flat scannable list (relevance order), not the launcher
