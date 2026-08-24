@@ -212,28 +212,28 @@ export async function renderShareCard(input: ShareCardInput): Promise<Blob> {
 
   // -- title + metric --------------------------------------------------------
   // The capability label carries the heading weight; the "local AI benchmark"
-  // suffix rides beside it in the muted colour at a smaller size, so the two
-  // read as one phrase ("Speech to text local AI benchmark") rather than a
-  // label plus an unrelated caption. The suffix's x is `label`'s MEASURED
-  // width, not a guessed offset — the label's text varies per capability
-  // ("Text generation" vs "Embeddings"), so a fixed offset would either
-  // collide with a wide label or leave a gap after a narrow one.
+  // suffix rides beside it in the muted colour, so the two read as one phrase
+  // ("Speech to text local AI benchmark") rather than a label plus an
+  // unrelated caption. The suffix's x is `label`'s MEASURED width, not a
+  // guessed offset — the label's text varies per capability ("Text
+  // generation" vs "Embeddings"), so a fixed offset would either collide with
+  // a wide label or leave a gap after a narrow one.
+  //
+  // Both runs are drawn at the SAME 24px size — weight and colour do the
+  // distinguishing, not size. A smaller suffix (tried first) reads as a
+  // caption stapled onto a heading rather than as one phrase, and it also
+  // reintroduces the baseline mismatch below: `textBaseline` is "top", so two
+  // sizes sharing one `y` sit on different baselines and need a hand-eyeballed
+  // nudge to line back up. One size sidesteps both problems at once, which is
+  // why a future "shrink the suffix back down" edit should stop here.
   ctx.fillStyle = INK.fg;
   ctx.font = `600 24px ${SANS}`;
   const label = capabilityLabel(input.capability);
   ctx.fillText(label, PAD, y);
   const labelWidth = ctx.measureText(label).width;
   ctx.fillStyle = INK.muted;
-  ctx.font = `14px ${SANS}`;
-  // `textBaseline` stays "top" throughout the card (set once, above), which
-  // means two different font sizes drawn at the same y sit on DIFFERENT
-  // baselines — a smaller font's glyphs hang noticeably higher than a bigger
-  // one's. The +8 nudges the suffix down onto the label's baseline; it is the
-  // same eyeballed offset the old brand row used to line up its 17px wordmark
-  // against a 12px caption (8 and 12 both landed the two baselines at ~21.6px
-  // below their own `y`), not a value derived from font metrics the Canvas
-  // API does not expose cheaply.
-  ctx.fillText(` ${titleSuffix()}`, PAD + labelWidth, y + 8);
+  ctx.font = `24px ${SANS}`;
+  ctx.fillText(` ${titleSuffix()}`, PAD + labelWidth, y);
   y += 30;
   ctx.fillStyle = INK.muted;
   ctx.font = `13px ${SANS}`;
