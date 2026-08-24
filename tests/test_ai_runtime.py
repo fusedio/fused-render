@@ -2497,6 +2497,11 @@ UNBOUNDED_RUNNER_DEPENDENCIES = {
     "pillow": "writes the PNG",
     "sentencepiece": "a tokenizer file format, fixed by the checkpoints that use it",
     "protobuf": "sentencepiece's on-disk format, same argument",
+    "jinja2": (
+        "renders the chat template around a prompt; it is a general templating "
+        "library with no notion of a model or a tensor, and its next major "
+        "cannot change what a checkpoint computes"
+    ),
     "av": "the ffmpeg libraries, for decoding to a waveform — not inference",
     "gguf": "a quantized-weight FILE reader; the tensors it returns are diffusers'",
     "triton-rocm": (
