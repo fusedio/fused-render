@@ -239,6 +239,19 @@
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);
   --scrim-border: rgba(255, 255, 255, 0.25);
   --scrim-border-hover: rgba(255, 255, 255, 0.5);
+  /* The lightbox: a veil over the whole viewport, the picture lifted off it,
+     and a glass chip for the ✕. The veil is heavier than --scrim (a modal
+     dims the page; this one has to make a photograph the only thing in the
+     room), and the lift stays at full strength in light mode where
+     --shadow-lg would go nearly invisible against the veil. */
+  --scrim-veil: rgba(0, 0, 0, 0.72);
+  --scrim-lift: rgba(0, 0, 0, 0.5);
+  --scrim-chip-bg: rgba(255, 255, 255, 0.12);
+  --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
+  /* Behind a <video>, filling whatever the frame's aspect ratio does not.
+     Black in both modes because it reads as the letterbox of the picture
+     rather than a surface of the page. */
+  --scrim-letterbox: #000000;
   --task-c7: #a78bfa;
 }
 
@@ -364,5 +377,10 @@
   --scrim-bg-hover: rgba(0, 0, 0, 0.75);
   --scrim-border: rgba(255, 255, 255, 0.25);
   --scrim-border-hover: rgba(255, 255, 255, 0.5);
+  --scrim-veil: rgba(0, 0, 0, 0.72);
+  --scrim-lift: rgba(0, 0, 0, 0.5);
+  --scrim-chip-bg: rgba(255, 255, 255, 0.12);
+  --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
+  --scrim-letterbox: #000000;
 }
 

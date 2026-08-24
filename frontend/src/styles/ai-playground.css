@@ -1301,7 +1301,7 @@ a.pg-hero-repo:hover {
   align-items: center;
   justify-content: center;
   padding: 40px;
-  background: rgba(0, 0, 0, 0.72);
+  background: var(--scrim-veil);
   cursor: zoom-out;
 }
 
@@ -1312,7 +1312,7 @@ a.pg-hero-repo:hover {
   /* The picture is the content; the cursor stops meaning "click to close" over
      it, and the click is swallowed there too. */
   cursor: default;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 18px 48px var(--scrim-lift);
 }
 
 .pg-lightbox-close {
@@ -1323,8 +1323,8 @@ a.pg-hero-repo:hover {
   height: 34px;
   border: 0;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
+  background: var(--scrim-chip-bg);
+  color: var(--scrim-fg);
   font: inherit;
   font-size: 15px;
   line-height: 1;
@@ -1332,7 +1332,7 @@ a.pg-hero-repo:hover {
 }
 
 .pg-lightbox-close:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: var(--scrim-chip-bg-hover);
 }
 
 .pg-attach-note {
@@ -1354,7 +1354,7 @@ a.pg-hero-repo:hover {
   min-width: 0;
   max-height: 240px;
   border-radius: 8px;
-  background: #000;
+  background: var(--scrim-letterbox);
   /* Mirrored, the way every video-call preview is: an unmirrored self-view
      makes aiming the camera feel inverted. Only the PREVIEW is flipped — the
      capture draws the raw frame, so what lands on disk is what the lens saw. */
