@@ -32,9 +32,14 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Input } from "@platform/shadcn/ui/input";
+import { Card } from "@platform/shadcn/ui/card";
 import {
   ConfigPanel,
+  useConfigOpen,
   RailChips,
+  RailField,
+  RailReset,
   RailSlider,
   ResultSlot,
   StageHeader,
@@ -43,6 +48,7 @@ import {
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { Button } from "@platform/shadcn/ui/button";
 import {
   canEdit,
   fitToImage,
@@ -265,7 +271,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const [error, setError] = useState<string | null>(null);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewLive, setPreviewLive] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   // Can THIS model be handed a base image at all (AI-9f)? The server's own
   // answer, read through imageInput.ts so the row that is drawn and the field
@@ -381,6 +387,14 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showBase]);
+
+  // Escape cancels the webcam, the same way it closes the preview overlay.
+  useEffect(() => {
+    if (!camera) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && stopCamera();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [camera]);
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -677,12 +691,13 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
         title="Describe a picture"
         configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+        onToggleConfig={toggleConfig}
       />
 
       <div className="pg-composer pg-composer-stack">
@@ -702,26 +717,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             }
           }}
         />
-        {/* The live view, while the webcam is open — in the same slot the
-            photo it is about to become occupies, right above the Webcam button
-            that opened it. */}
-        {camera && (
-          <div className="pg-camera">
-            <video ref={videoRef} playsInline muted />
-            <div className="pg-camera-side">
-              <button type="button" className="btn btn-primary" onClick={capture}>
-                Capture
-              </button>
-              <button
-                type="button"
-                className="pg-ghost-btn pg-camera-cancel"
-                onClick={stopCamera}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
         {/* Clear, floating in the box's top-right corner: it appears only once
             there is a picture to throw away, and in this stacked composer a
             slot of its own would have cost the box a permanent 40px of height
@@ -828,44 +823,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         </div>
       </div>
 
-      {/* The attached picture at full size. Deliberately the whole modal: an
-          image and a way out, no title bar, no filename, no actions — the ✕ on
-          the row below already removes it, and this is only here because a
-          28px thumbnail cannot be looked at. Click the backdrop or press
-          Escape to close, the two things anybody tries. */}
-      {base && showBase && (
-        <div
-          className="pg-lightbox"
-          role="dialog"
-          aria-label="The attached picture"
-          onClick={() => setShowBase(false)}
-        >
-          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
-            type="button"
-            className="pg-lightbox-close"
-            title="Close"
-            aria-label="Close"
-            onClick={() => setShowBase(false)}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Examples first, under the box they fill; hidden once a picture is on
-          screen, which is what that space is then for. */}
-      {!run && (
-        <StarterCards
-          // The photo examples are only offered where a photo can be sent;
-          // elsewhere the same shuffled order stands with them filtered out.
-          samples={editable ? ALL_STARTERS : ALL_STARTERS.filter((sample) => !sample.image)}
-          onPick={(s) => void takeSample(s)}
-        />
-      )}
-
-      {/* Chips lead the panel; sliders and the seed follow. */}
-      <ConfigPanel open={configOpen}>
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
         <div className="pg-config-chips">
           {/* Hidden, not disabled, while the attached image decides the size:
               a chip row where nothing is lit and a slider parked on 480 are
@@ -897,29 +855,22 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           )}
         </div>
         {sizeIsTheImages ? (
-          <div className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Size</span>
-              <button
-                type="button"
-                className="pg-ctl-reset"
-                onClick={() => setSizeFromImage(false)}
-              >
-                Set a size
-              </button>
-            </span>
-            <span className="pg-ctl-value">
+          <RailField
+            label="Size"
+            action={<RailReset onClick={() => setSizeFromImage(false)}>Set a size</RailReset>}
+            hint={
+              fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
+                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
+                  "size takes minutes. Set a size to render it bigger."
+                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`
+            }
+          >
+            <span className="text-xs">
               {fitted
                 ? `${fitted.width} × ${fitted.height} — the picture's shape`
                 : "Read from the attached picture"}
             </span>
-            <span className="pg-ctl-hint">
-              {fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
-                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
-                  "size takes minutes. Set a size to render it bigger."
-                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`}
-            </span>
-          </div>
+          </RailField>
         ) : (
           <>
             <RailSlider
@@ -968,23 +919,81 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           fallback={DEFAULTS.guidance}
           onChange={setGuidance}
         />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">Seed</span>
-          </span>
-          <input
-            className="pg-rail-input"
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same picture."
+        >
+          <Input
             type="text"
             inputMode="numeric"
             value={seed}
             placeholder="Random each time"
             onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
-          <span className="pg-ctl-hint">
-            Same seed + same prompt + same settings = the same picture.
-          </span>
-        </label>
+        </RailField>
       </ConfigPanel>
+
+      {/* The attached picture at full size. Deliberately the whole modal: an
+          image and a way out, no title bar, no filename, no actions — the ✕ on
+          the row below already removes it, and this is only here because a
+          28px thumbnail cannot be looked at. Click the backdrop or press
+          Escape to close, the two things anybody tries. */}
+      {base && showBase && (
+        <div
+          className="pg-lightbox"
+          role="dialog"
+          aria-label="The attached picture"
+          onClick={() => setShowBase(false)}
+        >
+          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
+          <button
+            type="button"
+            className="pg-lightbox-close"
+            title="Close"
+            aria-label="Close"
+            onClick={() => setShowBase(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* The webcam, over everything — the lightbox's own shape: a scrim, the
+          live view where the picture goes, one ✕. Capture is the only action.
+          Click the backdrop or press Escape to cancel, the two things anybody
+          tries; both land in stopCamera, the one place the stream stops. */}
+      {camera && (
+        <div className="pg-lightbox" role="dialog" aria-label="Webcam" onClick={stopCamera}>
+          <div className="pg-webcam-box" onClick={(e) => e.stopPropagation()}>
+            <video ref={videoRef} className="pg-webcam-video" playsInline muted />
+            <Button variant="outline" onClick={capture}>
+              Capture
+            </Button>
+          </div>
+          <button
+            type="button"
+            className="pg-lightbox-close"
+            title="Close without a picture"
+            aria-label="Close without a picture"
+            onClick={stopCamera}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Examples first, under the box they fill; hidden once a picture is on
+          screen, which is what that space is then for. */}
+      {!run && (
+        <StarterCards
+          // The photo examples are only offered where a photo can be sent;
+          // elsewhere the same shuffled order stands with them filtered out.
+          samples={editable ? ALL_STARTERS : ALL_STARTERS.filter((sample) => !sample.image)}
+          onPick={(s) => void takeSample(s)}
+        />
+      )}
+
+      {/* Chips lead the panel; sliders and the seed follow. */}
 
       {error && <p className="pg-error">{error}</p>}
 
@@ -1064,6 +1073,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           </figure>
           </div>
         )}
+      </Card>
     </div>
   );
 }

@@ -18,8 +18,12 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
+import { Input } from "@platform/shadcn/ui/input";
+import { Card } from "@platform/shadcn/ui/card";
 import {
   ConfigPanel,
+  useConfigOpen,
+  RailField,
   RailSlider,
   ResultSlot,
   StageHeader,
@@ -163,7 +167,7 @@ export function VideoStage({
   );
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
-  const [configOpen, setConfigOpen] = useState(false);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
   const [run, setRun] = useState<Run | null>(null);
   const [gallery, setGallery] = useState<VideoStarted[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -245,12 +249,13 @@ export function VideoStage({
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
         title="Describe a video"
         configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+        onToggleConfig={toggleConfig}
       />
 
       <div className="pg-composer">
@@ -306,14 +311,7 @@ export function VideoStage({
         </div>
       </div>
 
-      {/* Examples first, under the box they fill; hidden once a clip is on
-          screen, which is what that space is then for. */}
-      {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
-
-      {/* Every knob is behind the cog; the surface above is prompt and
-          Generate. The four sliders in the order a render is thought about:
-          how big, how long, how carefully — then the seed. */}
-      <ConfigPanel open={configOpen}>
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Width"
           hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
@@ -354,23 +352,27 @@ export function VideoStage({
           fallback={modelSteps}
           onChange={setSteps}
         />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">Seed</span>
-          </span>
-          <input
-            className="pg-rail-input"
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same video."
+        >
+          <Input
             type="text"
             inputMode="numeric"
             value={seed}
             placeholder="Random each time"
             onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
-          <span className="pg-ctl-hint">
-            Same seed + same prompt + same settings = the same video.
-          </span>
-        </label>
+        </RailField>
       </ConfigPanel>
+
+      {/* Examples first, under the box they fill; hidden once a clip is on
+          screen, which is what that space is then for. */}
+      {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
+
+      {/* Every knob is behind the cog; the surface above is prompt and
+          Generate. The four sliders in the order a render is thought about:
+          how big, how long, how carefully — then the seed. */}
 
       {error && <p className="pg-error">{error}</p>}
 
@@ -463,6 +465,7 @@ export function VideoStage({
           ))}
         </div>
       )}
+      </Card>
     </div>
   );
 }

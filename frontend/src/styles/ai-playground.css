@@ -5,7 +5,7 @@
  * pg-.
  *
  * Every stage is the SAME shape: one centered column on the hero card's
- * gutter (min(680px, 100% - 64px)) reading as an API surface — input, Run,
+ * frame (min(840px, 100% - 32px)) reading as an API surface — input, Run,
  * the result of that run. Every parameter is behind the cog in the stage's
  * title row, which opens a narrow settings card in the column's right gutter.
  * The old right rail, the chat transcript and the image gallery died in this
@@ -262,25 +262,6 @@
   white-space: nowrap;
 }
 
-/* The parameter count, a filled chip left of the size. FILLED and borderless
- * on purpose: the Download pill beside it is bordered, and a second bordered
- * pill on the same line would read as a second thing to click. A wash of
- * --tint rather than a colour, so it stays a label and not a status.
- *
- * `flex: none` like its two neighbours — the name is the only thing on this
- * row that gives way. The curated string can be long ("8B (~1B active)"), and
- * that is allowed to cost the name width: an MoE row's whole point is the
- * parenthetical.  */
-.pg-model-chip {
-  flex: none;
-  font-size: 11px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-  padding: 1px 6px;
-  border-radius: 5px;
-  background: rgba(var(--tint), 0.07);
-  font-variant-numeric: tabular-nums;
-}
 
 /* Was inheriting the foot's type; now that it lives on the name line it says
  * so itself. `flex: none` is the whole point of the slot — the size is the one
@@ -452,164 +433,26 @@
      only what keeps an empty box from growing a scrollbar. `clip`, not
      `hidden`: there is nothing here to scroll to sideways, and `hidden` leaves
      a programmatically scrollable box that a stray focus or anchor jump can
-     shove sideways. The apps strip scrolls in its own box (`.pg-apps-row`), so
-     nothing legitimate is lost. */
+     shove sideways. */
   overflow-x: hidden;
   overflow-x: clip;
 }
 
 /* The stage header as a banner — the model introducing itself before the work
-   below it. Wider than the 680px column it heads, and on a 16px gutter rather
-   than 32px, because it is a header rather than part of the API surface. Its
-   max is exactly the pair below at its widest (column + gap + settings card),
-   so the banner spans everything the stage can ever put under it and its own
-   edges never move when the cog is clicked — the model's name stays a fixed
-   landmark while the column slides. Still a min(), not a bare max-width: the
-   gutter has to survive a narrow stage too. */
+   below it. It simply spans the frame; its edges never move when the cog is
+   clicked, so the model's name stays a fixed landmark while the tracks below
+   trade width. */
 .pg-hero {
-  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
+  width: 100%;
   /* Extra room below: the stage's own gap reads too tight under a card this
-     heavy, and the work column needs to start as its own thing. */
-  margin: 0 auto 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 18px 22px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+     heavy, and the work column needs to start as its own thing. The box itself
+     (border, padding, radius) is the shadcn Card's now — this rule is only the
+     banner's PLACEMENT in the stage. The 1px top margin keeps the Card's
+     ring (a box-shadow drawn just OUTSIDE the box) from being clipped by the
+     stage scroller's top edge. */
+  margin: 1px auto 16px;
 }
 
-.pg-hero-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-/* capabilityIcon draws at 16px; CSS wins over the SVG's width/height
-   attributes, so the hero scales it without a second icon set. */
-.pg-hero-icon {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
-}
-.pg-hero-icon svg {
-  width: 22px;
-  height: 22px;
-}
-
-.pg-hero-names {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-/* The full author/name as Hugging Face knows it, linking there when it is a
-   repo id. */
-.pg-hero-repo {
-  font-size: 12px;
-  color: var(--fg-muted);
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-a.pg-hero-repo:hover {
-  color: var(--accent);
-  text-decoration: underline;
-}
-
-.pg-hero-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 24px;
-  margin: 0;
-}
-
-.pg-hero-fact dt {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-muted);
-}
-
-.pg-hero-fact dd {
-  margin: 1px 0 0;
-  font-size: 13px;
-}
-
-/* The memory verdict, which is the one fact here that is a JUDGEMENT rather
- * than a figure — so it carries a tooltip saying what it was judged against.
- * The tooltip is NOT advertised: a dotted underline was tried and reads as a
- * defect on a coloured word, and the sentence under it is an elaboration
- * ("close other heavy apps while it runs") rather than something the reader is
- * stuck without. `cursor: help` is not the fallback either — one item in a row
- * of plain facts announcing a different kind of thing to press is the argument
- * D454 already lost on the Tasks list. */
-.pg-hero-fact-judged {
-  white-space: nowrap;
-}
-
-/* A HUE ON THE TWO BAD ANSWERS ONLY — the app's own warning and error tokens,
- * on the text rather than in a filled badge: this row is four dt/dd pairs, and
- * a pill in one of the cells becomes a different kind of object and out-shouts
- * the Parameters and Download figures beside it.
- *
- * "easy" gets NO GREEN. Green on this page means running (`.pg-model-live`, the
- * loaded badge, D461); a second meaning for it here would dilute that on nearly
- * every card, and a verdict that only colours when it wants attention is more
- * legible than three colours competing. */
-.pg-fact-tight {
-  color: var(--warning);
-}
-
-.pg-fact-no {
-  color: var(--error);
-}
-
-.pg-stage-title {
-  margin: 0;
-  font-size: 17px;
-  letter-spacing: -0.01em;
-}
-
-.pg-stage-kind {
-  color: var(--fg-muted);
-  font-weight: 400;
-}
-
-/* The model introducing itself — the catalog note, unclamped. */
-.pg-stage-note {
-  margin: 4px 0 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--fg);
-  max-width: 64ch;
-}
-
-.pg-stage-state {
-  margin: 3px 0 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-}
-
-/* Top-right of the hero card, beside the names — vertical space is the
-   stage's, not the header's. */
-.pg-stage-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  align-self: flex-start;
-  flex: none;
-}
 
 /* The running pull, standing where the Download button stood — icon, ring,
  * bytes, sized by its own content. It replaced a bar-and-sentence borrowed from
@@ -726,8 +569,7 @@ a.pg-hero-repo:hover {
    stage lines up under the header it belongs to. */
 
 .pg-work {
-  width: min(680px, calc(100% - 64px));
-  margin: 0 auto;
+  width: 100%;
   /* A grid rather than a flex column: the settings card takes a second column
      — a reserved track it is positioned into, see `.has-config` below — while
      every other child stays in the first. One column, the closed state, lays
@@ -778,7 +620,6 @@ a.pg-hero-repo:hover {
 
 .pg-cog.active {
   color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.1);
 }
 
 /* The glyph turns one notch while the panel opens. 45deg and not some other
@@ -806,32 +647,9 @@ a.pg-hero-repo:hover {
   flex-direction: column;
 }
 
-.pg-config-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-alt);
-}
-
-/* Names the card, because in the gutter it is no longer obviously the thing
-   the cog just opened. */
-.pg-config-head {
-  margin: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-muted);
-}
-
-.pg-config-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
+/* The inner box's chrome (border, radius, background, padding) is the shadcn
+   Card's now — `pg-config-inner` stays on it purely as the hook the sticky,
+   fold and reduced-motion rules below target. */
 
 /* The numbers the placement below is built from, declared OUT here on the
    container itself: a `@container` rule can never target its own container —
@@ -840,160 +658,114 @@ a.pg-hero-repo:hover {
    read it would fall over. */
 .pg-stage {
   --pg-gap: 16px;
-  /* The card's band, not one number. A single 240px card put the side-by-side
-     threshold at 1000cqw, which a ~1000px window misses by a hair — the stage
-     gets ~950 of it — so a window with obvious room beside the column still
-     stacked the settings under it. Letting the card give up width instead of
-     the column moves the threshold down to where that window lands, and hands
-     the full 240 back as soon as there is room for it. */
-  --pg-card-min: 192px;
-  --pg-card-max: 240px;
-  /* The fold's two beats, and they never overlap: the column glides, THEN the
-     card fades in; the card fades out, THEN the column glides back. Same two
-     numbers each way, in the other order — the reason they cannot run together
-     is geometry rather than taste, and it is written out at the open-state rule
-     in the @container block. `--pg-fade` is mirrored by `CONFIG_EXIT_MS` in
-     controls.tsx, which is the timer that unmounts the card; the two have to
-     agree or the fade is cut off (too short) or an invisible card stays mounted
-     (too long). */
+  /* The settings card's track. One number now: the frame below caps everything
+     at 840px, so the content track is what flexes, not the card. */
+  --pg-card: 240px;
+  /* The fold's two beats, and they never overlap: the track glides, THEN the
+     card fades in; the card fades out, THEN the track glides back. `--pg-fade`
+     is mirrored by `CONFIG_EXIT_MS` in controls.tsx, which is the timer that
+     unmounts the card; the two have to agree or the fade is cut off (too
+     short) or an invisible card stays mounted (too long). */
   --pg-glide: 240ms;
   --pg-fade: 160ms;
 }
 
-/* The card's actual width, resolved on the stage's CHILDREN rather than the
-   stage: `cqw` on the container itself measures the container's own ANCESTOR,
-   the same trap as the vars above, and every box that reads --pg-card (hero,
-   work column, apps strip, and the card itself by inheritance) is a descendant
-   of .pg-stage, so each one resolves it against the stage. It is one shared
-   expression, so all four still agree to the pixel — the hero and the apps
-   strip keep spanning exactly the pair below them. */
-.pg-stage > * {
-  --pg-card: clamp(
-    var(--pg-card-min),
-    100cqw - 680px - var(--pg-gap) - 32px,
-    var(--pg-card-max)
-  );
+/* THE width story, in one place: every box on the stage — hero, work column —
+   lives inside this frame and simply spans it. 840px cap,
+   centered, a 32px gutter below that. */
+.pg-frame {
+  width: min(840px, calc(100% - 32px));
+  margin: 0 auto;
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-/* Wide enough for the whole PAIR — column plus card at its NARROWEST — to sit
-   centered with the stage's own 32px edges: 680 + 16 gap + 192 card + 2×32 =
-   920cqw. Above it the clamp above widens the card until it reaches 240 (at
-   968cqw) and holds. Below it the card stays in flow under the input, the
-   placement the cog pass shipped. That band used to keep the card beside the
-   column by letting the column give up width; it no longer does, which is the
-   price of never resizing the input. */
-@container (min-width: 920px) {
-  /* The closed column's own left edge, written as the LENGTH `margin: 0 auto`
-     resolves to. Only so it can be animated: `auto` is not an interpolable
-     value, so with the shorthand left in place the slide below would jump one
-     way and glide the other. Same expression as the open state's below,
-     minus the card's half-footprint, which is all opening does to it. */
+/* Side-by-side survives down to a 480px content track: content = frame - 16
+   gap - 240 card, and the frame is 100cqw - 32 below its cap, so 480 + 256 +
+   32 = 768cqw is the floor. Below it the card moves into flow under the
+   input. */
+@container (min-width: 768px) {
+  /* The column always spans the hero's full width — closed or open, its box is
+     the header's box, so the bottom of the stage stays in sync with the top.
+     What the cog changes is the TRACKS inside it: closed, the content track is
+     the whole width (the second track collapsed to nothing, the gap with it);
+     open, the content gives the card's track back. Both states are plain
+     lengths, so the track flip itself glides. This deliberately reverses the
+     old D464 invariant (the input used to keep its width and slide instead) —
+     syncing the column to the hero was judged worth the input resize. */
   .pg-work {
-    margin-left: calc((100cqw - 680px) / 2);
-    margin-right: 0;
-    /* Declared on the CLOSED state, so it is the transition both directions
-       use: the open state below does not override it, and the glide back is
-       simply this rule taking over when the card unmounts. */
-    transition: margin-left var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1);
-  }
-
-  /* Open geometry — held for the card's whole LIFE, not just while the cog
-     says open: the `:has()` half keeps this rule in force through the exit,
-     after `has-config` has come off, until the card actually unmounts. That is
-     what sequences the fold — the column cannot start gliding back while the
-     card is still on screen — and it is the same shape the schedule modal uses
-     to hold ITS geometry through an exit
-     (`.modal-dialog:has(.schedule-explorer:not(.is-closing))`, schedule.css).
-
-     Sequencing is forced by the geometry, not chosen for feel. The card's open
-     box and the column's CLOSED box overlap at every width in this band: the
-     pair is centered, so opening slides the column left by half the card's
-     footprint, which puts the column's closed right edge (gap + card)/2 INTO
-     the card's own track. A frame with the card visible and the column
-     mid-glide therefore has only two possible readings — the card rides out
-     past the stage's edge (it is anchored to the column, so it travels with it)
-     or it sits on top of the composer. One beat at a time is the only version
-     with neither, which is why the fade waits for the glide on the way in and
-     the glide waits for the fade on the way out.
-
-     The column slides left by HALF the card's footprint: what the pair gives up
-     on the right it takes back on the left, so the PAIR is centered on the
-     stage while the column stays the same 680px it was before the cog was
-     clicked — it slides, it does not narrow. ((100cqw - 680)/2 - (gap + card)/2
-     is (100cqw - (680 + gap + card))/2, the pair's own centered left edge.)
-     The hero banner above does NOT move with it: it is a full-width header, so
-     it has no column edge to keep in line with. */
-  .pg-work.has-config,
-  .pg-work:has(> .pg-config-card.is-closing) {
-    margin-left: calc((100cqw - 680px) / 2 - (var(--pg-gap) + var(--pg-card)) / 2);
-    margin-right: 0;
-    /* A plain calc, not a min(): the threshold above already guarantees the
-       pair fits, so nothing here has to clamp. The number tracks the stage's
-       width through --pg-card, but it is blind to the cog — which is the
-       invariant this layout exists for: opening the panel never resizes the
-       input. */
-    width: calc(680px + var(--pg-gap) + var(--pg-card));
-    /* 680px, not `minmax(0, 1fr)`: `width` is NOT animated — only `margin-left`
-       is — but the state still flips it in one step, and a fractional first
-       track would resolve against whatever the box is at that moment. An
-       explicit track means the input measures 680px in every frame of the
-       slide, which is the invariant this whole layout exists for. Nothing is
-       lost: at this width the fraction resolved to 680px anyway. */
-    grid-template-columns: 680px var(--pg-card);
-    column-gap: var(--pg-gap);
+    grid-template-columns: 100% 0px;
+    column-gap: 0px;
+    transition:
+      grid-template-columns var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1),
+      column-gap var(--pg-glide) cubic-bezier(0.2, 0.7, 0.3, 1);
     /* So the rail below can take its grid area as a containing block. */
     position: relative;
   }
 
+  /* Open geometry — held for the card's whole LIFE, not just while the cog
+     says open: the `:has()` half keeps this rule in force through the exit,
+     after `has-config` has come off, until the card actually unmounts. That
+     sequences the fold — the fade waits for the glide on the way in (the
+     animation-delay below), and the glide back waits for the fade on the way
+     out — so the card never paints over a content track still in motion. */
+  .pg-work.has-config,
+  .pg-work:has(.pg-config-card.is-closing) {
+    grid-template-columns: calc(100% - var(--pg-gap) - var(--pg-card)) var(--pg-card);
+    column-gap: var(--pg-gap);
+  }
+
   /* Load-bearing: without it auto-placement drops the stage's SECOND child into
-     the empty second column. Unconditional, and harmless with the cog closed —
-     a single-track grid puts everything in column 1 anyway. The card itself is
-     pulled back out into column 2 by the more specific rule below. */
+     the empty second column. The card itself is pulled back out into column 2
+     by the more specific rule below. */
   .pg-work > * {
     grid-column: 1;
   }
 
-  /* Absolutely positioned INTO the second column rather than placed in it: an
-     in-flow card would size its own grid row, so opening the cog would push
-     the composer down by the card's height — the exact shove this layout
-     exists to avoid. An abspos grid child takes its grid area as its
-     containing block, with the row edges falling back to the container's
-     padding box when the row placement is auto, so `inset: 0` is a full-height
-     rail in the --pg-card track. (`grid-row: 1 / -1` would NOT do this: negative
-     line numbers resolve against the EXPLICIT grid, and there are no explicit
-     rows here.) The track holds its width whether anything is in it or not, so
-     the column-width math above is untouched.
+  /* The panel lives INSIDE the work card in the DOM — between the composer
+     and the result, which is where the narrow fallback needs it in flow — and
+     escapes here on the wide layout: absolutely positioned against .pg-work
+     (the `position: relative` above), pinned to the right edge at the track's
+     width, which is exactly the geometry the reserved second grid column
+     draws. The work card must not clip it — see the overflow override on
+     .pg-work-card below this block.
+
+     An in-flow panel would instead size its own row inside the card, so
+     opening the cog would push the composer down by the panel's height.
 
      No open-state qualifier on the selector, and none needed: the card exists
-     only while the rule above is in force — open, or closing and not yet
-     unmounted — so the two-track grid it positions into is always there. Which
-     is also why the exit needs no geometry of its own: the dying card keeps the
-     rail it was already in, to the pixel, sticky included. */
-  .pg-work > .pg-config-card {
-    grid-column: 2;
+     only while the open rule above is in force — open, or closing and not yet
+     unmounted — so the two-track geometry it positions into is always there. */
+  .pg-work .pg-config-card {
     position: absolute;
-    inset: 0;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    width: var(--pg-card);
+  }
+
+  /* The shadcn Card ships `overflow-hidden`; kept, the rail above would be
+     clipped at the work card's edge instead of escaping into the side track. */
+  .pg-work > .pg-work-card {
+    overflow: visible;
   }
 
   /* The card rides the rail: it stays on screen while a long result scrolls
      past it. Sticky cannot live on the rail itself — an abspos box has nothing
-     to stick within — which is why the rail and the card are two boxes. It is
-     also what puts the exit in the right place: the fade runs wherever the card
-     was being READ, which after a scroll is nowhere near the top of the
-     column. */
-  .pg-work > .pg-config-card > .pg-config-inner {
+     to stick within — which is why the rail and the card are two boxes. */
+  .pg-work .pg-config-card > .pg-config-inner {
     position: sticky;
     top: 0;
   }
 
-  /* The wait that keeps the card out of the moving column's way — one whole
+  /* The wait that keeps the card out of the moving track's way — one whole
      glide, so the first pixel it paints is painted into a gutter that already
-     exists. Only beside the column: below the threshold the card sits in flow
-     under the input, nothing glides, and a wait there would be dead air.
-     Not on the way out (`:not`) — the exit fades at once, and this delay
-     landing on it would hold the card still for longer than its own unmount
-     timer, dropping it with no fade at all. */
-  .pg-work > .pg-config-card:not(.is-closing) > .pg-config-inner {
+     exists. Not on the way out (`:not`) — the exit fades at once, and this
+     delay landing on it would hold the card still past its own unmount timer,
+     dropping it with no fade at all. */
+  .pg-work .pg-config-card:not(.is-closing) > .pg-config-inner {
     animation-delay: var(--pg-glide);
   }
 }
@@ -1012,6 +784,13 @@ a.pg-hero-repo:hover {
    is a card with its right edge sheared off by the stage's edge. */
 .pg-config-inner {
   animation: pg-fold-in var(--pg-fade) cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+/* A mount the user did not cause — the page loading with the panel open — has
+   nothing to animate FROM: the fade (and its wait beside the column) would
+   read as the settings arriving late. The cog's toggles keep the fold. */
+.pg-config-card.no-entry > .pg-config-inner {
+  animation: none;
 }
 
 .pg-config-card.is-closing {
@@ -1070,110 +849,29 @@ a.pg-hero-repo:hover {
   gap: 8px;
 }
 
-.pg-ctl {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 12.5px;
-}
-
-.pg-ctl-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.pg-ctl-label {
-  font-weight: 600;
-  color: var(--fg);
-}
-
-.pg-ctl-reset {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  color: var(--fg-muted);
-  text-decoration: underline dotted;
-  cursor: pointer;
-}
-
-.pg-ctl-reset:hover {
-  color: var(--fg);
-}
-
-.pg-ctl-num {
-  margin-left: auto;
-  width: 64px;
-  font: inherit;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 2px 6px;
-}
-
-/* Spinners off — the slider is the coarse control, the field is for typing. */
-.pg-ctl-num::-webkit-outer-spin-button,
-.pg-ctl-num::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.pg-ctl-num {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-
-.pg-ctl input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent);
-}
-
-.pg-ctl-hint {
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--fg-muted);
-}
-
-.pg-ctl-row {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.pg-ctl-row input[type="checkbox"] {
-  margin-top: 2px;
-  accent-color: var(--accent);
-}
-
-.pg-ctl-row span {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pg-rail-textarea,
-.pg-rail-input {
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  resize: vertical;
-  width: 100%;
-}
-
+/* One row each, never a ragged second line: the card's column is narrow, so
+   overflow scrolls sideways instead of wrapping. Scrollbar hidden — the cut-off
+   chip at the edge is the affordance. */
 .pg-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  /* Full-bleed inside the settings Card: the row borrows the card's own
+     padding (--card-spacing is on the Card element, so it inherits) and hands
+     it back as scroll padding — a cut-off chip is clipped by the card's edge,
+     not left floating mid-padding. */
+  margin-inline: calc(var(--card-spacing, 16px) * -1);
+  padding-inline: var(--card-spacing, 16px);
+  scroll-padding-inline: var(--card-spacing, 16px);
+}
+.pg-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.pg-chip {
+  flex: none;
 }
 
 .pg-chip {
@@ -1196,7 +894,6 @@ a.pg-hero-repo:hover {
 .pg-chip.active {
   color: var(--fg);
   border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.1);
 }
 
 /* -- shared stage furniture ---------------------------------------------------- */
@@ -1531,58 +1228,31 @@ a.pg-hero-repo:hover {
   color: var(--fg-muted);
 }
 
-/* The live webcam view, while it is open. Capped at 240px tall so the prompt
-   below it stays on screen — this panel is a viewfinder, not the result. */
-.pg-camera {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  padding: 6px 4px 8px;
-}
-
-.pg-camera video {
-  flex: 1;
-  min-width: 0;
-  max-height: 240px;
-  border-radius: 8px;
-  background: var(--scrim-letterbox);
-  /* Mirrored, the way every video-call preview is: an unmirrored self-view
-     makes aiming the camera feel inverted. Only the PREVIEW is flipped — the
-     capture draws the raw frame, so what lands on disk is what the lens saw. */
-  transform: scaleX(-1);
-}
-
-.pg-camera-side {
-  flex: none;
+/* The webcam overlay's inner column: viewfinder, then Capture. Swallows the
+   backdrop's click-to-close (and its zoom-out cursor) the way the lightbox's
+   img does. */
+.pg-webcam-box {
   display: flex;
   flex-direction: column;
-  /* Stretch, not flex-end: Cancel is CENTRED under Capture, and it can only be
-     centred on the button above it if it is as wide as the column Capture set. */
-  align-items: stretch;
-  gap: 8px;
+  align-items: center;
+  gap: 14px;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+  cursor: default;
 }
 
-/* Closing the viewfinder without taking a picture — the one destructive-ish
-   action in this box, so it reads in the error colour rather than as a second
-   grey label. No border, no underline, no fill: it is a word under a button,
-   and the extra top margin is what keeps it from reading as part of Capture. */
-.pg-camera-cancel {
-  margin-top: 4px;
-  text-align: center;
-  color: var(--error);
-  text-decoration: none;
-}
-
-.pg-camera-cancel:hover:not(:disabled) {
-  color: var(--error);
-  opacity: 0.75;
-}
-
-/* A settings row whose value is a sentence rather than a number — the size
-   under an attached image, which the server derives. */
-.pg-ctl-value {
-  font-size: 12px;
-  color: var(--fg);
+/* The live view, mirrored the way every video-call self-view is: an
+   unmirrored preview makes aiming the camera feel inverted. Only the PREVIEW
+   is flipped — the capture draws the raw frame, so what lands on disk is what
+   the lens saw. */
+.pg-webcam-video {
+  transform: scaleX(-1);
+  background: var(--scrim-letterbox);
+  max-width: 100%;
+  max-height: calc(100vh - 180px);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px var(--scrim-lift);
 }
 
 .pg-ghost-btn {
@@ -1755,10 +1425,7 @@ a.pg-hero-repo:hover {
    background either, for the same reason: it stays quieter than .pg-answer and
    .pg-image-frame, which are the boxes with something in them.
 
-   One height for all five stages. 200px is the floor that makes the column
-   read as complete without pushing the app strip below the fold on a laptop —
-   .pg-apps is pinned to the stage's bottom with `margin-top: auto`, so every
-   pixel here is a pixel taken out of that void, not added to the page. */
+   One height for all five stages. */
 .pg-slot {
   display: flex;
   flex-direction: column;
@@ -2402,17 +2069,6 @@ a.pg-hero-repo:hover {
   gap: 14px;
 }
 
-.pg-embed-lines {
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--bg-alt);
-  color: var(--fg);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
 .pg-embed-results {
   list-style: none;
   margin: 0;
@@ -2477,8 +2133,7 @@ a.pg-hero-repo:hover {
 
   /* The 64px gutter is hero-card breathing room; on a phone it is dead
      space. */
-  .pg-hero,
-  .pg-work {
+  .pg-frame {
     width: 100%;
   }
 }
@@ -2493,54 +2148,3 @@ a.pg-hero-repo:hover {
   color: var(--fg-muted);
 }
 
-/* ---- The showcase-app strip under the stage (PlaygroundApps.tsx). The
- * cards themselves are the hub's own .app-pcard (styles/apps.css) — this
- * block only places the section and lays them out as one scrollable row. Appended at file
- * end under its own `.pg-apps-` prefix: the rest of this sheet is under
- * concurrent redesign (#760) and this block must merge clean. ---- */
-.pg-apps {
-  /* The banner's own gutters, so the stage's top and bottom bands share one
-   * pair of edges — the same min() expression, not a number copied. Auto side
-   * margins centre it; `margin-top: auto` is untouched by them and still does
-   * its main-axis job below. */
-  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
-  margin-left: auto;
-  margin-right: auto;
-  /* Pinned to the bottom of the stage's viewport when the content above is
-   * short (`auto` soaks up the spare space — .pg-stage is a flex column),
-   * and pushed below the fold when it isn't: .pg-stage is the scroller, so
-   * tall stage content simply scrolls down to the strip. The padding is the
-   * floor spacing `auto` would otherwise collapse to zero. */
-  margin-top: auto;
-  padding-top: 28px;
-}
-/* One horizontal row, never wrapping: overflow scrolls sideways inside the
- * strip. The card wrappers are display:contents, so the .app-pcard anchors
- * themselves are the flex items — fixed at the hub grid's minimum width. */
-.pg-apps-row {
-  display: flex;
-  gap: 18px;
-  overflow-x: auto;
-  /* `overflow-x: auto` clips the BLOCK axis too, and .app-pcard's hover lifts
-   * the card 1px and casts an 18px-blur shadow — with the cards flush against
-   * this box the lifted top border reads as sliced off. So the strip carries
-   * padding on every side that the hover state can spill into, and negative
-   * margins hand the same amount back to the layout: the cards sit exactly
-   * where they did, only the clipping box grew. The side inset is 16px, which
-   * is precisely the slack .pg-apps' `100% - 32px` leaves, so the stage never
-   * gains a horizontal scrollbar. Bottom nets out at the 6px that keeps the
-   * scrollbar off the cards' edge. */
-  padding: 16px 16px 20px;
-  margin: -16px -16px -14px;
-}
-.pg-apps-row .app-pcard {
-  flex: 0 0 300px;
-}
-/* Sentence case, at reading size: "Use it in an app" is an invitation, and
- * caps-plus-tracking turns a sentence into a section label. */
-.pg-apps-head {
-  margin: 0 0 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-muted);
-}

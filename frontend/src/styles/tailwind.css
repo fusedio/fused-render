@@ -1,4 +1,9 @@
 /* Tailwind WITHOUT preflight — see the base layer at the bottom of this file. */
+/* Layer order pinned up front: the base layer is DECLARED at the bottom of
+   this file, and without this line that first-appearance order would rank it
+   above utilities — its `color: inherit` would then beat every text-* class
+   on a shadcn button. */
+@layer theme, base, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "tw-animate-css";
@@ -83,10 +88,16 @@
 }
 
 :root {
+    /* Radius is not a theme concern — on the bare :root so BOTH themes (dark
+       is the no-attribute default) resolve the radius-* scale; parked in the
+       light block only, every rounded-* was calc() over nothing in dark. */
     --radius: 0.625rem;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
+    /* One shade BELOW the app's own page background (tokens.css --bg,
+       #131417) and in ITS cool blue-grey hue — a neutral grey here read
+       warmer than the page it sits on. */
+    --card: #0f1013;
     --card-foreground: oklch(0.985 0 0);
     --popover: oklch(0.205 0 0);
     --popover-foreground: oklch(0.985 0 0);
