@@ -46,6 +46,7 @@ import http.server
 import importlib.util
 import json
 import os
+import queue
 import re
 import shutil
 import socket
@@ -101,6 +102,77 @@ CANCEL = threading.Event()
 #: object nor a diffusers pipeline is safe to call from two threads — so a
 #: second request waits rather than interleaves.
 GENERATE_LOCK = threading.Lock()
+
+
+def _generate_thread_loop(tasks: "queue.SimpleQueue") -> None:
+    """Body of the ONE thread every `generate()`/`_single`-style call runs on.
+
+    See `run_on_generate_thread`'s own docstring for why this thread must never
+    exit for the life of the process."""
+    while True:
+        tasks.get()()
+
+
+def _start_generate_thread() -> "queue.SimpleQueue":
+    tasks: "queue.SimpleQueue" = queue.SimpleQueue()
+    threading.Thread(target=_generate_thread_loop, args=(tasks,),
+                     name="generate", daemon=True).start()
+    return tasks
+
+
+#: The queue behind `run_on_generate_thread` — created once, at import time,
+#: alongside the thread that drains it. See that function's docstring.
+_GENERATE_TASKS = _start_generate_thread()
+
+
+def run_on_generate_thread(fn, *args, **kwargs):
+    """Call `fn(*args, **kwargs)` on this process's ONE persistent MLX thread,
+    and return what it returns (or raise what it raised).
+
+    **Never on the caller's own thread**, because the caller here is always an
+    HTTP connection thread — `_Server` is a `ThreadingTCPServer`, which hands
+    every request a BRAND NEW thread that exits the moment the response
+    finishes. MLX keeps compiled-graph state in a C++ `thread_local` (an
+    `mlx::core::detail::CompileCache`); tearing one down runs its destructor
+    from `pthread`'s own thread-exit cleanup, well outside anything Python's
+    `try`/`except` can reach, and a checkpoint whose generation step is
+    `mx.compile`d (mlx-vlm's is) populates that cache on its very first call.
+    Reproduced directly, no HTTP involved: two back-to-back `stream_generate`
+    calls on the SAME thread never fail, but the same two calls issued from
+    TWO DIFFERENT threads in a row crash the process on the second one, deep in
+    `CompileCache::CacheEntry::~CacheEntry()` — a `SIGSEGV` with no Python
+    traceback at all, which on this worker's actual TCP transport surfaces to
+    the caller as nothing more specific than a bare "connection reset by
+    peer". A `ThreadingTCPServer` request thread is exactly that "two
+    different threads" shape: request 1 built the cache on thread A, thread A
+    exits when the response ends, and request 2's thread B is the crash.
+
+    So every `generate()`/`_single`/`_stream` call is routed through the SAME
+    thread for the whole process, started once at import time and never
+    joined — the identical fix `worker.py::_pin_stream` already applies to
+    MLX's per-thread default-stream state, applied here to its per-thread
+    compiled-graph state instead. `GENERATE_LOCK` already serializes every
+    caller to one at a time, so there is never more than one task in flight on
+    this thread regardless.
+
+    A plain function call, not a generator: streaming (`_stream`) already
+    passes its own `write` callback in as an argument, so the callable handed
+    here does its own line-by-line writing from ON the generate thread — the
+    connection thread only blocks on the result, it never touches MLX itself.
+    """
+    result: "queue.SimpleQueue" = queue.SimpleQueue()
+
+    def task():
+        try:
+            result.put((True, fn(*args, **kwargs)))
+        except BaseException as e:  # noqa: BLE001 - re-raised on the caller's thread
+            result.put((False, e))
+
+    _GENERATE_TASKS.put(task)
+    ok, payload = result.get()
+    if ok:
+        return payload
+    raise payload
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
 
@@ -3606,7 +3678,12 @@ def _handler(generate, streaming):
             with GENERATE_LOCK, heartbeat():
                 CANCEL.clear()
                 try:
-                    self._json({"ok": True, "result": generate(body)})
+                    # `run_on_generate_thread`, never a bare `generate(body)`:
+                    # this method runs on a `ThreadingTCPServer` connection
+                    # thread, which is exactly the thread MLX's compiled-graph
+                    # cache must never touch — see that function's docstring.
+                    result = run_on_generate_thread(generate, body)
+                    self._json({"ok": True, "result": result})
                 except Cancelled:
                     self._json({"ok": True, "cancelled": True})
                 except BaseException as e:  # noqa: BLE001 - must reach the client
@@ -3629,7 +3706,15 @@ def _handler(generate, streaming):
             with GENERATE_LOCK, heartbeat():
                 CANCEL.clear()
                 try:
-                    generate(body, write)
+                    # `run_on_generate_thread`, never a bare `generate(body,
+                    # write)`: this method runs on a `ThreadingTCPServer`
+                    # connection thread — see that function's docstring for
+                    # why MLX's generation must never run there. `write`
+                    # itself still runs on the generate thread it is called
+                    # from (it is passed in, not called back across threads),
+                    # so every chunk is written to `self.wfile` from ONE
+                    # thread at a time, exactly as before.
+                    run_on_generate_thread(generate, body, write)
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     write({"type": "done", "ok": False,
                            "error": describe_failure(e)})

@@ -83,6 +83,7 @@ def _pin_stream():
     devices = [mx.cpu, mx.default_device()]
     with _STREAMS_LOCK:
         streams = []
+        seen = set()
         for device in devices:
             key = str(device)
             # `if key not in`, NOT `setdefault(key, make(device))`: the latter
@@ -91,8 +92,22 @@ def _pin_stream():
             # mechanism, so quietly making unshared ones is the bug this guards.
             if key not in _STREAMS:
                 _STREAMS[key] = make(device)
-            if _STREAMS[key] not in streams:
-                streams.append(_STREAMS[key])
+            stream = _STREAMS[key]
+            # `id(stream)`, never `stream not in streams` (which is what this
+            # said until the crash this comment now documents): `in` calls
+            # `Stream.__eq__`, and a `new_thread_unsafe_stream` is — per its own
+            # name — not safe to touch from a thread other than the one that
+            # made it, EQUALITY INCLUDED. A worker with more than one request
+            # thread calls this from a NEW thread every time (a fresh
+            # `ThreadingTCPServer` thread per request), so the second request
+            # onward compared a stream this thread never made and segfaulted
+            # inside MLX's C++ equality — reproduced directly by calling this
+            # from two different threads in a row, no HTTP layer involved.
+            # `id()` is a plain Python pointer comparison, never reaching into
+            # MLX at all, so it carries none of that risk.
+            if id(stream) not in seen:
+                seen.add(id(stream))
+                streams.append(stream)
     for stream in streams:
         pin(stream)
     return streams

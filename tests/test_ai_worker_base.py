@@ -570,6 +570,74 @@ def test_one_generation_at_a_time(base):
         server.shutdown()
 
 
+def test_generate_never_runs_on_the_connection_thread(base):
+    """The actual regression: MLX keeps a per-thread compiled-graph cache (a
+    C++ `thread_local`), and `_Server` is a `ThreadingTCPServer` — a BRAND NEW
+    thread per connection, which exits the moment the response finishes.
+    Reproduced directly against a real MLX-vlm checkpoint: `stream_generate`
+    called from two different threads in a row (never the SAME thread twice)
+    segfaults the process on the second call, deep inside
+    `CompileCache::CacheEntry::~CacheEntry()`, with no Python traceback —
+    which on this worker's transport reaches the caller as nothing more
+    specific than a bare connection reset.
+
+    A fake `generate` cannot reproduce the segfault itself (it is native code
+    a stub never touches), but it CAN pin the architectural contract that
+    prevents it: every call must land on the SAME thread, and that thread must
+    never be the one `BaseHTTPRequestHandler` is running on. This is exactly
+    what `run_on_generate_thread` buys — see its docstring."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    threads_seen = []
+    connection_threads = []
+
+    def generate(body):
+        threads_seen.append(threading.current_thread())
+        return {}
+
+    server = _serve(base, generate)
+    try:
+        for _ in range(3):
+            connection_threads.append(threading.current_thread())
+            _call(server, "/generate", {}).close()
+        assert len(threads_seen) == 3
+        assert len(set(threads_seen)) == 1, (
+            "generate() ran on more than one thread: " + repr(threads_seen))
+        # `_call` runs synchronously on THIS (the test's) thread, and
+        # `ThreadingTCPServer` hands each connection its own fresh thread — so
+        # the generate thread must be neither this thread nor any recorded
+        # "connection" stand-in, confirming it is the dedicated thread, not
+        # whatever thread happened to accept the socket.
+        assert threads_seen[0] not in connection_threads
+    finally:
+        server.shutdown()
+
+
+def test_a_streaming_generates_writes_also_stay_off_the_connection_thread(base):
+    """The streaming half of the same contract — `_stream` passes `write`
+    itself into the generate-thread call, so every chunk is written to
+    `self.wfile` from that ONE thread too, never per-request."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    threads_seen = []
+
+    def generate(body, write):
+        threads_seen.append(threading.current_thread())
+        write({"type": "chunk", "text": "hi"})
+        write({"type": "done", "ok": True})
+
+    server = _serve(base, generate, streaming=True)
+    try:
+        for _ in range(3):
+            with _call(server, "/generate", {}) as response:
+                response.read()
+        assert len(threads_seen) == 3
+        assert len(set(threads_seen)) == 1, (
+            "streaming generate() ran on more than one thread: " + repr(threads_seen))
+    finally:
+        server.shutdown()
+
+
 # -- reporting ------------------------------------------------------------------
 
 
