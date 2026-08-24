@@ -16918,16 +16918,30 @@ async function loadSnapshots() {
   const run_id = fused.params.get("run");
   if (ASK) {
     // The git sidebar's "Fix with AI" button opened THIS document fresh for
-    // exactly this ask (see ASK, above) — never onto an existing session_id or
-    // run, because the host builds this src only when it is switching the
-    // sidebar TO claude for the first time over this error. So this branch
-    // wins outright rather than folding into the resume/landing choice below:
-    // there is no history to load and no run to re-attach, only a new
-    // conversation to start immediately, the same way the home screen's own
-    // submit handler does (`enterChat()` then `sendMessage`, further down).
-    // `ASK` itself is read once here and never again — the const has no other
-    // reader in this file, which is what makes "one-shot" true on this side of
-    // the hop as well as the shell's.
+    // exactly this ask (see ASK, above) — but `session_id`/`run` above are
+    // read through `fused.params`, which (this page sets no
+    // `_fusedParamBoundary`) targets the SHELL's own address bar, not this
+    // iframe's own src. That address bar is NOT guaranteed clean: closing the
+    // sidebar (Preview.tsx's `setSide`/Listing.tsx's `closeSide`) never clears
+    // it, so a `session_id`/`run` a PAST conversation on this same file left
+    // behind survives sitting right there — this branch used to assume
+    // otherwise ("never onto an existing session_id or run") and that was
+    // wrong: `sendMessage` below reads `fused.params.get("session_id")` again
+    // at send time (its own `agent.py` "start" call), independently of
+    // anything decided here, so a stale id would have appended this fresh
+    // ask's message to a DIFFERENT conversation server-side while this frame
+    // shows an empty transcript, and any leftover in-flight `run` would never
+    // be re-attached and would keep streaming invisibly.
+    //
+    // So this branch does what "New chat" does before it starts one (the
+    // `back` button's click handler, above) — disown both, the same way and
+    // for the same reason (`{history: "replace", default: ""}`: a stale
+    // identifier is not a place anyone navigated to, so disowning it must not
+    // buy a Back entry) — before entering chat and sending, which is what
+    // makes "this is a genuinely new conversation" true here rather than
+    // merely assumed.
+    fused.params.set("session_id", "", { history: "replace", default: "" });
+    fused.params.set("run", "", { history: "replace", default: "" });
     enterChat();
     sendMessage(ASK);
   } else if (session_id || run_id) {

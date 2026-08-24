@@ -1076,10 +1076,16 @@ def test_every_run_write_is_a_replace_write():
     putting a rediscovered run back on the URL after the server was asked whether
     this chat still has one — the same bookkeeping, arrived at by a question
     instead of by starting the run, and the reader took no step to be recorded.
+    The eighth is the "Fix with AI" boot branch (`if (ASK) {`) disowning a
+    LEFTOVER `run` before starting a fresh conversation — a stale id left on the
+    shell's address bar by a past chat this frame never had a hand in, so
+    clearing it here is exactly the "New chat" cleanup (the `back` button's own
+    write, above) done automatically instead of by a click, and never a step the
+    reader took either.
     """
     code = _pane_code()
     writes = re.findall(r'fused\.params\.set\("run",[^;]*;', code)
-    assert len(writes) == 7, writes
+    assert len(writes) == 8, writes
     for w in writes:
         assert 'history: "replace"' in w, w
 

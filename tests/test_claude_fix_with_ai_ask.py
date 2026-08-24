@@ -63,16 +63,44 @@ def test_the_ask_is_stripped_from_a_framed_apps_own_params(code):
 
 def test_a_present_ask_starts_a_fresh_chat_and_sends_it(code):
     """The boot IIFE: `ASK` wins outright, ahead of the session_id/run resume
-    branch — a present ask never coincides with either, because the host only
-    builds this src when switching the sidebar TO claude for the first time
-    over one error, but the ordering also has to be right regardless of that
-    invariant holding."""
+    branch."""
     boot = code[code.rindex("(async () => {"):]
     boot = boot[:boot.index("\n})();")]
     assert "if (ASK) {" in boot
     ask_branch = boot[boot.index("if (ASK) {"):boot.index("} else if (session_id")]
     assert "enterChat();" in ask_branch
     assert "sendMessage(ASK);" in ask_branch
+
+
+def test_the_ask_branch_disowns_a_leftover_session_before_sending(code):
+    """`session_id`/`run` are read through `fused.params`, which (this page
+    sets no `_fusedParamBoundary`) targets the SHELL's own address bar, not
+    this iframe's own src — and closing the sidebar (Preview.tsx/Listing.tsx)
+    never clears them. So a PAST conversation on this same file can leave a
+    `session_id`/`run` sitting on that address bar, and `sendMessage` re-reads
+    `fused.params.get("session_id")` independently at send time (its own
+    `agent.py` "start" call) regardless of anything decided in the boot IIFE.
+
+    Without disowning them first, a present `ASK` would still boot an empty
+    transcript (this branch never calls loadHistory/resumeRun) while silently
+    appending the fresh ask's message to the STALE conversation server-side,
+    and would abandon any real in-flight `run` with nothing re-attaching it.
+    Enforced the same way "New chat" enforces it before starting one (the
+    `back` button's click handler): disown both with
+    `{history: "replace", default: ""}`, in the ASK branch, before
+    `sendMessage` runs.
+    """
+    boot = code[code.rindex("(async () => {"):]
+    boot = boot[:boot.index("\n})();")]
+    ask_branch = boot[boot.index("if (ASK) {"):boot.index("} else if (session_id")]
+    clear_session = 'fused.params.set("session_id", "", { history: "replace", default: "" });'
+    clear_run = 'fused.params.set("run", "", { history: "replace", default: "" });'
+    assert clear_session in ask_branch
+    assert clear_run in ask_branch
+    # And both clears land BEFORE sendMessage — clearing after the send has
+    # already read the (still stale) session_id would be no fix at all.
+    assert ask_branch.index(clear_session) < ask_branch.index("sendMessage(ASK)")
+    assert ask_branch.index(clear_run) < ask_branch.index("sendMessage(ASK)")
 
 
 def test_the_ask_is_never_reported_to_the_model_as_an_app_param(source):
