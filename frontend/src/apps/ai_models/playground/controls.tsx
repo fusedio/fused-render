@@ -91,6 +91,12 @@ export function StageHeader({
   );
 }
 
+/** How long the settings card's exit animation runs, in ms. Mirrors
+ *  `--pg-fade` in ai-playground.css — the timer below unmounts the card, the
+ *  stylesheet fades it, and a value that disagrees either cuts the fade off
+ *  mid-way or leaves an invisible card mounted after it. */
+const CONFIG_EXIT_MS = 160;
+
 /** Where the uncommon parameters live, revealed by the cog above — a narrow
  *  card BESIDE the column rather than a band across it, so the settings sit in
  *  the stage's right gutter and the input/result column keeps reading top to
@@ -102,9 +108,34 @@ export function StageHeader({
  *  simple call. Unmounted while closed, not hidden — every control inside is
  *  driven by stage state, so nothing is lost by not rendering it. */
 export function ConfigPanel({ open, children }: { open: boolean; children: ReactNode }) {
-  if (!open) return null;
+  // Mount is kept for the length of the exit so the card can fade OUT as well
+  // as in: a panel that pops out of existence while the column glides back
+  // under it is the half-animated version, and reads worse than no animation
+  // at all. This unmount is also what STARTS the column's glide back: the
+  // stylesheet holds the open geometry for as long as a closing card is
+  // mounted (`:has(> .pg-config-card.is-closing)`, ai-playground.css), because
+  // the card's open place and the column's closed place overlap — a card
+  // fading over a column already in motion can only be clipped by the stage or
+  // laid on top of the composer.
+  const [shown, setShown] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setShown(true);
+      return;
+    }
+    if (!shown) return;
+    const timer = window.setTimeout(() => setShown(false), CONFIG_EXIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [open, shown]);
+  if (!shown) return null;
   return (
-    <aside className="pg-config-card" aria-label="Settings">
+    <aside
+      className={"pg-config-card" + (open ? "" : " is-closing")}
+      aria-label="Settings"
+      // On the way out it is a picture of a panel, not a panel: nothing in it
+      // can be reached or read while it fades.
+      aria-hidden={open ? undefined : true}
+    >
       {/* Two boxes, not one: beside the column the <aside> is a full-height
           rail and this inner box is what sticks inside it. */}
       <div className="pg-config-inner">
