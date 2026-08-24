@@ -35,7 +35,7 @@ import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize"
 import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
-import { buildAppSeed, modelName } from "./appSeed";
+import { buildAppAnnotation, modelName } from "./appSeed";
 import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { PlaygroundApps } from "./PlaygroundApps";
@@ -698,17 +698,19 @@ export default function PlaygroundTab() {
                 <div className="pg-stage-actions">
                   {/* The playground's exit ramp: everything tried here is one
                       `fused.ai` call in a page, and this hands the /apps
-                      composer a seed naming the model, the tuned settings and
-                      the call — the user finishes the sentence with the app
-                      they want. */}
+                      composer an annotation naming the model and the tuned
+                      settings — shown as a chip, not dumped into the prompt
+                      box — so the user just types the app they want. */}
                   <button
                     type="button"
                     className="btn btn-secondary"
                     title="Open the app builder with this model and your settings pre-filled"
                     onClick={() =>
                       navigateUrl(
-                        "/apps?seed=" +
-                          encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
+                        "/apps?annot=" +
+                          encodeURIComponent(
+                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
+                          ),
                       )
                     }
                   >
