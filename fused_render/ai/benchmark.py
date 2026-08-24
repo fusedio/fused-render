@@ -133,7 +133,7 @@ _EMBED_TEXTS = (
 #: below runs in seconds to a couple of minutes on ordinary hardware; a
 #: comparable video render needs a resident model that is itself 20-140GB
 #: depending on engine (`registry.VIDEO_TRAITS`, `catalog.SUGGESTIONS[
-#: "ltx-video"]`/`["h3-video"]`) and minutes of denoising even once loaded.
+#: "ltx-video"]`) and minutes of denoising even once loaded.
 #: Wiring this capability into `_MEASURE` the way the other four are would
 #: make a "Run" press on this tab silently commit a user to tens of gigabytes
 #: and several minutes on a cold model — a materially different cost than

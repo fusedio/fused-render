@@ -98,8 +98,9 @@ TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
 
 # How long a video request will wait for the worker to finish rendering.
 # `TRANSCRIBE_TIMEOUT_S`'s reasoning restated for the other job that can
-# genuinely run for hours on ordinary hardware: a 768-class H3 render on an
-# M3 can far exceed the image path's `GENERATE_TIMEOUT_S` (900s), and the
+# genuinely run for hours on ordinary hardware: a high-resolution video
+# render on an M3 can far exceed the image path's `GENERATE_TIMEOUT_S`
+# (900s), and the
 # precedent for a carve-out this wide is transcription's own four hours. Two,
 # not four, because a render — unlike a multi-hour recording — is bounded by
 # `frames`/`steps` this app itself clamps (`ai_runtime.py`'s video route), so
@@ -692,16 +693,6 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
-    # `h3_video/worker.py` spawns the h3 binary itself and has no resolution
-    # ladder of its own to run — `registry.h3_bin()` already ran once, when
-    # `_runner_or_raise` decided this capability was available at all, and
-    # this hands that ANSWER down rather than asking the worker to derive it
-    # again (the same reason no Hub token is minted here: the parent already
-    # knows and a second derivation could only disagree with the first).
-    if capability == registry.VIDEO_GENERATION:
-        resolved = registry.h3_bin()
-        if resolved:
-            env["FUSED_RENDER_H3_BIN"] = resolved
     return env
 
 
@@ -1918,8 +1909,8 @@ def start_video(model: str, request: dict, job: str) -> None:
     """Open `job` and render a video on a thread. See `_start_render`.
 
     Raises before starting if it cannot — a request this machine cannot
-    serve (no Apple Silicon, or no h3 binary staged) answers with the
-    reason instead of opening a row that immediately dies.
+    serve (no Apple Silicon) answers with the reason instead of opening a
+    row that immediately dies.
     """
     _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
                   noun="video", thread_name="ai-video")
@@ -1971,8 +1962,9 @@ def generate_image(model: str, request: dict, job: str) -> dict:
 def generate_video(model: str, request: dict, job: str) -> dict:
     """Render one video. See `_generate_via_worker`.
 
-    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a 768-class
-    H3 render can run for far longer than any image request.
+    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a
+    high-resolution video render can run for far longer than any image
+    request.
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
                                 timeout=VIDEO_TIMEOUT_S, noun="video")

@@ -606,7 +606,7 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     # carry the former, and the sentence-transformers checkpoints that carry the
     # latter are exactly what the `absent` list above keeps out (see
     # `ai/tasks.py`'s note on those two rows). VIDEO_GENERATION arrives through
-    # "text-to-video", the tag `h3-video` now serves.
+    # "text-to-video", the tag `ltx-video` serves.
     assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
         registry.EMBEDDINGS, registry.VIDEO_GENERATION}

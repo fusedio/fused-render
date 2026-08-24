@@ -81,17 +81,16 @@ NEMO_ASR_TARGET = "nemo.collections.asr.models."
 #: safetensors, rather than the single-file layout diffusers writes.
 MFLUX_COMPONENTS = ("transformer", "text_encoder", "vae")
 
-#: What an h3-readable snapshot always has at its ROOT: the `FL2VA/`
-#: checkpoint tree h3.c's own loader requires (`h3_load_dir` in h3.c,
-#: verified against the pinned commit — every path it opens is
-#: `FL2VA/…` or `Ref2VA/…`, never bare). The real repo
-#: (`MiniMaxAI/MiniMax-H3`) ALSO carries a root-level `model_index.json`
-#: — h3.c's own bookkeeping file, not a diffusers pipeline manifest — so
-#: this check has to run, and RETURN, before the `DIFFUSERS_INDEX` check
-#: below, or a full MiniMax-H3 snapshot would be mislabelled as a
-#: diffusers-loadable repo too. `Ref2VA/` is deliberately not required:
-#: this build never fetches it (v1 is FL2VA-only), so a snapshot missing
-#: it is still the ordinary, complete case here.
+#: What a MiniMax-H3 snapshot always has at its ROOT: the `FL2VA/`
+#: checkpoint tree. **No runner reads this layout any more** — D468 dropped
+#: `h3-video` — but the signal is still load-bearing, for the same reason
+#: D406's withdrawn Parakeet runner left its own check standing: the real
+#: repo (`MiniMaxAI/MiniMax-H3`) ALSO carries a root-level
+#: `model_index.json` — h3.c's own bookkeeping file, not a diffusers
+#: pipeline manifest — so this check has to run, and RETURN, before the
+#: `DIFFUSERS_INDEX` check below, or a snapshot somebody already fetched
+#: would be mislabelled as a diffusers-loadable repo and the page would
+#: offer a Load button that opens on a layout diffusers cannot read.
 H3_COMPONENT = "FL2VA"
 
 #: `dgrauet/ltx-2.3-mlx-q4`'s own manifest file (mlx-forge's split-conversion
@@ -902,7 +901,7 @@ UNLOADABLE_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "compressed-tensors
 #: the config names an ASR class nothing else in this app can read — it is
 #: just decisive about matching NOTHING, which the early return in `loaders()`
 #: enforces directly rather than through this table.
-DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video", "h3-video",
+DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -1140,13 +1139,13 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # and offer to load an LTX-2.3 checkpoint as a chat model.
         return tuple(found)
     if has_h3_components(dirnames):
-        found.append("h3-video")
-        # …and NOTHING else, for the diffusers branch's reason: the real
-        # repo carries a root `model_index.json` of its own (h3.c's
-        # bookkeeping, not a diffusers manifest), and without this return
-        # the check below would ALSO claim it and the page would offer a
-        # Diffusers Load button that opens on a layout diffusers cannot
-        # read.
+        # Claims NO runner — D468 dropped `h3-video`, which was the only
+        # thing that could read this layout — but the early return MUST
+        # stay, exactly as D406's Parakeet withdrawal kept its own. The
+        # real repo carries a root `model_index.json` of its own (h3.c's
+        # bookkeeping, not a diffusers manifest), so falling through would
+        # let the check below claim it and the page would offer a Diffusers
+        # Load button that opens on a layout diffusers cannot read.
         return tuple(found)
     if repo_id in MFLUX_VARIANTS and has_mflux_components(dirnames):
         found.append("mflux-image")

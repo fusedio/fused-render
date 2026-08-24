@@ -2766,9 +2766,10 @@ export interface AiCatalogCapability {
    *  canvas default and the step default (`registry.VideoTraits`, server
    *  side). `null` for every capability but video generation: it is the
    *  first (only) one whose request shape varies by which runner resolved
-   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps against `h3-video`'s
-   *  `5 + 17n` at 864×480/20), so the Playground's frame/canvas/step
-   *  sliders read this rather than a hardcoded grid — a slider that
+   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps; the dropped
+   *  `h3-video` used `5 + 17n` at 864×480/20), so the Playground's
+   *  frame/canvas/step sliders read this rather than a hardcoded grid — a
+   *  slider that
    *  disagreed with the server would snap on every render and land off by
    *  up to half its own travel. */
   videoTraits: {

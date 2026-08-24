@@ -419,9 +419,9 @@ describe("video generation's place in the reading order", () => {
   it("sorts between text-to-image and automatic-speech-recognition", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
       capability("automatic-speech-recognition", [curated("mlx-community/whisper-tiny")]),
-      capability("text-to-video", [curated("MiniMaxAI/MiniMax-H3-FL2VA")], {
-        runner: "h3-video",
-        runnerShortLabel: "H3",
+      capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
+        runner: "ltx-video",
+        runnerShortLabel: "LTX-2.3",
       }),
       capability("text-generation", [curated("mlx-community/Qwen3.5-9B-OptiQ-4bit")]),
       capability("text-to-image", [curated("mlx-community/FLUX.2-Klein-4B-4bit")]),
@@ -437,16 +437,14 @@ describe("video generation's place in the reading order", () => {
     ]);
   });
 
-  // Two engines now serve this capability (`ltx-video`, then `h3-video`), and
-  // NEITHER reaches a machine that is not Apple Silicon — unlike text
-  // generation or image generation, where a torch/diffusers row keeps the
-  // capability alive on Windows and Linux. Video generation is therefore
-  // still the one whose row can go fully unavailable, even with a second
-  // engine in the mix; this mirrors the `runner: "h3-video"` case above with
-  // `ltx-video`, pinning that the page needed no new code for it — the row
-  // renders off whichever runner the SERVER reports as effective, and
-  // neither this test nor `mergeSections` cares which one that is.
-  it("renders with ltx-video as the effective runner, same as h3-video", () => {
+  // `ltx-video` does not reach a machine that is not Apple Silicon — unlike
+  // text generation or image generation, where a torch/diffusers row keeps
+  // the capability alive on Windows and Linux. Video generation is therefore
+  // the one capability whose row can go fully unavailable. The row renders
+  // off whichever runner the SERVER reports as effective, and neither this
+  // test nor `mergeSections` cares which one that is — which is why dropping
+  // the second engine (D468) needed no page change at all.
+  it("renders with ltx-video as the effective runner", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
       capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
         runner: "ltx-video",
@@ -462,13 +460,13 @@ describe("video generation's place in the reading order", () => {
 
   // Unavailable is still SHOWN, with its reason — the same rule every other
   // capability follows (HF-8), and video generation is still the one that can
-  // go unavailable on every engine it has: `ltx-video` and `h3-video` are
-  // BOTH gated on Apple Silicon (registry.py's ordering, SPEC §40's LTX-2.3
-  // plan), so neither reaches a Windows or Linux machine the way a torn-off
-  // torch/CUDA row keeps text or image generation alive there.
-  it("still renders, with its reason, when this machine has no h3 binary", () => {
+  // go unavailable on every engine it has: `ltx-video` is gated on Apple
+  // Silicon (registry.py's ordering, SPEC §40's LTX-2.3 plan), so it does
+  // not reach a Windows or Linux machine the way a torn-off torch/CUDA row
+  // keeps text or image generation alive there.
+  it("still renders, with its reason, when this machine cannot serve video", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
-      capability("text-to-video", [curated("MiniMaxAI/MiniMax-H3-FL2VA")], {
+      capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
         available: false,
         reason: "needs Apple Silicon — MLX runs on Metal only (this is linux/x86_64)",
         default: null,
