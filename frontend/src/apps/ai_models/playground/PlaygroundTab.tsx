@@ -39,7 +39,6 @@ import { PLAYGROUND_GROUPS } from "./groups";
 import { buildAppAnnotation, modelName } from "./appSeed";
 import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
-import { PlaygroundApps } from "./PlaygroundApps";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
 import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -57,6 +56,10 @@ import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@platform/shadcn/ui/card";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Binary, Check, Copy, Cpu, HardDriveDownload, Sparkles } from "lucide-react";
 
 // What the groups are called HERE: the capability vocabulary is exact
 // ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
@@ -130,6 +133,9 @@ type CatalogLoad =
 export default function PlaygroundTab() {
   const [catalog, setCatalog] = useState<CatalogLoad>({ status: "loading" });
   const [actionError, setActionError] = useState<string | null>(null);
+  // The copy-repo tick, briefly. Not per-model: switching models mid-tick just
+  // lets the tick lapse on its own.
+  const [copiedRepo, setCopiedRepo] = useState(false);
   const runtime = useAiRuntime();
   // `useUrlVersion`, not `useNavEpoch`: the selection is written with
   // `replaceSearch`, which fires only fused:urlchange — the nav epoch counts
@@ -387,31 +393,30 @@ export default function PlaygroundTab() {
   // The two bad answers are TINTED and the good one is not. Amber and red are
   // the app's warning and error tokens and they are spent here for the reason
   // they exist: "tight" and "no" are the only verdicts that ask the reader to
-  // do something differently. "easy" deliberately gets no green — green on this
-  // page means RUNNING (the sidebar's live dot, the loaded badge, D461), and a
-  // second meaning for one hue on one screen dilutes the one that matters,
-  // doubly so when it would appear on nearly every model. Untinted-is-fine is
-  // legible precisely because the other two are not.
+  // do something differently. The verdict is a badge by the model's name now
+  // (the shadcn redesign's ref put it there), with a small dot carrying the
+  // hue — a dot on a quiet secondary badge, not a filled colour, so it stays
+  // below the RUNNING green that D461 reserves for the loud treatment.
   const fitNote = !selected
     ? null
     : selected.model.fit === "easy"
       ? {
           text: "Runs comfortably here",
-          tone: "",
+          dot: "bg-emerald-500",
           title:
             "Judged against this machine's memory — the weights leave room for everything else.",
         }
       : selected.model.fit === "tight"
         ? {
             text: "Tight fit on this machine",
-            tone: " pg-fact-tight",
+            dot: "bg-[var(--warning)]",
             title:
               "Judged against this machine's memory — close other heavy apps while it runs.",
           }
         : selected.model.fit === "no"
           ? {
               text: "Likely too big for this machine",
-              tone: " pg-fact-no",
+              dot: "bg-[var(--error)]",
               title: "Judged against this machine's memory — it may crawl or fail to load.",
             }
           : null;
@@ -498,20 +503,6 @@ export default function PlaygroundTab() {
                     )}
                     {name}
                   </span>
-                  {/* Parameter count, left of the download weight: the two
-                      numbers a reader compares rows by, and they mean
-                      different things — how much model, then how much to
-                      fetch. Printed as the curator wrote it ("4B", "8B (~1B
-                      active)"), never shortened here: catalog.py's AI-2c rule
-                      is that this string is a value somebody owns.
-                      Absent on a cached entry nobody curated, and the slot
-                      then draws nothing rather than a "—" the stage header
-                      would have to explain. */}
-                  {model.params && (
-                    <span className="pg-model-chip" title="Parameters">
-                      {model.params}
-                    </span>
-                  )}
                   <span
                     className="pg-model-size"
                     title={
@@ -657,6 +648,11 @@ export default function PlaygroundTab() {
       </aside>
 
       <div className="pg-stage">
+      {/* One frame owns the width story for everything on the stage: capped at
+          840px, centered, gutters below that. The hero spans it fully and the
+          work column share the same box, so top and bottom can
+          never drift apart. */}
+      <div className="pg-frame">
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
         {blockedAsk && selected && (
           // Not an ErrorBanner: nothing failed and nothing the user did is
@@ -675,65 +671,83 @@ export default function PlaygroundTab() {
           </p>
         ) : (
           <>
-            <section className="pg-hero">
-              <div className="pg-hero-head">
-                <div className="pg-hero-names">
-                  <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
+            <Card className="pg-hero flex-none [--card-spacing:--spacing(6)]">
+              <CardHeader>
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className="text-lg font-semibold tracking-tight">
+                      {modelName(selected.model)}
+                    </CardTitle>
+                    {/* WILL IT RUN HERE — the server's verdict over the weights
+                        and this machine's RAM (`_fit_verdict`), as a badge by
+                        the name. ALL THREE answers are drawn: this fact answers
+                        "can my machine run this", which is asked of every
+                        model, and a row that answers only when the answer is
+                        bad is silent exactly when it is being consulted.
+                        `null` still draws nothing — a verdict over a size
+                        nobody measured is a lie. */}
+                    {fitNote && (
+                      <Badge variant="secondary" className="gap-1.5 font-normal" title={fitNote.title}>
+                        <span className={"size-1.5 rounded-full " + fitNote.dot} />
+                        {fitNote.text}
+                      </Badge>
+                    )}
+                  </div>
                   {/* The full repo id — author/name as Hugging Face knows it.
                       A link only when it IS a repo id: llama.cpp entries are
                       keyed by bare .gguf filename (formats.GGUF_RECIPES), and
-                      huggingface.co/<filename> is a 404 dressed as a link. */}
-                  {selected.model.id.includes("/") ? (
-                    <a
-                      className="pg-hero-repo"
-                      href={hubModelUrl(selected.model.id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      huggingface.co/<filename> is a 404 dressed as a link.
+                      The copy button rides beside it, revealed on hover. */}
+                  <div className="group flex min-w-0 items-center gap-1.5">
+                    {selected.model.id.includes("/") ? (
+                      <a
+                        className="truncate font-mono text-xs text-muted-foreground no-underline transition-colors hover:text-foreground hover:underline"
+                        href={hubModelUrl(selected.model.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {selected.model.id}
+                      </a>
+                    ) : (
+                      <span className="truncate font-mono text-xs text-muted-foreground">
+                        {selected.model.id}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(selected.model.id).catch(() => {});
+                        setCopiedRepo(true);
+                        window.setTimeout(() => setCopiedRepo(false), 1600);
+                      }}
+                      className="shrink-0 cursor-pointer appearance-none border-0 bg-transparent p-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      title="Copy model ID"
                     >
-                      {selected.model.id}
-                    </a>
-                  ) : (
-                    <span className="pg-hero-repo">{selected.model.id}</span>
-                  )}
-                </div>
-                <div className="pg-stage-actions">
-                  {/* The playground's exit ramp: everything tried here is one
-                      `fused.ai` call in a page, and this hands the /apps
-                      composer an annotation naming the model and the tuned
-                      settings — shown as a chip, not dumped into the prompt
-                      box — so the user just types the app they want. */}
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    title="Open the app builder with this model and your settings pre-filled"
-                    onClick={() =>
-                      navigateUrl(
-                        "/apps?annot=" +
-                          encodeURIComponent(
-                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
-                          ),
-                      )
-                    }
-                  >
-                    Build an app with this AI
-                  </button>
-                  {!selected.model.downloaded && !selectedDownloading && (
-                    <button type="button" className="btn btn-secondary" onClick={runDownload}>
-                      Download{selectedSize ? ` (${selectedSize.text})` : ""}
+                      {copiedRepo ? (
+                        <Check className="size-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
+                      )}
+                      <span className="sr-only">Copy model ID</span>
                     </button>
+                  </div>
+                </div>
+                <CardAction className="flex flex-wrap items-center justify-end gap-2">
+                  {/* The model's own lifecycle first (Download / progress /
+                      Load / Unload), the exit ramp last: the rightmost slot is
+                      the header's landing edge, and "Build an app" is where
+                      the whole playground points. All of them outline — one
+                      state cluster, one weight. */}
+                  {!selected.model.downloaded && !selectedDownloading && (
+                    <Button variant="outline" size="sm" onClick={runDownload}>
+                      Download{selectedSize ? ` (${selectedSize.text})` : ""}
+                    </Button>
                   )}
-                  {/* The pull, IN THE BUTTON'S OWN SLOT. Pressing Download used
-                      to empty this corner — the button's condition excludes a
-                      running download — so the one place the eye was already
-                      on went blank at the exact moment there was most to say,
-                      and the only counting left on the page was the sidebar
-                      row's size cell. `ModelProgress` is the drawing every
-                      other card on /ai-models uses for this (shared/), reading
-                      the same job row: bytes and a bar come from the worker
-                      doing the fetching, never from the runtime, which knows
-                      only that something is happening. No job row yet — the
-                      poll is a second behind the click — is its "Preparing…",
-                      not a blank. */}
+                  {/* The pull, IN THE BUTTON'S OWN SLOT — icon, ring, bytes in
+                      the width of a button, with Cancel swapped in under the
+                      pointer (`:hover` / `:focus-within`, nothing moves).
+                      Deliberately custom rather than a shadcn piece: the
+                      one-cell two-drawings grid is the point. */}
                   {selectedDownloading && (
                     <div
                       className="pg-hero-dl"
@@ -743,20 +757,6 @@ export default function PlaygroundTab() {
                           : "Downloading…"
                       }
                     >
-                      {/* An icon, a ring, and the two byte figures — in the
-                          width of a button, which is all this corner has.
-                          Deliberately NOT `ModelProgress`, the drawing the
-                          /ai-models cards share: that one leads with a pulsing
-                          dot and the job's own sentence ("Fetching weights…")
-                          and ends in a bar that wants a whole card's width.
-                          Here the icon says which kind of work this is without
-                          a word, and a ring says how far in the space the
-                          sentence wanted. */}
-                      {/* The icon does NOT take part in the swap: it is what
-                          says which kind of work this slot is about, and that is
-                          as true while the pointer is over it as before. Only
-                          the two things that are about PROGRESS — the ring and
-                          the figures — give way. */}
                       <span className="pg-hero-dl-icon" aria-hidden="true">
                         {MenuIcons.download}
                       </span>
@@ -770,33 +770,6 @@ export default function PlaygroundTab() {
                             </span>
                           )}
                         </span>
-                      {/* POINT AT THE PROGRESS, GET THE WAY OUT. A download is
-                          the one thing on this card a reader changes their mind
-                          about, and the figures are what they look at while
-                          doing it — so the way to stop it lives under the
-                          pointer that is already there, rather than as a fourth
-                          button in a row that is only ever read while a
-                          download is NOT running.
-
-                          Both drawings share one grid cell, so the box is as
-                          wide and as tall as the wider of the two at rest and
-                          NOTHING MOVES on hover: a control that reflows the row
-                          it appears in is a control the pointer slides off
-                          (D452's argument about the recent-chats row, in one
-                          box instead of one row).
-
-                          Revealed by `:hover` and by `:focus-within`, and the
-                          button stays in the DOM and focusable while invisible
-                          — which is what makes the second of those fire, so the
-                          way out is reachable by tab and not only by pointer.
-
-                          A WORD, at the figures' own size, and not a button: it
-                          stands in for a byte count in a corner of a card, and
-                          a bordered control there would be the loudest thing on
-                          the card while the download it stops is the quietest.
-                          Pale red and underlined is enough — the colour says
-                          which direction it goes, the underline says it is
-                          pressable. */}
                         {stoppable && (
                           <button
                             type="button"
@@ -811,89 +784,94 @@ export default function PlaygroundTab() {
                     </div>
                   )}
                   {selected.model.downloaded && !selectedResident && (
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={runLoad}
                       title="Optional — the first generation loads it too"
                     >
                       Load
-                    </button>
+                    </Button>
                   )}
                   {selectedResident && selectedResident.state === "ready" && (
-                    <button type="button" className="btn btn-secondary" onClick={runUnload}>
+                    <Button variant="outline" size="sm" onClick={runUnload}>
                       Unload
-                    </button>
+                    </Button>
                   )}
-                </div>
-              </div>
+                  {/* The playground's exit ramp: everything tried here is one
+                      `fused.ai` call in a page, and this hands the /apps
+                      composer an annotation naming the model and the tuned
+                      settings — shown as a chip, not dumped into the prompt
+                      box — so the user just types the app they want. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    title="Open the app builder with this model and your settings pre-filled"
+                    onClick={() =>
+                      navigateUrl(
+                        "/apps?annot=" +
+                          encodeURIComponent(
+                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
+                          ),
+                      )
+                    }
+                  >
+                    <Sparkles data-icon="inline-start" />
+                    Build an app
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              {/* No facts, no CardContent: an empty one still takes the card's
+                  flex gap and leaves blank space under the header. */}
               {(selected.model.params ||
                 selected.model.quantization ||
-                selected.model.size_gb != null ||
-                fitNote) && (
-                <dl className="pg-hero-facts">
-                  {selected.model.params && (
-                    <div className="pg-hero-fact">
-                      <dt>Parameters</dt>
-                      <dd>{selected.model.params}</dd>
-                    </div>
-                  )}
-                  {selected.model.quantization && (
-                    <div className="pg-hero-fact">
-                      <dt>Quantization</dt>
-                      <dd>{selected.model.quantization}</dd>
-                    </div>
-                  )}
-                  {selected.model.size_gb != null && (
-                    <div className="pg-hero-fact">
-                      <dt>Download</dt>
-                      <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
-                    </div>
-                  )}
-                  {/* WILL IT RUN HERE — the server's verdict over the weights
-                      and this machine's RAM (`_fit_verdict`), back on the card
-                      after the state line that used to carry it was deleted for
-                      being prose. A fact beside the others rather than a chip
-                      by the name: this page spends its loud colours on what is
-                      RUNNING (D461), and a coloured badge here would be the
-                      same "quieter card" argument re-lost.
-
-                      ALL THREE answers are drawn, reversing the warning-only
-                      first cut. That version had the better argument on paper —
-                      "easy" is the common case, and a mark on nearly every
-                      model marks nothing (D448's chip) — and it was wrong about
-                      what this fact is FOR. It is not a badge decorating a
-                      model; it is the answer to "can my machine run this",
-                      which is asked OF EVERY MODEL, and a row that answers only
-                      when the answer is bad is silent exactly when it is being
-                      consulted: on a 34GB laptop every model the sidebar offers
-                      is "easy", so the fact was unreachable and read as
-                      missing. Absence-as-good-news works for a badge nobody was
-                      looking for, not for a question somebody asked. `null`
-                      still draws nothing, for the server's own reason: a verdict
-                      over a size nobody measured is the lie the "—" size cell
-                      exists to avoid.
-
-                      Its own fact, not a line on Download: fetching and
-                      running are different questions, and the Download slot is
-                      the one that turns into a progress ring mid-pull — which
-                      is exactly when "will this even fit" is worth reading. */}
-                  {fitNote && (
-                    <div className="pg-hero-fact">
-                      <dt>Memory</dt>
-                      <dd className={"pg-hero-fact-judged" + fitNote.tone} title={fitNote.title}>
-                        {fitNote.text}
-                      </dd>
-                    </div>
-                  )}
-                </dl>
+                selected.model.size_gb != null) && (
+                <CardContent className="flex flex-col gap-4">
+                  {/* Every fact carries its own divider bar, drawn by ::before
+                      in the gap to its LEFT — and `overflow-x-clip` on the
+                      list clips the bar off whichever fact starts a line, the
+                      first included. A per-item `i > 0` separator can't do
+                      that: when the row wraps, the wrapped item would open its
+                      line with a stray bar. */}
+                  <dl className="relative m-0 flex flex-wrap items-center gap-x-4 gap-y-2 overflow-x-clip text-sm">
+                    {[
+                      selected.model.params
+                        ? {
+                            icon: Cpu,
+                            label: "Parameters",
+                            value: selected.model.params,
+                          }
+                        : null,
+                      selected.model.quantization
+                        ? {
+                            icon: Binary,
+                            label: "Quantization",
+                            value: selected.model.quantization,
+                          }
+                        : null,
+                      selected.model.size_gb != null
+                        ? {
+                            icon: HardDriveDownload,
+                            label: "Download",
+                            value: modelSizeLabel(selected.model.size_gb, jobForSelected),
+                          }
+                        : null,
+                    ]
+                      .filter((f) => f !== null)
+                      .map((f) => (
+                        <div
+                          key={f.label}
+                          className="relative flex items-center gap-2 before:absolute before:top-1/2 before:-left-2 before:h-4 before:w-px before:-translate-y-1/2 before:bg-border"
+                        >
+                          <f.icon className="size-4 shrink-0 text-muted-foreground" />
+                          <dt className="text-muted-foreground">{f.label}</dt>
+                          <dd className="m-0 font-medium tabular-nums">{f.value}</dd>
+                        </div>
+                      ))}
+                  </dl>
+                </CardContent>
               )}
-              {/* The curator's sentence, in full — the sidebar clamps it.
-                  For the zero-jargon reader this is the model introducing
-                  itself; the mechanics (loaded, downloading) stay on the
-                  quieter line below it. */}
-              {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-            </section>
+            </Card>
             {selected.row.capability === "text-generation" ? (
               <TextStage
                 key={selected.model.id}
@@ -931,9 +909,9 @@ export default function PlaygroundTab() {
                 still load and manage this model.
               </p>
             )}
-            <PlaygroundApps capability={selected.row.capability} modelId={selected.model.id} />
           </>
         )}
+      </div>
       </div>
     </div>
   );

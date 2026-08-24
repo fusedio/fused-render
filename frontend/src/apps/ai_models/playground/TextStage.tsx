@@ -34,9 +34,14 @@ import {
 import { canAttachImage, usableAttachment, type AttachedImage } from "./imageInput";
 import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
+import { Textarea } from "@platform/shadcn/ui/textarea";
+import { Card } from "@platform/shadcn/ui/card";
 import {
   ConfigPanel,
+  useConfigOpen,
   CopyButton,
+  RailField,
+  RailReset,
   RailSlider,
   ResultSlot,
   StageHeader,
@@ -174,7 +179,7 @@ export function TextStage({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   // Can THIS model be asked about a picture at all — the server's own answer
   // (AI-11j), read through `imageInput.ts` so the row drawn here and the
@@ -359,12 +364,13 @@ export function TextStage({
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
         title="Try a prompt"
         configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+        onToggleConfig={toggleConfig}
       />
 
       <div className="pg-composer">
@@ -496,7 +502,7 @@ export function TextStage({
       )}
 
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
-      <ConfigPanel open={configOpen}>
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Temperature"
           hint="Lower is focused and repeatable; higher is varied and creative."
@@ -517,30 +523,22 @@ export function TextStage({
           fallback={DEFAULTS.max_tokens}
           onChange={setMaxTokens}
         />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">System prompt</span>
-            {/* "clear", not the other controls' "reset": resetting this one IS
-                emptying it, and a button that says reset beside a prompt the
-                user wrote reads like it would restore one of ours. */}
-            {system !== "" && (
-              <button type="button" className="pg-ctl-reset" onClick={() => setSystem("")}>
-                clear
-              </button>
-            )}
-          </span>
-          <textarea
-            className="pg-rail-textarea"
+        {/* "clear", not the other controls' "reset": resetting this one IS
+            emptying it, and a button that says reset beside a prompt the
+            user wrote reads like it would restore one of ours. */}
+        <RailField
+          label="System prompt"
+          action={system !== "" && <RailReset onClick={() => setSystem("")}>clear</RailReset>}
+          hint="Standing instructions, applied to every run. Empty by default — the reply is whatever this model does on its own."
+        >
+          <Textarea
+            className="min-h-0 resize-y text-xs leading-normal"
             rows={4}
             value={system}
             placeholder="Who the model should be"
             onChange={(e) => setSystem(e.target.value)}
           />
-          <span className="pg-ctl-hint">
-            Standing instructions, applied to every run. Empty by default — the
-            reply is whatever this model does on its own.
-          </span>
-        </label>
+        </RailField>
         <RailSlider
           label="Top-p"
           hint="How much of the probability mass the model may sample from."
@@ -552,6 +550,14 @@ export function TextStage({
           onChange={setTopP}
         />
       </ConfigPanel>
+
+      {/* Examples first, under the box they fill; hidden once there is a
+          reply to read, which is what that space is then for. */}
+      {!reply && !status && (
+        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
+      )}
+
+      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
 
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
@@ -588,6 +594,7 @@ export function TextStage({
           </div>
         </div>
       )}
+      </Card>
     </div>
   );
 }

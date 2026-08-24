@@ -24,7 +24,9 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { ConfigPanel, CopyButton, ResultSlot, StageHeader } from "./controls";
+import { Input } from "@platform/shadcn/ui/input";
+import { Card } from "@platform/shadcn/ui/card";
+import { useConfigOpen, ConfigPanel, CopyButton, RailCheck, RailField, RailSelect, ResultSlot, StageHeader } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -56,7 +58,7 @@ export function TranscribeStage({ model }: { model: string }) {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   const [task, setTask] = useState<"transcribe" | "translate">(() =>
     readParam("task") === "translate" ? "translate" : "transcribe",
@@ -306,12 +308,13 @@ export function TranscribeStage({ model }: { model: string }) {
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader
           title="Transcribe a recording"
           configOpen={configOpen}
-          onToggleConfig={() => setConfigOpen((open) => !open)}
+          onToggleConfig={toggleConfig}
         />
 
         {phase.step === "recording" ? (
@@ -398,48 +401,38 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
 
-        <ConfigPanel open={configOpen}>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Task</span>
-            </span>
-            <select
-              className="pg-rail-input"
+        <ConfigPanel open={configOpen} animated={configTouched.current}>
+          <RailField label="Task">
+            <RailSelect
               value={task}
               onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
             >
               <option value="transcribe">Transcribe — same language</option>
               <option value="translate">Translate into English</option>
-            </select>
-          </label>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Language</span>
-            </span>
-            <input
-              className="pg-rail-input"
+            </RailSelect>
+          </RailField>
+          <RailField label="Language" hint="Set it only when detection gets it wrong.">
+            <Input
               type="text"
               value={language}
               placeholder="Detected automatically"
               onChange={(e) => setLanguage(e.target.value)}
             />
-            <span className="pg-ctl-hint">Set it only when detection gets it wrong.</span>
-          </label>
-          <label className="pg-ctl pg-ctl-row">
-            <input type="checkbox" checked={vad} onChange={(e) => setVad(e.target.checked)} />
-            <span>
-              <span className="pg-ctl-label">Skip silence</span>
-              <span className="pg-ctl-hint">Much faster on recordings with gaps. Turn off if it clips speech.</span>
-            </span>
-          </label>
-          <label className="pg-ctl pg-ctl-row">
-            <input type="checkbox" checked={words} onChange={(e) => setWords(e.target.checked)} />
-            <span>
-              <span className="pg-ctl-label">Word timestamps</span>
-              <span className="pg-ctl-hint">Per-word timings in the saved transcript. Slower.</span>
-            </span>
-          </label>
+          </RailField>
+          <RailCheck
+            label="Skip silence"
+            hint="Much faster on recordings with gaps. Turn off if it clips speech."
+            checked={vad}
+            onChange={setVad}
+          />
+          <RailCheck
+            label="Word timestamps"
+            hint="Per-word timings in the saved transcript. Slower."
+            checked={words}
+            onChange={setWords}
+          />
         </ConfigPanel>
+
 
         {error && <p className="pg-error">{error}</p>}
 
@@ -522,6 +515,7 @@ export function TranscribeStage({ model }: { model: string }) {
             </div>
           </div>
         )}
+      </Card>
     </div>
   );
 }
