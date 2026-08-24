@@ -2,8 +2,9 @@
 // ranked comparison chart (the hero: "which of these is fastest here"), a
 // leaderboard of every model with its own action (Run, Details), and a
 // per-model trend chart (secondary: "is THIS model getting faster or
-// slower") — plus the archive underneath and a button to measure again
-// (SPEC AI-14).
+// slower"), now rendered INLINE directly under whichever row it belongs to
+// (D481) rather than in its own block below the whole list — plus the
+// archive underneath and a button to measure again (SPEC AI-14).
 //
 // **The question this tab exists to answer is "how fast is THIS model on THIS
 // laptop", and the only way to answer it comparably is to fix the work.** So a
@@ -29,9 +30,11 @@
 // one model has a measurement — the normal case — and the leaderboard's own
 // inline bar is deleted, since drawing the identical proportional comparison
 // twice (once properly, with an axis, once as an unlabelled sliver in each
-// row) was the duplicated ink. `ModelTrendChart` keeps its own spot, now
+// row) was the duplicated ink. `ModelTrendChart` keeps its own spot,
 // correctly secondary, for the model a reader picks by clicking a leaderboard
-// row.
+// row — see the D481 comment above `.am-bench-rows`' render loop for why that
+// spot moved from a block below the whole list to right under the clicked
+// row itself.
 //
 // THE LISTING IS NOT THIS TAB'S. `scan` arrives from the page above
 // (lib/useCacheScan.ts) exactly as it does for the Local tab, because "which
@@ -69,7 +72,7 @@
 // already-polled table rather than adding a second poll: while that table
 // still reports the model loading, the row says so; once it does not, the row
 // switches to "Measuring — mm:ss" ticking from the moment Run was pressed.
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { ComparisonChart } from "./ComparisonChart";
 import { ShareChartButton } from "./ShareChartButton";
 import { ModelTrendChart } from "./ModelTrendChart";
@@ -947,73 +950,83 @@ function CapabilitySection({
           )}
           {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
               with the action (Run, Details) the chart above has no room for.
-              Doubles as the trend chart's picker below: click a row (or focus
-              it and press Enter/Space) to choose which model that instrument
-              is showing. No bar here any more — that was the SAME
-              proportional comparison the chart above now draws once,
-              properly, with an axis; two copies of one comparison was the
-              duplicated ink this replaces. */}
+              Clicking a row (or focusing it and pressing Enter/Space) still
+              chooses which model INSTRUMENT THREE, the trend, is showing —
+              but that instrument now renders as a full-width sibling
+              directly after the clicked row itself (D481), not in a block
+              below the whole list. At N models the old position put the
+              trend a full screen away from row N's click: the thing that
+              visibly changed was off-screen, so the click read as doing
+              nothing. `.am-bench-rows` is already a flex column, so the
+              expansion is just one more child in it, rendered only for the
+              one row whose model equals `selectedModel` — "selected" already
+              means "exactly one" here, so there is nothing new to track. No
+              bar in the row itself any more — that was the SAME proportional
+              comparison the chart above now draws once, properly, with an
+              axis; two copies of one comparison was the duplicated ink this
+              replaces. */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
                 ? undefined
                 : runButtonState(capability, model, inFlight, row !== null);
               return (
-                <BenchmarkRow
-                  key={model}
-                  model={model}
-                  row={row}
-                  metric={metric}
-                  expectedDevice={expectedDevice}
-                  button={button}
-                  busyText={model === busyModel ? busyText : null}
-                  gone={gone.has(model)}
-                  selected={model === selectedModel}
-                  onSelect={() => onSelectModel(model)}
-                  onRun={() => onRun(model, capability)}
-                />
+                <Fragment key={model}>
+                  <BenchmarkRow
+                    model={model}
+                    row={row}
+                    metric={metric}
+                    expectedDevice={expectedDevice}
+                    button={button}
+                    busyText={model === busyModel ? busyText : null}
+                    gone={gone.has(model)}
+                    selected={model === selectedModel}
+                    onSelect={() => onSelectModel(model)}
+                    onRun={() => onRun(model, capability)}
+                  />
+                  {/* INSTRUMENT THREE, SECONDARY, INLINE (D481): one model's
+                      own history, a real time axis, rendered as a full-width
+                      sibling right after the row it belongs to — a plain flex
+                      child of `.am-bench-rows`, not a grid cell of the row
+                      above it, since the chart needs the whole row's width
+                      rather than whatever the row's own columns leave over.
+                      Drawn only for `selectedModel`'s own row — the row
+                      already names the model (its own headline, a few pixels
+                      up), so unlike the old block-below-the-list version this
+                      needs no title of its own repeating that name.
+
+                      Three shapes, not two. A single measured point is NOT a
+                      trend: it has no before to compare against, and drawing
+                      it in the same ~400px frame as a real chart was the
+                      actual bug (one dot, ~95% empty frame, the largest
+                      element on the page). So it gets its own compact state —
+                      the value stated plainly, at a fraction of the height —
+                      and only two-or-more points earn `ModelTrendChart`. Zero
+                      points (a model with runs, just none that measured THIS
+                      metric — a true "Never benchmarked" row has no trend
+                      state at all, see below) draws neither: a reader who
+                      picked a metric this model has no data for gets told so
+                      in words, never an empty axis. */}
+                  {model === selectedModel && metric && (
+                    <div className="am-bench-trend-inline">
+                      {trend === "trend" ? (
+                        <ModelTrendChart runs={trendRuns} metric={metric} />
+                      ) : trend === "single" ? (
+                        <div className="am-bench-trend-single">
+                          <span className="am-bench-trend-value">
+                            {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
+                          </span>
+                          <span className="am-bench-trend-note">one run · run again to see a trend</span>
+                        </div>
+                      ) : (
+                        <p className="am-group-note">No {metric.label.toLowerCase()} recorded for this model yet.</p>
+                      )}
+                    </div>
+                  )}
+                </Fragment>
               );
             })}
           </div>
-          {/* INSTRUMENT THREE, SECONDARY: the trend — one model's own
-              history, a real time axis. Earns its space once someone has
-              actually re-run a model; until then it says so plainly rather
-              than drawing an empty frame (see `trendKind` below).
-
-              **Titled by the MODEL alone now** — no metric badge here any
-              more. The section head above already names the metric, in the
-              `<select>`'s own option text (unit and direction cue included,
-              via `metricOptionLabel`), and repeating it a few lines
-              down was the exact "drawn twice" duplication that select's own
-              move into this card was meant to end. A model with a card gone
-              from disk (`gone`) still gets a title here: its history is
-              still what this instrument is showing. */}
-          {metric && selectedModel && (
-            <div className="am-bench-trend-head">
-              <h4 className="am-bench-trend-title">{shortModelName(selectedModel)}</h4>
-            </div>
-          )}
-          {/* Three shapes, not two. A single measured point is NOT a trend:
-              it has no before to compare against, and drawing it in the same
-              ~400px frame as a real chart was the actual bug (one dot, ~95%
-              empty frame, the largest element on the page). So it gets its
-              own compact state — the value stated plainly, at a fraction of
-              the height — and only two-or-more points earn
-              `ModelTrendChart`. */}
-          {!metric || !selectedModel ? null : trend === "trend" ? (
-            <ModelTrendChart runs={trendRuns} metric={metric} />
-          ) : trend === "single" ? (
-            <div className="am-bench-trend-single">
-              <span className="am-bench-trend-value">
-                {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
-              </span>
-              <span className="am-bench-trend-note">one run · run again to see a trend</span>
-            </div>
-          ) : (
-            <p className="am-group-note">
-              No {metric.label.toLowerCase()} recorded for {shortModelName(selectedModel)} yet.
-            </p>
-          )}
         </>
       )}
 
@@ -1059,7 +1072,7 @@ function BenchmarkRow({
   busyText?: string | null;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
-  /** This row is the one the trend chart above is currently showing. */
+  /** This row is the one the inline trend expansion (D481) right below it is currently showing. */
   selected: boolean;
   /** Choose this model for the trend chart — a click anywhere on the row, or
    *  Enter/Space while it has focus. */

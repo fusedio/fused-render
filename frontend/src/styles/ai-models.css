@@ -2264,10 +2264,11 @@
   outline-offset: -2px;
 }
 
-/* The row whose history the trend chart above is currently showing. Border
-   plus a light accent wash rather than either alone — the same idiom
-   `.bar-menu-item.active` (explorer.css) uses for its own "which one is this"
-   state, kept stronger than a hover tint so the two never blur. */
+/* The row whose history the trend instrument below it (D481) is currently
+   showing. Border plus a light accent wash rather than either alone — the
+   same idiom `.bar-menu-item.active` (explorer.css) uses for its own "which
+   one is this" state, kept stronger than a hover tint so the two never
+   blur. */
 .am-bench-row.selected {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
@@ -2474,42 +2475,26 @@
 }
 
 /* -- the trend instrument, and its two possible shapes -----------------------
-   Chart-first: this sits ABOVE the leaderboard rows in the DOM (BenchmarkTab's
-   `CapabilitySection`), because the trend is the first question this tab
-   answers and the ranked list — which doubles as its model picker — is the
-   second. */
-
-/* The trend instrument's own title: the MODEL alone now — no metric badge
-   here any more. The section head above already names the metric, right
-   beside the `<select>` that chose it (`.am-bench-metricsel`, unit and
-   direction cue included), and this heading used to repeat it a few lines
-   down; that was the duplicated ink moving the select into the card was
-   meant to end. */
-/* Separated from the leaderboard rows above it by MORE than the ordinary
-   `--am-gap-head` used everywhere else on this page — deliberately, this is
-   the boundary between the second instrument and the third, the same rank of
-   break as the one between the comparison chart and the rows (that pair
-   already spends TWO `--am-gap-head`s, one as the chart's own
-   `margin-bottom`, one as the rows' own `margin-top`), and it was reading as
-   a caption on the last row rather than a break at all — so this one goes
-   further still, plus a rule: the rows above are each their own bordered
-   card, and the comparison chart above THAT has a gridlined plot box, so a
-   heading with no border of its own had nothing marking it as a new
-   instrument. */
-.am-bench-trend-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-top: calc(var(--am-gap-head) * 2);
-  padding-top: var(--am-gap-head);
-  border-top: 1px solid var(--border);
-  margin-bottom: 6px;
-}
-
-.am-bench-trend-title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
+   INLINE now (D481): rendered as a plain flex child of `.am-bench-rows`,
+   directly after the one row whose model is `selectedModel` — not in its own
+   block below the whole leaderboard, which is where it used to live (and
+   where the boundary/heading rules that used to sit right here, since
+   deleted, were fighting to mark it as a new instrument rather than a
+   caption on the last row). At N models that block-below position put the
+   trend a full screen away from the click that changed it; a sibling of the
+   clicked row's own flex item needs none of that separating machinery —
+   `.am-bench-rows`'s own 6px `gap` already sits between it and its
+   neighbours the same way it sits between any two rows, and the accent
+   border below ties it to the row it hangs off instead. */
+.am-bench-trend-inline {
+  /* Full row width for free: this is a SIBLING of `.am-bench-row`'s grid, not
+     a cell inside it, so it never has to fight that row's
+     `grid-template-columns` for room the chart needs in full. */
+  padding-left: 10px;
+  /* The same ink `.am-bench-row.selected`'s own border already uses for
+     "this is the one" — moved down onto the expansion it now owns, rather
+     than a second, unrelated visual language invented for it. */
+  border-left: 2px solid var(--accent);
 }
 
 .am-bench-chart {
