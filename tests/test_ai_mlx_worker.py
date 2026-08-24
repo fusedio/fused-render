@@ -437,7 +437,7 @@ def _fake_mlx_vlm_with_config(monkeypatch, config=None, responses=()):
 
     def _apply_chat_template(processor, config, messages, num_images=0, **kw):
         calls.append({"processor": processor, "config": config, "messages": messages,
-                       "num_images": num_images})
+                       "num_images": num_images, "kwargs": kw})
         return "TEMPLATED-PROMPT-WITH-IMAGE-TOKENS"
 
     prompt_utils.apply_chat_template = _apply_chat_template
@@ -666,6 +666,12 @@ def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monk
     assert len(calls) == 1
     assert calls[0]["num_images"] == 1
     assert calls[0]["config"] == vlm_config
+    # mlx-vlm's own `apply_chat_template` closes the think block by default on
+    # any template that accepts `enable_thinking` (verified against the
+    # installed 0.6.15 source) — this worker must override that, the same
+    # thinking-stays-open behaviour the text path gets for free from the
+    # tokenizer's own template (see `_messages_to_prompt`'s docstring).
+    assert calls[0]["kwargs"].get("enable_thinking") is True
     assert frames[-1]["ok"] is True
 
 

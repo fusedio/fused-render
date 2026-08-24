@@ -505,9 +505,21 @@ def generate(body, write):
         # has no notion of that at all. `model_type` out of `config` is how
         # the helper picks this checkpoint's own message format
         # (`prompt_utils.MODEL_CONFIG`).
+        #
+        # **`enable_thinking=True`, explicitly** — mlx-vlm's helper (verified
+        # against the installed 0.6.15 source) defaults this to `False` on any
+        # template that accepts the kwarg, which closes the think block the
+        # same way `_messages_to_prompt`'s docstring says the OTHER helper
+        # must never be reached for: a reasoning model (Qwen3.5 and friends)
+        # would silently drop visible thinking the moment an image is
+        # attached, with no error and nothing for `playground/think.ts` to
+        # render. Passing it here keeps the image path's thinking behaviour
+        # identical to the text path's (an unset kwarg is simply unused by a
+        # template that never asks for it, so this is a no-op there).
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        text = apply_chat_template(processor, config, messages, num_images=len(images))
+        text = apply_chat_template(processor, config, messages,
+                                   num_images=len(images), enable_thinking=True)
     else:
         text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
     max_tokens = int(body.get("max_tokens") or 1024)
