@@ -23,9 +23,61 @@
 // `capabilityLabel`, sizes from `formatSize`, and the section order from the
 // Local tab's own `CAPABILITY_ORDER`. A second copy of any of those is how one
 // page comes to disagree with itself.
-import type { AiBenchmarkMetrics, AiBenchmarkRun } from "@platform/lib/api";
+import type { AiBenchmarkMetrics, AiBenchmarkRun, AiBenchmarkWorkload } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
+
+/** What a run under this capability actually DOES, in one sentence — server
+ *  fact, never a frontend guess (D483). The Benchmark tab's only other words
+ *  about the workload were the tab subtitle ("a fixed workload per
+ *  capability, timed on this machine"), which never said WHAT the fixed
+ *  work actually was; a reader had no way to learn that a text run decodes
+ *  128 tokens greedily, or that a speech run transcribes a 30-second tone,
+ *  without reading `ai/benchmark.py` themselves.
+ *
+ *  Built from `workload.params` — the SAME object the server sends, built by
+ *  `Workload.as_dict()` — never a second, hand-copied table of those facts
+ *  on this side: `tests/test_ai_benchmark_workload_note.py` pins every
+ *  param name used below against the server's own `WORKLOADS` so a new
+ *  param added there fails a test here rather than drifting silently, the
+ *  same class of guard D470 already gives `_IMAGE_WIRE_KEYS`/
+ *  `_TRANSCRIBE_WIRE_KEYS`.
+ *
+ *  **`prompt` and `texts` are read but never echoed verbatim** — a reader
+ *  comparing two models needs to know the prompt/texts are FIXED, not the
+ *  words themselves, which would turn one line into a paragraph for no
+ *  comparison anybody is making. `_CONTENT_PARAMS_WITH_NO_LITERAL_ECHO` in
+ *  that same drift test is the explicit, narrow exemption for those two —
+ *  every OTHER param name in `workload.params` must appear literally
+ *  somewhere in the strings this function returns.
+ *
+ *  Returns null for a capability this function does not know how to
+ *  describe (there is currently one for one — every capability with a
+ *  workload at all has a case below) rather than a generic fallback
+ *  sentence that would say nothing. */
+export function workloadNote(capability: string, workload: AiBenchmarkWorkload | null): string | null {
+  if (!workload) return null;
+  const p = workload.params;
+  const provenance = `${workload.name} · rev ${workload.revision}`;
+  switch (capability) {
+    case "text-generation":
+      return `Decodes ${p.maxTokens} tokens from a fixed prompt, greedy (temperature ${p.temperature}) — ${provenance}.`;
+    case "text-to-image":
+      // `steps` is deliberately ABSENT from `params` (ai/benchmark.py's own
+      // module docstring) — each model contributes its own catalog default,
+      // recorded per run rather than fixed here, and that omission is
+      // exactly the fact a reader comparing two image models needs, so it
+      // is said in words rather than silently leaving `steps` out of this
+      // sentence with no explanation.
+      return `Renders a fixed ${p.width}×${p.height} prompt at guidance ${p.guidance}, seed ${p.seed} — each model's own step count (not fixed here) is recorded per run — ${provenance}.`;
+    case "automatic-speech-recognition":
+      return `Transcribes ${p.audioSeconds}s of a generated ${p.toneHz} Hz tone at ${p.sampleRate} Hz — ${provenance}.`;
+    case "embeddings":
+      return `Encodes ${p.batch} fixed texts as one batch — ${provenance}.`;
+    default:
+      return null;
+  }
+}
 
 /** What an unmeasured number renders as. One constant, so a table cell, a
  *  summary line and a chart caption cannot each pick a different dash. */

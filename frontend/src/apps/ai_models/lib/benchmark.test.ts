@@ -45,6 +45,7 @@ import {
   stoppedNote,
   summaryLine,
   trendKind,
+  workloadNote,
   yAxisTicks,
   type MetricSpec,
   type ModelLatest,
@@ -1471,3 +1472,59 @@ describe("niceAxisMax", () => {
   });
 });
 
+
+describe("workloadNote", () => {
+  const workload = (params: Record<string, unknown>) => ({
+    name: "text-128-tokens",
+    revision: 1,
+    params,
+  });
+
+  it("names the tokens, greedy decode and provenance for text generation", () => {
+    const note = workloadNote(
+      "text-generation",
+      workload({ prompt: "…", maxTokens: 128, temperature: 0.0 }),
+    );
+    expect(note).toContain("128");
+    expect(note).toContain("greedy");
+    expect(note).toContain("text-128-tokens");
+    expect(note).toContain("rev 1");
+    // The prompt's own words are never echoed — see the function's own
+    // comment for why (a reader needs to know it is FIXED, not what it says).
+    expect(note).not.toContain("…");
+  });
+
+  it("names the size, guidance and seed for image generation, and says steps are per-model", () => {
+    const note = workloadNote(
+      "text-to-image",
+      workload({ prompt: "…", width: 512, height: 512, seed: 0, guidance: 4.0 }),
+    );
+    expect(note).toContain("512");
+    expect(note).toContain("guidance");
+    expect(note).toContain("seed");
+    // `steps` is deliberately absent from the server's own params — the
+    // note has to say THAT in words, not just quietly omit it.
+    expect(note?.toLowerCase()).toContain("step");
+  });
+
+  it("names the duration, tone and sample rate for speech", () => {
+    const note = workloadNote(
+      "automatic-speech-recognition",
+      workload({ audioSeconds: 30.0, sampleRate: 16000, toneHz: 440.0 }),
+    );
+    expect(note).toContain("30");
+    expect(note).toContain("440");
+    expect(note).toContain("16000");
+  });
+
+  it("names the batch size for embeddings, without echoing the texts themselves", () => {
+    const note = workloadNote("embeddings", workload({ texts: ["a", "b"], batch: 8 }));
+    expect(note).toContain("8");
+    expect(note).not.toContain("\"a\"");
+  });
+
+  it("is null with no workload, or for a capability it has no case for", () => {
+    expect(workloadNote("text-generation", null)).toBeNull();
+    expect(workloadNote("text-to-video", workload({}))).toBeNull();
+  });
+});

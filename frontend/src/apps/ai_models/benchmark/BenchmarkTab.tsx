@@ -113,6 +113,7 @@ import {
   shortModelName,
   stoppedNote,
   trendKind,
+  workloadNote,
   type LeaderboardRow,
   type MetricSpec,
   type ModelLatest,
@@ -139,6 +140,7 @@ import {
   runAiBenchmark,
   type AiBenchmarkMachine,
   type AiBenchmarkRun,
+  type AiBenchmarkWorkload,
   type AiRuntime,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -156,6 +158,16 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // render that reads `all` until `runs` and this land together out of the
   // same response.
   const [workloadCapabilities, setWorkloadCapabilities] = useState<string[]>([]);
+  // The fixed workload EACH capability above actually runs (D483) — what a
+  // Run press measures, in the server's own words: a fixed prompt and token
+  // budget, a generated tone of a fixed length, a fixed image size and
+  // guidance, eight fixed texts. Rendered by `CapabilitySection` as a single
+  // line under its own heading (`workloadNote`, below) rather than restated
+  // here as frontend prose that could silently drift from
+  // `fused_render/ai/benchmark.py`'s `WORKLOADS` table — see that function's
+  // own comment for why the drift is guarded by a Python-side test rather
+  // than trusted to stay in sync by hand.
+  const [workloads, setWorkloads] = useState<Record<string, AiBenchmarkWorkload>>({});
   // THIS machine, as the server sees it now — the caption the share card is
   // unshareable without ("62 tok/s" means nothing without the laptop that
   // produced it). Read from the history rather than from each run, because it
@@ -242,6 +254,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
         if (!alive) return;
         setRuns(history.runs);
         setWorkloadCapabilities(history.workloadCapabilities);
+        setWorkloads(history.workloads);
         setMachine(history.machine);
         setError(null);
       },
@@ -404,6 +417,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
       const history = await deleteAiBenchmarks([id]);
       setRuns(history.runs);
       setWorkloadCapabilities(history.workloadCapabilities);
+      setWorkloads(history.workloads);
       setMachine(history.machine);
     } catch (e) {
       setError((e as Error).message);
@@ -595,6 +609,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           metric={selectedMetric}
           metricSpecs={metricSpecs}
           onSelectMetric={setMetricParam}
+          workload={workloads[selected] ?? null}
           runs={capabilityRuns}
           machine={machine}
           ranked={ranked}
@@ -622,6 +637,7 @@ function CapabilitySection({
   metric,
   metricSpecs,
   onSelectMetric,
+  workload,
   runs,
   machine,
   ranked,
@@ -651,6 +667,12 @@ function CapabilitySection({
    *  picks WHICH card). Empty for a capability with nothing to select. */
   metricSpecs: MetricSpec[];
   onSelectMetric: (key: string) => void;
+  /** This capability's own fixed workload (D483) — null while the history
+   *  has not answered, or for a capability with none (`NO_WORKLOAD_YET`
+   *  server-side, video generation today, which draws no Run button either
+   *  and therefore has nothing here to caption). Rendered as `workloadNote`
+   *  below, once, under the section heading. */
+  workload: AiBenchmarkWorkload | null;
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
   /** This machine, for the share card's caption — null until the history has
@@ -707,6 +729,10 @@ function CapabilitySection({
   onRunAll: (capability: string, models: string[]) => void;
   onStopAll: (capability: string) => void;
 }) {
+  // What a Run press here actually measures, in one sentence (D483) — null
+  // for a capability `workloadNote` does not know how to describe, or
+  // while `workload` itself has not arrived yet.
+  const note = workloadNote(capability, workload);
   // The trend instrument's shape — `trendKind` (lib/benchmark.ts) decides
   // "none" / "single" / "trend" from how many of `trendRuns` actually
   // measured `metric`. Computed here, once, rather than inline in the JSX
@@ -847,6 +873,19 @@ function CapabilitySection({
           )}
         </div>
       </div>
+      {/* What a Run press on this capability actually DOES (D483) — the
+          page's only other words about this were the tab-level subtitle,
+          "a fixed workload per capability, timed on this machine", which
+          said THAT the work is fixed without ever saying what it is. One
+          plain line under the heading, not a disclosure: this is reference
+          material read once and skimmed past every other time, not
+          something worth a click to reveal, and a THIRD kind of expander
+          on this tab (after the row accordion and the archive's own
+          `<details>`) would be one expander too many for what is, at most,
+          a sentence. `.am-group-note` is the same "one caption under a
+          heading" idiom the empty-state notes on this very tab already
+          use, so a reader who has seen either reads this one for free. */}
+      {note && <p className="am-group-note">{note}</p>}
 
       {runs === null ? (
         <SkeletonLines rows={2} label={`Loading ${capabilityLabel(capability)} benchmarks`} />
