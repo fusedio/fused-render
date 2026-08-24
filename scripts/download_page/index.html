@@ -583,7 +583,7 @@
   .trouble-sec h2 { margin: 0 0 6px; }
   .trouble-sec > p { color: var(--ink-2); margin: 0 0 26px; max-width: 62ch; }
   .guide .steps code, .tfix code {
-    background: var(--code-bg);
+    background: var(--shot-bg);
     border: 1px solid var(--rule);
     border-radius: 5px;
     padding: 2px 6px;
@@ -591,7 +591,7 @@
   }
   .guide pre {
     position: relative;
-    background: var(--code-bg);
+    background: var(--shot-bg);
     border: 1px solid var(--rule);
     border-radius: 8px;
     padding: 10px 46px 10px 12px;
@@ -612,7 +612,11 @@
     gap: 22px;
     align-items: start;
   }
+  @media (max-width: 760px) {
+    .trouble-split { grid-template-columns: minmax(0, 1fr); }
+  }
   .trouble-list { display: grid; gap: 8px; align-content: start; }
+  .tfix ol { list-style: decimal; padding-left: 22px; display: grid; gap: 8px; }
   .terr {
     appearance: none;
     text-align: left;
@@ -637,7 +641,7 @@
   .terr.active {
     color: var(--ink);
     border-color: rgba(229, 255, 68, 0.45);
-    background: var(--accent-dim);
+    background: var(--accent-wash);
   }
   .trouble-detail {
     border: 1px solid var(--rule);
@@ -664,7 +668,7 @@
   /* Mini terminal window: shows what typing the fix actually looks like.
      Drawn in HTML so it stays crisp and on-palette — not a screenshot. */
   .term {
-    background: var(--code-bg);
+    background: var(--shot-bg);
     border: 1px solid var(--rule);
     border-radius: 10px;
     overflow: hidden;
@@ -1274,6 +1278,17 @@
 </div>
 
 <script>
+  // Resting CSS is the finished page; .anim only opts decorative motion in,
+  // and only for visitors who have not asked for reduced motion.
+  (function () {
+    var mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    var apply = function () {
+      document.documentElement.classList.toggle("anim", !mq.matches);
+    };
+    apply();
+    mq.addEventListener ? mq.addEventListener("change", apply) : mq.addListener(apply);
+  })();
+
   // ---- OS detection: one answer, shared by the hero CTA and the cards ----
   // Default to macOS when unsure; a mobile visitor keeps that default.
   var visitorOS = (function () {
