@@ -595,13 +595,28 @@ def _measure_text(model: str, workload: Workload, *, timed: bool,
                     count += 1
                     if row is not None:
                         # A cheap counter plus a string format, called once
-                        # PER TOKEN — never a network call, see
+                        # PER CHUNK — never a network call, see
                         # `_MeasurementRow`'s own docstring for why that is
                         # safe: the watcher thread, not this loop, decides how
                         # often that turns into an actual job-row write, so
                         # this cannot perturb `tokensPerSecond` no matter how
                         # fast or slow decode is.
-                        row.set_detail(f"Decoding — {count}/{max_tokens} tokens")
+                        #
+                        # `count` is a CHUNK count standing in for a token
+                        # count, and the two are not the same thing by
+                        # definition (AI-3: the authoritative token counts —
+                        # `outputTokens`/`tokensPerSecond` below — are always
+                        # the WORKER's own `done["tokens"]`, never derived
+                        # here). Verified 1:1 for every runner this capability
+                        # currently has (`llama_text.py`'s `create_completion`
+                        # stream and `mlx_lm.stream_generate` both yield
+                        # exactly one chunk per sampled token), so the label
+                        # is accurate today — but `min(...)` keeps a live
+                        # display honest even against a hypothetical future
+                        # runner whose chunks are not 1:1, rather than trusting
+                        # that invariant to hold forever un-enforced.
+                        row.set_detail(
+                            f"Decoding — {min(count, max_tokens)}/{max_tokens} tokens")
                 elif kind == "done":
                     done = event
             break

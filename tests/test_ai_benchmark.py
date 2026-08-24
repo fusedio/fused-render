@@ -1060,6 +1060,38 @@ def test_a_queued_transcription_does_not_rename_the_measurement_row(bench,
     assert ours[0]["state"] == "done"
 
 
+def test_the_displayed_token_count_never_exceeds_max_tokens(bench, monkeypatch):
+    """`count` counts CHUNK events as a live stand-in for a token count — true
+    1:1 for every runner this capability currently has, but a live display
+    should not trust that invariant to hold forever un-enforced. A runner
+    that ever emitted more chunks than the workload's own `maxTokens` (128)
+    must not display an impossible "140/128 tokens"."""
+    workload = benchmark.WORKLOADS[ai_registry.TEXT_GENERATION]
+    max_tokens = workload.params["maxTokens"]
+
+    def generate_text_warmup(model, body):
+        bench.advance(0.1)
+        yield {"type": "chunk", "text": "x"}
+        yield {"type": "done", "ok": True, "tokens": 1}
+
+    def generate_text_overshoot(model, body):
+        bench.advance(0.1)
+        for _ in range(max_tokens + 12):
+            yield {"type": "chunk", "text": "x"}
+        yield {"type": "done", "ok": True, "tokens": max_tokens + 12}
+
+    calls = {"n": 0}
+
+    def dispatch(model, body):
+        calls["n"] += 1
+        gen = generate_text_warmup if calls["n"] == 1 else generate_text_overshoot
+        return gen(model, body)
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", dispatch)
+    benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    detail = jobs.list_jobs()[0]["detail"]
+    assert detail == f"Decoding — {max_tokens}/{max_tokens} tokens"
+
 
 # -- cancellation is not a measurement ------------------------------------------
 #
