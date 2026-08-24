@@ -103,6 +103,30 @@ def test_the_ask_branch_disowns_a_leftover_session_before_sending(code):
     assert ask_branch.index(clear_run) < ask_branch.index("sendMessage(ASK)")
 
 
+def test_the_ask_branch_awaits_model_and_effort_detection_before_sending(code):
+    """`curModel()`/`curEffort()` (inside `sendMessage`'s `agent.py` "start"
+    call) rank `detectedModel`/`prefModel` above the DEFAULT_MODEL/
+    DEFAULT_EFFORT constants, but both are filled by ASYNC calls
+    (`action: "defaults"` and `GET /api/prefs`) that are only kicked off, never
+    awaited, at the top of the script. An ordinary visit never notices: a
+    person reads the page and types before their first send, which is normally
+    slower than either settling. The ASK branch has no person in between — it
+    sends the instant boot reaches it — so without awaiting the same two
+    promises first, every "Fix with AI" run would launch on the bare defaults,
+    silently ignoring the project's detected config and the user's
+    Preferences → Default model.
+    """
+    assert "const detectionReady = fused.runPython(AGENT, { action: \"defaults\"" in code
+    assert 'const prefsReady = fetch("/api/prefs")' in code
+    boot = code[code.rindex("(async () => {"):]
+    boot = boot[:boot.index("\n})();")]
+    ask_branch = boot[boot.index("if (ASK) {"):boot.index("} else if (session_id")]
+    assert "await Promise.all([detectionReady, prefsReady]);" in ask_branch
+    # And the wait happens BEFORE the send it exists to fix.
+    assert (ask_branch.index("await Promise.all([detectionReady, prefsReady]);")
+            < ask_branch.index("sendMessage(ASK)"))
+
+
 def test_the_ask_is_never_reported_to_the_model_as_an_app_param(source):
     """Same guarantee test_the_ask_is_stripped_from_a_framed_apps_own_params
     pins on the stripped-comments `code` fixture; re-checked on raw `source`

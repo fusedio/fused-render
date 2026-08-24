@@ -10868,7 +10868,15 @@ window.addEventListener("resize", closeSelPop);
 // lands, then snap to the real config — unless a pane param already pinned a
 // choice, which curModel/curEffort rank higher. Values are validated against
 // the selector's own lists so a config this build doesn't know stays fallback.
-fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((d) => {
+//
+// Captured into a named promise (`detectionReady`), not just fired: an ordinary
+// visit never awaits it (a person has to read the page and type before the
+// first `sendMessage`, which is normally slower than this settling), but the
+// "Fix with AI" boot branch below sends IMMEDIATELY with no human in between —
+// without awaiting this first, that automatic send would launch on
+// `DEFAULT_MODEL`/`DEFAULT_EFFORT` every time, silently ignoring the project's
+// detected config, racing a promise it never even looks at.
+const detectionReady = fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((d) => {
   if (d && d.model && MODELS.includes(d.model)) detectedModel = d.model;
   if (d && d.effort && EFFORTS.includes(d.effort)) detectedEffort = d.effort;
   if (detectedModel || detectedEffort) syncSelects();
@@ -10879,7 +10887,12 @@ fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((
 // whichever of the two arrives second simply re-renders the same ranking.
 // Validated against MODELS for the same reason detection is — a name this
 // build's selector doesn't have can't be shown as selected.
-fetch("/api/prefs").then((r) => r.json()).then((p) => {
+//
+// Captured into `prefsReady` for the same reason `detectionReady` is: the
+// "Fix with AI" boot branch awaits both before its automatic send, so it picks
+// up the user's Preferences → Default model exactly as a manually-sent first
+// message would.
+const prefsReady = fetch("/api/prefs").then((r) => r.json()).then((p) => {
   const m = p && p.model && p.model.default;
   if (m && MODELS.includes(m)) { prefModel = m; syncSelects(); }
 }).catch(() => {});
@@ -16943,6 +16956,21 @@ async function loadSnapshots() {
     fused.params.set("session_id", "", { history: "replace", default: "" });
     fused.params.set("run", "", { history: "replace", default: "" });
     enterChat();
+    // `detectionReady`/`prefsReady` (above) are already in flight by the time
+    // this runs (both are fired unconditionally near the top of the script),
+    // but an ordinary visit never has to WAIT for them — a person reads the
+    // page and types before their first send, which is normally slower than
+    // either settling. This send has no person in between: it fires the
+    // instant boot reaches this branch, which is faster than both, so without
+    // awaiting them here `curModel()`/`curEffort()` inside `sendMessage` would
+    // read `detectedModel`/`prefModel` while they are still "", and every
+    // "Fix with AI" run would launch on `DEFAULT_MODEL`/`DEFAULT_EFFORT`,
+    // silently ignoring the project's detected config and the user's
+    // Preferences → Default model. Both already swallow their own failures
+    // (`.catch(() => {})`), so this never rejects and never blocks on a
+    // network error — only on however long the (normally fast) local reads
+    // actually take.
+    await Promise.all([detectionReady, prefsReady]);
     sendMessage(ASK);
   } else if (session_id || run_id) {
     // A bare `run` param (frame died before the first poll saw the session id)
