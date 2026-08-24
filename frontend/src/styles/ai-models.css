@@ -1983,29 +1983,17 @@
   gap: 12px;
 }
 
-/* Share: the chart, this machine's hardware and the fused render mark as one
-   PNG (benchmark/shareCard.ts). The receipt beside it says WHERE the card went
-   — the three delivery channels (share sheet, clipboard, download) leave it in
-   three different places, and a silent success sends the reader hunting for a
-   file that is actually on their clipboard. */
-.am-bench-share {
-  display: inline-flex;
-  /* Same reason as `.am-bench-headtools` above: the button is a 26px box and
-     the receipt beside it is one line of 11px text, so their centres are what
-     line up. Baseline here put the note's text baseline on the button's
-     bottom edge, hanging the sentence low. */
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.am-bench-share-note {
-  color: var(--fg-muted);
-}
-
-.am-bench-share-error {
-  color: var(--error);
-}
+/* Share (D478): the chart, this machine's hardware and the fused render mark
+   as one PNG (benchmark/shareCard.ts). The receipt for where it went used to
+   be an inline note living right here, in `.am-bench-share` — a wrapper that
+   existed only to hold the button and that note side by side. It is gone now:
+   the receipt is a global toast (`ShareChartButton.tsx`'s file-top comment
+   has the measured layout-shift and heading-collision reasons it moved), and
+   with nothing left to sit beside, the button needs no wrapper of its own —
+   `<ShareChartButton>` renders the `<button>` directly into
+   `.am-bench-headtools`'s flex row, so this class and its two receipt-colour
+   rules (`.am-bench-share-note` / `.am-bench-share-error`) are deleted rather
+   than kept pointing at a wrapper that no longer exists. */
 
 .am-bench-metricsel {
   display: flex;
