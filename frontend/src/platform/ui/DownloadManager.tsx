@@ -326,13 +326,24 @@ export function JobRow({
     }
   };
 
+  // A "done" row is not drawn at all — success is meant to just vanish, and
+  // `jobs.py`'s `FINISHED_TTL_S` (3s) already clears the underlying record
+  // shortly after the first read, so this is a cosmetic head start rather
+  // than a second lifecycle. `error` and `cancelled` rows are NOT this: they
+  // stay visible until dismissed, because only a success disappears on its
+  // own — a failure or a cancellation is something the user needs to see.
+  if (job.state === "done") return null;
+
   return (
     <div className={"dl-row" + (job.stalled ? " is-stalled" : "")}>
       <div className="dl-row-head">
         <span className="dl-title" title={job.page || undefined}>
           {job.title}
         </span>
-        {job.model && <span className="dl-model">{job.model}</span>}
+        {/* Suppressed when it just repeats the title (`_start_resident`/`load`
+            set both `title` and `model` to the same model id) — otherwise a
+            model-load row would draw the model name twice. */}
+        {job.model && job.model !== job.title && <span className="dl-model">{job.model}</span>}
         {amount && <span className="dl-amount">{amount}</span>}
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>

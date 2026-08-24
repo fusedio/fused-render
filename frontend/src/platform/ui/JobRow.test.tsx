@@ -72,3 +72,32 @@ test("the title keeps its own text regardless of the model — model is a siblin
   expect(title).toHaveLength(1);
   expect(title[0].children).toEqual(["a red fox in snow"]);
 });
+
+test("a model equal to the title draws no .dl-model suffix — a load row must not repeat the model twice", () => {
+  // `_start_resident`/`load` (fused_render/ai/supervisor.py) set both `title`
+  // and `model` to the model id, so a load row's title IS the model — the
+  // suffix would otherwise repeat it verbatim right next to itself.
+  const root = renderRow({ ...BASE, title: "org/model", model: "org/model" });
+  expect(findAll(root, "dl-model")).toHaveLength(0);
+});
+
+test("a done job draws nothing at all — success clears itself from the corner", () => {
+  // PR #785: success used to be cleared server-side (supervisor._finish
+  // dismissed the row instantly), which raced every poller including
+  // fused_ai.py's own job watcher. The clearing now happens here instead —
+  // the server reports a real, observable "done" state and the frontend
+  // simply does not draw it. `error`/`cancelled` rows are NOT this: they
+  // must stay visible until the user dismisses them.
+  const tree = create(<JobRow job={{ ...BASE, state: "done" }} onChanged={() => {}} onPatch={() => {}} />).toJSON();
+  expect(tree).toBeNull();
+});
+
+test("an error job still draws — only a success clears itself", () => {
+  const root = renderRow({ ...BASE, state: "error", message: "boom" });
+  expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
+});
+
+test("a cancelled job still draws — only a success clears itself", () => {
+  const root = renderRow({ ...BASE, state: "cancelled" });
+  expect(findAll(root, "dl-row").length).toBeGreaterThan(0);
+});
