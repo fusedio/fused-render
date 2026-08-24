@@ -2201,8 +2201,10 @@ describe("the unread mark", () => {
     // unused constants for the next reader to wonder about.
     expect(VIEWS).not.toContain("const ICON_CLOCK");
     expect(VIEWS).not.toContain("const ICON_CHAT");
+    // The body is the row's ink and carries the row's caption (`data-hint`), so
+    // the element opens with an attribute now rather than closing immediately.
     expect(thread).toMatch(
-      /className="tasks-msg-body">\{firstLine\(m\.body\)[^}]*\}<\/span>/,
+      /className="tasks-msg-body" data-hint=\{m\.body\}>\s*\{firstLine\(m\.body\)[^}]*\}\s*<\/span>/,
     );
   });
 
@@ -4219,14 +4221,14 @@ describe("the folder chip on a row and a card", () => {
     expect(CARD).toMatch(
       /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
-    // The task's own name is still captioned on the row, so nothing is
-    // unreachable: the row's `title` is the task's own, and the chip's tooltip
-    // was never the only copy.
-    expect(ROW).toContain("title={task.title}");
+    // The task's own name is still captioned — on the TITLE now, not the row
+    // (Akshil: "the tooltip of title should only show up if I am on title
+    // text"), and through the instant panel rather than a native tooltip.
+    expect(ROW).toContain("data-hint={task.title}");
   });
 });
 
-describe("every caption on a row is a NATIVE title", () => {
+describe("every caption on a row is an INSTANT hint", () => {
   // Akshil, 2026-08-24, third pass — final. The custom `[data-tip]` panel had a
   // day here and was pulled the same day: it is positioned under its ELEMENT, so
   // on the list's first row it opened over the row below, captioning a different
@@ -4235,7 +4237,7 @@ describe("every caption on a row is a NATIVE title", () => {
   // right-edge anchor, a `:has()` suppression, a fast-delay list) to survive the
   // row at all. The browser's tooltip follows the POINTER — the one placement
   // that cannot caption the wrong row — and needs none of them.
-  it("uses no data-tip anywhere on the task row", () => {
+  it("uses no data-tip and no native title anywhere on the task row", () => {
     // The one legitimate data-tip user in this file is the status ring's unread
     // count (StatusIcon), which predates all of this — a fast tip on a COLUMN of
     // identical marks, where the 300ms guard is the point. Everything the row
@@ -4244,20 +4246,26 @@ describe("every caption on a row is a NATIVE title", () => {
     expect(row).not.toContain("data-tip={task.title}");
     expect(row).not.toContain('data-tip={tildePath');
     expect(row).not.toContain("data-tip={when.title}");
+    // …and no native `title` either: it is placed perfectly and waits four to
+    // five seconds on a session's first hover, which is the whole reason
+    // platform/lib/hints.ts exists.
+    expect(row).not.toContain("title={task.title}");
+    expect(row).not.toContain("title={when.title}");
     // …and the four support rules are gone from the stylesheet with it.
     expect(SCHEDULE_CSS).not.toContain('.tasks-row[data-tip]');
     expect(SCHEDULE_CSS).not.toContain('.tasks-row:has([data-tip]');
     expect(SCHEDULE_CSS).not.toContain('.tasks-row-time[data-tip]');
   });
 
-  it("gives every mark a title OF ITS OWN, which is the actual bug fix", () => {
+  it("gives every mark a hint OF ITS OWN, which is the actual bug fix", () => {
     // What fixed "hovering the folder chip shows the task title" was never the
-    // panel — it was each mark carrying its own title, so the browser stops
-    // walking up to the row's. That survives the panel's removal.
-    expect(ROW).toContain("title={tildePath(taskFile_, home)}");
-    expect(ROW).toContain("title={tildePath(task.project, home)}");
-    expect(ROW).toContain('title={`${shown} message${shown === 1 ? "" : "s"} in this task`}');
-    expect(ROW).toContain("title={when.title}");
+    // tooltip mechanism — it was each mark carrying its own caption, so the
+    // resolver stops at it instead of walking up. That survived two rewrites of
+    // the mechanism underneath.
+    expect(ROW).toContain("data-hint={tildePath(taskFile_, home)}");
+    expect(ROW).toContain("data-hint={tildePath(task.project, home)}");
+    expect(ROW).toContain('data-hint={`${shown} message${shown === 1 ? "" : "s"} in this task`}');
+    expect(ROW).toContain("data-hint={when.title}");
     // The stretched link stays silent so the row's own title is the one copy of
     // the caption; its accessible NAME is not a tooltip and stays.
     const link = ROW.slice(ROW.indexOf('className="tasks-rowlink"'));
@@ -4270,7 +4278,7 @@ describe("every caption on a row is a NATIVE title", () => {
     // is a stretched-link row like the task row, so without the lift the link
     // swallows the pointer and answers with the message BODY; and 11px of ink on
     // a padded row is a target a pointer misses above and below.
-    expect(VIEWS).toContain('className="tasks-msg-time" title={messageWhenTitle(m)}');
+    expect(VIEWS).toContain('className="tasks-msg-time" data-hint={messageWhenTitle(m)}');
     const time = block(TASKS_CSS, ".tasks-msg-time");
     expect(time).toContain("z-index: 2");
     expect(time).toContain("align-self: stretch");
@@ -4302,7 +4310,7 @@ describe("the message row's second time", () => {
     const from = VIEWS.indexOf('className={"tasks-msg"');
     const msgRow = VIEWS.slice(from, VIEWS.indexOf("{why && <p", from));
     expect(msgRow).toContain("{relativeWhen(m.at)}");
-    expect(msgRow).toContain("title={messageWhenTitle(m)}");
+    expect(msgRow).toContain("data-hint={messageWhenTitle(m)}");
     // The label and its rule are gone, and nothing renders the class.
     expect(VIEWS).not.toContain("tasks-msg-ran");
     expect(VIEWS).not.toContain("ranNote");
@@ -4446,7 +4454,7 @@ describe("the time a task row prints", () => {
     // A native `title` of its own — which is also what stops the browser walking
     // up to the ROW's title and answering with the task's name.
     expect(ROW).toMatch(
-      /<span className="tasks-row-time" title=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
+      /<span className="tasks-row-time" data-hint=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
     );
     // And the dash takes the column's own register rather than a class of its own —
     // it IS one of the column's values, not a different kind of thing.
@@ -7068,7 +7076,7 @@ describe("the file mark after a task's title", () => {
     // all, and a filename is prose. A column of prose is the crowding this
     // row has twice been trimmed for.
     expect(VIEWS).toContain('className="tasks-row-file"');
-    expect(VIEWS).toContain("title={tildePath(taskFile_, home)}");
+    expect(VIEWS).toContain("data-hint={tildePath(taskFile_, home)}");
     expect(VIEWS).toContain("{ICON_FILE}");
   });
 
@@ -7082,7 +7090,7 @@ describe("the file mark after a task's title", () => {
     // both would be claiming both.
     expect(VIEWS).toContain("{taskFile_ ? (");
     expect(VIEWS).toContain("{ICON_FOLDER}");
-    expect(VIEWS).toContain("title={tildePath(task.project, home)}");
+    expect(VIEWS).toContain("data-hint={tildePath(task.project, home)}");
     // The glyph really is gone from inside the chip: its body is the name alone.
     expect(VIEWS).toContain('const body = <span className="schedule-tv-id-name">{name}</span>;');
   });

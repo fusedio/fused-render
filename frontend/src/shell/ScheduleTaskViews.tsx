@@ -423,7 +423,7 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   const body = <span className="schedule-tv-id-name">{name}</span>;
   if (!onPick) {
     return (
-      <span className="schedule-tv-id" title={title || name}>{body}</span>
+      <span className="schedule-tv-id" data-hint={title || name}>{body}</span>
     );
   }
   // A SHIELD around the tag, and the tag back at its own size (Akshil,
@@ -449,10 +449,13 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   return (
     <span
       className="schedule-tv-id-shield"
-      /* Empty, not absent: an element with no `title` lets the browser look up
-         the tree, and what it finds is the row's — the task's name over a band
-         the reader is not pointing at anything in. */
-      title=""
+      /* EMPTY, not absent, and it is the whole reason the band says nothing: the
+         ROW carries `data-hint={task.title}`, and `hints.ts` resolves a hint by
+         walking up with `closest("[data-hint]")` — so without this the band
+         would answer with the task's name, which is exactly what it must not
+         do. An empty value is found first and resolves to no hint, the same job
+         `title=""` used to do against the native tooltip. */
+      data-hint=""
       onClick={(e) => e.stopPropagation()}
     >
       <button
@@ -466,7 +469,8 @@ export function IdentityChip({ name, title, onPick, active = false }: {
         // A NATIVE `title`, by owner call after the custom panel drew displaced
         // from the chip it captioned. Having one OF ITS OWN is also what stops
         // the walk up to the row's, which is what put the task's name here.
-        title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+        data-hint={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+        aria-label={active ? `${name} — showing only this folder, press to clear` : `Show only ${name}`}
         aria-pressed={active}
         onClick={(e) => {
           e.stopPropagation();
@@ -1980,19 +1984,17 @@ function TaskNode({
         // claimed (`is-inert` turns the cursor and the hover tint off).
         role={pressable && !href ? "button" : undefined}
         tabIndex={pressable && !href ? 0 : undefined}
-        /* NATIVE `title`, and so is every caption on this row (Akshil,
-           2026-08-24, third pass — final). The custom `[data-tip]` panel had a
-           turn here and was pulled the same day: it is an absolutely positioned
-           box under its element, so on the FIRST ROW of the list it opened over
-           the row below, a caption sitting on a different task's title — "it is
-           displaced completely from the title". The browser's tooltip follows
-           the POINTER, which is the one placement that cannot caption the wrong
-           row, and it costs no stacking rules, no anchoring rules and no
-           suppression rules. The delay is the price, accepted by the owner —
-           what mattered was the wrong-tooltip bug, and that was never the
-           delay: it was marks with no `title` of their own inheriting this one,
-           which each mark now stops by carrying its own. */
-        title={task.title}
+        /* NO CAPTION ON THE ROW ITSELF (Akshil, 2026-08-24: "the tooltip of
+           title should only show up if I am on title text"). It lived here
+           through three passes — as a native `title`, as the CSS panel, as the
+           instant one — and a caption on the row is a caption on ALL of it: the
+           id chip, the status ring, the empty space between the title and the
+           folder, and every band around a mark answered with the task's name
+           because `closest()` walks up to whatever the row is holding. The
+           TITLE is the thing whose text can be cut off and therefore the only
+           thing here worth captioning, so it carries its own (see
+           `.tasks-title` below). Every other mark on the row already carries the
+           one fact its own ink cannot show. */
         onClick={href ? undefined : pressable ? activate : undefined}
         onKeyDown={
           href
@@ -2171,7 +2173,18 @@ function TaskNode({
             the ring, the folder and the time all stay at full strength, because
             fading the whole row would say "archived", which is a different fact
             with a lane of its own. */}
-        <span className={"tasks-title" + (ahead ? " is-upcoming" : "")}>{label}</span>
+        {/* THE CAPTION LIVES HERE, not on the row (see the row's own note).
+            This element is the one on the row that ELLIPSISES — `overflow:
+            hidden` in tasks.css — so it is the one whose full text a reader can
+            actually be missing, which is the whole job of a tooltip. The panel
+            is `position: fixed` on <body>, so this element's own clipping has no
+            say in whether the caption is readable. */}
+        <span
+          className={"tasks-title" + (ahead ? " is-upcoming" : "")}
+          data-hint={task.title}
+        >
+          {label}
+        </span>
         {/* The one thing that follows the title (Akshil, 2026-08-23): a file
             mark, on the tasks whose target is a FILE rather than the folder.
             The row already says which project the work happened in; what it
@@ -2216,7 +2229,7 @@ function TaskNode({
         {taskFile_ ? (
           <span
             className="tasks-row-file"
-            title={tildePath(taskFile_, home)}
+            data-hint={tildePath(taskFile_, home)}
             aria-label={`This task is about ${basename(taskFile_)}`}
           >
             {ICON_FILE}
@@ -2224,7 +2237,7 @@ function TaskNode({
         ) : task.project ? (
           <span
             className="tasks-row-file"
-            title={tildePath(task.project, home)}
+            data-hint={tildePath(task.project, home)}
             aria-label={`This task is about the folder ${basename(task.project)}`}
           >
             {ICON_FOLDER}
@@ -2412,7 +2425,7 @@ function TaskNode({
                  the folder chip alone, every mark here without its own title
                  was borrowing the row's. Native, like everything on this row
                  (third pass — the custom panel drew displaced and was pulled). */
-              title={`${shown} message${shown === 1 ? "" : "s"} in this task`}
+              data-hint={`${shown} message${shown === 1 ? "" : "s"} in this task`}
             >
               {shown}
               <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
@@ -2447,11 +2460,11 @@ function TaskNode({
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
         {soon && (
-          <span className="tasks-row-next" title={soon.title}>
+          <span className="tasks-row-next" data-hint={soon.title}>
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" title={when.title}>
+        <span className="tasks-row-time" data-hint={when.title}>
           {when.text}
         </span>
       </div>
@@ -2492,7 +2505,6 @@ function TaskNode({
                   // that opens a modal keeps them here.
                   role={to ? undefined : "button"}
                   tabIndex={to ? undefined : 0}
-                  title={m.body}
                   // One handler for both ways in, the same rule the task row obeys:
                   // `pressMessage` opens the form on a message that has not gone out
                   // and the transcript turn on one that has.
@@ -2517,7 +2529,6 @@ function TaskNode({
                     <a
                       className="tasks-rowlink"
                       href={to}
-                      title={m.body}
                       aria-label={firstLine(m.body) || "(empty)"}
                       onClick={(e) => {
                         if (opensElsewhere(e)) return;
@@ -2546,7 +2557,13 @@ function TaskNode({
                       distinction the row's own words and time make anyway. The
                       id and the body lead now. */}
                   <IdChip id={m.message_id} kind="message" />
-                  <span className="tasks-msg-body">{firstLine(m.body) || "(empty)"}</span>
+                  {/* The message's own caption, on the text and not on the row —
+                      the same rule the task row above follows, and for the same
+                      reason: this is the element that ellipsises. The hint is the
+                      WHOLE body where the ink is only its first line. */}
+                  <span className="tasks-msg-body" data-hint={m.body}>
+                    {firstLine(m.body) || "(empty)"}
+                  </span>
                   {/* No dot after the body any more (2026-08-18). It trailed the
                       title here, and led the row in a reserved rail slot before
                       that, and both arrangements were arguing about WHERE to put a
@@ -2611,7 +2628,7 @@ function TaskNode({
                       (messageWhenTitle). The "ran 07:12 today" label that used to
                       sit beside this is gone: 2026-08-17, "I don't think I need this
                       as well, the RAND Today stuff". */}
-                  <span className="tasks-msg-time" title={messageWhenTitle(m)}>
+                  <span className="tasks-msg-time" data-hint={messageWhenTitle(m)}>
                     {relativeWhen(m.at)}
                   </span>
                 </div>
@@ -3188,7 +3205,11 @@ function TaskCard({
           (draggable ? " is-draggable" : "") +
           (isDragging ? " is-dragging" : "")
         }
-        title={task.title}
+        /* The Board card's own caption, on the same instant panel as the List's
+           (hints.ts). It is the same page and the same fact; a card that waited
+           four seconds while the rows beside it answered at once would read as a
+           different kind of thing. */
+        data-hint={task.title}
         draggable={draggable}
         onDragStart={(ev) => {
           // Some data is required for Firefox to start a drag at all; the task
