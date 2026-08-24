@@ -211,6 +211,32 @@
   overflow: hidden;
 }
 
+/* Shimmer while the thumb has something coming (an undecoded still, or a live
+   iframe not yet painted) — see the condition in AppPreviewCard.tsx. Same
+   `@keyframes skel-shimmer` as `.skel-bar` (explorer.css) — keyframe names are
+   global, so referencing it by name carries no cross-file dependency. Only
+   the gradient/size PROPERTIES are restated here rather than factored into a
+   shared class, because BOTH selectors below are compounded onto a box class
+   that already declares its own `background` (`.app-pcard-thumb`) — a shared
+   single-class rule would tie that class's specificity and the winner would
+   come down to stylesheet order. `.app-pcard-thumb.home-skel-body` is the
+   OTHER consumer: Home's Fused-Apps skeleton row (Home.tsx SkeletonCard)
+   reuses `.app-pcard-thumb` itself as its thumb well, not a separate overlay
+   like `.app-pcard-skel` — it has nothing layered on top of it, so it only
+   needs the background, not the `position`/`pointer-events` below. */
+.app-pcard-skel,
+.app-pcard-thumb.home-skel-body {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.app-pcard-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 .app-pcard-thumb iframe {
   position: absolute;
   top: 0;

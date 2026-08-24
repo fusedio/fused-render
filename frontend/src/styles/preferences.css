@@ -365,10 +365,123 @@
   min-width: 0;
 }
 
+/* The terminal empty state, close to its original one-line weight —
+   deliberately NOT a card-height well. An earlier version reserved a full
+   card's height here (`min-height` tied to a derived `--home-card-h`), on the
+   theory that the terminal state should hold the same box the skeleton row
+   held. In practice that turned "Recent files" on a fresh install into a
+   giant dashed box with one line of text adrift in the middle — worse than
+   the transient shift it replaced, because THIS state is permanent, not a
+   loading flicker. The skeleton's job was to stop a fetch-in-flight from
+   resizing the page; a `[]` result is not in flight, so it doesn't need the
+   same treatment. Padding only, no border, no min-height: enough breathing
+   room to not read as a stray line of text, nowhere near a card's worth of
+   empty box. */
+.home-section .fh-empty {
+  padding: 20px 0;
+  text-align: center;
+}
+
 .fh-empty {
   margin: 0;
   font-size: 13.5px;
   color: var(--fg-muted);
+}
+
+/* Section skeleton row (Home.tsx SkeletonCard): reuses the real card's own
+   class (`.fhb-card` for the Claude Sessions variant; `.app-pcard`, apps.css,
+   for the Fused Apps variant) for its box model — padding, border, radius,
+   head/thumb geometry — so the skeleton's height tracks whatever the real
+   card's CSS says, automatically, rather than a hand-measured constant that
+   silently goes stale the next time that CSS changes. These rules only
+   neutralise the hover treatment those classes carry, since a skeleton
+   `<span>` is decoration, not a link.
+   COMPOUND selectors, not `.home-skel-card:hover` alone: a bare compound of
+   one class + `:hover` has the same specificity as `.fhb-card:hover` /
+   `.app-pcard:hover` themselves, so which one wins would depend on which
+   rule happens to sit later in the built stylesheet — pairing the real card
+   class into the selector (three components, not two) wins outright,
+   independent of source order. The two variants revert to different values
+   because their unhovered base states differ: `.fhb-card` carries a resting
+   box-shadow, `.app-pcard` carries none. */
+.home-skel-card {
+  cursor: default;
+}
+
+.fhb-card.home-skel-card:hover {
+  border-color: var(--border);
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  transform: none;
+}
+
+.app-pcard.home-skel-card:hover {
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+}
+
+/* `.fh-card-text` normally shrink-wraps its real name/path text; the skeleton
+   bars have nothing to shrink-to-fit against, so this grows the column to
+   take the rest of the head row instead of collapsing near 0. Only the
+   "folder" variant needs it — the "app" variant's title/meta bars sit
+   directly in `.app-pcard-body`, a column flex child that already stretches
+   to the card's full width. */
+.home-skel-text {
+  flex: 1 1 auto;
+}
+
+/* The two shimmer bars in a skeleton head — reuses `.skel-bar` (explorer.css)
+   as-is; only the widths are per-instance (inline style in Home.tsx). */
+
+/* Shimmer wash for a whole panel — same gradient/animation recipe as
+   `.skel-bar`'s (explorer.css: the shared `@keyframes skel-shimmer` is
+   referenced by name, not restated — keyframe names are global, so there's no
+   file-load-order issue there). The gradient/size PROPERTIES are restated per
+   consumer rather than factored into one shared class, because each consumer
+   is compounded onto a real box class that already sets its own `background`
+   (`.fhb-thumb`, `.fhb-sheet-skel-body`'s sibling `.fhb-sheet`, `.fhb-preview`
+   in spirit) — a shared single-class rule would tie for specificity with that
+   base rule and the winner would come down to stylesheet order instead of
+   this rule. `.fhb-sheet-skel-body` and `.fhb-preview-skel` are already their
+   own standalone classes (see below) so they don't need the compound form. */
+.fhb-thumb.home-skel-body,
+.fhb-sheet-skel-body,
+.fhb-preview-skel {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+/* Light theme repaints `.fhb-thumb`'s background (below, ~line 928) with a
+   selector one class heavier than `.fhb-thumb.home-skel-body` above
+   (`:root[data-theme="light"]` + `.fhb-thumb` vs. two plain classes) — so in
+   light theme, unpatched, it silently won and the skeleton body was a flat
+   grey box with no shimmer at all. This repaints the shimmer back on top,
+   at higher specificity than both. */
+:root[data-theme="light"] .fhb-thumb.home-skel-body {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+/* The folder-stack skeleton's front-sheet body: same slot `.fhb-sheet-d0
+   .fhb-preview` fills once settled (flex-grown, full width, a 60px floor) —
+   stated on its own class rather than reusing `.fhb-preview` itself, which
+   would hit the same cross-file specificity problem `.home-skel-body` avoids
+   above. */
+.fhb-sheet-skel-body {
+  flex: 1 1 auto;
+  min-height: 60px;
+  width: 100%;
+}
+
+/* `LivePreview`'s shimmer while `!started || !loaded` (BookmarkCards.tsx):
+   fills the same absolutely-positioned box the iframe does, and stays out of
+   the card's click target like every other decoration in `.fhb-preview`. */
+.fhb-preview-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 
 /* Search results: a flat scannable list (relevance order), not the launcher
