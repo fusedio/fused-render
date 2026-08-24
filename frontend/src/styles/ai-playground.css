@@ -2357,8 +2357,17 @@ a.pg-hero-repo:hover {
   display: flex;
   gap: 18px;
   overflow-x: auto;
-  /* Room for the scrollbar so it doesn't sit on the cards' bottom edge. */
-  padding-bottom: 6px;
+  /* `overflow-x: auto` clips the BLOCK axis too, and .app-pcard's hover lifts
+   * the card 1px and casts an 18px-blur shadow — with the cards flush against
+   * this box the lifted top border reads as sliced off. So the strip carries
+   * padding on every side that the hover state can spill into, and negative
+   * margins hand the same amount back to the layout: the cards sit exactly
+   * where they did, only the clipping box grew. The side inset is 16px, which
+   * is precisely the slack .pg-apps' `100% - 32px` leaves, so the stage never
+   * gains a horizontal scrollbar. Bottom nets out at the 6px that keeps the
+   * scrollbar off the cards' edge. */
+  padding: 16px 16px 20px;
+  margin: -16px -16px -14px;
 }
 .pg-apps-row .app-pcard {
   flex: 0 0 300px;
