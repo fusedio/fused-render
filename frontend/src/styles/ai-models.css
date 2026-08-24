@@ -2153,7 +2153,11 @@
 
 /* -- Run all: one queue per capability, driven by BenchmarkTab's runAllFor --
    Sits between the two chart instruments and the ledger rows it drives —
-   right above `.am-bench-rows`, since that is exactly the list it acts on. */
+   right above `.am-bench-rows`, since that is exactly the list it acts on.
+   The full `--am-gap-head` above stays: that break is what separates this
+   instrument from the comparison chart, and is still owed. What changes
+   (D477) is BELOW: see `.am-bench-runall + .am-bench-rows` — the button and
+   the rows it drives now close ranks into one block. */
 .am-bench-runall {
   display: flex;
   flex-wrap: wrap;
@@ -2161,6 +2165,50 @@
   gap: 10px;
   margin-top: var(--am-gap-head);
   font-size: 12px;
+}
+
+/* The idle Run All button (D477) — see the long comment in BenchmarkTab.tsx
+   above this button's JSX for the full rationale; this is just the chrome
+   that carries it out. `--fg` border and text, transparent plate: no accent
+   (that ink is spoken for as chart/value/selection data on this tab) and no
+   fill (reserved by the D475 precedent for the one truly consequential
+   action beside a cheaper one — here Run All has no cheaper sibling to sit
+   next to, but it IS the single most expensive press on this page, so it
+   gets the same restraint a fill would violate). Glyph then label, one
+   inline-flex row, so `MenuIcons.play` sits on the same baseline as the
+   text rather than floating above or below it. */
+.am-bench-runall-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Hover/focus wash in `--fg` at the same 12% a Try button's accent hover
+   uses (`.am-card-try:hover` in this file's Models-tab neighbour) — the
+   fill stays a wash, never solid, for the identical reason: a solid --fg
+   fill here would BECOME the filled plate the comment above just rejected.
+   `disabled` gets no hover at all; `busy`'s title already explains why. */
+.am-bench-runall-btn:hover:not(:disabled),
+.am-bench-runall-btn:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.am-bench-runall-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.am-bench-runall-btn svg {
+  flex: none;
 }
 
 .am-bench-runall-progress {
@@ -2185,6 +2233,17 @@
   flex-direction: column;
   gap: 6px;
   margin-top: var(--am-gap-head);
+}
+
+/* D477: when a Run All button precedes the rows, it IS that list's control
+   — the two should read as one block, not two instruments sharing a gap
+   that belongs to neither. Collapse `.am-bench-rows`'s own `--am-gap-head`
+   down to the same 6px the rows already use between each other, but only
+   when the button is actually there: `runnable.length === 0` still hides
+   `.am-bench-runall` entirely, and in that case the rows keep their full
+   head gap under the chart above, same as always. */
+.am-bench-runall + .am-bench-rows {
+  margin-top: 6px;
 }
 
 /* One model, one line: who, the bar, the number, the button. Compacted from a

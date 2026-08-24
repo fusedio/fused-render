@@ -840,7 +840,12 @@ function CapabilitySection({
               press does (`BenchmarkTab`'s `runAllFor`), so a queued run and a
               manual one are indistinguishable to the server and to the
               history. Sits between the two chart instruments and the ledger
-              rows it drives, since it acts on exactly that list.
+              rows it drives, since it acts on exactly that list — and now
+              (D477) sits FLUSH against those rows in the markup's own order
+              (see `.am-bench-runall + .am-bench-rows` in ai-models.css): the
+              button is that list's control, not a third, orphaned instrument
+              floating in the gap the chart and the rows each already own a
+              margin into.
 
               **The label states the true cost up front** — "Run all 6
               models" — rather than reading like a single cheap click; each
@@ -849,7 +854,32 @@ function CapabilitySection({
               repeated downloads-from-disk. `runnable.length === 0` hides the
               button entirely rather than disabling it — there is nothing
               honest for a Run All button to say when every model is
-              already `gone`. */}
+              already `gone`.
+
+              **Idle branch is `--fg`-outlined, glyph-led, plain text (D477)**
+              — not the accent outline `.am-card-try` wears on the Models tab,
+              and not a filled plate. Accent on THIS tab is already spoken
+              for as DATA ink: the comparison chart's bars, the metric values
+              in each row, and the selected row's ring all draw in it, so an
+              accent-outlined button sitting between the chart and the
+              selection would read as one more lime thing competing to be the
+              current selection rather than a control. `--fg` says "control",
+              not "selected" or "value", and stays true everywhere on the
+              page. A filled plate was rejected on the D475 precedent this
+              tab does not get to except itself from: filled is the loudest
+              mark this page can make, reserved for the ONE genuinely
+              consequential action beside a cheaper one (Load, filled, next
+              to Try, outlined, on the Models tab) — and Run All is minutes
+              of compute across N cold loads and several GB re-read from
+              disk, the single most expensive thing a press can start here.
+              It should be findable, which the border and full-opacity text
+              do; it should not be the loudest thing on the page competing
+              with the chart above it. The glyph is `MenuIcons.play`, the
+              exact triangle every row below already wears on its own Run
+              button — "run all" is that same act N times over, so it borrows
+              the row's own vocabulary instead of inventing a second one; a
+              bare word here would say the same thing in a different
+              language than the list it operates on. */}
           {runnable.length > 0 && (
             <div className="am-bench-runall">
               {status === "running" && queue ? (
@@ -873,7 +903,7 @@ function CapabilitySection({
                 <>
                   <button
                     type="button"
-                    className="cc-btn"
+                    className="am-bench-runall-btn"
                     disabled={busy}
                     title={
                       busy
@@ -882,6 +912,7 @@ function CapabilitySection({
                     }
                     onClick={() => onRunAll(capability, runnable)}
                   >
+                    {MenuIcons.play}
                     Run all {runnable.length} models
                   </button>
                   {/* The one category Run All silently leaves out — say so,
