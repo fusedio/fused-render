@@ -1294,6 +1294,42 @@
     }
   }
 
+  // Tell every same-origin ancestor that owns a Claude sidebar to open it primed
+  // with a prompt, and send it. Same shape and the same climbing/try-catch
+  // discipline as noteRevSelected just above, for the same reasons (D3/D4: a
+  // global on the ancestor, not a postMessage) — underscore-prefixed because this
+  // too is plumbing between the built-in git template and the shell that ships
+  // with it, NOT a documented `fused.*` contract.
+  //
+  // Deliberately not a param, and not something this frame can do itself: the
+  // git view has no chat of its own, only a working tree, so fixing an error it
+  // hit means handing the ask to whichever ancestor is showing (or can show) the
+  // Claude sidebar — a different iframe entirely, on a different template, with
+  // its own transcript and its own file/shell access. `fused.params.set` would
+  // write the ancestor's URL, and the address bar is the one place this text must
+  // never appear: it is one failed command's error message, not a page's
+  // identity, and a bookmark of it would replay a stale error at whoever opened
+  // it later. `_file` and `chat_only=1` already live on the claude iframe's src
+  // alone for exactly that "never in the address bar" reason (see
+  // noteRevSelected above `_rev`); this prompt rides the same way, as a fourth
+  // param of that kind, delivered through the ancestor rather than the src this
+  // frame builds, because it is this frame's ancestor that owns that iframe.
+  function noteAskClaude(text) {
+    const value = typeof text === "string" && text ? text : null;
+    if (!value) return;
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedClaudeAsk === "function") t._fusedClaudeAsk(value);
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+  }
+
   // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
   // Most .py files run on the app's own interpreter and install nothing. A file
@@ -4294,6 +4330,15 @@
   // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
   // does nothing.
   window._fusedSelectRev = noteRevSelected;
+
+  // The git sidebar's "fix this error" hop, the same internal plumbing as
+  // `_fusedSelectRev` just above and for the same reason it is not on
+  // `window.fused`: the built-in git template calls this with the prompt it
+  // built for a failed operation, and the shell (if it has a Claude sidebar to
+  // drive) opens it primed with that text and sends it. Not present in the
+  // hosted runtime, same as `_fusedSelectRev` — a window with no `_fusedClaudeAsk`
+  // hook is simply not a shell that can open one, and the call does nothing.
+  window._fusedAskClaude = noteAskClaude;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).

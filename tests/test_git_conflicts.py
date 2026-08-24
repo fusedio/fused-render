@@ -284,8 +284,12 @@ def test_view_destructive_set_mirrors_ops_module(ops):
 def test_view_asks_sonnet_for_a_resolution():
     src = _view_source()
     assert 'const RESOLVE_MODEL = "claude-sonnet-5"' in src
-    # And it is the model actually passed, not just declared.
-    assert src.count("model: RESOLVE_MODEL") == 2      # conflict + error advice
+    # And it is the model actually passed, not just declared. The failed-
+    # operation case used to be a second `fused.ai` call here too (advice-only,
+    # same model) — it is gone now that a failed operation hands its error to
+    # the Claude sidebar instead of asking the model from this pane (see
+    # `askClaudeOnError`), so conflict resolution is the only caller left.
+    assert src.count("model: RESOLVE_MODEL") == 1
 
 
 def test_view_reads_conflicts_on_its_own_channel():
@@ -330,6 +334,55 @@ def test_view_offers_the_button_only_on_a_conflicted_row():
     src = _view_source()
     assert "if (change.conflicted) {" in src
     assert "resolveButton(path," in src
+
+
+def test_failed_operation_toast_offers_fix_with_ai_not_explain():
+    """The toast's old advice-only button ("Explain") is gone; a failed
+    operation now hands off to the Claude sidebar instead of asking this pane's
+    own AI for advice (see the module docstring's "two situations" -> "one
+    situation" note above `RESOLVE_MODEL`)."""
+    src = _view_source()
+    assert '"Fix with AI"' in src
+    assert '"Explain"' not in src
+    assert "async function adviseOnError" not in src
+    assert "ADVISE_SYSTEM" not in src
+    # The button's click handler is the new function, not the deleted one.
+    toast = src[src.index("if (!flash.ok) {"):]
+    toast = toast[:toast.index("\n    }")]
+    assert "onClick: () => askClaudeOnError(flash.message)" in toast
+
+
+def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
+    """`askClaudeOnError` reuses exactly the facts the old advice-only prompt
+    assembled (the error, plus branch/upstream/ahead-behind/dirty) — only the
+    ask at the end changed from "what does this mean" to "explain and fix it" —
+    and hands them to the ancestor-window hop instead of calling `fused.ai`
+    itself."""
+    src = _view_source()
+    fn = src[src.index("function askClaudeOnError(message)"):]
+    fn = fn[:fn.index("\n}")]
+    assert "repo.branch" in fn
+    assert "repo.upstream" in fn
+    assert "repo.ahead" in fn and "repo.behind" in fn
+    assert "repo.dirty" in fn
+    # It names the repository/working directory the error is about.
+    assert " file " in fn or "+ file +" in fn or "file +" in fn
+    # It asks for a fix, not just an explanation.
+    assert "fix it" in fn
+    # And it leaves via the ancestor hop, guarded like every other call to it.
+    assert 'typeof window._fusedAskClaude === "function"' in fn
+    assert "window._fusedAskClaude(" in fn
+    # It must NOT call fused.ai itself — that is the whole point of the change.
+    assert "fused.ai(" not in fn
+
+
+def test_the_claude_ask_reaches_the_shell_through_the_ancestor_global():
+    """Same idiom as `_fusedSelectRev` (D3/D4): an ancestor-window global, not a
+    postMessage, and not a param — see test_the_commit_reaches_the_shell_
+    through_the_ancestor_global in test_git_scope.py for the `_rev` sibling of
+    this hop."""
+    src = _view_source()
+    assert src.count("window._fusedAskClaude(") == 1
 
 
 def test_resolve_never_stages_or_commits(ops):
