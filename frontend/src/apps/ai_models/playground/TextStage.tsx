@@ -153,7 +153,7 @@ export function TextStage({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(true);
 
   const [temperature, setTemperature] = useState(() =>
     numParam("temp", DEFAULTS.temperature, ...LIMITS.temperature),

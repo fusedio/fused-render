@@ -173,7 +173,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ranked, setRanked] = useState<Ranked[] | null>(null);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(true);
 
   // The run itself is one quick POST, but the cold-start watch loop is not —
   // leaving the stage must stop it, same as the chat stage's rule.

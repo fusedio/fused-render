@@ -268,7 +268,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const [error, setError] = useState<string | null>(null);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewLive, setPreviewLive] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(true);
 
   // Can THIS model be handed a base image at all (AI-9f)? The server's own
   // answer, read through imageInput.ts so the row that is drawn and the field

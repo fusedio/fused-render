@@ -165,7 +165,7 @@ export function VideoStage({
   );
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(true);
   const [run, setRun] = useState<Run | null>(null);
   const [gallery, setGallery] = useState<VideoStarted[]>([]);
   const [error, setError] = useState<string | null>(null);

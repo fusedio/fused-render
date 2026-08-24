@@ -57,7 +57,7 @@ export function TranscribeStage({ model }: { model: string }) {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(true);
 
   const [task, setTask] = useState<"transcribe" | "translate">(() =>
     readParam("task") === "translate" ? "translate" : "transcribe",
