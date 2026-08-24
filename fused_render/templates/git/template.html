@@ -3429,14 +3429,21 @@ function render(data, stashes, diff) {
   if (flash) {
     const note = el("div", { className: "flash" + (flash.ok ? "" : " bad") },
                     el("span", { textContent: flash.message }));
-    if (!flash.ok) {
+    if (!flash.ok && resolving === null && proposal === null && !aiBusy) {
       /* A LABELLED button, deliberately not the bare sparkle: the commit box
          has a sparkle that writes the message, and an identical icon here sent
          a user expecting a commit message into the Claude sidebar instead.
-         Not gated on `resolving`/`proposal`/`aiBusy` the way `resolveButton`
-         is — those track THIS pane's own in-flight AI call, and this button
-         makes none; it only opens a different iframe, which has no busy state
-         of this pane's to collide with. */
+         GATED on `resolving`/`proposal`/`aiBusy`, same as `resolveButton` —
+         and for a stronger reason than "this button makes another AI call",
+         which was this comment's original (wrong) justification for dropping
+         the gate. This button makes NO call of its own, but `askClaudeOnError`
+         switches the sidebar to `claude`, which UNMOUNTS this entire git
+         iframe — document, module state and all. Showing it while a conflict
+         resolution is streaming, or a proposal is sitting unreviewed, would
+         let one click throw both away with no warning: the generation simply
+         stops (nothing left running it) and the proposal is gone, not merely
+         hidden. The user finishes or dismisses that first, the same as
+         `resolveButton` already requires. */
       note.append(action("ask-claude", [icon(SPARK_GLYPH, 14), "Fix with AI"], {
         className: "ai",
         label: "Open Claude to explain and fix this error",

@@ -347,9 +347,22 @@ def test_failed_operation_toast_offers_fix_with_ai_not_explain():
     assert "async function adviseOnError" not in src
     assert "ADVISE_SYSTEM" not in src
     # The button's click handler is the new function, not the deleted one.
-    toast = src[src.index("if (!flash.ok) {"):]
+    toast = src[src.index("if (!flash.ok && resolving === null"):]
     toast = toast[:toast.index("\n    }")]
     assert "onClick: () => askClaudeOnError(flash.message)" in toast
+
+
+def test_the_fix_with_ai_button_stays_gated_on_this_panes_own_ai_state():
+    """review #804 finding 7: the button used to drop this gate on the theory
+    that it makes no AI call of its own — true, but beside the point.
+    `askClaudeOnError` switches the sidebar to `claude`, which UNMOUNTS this
+    entire git iframe, and an unmount throws away a conflict resolution
+    streaming in `resolving`/`streamed` and any `proposal` sitting unreviewed
+    with no warning at all — the exact work `resolveButton`'s own gate exists
+    to protect. Restored to the same three-part gate `resolveButton` uses."""
+    src = _view_source()
+    assert ("if (!flash.ok && resolving === null && proposal === null "
+            "&& !aiBusy) {") in src
 
 
 def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
