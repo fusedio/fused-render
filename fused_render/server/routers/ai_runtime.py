@@ -80,10 +80,11 @@ _MAX_SEED = 2**31 - 1
 _IMAGE_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
 # Bounds for a video request. Narrower canvas than an image's — `w*h <=
-# 768*1344` — chosen against H3's FL2VA checkpoint, the shape it was
-# benchmarked at; a caller asking for more gets clamped down to it rather
-# than an OOM minutes into a render. Shared across every video runner: this
-# is a safety rail the APP chose, not a fact about either engine's weights
+# 768*1344` — originally chosen against the FL2VA checkpoint of the
+# since-dropped `h3-video` runner (D468), the shape it was benchmarked at;
+# a caller asking for more gets clamped down to it rather than an OOM
+# minutes into a render. Kept unchanged on that runner's removal because it
+# is a safety rail the APP chose, not a fact about any engine's weights
 # (unlike the frame grid and the canvas/step DEFAULTS below, which are —
 # see `registry.VideoTraits`). `frames` snaps to the SERVING engine's own
 # valid grid (`_snap_frames`, given that engine's traits), because a value
@@ -96,27 +97,26 @@ _MAX_VIDEO_PIXELS = 768 * 1344
 #: private pair here, because `catalog.py`'s video-traits payload for the
 #: Playground's frame slider needs the identical window — a slider computed
 #: from one and a server clamped by the other would disagree with itself
-#: exactly the way Task 5 left the client disagreeing with H3's grid.
-#: Originally VERIFIED against h3's built binary (`h3_align_frame_count`/
-#: `h3_valid_params`: `n=0` — 5 frames, one VAE chunk with no decoder
-#: history — is refused at generation time with "generation requires at
-#: least one trained 22-frame decoder chunk", and anything aligning above
-#: 362 is refused as outside "the released 5..362 range") — LTX has no
-#: compiled binary to refuse a value outright, so the same `[1, 21]` window
-#: is carried over as the app's own bound on its grid too (1 + 8*21 = 169
-#: frames, ~7s at 24fps), rather than inventing an unrelated ceiling with no
+#: exactly the way Task 5 left the client disagreeing with the engine's
+#: grid. The window was originally VERIFIED against the built `h3` binary of
+#: the since-dropped `h3-video` runner (D468), which refused `n=0` and
+#: anything aligning past its released 5..362 range outright. LTX has no
+#: compiled binary to refuse a value, so the same `[1, 21]` window is
+#: carried over as the app's own bound on its grid (1 + 8*21 = 169 frames,
+#: ~7s at 24fps), rather than inventing an unrelated ceiling with no
 #: measurement behind it.
 _MIN_FRAMES_N, _MAX_FRAMES_N = registry.MIN_VIDEO_FRAMES_N, registry.MAX_VIDEO_FRAMES_N
-#: [2, 1000] is h3's own hard floor/ceiling ("denoising steps must be in
-#: [2, 1000]", h3.c `h3_valid_params`) — 1 step is not merely slow, it is a
-#: request the binary refuses outright. LTX has no such floor (`stage1_steps`
-#: is a plain slice of a fixed sigma schedule — see `ltx_video/worker.py`),
-#: but a value this low is not a meaningfully faster render on either
-#: engine, so the shared floor stays rather than becoming a fourth
-#: per-engine trait. The app's own ceiling (50) is ours to pick either way.
+#: The floor of 2 came from the since-dropped `h3-video` runner's own hard
+#: range ("denoising steps must be in [2, 1000]", D468) — for that binary 1
+#: step was not merely slow, it was refused outright. LTX has no such floor
+#: (`stage1_steps` is a plain slice of a fixed sigma schedule — see
+#: `ltx_video/worker.py`), but a value this low is not a meaningfully faster
+#: render, so the floor stays as the app's own rather than being relaxed to
+#: 1 on that runner's removal. The ceiling (50) is ours to pick either way.
 _MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
-# No `guidance` here — H3 is CFG-distilled and takes no such parameter. A
-# caller passing one hits `_reject_unknown` like any other unsupported option.
+# No `guidance` here — the shipping video engine is CFG-distilled and takes
+# no such parameter. A caller passing one hits `_reject_unknown` like any
+# other unsupported option.
 _VIDEO_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "frames", "steps", "seed"})
 _TRANSCRIBE_OPTIONS = frozenset({
@@ -337,8 +337,8 @@ def _videos_dir() -> str:
 
 
 def _video_side(value, default: int) -> int:
-    """One dimension, clamped to H3's range and snapped DOWN to a multiple of
-    32 — `_side`'s rule, with video's own bounds."""
+    """One dimension, clamped to the video range and snapped DOWN to a
+    multiple of 32 — `_side`'s rule, with video's own bounds."""
     try:
         side = int(value)
     except (TypeError, ValueError):
@@ -371,22 +371,21 @@ def _snap_frames(value, traits: "registry.VideoTraits") -> int:
     ACTUALLY RENDER for `value` — rounded UP to the next grid point, never
     to the nearest one.
 
-    **Per-runner since Task 5 of the LTX-2.3 plan** — this used to be h3's
-    grid, `5 + 17n`, hardcoded, because h3-video was the only video runner
-    there was. `traits` now carries whichever engine will actually serve the
-    request (`registry.video_traits_for`, resolved by the caller), and the
-    arithmetic is unchanged: `value = max(traits.frames_base, requested)`,
-    then rounded up to the next `frames_base + frames_step * n`. Matching the
-    direction matters, not only the grid — h3 aligns UP (`h3_align_frame_
-    count`, h3_host.c, VERIFIED against the built binary), and a server that
-    rounded to nearest would report a smaller `frames` than the render it
-    just started for any request whose distance-below its nearest grid point
-    is shorter than its distance to the one above (e.g. 100 renders as 107 on
-    h3's grid, not the "closer" 90 a nearest-rounding server would have
-    claimed). LTX has no compiled binary to align against, but `8n + 1` is the
-    grid its own upstream CLI defaults to, and rounding the same direction
-    keeps this function's one contract — "the frames on the reply are the
-    frames the engine renders" — true for both.
+    **Per-runner since Task 5 of the LTX-2.3 plan** — this used to be the
+    since-dropped `h3-video` runner's grid, `5 + 17n`, hardcoded, because it
+    was the only video runner there was. `traits` now carries whichever
+    engine will actually serve the request (`registry.video_traits_for`,
+    resolved by the caller), and the arithmetic is unchanged: `value =
+    max(traits.frames_base, requested)`, then rounded up to the next
+    `frames_base + frames_step * n`. Matching the direction matters, not only
+    the grid: a server that rounded to NEAREST would report a smaller
+    `frames` than the render it just started for any request whose
+    distance-below its nearest grid point is shorter than its distance to the
+    one above (on `5 + 17n`, verified against that runner's own binary, 100
+    rendered as 107, not the "closer" 90). LTX has no compiled binary to
+    align against, but `8n + 1` is the grid its own upstream CLI defaults to,
+    and rounding the same direction keeps this function's one contract —
+    "the frames on the reply are the frames the engine renders" — true.
 
     Bounded to `n` in `[_MIN_FRAMES_N, _MAX_FRAMES_N]` regardless of engine —
     an app-chosen safety rail (unlike the grid itself, this is not a fact
@@ -795,6 +794,12 @@ def _catalog_with_downloads() -> list[dict]:
         row["models"] = curated + extra
         for entry in row["models"]:
             entry["fit"] = _fit_verdict(entry.get("size_gb"))
+            # Whether this one can be handed a base image to EDIT (AI-9f) —
+            # computed per entry on BOTH halves, because a cached mflux repo
+            # with no edit variant is as unable to edit as a diffusers one and
+            # a picker filtering on absence would offer it anyway.
+            entry["acceptsImage"] = _accepts_image(
+                row["capability"], row["runner"], entry["id"])
     return rows
 
 
@@ -854,6 +859,37 @@ def _fit_verdict(size_gb: float | None) -> str | None:
     if size_gb <= ram * 0.5:
         return "tight"
     return "no"
+
+
+def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
+    """Can `model_id` be handed a BASE IMAGE to edit on this machine (AI-9f)?
+
+    A mirror of `api_ai_image`'s own two refusals, in the same order, so a
+    picker that draws an attach button and the endpoint that would 400 the
+    resulting request cannot disagree:
+
+    1. the ENGINE — `engine_options` is the one place that says which backends
+       honour `image` (every diffusers image code refuses it, mflux honours
+       it), and it is asked here rather than restated;
+    2. the MODEL — mflux additionally needs an edit variant class named for the
+       repo (`formats.mflux_edit_recipe`), since a repo can be renderable and
+       not editable. A future engine that honours `image` with no per-model
+       table is True on the engine's answer alone, exactly as the endpoint
+       treats it.
+
+    False on every non-image capability rather than True-by-vacancy: the
+    engine table is an exception list, so a text runner "refuses nothing" and
+    would otherwise come back claiming a chat model takes a photo.
+    """
+    if capability != registry.IMAGE_GENERATION or runner_code is None:
+        return False
+    try:
+        engine_options.unsupported_or_raise(runner_code, image="probe")
+    except ValueError:
+        return False
+    if runner_code == "mflux-image":
+        return formats.mflux_edit_recipe(model_id) is not None
+    return True
 
 
 @router.get("/api/ai/catalog")
@@ -1210,14 +1246,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Render one video (with audio). Returns everything about it except the
     bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
-    `guidance` (H3 is CFG-distilled) and `previewPath` (no live preview in
-    this build), plus `frames`.
+    `guidance` (the engine is CFG-distilled) and `previewPath` (no live
+    preview in this build), plus `frames`.
 
     The 409 case is the one this route has that the image route does not:
     video generation is the first capability with no "everywhere" row, so on
-    anything but Apple Silicon (or a Mac with no h3 binary staged) this always
-    answers with `registry.unavailable_reason` rather than ever reaching a
-    default model.
+    anything but Apple Silicon this always answers with
+    `registry.unavailable_reason` rather than ever reaching a default model.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -1239,15 +1274,15 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # branch in `api_ai_image` above (`catalog.default_for` never gates
         # on availability -- only `catalog.describe`'s own `default` field
         # does that, a different function entirely -- and `SUGGESTIONS
-        # ["h3-video"]` is a hardcoded non-empty list, so `default_for`
-        # always returns that one id here whether or not this machine can
-        # run it). Kept anyway, matching `api_ai_image`'s own choice: cheap
+        # ["ltx-video"]` is a hardcoded non-empty list, so `default_for`
+        # always returns an id here whether or not this machine can run it).
+        # Kept anyway, matching `api_ai_image`'s own choice: cheap
         # defensive code against a catalog that someday ships an empty
         # shortlist, not the mechanism this route actually relies on for
-        # the 409. The REAL "needs Apple Silicon"/"the h3 binary is not
-        # available" answer, on a machine that cannot serve this
-        # capability, comes from `start_video`'s own `_runner_or_raise`
-        # below -- caught and turned into the same 409 a few lines down.
+        # the 409. The REAL "needs Apple Silicon" answer, on a machine that
+        # cannot serve this capability, comes from `start_video`'s own
+        # `_runner_or_raise` below -- caught and turned into the same 409 a
+        # few lines down.
         return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
                       or "no video model is configured", status=409)
 
@@ -1259,23 +1294,30 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # `None` when nothing can serve the capability at all — already answered
     # with a 409 above via `catalog.default_for`'s dead branch, or about to
     # be via `start_video`'s own error below; `video_traits_for` handles
-    # `None` by falling back to H3's numbers, matching every request this
-    # route ever answered before a second engine existed.
+    # `None` by falling back to the shipping runner's own numbers.
     serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
     traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
 
     # **Naming a model explicitly does NOT pick its runner.** Resolution is
     # by CAPABILITY plus stored preference (`registry.resolve`), never by
     # `model` — `start_video`'s own `_runner_or_raise` never reads it either.
-    # So on an Apple Silicon Mac with `ltx-video` resolved and NO engine
-    # preference set, `{"model": "MiniMaxAI/MiniMax-H3"}` would build and
-    # start the ltx-video worker against the H3 repo, which raises deep
-    # inside `load()` after a (cheap, listing-only) Hub round trip — a
-    # confusing failure for someone who deliberately named the model they
-    # already have 144GB of. Refused here instead, naming the one other
-    # place this repo IS reachable: the Engines tab, which is exactly the
-    # switch `registry.resolve` already honours (see that module's own
-    # docstring). Silent for anything not already cached — there is no
+    # So naming a repo that some OTHER video runner reads would build and
+    # start the resolved worker against it anyway, raising deep inside
+    # `load()` after a (cheap, listing-only) Hub round trip — a confusing
+    # failure for someone who deliberately named the model they already have
+    # on disk. Refused here instead, naming the place a different engine IS
+    # reachable: the Engines tab, which is exactly the switch
+    # `registry.resolve` already honours (see that module's own docstring).
+    #
+    # **CURRENTLY UNREACHABLE, and kept deliberately.** D468 dropped
+    # `h3-video`, leaving one video runner, and `formats.loaders` no longer
+    # names any video runner but `ltx-video` — so `runner_code !=
+    # serving_runner.code` cannot hold today. The guard is generic over
+    # runners rather than about those two specifically, and it is what a
+    # second video engine's own arrival would otherwise have to remember to
+    # add back; the same argument `formats.py`'s withdrawn-runner early
+    # returns make for themselves. Silent for anything not already cached —
+    # there is no
     # format evidence to refuse on without a network call this route has
     # never made, and an uncached id is the ordinary "let the runner's own
     # `load()` refusal explain it" path every other capability already
@@ -1309,8 +1351,8 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     seed = max(0, min(_MAX_SEED, seed))
 
     # The serving engine's own default canvas (`traits.default_width/height`
-    # — VERIFIED per-engine: H3's built binary `--help` for h3-video, LTX's
-    # own CLI `--width`/`--height` for ltx-video). A bare call renders at the
+    # — VERIFIED per-engine: LTX's own CLI `--width`/`--height` for
+    # `ltx-video`). A bare call renders at the
     # shape the ENGINE is tuned for, the same way the image route's
     # 1024x1024 default matches its own pipelines' square default rather
     # than an arbitrary size. The side snap and pixel clamp below stay
@@ -1341,7 +1383,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         # the answer is a fact about this machine, not a server fault.
         return _error(str(e), status=409)
     # The settled request, not the one that came in: `width`/`height` may have
-    # been snapped, `frames` rounded to h3's grid, `steps` clamped, `seed`
+    # been snapped, `frames` rounded to the engine's grid, `steps` clamped, `seed`
     # invented. A caller that echoes these back gets the render it actually
     # got, not the one it asked for.
     return {

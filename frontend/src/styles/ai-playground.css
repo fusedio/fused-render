@@ -6,9 +6,9 @@
  *
  * Every stage is the SAME shape: one centered column on the hero card's
  * gutter (min(680px, 100% - 64px)) reading as an API surface — input, Run,
- * the result of that run. Common parameters sit inline under the composer;
- * everything else is behind a closed-by-default Advanced <details>. The old
- * right rail, the chat transcript and the image gallery died in this
+ * the result of that run. Every parameter is behind the cog in the stage's
+ * title row, which opens a narrow settings card in the column's right gutter.
+ * The old right rail, the chat transcript and the image gallery died in this
  * unification. The model sidebar stacks below ~760px. */
 
 /* On the playground the page's own <main> stops scrolling and becomes a flex
@@ -353,11 +353,63 @@
   background: rgba(var(--tint), 0.1);
 }
 
-/* Mid-download: the glyph cannot say "Downloading…" the way the word did, so
- * it dims and stops responding, and the title carries the sentence. */
+/* Mid-download the slot stops responding — but it no longer DIMS. It used to,
+ * because a download glyph is the same glyph whether or not a pull is running
+ * and half opacity was the only difference available; the ring below is a
+ * different drawing altogether, and fading the one part of the row that is
+ * actually moving is the opposite of what it is for. */
 .pg-model-dl:disabled {
-  opacity: 0.5;
   cursor: default;
+}
+
+/* The pull, counting (DownloadRing) — in the sidebar row's corner, where it
+ * takes the place of the download arrow, and again in the stage header beside
+ * the byte figures. ONE drawing for both, because it is one fact and the two
+ * places would drift apart the way the header's old borrowed bar already had.
+ * 14px to match `.pg-model-dl svg`: in the row the ring stands exactly where
+ * the arrow stood, so nothing changes shape when a download starts. */
+.pg-dl-ring {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  /* 0% at twelve o'clock: the arc is drawn from the circle's own start point,
+     which SVG puts at three. */
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+
+.pg-dl-ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+
+.pg-dl-ring-track {
+  stroke: var(--border);
+}
+
+.pg-dl-ring-arc {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  /* The poll lands once a second, so the arc walks between readings rather
+     than jumping — the same easing the bar in `.am-runtime-bar-fill` uses. */
+  transition: stroke-dashoffset 200ms linear;
+}
+
+/* No total to divide by — the first second of a pull, and the whole of a venv
+   build. A quarter arc, turning: a ring pinned at zero reads as stalled. */
+.pg-dl-ring-idle {
+  animation: pg-dl-ring-spin 1.1s linear infinite;
+}
+
+@keyframes pg-dl-ring-spin {
+  from { transform: rotate(-90deg); }
+  to { transform: rotate(270deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-dl-ring-idle {
+    animation: none;
+  }
 }
 
 /* The unsupported card's task word, and nothing else — the selectable cards
@@ -380,17 +432,26 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* The settings card's placement is a question about THIS box's width — how
+     much gutter is left beside the 680px column — and the viewport is a poor
+     proxy for it: the model sidebar and the page chrome take ~630px before the
+     stage gets any. A container query asks the real box. */
+  container-type: inline-size;
   /* The stage is the scroller now — a one-shot column has no inner log to
      scroll, so the hero rides along with the content. */
   overflow-y: auto;
 }
 
-/* The stage header as a card, centered with wide side margins — the model
-   introducing itself before the stage below it. `width: min(...)` rather than
-   max-width + auto margins alone so the side breathing room survives narrow
-   windows too. */
+/* The stage header as a banner — the model introducing itself before the work
+   below it. Wider than the 680px column it heads, and on a 16px gutter rather
+   than 32px, because it is a header rather than part of the API surface. Its
+   max is exactly the pair below at its widest (column + gap + settings card),
+   so the banner spans everything the stage can ever put under it and its own
+   edges never move when the cog is clicked — the model's name stays a fixed
+   landmark while the column slides. Still a min(), not a bare max-width: the
+   gutter has to survive a narrow stage too. */
 .pg-hero {
-  width: min(680px, calc(100% - 64px));
+  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
   /* Extra room below: the stage's own gap reads too tight under a card this
      heavy, and the work column needs to start as its own thing. */
   margin: 0 auto 16px;
@@ -468,6 +529,35 @@ a.pg-hero-repo:hover {
   font-size: 13px;
 }
 
+/* The memory verdict, which is the one fact here that is a JUDGEMENT rather
+ * than a figure — so it carries a tooltip saying what it was judged against.
+ * The tooltip is NOT advertised: a dotted underline was tried and reads as a
+ * defect on a coloured word, and the sentence under it is an elaboration
+ * ("close other heavy apps while it runs") rather than something the reader is
+ * stuck without. `cursor: help` is not the fallback either — one item in a row
+ * of plain facts announcing a different kind of thing to press is the argument
+ * D454 already lost on the Tasks list. */
+.pg-hero-fact-judged {
+  white-space: nowrap;
+}
+
+/* A HUE ON THE TWO BAD ANSWERS ONLY — the app's own warning and error tokens,
+ * on the text rather than in a filled badge: this row is four dt/dd pairs, and
+ * a pill in one of the cells becomes a different kind of object and out-shouts
+ * the Parameters and Download figures beside it.
+ *
+ * "easy" gets NO GREEN. Green on this page means running (`.pg-model-live`, the
+ * loaded badge, D461); a second meaning for it here would dilute that on nearly
+ * every card, and a verdict that only colours when it wants attention is more
+ * legible than three colours competing. */
+.pg-fact-tight {
+  color: var(--warning);
+}
+
+.pg-fact-no {
+  color: var(--error);
+}
+
 .pg-stage-title {
   margin: 0;
   font-size: 17px;
@@ -505,6 +595,105 @@ a.pg-hero-repo:hover {
   flex: none;
 }
 
+/* The running pull, standing where the Download button stood — icon, ring,
+ * bytes, sized by its own content. It replaced a bar-and-sentence borrowed from
+ * the /ai-models cards, which needed a fixed 240px lane in a row of buttons and
+ * spent most of it on words ("Fetching weights…") that the download icon says
+ * in 14px. */
+.pg-hero-dl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ONE CELL, TWO DRAWINGS — the progress (ring + figures) and the Cancel that
+   replaces it under the pointer. Stacked in a single grid area rather than
+   swapped in flow, so the box measures the wider of the two at rest and the
+   hover changes nothing but which one is painted; a slot that resized would
+   shove the buttons beside it sideways at the moment the pointer arrived. The
+   download icon sits OUTSIDE this box, because it does not take part. */
+.pg-hero-dl-swap {
+  display: grid;
+  align-items: center;
+  justify-items: start;
+}
+
+.pg-hero-dl-swap > * {
+  grid-area: 1 / 1;
+}
+
+.pg-hero-dl-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The swap. Opacity and not `display`, for two reasons: a display-toggled
+   button cannot be focused, so `:focus-within` would never fire and the way out
+   of a download would be pointer-only; and a box that stops laying out its
+   child stops reserving its size, which is the reflow this grid exists to
+   prevent. `pointer-events` is what keeps the invisible half from swallowing
+   clicks meant for the visible one. */
+.pg-hero-dl-live,
+.pg-hero-dl-stop {
+  transition: opacity 120ms ease;
+}
+
+/* A word the size of the figures it stands in for, in the error hue at 85% so
+   it reads as pale rather than as an alarm — this is an offer, not a failure.
+   No border, no padding, no background: it replaces 12px of muted text in the
+   corner of a card, and a bordered control there would out-shout everything
+   including the download it stops. The underline is what says it is
+   pressable. */
+.pg-hero-dl-stop {
+  opacity: 0;
+  pointer-events: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: rgba(var(--error-rgb), 0.85);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.pg-hero-dl-stop:hover {
+  color: var(--error);
+}
+
+.pg-hero-dl:hover .pg-hero-dl-live,
+.pg-hero-dl:focus-within .pg-hero-dl-live {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pg-hero-dl:hover .pg-hero-dl-stop,
+.pg-hero-dl:focus-within .pg-hero-dl-stop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pg-hero-dl-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.pg-hero-dl-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Tabular, because these two numbers are re-rendered every second and
+   proportional digits make a still row look like a shivering one. */
+.pg-hero-dl-bytes {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .pg-error {
   margin: 0;
   font-size: 12.5px;
@@ -523,8 +712,21 @@ a.pg-hero-repo:hover {
 .pg-work {
   width: min(680px, calc(100% - 64px));
   margin: 0 auto;
+  /* A grid rather than a flex column: the settings card takes a second column
+     — a reserved track it is positioned into, see `.has-config` below — while
+     every other child stays in the first. One column, the closed state, lays
+     out exactly as the flex column did. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+/* The stage's title row: the action on the left, the settings cog at the far
+   right end of the same line. */
+.pg-work-head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
 }
 
@@ -536,46 +738,165 @@ a.pg-hero-repo:hover {
   letter-spacing: -0.01em;
 }
 
-/* Closed by default, and deliberately flat — no card, no background. */
-.pg-config > summary {
+/* Quiet until wanted: a muted glyph that lights on hover and stays lit while
+   the panel it opened is on screen. */
+.pg-cog {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  font-weight: 600;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
-  user-select: none;
-  list-style: none;
 }
 
-.pg-config > summary::-webkit-details-marker {
-  display: none;
-}
-
-.pg-config > summary::after {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-right: 1.5px solid var(--fg-muted);
-  border-bottom: 1.5px solid var(--fg-muted);
-  transform: rotate(-45deg);
-  transition: transform 0.15s ease;
-}
-
-.pg-config[open] > summary::after {
-  transform: rotate(45deg);
-}
-
-.pg-config > summary:hover {
+.pg-cog:hover {
   color: var(--fg);
+  background: rgba(var(--tint), 0.07);
+}
+
+.pg-cog.active {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+/* The settings, as a narrow card of their own. A card and not a bare band
+   because at anything but a phone width it sits BESIDE the column — the two
+   centered together — and a floating stack of sliders with no edge would read
+   as loose page furniture. Styled outside the container query below, so the
+   narrow-window fallback — the same card, full column width, in flow under the
+   input — is one dialect with it.
+   The <aside> is only the RAIL the card travels in — the visuals are on the
+   inner box, which is what sticks. In the fallback the rail is a plain
+   in-flow div and the inner box is simply the card. */
+.pg-config-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.pg-config-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+/* Names the card, because in the gutter it is no longer obviously the thing
+   the cog just opened. */
+.pg-config-head {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
 }
 
 .pg-config-body {
-  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+/* The numbers the placement below is built from, declared OUT here on the
+   container itself: a `@container` rule can never target its own container —
+   the query would resolve against .pg-stage's ANCESTOR — so a var declared on
+   .pg-stage inside the block would simply never land, and every calc() that
+   read it would fall over. */
+.pg-stage {
+  --pg-gap: 16px;
+  /* The card's band, not one number. A single 240px card put the side-by-side
+     threshold at 1000cqw, which a ~1000px window misses by a hair — the stage
+     gets ~950 of it — so a window with obvious room beside the column still
+     stacked the settings under it. Letting the card give up width instead of
+     the column moves the threshold down to where that window lands, and hands
+     the full 240 back as soon as there is room for it. */
+  --pg-card-min: 192px;
+  --pg-card-max: 240px;
+}
+
+/* The card's actual width, resolved on the stage's CHILDREN rather than the
+   stage: `cqw` on the container itself measures the container's own ANCESTOR,
+   the same trap as the vars above, and every box that reads --pg-card (hero,
+   work column, apps strip, and the card itself by inheritance) is a descendant
+   of .pg-stage, so each one resolves it against the stage. It is one shared
+   expression, so all four still agree to the pixel — the hero and the apps
+   strip keep spanning exactly the pair below them. */
+.pg-stage > * {
+  --pg-card: clamp(
+    var(--pg-card-min),
+    100cqw - 680px - var(--pg-gap) - 32px,
+    var(--pg-card-max)
+  );
+}
+
+/* Wide enough for the whole PAIR — column plus card at its NARROWEST — to sit
+   centered with the stage's own 32px edges: 680 + 16 gap + 192 card + 2×32 =
+   920cqw. Above it the clamp above widens the card until it reaches 240 (at
+   968cqw) and holds. Below it the card stays in flow under the input, the
+   placement the cog pass shipped. That band used to keep the card beside the
+   column by letting the column give up width; it no longer does, which is the
+   price of never resizing the input. */
+@container (min-width: 920px) {
+  /* The work column slides left by HALF the card's footprint: what the pair
+     gives up on the right it takes back on the left, so the PAIR is centered on
+     the stage while the column stays the same 680px it was before the cog was
+     clicked — it slides, it does not narrow. ((100cqw - 680)/2 - (gap + card)/2
+     is (100cqw - (680 + gap + card))/2, the pair's own centered left edge.)
+     The hero banner above does NOT move with it: it is a full-width header, so
+     it has no column edge to keep in line with. */
+  .pg-work.has-config {
+    margin-left: calc((100cqw - 680px) / 2 - (var(--pg-gap) + var(--pg-card)) / 2);
+    margin-right: 0;
+    /* A plain calc, not a min(): the threshold above already guarantees the
+       pair fits, so nothing here has to clamp. The number tracks the stage's
+       width through --pg-card, but it is blind to the cog — which is the
+       invariant this layout exists for: opening the panel never resizes the
+       input. */
+    width: calc(680px + var(--pg-gap) + var(--pg-card));
+    grid-template-columns: minmax(0, 1fr) var(--pg-card);
+    column-gap: var(--pg-gap);
+    /* So the rail below can take its grid area as a containing block. */
+    position: relative;
+  }
+
+  /* Load-bearing: without it auto-placement drops the stage's SECOND child
+     into the empty second column. */
+  .pg-work.has-config > * {
+    grid-column: 1;
+  }
+
+  /* Absolutely positioned INTO the second column rather than placed in it: an
+     in-flow card would size its own grid row, so opening the cog would push
+     the composer down by the card's height — the exact shove this layout
+     exists to avoid. An abspos grid child takes its grid area as its
+     containing block, with the row edges falling back to the container's
+     padding box when the row placement is auto, so `inset: 0` is a full-height
+     rail in the --pg-card track. (`grid-row: 1 / -1` would NOT do this: negative
+     line numbers resolve against the EXPLICIT grid, and there are no explicit
+     rows here.) The track holds its width whether anything is in it or not, so
+     the column-width math above is untouched. */
+  .pg-work.has-config > .pg-config-card {
+    grid-column: 2;
+    position: absolute;
+    inset: 0;
+  }
+
+  /* The card rides the rail: it stays on screen while a long result scrolls
+     past it. Sticky cannot live on the rail itself — an abspos box has nothing
+     to stick within — which is why the rail and the card are two boxes. */
+  .pg-work.has-config > .pg-config-card > .pg-config-inner {
+    position: sticky;
+    top: 0;
+  }
 }
 
 /* Chip rows lead the fold, tighter than the slider stack below them. */
@@ -756,24 +1077,348 @@ a.pg-hero-repo:hover {
   outline: none;
 }
 
+/* A three-line floor, because a prompt worth running is usually two or three
+   lines and a box that starts at one makes it look like a search field. It has
+   to be a min-height rather than `rows` alone: useAutoGrow writes an inline
+   height from the text's own scrollHeight, and min-height is what stops that
+   from collapsing the box back to one line. 4.5em is 3 × the 1.5 line-height,
+   plus the box's own 12px of padding — box-sizing is border-box globally. */
+.pg-composer textarea {
+  min-height: calc(4.5em + 12px);
+}
+
+/* The ONE-LINE input (the embed stage's search) starts at the TOP. The
+   composer's `align-items: flex-end` is a rule about a GROWING box: a textarea
+   fills the composer, so aligning its bottom is what keeps its last line level
+   with the Run button beside it. An input does not grow — it is one line inside
+   a box whose height comes from the button column's 72px — so flex-end left the
+   text sitting on the floor with an empty third of a card above it, reading as
+   a caption under nothing. Top-aligned it starts where every other stage's
+   prompt starts, which is what makes the four composers one shape. */
+.pg-composer input {
+  align-self: flex-start;
+}
+
 .pg-send {
   flex: none;
 }
 
-/* 32px matches .btn (buttons-modal.css) so Clear and Run share a line. */
+/* Every composer's buttons stack in a column of their own beside the input:
+   Clear above Run, one 8px gap apart, the pair sitting in the composer's
+   bottom-right corner. Deliberately NOT `align-self: stretch`: stretched to a
+   three-line prompt's height the column had ~20px of slack in it, and with Run
+   at the foot all of that fell between the two buttons — Clear ended up adrift
+   in the middle of the box rather than reading as the pair's top. The column's
+   width is Run's, the wider of the two, so Clear appearing and disappearing
+   never changes the input's width — which is what used to leave a grown
+   textarea height a line short and turn the box into a scroller. */
+.pg-composer-side {
+  flex: none;
+  /* Both slots, whether Clear is in one of them or not (2 × 32px button + the
+     gap). Without it the embed stage's one-line input sets the composer's
+     height, and the box would jump taller the moment a result gave it a Clear —
+     trading the width jitter this stack removes for a height one. */
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 32px matches .btn (buttons-modal.css), so Clear reads as the same weight of
+   control as the Run below it. Top-aligned by DEFAULT — `margin-bottom: auto`
+   takes whatever slack there is, which in a row-flex parent is the same auto
+   margin working across the axis, so Clear is at the top wherever it appears.
+   Inert in the button stack above, whose height is exactly its two buttons. */
 .pg-clear {
   flex: none;
   height: 32px;
+  margin-bottom: auto;
+  /* Held off the edge Run's border sits on. Flush, the two right edges lined up
+     exactly — and a bare label squared off against a filled button's corner
+     reads as a mis-set pair, not as alignment: the button has a box holding its
+     own edge, the label has nothing but the glyphs. 8px lands its last letter
+     just inside Run's ⏎. */
+  margin-right: 8px;
   display: inline-flex;
   align-items: center;
   padding: 0 6px;
 }
 
-.pg-under {
+/* The one place that opts out: the recording's own row is a horizontal toolbar
+   around an <audio> element, not a composer — its Clear belongs on that line
+   with the buttons beside it, not lifted off it. */
+.pg-audio-row .pg-clear {
+  margin-bottom: 0;
+}
+
+/* -- the image stage's attachment row (D467) ---------------------------------
+   A composer that takes a base image STACKS — attached photo, prompt, then a
+   floor holding the attach controls on the left and the Clear/Run column on the
+   right — where the other three stages' composers are one row of [prompt |
+   button column]. Only this stage sets the modifier, so those three are
+   untouched, and Run stays where every other composer puts it: bottom-right. */
+.pg-composer-stack {
+  flex-direction: column;
+  align-items: stretch;
+  /* The containing block for the floating Clear below. */
+  position: relative;
+}
+
+/* Clear in the box's top-right corner, out of flow: in a stacked composer the
+   button column is one button tall, and putting Clear back into it would add
+   its 32px plus the gap to the composer's height for good — a row of chrome for
+   a control that only exists once there is a result. Absolute costs nothing, and
+   the corner is where a dismiss is looked for. The margins `.pg-clear` sets for
+   its in-flow life are undone here. */
+.pg-clear-corner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  height: auto;
+  margin: 0;
+  /* Padding rather than offset: the word needs room around it (flush to the
+     box's rounded corner it read as cropped), and giving the padding to the
+     button means the hit area grows with it instead of just the gap. */
+  padding: 5px 10px;
+  border-radius: 8px;
+}
+
+/* The prompt keeps a lane clear for it — ALWAYS, not only while Clear is on
+   screen: the text wraps inside this padding, so a lane that appeared with the
+   button would rewrap the whole prompt (and, with `useAutoGrow` writing an
+   inline height, leave the box a line short — the bug that hook exists for).
+   ~64px is Clear at
+   its widest plus the corner offset. */
+.pg-composer-stack textarea {
+  padding-right: 64px;
+}
+
+.pg-clear-corner:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+}
+
+/* Everything on this line lives in the bottom-RIGHT corner: attach, webcam,
+   then Clear/Generate. Bottom-aligned, so the 28px pills sit on the same
+   baseline as the 32px button beside them however tall that column gets. */
+.pg-composer-foot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The prompt already spans the box in a stacked composer, so the button column
+   has no width to reserve here — its 72px floor exists to stop a one-line input
+   from jumping when a Clear appears beside it, and there is nothing beside it on
+   this row. */
+.pg-composer-foot .pg-composer-side {
+  min-height: 0;
+}
+
+.pg-attach-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-height: 20px;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+/* The picked photo, as a chip: the thumbnail and the way to drop it, nothing
+   else. It takes the empty half of the composer's floor (`margin-right: auto`),
+   so the picture sits on the same line as the buttons that put it there. */
+.pg-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+/* 28px, so the chip (border + 3px of padding around it) comes out at the 32px
+   height of the Generate button it shares the floor with — a taller thumbnail
+   set the whole row's height and pushed the box down. */
+.pg-attach img {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  object-fit: cover;
+  /* A checker-free flat ground: a transparent PNG over the composer's own fill
+     would read as part of the box rather than as a picture in it. */
+  background: rgba(var(--tint), 0.08);
+}
+
+.pg-attach-drop {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pg-attach-drop:hover {
+  background: rgba(var(--tint), 0.1);
+  color: var(--fg);
+}
+
+/* Both ways in wear the same pill — one is a <label> over a hidden file input,
+   the other a <button>, and a person reading the row must not be able to tell
+   which is which. */
+.pg-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pg-attach-btn:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.pg-attach-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.pg-attach-btn input[type="file"] {
+  display: none;
+}
+
+/* The thumbnail is a button, because it opens the picture at full size — no
+   frame of its own, so what is drawn is still just the photo. */
+.pg-attach-open {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+  line-height: 0;
+  border-radius: 5px;
+}
+
+.pg-attach-open:hover img {
+  opacity: 0.82;
+}
+
+/* The attached picture, full size, over everything. One image and one ✕ — the
+   ✕ on the composer's chip is what REMOVES the picture; this only shows it. */
+.pg-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: var(--scrim-veil);
+  cursor: zoom-out;
+}
+
+.pg-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  /* The picture is the content; the cursor stops meaning "click to close" over
+     it, and the click is swallowed there too. */
+  cursor: default;
+  box-shadow: 0 18px 48px var(--scrim-lift);
+}
+
+.pg-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--scrim-chip-bg);
+  color: var(--scrim-fg);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pg-lightbox-close:hover {
+  background: var(--scrim-chip-bg-hover);
+}
+
+.pg-attach-note {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+/* The live webcam view, while it is open. Capped at 240px tall so the prompt
+   below it stays on screen — this panel is a viewfinder, not the result. */
+.pg-camera {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 6px 4px 8px;
+}
+
+.pg-camera video {
+  flex: 1;
+  min-width: 0;
+  max-height: 240px;
+  border-radius: 8px;
+  background: var(--scrim-letterbox);
+  /* Mirrored, the way every video-call preview is: an unmirrored self-view
+     makes aiming the camera feel inverted. Only the PREVIEW is flipped — the
+     capture draws the raw frame, so what lands on disk is what the lens saw. */
+  transform: scaleX(-1);
+}
+
+.pg-camera-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  /* Stretch, not flex-end: Cancel is CENTRED under Capture, and it can only be
+     centred on the button above it if it is as wide as the column Capture set. */
+  align-items: stretch;
+  gap: 8px;
+}
+
+/* Closing the viewfinder without taking a picture — the one destructive-ish
+   action in this box, so it reads in the error colour rather than as a second
+   grey label. No border, no underline, no fill: it is a word under a button,
+   and the extra top margin is what keeps it from reading as part of Capture. */
+.pg-camera-cancel {
+  margin-top: 4px;
+  text-align: center;
+  color: var(--error);
+  text-decoration: none;
+}
+
+.pg-camera-cancel:hover:not(:disabled) {
+  color: var(--error);
+  opacity: 0.75;
+}
+
+/* A settings row whose value is a sentence rather than a number — the size
+   under an attached image, which the server derives. */
+.pg-ctl-value {
+  font-size: 12px;
+  color: var(--fg);
 }
 
 .pg-ghost-btn {
@@ -817,75 +1462,113 @@ a.pg-hero-repo:hover {
   }
 }
 
-/* Empty states: a real invitation, not a blank box. */
+/* Example prompts: one row of outlined pills under the input, each an icon and
+   a short name, with a round rotate button at the end. Pills rather than the
+   /apps hub's filled cards: a card carries a picture and a meta row, and these
+   carry two words — at pill size a fill and a shadow read as four heavy blocks
+   under a quiet input. Only the name is drawn; the prompt itself is two or
+   three clauses and lives in the hover title.
 
-.pg-empty-stage {
+   Each pill HUGS its name (flex, `flex: none`) instead of taking an equal grid
+   column: equal columns are as wide as the longest name and truncate every
+   other one, which is the one thing a two-word label cannot afford. Nothing
+   here ellipsises; when the row runs out of width the COUNT drops instead —
+   `StarterCards` measures this box and shows one pill fewer (controls.tsx), so
+   the settings card's narrower column (D464) gets three whole names rather
+   than four cut ones. `overflow: hidden` is what makes that measurement
+   possible (scrollWidth vs clientWidth) and is never seen. No label above the
+   row: a rotate button does not need one. */
+
+.pg-starters {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 6px;
-  padding: 4px 16px 24px;
+  align-items: flex-start;
+  gap: 8px;
+  /* Room for the focus ring. */
+  padding: 2px;
 }
 
-/* `.pg-empty-title`/`.pg-empty-sub`: dropped in the merge that restored this
-   file's other playground-stage rules (`.pg-seed`, `.pg-image-strip`,
-   `.pg-rail*`) for VideoStage. VideoStage.tsx is their only remaining
-   consumer — ImageStage/TextStage's own `.pg-empty-stage` renders only
-   `StarterPrompts`, with no title/sub pair inside it at all — so the
-   omission rendered VideoStage's empty state as two unstyled `<p>`s. */
-.pg-empty-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.pg-empty-sub {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  max-width: 46ch;
-}
-
-.pg-starter {
-  margin-top: 14px;
+/* `flex: 0 1 auto`, NOT `flex: 1`: the row is as wide as its pills, so the
+   rotate button sits immediately after the last one instead of being parked at
+   the column's right edge with a hole in between. It still SHRINKS below that
+   (flex-shrink 1 plus `min-width: 0`), which is what keeps the measurement
+   below meaningful — a row that could not shrink would never report an
+   overflow and the count would never drop. */
+.pg-starter-grid {
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.pg-starter-card {
+  flex: none;
+  display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.pg-starter-title {
-  margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-.pg-starter-chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  max-width: 560px;
-}
-
-.pg-starter-chip {
   font: inherit;
   font-size: 12.5px;
-  padding: 7px 13px;
+  padding: 7px 14px;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: transparent;
-  color: var(--fg);
   cursor: pointer;
-  text-align: left;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease;
 }
 
-.pg-starter-chip:hover {
+/* Border and text only — no fill. The row is eight pills side by side; a tinted
+   plate under the hovered one reads as a selected state rather than a pointer. */
+.pg-starter-card:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.pg-starter-icon {
+  display: flex;
+  flex: none;
+  /* A shade quieter than the name at rest — the glyph is for scanning the row,
+     the name is what is being read. */
+  opacity: 0.75;
+}
+
+.pg-starter-card:hover .pg-starter-icon {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* Round, and the pill's own height: it is chrome on the row, not a ninth
+   example. Sized in one place — the pills' 12.5px line box plus their padding
+   and border — so the circle sits on the same baseline band as the row. */
+.pg-starter-rotate {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 33px;
+  height: 33px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.pg-starter-rotate:hover {
+  color: var(--fg);
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.08);
+}
+
+.pg-starter-rotate svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* Label above, card below. Text and image stages both use it. */
@@ -1106,7 +1789,11 @@ a.pg-hero-repo:hover {
   line-height: 0;
 }
 
-.pg-image-result img {
+/* `video` alongside `img`: the video stage draws the same framed result, and
+   a `<video controls>` left unstyled sizes to its own intrinsic pixels rather
+   than to the frame the aspect-ratio box just set. */
+.pg-image-result img,
+.pg-image-result video {
   display: block;
   width: 100%;
   height: 100%;
@@ -1114,6 +1801,17 @@ a.pg-hero-repo:hover {
   border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--bg-alt);
+}
+
+/* The `watchJob` "gone means done" fallback failing its own artefact check
+   (ImageStage's `Run.readFailed`) — same muted-note treatment as the
+   transcript stage's `.pg-transcript-empty`. */
+.pg-image-readfailed {
+  margin: 0;
+  padding: 24px 16px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
 }
 
 /* Fixed scrim, not theme colours: this sits on arbitrary photo pixels, so the
@@ -1231,85 +1929,6 @@ a.pg-hero-repo:hover {
   cursor: not-allowed;
   opacity: 0.4;
   pointer-events: none;
-}
-
-/* VideoStage predates the other four stages' rail removal (D429) and keeps
-   its own main-column + settings-rail shape — scoped under `.pg-work-video`
-   so it does not fight the shared `.pg-work` (now a centered single column)
-   the other four stages draw. */
-.pg-work.pg-work-video {
-  width: min(1100px, calc(100% - 64px));
-  flex-direction: row;
-  gap: 20px;
-  align-items: stretch;
-}
-
-.pg-main {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.pg-rail {
-  flex: 0 0 248px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(var(--tint), 0.02);
-  align-self: flex-start;
-  max-height: 100%;
-  overflow-y: auto;
-}
-
-.pg-rail-toggle {
-  display: none;
-}
-
-.pg-rail-section {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.pg-rail-section + .pg-rail-section {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
-}
-
-.pg-rail-title {
-  margin: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-@media (max-width: 1100px) {
-  .pg-work-video {
-    flex-direction: column;
-  }
-
-  .pg-rail {
-    display: none;
-    flex: none;
-    width: 100%;
-    max-height: none;
-  }
-
-  .pg-work.rail-open .pg-rail {
-    display: flex;
-  }
-
-  .pg-rail-toggle {
-    display: inline-block;
-  }
 }
 
 /* -- transcription ------------------------------------------------------------------ */
@@ -1573,14 +2192,6 @@ a.pg-hero-repo:hover {
   gap: 14px;
 }
 
-.pg-embed-intro {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--fg-muted);
-  max-width: 60ch;
-}
-
 .pg-embed-lines {
   resize: vertical;
   border: 1px solid var(--border);
@@ -1678,6 +2289,13 @@ a.pg-hero-repo:hover {
  * end under its own `.pg-apps-` prefix: the rest of this sheet is under
  * concurrent redesign (#760) and this block must merge clean. ---- */
 .pg-apps {
+  /* The banner's own gutters, so the stage's top and bottom bands share one
+   * pair of edges — the same min() expression, not a number copied. Auto side
+   * margins centre it; `margin-top: auto` is untouched by them and still does
+   * its main-axis job below. */
+  width: min(calc(680px + var(--pg-gap) + var(--pg-card)), calc(100% - 32px));
+  margin-left: auto;
+  margin-right: auto;
   /* Pinned to the bottom of the stage's viewport when the content above is
    * short (`auto` soaks up the spare space — .pg-stage is a flex column),
    * and pushed below the fold when it isn't: .pg-stage is the scroller, so
@@ -1699,11 +2317,11 @@ a.pg-hero-repo:hover {
 .pg-apps-row .app-pcard {
   flex: 0 0 300px;
 }
+/* Sentence case, at reading size: "Use it in an app" is an invitation, and
+ * caps-plus-tracking turns a sentence into a section label. */
 .pg-apps-head {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--fg-muted);
 }

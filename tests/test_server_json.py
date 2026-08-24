@@ -1,4 +1,4 @@
-"""`server.json` (SPEC PY-19, D463): the discovery file a process the server
+"""`server.json` (SPEC PY-19, D472): the discovery file a process the server
 did NOT spawn reads to find this server's origin — `fused_ai.py`'s
 `resolve_origin()` fallback below `FUSED_RENDER_ORIGIN`.
 

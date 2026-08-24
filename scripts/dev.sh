@@ -37,8 +37,6 @@
 #     nothing. Consumed here, never forwarded to the server.
 #   * FUSED_RENDER_NO_RELOAD=1: disable Python auto-reload; run the server once
 #     exactly as before (server opens its own browser tab).
-#   * FUSED_RENDER_SKIP_H3_BUILD=1: skip building the h3-video runner's h3.c
-#     binary (see _h3_maybe_build below) — h3-video stays unavailable.
 # watchfiles is auto-installed into the venv if missing; if the install fails,
 # dev.sh falls back to the original single-launch behavior.
 set -euo pipefail
@@ -324,7 +322,6 @@ WATCH_PID=""
 CORE_WATCH_PID=""
 OPENER_PID=""
 SERVER_PID=""
-H3_BUILD_PID=""
 DEV_PIDFILE=""
 
 # The single shutdown handler — one function, installed by every trap, so the
@@ -333,7 +330,7 @@ DEV_PIDFILE=""
 dev_shutdown() {
   # Disarm first: the INT/TERM handlers exit, which re-enters via EXIT.
   trap - EXIT INT TERM
-  local roots="$WATCH_PID $CORE_WATCH_PID $OPENER_PID $SERVER_PID $H3_BUILD_PID"
+  local roots="$WATCH_PID $CORE_WATCH_PID $OPENER_PID $SERVER_PID"
   if [[ -n "${roots// /}" ]]; then
     reap_trees "$roots"
     # Reap our own children rather than leaving zombies parked on this shell.
@@ -581,239 +578,6 @@ done
 # already-set value so the caller can override (including to "0" to force the
 # production dies-with-server behavior).
 export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
-
-# ---------------------------------------------------------------------------
-# h3-video runner: build + cache the h3.c (antirez) Metal binary so a dev
-# checkout has `h3-video` available with no one hand-building it first —
-# BACKGROUNDED so a clean-cache first build (up to ~90s) never blocks the
-# server from starting.
-#
-# Same commit pin as build_dmg.sh (both read scripts/h3_commit.txt, so the pin
-# cannot drift between the two build paths) and the same cache layout,
-# `build/h3-bin/<commit>/h3`, so a dev build and a DMG build of the SAME
-# checkout share one cache (both derive it from that checkout's own
-# $REPO_ROOT/build) — never across two different worktrees, since `build/` is
-# gitignored and per-checkout.
-#
-# Soft-fail, ALWAYS: h3-video is one optional local AI runner among several
-# (see _h3_available() in fused_render/ai/registry.py) — never something a
-# dev server start can be allowed to fail over. Not Apple Silicon, no
-# network, missing git/clang, a compile error, an unsupported SDK, a
-# contended or stale lock: every one of these prints a message and leaves
-# h3-video simply unavailable (registry.py's own availability check already
-# reports why) rather than aborting anything.
-#
-# Opt out entirely with FUSED_RENDER_SKIP_H3_BUILD=1.
-#
-# WHY BACKGROUNDING IS SAFE WITH NO SERVER RESTART: `h3_bin()`
-# (fused_render/ai/registry.py) resolves `FUSED_RENDER_H3_BIN` with a plain
-# `os.path.isfile` check, ignoring the override outright if it is not yet a
-# real file — and `_h3_available()` (which calls it) is NEVER cached, by the
-# same "every failure here is fixed WHILE THE APP IS RUNNING" design already
-# used for `_rocm()`'s device checks. So exporting FUSED_RENDER_H3_BIN before
-# the file exists is harmless (the override is simply ignored until the
-# rename below makes it real), and the very next `/api/ai/catalog` read after
-# the binary lands sees it with no dev.sh/server restart of any kind.
-_h3_commit() {
-  tr -d '[:space:]' < "$REPO_ROOT/scripts/h3_commit.txt"
-}
-
-# Is the lock at $1 stale (no owner, or an owner that is provably gone)? A
-# lock this young (< the grace period) is treated as live even with no pid
-# file yet — mkdir and writing the pid file are two syscalls, not one, and a
-# stale-check landing in between them must not reclaim a lock its owner just
-# legitimately took.
-_h3_lock_is_stale() {
-  local lock_dir="$1" other_pid other_start cur_start age
-  age="$(( $(date +%s) - $(stat -f '%m' "$lock_dir" 2>/dev/null || stat -c '%Y' "$lock_dir" 2>/dev/null || echo 0) ))"
-  if [[ ! -f "$lock_dir/pid" ]]; then
-    [[ "$age" -gt 2 ]]
-    return $?
-  fi
-  other_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
-  other_start="$(cat "$lock_dir/start" 2>/dev/null || true)"
-  [[ "$other_pid" =~ ^[0-9]+$ ]] || return 0
-  pid_alive "$other_pid" || return 0
-  [[ -n "$other_start" ]] || return 0
-  cur_start="$(ps -o lstart= -p "$other_pid" 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')"
-  [[ "$cur_start" == "$other_start" ]] && return 1  # live, matching owner
-  return 0  # pid recycled onto something else — stale
-}
-
-# Claim $1 as an exclusive lock, guarding against a SECOND dev.sh started in
-# this same checkout before the first's reap (top of this script) has run —
-# `mkdir` is atomic even across unrelated processes on the same filesystem,
-# and the pid+start-time verification mirrors `dev_pidfile_is_ours` above for
-# the same reason: a bare "is this pid alive" misfires on a recycled pid.
-#
-# Bounded at 3 attempts: a lock that is neither claimable nor reclaimable
-# after that many rounds is left alone and this run simply does not build —
-# a duplicate compile is wasteful, but a reclaim loop that could spin forever
-# on a lock that keeps re-appearing would be worse than either.
-_h3_claim_lock() {
-  local lock_dir="$1" attempt
-  for attempt in 1 2 3; do
-    if mkdir "$lock_dir" 2>/dev/null; then
-      printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null || true
-      ps -o lstart= -p $$ 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//' > "$lock_dir/start" 2>/dev/null || true
-      return 0
-    fi
-    if _h3_lock_is_stale "$lock_dir"; then
-      rm -rf "$lock_dir" 2>/dev/null || true
-      continue
-    fi
-    return 1
-  done
-  return 1
-}
-
-# The actual clone + build + ATOMIC install, run entirely inside the
-# backgrounded subshell dev.sh forks for it (see the call site below) — so a
-# failure here can never abort dev.sh itself. Every external command is
-# guarded with `if ! cmd; then …; fi` so a failure is reported (into the log)
-# rather than read as a bare "failed at line N" under this script's
-# `set -euo pipefail`.
-#
-# The cleanup trap's command is built with the paths BAKED IN as literal
-# values (double-quoted, `printf %q`-escaped) at the point `trap` is called —
-# NOT `trap '...$src_dir...' ...` with the expansion left for later. Verified
-# the hard way: a `local` variable set inside a function is gone the instant
-# the function returns, so an EXIT trap installed inside that same function —
-# fired only once this whole subshell has nothing left to run, i.e. AFTER the
-# function has already returned — still naming the variable by reference
-# hits `set -u`'s "unbound variable" at the exact moment it
-# tries to clean up, and the rm -rf silently never happens. Baking in the
-# values sidesteps the scoping question entirely: by the time the trap fires,
-# it is a plain literal command, not a variable lookup.
-#
-# stdout/stderr are the CALLER's (dev.sh's real terminal) for exactly two
-# lines — one on entry (printed by the caller below, before backgrounding),
-# one on exit here — printed with the same `echo` used everywhere else in
-# this script; the noisy clone/compile trace is redirected into $4 (the log
-# file) so it cannot interleave with server output.
-_h3_build_in_background() {
-  local stage_dir="$1" bin_path="$2" lock_dir="$3" log_file="$4" h3_commit="$5"
-  local src_dir="$stage_dir.src.$$" tmp_bin="$stage_dir/.h3.tmp.$$"
-
-  if ! _h3_claim_lock "$lock_dir"; then
-    echo "==> another dev.sh in this checkout appears to be building h3 already — not duplicating the compile"
-    return 0
-  fi
-  # Own the lock from here on: clean it up, and any partial clone/temp
-  # binary, on EVERY exit path — normal completion, an explicit `return`
-  # below, or an `errexit` abort from an unguarded failure. This is also
-  # what makes a KILLED build leave no half-built state behind: dev.sh's own
-  # shutdown sends this subshell (and its git/make children) SIGTERM, and
-  # this trap fires before the subshell actually exits.
-  trap "rm -rf $(printf '%q' "$src_dir") $(printf '%q' "$tmp_bin") $(printf '%q' "$lock_dir")" EXIT INT TERM
-  # $LINENO stays a live reference (single-quoted) — it is a bash special
-  # variable, not a `local` that goes out of scope, so it is safe to leave
-  # unresolved until the trap fires; $log_file is spliced in as a literal
-  # value now, for the same scoping reason as the EXIT trap above.
-  trap 'echo "h3 build: unexpected failure at line $LINENO" >>'"$(printf '%q' "$log_file")"' 2>&1' ERR
-
-  {
-    echo "=== h3 build starting $(date) ==="
-    rm -rf "$src_dir"
-    if ! git clone --quiet https://github.com/antirez/h3.c.git "$src_dir"; then
-      echo "clone of antirez/h3.c failed (offline?)"
-      exit 0
-    fi
-    if ! git -C "$src_dir" checkout --quiet "$h3_commit"; then
-      echo "checkout of h3.c @ ${h3_commit} failed"
-      exit 0
-    fi
-    # See build_dmg.sh's own step-2c comment for why no offline Metal shader
-    # toolchain is needed but a macOS 26+ SDK still is.
-    if ! (cd "$src_dir" && make -j8 h3) || [[ ! -x "$src_dir/h3" ]]; then
-      echo "h3.c build failed (needs a macOS 26+ SDK selected — see build_dmg.sh step 2c)"
-      exit 0
-    fi
-    mkdir -p "$stage_dir"
-    cp "$src_dir/h3" "$tmp_bin"
-    chmod +x "$tmp_bin"
-    # ATOMIC: `mv` on the same filesystem is a single rename(2), so the cache
-    # path never shows a truncated/partial file to a concurrent reader —
-    # `h3_bin()`'s override check is a bare `os.path.isfile`, and a
-    # half-written binary there would be exec'd.
-    mv -f "$tmp_bin" "$bin_path"
-    # MIT notice: a local dev build is not redistribution the way
-    # build_dmg.sh's shipped DMG is, so this is not a compliance requirement
-    # here — staged anyway since it costs nothing and keeps this cache
-    # identical to what build_dmg.sh would have produced in the same spot.
-    [[ -f "$src_dir/LICENSE" ]] && cp "$src_dir/LICENSE" "$stage_dir/LICENSE"
-    echo "h3 built OK -> $bin_path"
-  } >>"$log_file" 2>&1
-
-  if [[ -x "$bin_path" ]]; then
-    echo "==> h3 build finished: OK, cached at $bin_path"
-  else
-    echo "==> h3 build failed — h3-video will be unavailable (see $log_file)"
-  fi
-}
-
-_h3_maybe_build() {
-  if [[ "${FUSED_RENDER_SKIP_H3_BUILD:-}" == "1" ]]; then
-    echo "==> FUSED_RENDER_SKIP_H3_BUILD set -> skipping h3 build (h3-video will be unavailable)"
-    return 0
-  fi
-  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
-    echo "==> h3-video needs Apple Silicon (this is $(uname -s)/$(uname -m)) -> skipping h3 build"
-    return 0
-  fi
-  if ! command -v git >/dev/null 2>&1; then
-    echo "==> WARNING: git not found on PATH -> skipping h3 build (h3-video will be unavailable)" >&2
-    return 0
-  fi
-  if ! command -v clang >/dev/null 2>&1 && ! command -v cc >/dev/null 2>&1; then
-    echo "==> WARNING: no clang/cc on PATH -> skipping h3 build (h3-video will be unavailable)" >&2
-    return 0
-  fi
-
-  local h3_commit h3_stage_dir h3_bin h3_lock log_file
-  h3_commit="$(_h3_commit)"
-  # The lock's PARENT must exist before `_h3_claim_lock`'s bare `mkdir
-  # "$lock_dir"` runs, or that mkdir fails with ENOENT (no such parent
-  # directory) on a checkout that has never built h3 before — a failure
-  # `_h3_claim_lock` cannot tell apart from "the lock already exists", so it
-  # would misreport a fresh checkout's very first build attempt as
-  # contended. `-p` is harmless on every later run once the tree exists.
-  mkdir -p "$REPO_ROOT/build/h3-bin"
-  h3_stage_dir="$REPO_ROOT/build/h3-bin/${h3_commit}"
-  h3_bin="$h3_stage_dir/h3"
-  h3_lock="$REPO_ROOT/build/h3-bin/${h3_commit}.lock"
-
-  if [[ -x "$h3_bin" ]]; then
-    echo "==> h3 (${h3_commit}) already built and cached at $h3_bin"
-    export FUSED_RENDER_H3_BIN="$h3_bin"
-    return 0
-  fi
-
-  # Exported BEFORE the binary exists — see the long comment above this
-  # section for why that is safe (h3_bin()'s plain isfile check, and
-  # _h3_available() never being cached): h3-video correctly reports
-  # unavailable until the rename lands, and the very next resolution after
-  # that picks it up with no restart.
-  export FUSED_RENDER_H3_BIN="$h3_bin"
-
-  mkdir -p "$REPO_ROOT/.dev-pids"
-  log_file="$REPO_ROOT/.dev-pids/h3-build.log"
-  echo "==> building h3 (antirez/h3.c @ ${h3_commit}) for the h3-video runner in the"
-  echo "    background — up to ~90s on a clean cache; h3-video stays unavailable"
-  echo "    until it lands, with no restart needed once it does. log: $log_file"
-  # Explicit subshell `( … ) &`, NOT a bare `_h3_build_in_background … &`:
-  # verified empirically that a `func &` background job does not behave the
-  # same as `( func ) &` for trap purposes in every shell/version combination
-  # this script has to run under — the explicit subshell is the form actually
-  # exercised, so it is the one kept, matching the vite-watch backgrounding a
-  # few hundred lines below (`(cd "$FRONTEND" && npm run watch) &`) which
-  # uses the same shape for the same reason: `$!` names the subshell dev.sh's
-  # own process-tree walk (kill_tree/reap_trees) expects to find these
-  # children under.
-  ( _h3_build_in_background "$h3_stage_dir" "$h3_bin" "$h3_lock" "$log_file" "$h3_commit" ) &
-  H3_BUILD_PID=$!
-}
-_h3_maybe_build || echo "==> WARNING: h3 build step failed unexpectedly -> h3-video will be unavailable" >&2
 
 # Python: active venv first, then the repo-local .venv. With neither, bootstrap
 # a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh

@@ -17,6 +17,15 @@ export interface Config {
   // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
   // every mount lives under.
   mounts_root: string;
+  // Where shell code may write scratch files — bytes the app made and can
+  // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
+  // the writer mkdirs it, and /api/fs/mkdir makes ONE level at a time.
+  cache_dir: string;
+  // Whether this machine can raise the OS file/folder dialog from the server
+  // process (server/dirpicker.py) — false on a hosted deploy with no GUI
+  // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
+  // fallback. One backend set raises both dialogs, hence the one flag.
+  native_dir_picker: boolean;
   // Whether the builtin sessions mount record exists yet — a surface linking
   // into it renders only when this is true, so it's never a dead link
   // (unpackaged dev run with no zip, or the brief window before startup's
@@ -1023,6 +1032,28 @@ export function writeFile(path: string, content = "", create = false): Promise<S
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
+/** Raise the user's OWN file dialog, in the server process, and get back the
+ *  absolute path they chose — `null` on a cancel, which is an answer and must
+ *  not be re-asked.
+ *
+ *  The one way for shell code to learn a path: a browser's `<input type=file>`
+ *  hands over BYTES and strips the path on purpose, so an endpoint that takes a
+ *  path (`/api/ai/image`'s `image`) is otherwise only reachable by uploading a
+ *  copy of a file this machine already has. Throws on 409 (a dialog is already
+ *  up), 501 (this machine has no dialog — `Config.native_dir_picker` says so up
+ *  front) and 500.
+ *
+ *  `types` narrows the dialog to those extensions (bare, no dot) — a caller that
+ *  can read three formats should not be offered a fourth. It is the dialog's
+ *  half of the job and NOT the check: a drag-drop never sees the dialog, and the
+ *  Linux backends can only suggest, so a caller still refuses what it cannot
+ *  read in its own words. */
+export function pickFile(
+  opts: { start?: string; title?: string; types?: string[] } = {},
+): Promise<string | null> {
+  return postJson<{ path: string | null }>("/api/fs/pick-file", opts).then((r) => r.path);
+}
+
 export function mkdir(path: string): Promise<StatResult> {
   return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }
@@ -1854,8 +1885,21 @@ export interface NewAppResult {
   session_error: string | null;
 }
 
-export function createApp(name: string, prompt: string): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+// `model`/`effort` are the hero composer's pickers — short model names
+// from the same set as DefaultModel, effort from the claude template's own
+// EFFORTS list. "" means "don't pass the flag": the scaffolding session keeps
+// whatever a chat opened by hand would detect for this project. Anything else
+// is a 400 rather than a silent substitution, so a typo can't quietly buy a
+// different model than the one asked for.
+export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export function createApp(
+  name: string,
+  prompt: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
@@ -2701,6 +2745,14 @@ export interface AiCatalogModel {
    *  repo the user found themselves. NOT the default: `default` is still the
    *  smallest entry and owes nothing to this flag. */
   recommended: boolean;
+  /** Can this model be handed a BASE IMAGE to edit rather than only a prompt
+   *  (AI-9f)? The server's own answer, computed per entry from the resolved
+   *  ENGINE (only mflux honours `image`) and then from the model's own edit
+   *  variant — the same two gates `/api/ai/image` refuses with, so a picker
+   *  that draws an attach affordance off this cannot offer a request the
+   *  route would 400. False on every non-image capability, and optional on
+   *  the wire only because an older server does not send it. */
+  acceptsImage?: boolean;
 }
 
 export interface AiCatalogCapability {
@@ -2727,9 +2779,10 @@ export interface AiCatalogCapability {
    *  canvas default and the step default (`registry.VideoTraits`, server
    *  side). `null` for every capability but video generation: it is the
    *  first (only) one whose request shape varies by which runner resolved
-   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps against `h3-video`'s
-   *  `5 + 17n` at 864×480/20), so the Playground's frame/canvas/step
-   *  sliders read this rather than a hardcoded grid — a slider that
+   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps; the dropped
+   *  `h3-video` used `5 + 17n` at 864×480/20), so the Playground's
+   *  frame/canvas/step sliders read this rather than a hardcoded grid — a
+   *  slider that
    *  disagreed with the server would snap on every render and land off by
    *  up to half its own travel. */
   videoTraits: {

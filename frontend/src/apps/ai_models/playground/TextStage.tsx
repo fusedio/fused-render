@@ -15,14 +15,15 @@
 import { useEffect, useRef, useState } from "react";
 import {
   cancelGeneration,
-  ModelLoading,
   streamChat,
-  watchJob,
+  withModelReady,
   type ChatSettings,
   type ChatUsage,
 } from "./client";
 import { renderMarkdown } from "./markdown";
-import { AdvancedPanel, CopyButton, RailSlider, StarterPrompts } from "./controls";
+import { splitThink } from "./think";
+import { ConfigPanel, CopyButton, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
+import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
@@ -39,43 +40,80 @@ const LIMITS = {
   max_tokens: [1, 32768],
 } as const;
 
-// A standing system prompt by default, not a blank: small local models drift
-// into rambling or page-long <think> blocks without one, and the person this
-// tab exists for should meet the model at its best. Kept short and generic —
-// it steers verbosity and reasoning length, never persona — and fully
-// editable/clearable in the advanced panel (a cleared prompt round-trips as
-// `system=`). It also asks for <thinking>, which splitThink lifts into the fold.
-const DEFAULT_SYSTEM =
-  "You are a helpful assistant answering a single one-off prompt. Answer directly " +
-  "in Markdown and keep it short — expand only when asked for detail. If you need " +
-  "to reason first, put that reasoning inside a <thinking>...</thinking> tag " +
-  "before the answer, and keep it brief.";
+// No system prompt by default. This stage's job is to show what THIS model does
+// on a bare `fused.ai` call, and a standing prompt of ours — however short — is
+// a second author in every reply: verbosity, formatting and reasoning length all
+// come out steered, and nothing on screen says by whom. The panel's field is
+// there for anyone who wants one, and `system=` still rides the URL when it is
+// set. A model that rambles or thinks out loud without one is telling the reader
+// something true about itself, which is what they came to find out.
 
-const STARTERS = [
-  "Explain how a language model predicts the next word, simply",
-  "Write a haiku about running AI on a laptop",
-  "Draft a short, polite email declining a meeting",
-  "Give me three dinner ideas from rice, eggs and spinach",
+// Eight authored examples — two pages of four (D465). Each is a real ask with
+// its constraints spelled out, not a topic: what to write, how long, what to
+// leave out. A one-line "write a haiku" tests that the model answers; these
+// test what the reader actually came to find out, which is whether it follows
+// the shape it was given.
+const STARTERS: Starter[] = [
+  {
+    name: "How it guesses",
+    icon: StarterIcons.bulb,
+    prompt:
+      "Explain how a language model picks the next word to someone who has never written " +
+      "code. Use one everyday analogy, stay under 150 words, and end with the thing people " +
+      "most often get wrong about it.",
+  },
+  {
+    name: "Decline a meeting",
+    icon: StarterIcons.mail,
+    prompt:
+      "Write a short, warm email declining Thursday's design review because I am shipping a " +
+      "release that day. Offer to read the notes and send comments, keep it to four " +
+      "sentences, and do not apologise twice.",
+  },
+  {
+    name: "Dinner from this",
+    icon: StarterIcons.bowl,
+    prompt:
+      "I have rice, two eggs, spinach and a lemon. Give me three dinners I can cook in under " +
+      "20 minutes — a title and three steps each, ordered from least to most effort.",
+  },
+  {
+    name: "Explain an error",
+    icon: StarterIcons.code,
+    prompt:
+      "Explain what a Python KeyError means, the three most common ways it happens in real " +
+      "code, and how to fix each one. One short snippet per fix, no preamble.",
+  },
+  {
+    name: "Regex, in parts",
+    icon: StarterIcons.list,
+    prompt:
+      "Write a regular expression that matches an ISO date (YYYY-MM-DD) and nothing else, " +
+      "then explain it token by token as a bullet list, including why each anchor is there.",
+  },
+  {
+    name: "One day in Lisbon",
+    icon: StarterIcons.plane,
+    prompt:
+      "Plan one day in Lisbon for someone who would rather walk and drink coffee than queue " +
+      "for museums. Morning, afternoon, evening — one line each, plus the walk between them.",
+  },
+  {
+    name: "Three haiku",
+    icon: StarterIcons.pen,
+    prompt:
+      "Write three haiku about running a large AI model on a laptop that gets hot. Give each " +
+      "a different mood: proud, tired, funny. Nothing about clouds.",
+  },
+  {
+    name: "Argue both sides",
+    icon: StarterIcons.chart,
+    prompt:
+      "I am choosing between a laptop with 16GB of memory and one with 32GB for running AI " +
+      "models locally. Argue both sides in a short table, then commit to one recommendation " +
+      "and say what would change your mind.",
+  },
 ];
-
-/** Split one reply into the deliberation and the answer. A block still open
- *  (mid-stream) is all deliberation. Both spellings: <think> from
- *  reasoning-tuned models, <thinking> from the default system prompt — longer
- *  tag first, or "<thinking>" parses as "<think>" plus stray text. */
-function splitThink(text: string): { think: string | null; answer: string; thinking: boolean } {
-  for (const tag of ["thinking", "think"]) {
-    const open = text.indexOf(`<${tag}>`);
-    if (open < 0) continue;
-    const close = text.indexOf(`</${tag}>`);
-    if (close < 0) return { think: text.slice(open + tag.length + 2), answer: "", thinking: true };
-    return {
-      think: text.slice(open + tag.length + 2, close).trim(),
-      answer: text.slice(close + tag.length + 3).replace(/^\s+/, ""),
-      thinking: false,
-    };
-  }
-  return { think: null, answer: text, thinking: false };
-}
 
 function replyStats(usage: ChatUsage | null | undefined): string | null {
   if (!usage?.output_tokens) return null;
@@ -103,6 +141,7 @@ export function TextStage({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
 
   const [temperature, setTemperature] = useState(() =>
     numParam("temp", DEFAULTS.temperature, ...LIMITS.temperature),
@@ -111,9 +150,7 @@ export function TextStage({
   const [maxTokens, setMaxTokens] = useState(() =>
     numParam("maxtok", DEFAULTS.max_tokens, ...LIMITS.max_tokens),
   );
-  // `??`, not `||`: an EMPTY `system=` param is the user having cleared the
-  // default on purpose, and must stay cleared on reload.
-  const [system, setSystem] = useState(() => readParam("system") ?? DEFAULT_SYSTEM);
+  const [system, setSystem] = useState(() => readParam("system") ?? "");
   useEffect(() => {
     const timer = window.setTimeout(() => {
       writeParams({
@@ -121,14 +158,15 @@ export function TextStage({
         temp: temperature !== DEFAULTS.temperature ? String(temperature) : null,
         topp: topP !== DEFAULTS.top_p ? String(topP) : null,
         maxtok: maxTokens !== DEFAULTS.max_tokens ? String(maxTokens) : null,
-        system: system !== DEFAULT_SYSTEM ? system : null,
+        // Empty is the default now, so the param appears only when there IS one.
+        system: system.trim() ? system : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
   }, [prompt, temperature, topP, maxTokens, system]);
 
   const abortRef = useRef<AbortController | null>(null);
-  const boxRef = useRef<HTMLTextAreaElement | null>(null);
+  const { ref: boxRef, grow } = useAutoGrow();
 
   // Leaving the stage must not orphan a generation burning battery behind a
   // tab the user left: abort the fetch AND tell the worker (an abort alone
@@ -142,13 +180,6 @@ export function TextStage({
     },
     [],
   );
-
-  const grow = () => {
-    const box = boxRef.current;
-    if (!box) return;
-    box.style.height = "auto";
-    box.style.height = Math.min(box.scrollHeight, 180) + "px";
-  };
 
   const settings = (): ChatSettings => ({
     ...(temperature !== DEFAULTS.temperature ? { temperature } : {}),
@@ -178,29 +209,13 @@ export function TextStage({
       });
 
     try {
-      let result;
-      try {
-        result = await run();
-      } catch (e) {
-        if (!(e instanceof ModelLoading)) throw e;
-        // The run STARTED the load (AI-5); watch it, then ask again — once.
-        setStatus(
-          downloaded
-            ? "Loading the model into memory — the first run pays for this once…"
-            : "Downloading the model — the first run pays for this once…",
-        );
-        if (e.jobId) {
-          const outcome = await watchJob(e.jobId, controller.signal, (job) =>
-            setStatus(job.detail || "Loading the model…"),
-          );
-          // Someone stopped the load from the Activity panel. Retrying would
-          // just earn a second 409 and surface it as a stream error, so say
-          // what actually happened.
-          if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
-        }
-        setStatus(null);
-        result = await run();
-      }
+      // AI-5's dance, and the wait is bounded rather than one retry — see
+      // `withModelReady`, which owns it for this stage and the embedding one.
+      const result = await withModelReady(run, {
+        signal: controller.signal,
+        downloaded,
+        onStatus: setStatus,
+      });
       setReply((r) => (r ? { ...r, pending: false, usage: result.usage ?? null } : r));
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
@@ -236,15 +251,20 @@ export function TextStage({
   const stats = replyStats(reply?.usage);
 
   return (
-    <div className="pg-work">
-      {/* The action only: the hero card above names the model and its state. */}
-      <h2 className="pg-work-title">Try a prompt</h2>
+    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      {/* The action, and the way to the settings. The hero card above names
+          the model and its state. */}
+      <StageHeader
+        title="Try a prompt"
+        configOpen={configOpen}
+        onToggleConfig={() => setConfigOpen((open) => !open)}
+      />
 
       <div className="pg-composer">
         <textarea
           ref={boxRef}
           value={prompt}
-          rows={2}
+          rows={3}
           placeholder={`Ask ${modelLabel} something…`}
           onChange={(e) => {
             setPrompt(e.target.value);
@@ -257,35 +277,49 @@ export function TextStage({
             }
           }}
         />
-        {!streaming && reply && (
-          <button
-            type="button"
-            className="pg-ghost-btn pg-clear"
-            title="Clear the prompt and reply"
-            onClick={clear}
-          >
-            Clear
-          </button>
-        )}
-        {streaming ? (
-          <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
-            Stop
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-primary pg-send"
-            disabled={!prompt.trim()}
-            title="Enter to run · Shift+Enter for a new line"
-            onClick={() => void send()}
-          >
-            Run <kbd className="pg-kbd">⏎</kbd>
-          </button>
-        )}
+        {/* Clear at the top of this column, Run at the bottom — not inline with
+            the prompt. Inline, Clear appeared and disappeared BESIDE the text,
+            narrowing the box by its own width and rewrapping the prompt taller
+            than the height the grow already wrote. The column's width is set by
+            Run, the wider of the two, so nothing moves when Clear comes and
+            goes. */}
+        <div className="pg-composer-side">
+          {!streaming && reply && (
+            <button
+              type="button"
+              className="pg-ghost-btn pg-clear"
+              title="Clear the prompt and reply"
+              onClick={clear}
+            >
+              Clear
+            </button>
+          )}
+          {streaming ? (
+            <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary pg-send"
+              disabled={!prompt.trim()}
+              title="Enter to run · Shift+Enter for a new line"
+              onClick={() => void send()}
+            >
+              Run <kbd className="pg-kbd">⏎</kbd>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Every knob is behind the fold; the surface above is prompt and Run. */}
-      <AdvancedPanel>
+      {/* Examples first, under the box they fill; hidden once there is a
+          reply to read, which is what that space is then for. */}
+      {!reply && !status && (
+        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
+      )}
+
+      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
+      <ConfigPanel open={configOpen}>
         <RailSlider
           label="Temperature"
           hint="Lower is focused and repeatable; higher is varied and creative."
@@ -309,9 +343,12 @@ export function TextStage({
         <label className="pg-ctl">
           <span className="pg-ctl-head">
             <span className="pg-ctl-label">System prompt</span>
-            {system !== DEFAULT_SYSTEM && (
-              <button type="button" className="pg-ctl-reset" onClick={() => setSystem(DEFAULT_SYSTEM)}>
-                reset
+            {/* "clear", not the other controls' "reset": resetting this one IS
+                emptying it, and a button that says reset beside a prompt the
+                user wrote reads like it would restore one of ours. */}
+            {system !== "" && (
+              <button type="button" className="pg-ctl-reset" onClick={() => setSystem("")}>
+                clear
               </button>
             )}
           </span>
@@ -322,7 +359,10 @@ export function TextStage({
             placeholder="Who the model should be"
             onChange={(e) => setSystem(e.target.value)}
           />
-          <span className="pg-ctl-hint">Standing instructions, applied to every run.</span>
+          <span className="pg-ctl-hint">
+            Standing instructions, applied to every run. Empty by default — the
+            reply is whatever this model does on its own.
+          </span>
         </label>
         <RailSlider
           label="Top-p"
@@ -334,16 +374,10 @@ export function TextStage({
           fallback={DEFAULTS.top_p}
           onChange={setTopP}
         />
-      </AdvancedPanel>
+      </ConfigPanel>
 
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
-
-      {!reply && !status && (
-        <div className="pg-empty-stage">
-          <StarterPrompts title="Try one:" prompts={STARTERS} onPick={(p) => void send(p)} />
-        </div>
-      )}
 
       {reply && shown && (
         <div className="pg-answer-block">

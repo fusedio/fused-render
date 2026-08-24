@@ -45,6 +45,33 @@ export function numParam(
   return value;
 }
 
+/** The `?a=b&c=d` for a set of params — "" when they are all null. Pure, and
+ *  exported for that reason: the two writers below need a `location` and a
+ *  router, and the interesting half of what they do is this. */
+export function searchString(updates: Record<string, string | null>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(updates)) {
+    if (value !== null) params.set(key, value);
+  }
+  const search = params.toString();
+  return search ? "?" + search : "";
+}
+
+/** Replace the WHOLE query with `updates` — everything not named is dropped,
+ *  where `writeParams` below keeps what it was not asked about.
+ *
+ *  For a move between stages. The stages share a namespace (`prompt` is a
+ *  sentence to a text model and a scene to an image one; `steps`, `seed` and
+ *  `w`/`h` mean different things to each engine that has them) and each stage
+ *  only ever nulls its OWN keys, so a merge-style rewrite carries the
+ *  abandoned stage's settings into the new one — where they are read if the
+ *  name happens to collide and are dead weight in the URL if it does not.
+ *  Naming what to keep, rather than what to clear, is the direction that does
+ *  not go stale: a stage that adds a parameter tomorrow is covered. */
+export function resetParams(updates: Record<string, string | null>): void {
+  replaceSearch(location.pathname + searchString(updates));
+}
+
 /** Rewrite query params in place — null deletes. `replaceSearch`, not
  *  navigate: model browsing and slider drags must not stack history entries. */
 export function writeParams(updates: Record<string, string | null>): void {

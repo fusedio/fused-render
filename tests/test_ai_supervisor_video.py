@@ -55,9 +55,9 @@ def test_leak_ceiling_uses_the_video_timeout_for_video_generation():
         supervisor.GENERATE_TIMEOUT_S + supervisor._LEAK_CEILING_MARGIN_S)
 
 
-def _fake_worker(capability, model="MiniMaxAI/MiniMax-H3"):
+def _fake_worker(capability, model="dgrauet/ltx-2.3-mlx-q4"):
     worker = supervisor.Worker(model=model, capability=capability,
-                               runner_code="h3-video", token="tok-video")
+                               runner_code="ltx-video", token="tok-video")
     worker.state = "ready"
     with supervisor._lock:
         supervisor._workers[capability] = worker
@@ -74,13 +74,13 @@ def test_unload_accepts_the_video_capability(monkeypatch):
 
 
 def test_unload_by_model_also_reaches_a_video_worker(monkeypatch):
-    worker = _fake_worker(registry.VIDEO_GENERATION, model="some/other-h3-model")
+    worker = _fake_worker(registry.VIDEO_GENERATION, model="some/other-video-model")
     monkeypatch.setattr(supervisor, "_terminate", lambda w: None)
-    assert supervisor.unload(model="some/other-h3-model", reason="test") is True
+    assert supervisor.unload(model="some/other-video-model", reason="test") is True
 
 
 def test_cancel_generation_reaches_a_video_worker(monkeypatch):
-    """Pins `_RUNNERS` to h3-video alone, matching `_fake_worker`'s hardcoded
+    """Pins `_RUNNERS` to ltx-video alone, matching `_fake_worker`'s hardcoded
     `runner_code` — since `ltx-video` was registered ahead of it (SPEC §40's
     LTX-2.3 plan), `ready_worker` (which `cancel_generation` calls) evicts a
     resident whose `runner_code` no longer matches the capability's RESOLVED
@@ -93,7 +93,7 @@ def test_cancel_generation_reaches_a_video_worker(monkeypatch):
     way `test_ai_runtime.py::test_a_video_off_apple_silicon_says_so` pins the
     registry to test one runner's behaviour in isolation.
     """
-    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("h3-video"),))
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("ltx-video"),))
     worker = _fake_worker(registry.VIDEO_GENERATION)
     calls = {}
 
@@ -118,34 +118,7 @@ def test_start_video_raises_before_opening_a_job_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     with pytest.raises(supervisor.SupervisorError, match="Apple Silicon"):
-        supervisor.start_video("MiniMaxAI/MiniMax-H3", {"prompt": "x"},
+        supervisor.start_video("dgrauet/ltx-2.3-mlx-q4", {"prompt": "x"},
                                "sys:ai-video:test")
 
 
-def test_child_env_injects_the_resolved_h3_binary_for_video(monkeypatch, tmp_path):
-    fake = tmp_path / "h3"
-    fake.write_text("#!/bin/sh\n")
-    fake.chmod(0o755)
-    monkeypatch.setenv("FUSED_RENDER_H3_BIN", str(fake))
-    env = supervisor._child_env("tok", "MiniMaxAI/MiniMax-H3", registry.VIDEO_GENERATION)
-    assert env["FUSED_RENDER_H3_BIN"] == str(fake)
-
-
-def test_child_env_does_not_resolve_h3_for_other_capabilities(monkeypatch):
-    """The resolver itself must not even be CALLED for a non-video capability
-    — a video-specific binary path has no business being derived for, say, an
-    image worker's environment."""
-    monkeypatch.delenv("FUSED_RENDER_H3_BIN", raising=False)
-    calls = []
-    monkeypatch.setattr(registry, "h3_bin", lambda: calls.append(1) or "/some/h3")
-    env = supervisor._child_env("tok", "org/model", registry.IMAGE_GENERATION)
-    assert not calls
-    assert "FUSED_RENDER_H3_BIN" not in env
-
-
-def test_child_env_omits_h3_binary_when_nothing_resolves(monkeypatch):
-    monkeypatch.delenv("FUSED_RENDER_H3_BIN", raising=False)
-    monkeypatch.setattr(registry.shutil, "which", lambda name: None)
-    monkeypatch.setattr(registry.sys, "frozen", None, raising=False)
-    env = supervisor._child_env("tok", "MiniMaxAI/MiniMax-H3", registry.VIDEO_GENERATION)
-    assert "FUSED_RENDER_H3_BIN" not in env

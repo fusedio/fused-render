@@ -219,8 +219,13 @@ export function RecommendedCard({
          partly downloaded repo card wears, and the reason this card needs it is
          the same: the bar in the progress row is 3px of a card the reader is
          watching from across a carousel. Nothing when the job reports no total
-         (a venv build), where an invented boundary would read as stalled. */
-      variant={"am-reccard" + (arriving === null ? "" : " am-card-arriving")}
+         (a venv build), where an invented boundary would read as stalled.
+
+         Idle, it is `am-card-none`: a recommendation is by construction a model
+         this machine does NOT have (the merge drops any the disk already
+         answers for), so the faded end of the have/not-have axis is this card's
+         resting state rather than a case it has to test for. */
+      variant={"am-reccard" + (arriving === null ? " am-card-none" : " am-card-arriving")}
       style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
       /* The curation's "why this one", on the card rather than in it. */
       hoverNote={model.note ?? undefined}
@@ -443,7 +448,13 @@ export function HubResultCard({
             ? " am-card-have"
             : disk.state === "partial"
               ? " am-card-part am-card-part-unknown"
-              : "")
+              : /* Nothing of it here — the faded end of the same axis. This card
+                   is the one place all three disk answers land side by side in a
+                   single list, so it is also where the axis has to be readable:
+                   a search for "qwen" returns models this machine has and models
+                   it does not, and the surface is what separates them before a
+                   single word is read. */
+                " am-card-none")
       }
       style={arriving === null ? undefined : { "--am-part": `${arriving * 100}%` }}
       cardRef={card}

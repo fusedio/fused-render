@@ -35,6 +35,40 @@ from optional_runtime import require
 from raster_engine import MAX_TILE_CACHE, band_ranges, error_descriptor, transparent_tile
 
 
+def _install_ca_bundle() -> None:
+    """Point TLS at a CA bundle that includes certifi's roots without dropping
+    the OS store. Windows' default context misses issuers certifi carries (the
+    remote-Zarr failure this fixes), but SSL_CERT_FILE replaces the trust store
+    rather than adding to it, so a plain certifi path would silently discard any
+    enterprise root the machine trusts. So the Windows store is merged into a
+    combined bundle; elsewhere the system store already works and is left be. An
+    operator's own SSL_CERT_FILE always wins."""
+    import sys
+
+    if sys.platform != "win32" or os.environ.get("SSL_CERT_FILE"):
+        return
+    import certifi
+    import ssl
+    import tempfile
+
+    with open(certifi.where(), "rb") as handle:
+        pem = bytearray(handle.read())
+    for store in ("ROOT", "CA"):
+        for cert, encoding, _trust in ssl.enum_certificates(store):
+            if encoding == "x509_asn":
+                pem += ssl.DER_cert_to_PEM_cert(cert).encode()
+    bundle = os.path.join(tempfile.gettempdir(), "fused-render-ca-bundle.pem")
+    temporary = f"{bundle}.{os.getpid()}.tmp"
+    with open(temporary, "wb") as handle:
+        handle.write(pem)
+    os.replace(temporary, bundle)
+    os.environ["SSL_CERT_FILE"] = bundle
+
+
+with contextlib.suppress(Exception):
+    _install_ca_bundle()
+
+
 MULTIDIM_RUNTIME = {
     "xarray": "xarray",
     "rioxarray": "rioxarray",

@@ -7,6 +7,7 @@
 // the page file the place every playground concern happened to land.
 import { readParam } from "@apps/ai_models/lib/params";
 import { type AiCatalogModel } from "@platform/lib/api";
+import { type AppAnnotation } from "@platform/lib/appAnnotation";
 
 /** The display name everywhere on this tab: the curated nickname, or the label
  *  for a cached entry nobody curated. A fallback read, never a derivation. */
@@ -14,13 +15,21 @@ export function modelName(model: AiCatalogModel): string {
   return model.nickname || model.label;
 }
 
-/** The seed for the /apps composer: everything the Playground knows about the
- *  moment — which model, what it is good for, the settings the user dialled in
- *  (read off the URL, where every non-default already lives), and the page API
- *  that reaches it (`runtime.js`'s names — the seed is read by an app AUTHOR's
- *  session, and camelCase is that API's vocabulary). Ends mid-sentence on
- *  purpose: the user finishes it with what they actually want built. */
-export function buildAppSeed(model: AiCatalogModel, capability: string): string {
+/** An annotation the /apps composer shows as a chip (`@LFM2.5`, Cursor-file-tag
+ *  style) instead of dumping prose into the prompt box. `detail` carries the
+ *  same instructions the old inline seed used to open with — model id, what
+ *  it's good for, the settings tuned in the Playground, the page API that
+ *  reaches it — spliced into the prompt at submit time, invisible to the user. */
+export function buildAppAnnotation(model: AiCatalogModel, capability: string): AppAnnotation {
+  return { id: model.id, name: modelName(model), detail: buildAppSeedDetail(model, capability) };
+}
+
+/** Everything the Playground knows about the moment — which model, what it is
+ *  good for, the settings the user dialled in (read off the URL, where every
+ *  non-default already lives), and the page API that reaches it (`runtime.js`'s
+ *  names — read by an app AUTHOR's session, so camelCase is that API's
+ *  vocabulary). Used as an `AppAnnotation`'s `detail`. */
+function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
   const name = model.nickname || model.label;
   const lines: string[] = [
     `Build a fused app around the local AI model "${name}" (${model.id}) — it runs fully offline on this machine.`,
@@ -105,8 +114,6 @@ export function buildAppSeed(model: AiCatalogModel, capability: string): string 
     "Before writing any AI code, load the `fused-render-ai` skill — it documents the " +
       "fused.ai contract: streaming, model loading and download progress, every error " +
       "type and how a page should respond, and what an exported app may call.",
-    "",
-    "The app I want: ",
   );
   return lines.join("\n");
 }

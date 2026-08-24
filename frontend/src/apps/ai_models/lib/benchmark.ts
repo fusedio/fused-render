@@ -864,19 +864,58 @@ export function runButtonState(
   };
 }
 
+/** `mm:ss`, floored, never negative — the same shape `TranscribeStage.tsx`'s
+ *  own `clock()` uses, so the app states elapsed time one way. Negative would
+ *  only happen from a clock skew between "when the click fired" and "now",
+ *  and floored to 0 rather than shown as a nonsense negative count. */
+function benchClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** The busy row's own text: phase, then elapsed time — never an invented
+ *  percentage (`styles/ai-models.css`'s own rule, and the busy row's previous
+ *  static "this takes minutes" is exactly the silence that rule exists to
+ *  replace).
+ *
+ *  **`stillLoading` is the AI runtime's OWN answer, not a guess.** `run()`
+ *  opens its measurement row only once `_load_to_ready` returns
+ *  (`ai/benchmark.py`), so the runtime's `loaded[]` entry for this model is
+ *  the one honest signal for "which phase is this, right now" — a client-side
+ *  timer cannot know when the load actually finished, and guessing from
+ *  elapsed time alone would show "Measuring" for a cold model still pulling
+ *  gigabytes. `useAiRuntime` is already polled by the page (`lib/aiRuntime.ts`)
+ *  for exactly this table, so this reuses that poll rather than adding a
+ *  second one.
+ *
+ *  Once loading ends, the label switches to a ticking elapsed clock from the
+ *  moment the button was pressed (`startedAt`, `now` in epoch milliseconds) —
+ *  real, measured time, matching the row `_MeasurementRow` now keeps open on
+ *  the server for exactly this phase. */
+export function busyRowText(
+  stillLoading: boolean,
+  startedAt: number,
+  now: number,
+): string {
+  if (stillLoading) return "Loading weights into memory…";
+  return `Measuring — ${benchClock((now - startedAt) / 1000)}`;
+}
+
 /** What to tell the user when a run came back stopped rather than measured.
  *
- *  **The cause is elsewhere in the app, and the note does not guess which.** A
- *  benchmark owns no download-manager row and offers no ✕ of its own (see
- *  `ai/benchmark.py`), so a run that ends `cancelled` was stopped by something
- *  reaching the model it was using — which one resident model per capability,
- *  shared by the whole app, makes possible. `fused.ai.cancel()` from any open
- *  page does it; so does the ✕ on a download row the load opened, and so does
+ *  **The cause could be the run's own row now, or something else entirely, and
+ *  the note does not guess which.** A benchmark's own measurement row
+ *  (`ai/benchmark.py`'s `_MeasurementRow`) offers a ✕ during the timed
+ *  phase — but a run that ends `cancelled` could just as well have been
+ *  stopped by something ELSE reaching the model it was using, since one
+ *  resident model per capability, shared by the whole app, makes that
+ *  possible too. `fused.ai.cancel()` from any open page does it; so does the
+ *  ✕ on the model's own LOAD row while it was still coming up, and so does
  *  the ✕ on a queued-transcription row a speech benchmark can inherit. The
  *  client cannot tell those apart, so the wording names the SHAPE of the cause
  *  and offers the commonest one as an example rather than asserting it — an
  *  earlier draft said "most likely fused.ai.cancel()" and was simply wrong for
- *  the two ✕ cases.
+ *  the ✕ cases.
  *
  *  Without this the failure was silent in the worst way: nothing appended, no
  *  error set, the button quietly re-enabled — so somebody who pressed Run and

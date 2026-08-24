@@ -142,6 +142,18 @@ export function cancelGeneration(capability?: string): Promise<{ cancelled: bool
  *  spinner nobody can dismiss. The throw lands in each caller's own catch. */
 const MAX_POLL_FAILURES = 10;
 
+/** How many CONSECUTIVE polls may fail to find the row before the watch calls
+ *  it `gone`, rather than firing on the very first miss. `FINISHED_TTL_S`
+ *  (`fused_render/jobs.py`) is a few seconds against this watch's 1s poll, so
+ *  a single slow tick, a re-render stall, or a background-tab timer throttle
+ *  can miss the row's whole window with margin to spare — and `gone` is read
+ *  as success by every caller (`ImageStage`, `TranscribeStage`, `TextStage`,
+ *  `EmbedStage` all treat it as "done, no artefact to distrust"), so firing on
+ *  the first miss risks rendering a path nothing was ever written to. Matches
+ *  `runtime.js`'s own `watchJob`, which has tolerated 5 for the same reason
+ *  since before this one existed. */
+const GONE_MISS_TOLERANCE = 5;
+
 /** Why a watch ended. Three outcomes, not two, because the callers genuinely
  *  need to tell them apart and a `Job | null` cannot say it:
  *
@@ -149,10 +161,12 @@ const MAX_POLL_FAILURES = 10;
  *                  if the job makes one, is on disk.
  *  - `cancelled` — somebody stopped it. NO artefact was written, so a caller
  *                  must not render an output path or claim a saved file.
- *  - `gone`      — the row vanished between polls. `FINISHED_TTL_S` is 30s
- *                  against a 1s poll, so this is the manager retiring a row we
- *                  simply took too long to read; treat it as `done` unless the
- *                  caller can check the artefact itself.
+ *  - `gone`      — the row was missing from `GONE_MISS_TOLERANCE` consecutive
+ *                  polls in a row, not just one. `FINISHED_TTL_S` is a few
+ *                  seconds against a 1s poll, so a single missed poll is not
+ *                  enough evidence the manager retired the row rather than us
+ *                  just being slow to read it once; treat `gone` as `done`
+ *                  unless the caller can check the artefact itself.
  *
  *  A FAILED poll is none of these and never ends the watch — that conflation
  *  is what made a single flaky `/api/jobs` read resolve as success. Rejects on
@@ -169,6 +183,7 @@ export async function watchJob(
   onTick?: (job: Job) => void,
 ): Promise<WatchOutcome> {
   let failures = 0;
+  let missingPolls = 0;
   for (;;) {
     if (signal.aborted) throw new DOMException("aborted", "AbortError");
     let row: Job | undefined;
@@ -177,11 +192,15 @@ export async function watchJob(
       failures = 0;
       row = snapshot.jobs.find((j) => j.id === jobId);
       if (row && onTick) onTick(row);
-      // Read, and the row is not there: the manager retired it.
-      if (!row) return { state: "gone" };
-      if (row.state !== "running") {
-        if (row.state === "error") throw new Error(row.message || "the job failed");
-        return { state: row.state === "cancelled" ? "cancelled" : "done", job: row };
+      if (!row) {
+        // One miss is not evidence the row is gone — see GONE_MISS_TOLERANCE.
+        if (++missingPolls >= GONE_MISS_TOLERANCE) return { state: "gone" };
+      } else {
+        missingPolls = 0;
+        if (row.state !== "running") {
+          if (row.state === "error") throw new Error(row.message || "the job failed");
+          return { state: row.state === "cancelled" ? "cancelled" : "done", job: row };
+        }
       }
     } catch (e) {
       if ((e as Error).name === "AbortError") throw e;
@@ -197,6 +216,92 @@ export async function watchJob(
   }
 }
 
+/** How many cold-start 409s one call may wait out before giving up. More than
+ *  one, because a load finishing is NOT the same as this call's model being
+ *  resident when it asks again: ONE model per capability is resident at a time
+ *  (AI-13), so any other surface asking for a different one — a second tab, the
+ *  Models page, an app calling `fused.ai` — evicts ours between the job row
+ *  going `done` and the retry landing, and the retry earns a fresh 409. The
+ *  single retry this replaces surfaced that as "<model> is still loading
+ *  (loading)", which reads as a broken run when nothing was broken: the answer
+ *  was to ask again. Bounded because two surfaces asking for two models can
+ *  trade the slot forever, and a spinner that never resolves is worse than a
+ *  sentence saying what is happening. */
+const MAX_LOAD_WAITS = 4;
+
+/** Sleep, but abortable — a Stop pressed during the wait must land on the same
+ *  AbortError every other step of the dance throws. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException("aborted", "AbortError"));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Run `attempt`, waiting out AI-5's cold start: the first call STARTS the load
+ *  and 409s with the job id, so this watches that job and asks again.
+ *
+ *  Lives here rather than in a stage because both stages that generate against
+ *  a resident model do the identical dance, and the copy in each of them drifted
+ *  the moment one of them learned something (this bound is that something). The
+ *  IMAGE path needs none of it: `generate_image` waits for the model inside the
+ *  render job server-side (`_wait_ready`), which is why the image stage never
+ *  saw the failure this fixes — a text box may not hang for a multi-GB load, so
+ *  the text and embedding paths fail fast and the waiting happens HERE.
+ *
+ *  `onStatus` is told what to narrate and handed null once there is nothing to
+ *  say. A load stopped from the Activity panel ends the call rather than being
+ *  retried into a second 409. */
+export async function withModelReady<T>(
+  attempt: () => Promise<T>,
+  opts: { signal: AbortSignal; downloaded: boolean; onStatus: (text: string | null) => void },
+): Promise<T> {
+  for (let waited = 0; ; waited++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      if (!(e instanceof ModelLoading)) throw e;
+      if (waited >= MAX_LOAD_WAITS) {
+        throw new Error(
+          `${e.message} — and it keeps losing its place before a run can start. ` +
+            `One model at a time is resident, so another page asking for a ` +
+            `different one takes the slot. Try again.`,
+        );
+      }
+      opts.onStatus(
+        waited > 0
+          ? "Loading the model again — something else took its place…"
+          : opts.downloaded
+            ? "Loading the model into memory — the first run pays for this once…"
+            : "Downloading the model — the first run pays for this once…",
+      );
+      if (e.jobId) {
+        const outcome = await watchJob(e.jobId, opts.signal, (job) =>
+          opts.onStatus(job.detail || "Loading the model…"),
+        );
+        // Someone stopped the load from the Activity panel. Asking again would
+        // just earn a second 409 and read as a stream error, so say what
+        // actually happened.
+        if (outcome.state === "cancelled") throw new Error("the model load was cancelled");
+        // No row to watch: retired, or never seen. Nothing to poll, so pace the
+        // retry rather than hammering the route with it.
+        if (outcome.state === "gone") await pause(1000, opts.signal);
+      } else {
+        await pause(1000, opts.signal);
+      }
+      opts.onStatus(null);
+    }
+  }
+}
+
 // -- Images (POST /api/ai/image, AI-9) ----------------------------------------
 
 /** What the route accepts — `_reject_unknown` refuses any other key, so this
@@ -204,6 +309,13 @@ export async function watchJob(
 export interface ImageRequest {
   prompt: string;
   model?: string;
+  /** An absolute path to a base image to EDIT instead of rendering from the
+   *  prompt alone (AI-9f). Only the mflux engine honours it, and only for a
+   *  model with an edit variant — `AiCatalogModel.acceptsImage` is the server's
+   *  own answer to whether this model is one of them, and sending it for one
+   *  that is not is a 400. Absolute, so no `base` is needed: the shell is not a
+   *  page and has no `?path=` to resolve against. */
+  image?: string;
   width?: number;
   height?: number;
   steps?: number;

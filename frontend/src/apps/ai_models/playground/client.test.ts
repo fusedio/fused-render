@@ -28,7 +28,7 @@ import { expect, test } from "bun:test";
 };
 
 // Dynamic, so the shim above is in place before the module graph evaluates.
-const { watchJob } = await import("./client");
+const { ModelLoading, watchJob, withModelReady } = await import("./client");
 import type { Job } from "@platform/lib/jobs";
 
 const JOB: Job = {
@@ -96,11 +96,35 @@ test("a cancelled row is NOT a finished one", async () => {
   expect(outcome.state).toBe("cancelled");
 });
 
-test("a vanished row resolves gone", async () => {
-  // FINISHED_TTL_S is 30s against a 1s poll, so this is the manager retiring a
-  // row we took too long to read — the ordinary end of a finished load.
+test("a vanished row resolves gone after enough consecutive misses", async () => {
+  // FINISHED_TTL_S is a few seconds against a 1s poll, so the manager
+  // retiring a row we took too long to read is still the ordinary case here
+  // — it just takes a run of misses, not one, to conclude that is what
+  // happened (see GONE_MISS_TOLERANCE).
   const { outcome } = await watch(["absent"]);
   expect(outcome).toEqual({ state: "gone" });
+});
+
+test("a single missed poll is not read as gone", async () => {
+  // The regression this tolerance exists to close: one slow tick used to
+  // resolve `gone`, which every caller (ImageStage, TranscribeStage,
+  // TextStage, EmbedStage) reads as "done, no artefact to distrust" — so a
+  // render that was still in flight got filed as a finished one with a path
+  // that held nothing.
+  const { outcome, seen } = await watch(["running", "absent", "done"]);
+  expect(outcome).toEqual({ state: "done", job: { ...JOB, state: "done" } });
+  expect(seen).toEqual(["running", "done"]);
+});
+
+test("misses only count while consecutive — a sighting resets the count", async () => {
+  const script: (string | Error)[] = ["running"];
+  for (let i = 0; i < 8; i++) {
+    script.push("absent");
+    script.push("running"); // resets the streak before it reaches tolerance
+  }
+  script.push("done");
+  const { outcome } = await watch(script);
+  expect(outcome).toEqual({ state: "done", job: { ...JOB, state: "done" } });
 });
 
 test("an error row throws its own message", async () => {
@@ -151,4 +175,96 @@ test("an already-aborted signal throws before the first poll", async () => {
   const controller = new AbortController();
   controller.abort();
   await expect(watch(["done"], controller.signal)).rejects.toThrow(/abort/i);
+});
+
+// -- withModelReady: the cold-start dance, bounded ---------------------------
+//
+// The bug these encode: the dance used to retry EXACTLY once, so a load that
+// finished and then lost the capability slot to another model — a second tab,
+// the Models page, an app calling fused.ai — came back to the reader as
+// "<model> is still loading (loading)". Nothing was broken; the answer was to
+// ask again. The image stage never showed this because its wait happens on the
+// server, inside the render job.
+
+/** Drive one dance. `script` is what each attempt does: "ok" resolves, "409"
+ *  throws ModelLoading with a job id, "409-nojob" throws one without. Every
+ *  job poll answers `done`, and both sleeps are stubbed to zero. */
+async function dance(script: string[], jobState = "done") {
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const status: (string | null)[] = [];
+  let attempts = 0;
+  (globalThis as { fetch: unknown }).fetch = async () => ({
+    ok: true,
+    json: async () => ({ jobs: [{ ...JOB, state: jobState }], now: 0 }),
+  });
+  (globalThis as { setTimeout: unknown }).setTimeout = (fn: () => void) => realSetTimeout(fn, 0);
+  const attempt = async () => {
+    const step = script[Math.min(attempts++, script.length - 1)];
+    if (step === "409") throw new ModelLoading("tiny-model is still loading (loading)", "j1");
+    if (step === "409-nojob") throw new ModelLoading("tiny-model is loading now", null);
+    if (step === "boom") throw new Error("the model process did not answer");
+    return "the answer";
+  };
+  try {
+    return {
+      result: await withModelReady(attempt, {
+        signal: new AbortController().signal,
+        downloaded: true,
+        onStatus: (text) => status.push(text),
+      }),
+      attempts,
+      status,
+    };
+  } finally {
+    globalThis.fetch = realFetch;
+    globalThis.setTimeout = realSetTimeout;
+  }
+}
+
+test("a resident model runs on the first attempt and narrates nothing", async () => {
+  const { result, attempts, status } = await dance(["ok"]);
+  expect(result).toBe("the answer");
+  expect(attempts).toBe(1);
+  expect(status).toEqual([]);
+});
+
+test("a cold start is watched and asked again", async () => {
+  const { result, attempts, status } = await dance(["409", "ok"]);
+  expect(result).toBe("the answer");
+  expect(attempts).toBe(2);
+  expect(status[0]).toMatch(/first run pays/);
+  // Handed null once there is nothing left to say.
+  expect(status[status.length - 1]).toBeNull();
+});
+
+test("a model evicted between the load and the retry is waited for again", async () => {
+  // THE REGRESSION. Two 409s in a row is not a failure: the first load
+  // finished, something else took the slot, and the second load is ours again.
+  const { result, attempts, status } = await dance(["409", "409", "409", "ok"]);
+  expect(result).toBe("the answer");
+  expect(attempts).toBe(4);
+  expect(status.some((text) => text?.includes("took its place"))).toBe(true);
+});
+
+test("a model that never keeps its place says so, rather than spinning", async () => {
+  await expect(dance(["409"])).rejects.toThrow(/keeps losing its place/);
+});
+
+test("the failing message carries what the server said", async () => {
+  await expect(dance(["409"])).rejects.toThrow(/still loading \(loading\)/);
+});
+
+test("a 409 with no job to watch is paced, not hammered", async () => {
+  const { result, attempts } = await dance(["409-nojob", "ok"]);
+  expect(result).toBe("the answer");
+  expect(attempts).toBe(2);
+});
+
+test("a load stopped from the Activity panel ends the call", async () => {
+  await expect(dance(["409", "ok"], "cancelled")).rejects.toThrow(/load was cancelled/);
+});
+
+test("any other failure is the caller's, untouched", async () => {
+  await expect(dance(["boom"])).rejects.toThrow("the model process did not answer");
 });

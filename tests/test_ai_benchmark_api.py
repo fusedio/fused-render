@@ -382,17 +382,20 @@ def test_posting_a_curated_but_undownloaded_model_is_a_404_not_a_download(
     assert loads == []
 
 
-def test_the_response_carries_no_job_id_and_no_row_is_created(client, on_disk,
-                                                              monkeypatch):
-    """The removal, guarded end to end.
+def test_the_response_carries_no_job_id_but_a_titled_row_is_created(
+        client, on_disk, monkeypatch):
+    """The wire contract, guarded end to end.
 
-    A benchmark used to hand back a `jobId`, and three attempts to make that row
-    work produced three defects: a decorated title no consumer could find, then a
-    bare title that SHADOWED the row `supervisor.load` opens for the same model —
-    putting the download manager's only ✕ on the load and letting a cold run spin
-    to its hour-long timeout. Server job rows are a title-keyed namespace shared
-    with the load path, so a benchmark cannot have one. Reporting is left REAL
-    here, so a row created anywhere on the path shows up in this assertion.
+    The HTTP response never carries a `jobId` — a page finds the measurement
+    row the same way it finds any other server row, through
+    `useCacheScan.ts`'s `job.title -> job` map, never through a value handed
+    back by this endpoint. Three earlier attempts at the row itself collided
+    on TITLE (a decorated one no consumer could find, then a bare one that
+    SHADOWED the row `supervisor.load` opens for the same model — putting the
+    download manager's only ✕ on the load and letting a cold run spin to its
+    hour-long timeout); `_bench_job_title` is the fix, so THIS test asserts a
+    row exists, titled distinctly, rather than asserting none does. Reporting
+    is left REAL here, so the row the run actually opened shows up.
     """
     monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: FakeRunner)
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
@@ -410,9 +413,11 @@ def test_the_response_carries_no_job_id_and_no_row_is_created(client, on_disk,
                      capability=ai_registry.TEXT_GENERATION).json()
         assert "jobId" not in body
         assert body["run"]["ok"] is True
-        assert jobs.list_jobs() == [], (
-            "a benchmark request created a download-manager row"
-        )
+        rows = jobs.list_jobs()
+        assert len(rows) == 1, "exactly one row for a benchmark, never zero or two"
+        assert rows[0]["title"] == "Benchmark · bench/model"
+        assert rows[0]["title"] != "bench/model"
+        assert rows[0]["state"] == "done"
     finally:
         jobs.reset()
 

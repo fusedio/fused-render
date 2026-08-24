@@ -32,16 +32,17 @@ import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
+import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { PLAYGROUND_GROUPS } from "./groups";
-import { buildAppSeed, modelName } from "./appSeed";
+import { buildAppAnnotation, modelName } from "./appSeed";
 import { capabilityIcon, unsupportedIcon } from "./capabilityIcons";
 import { pickPlaygroundModel, playgroundModels } from "./pick";
 import { PlaygroundApps } from "./PlaygroundApps";
 import { hubModelUrl } from "@apps/ai_models/local/hub";
-import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { readParam, resetParams, writeParams } from "@apps/ai_models/lib/params";
 import { isBusy, refreshAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
-import { fetchJobs, type Job } from "@platform/lib/jobs";
+import { cancelJob, fetchJobs, isRunning, type Job } from "@platform/lib/jobs";
 import {
   downloadAiModel,
   getAiCatalog,
@@ -68,6 +69,55 @@ const GROUP_LABELS: Record<string, string> = Object.fromEntries(
 );
 function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
+}
+
+// A sidebar row's download, counting. The row has one 20px corner for this and
+// the glyph that lived there says only "you may fetch this" — so a pull started
+// from the sidebar (or from the stage, or from another tab) left the row it is
+// about looking idle, with the percentage two hundred pixels away in the stage
+// header.
+//
+// A RING and not a bar: the slot is a square the width of an icon, and a 3px
+// bar in it is four pixels of fill nobody can read. It replaces the glyph in
+// place rather than joining it, because the arrow and the ring make the same
+// claim about the same model and the row has no room to make it twice.
+//
+// The arc is drawn with `stroke-dasharray`/`-dashoffset` on a circle rotated a
+// quarter turn back, so 0% starts at twelve o'clock. An unmeasured pull — no
+// total yet, which is the first second of every one of them and the whole of a
+// venv build — spins a fixed quarter-arc instead: a ring frozen at 0 reads as a
+// download that has stalled, which is the one thing it is not.
+const RING_R = 6.5;
+const RING_C = 2 * Math.PI * RING_R;
+
+/** How far a pull has got, 0–1, or null while nothing can divide. The job's
+ *  bytes and never the runtime's: only the worker doing the fetching knows.
+ *  One function because the ring, the byte line and both titles must not be
+ *  able to disagree about the same download. */
+function downloadFraction(job?: Job): number | null {
+  if (!job || job.unit !== "bytes" || !job.total || job.done === null) return null;
+  return Math.min(1, job.done / job.total);
+}
+
+function DownloadRing({ job }: { job?: Job }) {
+  const measured = downloadFraction(job);
+  return (
+    <svg
+      className={"pg-dl-ring" + (measured === null ? " pg-dl-ring-idle" : "")}
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+    >
+      <circle className="pg-dl-ring-track" cx="8" cy="8" r={RING_R} />
+      <circle
+        className="pg-dl-ring-arc"
+        cx="8"
+        cy="8"
+        r={RING_R}
+        strokeDasharray={RING_C}
+        strokeDashoffset={measured === null ? RING_C * 0.75 : RING_C * (1 - measured)}
+      />
+    </svg>
+  );
 }
 
 
@@ -222,6 +272,29 @@ export default function PlaygroundTab() {
 
   const select = (id: string) => {
     setActionError(null);
+    // CHANGING CAPABILITY CLEARS THE SETTINGS. Every stage writes its tuning
+    // into one query namespace and nulls only the keys it owns, so a merge kept
+    // the abandoned stage's — which is not merely untidy: `prompt`, `steps`,
+    // `seed` and `w`/`h` are spelled the same across stages and mean different
+    // things, so a scene written for an image model arrived as a sentence for a
+    // chat one, and a step count tuned for a distilled renderer was read by a
+    // video engine with its own grid. Whatever does NOT collide is dead weight
+    // in a URL people share.
+    //
+    // Written as "keep the model" rather than as a list of keys to drop,
+    // because the list of keys is the thing that goes stale: a stage that gains
+    // a parameter tomorrow is already covered here.
+    //
+    // A move WITHIN a capability keeps everything on purpose — comparing two
+    // image models at one size and seed is the whole point of the sidebar, and
+    // the stage does not even remount for it.
+    const nextCapability = railRows.find((row) =>
+      row.models.some((model) => model.id === id),
+    )?.capability;
+    if (nextCapability && selected && nextCapability !== selected.row.capability) {
+      resetParams({ model: id });
+      return;
+    }
     // cap dies with the first explicit pick — leaving it would make a shared
     // URL claim a task the user has since clicked away from.
     writeParams({ model: id, cap: null });
@@ -261,6 +334,20 @@ export default function PlaygroundTab() {
     if (!selected) return;
     return runDownloadFor(selected.model.id, selected.row.capability);
   };
+  // The download manager's ✕, on the card the download is being watched from. A
+  // REQUEST and not a state change: the job row stays until the worker honours
+  // it, and the next tick (one second — the poll is running because the runtime
+  // is busy) brings "Cancelling…" from the row itself rather than from a local
+  // guess about it. Same call the Local tab's cards make.
+  const runCancelDownload = async (job: Job) => {
+    setActionError(null);
+    try {
+      await cancelJob(job.id);
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+    refreshAiRuntime();
+  };
   const runLoad = async () => {
     if (!selected) return;
     setActionError(null);
@@ -293,6 +380,61 @@ export default function PlaygroundTab() {
   // never understating it, and null when there is nothing to say at all (see
   // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
+  // The fit verdict, in words, for all three answers — null and only null draws
+  // nothing (see the fact itself).
+  //
+  // The two bad answers are TINTED and the good one is not. Amber and red are
+  // the app's warning and error tokens and they are spent here for the reason
+  // they exist: "tight" and "no" are the only verdicts that ask the reader to
+  // do something differently. "easy" deliberately gets no green — green on this
+  // page means RUNNING (the sidebar's live dot, the loaded badge, D461), and a
+  // second meaning for one hue on one screen dilutes the one that matters,
+  // doubly so when it would appear on nearly every model. Untinted-is-fine is
+  // legible precisely because the other two are not.
+  const fitNote = !selected
+    ? null
+    : selected.model.fit === "easy"
+      ? {
+          text: "Runs comfortably here",
+          tone: "",
+          title:
+            "Judged against this machine's memory — the weights leave room for everything else.",
+        }
+      : selected.model.fit === "tight"
+        ? {
+            text: "Tight fit on this machine",
+            tone: " pg-fact-tight",
+            title:
+              "Judged against this machine's memory — close other heavy apps while it runs.",
+          }
+        : selected.model.fit === "no"
+          ? {
+              text: "Likely too big for this machine",
+              tone: " pg-fact-no",
+              title: "Judged against this machine's memory — it may crawl or fail to load.",
+            }
+          : null;
+
+  // The running pull's own figures, for the header's ring and byte line.
+  // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
+  // 0, which React renders as a literal "0".
+  const downloadedFraction = downloadFraction(jobForSelected);
+  // Whether the pull can be STOPPED, by the download manager's own rule rather
+  // than a looser one (`CancelButton` states it): a job its reporter never
+  // marked cancellable, or one already asked to stop, offers nothing — the
+  // progress then simply stays put under the pointer.
+  const stoppable =
+    jobForSelected &&
+    isRunning(jobForSelected) &&
+    jobForSelected.cancellable &&
+    !jobForSelected.cancel_requested &&
+    !jobForSelected.stalled
+      ? jobForSelected
+      : null;
+  const downloadedBytes = !!(
+    jobForSelected && jobForSelected.unit === "bytes" && jobForSelected.total &&
+    jobForSelected.done !== null
+  );
 
   return (
     <div className="pg-body">
@@ -399,7 +541,13 @@ export default function PlaygroundTab() {
                       className="pg-model-dl"
                       disabled={downloading}
                       aria-label={downloading ? "Downloading…" : `Download ${name}`}
-                      title={downloading ? "Downloading…" : `Download ${name}`}
+                      title={
+                        downloading
+                          ? downloadFraction(job) !== null
+                            ? `Downloading — ${Math.floor((downloadFraction(job) as number) * 100)}%`
+                            : "Downloading…"
+                          : `Download ${name}`
+                      }
                       onClick={(e) => {
                         // Selecting too is fine; a second click must not be.
                         e.stopPropagation();
@@ -407,7 +555,7 @@ export default function PlaygroundTab() {
                         void runDownloadFor(model.id, row.capability);
                       }}
                     >
-                      {MenuIcons.download}
+                      {downloading ? <DownloadRing job={job} /> : MenuIcons.download}
                     </button>
                   )}
                 </span>
@@ -550,17 +698,19 @@ export default function PlaygroundTab() {
                 <div className="pg-stage-actions">
                   {/* The playground's exit ramp: everything tried here is one
                       `fused.ai` call in a page, and this hands the /apps
-                      composer a seed naming the model, the tuned settings and
-                      the call — the user finishes the sentence with the app
-                      they want. */}
+                      composer an annotation naming the model and the tuned
+                      settings — shown as a chip, not dumped into the prompt
+                      box — so the user just types the app they want. */}
                   <button
                     type="button"
                     className="btn btn-secondary"
                     title="Open the app builder with this model and your settings pre-filled"
                     onClick={() =>
                       navigateUrl(
-                        "/apps?seed=" +
-                          encodeURIComponent(buildAppSeed(selected.model, selected.row.capability)),
+                        "/apps?annot=" +
+                          encodeURIComponent(
+                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
+                          ),
                       )
                     }
                   >
@@ -570,6 +720,94 @@ export default function PlaygroundTab() {
                     <button type="button" className="btn btn-secondary" onClick={runDownload}>
                       Download{selectedSize ? ` (${selectedSize.text})` : ""}
                     </button>
+                  )}
+                  {/* The pull, IN THE BUTTON'S OWN SLOT. Pressing Download used
+                      to empty this corner — the button's condition excludes a
+                      running download — so the one place the eye was already
+                      on went blank at the exact moment there was most to say,
+                      and the only counting left on the page was the sidebar
+                      row's size cell. `ModelProgress` is the drawing every
+                      other card on /ai-models uses for this (shared/), reading
+                      the same job row: bytes and a bar come from the worker
+                      doing the fetching, never from the runtime, which knows
+                      only that something is happening. No job row yet — the
+                      poll is a second behind the click — is its "Preparing…",
+                      not a blank. */}
+                  {selectedDownloading && (
+                    <div
+                      className="pg-hero-dl"
+                      title={
+                        downloadedFraction !== null
+                          ? `Downloading — ${Math.floor(downloadedFraction * 100)}%`
+                          : "Downloading…"
+                      }
+                    >
+                      {/* An icon, a ring, and the two byte figures — in the
+                          width of a button, which is all this corner has.
+                          Deliberately NOT `ModelProgress`, the drawing the
+                          /ai-models cards share: that one leads with a pulsing
+                          dot and the job's own sentence ("Fetching weights…")
+                          and ends in a bar that wants a whole card's width.
+                          Here the icon says which kind of work this is without
+                          a word, and a ring says how far in the space the
+                          sentence wanted. */}
+                      {/* The icon does NOT take part in the swap: it is what
+                          says which kind of work this slot is about, and that is
+                          as true while the pointer is over it as before. Only
+                          the two things that are about PROGRESS — the ring and
+                          the figures — give way. */}
+                      <span className="pg-hero-dl-icon" aria-hidden="true">
+                        {MenuIcons.download}
+                      </span>
+                      <span className="pg-hero-dl-swap">
+                        <span className="pg-hero-dl-live">
+                          <DownloadRing job={jobForSelected} />
+                          {downloadedBytes && (
+                            <span className="pg-hero-dl-bytes">
+                              {formatSize(jobForSelected?.done as number)} /{" "}
+                              {formatSize(jobForSelected?.total as number)}
+                            </span>
+                          )}
+                        </span>
+                      {/* POINT AT THE PROGRESS, GET THE WAY OUT. A download is
+                          the one thing on this card a reader changes their mind
+                          about, and the figures are what they look at while
+                          doing it — so the way to stop it lives under the
+                          pointer that is already there, rather than as a fourth
+                          button in a row that is only ever read while a
+                          download is NOT running.
+
+                          Both drawings share one grid cell, so the box is as
+                          wide and as tall as the wider of the two at rest and
+                          NOTHING MOVES on hover: a control that reflows the row
+                          it appears in is a control the pointer slides off
+                          (D452's argument about the recent-chats row, in one
+                          box instead of one row).
+
+                          Revealed by `:hover` and by `:focus-within`, and the
+                          button stays in the DOM and focusable while invisible
+                          — which is what makes the second of those fire, so the
+                          way out is reachable by tab and not only by pointer.
+
+                          A WORD, at the figures' own size, and not a button: it
+                          stands in for a byte count in a corner of a card, and
+                          a bordered control there would be the loudest thing on
+                          the card while the download it stops is the quietest.
+                          Pale red and underlined is enough — the colour says
+                          which direction it goes, the underline says it is
+                          pressable. */}
+                        {stoppable && (
+                          <button
+                            type="button"
+                            className="pg-hero-dl-stop"
+                            title={`Stop downloading ${selected.model.id}`}
+                            onClick={() => void runCancelDownload(stoppable)}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </span>
+                    </div>
                   )}
                   {selected.model.downloaded && !selectedResident && (
                     <button
@@ -590,7 +828,8 @@ export default function PlaygroundTab() {
               </div>
               {(selected.model.params ||
                 selected.model.quantization ||
-                selected.model.size_gb != null) && (
+                selected.model.size_gb != null ||
+                fitNote) && (
                 <dl className="pg-hero-facts">
                   {selected.model.params && (
                     <div className="pg-hero-fact">
@@ -608,6 +847,42 @@ export default function PlaygroundTab() {
                     <div className="pg-hero-fact">
                       <dt>Download</dt>
                       <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
+                    </div>
+                  )}
+                  {/* WILL IT RUN HERE — the server's verdict over the weights
+                      and this machine's RAM (`_fit_verdict`), back on the card
+                      after the state line that used to carry it was deleted for
+                      being prose. A fact beside the others rather than a chip
+                      by the name: this page spends its loud colours on what is
+                      RUNNING (D461), and a coloured badge here would be the
+                      same "quieter card" argument re-lost.
+
+                      ALL THREE answers are drawn, reversing the warning-only
+                      first cut. That version had the better argument on paper —
+                      "easy" is the common case, and a mark on nearly every
+                      model marks nothing (D448's chip) — and it was wrong about
+                      what this fact is FOR. It is not a badge decorating a
+                      model; it is the answer to "can my machine run this",
+                      which is asked OF EVERY MODEL, and a row that answers only
+                      when the answer is bad is silent exactly when it is being
+                      consulted: on a 34GB laptop every model the sidebar offers
+                      is "easy", so the fact was unreachable and read as
+                      missing. Absence-as-good-news works for a badge nobody was
+                      looking for, not for a question somebody asked. `null`
+                      still draws nothing, for the server's own reason: a verdict
+                      over a size nobody measured is the lie the "—" size cell
+                      exists to avoid.
+
+                      Its own fact, not a line on Download: fetching and
+                      running are different questions, and the Download slot is
+                      the one that turns into a progress ring mid-pull — which
+                      is exactly when "will this even fit" is worth reading. */}
+                  {fitNote && (
+                    <div className="pg-hero-fact">
+                      <dt>Memory</dt>
+                      <dd className={"pg-hero-fact-judged" + fitNote.tone} title={fitNote.title}>
+                        {fitNote.text}
+                      </dd>
                     </div>
                   )}
                 </dl>

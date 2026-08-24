@@ -37,18 +37,15 @@
 # monorepo checkout uv makes for the pin above — `packages/ltx-core-mlx` and
 # `packages/ltx-pipelines-mlx` are siblings in the same tree, not two repos.
 #
-# **ffmpeg, for the same reason `h3_video/pyproject.toml` needs it — but by a
-# different mechanism.** `ltx_pipelines_mlx.utils.media_io` shells out to a
-# real ffmpeg executable to mux frames for I2V preprocessing, through `ltx_
-# core_mlx.utils.ffmpeg.find_ffmpeg()`. Unlike h3.c, that function does not
-# read an environment variable — it is a bare `shutil.which("ffmpeg")` — so
-# `worker.py` cannot simply point an env var at `imageio_ffmpeg.
-# get_ffmpeg_exe()` the way `h3_video/worker.py` does for the h3.c binary; it
-# has to make the bundled ffmpeg resolvable on PATH instead (see `worker.py`
-# for exactly how). `imageio-ffmpeg` is still the right dependency for it: one
-# wheel per platform with a real, statically-linked executable inside, no
-# source build, no compiler — the same "wheels-only" argument h3_video's own
-# header makes at length.
+# **ffmpeg.** `ltx_pipelines_mlx.utils.media_io` shells out to a real ffmpeg
+# executable to mux frames for I2V preprocessing, through `ltx_core_mlx.
+# utils.ffmpeg.find_ffmpeg()`. That function does not read an environment
+# variable — it is a bare `shutil.which("ffmpeg")` — so `worker.py` cannot
+# simply point an env var at `imageio_ffmpeg.get_ffmpeg_exe()`; it has to make
+# the bundled ffmpeg resolvable on PATH instead (see `worker.py` for exactly
+# how). `imageio-ffmpeg` is the right dependency for it: one wheel per
+# platform with a real, statically-linked executable inside, no source build,
+# no compiler — this folder's "wheels-only" rule.
 #
 # Bounded per this folder's own rule: the floor is the version installed when
 # this folder was written, the ceiling is the next major.

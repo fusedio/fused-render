@@ -845,13 +845,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "recommended": True,
             "label": "LTX-2.3 int4 distilled",
             "nickname": "LTX-2.3 (int4)",
+            # Both video tiers shipped with no `params` and no `quantization`,
+            # so the playground's model card had two of its four facts blank
+            # beside every text and image entry. Filled from the PUBLISHERS,
+            # per this file's AI-2c rule that these are strings somebody owns:
+            # the upstream weights are `ltx-2.3-22b-distilled` (Lightricks/LTX-2.3,
+            # a 22B DiT), and the conversion's own card states "Int4
+            # quantization (group_size 64, transformer block Linear weights
+            # only)" — mlx-forge, not mlx-community, but the same scheme the
+            # other MLX rows in this file name as "MLX 4-bit", and the column is
+            # read down. The group size and the linear-weights-only scope stay
+            # here rather than in the field: they are true and they are not what
+            # a reader comparing two rows is asking.
+            "params": "22B",
+            "quantization": "MLX 4-bit",
             "size_gb": 28.5,
             "note": "Text-to-video with audio, 8 denoising steps, on a "
                     "16 GB+ Mac. Diverges from the bf16 sample at this "
                     "tier — upstream's own ladder calls it a different "
                     "valid composition, not a degraded one — and ships "
-                    "under the LTX-2 Community License, which is NOT H3's: "
-                    "it carries a revenue threshold and a non-compete "
+                    "under the LTX-2 Community License: it carries a "
+                    "revenue threshold and a non-compete "
                     "(Attachment A, item 20).",
             # `DistilledPipeline` runs a fixed 8-step stage-1 schedule
             # (`ltx_video/worker.py`'s own default, and `registry.VIDEO_
@@ -867,42 +881,17 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "id": "dgrauet/ltx-2.3-mlx-q8",
             "label": "LTX-2.3 int8 distilled",
             "nickname": "LTX-2.3 (int8)",
+            # Same 22B upstream, the other tier of the same conversion ("Int8
+            # quantization (group_size 64, transformer block Linear weights
+            # only)") — see the int4 entry for where both strings come from.
+            "params": "22B",
+            "quantization": "MLX 8-bit",
             "size_gb": 37.8,
             "note": "The same LTX-2 Community License, for the tier that "
                     "reproduces the bf16 sample — a 32 GB+ machine and "
                     "roughly 9 GB more download than the int4 default.",
             # Same pipeline, same schedule — see the int4 entry's own comment.
             "defaults": {"steps": 8},
-        },
-    ],
-    # v1's only checkpoint: FL2VA (frame + language to video + audio), one
-    # of the two top-level trees `MiniMaxAI/MiniMax-H3` actually ships —
-    # NOT its own repo (`MiniMaxAI/MiniMax-H3-FL2VA` does not exist; that
-    # id 401s). The real repo is 498.5GB whole (measured against the Hub's
-    # per-file byte sums, 2026-08-23) because it carries BOTH checkpoints —
-    # `FL2VA/` (144.05GB) and `Ref2VA/` (144.05GB) — plus a second, unused
-    # copy of their shared components at the repo root
-    # (`text_encoder/`+`transformer/`+`transformer_ref/`+`vae/`+`audio_vae/`,
-    # ~210GB more). h3.c's loader (`h3_load_dir` in h3.c, read at the pinned
-    # commit) never opens a bare root path — every file it touches is
-    # `FL2VA/…` or `Ref2VA/…` — so `FL2VA/*` is both NECESSARY and
-    # SUFFICIENT for this v1's prompt-only path, and `h3_video/worker.py`'s
-    # `download()` passes it as `allow_patterns` rather than fetching the
-    # whole 498.5GB repo. `size_gb` here is `FL2VA/`'s own measured total
-    # (144,051,182,625 bytes across its 81 files) — the whole of what a
-    # Download actually fetches, per this file's own `size_gb` rule — and
-    # is metadata only: never fetched by this app's own build or tests (see
-    # the hard "never download the H3 model" constraint).
-    "h3-video": [
-        {
-            "id": "MiniMaxAI/MiniMax-H3",
-            "recommended": True,
-            "label": "MiniMax H3 FL2VA",
-            "nickname": "MiniMax H3",
-            "size_gb": 144.1,
-            "note": "Text-to-video with audio. One resident model — the ref2va "
-                    "checkpoint (a second 144GB tree in the same repo) is not "
-                    "fetched or offered in this build.",
         },
     ],
 }
@@ -1115,8 +1104,8 @@ def describe() -> list[dict]:
                 # generation made irrelevant: each of them has an
                 # "everywhere" row, so SOME runner was always available and
                 # this was always non-null in practice. Video is the first
-                # capability that can be genuinely unservable here — h3.c is
-                # Metal-only with no fallback — and a caller with no model
+                # capability that can be genuinely unservable here — its
+                # one engine is MLX, with no fallback — and a caller with no model
                 # specified must be told there is nothing to load, not handed
                 # an id `default_for()` would then fail to load anyway. The
                 # suggestion LIST still shows the entry either way (`models`
@@ -1133,9 +1122,9 @@ def describe() -> list[dict]:
                 # VideoTraits`), and the Playground's own frame/canvas/step
                 # sliders need those numbers to draw a control that agrees
                 # with what the server will actually do — Task 5 of the
-                # LTX-2.3 plan de-hardcoded the SERVER's copy of H3's grid
-                # and left the client statically wired to it, which is the
-                # defect this field exists to close.
+                # LTX-2.3 plan de-hardcoded the SERVER's copy of the frame
+                # grid and left the client statically wired to it, which is
+                # the defect this field exists to close.
                 "videoTraits": (
                     _video_traits_payload(runner.code)
                     if capability == registry.VIDEO_GENERATION and runner is not None
