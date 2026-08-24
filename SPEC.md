@@ -4108,13 +4108,20 @@ caller that wants the log on purpose.
   never the traceback overlay — and `ai_unavailable` reads as *"AI is not
   available on this server."*
 
-- **GT-19** **A merge conflict, and a failed operation, can be taken to an AI —
-  and NOTHING it says reaches the working tree without a confirmation.** Two
-  situations, one button (the same sparkle as GT-18), one panel, and one model:
-  **`claude-sonnet-5`**, named explicitly rather than left on the cheap default,
-  because reconciling two versions of a file is not the shape of work the default
-  is for. `effort` stays low — the thinking budget is not what decides whether a
-  merge is understood, and it is the latency the user waits through.
+- **GT-19** **A merge conflict can be taken to an AI IN THIS PANEL, with
+  nothing it says reaching the working tree without a confirmation; a failed
+  operation is taken to the Claude SIDEBAR instead (D476), under that sidebar's
+  own permission mode.** Two situations, one sparkle (the same icon as GT-18),
+  and — for the conflict case — one panel and one model: **`claude-sonnet-5`**,
+  named explicitly rather than left on the cheap default, because reconciling
+  two versions of a file is not the shape of work the default is for. `effort`
+  stays low — the thinking budget is not what decides whether a merge is
+  understood, and it is the latency the user waits through. *This used to read
+  "one panel, and one model" for both situations — the operation-error case
+  streamed advice into the SAME proposal panel the conflict case uses, on the
+  same model, with no Apply. D476 moved it out of this view entirely; the
+  model, the panel, and the confirmation-before-write guarantee below are now
+  the conflict case's alone.*
 
   **The conflict case is the primary one.** A conflicted row in the change lists
   carries the sparkle, ahead of Stage — on a conflicted file the resolution is
@@ -4162,11 +4169,31 @@ caller that wants the log on purpose.
   no write. A model that declines answers `UNRESOLVABLE` and gets **no Apply at
   all**.
 
-  **The operation-error case is secondary and produces advice only.** A failed
-  mutation's `flash` carries the sparkle; the model gets the error text plus the
-  repository's branch/upstream/ahead-behind/dirty state and returns what it means
-  and what to run. There is no Apply, and this view will not run a command a
-  model picked — that is a different feature and a much larger one.
+  **The operation-error case is secondary, and now hands off to the Claude
+  sidebar instead of producing advice in this panel** (D476). A failed
+  mutation's `flash` carries the sparkle, labeled **"Fix with AI"**; the same
+  facts the panel used to answer with (the error text plus the repository's
+  branch/upstream/ahead-behind/dirty state) become a prompt asking the model to
+  explain the failure AND fix it, handed to whichever ancestor owns a Claude
+  sidebar through the runtime's ancestor-window hop
+  (`window._fusedAskClaude`/`noteAskClaude`, static/runtime.js) — never a param,
+  so the text cannot reach an address bar or a bookmark. The prompt is PULLED by
+  the claude template at its own boot (`window._fusedClaudeAskTake`/
+  `pullClaudeAsk`), not pushed onto that document's URL, because a URL is an
+  address and "follow this part of the address only the first time" cannot be
+  expressed by one; the host answers HONESTLY whether claude will actually be
+  shown (gate-denied or still pending reads as "not delivered", never a seed
+  stored for a boot that will never happen) and the button reports a real
+  failure — not a swallow — when nothing up the chain can open one at all. *This
+  clause used to describe `adviseOnError`/`ADVISE_SYSTEM`: the operation-error
+  case asked THIS view's own `fused.ai` for advice text, shown in the same
+  proposal panel the conflict-resolution case uses, with no Apply. D476 deleted
+  both — advice a user has to copy into a terminal by hand is strictly less
+  useful than a sidebar that can read the repository, run the fix, and show its
+  work, which is what the Claude sidebar already is everywhere else in this
+  app.* There is still no Apply here and this view still will not run a command
+  itself — fixing is Claude's job now, in its own sidebar, under its own
+  permission mode, never this panel's.
 
   Every `fused.ai` rejection is this view's own sentence, never the traceback
   overlay: `ai_unavailable`, `model_loading`, `unavailable`, `cancelled`,
