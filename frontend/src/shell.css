@@ -3,6 +3,7 @@
  * top-to-bottom order of the monolithic file. Add new sections at the
  * position their rules would have appeared, not at the end by habit.
  * Palette tokens live in styles/tokens.css (tests/test_theme.py). */
+@import "./styles/tailwind.css";
 @import "./styles/tokens.css";
 @import "./styles/base.css";
 @import "./styles/sidebar.css";
