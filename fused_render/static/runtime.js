@@ -11,8 +11,10 @@
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
+ *     opts.images: absolute paths to base images for a vision-language model,
+ *     on THIS turn only.
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
- *     All four are LOCAL-MODEL ONLY and are refused (400) rather than dropped
+ *     All five are LOCAL-MODEL ONLY and are refused (400) rather than dropped
  *     on the Claude path. fused.ai.cancel() stops a local generation mid-flight
  *     without unloading the model.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
@@ -2285,6 +2287,13 @@
     // history: only something that OWNS the chat template can decline to apply
     // one, so the Claude path refuses this rather than quietly ignoring it.
     if (opts.raw !== undefined) body.raw = opts.raw;
+    // A base image (or several) for a vision-language local model, on THIS
+    // turn only — absolute paths, never bytes (fused-render's own rule: an
+    // image travels as a path on the wire). Local models only, for the same
+    // reason as history and raw: the Claude CLI has no notion of an
+    // attachment, so it refuses this rather than silently answering as if
+    // nothing had been sent.
+    if (opts.images !== undefined) body.images = opts.images;
     // Sampling. Local models only, like history and raw — the Claude CLI
     // exposes no sampling knobs, so these are refused there rather than
     // dropped. camelCase in, snake_case on the wire, because the wire shape is

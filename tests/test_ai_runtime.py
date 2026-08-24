@@ -7832,6 +7832,74 @@ def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client)
     assert "between" not in message
 
 
+# -- images: a current-turn attachment for a local VLM (D467's shape reused) --
+
+
+def test_images_reach_the_worker_alongside_messages(client, fake_runner, monkeypatch):
+    """A list of absolute paths, threaded straight through to the worker's
+    request — the worker is the one that knows how to turn them into
+    placeholder tokens (`mlx_text/worker.py`'s image path, commit 3)."""
+    sent = {}
+
+    def capture(model, request):
+        sent["request"] = request
+        yield {"type": "chunk", "text": "a cat"}
+        yield {"type": "done", "ok": True, "tokens": 1}
+
+    monkeypatch.setattr(supervisor, "generate_text", capture)
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?",
+        "model": "org/chat",
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.text
+    assert sent["request"]["images"] == ["/Users/x/photo.png"]
+
+
+def test_no_images_key_at_all_is_not_sent_to_the_worker(client, fake_runner, monkeypatch):
+    """Absent means absent — the worker's own contract is "empty/absent is
+    today's text path, unchanged", and a bare empty list sent on every call
+    would be a needless departure from that for every model that never uses
+    it."""
+    sent = {}
+
+    def capture(model, request):
+        sent["request"] = request
+        yield {"type": "chunk", "text": "ok"}
+        yield {"type": "done", "ok": True, "tokens": 1}
+
+    monkeypatch.setattr(supervisor, "generate_text", capture)
+    client.post("/api/ai", json={"prompt": "hi", "model": "org/chat"},
+               headers={"X-Fused": "1"})
+    assert "images" not in sent["request"]
+
+
+@pytest.mark.parametrize("images,expected", [
+    ("not a list", "must be a list"),
+    ([""], "must be a non-empty string"),
+    ([123], "must be a non-empty string"),
+    ([f"/img/{i}.png" for i in range(20)], "may not carry more than"),
+])
+def test_a_malformed_images_list_says_why(client, images, expected):
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "images": images,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert expected in response.json()["error"]["message"]
+
+
+def test_images_are_refused_for_claude_rather_than_dropped(client):
+    """The same rule `history` and `raw` are refused for: silently dropping a
+    picture would answer as if it had never been attached, which reads as the
+    model ignoring what was sent rather than the API declining to send it."""
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?",
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "local model" in response.json()["error"]["message"]
+
+
 def test_cancel_stops_the_generation_without_unloading(client, fake_runner):
     """Not the same as unloading: the weights stay, so the next message starts
     answering immediately."""

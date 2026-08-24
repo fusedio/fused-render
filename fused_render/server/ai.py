@@ -747,6 +747,31 @@ def _sampling_problem(body: dict) -> str | None:
     return None
 
 
+#: How many pictures one request may attach. Bounded for the same reason
+#: `max_tokens` is (`_SAMPLING`, above): ONE model is resident per capability
+#: and serves every page on this machine, so an unbounded list is not one
+#: caller's slow request — it is every other caller's turn behind a request
+#: that decided to carry fifty images' worth of placeholder tokens. Eight is
+#: past any ordinary "compare these pictures" ask and short of a caller that
+#: meant to send a folder.
+_MAX_IMAGES = 8
+
+
+def _images_problem(images) -> str | None:
+    """Why this `images` list is unusable, or None. Local models only — the
+    caller-facing refusal for a Claude-tier request lives in `_ai_relay`,
+    beside `history`'s and `raw`'s own refusals, and this only checks the
+    SHAPE: a list of non-empty strings, under the cap."""
+    if not isinstance(images, list):
+        return "'images' must be a list of absolute file paths"
+    if len(images) > _MAX_IMAGES:
+        return f"'images' may not carry more than {_MAX_IMAGES} paths"
+    for index, path in enumerate(images):
+        if not isinstance(path, str) or not path:
+            return f"'images[{index}]' must be a non-empty string"
+    return None
+
+
 def _history_problem(history) -> str | None:
     """Why this history is unusable, or None. The message is the API's manners:
     a chat client passing the wrong shape should be told which turn and what
@@ -816,6 +841,15 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         "max_tokens": body.get("max_tokens"),
         "temperature": body.get("temperature"),
         "top_p": body.get("top_p"),
+        # Absolute paths on THIS turn only (mlx_text/worker.py's own boundary,
+        # AI-11j) — a LIST, unlike `/api/ai/image`'s single `image`, because a
+        # VLM's chat template is told `num_images` and asking about two
+        # pictures at once is the ordinary case for this capability, where an
+        # edit always has exactly one base image. Omitted entirely rather than
+        # sent empty: `images: []` on every call would be a needless departure
+        # from the worker's "absent = today's text path" contract for every
+        # model that never uses it.
+        **({"images": body.get("images")} if body.get("images") else {}),
     }
     request = {k: v for k, v in request.items() if v is not None}
 
@@ -976,6 +1010,17 @@ async def _ai_relay(body: dict):
             "has nowhere to put 'history' — send one or the other",
             status=400)
 
+    # Base images for a vision-language local model, on the CURRENT turn only
+    # (mlx_text/worker.py's own boundary — `history` stays text-only, matching
+    # `_history_problem`'s `content: str` requirement, which this leaves
+    # alone). Shape-checked here, refused for Claude below, same as history
+    # and raw.
+    images = body.get("images")
+    if images is not None:
+        problem = _images_problem(images)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
@@ -1032,10 +1077,22 @@ async def _ai_relay(body: dict):
             "which is always a chat",
             status=400)
 
-    # Third flag, same rule. The Claude CLI exposes no sampling knobs at all —
+    # Third flag, same rule. The Claude CLI has no notion of an attachment —
+    # `claude -p` takes a prompt string — so silently dropping the picture
+    # would answer as if it had never been sent, which reads as the model
+    # ignoring what was attached rather than the API declining to attach it.
+    if images:
+        return _ai_error(
+            "bad_request",
+            "'images' is only supported by a local model (a Hugging Face repo "
+            "id, e.g. 'mlx-community/Qwen3-8B-4bit'); this call would go to "
+            f"{model!r}, which cannot be handed a picture",
+            status=400)
+
+    # Fourth flag, same rule. The Claude CLI exposes no sampling knobs at all —
     # `effort` is what it has — so a temperature accepted here would be a
     # setting the caller could watch have no effect, which is the failure mode
-    # `history` and `raw` are refused for.
+    # `history`, `raw` and `images` are refused for.
     named = [name for name in _SAMPLING if body.get(name) is not None]
     if named:
         return _ai_error(
