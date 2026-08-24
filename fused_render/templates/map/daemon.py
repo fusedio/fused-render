@@ -409,7 +409,11 @@ def main():
             "pid": os.getpid(),
         },
     )
-    RENDER_POOL.submit(_prewarm_geo_stack)
+    # Skip on a single-CPU host: the prewarm would hold the only render thread
+    # for the whole import and block the first raster tile it means to speed up,
+    # and that first render imports the stack lazily anyway.
+    if (os.cpu_count() or 4) > 1:
+        RENDER_POOL.submit(_prewarm_geo_stack)
     try:
         server.serve_forever(poll_interval=0.25)
     finally:

@@ -86,13 +86,14 @@ MVT_BUFFER = 64
 # and payload byte. One pixel (8 units) is imperceptible yet ~15% faster and
 # smaller on dense tiles; the old 2.0 preserved ~1/8 px.
 SIMPLIFY_TOLERANCE = float(os.environ.get("MAP_VIEWER_VECTOR_SIMPLIFY_UNITS", "8.0"))
-# A detail tile that is mostly features smaller than a screen pixel wastes both
-# encode time and payload drawing specks that land on the same pixel. Features
-# whose footprint is under COALESCE_PIXELS px are collapsed to one (the largest)
-# per cell of that size; larger features — long lines, big polygons — are always
-# kept, so only visually-coincident geometry is dropped. 0 disables it.
-COALESCE_PIXELS = float(os.environ.get("MAP_VIEWER_VECTOR_COALESCE_PX", "0.75"))
-TILE_PIXELS = 256
+# A detail tile that is mostly features barely larger than a screen pixel wastes
+# both encode time and payload drawing specks that land on the same pixel.
+# Features whose footprint is under COALESCE_PIXELS px are collapsed to one (the
+# largest) per cell of that size; larger features — long lines, big polygons —
+# are always kept, so only visually-coincident geometry is dropped. 0 disables
+# it. Measured against the same 512px tile as SIMPLIFY_TOLERANCE (8 units/px).
+TILE_PIXELS = 512
+COALESCE_PIXELS = float(os.environ.get("MAP_VIEWER_VECTOR_COALESCE_PX", "1.5"))
 WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
 ENGINE_VERSION = "native-mvt-v2"
@@ -1271,10 +1272,10 @@ class VectorEngine:
         cy = (bounds[small_rows, 1] + bounds[small_rows, 3]) * 0.5
         col = np.floor((cx + MVT_BUFFER) / cell).astype(np.int64)
         srow = np.floor((cy + MVT_BUFFER) / cell).astype(np.int64)
-        cell_id = col * (1 << 20) + srow
-        areas = shapely.area(geometries)[small_rows]
+        areas = shapely.area(geometries[small_rows])
         order = np.argsort(-areas, kind="stable")
-        _, keep = np.unique(cell_id[order], return_index=True)
+        cells = np.stack([col[order], srow[order]], axis=1)
+        _, keep = np.unique(cells, axis=0, return_index=True)
         kept_small = small_rows[order[keep]]
         large_rows = np.flatnonzero(drawable & ~small)
         return np.sort(np.concatenate([large_rows, kept_small]))
