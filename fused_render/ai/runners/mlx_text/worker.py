@@ -147,6 +147,35 @@ def _mlx_load():
     return mlx_load
 
 
+def _unsupported_architecture(config):
+    """`(model_type, exc)` if mlx-vlm cannot open `config`'s architecture,
+    else `None` — the exception is carried out so the caller can chain `from`
+    it and keep the original message in the log.
+
+    Asked of mlx-vlm's OWN resolution (`get_model_and_args`) — never a table
+    of architectures maintained here, which would go stale the moment the
+    installed package's model zoo grew past it. `get_model_and_args` is
+    exactly what `mlx_load` below calls internally to pick a model class; the
+    only thing asking it again here buys is catching its failure BEFORE it is
+    wrapped in mlx-vlm's own words, so `load` can say something clearer than
+    what those words say on their own — see `load`'s own comment for why that
+    matters.
+    """
+    model_type = config.get("model_type") if isinstance(config, dict) else None
+    if not model_type:
+        return None
+    try:
+        from mlx_vlm.utils import get_model_and_args
+
+        get_model_and_args(config)
+    except ValueError as e:
+        # mlx-vlm's own "no such architecture" shape — see `load`'s docstring.
+        return model_type, e
+    except Exception:  # noqa: BLE001 - anything else is not THIS question's to answer
+        return None
+    return None
+
+
 def load(model_id, path):
     """`path` is what `download` returned — the snapshot directory."""
     mlx_load = _mlx_load()
@@ -157,25 +186,96 @@ def load(model_id, path):
     # one that will generate. See `_pin_stream`.
     _pin_stream()
 
+    # Read once, here, and reused below rather than re-read per request (see
+    # the comment where it lands in `_loaded`) — and read BEFORE the load
+    # call for a second reason: it is what lets `_unsupported_architecture`
+    # ask mlx-vlm's own resolver whether this checkpoint's `model_type` opens
+    # at all, before `mlx_load` gets a chance to fail on it in mlx-vlm's own
+    # words instead of ours.
+    from mlx_vlm.utils import load_config
+
+    config = load_config(path)
+
+    # **AI-11j widened `visual-question-answering` to a real TEXT_GENERATION
+    # capability, but the vocabulary tag says nothing about whether mlx-vlm's
+    # model ZOO actually opens the architecture behind it** — the canonical
+    # repo for that tag, `dandelin/vilt-b32-finetuned-vqa`, ships no
+    # `mlx_vlm.models.vilt`, and calling `mlx_load` on it raises
+    # `ValueError: Model type vilt not supported. Error: …` straight out of
+    # mlx-vlm's `get_model_and_args`. That message is not wrong, but it reads
+    # as this app's own confusion by the time `describe_failure` reports it —
+    # a bare `ValueError` with no cause chain to walk, phrased as an internal
+    # import failure inside a third-party utility rather than a fact about
+    # the checkpoint. So this is caught here and re-raised in OUR words,
+    # naming the architecture plainly, the same discipline `_mlx_load`
+    # follows for an unimportable environment: say what is actually true (an
+    # architecture this runner cannot open) rather than let a technically
+    # correct but confusingly phrased library message reach the page
+    # unexplained. `from e` keeps the original message in the log for
+    # whoever reads it.
+    unsupported = _unsupported_architecture(config)
+    if unsupported is not None:
+        model_type, cause = unsupported
+        raise RuntimeError(
+            f"{model_type!r} is not an architecture mlx-vlm can open — "
+            f"{model_id} cannot be loaded by this runner, which is a fact "
+            "about this checkpoint rather than about the environment."
+        ) from cause
+
     # `lazy=True` is the measurement this switch is built on: eager loading
     # materialises the vision tower too — +0.67GB on Qwen3.5-4B-OptiQ-4bit,
     # resident at 3.937GB against mlx-lm's 3.270GB — even though a text-only
-    # chat never touches it. `lazy=True` defers those arrays until something
-    # actually reads them (the image path, commit 3), which lands a plain
-    # text generation at 3.275GB: within measurement noise of what mlx-lm's
-    # language-tower-only load cost, rather than paying for a tower nobody
-    # asked to use.
+    # chat never touches it. `lazy=True` defers EVERY array, vision and
+    # language both, until something actually reads it.
     model, processor = mlx_load(path, lazy=True)
+
+    # …but "defer everything" is one array too many. Left fully lazy, the
+    # LANGUAGE tower's own weights are not forced into memory until the first
+    # generation, which breaks two things `mlx-lm` never did: `memory()`
+    # below reads `mx.get_active_memory()`, so `/health`'s `resident_bytes`
+    # would report a freshly loaded, multi-gigabyte model as ~0 bytes right up
+    # until the first reply — and a corrupt checkpoint or an OOM, which used
+    # to fail the LOAD, now fails the first GENERATION instead, because
+    # `worker_base` marks this model "ready" the moment `load()` returns
+    # without having touched a single weight.
+    #
+    # So the language tower is evaluated NOW — exactly what mlx-lm always did
+    # for the one tower it ever loaded, and exactly what mlx-vlm's own
+    # `lazy=False` does for BOTH towers (`mlx_vlm.utils.load_model`'s
+    # `if not lazy: mx.eval(model.parameters())`) — while the vision tower
+    # stays lazy, deferred to the image path's first use (commit 3).
+    #
+    # Verified by hand: evaluating only `model.language_model` on
+    # `mlx-community/Qwen3.5-4B-OptiQ-4bit` (this runner's own catalog entry)
+    # lands at 3269.96 MB resident — matching mlx-lm's own 3.270GB almost
+    # exactly — against 3936.99 MB for evaluating both towers eagerly. The
+    # ~0.67GB gap between the two IS the vision tower, and it stays deferred.
+    import mlx.core as mx
+
+    language_model = getattr(model, "language_model", None)
+    if language_model is not None:
+        mx.eval(language_model.parameters())
+    else:
+        # Defensive, not the expected path: every architecture mlx-vlm ships
+        # builds its `Model` around a `self.language_model` attribute —
+        # verified across qwen3, qwen3_5, gemma3, gemma4, llama and others,
+        # the whole reason `Model.get_input_embeddings` can call
+        # `self.language_model.model.embed_tokens` unconditionally in every
+        # one of them. A future architecture that broke that convention must
+        # not silently keep the honest-reporting bug this fix exists for; it
+        # costs the full eager load instead, same as mlx-lm always did.
+        mx.eval(model.parameters())
+
     _loaded["model"] = model
     _loaded["processor"] = processor
-    # Stashed once, here, rather than re-read per request: `generate`'s image
-    # path needs it for `mlx_vlm.prompt_utils.apply_chat_template` (`num_images`
-    # is not enough on its own — the helper also reads the model's own
-    # `model_type` off this dict to pick its message format), and a request is
-    # not the place to be doing filesystem reads this load already paid for.
-    from mlx_vlm.utils import load_config
-
-    _loaded["config"] = load_config(path)
+    # The SAME `config` read above (and already spent checking architecture
+    # support with it) — stashed here rather than re-read per request:
+    # `generate`'s image path needs it for `mlx_vlm.prompt_utils.
+    # apply_chat_template` (`num_images` is not enough on its own — the
+    # helper also reads the model's own `model_type` off this dict to pick
+    # its message format), and a request is not the place to be doing
+    # filesystem reads this load already paid for.
+    _loaded["config"] = config
 
 
 def memory():
@@ -314,23 +414,46 @@ def generate(body, write):
     # mean re-sending the placeholder tokens (and the pixels) on every turn of
     # a growing history, which is a real design question this build does not
     # answer, not an oversight in this one.
-    images = [p for p in (body.get("images") or []) if isinstance(p, str) and p]
+    #
+    # `isinstance(raw_images, list)`, not a bare `or []`: the server validates
+    # this shape today (`_images_problem`), but this worker's OWN contract
+    # should not depend on that — a caller that sent a single string instead
+    # of a list would otherwise have this comprehension iterate its
+    # CHARACTERS, and report a mystifying "image not found: /" for whichever
+    # character `_unreadable_image` reached first.
+    raw_images = body.get("images")
+    images = ([p for p in raw_images if isinstance(p, str) and p]
+             if isinstance(raw_images, list) else [])
     if images:
         for path in images:
             problem = _unreadable_image(path)
             if problem:
                 write({"type": "done", "ok": False, "error": problem})
                 return
+        # `config` is the dict `load()` stashed at load time. Checked for
+        # real content, not just presence: `apply_chat_template` below does
+        # `config["model_type"]` UNCONDITIONALLY, so an empty dict would
+        # otherwise reach that as a bare `KeyError` — a crash with no path,
+        # no model, nothing a caller could act on — instead of the named
+        # `{done, ok: false, error}` frame every other failure on this path
+        # writes (`_unreadable_image`'s own discipline). `load()` always
+        # stashes a real config for anything that got far enough to generate,
+        # so this is defensive rather than an expected failure.
+        config = _loaded.get("config")
+        if not config:
+            write({"type": "done", "ok": False,
+                   "error": "no model configuration was found to build an "
+                            "image-aware prompt from"})
+            return
         # The ONE place mlx-vlm's own `apply_chat_template` is correct rather
         # than a hazard (see `_messages_to_prompt`'s docstring): the image
         # placeholder tokens it inserts into the prompt are what the model
         # needs to know a picture is coming, and the tokenizer's own template
-        # has no notion of that at all. `config` is the dict `load()` stashed
-        # at load time — `model_type` out of it is how the helper picks this
-        # checkpoint's own message format (`prompt_utils.MODEL_CONFIG`).
+        # has no notion of that at all. `model_type` out of `config` is how
+        # the helper picks this checkpoint's own message format
+        # (`prompt_utils.MODEL_CONFIG`).
         from mlx_vlm.prompt_utils import apply_chat_template
 
-        config = _loaded.get("config") or {}
         text = apply_chat_template(processor, config, messages, num_images=len(images))
     else:
         text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
@@ -342,7 +465,21 @@ def generate(body, write):
 
     # Counted BEFORE the first token, so a cancelled generation reports it too:
     # the prompt was read whether or not the answer was wanted by the end.
-    prompt_tokens = _prompt_tokens(processor, text)
+    #
+    # **`None` on the image path, deliberately, rather than a wrong number.**
+    # `_prompt_tokens` counts the TEMPLATED TEXT — the string `apply_chat_
+    # template` returned, with one placeholder TOKEN standing in for a
+    # picture — but that placeholder later expands, deep inside the vision
+    # tower, into anywhere from dozens to thousands of real vision tokens the
+    # text encoder never sees as characters. Counting the templated string
+    # would report a number smaller than what the model actually read by
+    # roughly the whole cost of every attached image, under a label
+    # (`input_tokens`, SPEC AI-3) that promises the model's own count. This is
+    # a METRIC (fail-soft is the rule, per `_prompt_tokens`'s own docstring),
+    # and an under-report presented as a count is a worse metric than an
+    # honest `None` — so the image path reports nothing rather than reports
+    # wrong.
+    prompt_tokens = None if images else _prompt_tokens(processor, text)
 
     count = 0
     started = time.time()

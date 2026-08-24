@@ -42,6 +42,10 @@ class FakeMlxCore(types.ModuleType):
         self.made = []
         #: (thread name, stream) for every `set_default_stream` call.
         self.pinned = []
+        #: every argument `mx.eval(...)` was called with, in order — how the
+        #: eager-language-tower-eval fix (`load`'s own comment) is checked
+        #: without a real MLX array to evaluate.
+        self.evaled = []
         self._lock = threading.Lock()
         for name, value in extra.items():
             setattr(self, name, value)
@@ -57,6 +61,34 @@ class FakeMlxCore(types.ModuleType):
     def set_default_stream(self, stream):
         with self._lock:
             self.pinned.append((threading.current_thread().name, stream))
+
+    def eval(self, *args):
+        with self._lock:
+            self.evaled.append(args)
+
+
+class _FakeTower:
+    """A stand-in for `model.language_model` / `model.vision_tower`: nothing
+    calls anything on it except `.parameters()`, which returns a MARKER
+    (never real MLX arrays) so a test can tell which tower `mx.eval` touched
+    without needing a real array to evaluate."""
+
+    def __init__(self, marker):
+        self._marker = marker
+
+    def parameters(self):
+        return self._marker
+
+
+class _FakeVlmModel:
+    """What `mlx_vlm.load` returns as the model half of its pair — minimal,
+    with exactly the two attributes `worker.load`'s eager-eval fix reads:
+    `language_model` (evaluated now, honest memory reporting) and
+    `vision_tower` (left lazy, untouched by `load` at all)."""
+
+    def __init__(self):
+        self.language_model = _FakeTower("LANGUAGE_PARAMS")
+        self.vision_tower = _FakeTower("VISION_PARAMS")
 
 
 def load_worker(monkeypatch, mlx_core=None):
@@ -160,7 +192,7 @@ def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
     def _load(path, lazy=False):
         loaded["path"] = path
         loaded["lazy"] = lazy
-        return "MODEL", "PROCESSOR"
+        return _FakeVlmModel(), "PROCESSOR"
 
     fake = types.ModuleType("mlx_vlm")
     fake.load = _load
@@ -176,8 +208,69 @@ def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
     # eager loading materialises the vision tower a text-only chat never
     # touches (+0.67GB on Qwen3.5-4B), and `lazy=True` defers it to first use.
     assert loaded["lazy"] is True
-    assert worker._loaded == {"model": "MODEL", "processor": "PROCESSOR",
-                              "config": {"model_type": "qwen3_5"}}
+    assert worker._loaded["processor"] == "PROCESSOR"
+    assert worker._loaded["config"] == {"model_type": "qwen3_5"}
+    assert isinstance(worker._loaded["model"], _FakeVlmModel)
+
+
+# -- honest memory reporting: the LANGUAGE tower is evaluated at load time ----
+# `lazy=True` alone (mlx_vlm.load's own default-off flag) leaves EVERYTHING
+# unevaluated, language tower included -- `memory()` (this module) would then
+# report a freshly loaded, multi-gigabyte model as near-zero until the first
+# generation forced the graph, and a load-time failure (corrupt weights, an
+# OOM) would surface as a failed GENERATION instead of a failed LOAD, since
+# `worker_base` marks the model "ready" the moment `load()` returns. So the
+# language tower is evaluated NOW -- exactly what mlx-lm always did, and
+# exactly what mlx-vlm's own `lazy=False` does for BOTH towers
+# (`mlx_vlm.utils.load_model`'s `if not lazy: mx.eval(model.parameters())`) --
+# while the vision tower is left untouched, deferred to first use.
+#
+# Verified by hand on the real package: evaluating only `model.language_model`
+# on `mlx-community/Qwen3.5-4B-OptiQ-4bit` lands at 3269.96 MB resident,
+# against 3936.99 MB for evaluating both towers -- matching mlx-lm's own
+# 3.270GB figure almost exactly, with the 0.67GB difference being the vision
+# tower this fix keeps lazy.
+
+
+def test_load_evaluates_the_language_tower_but_leaves_the_vision_tower_lazy(
+        monkeypatch):
+    mlx_core = FakeMlxCore()
+    _fake_mlx_vlm_with_config(monkeypatch)
+    worker = load_worker(monkeypatch, mlx_core=mlx_core)
+
+    worker.load("mlx-community/Qwen3.5-4B-OptiQ-4bit", "/snapshots/qwen")
+
+    marks = [args[0] for args in mlx_core.evaled if args]
+    assert "LANGUAGE_PARAMS" in marks, (
+        "the language tower must be forced into memory at load time, not left "
+        "for the first generation to discover a corrupt checkpoint")
+    assert "VISION_PARAMS" not in marks, (
+        "the vision tower must stay lazy -- evaluating it here is the +0.67GB "
+        "eager load this whole switch was built to avoid")
+
+
+def test_load_evaluates_everything_for_an_architecture_with_no_language_model_attribute(
+        monkeypatch):
+    """Defensive fallback, not the expected path: every architecture mlx-vlm
+    ships builds its `Model` around `self.language_model` (verified across
+    qwen3, qwen3_5, gemma3, gemma4, llama and others), but a future one that
+    broke that convention must not silently keep the honest-reporting bug --
+    it should cost the +0.67GB-style eager load instead."""
+    mlx_core = FakeMlxCore()
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    plain_model = _FakeTower("ALL_PARAMS")  # no `.language_model` at all
+    mlx_vlm.load = lambda path, lazy=False: (plain_model, _ProcessorWrappingATokenizer())
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.load_config = lambda path: {"model_type": "mystery"}
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    worker = load_worker(monkeypatch, mlx_core=mlx_core)
+
+    worker.load("org/mystery-architecture", "/snapshots/mystery")
+
+    marks = [args[0] for args in mlx_core.evaled if args]
+    assert "ALL_PARAMS" in marks
+
 
 
 # -- what the prompt cost ------------------------------------------------------
@@ -276,7 +369,7 @@ def test_both_terminal_frames_carry_the_prompt_count(worker, monkeypatch):
 
 def _fake_mlx_vlm(monkeypatch, responses=()):
     mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.load = lambda path, lazy=False: ("MODEL", _ProcessorWrappingATokenizer())
+    mlx_vlm.load = lambda path, lazy=False: (_FakeVlmModel(), _ProcessorWrappingATokenizer())
     mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
     sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
@@ -333,7 +426,7 @@ def _fake_mlx_vlm_with_config(monkeypatch, config=None, responses=()):
     `mlx_vlm.prompt_utils.apply_chat_template` (the ONE place mlx-vlm's own
     template helper is correct — see `worker._messages_to_prompt`)."""
     mlx_vlm = types.ModuleType("mlx_vlm")
-    mlx_vlm.load = lambda path, lazy=False: ("MODEL", _ProcessorWrappingATokenizer())
+    mlx_vlm.load = lambda path, lazy=False: (_FakeVlmModel(), _ProcessorWrappingATokenizer())
     mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
     sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
@@ -364,6 +457,56 @@ def test_load_stashes_the_config_for_the_image_path_to_reuse(worker, monkeypatch
     worker.load("mlx-community/gemma-4-4bit", "/snapshots/gemma")
 
     assert worker._loaded["config"] == {"model_type": "gemma4"}
+
+
+# -- an architecture mlx-vlm cannot open: named plainly, not in mlx-vlm's own
+# words (AI-11j widened `visual-question-answering` to TEXT_GENERATION, and
+# its canonical repo, `dandelin/vilt-b32-finetuned-vqa`, ships no
+# `mlx_vlm.models.vilt` — this is what that load must say instead of mlx-vlm's
+# own `ValueError: Model type vilt not supported. Error: …`)
+
+
+def test_an_unopenable_architecture_fails_named_rather_than_in_mlx_vlms_own_words(
+        worker, monkeypatch):
+    """The failure this catches is real (mlx-vlm genuinely cannot open this
+    checkpoint) — what changes is the WORDS, from a bare `ValueError` with no
+    cause chain to walk, to a sentence that plainly names the architecture and
+    says this is a fact about the checkpoint rather than the environment
+    (`_mlx_load`'s own discipline for the identical problem: describe what is
+    actually true, do not let a confusing message reach the page unexplained)."""
+    _fake_mlx_vlm_with_config(monkeypatch, config={"model_type": "vilt"})
+    utils = sys.modules["mlx_vlm.utils"]
+
+    def _get_model_and_args(config):
+        raise ValueError("Model type vilt not supported. Error: No module "
+                         "named 'mlx_vlm.models.vilt'")
+
+    utils.get_model_and_args = _get_model_and_args
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.load("dandelin/vilt-b32-finetuned-vqa", "/snapshots/vilt")
+    message = str(caught.value)
+
+    assert "vilt" in message
+    assert "dandelin/vilt-b32-finetuned-vqa" in message
+    assert "fact about this checkpoint" in message
+    # The chain survives, exactly as `_mlx_load`'s own wrapping keeps it —
+    # a maintainer reading the log sees mlx-vlm's own words too.
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert "not supported" in str(caught.value.__cause__)
+
+
+def test_an_architecture_mlx_vlm_CAN_open_is_not_falsely_accused(worker, monkeypatch):
+    """The opt-in check must not fire on the ordinary case: an architecture
+    `get_model_and_args` resolves without complaint proceeds to load exactly
+    as before this build."""
+    _fake_mlx_vlm_with_config(monkeypatch, config={"model_type": "qwen3_5"})
+    utils = sys.modules["mlx_vlm.utils"]
+    utils.get_model_and_args = lambda config: (object(), config["model_type"])
+
+    worker.load("mlx-community/Qwen3.5-4B-OptiQ-4bit", "/snapshots/qwen")
+
+    assert worker._loaded["config"] == {"model_type": "qwen3_5"}
 
 
 def test_a_generation_with_no_images_is_the_text_path_exactly_unchanged(worker, monkeypatch):
@@ -429,11 +572,85 @@ def test_a_missing_image_path_names_the_path_rather_than_crashing_in_the_model(
     assert not calls, "a bad path must be caught before the model is ever asked"
 
 
+def test_a_string_instead_of_a_list_is_not_iterated_as_characters(worker, monkeypatch):
+    """The server validates `images`' shape today (`_images_problem`), but
+    this worker's OWN contract must not depend on that — a single string
+    handed in where a list was expected must read as "no images", not as one
+    character-long "path" per character."""
+
+    class _Response:
+        text = "hi"
+
+    calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "hi"}], "images": "/a/b.png"},
+        frames.append)
+
+    assert not calls, "a non-list 'images' must never reach the template helper"
+    assert frames[-1]["ok"] is True
+
+
+def test_an_empty_config_fails_named_rather_than_crashing_in_apply_chat_template(
+        worker, monkeypatch, tmp_path):
+    """`apply_chat_template` reads `config["model_type"]` unconditionally — an
+    empty config must be caught here, with a named error, rather than let a
+    bare KeyError reach the caller."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+    calls = _fake_mlx_vlm_with_config(monkeypatch)
+    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+                          config={})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}], "images": [str(photo)]},
+        frames.append)
+
+    assert frames[-1]["ok"] is False
+    assert "configuration" in frames[-1]["error"]
+    assert not calls, "apply_chat_template must never be reached with an empty config"
+
+
+def test_input_tokens_is_none_on_the_image_path_rather_than_an_undercount(
+        worker, monkeypatch, tmp_path):
+    """The templated string counts ONE placeholder token per picture; the
+    model reads far more once the vision tower expands it. Reporting the
+    templated count under `input_tokens` would understate the real prompt
+    cost by roughly the whole image — so this path reports nothing rather
+    than a wrong number."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+
+    class _Response:
+        text = "a cat"
+
+    _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    worker._loaded.update(model=object(),
+                          processor=_ProcessorWrappingATokenizer(ids=(1, 2, 3)),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}], "images": [str(photo)]},
+        frames.append)
+
+    done = frames[-1]
+    assert done["ok"] is True
+    assert done["input_tokens"] is None
+
+
 def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch):
     """Streams were process-wide before 0.32 and there was nothing to pin. A
     runner that insisted on the newer call would turn a version skew into a
     worker that cannot generate at all."""
-    mlx_core = types.SimpleNamespace(cpu="CPU", gpu="GPU")
+    # `eval` is a no-op here rather than absent: real old MLX has always had
+    # `mx.eval`, and the absence this test is actually about is the
+    # thread-local-stream calls, not this one.
+    mlx_core = types.SimpleNamespace(cpu="CPU", gpu="GPU", eval=lambda *a: None)
     _fake_mlx_vlm(monkeypatch)
     worker = load_worker(monkeypatch, mlx_core=mlx_core)
 
