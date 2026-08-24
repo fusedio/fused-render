@@ -126,6 +126,43 @@ def memory():
 # ------------------------------------------------------------------ embedding
 
 
+def _pooled(features):
+    """The embedding vector out of what `get_*_features` returned.
+
+    **transformers 5 returns the tower's whole output, not the vector.** Through
+    the 4.x series `get_text_features`/`get_image_features` returned the pooled
+    tensor itself; in 5.x both hand back a `BaseModelOutputWithPooling` carrying
+    `last_hidden_state` (per-token/per-patch, `(batch, 64, dim)` for SigLIP's
+    text tower) beside `pooler_output` (the vector, `(batch, dim)`). Calling
+    `.to()` on that object is the `AttributeError:
+    'BaseModelOutputWithPooling' object has no attribute 'to'` this function
+    exists to have never allowed — and picking the field is not optional
+    tidying, because `last_hidden_state` is a different rank and would not have
+    raised, it would have returned nonsense.
+
+    **`pooler_output` is right for BOTH model types in
+    `formats.EMBED_MODEL_TYPES`, and for CLIP that is not a coincidence.** A
+    CLIP feature is the pooled output PROJECTED into the joint space, and 5.x
+    keeps `get_*_features` honest about that by overwriting the field on the way
+    out (`text_outputs.pooler_output = self.text_projection(pooled_output)` in
+    `modeling_clip`). So the projection is not skipped by reading the same
+    attribute SigLIP's unprojected tower publishes — one field, both formats,
+    checked in the installed source rather than assumed from the name.
+
+    No fallback for a plain tensor: `pyproject.toml` pins
+    `transformers>=5.15,<6`, so the 4.x shape is not a version this runner can
+    be installed against, and a branch for it would be untestable code
+    asserting a dependency range that does not exist.
+    """
+    pooled = getattr(features, "pooler_output", None)
+    if pooled is None:
+        raise RuntimeError(
+            "the model's feature call returned "
+            f"{type(features).__name__} with no `pooler_output` — this runner "
+            "reads that field for both SigLIP and CLIP (see _pooled)")
+    return pooled
+
+
 def _text_vectors(model, processor, device, texts):
     """One vector per string in `texts`, unnormalized, as a plain nested list."""
     import torch
@@ -135,7 +172,7 @@ def _text_vectors(model, processor, device, texts):
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.inference_mode():
         features = model.get_text_features(**inputs)
-    return features.to("cpu", dtype=torch.float32).tolist()
+    return _pooled(features).to("cpu", dtype=torch.float32).tolist()
 
 
 def _image_vectors(model, processor, device, paths):
@@ -154,7 +191,7 @@ def _image_vectors(model, processor, device, paths):
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.inference_mode():
         features = model.get_image_features(**inputs)
-    return features.to("cpu", dtype=torch.float32).tolist()
+    return _pooled(features).to("cpu", dtype=torch.float32).tolist()
 
 
 def generate(body):

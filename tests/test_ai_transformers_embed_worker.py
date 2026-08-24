@@ -79,16 +79,36 @@ class FakeProcessor:
         return {"pixel_values": FakeTensor(rows=len(images))}
 
 
+class FakeOutput:
+    """What transformers 5 hands back from `get_text_features` /
+    `get_image_features`: a `BaseModelOutputWithPooling`, NOT the vector.
+
+    **The shape is the point of the fake.** An earlier version of this file
+    returned the `FakeFeatures` above directly, which is the transformers 4.x
+    contract, and so the suite went green against a model that could not
+    exhibit the bug the real one had — `worker._pooled` did not exist and
+    `features.to(...)` raised `AttributeError:
+    'BaseModelOutputWithPooling' object has no attribute 'to'` on every real
+    embed call. `last_hidden_state` is carried too, and deliberately given a
+    DIFFERENT rank, so a worker that reached for the wrong field would fail
+    here on shape rather than pass with nonsense.
+    """
+
+    def __init__(self, pooled):
+        self.pooler_output = FakeFeatures(pooled)
+        self.last_hidden_state = FakeFeatures([[row] * 4 for row in pooled])
+
+
 class FakeModel:
     """`get_text_features`/`get_image_features` each return one deterministic
     vector per item, so a test can assert both the COUNT and the SHAPE without
     caring what the numbers mean."""
 
     def get_text_features(self, **_kwargs):
-        return FakeFeatures([[1.0, 2.0, 2.0], [4.0, 0.0, 3.0]][:2])
+        return FakeOutput([[1.0, 2.0, 2.0], [4.0, 0.0, 3.0]][:2])
 
     def get_image_features(self, **_kwargs):
-        return FakeFeatures([[3.0, 4.0]])
+        return FakeOutput([[3.0, 4.0]])
 
 
 @pytest.fixture()
