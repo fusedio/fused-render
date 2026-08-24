@@ -88,6 +88,9 @@
 }
 
 :root {
+    /* Radius is not a theme concern — on the bare :root so BOTH themes (dark
+       is the no-attribute default) resolve the radius-* scale; parked in the
+       light block only, every rounded-* was calc() over nothing in dark. */
     --radius: 0.625rem;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);

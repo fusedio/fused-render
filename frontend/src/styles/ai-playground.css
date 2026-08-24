@@ -471,8 +471,10 @@
   /* Extra room below: the stage's own gap reads too tight under a card this
      heavy, and the work column needs to start as its own thing. The box itself
      (border, padding, radius) is the shadcn Card's now — this rule is only the
-     banner's PLACEMENT in the stage. */
-  margin: 0 auto 16px;
+     banner's PLACEMENT in the stage. The 1px top margin keeps the Card's
+     ring (a box-shadow drawn just OUTSIDE the box) from being clipped by the
+     stage scroller's top edge. */
+  margin: 1px auto 16px;
 }
 
 
