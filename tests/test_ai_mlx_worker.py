@@ -215,19 +215,19 @@ def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
 
 # -- honest memory reporting: the LANGUAGE tower is evaluated at load time ----
 # `lazy=True` alone (mlx_vlm.load's own default-off flag) leaves EVERYTHING
-# unevaluated, language tower included -- `memory()` (this module) would then
+# unevaluated, language tower included — `memory()` (this module) would then
 # report a freshly loaded, multi-gigabyte model as near-zero until the first
 # generation forced the graph, and a load-time failure (corrupt weights, an
 # OOM) would surface as a failed GENERATION instead of a failed LOAD, since
 # `worker_base` marks the model "ready" the moment `load()` returns. So the
-# language tower is evaluated NOW -- exactly what mlx-lm always did, and
+# language tower is evaluated NOW — exactly what mlx-lm always did, and
 # exactly what mlx-vlm's own `lazy=False` does for BOTH towers
 # (`mlx_vlm.utils.load_model`'s `if not lazy: mx.eval(model.parameters())`) --
 # while the vision tower is left untouched, deferred to first use.
 #
 # Verified by hand on the real package: evaluating only `model.language_model`
 # on `mlx-community/Qwen3.5-4B-OptiQ-4bit` lands at 3269.96 MB resident,
-# against 3936.99 MB for evaluating both towers -- matching mlx-lm's own
+# against 3936.99 MB for evaluating both towers — matching mlx-lm's own
 # 3.270GB figure almost exactly, with the 0.67GB difference being the vision
 # tower this fix keeps lazy.
 
@@ -245,7 +245,7 @@ def test_load_evaluates_the_language_tower_but_leaves_the_vision_tower_lazy(
         "the language tower must be forced into memory at load time, not left "
         "for the first generation to discover a corrupt checkpoint")
     assert "VISION_PARAMS" not in marks, (
-        "the vision tower must stay lazy -- evaluating it here is the +0.67GB "
+        "the vision tower must stay lazy — evaluating it here is the +0.67GB "
         "eager load this whole switch was built to avoid")
 
 
@@ -530,33 +530,38 @@ def test_a_generation_with_no_images_is_the_text_path_exactly_unchanged(worker, 
 
 # -- the MODEL axis: refuse when the LOADED checkpoint has no vision tower --
 # The server's `_accepts_image` tries to prevent this by reading a cached
-# `config.json`, but that is a PREDICTION and can disagree with reality (a
-# config declaring `vision_config` whose mlx-vlm architecture module exposes
-# no tower, a model swapped underneath, an older server with no gate at all,
-# or a caller reaching this worker directly). The worker is the one place
-# that knows what it actually loaded, so it asks the loaded object rather
-# than re-reading the config a second time.
+# `config.json`, but that is a PREDICTION and can disagree with reality (the
+# model on disk swapped underneath, an older server with no gate at all, or
+# a caller reaching this worker directly). The worker is the one place that
+# knows what it actually loaded, so it asks its OWN copy of the config again.
+#
+# **Answered from CONFIG EVIDENCE (`vision_config`/`image_token_id`), never
+# from `getattr(model, "vision_tower", None)`.** A first cut of this check
+# read that one attribute name and was WRONG: verified against every
+# `class Model(...)` in the installed mlx-vlm 0.6.15 package, at least 18
+# real architectures name the identical thing `vision_model`, `vision` or
+# `visual` instead of `vision_tower` — a getattr keyed on one spelling
+# refused every genuine vision-language model spelled another way, which is
+# the exact opposite of the intended behaviour and was invisible to a test
+# that only faked the common name. `test_a_vision_model_under_an_uncommon_
+# attribute_name_is_still_accepted` below is the case that would have caught
+# it: same config evidence, a DIFFERENT attribute name, must still be
+# accepted. The rule is refuse-on-POSITIVE-evidence-of-text-only, never on
+# the absence of one recognised attribute — an architecture this file has
+# never heard of must be let through when its config says it has a tower.
 
 
-class _TextOnlyFakeModel:
-    """The loaded object for a checkpoint with a language tower and NO
-    vision tower — `language_model` present (as every mlx-vlm architecture's
-    is, VLM or plain text), `vision_tower` absent, exactly the shape a
-    text-only GGUF-adjacent MLX checkpoint loads as."""
-
-    def __init__(self):
-        self.language_model = _FakeTower("LANGUAGE_PARAMS")
-
-
-def test_images_are_refused_when_the_loaded_model_has_no_vision_tower(
+def test_images_are_refused_when_the_loaded_configs_own_evidence_says_text_only(
         worker, monkeypatch, tmp_path):
     """The server's `acceptsImage` flag is a prediction off a cached
-    `config.json`; this is the worker's OWN check against what it actually
-    loaded, and it must fire whether or not the server's flag agreed."""
+    `config.json`; this is the worker's OWN check against the config it
+    actually loaded, and it must fire whether or not the server's flag
+    agreed. Neither `vision_config` nor `image_token_id` present — the
+    genuinely text-only case."""
     photo = tmp_path / "cat.png"
     photo.write_bytes(b"not a real png, just bytes on disk")
     calls = _fake_mlx_vlm_with_config(monkeypatch)
-    worker._loaded.update(model=_TextOnlyFakeModel(),
+    worker._loaded.update(model=_FakeVlmModel(),
                           processor=_ProcessorWrappingATokenizer(),
                           model_id="org/text-only-chat",
                           config={"model_type": "llama"})
@@ -572,12 +577,52 @@ def test_images_are_refused_when_the_loaded_model_has_no_vision_tower(
     assert not calls, "apply_chat_template must never be reached for a tower-less model"
 
 
+def test_a_vision_model_under_an_uncommon_attribute_name_is_still_accepted(
+        worker, monkeypatch, tmp_path):
+    """THE case a `getattr(model, "vision_tower", ...)` discriminator gets
+    wrong: a real vision-language checkpoint whose config declares a tower
+    (`image_token_id` here, the same evidence `hub_cache.has_vision_tower`
+    reads) but whose mlx-vlm architecture module happens to expose that
+    tower under `vision_model` rather than `vision_tower` — llama4,
+    idefics2/3 and internvl_chat all do this in the installed 0.6.15
+    package. Config evidence must accept it regardless of what the loaded
+    object's attribute happens to be spelled."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+
+    class _UncommonAttributeModel:
+        """No `.vision_tower` at all — the tower lives at `.vision_model`
+        instead, exactly like llama4/idefics2/idefics3/internvl_chat."""
+
+        def __init__(self):
+            self.language_model = _FakeTower("LANGUAGE_PARAMS")
+            self.vision_model = _FakeTower("VISION_PARAMS_UNDER_A_DIFFERENT_NAME")
+
+    class _Response:
+        text = "a cat"
+
+    calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    worker._loaded.update(model=_UncommonAttributeModel(),
+                          processor=_ProcessorWrappingATokenizer(),
+                          model_id="org/llama4-style-vlm",
+                          config={"model_type": "llama4", "image_token_id": 128256})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}],
+         "images": [str(photo)]},
+        frames.append)
+
+    assert frames[-1]["ok"] is True, frames[-1]
+    assert len(calls) == 1, "the config said this checkpoint has a tower — it must be used"
+
+
 def test_the_vision_tower_check_fires_before_any_path_is_even_looked_at(
         worker, monkeypatch):
     """Order matters: a model that cannot use a picture at all should not
     make the caller wait on a filesystem check first."""
     calls = _fake_mlx_vlm_with_config(monkeypatch)
-    worker._loaded.update(model=_TextOnlyFakeModel(),
+    worker._loaded.update(model=_FakeVlmModel(),
                           processor=_ProcessorWrappingATokenizer(),
                           model_id="org/text-only-chat",
                           config={"model_type": "llama"})
@@ -601,13 +646,17 @@ def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monk
     the list's length exactly."""
     photo = tmp_path / "cat.png"
     photo.write_bytes(b"not a real png, just bytes on disk")
+    # `image_token_id` is the config evidence the model-axis gate looks for
+    # (alongside `vision_config`) — without it, this checkpoint would read as
+    # text-only and never reach the template helper this test is about.
+    vlm_config = {"model_type": "qwen3_5", "image_token_id": 151655}
 
     class _Response:
         text = "a cat"
 
     calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
     worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
-                          config={"model_type": "qwen3_5"})
+                          config=vlm_config)
 
     frames = []
     worker.generate(
@@ -616,7 +665,7 @@ def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monk
 
     assert len(calls) == 1
     assert calls[0]["num_images"] == 1
-    assert calls[0]["config"] == {"model_type": "qwen3_5"}
+    assert calls[0]["config"] == vlm_config
     assert frames[-1]["ok"] is True
 
 
@@ -626,8 +675,10 @@ def test_a_missing_image_path_names_the_path_rather_than_crashing_in_the_model(
     is the check that stops a caller ever seeing one for a simple typo."""
     missing = str(tmp_path / "does-not-exist.png")
     calls = _fake_mlx_vlm_with_config(monkeypatch)
+    # `image_token_id` clears the model-axis gate (this test is about the
+    # PATH check that runs after it, not about a tower-less model).
     worker._loaded.update(model=_FakeVlmModel(), processor=_ProcessorWrappingATokenizer(),
-                          config={"model_type": "qwen3_5"})
+                          config={"model_type": "qwen3_5", "image_token_id": 151655})
 
     frames = []
     worker.generate(
@@ -696,9 +747,11 @@ def test_input_tokens_is_none_on_the_image_path_rather_than_an_undercount(
         text = "a cat"
 
     _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    # `image_token_id` clears the model-axis gate; this test is about the
+    # DOWNSTREAM token count, not about whether the model has a tower.
     worker._loaded.update(model=_FakeVlmModel(),
                           processor=_ProcessorWrappingATokenizer(ids=(1, 2, 3)),
-                          config={"model_type": "qwen3_5"})
+                          config={"model_type": "qwen3_5", "image_token_id": 151655})
 
     frames = []
     worker.generate(

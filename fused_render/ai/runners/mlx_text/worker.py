@@ -429,48 +429,75 @@ def generate(body, write):
     images = ([p for p in raw_images if isinstance(p, str) and p]
              if isinstance(raw_images, list) else [])
     if images:
-        # **The MODEL axis, checked FIRST, before a single path is even
-        # looked at.** `server/ai.py`'s `_images_problem`/`_accepts_image`
-        # already try to stop this at the door, but that gate reads a
-        # CACHED `config.json` — a prediction that can disagree with what is
-        # actually resident: the config could declare `vision_config` for an
-        # architecture whose mlx-vlm module builds no tower, the model on
-        # disk could have been swapped after the server last read it, an
-        # older server may carry no such gate at all, and nothing stops a
-        # caller reaching this worker directly. This process is the one
-        # place that KNOWS what it loaded, so it asks the loaded object
-        # itself — the same `language_model` sibling attribute `load()`
-        # already reaches for, since every mlx-vlm architecture that has a
-        # vision tower exposes it there.
-        #
-        # Silently answering about a picture the model cannot even see is
-        # the worst failure this app has: a confident reply about nothing.
-        # An explicit, named refusal is the whole point of this check.
-        if getattr(model, "vision_tower", None) is None:
-            write({"type": "done", "ok": False,
-                   "error": f"{_loaded.get('model_id') or 'this model'} has no "
-                            "vision tower to read an image with"})
-            return
-        for path in images:
-            problem = _unreadable_image(path)
-            if problem:
-                write({"type": "done", "ok": False, "error": problem})
-                return
-        # `config` is the dict `load()` stashed at load time. Checked for
-        # real content, not just presence: `apply_chat_template` below does
-        # `config["model_type"]` UNCONDITIONALLY, so an empty dict would
-        # otherwise reach that as a bare `KeyError` — a crash with no path,
-        # no model, nothing a caller could act on — instead of the named
-        # `{done, ok: false, error}` frame every other failure on this path
-        # writes (`_unreadable_image`'s own discipline). `load()` always
-        # stashes a real config for anything that got far enough to generate,
-        # so this is defensive rather than an expected failure.
+        # `config` is the dict `load()` stashed at load time — needed both
+        # for the MODEL-axis check right below and later to build the
+        # image-aware prompt via `apply_chat_template`. Checked for real
+        # content up front, not lazily: an empty dict would otherwise reach
+        # either use as a confusing failure with no path, no model, nothing
+        # a caller could act on. `load()` always stashes a real config for
+        # anything that got far enough to generate, so this is defensive
+        # rather than an expected failure.
         config = _loaded.get("config")
         if not config:
             write({"type": "done", "ok": False,
                    "error": "no model configuration was found to build an "
                             "image-aware prompt from"})
             return
+
+        # **The MODEL axis, checked BEFORE a single path is even looked
+        # at.** `server/ai.py`'s `_images_problem`/`_accepts_image` already
+        # try to stop this at the door, but that gate reads a CACHED
+        # `config.json` — a prediction that can disagree with what is
+        # actually resident: the model on disk could have been swapped
+        # after the server last read it, an older server may carry no such
+        # gate at all, and nothing stops a caller reaching this worker
+        # directly. This process is the one place that KNOWS what it
+        # loaded, so it asks its OWN copy of the config again here.
+        #
+        # **Answered from CONFIG EVIDENCE, never from a `getattr` on the
+        # loaded model object.** A first cut of this check read
+        # `model.vision_tower`, which is wrong: that attribute's name is NOT
+        # standardised across mlx-vlm's model zoo — verified against every
+        # `class Model(...)` in the installed 0.6.15 package — `vision_tower`
+        # is only the most common spelling. At least 18 real architectures
+        # name the SAME thing `vision_model` (idefics2, idefics3,
+        # internvl_chat, llama4, deepseekocr, molmo_point, and others),
+        # `vision` (deepseek_vl_v2, moondream2, moondream3, rt_detr_v2), or
+        # `visual` (paddleocr_vl). A getattr keyed on one name refuses every
+        # architecture spelled another way — genuine vision-language models,
+        # rejected as "no vision tower" — which is the exact opposite of the
+        # intended behaviour, and invisible to a test that only fakes the
+        # common attribute name.
+        #
+        # So this asks the same question `hub_cache.has_vision_tower` and
+        # `_architecture_task` already ask of a checkpoint's OWN config: a
+        # `vision_config` block and/or an `image_token_id` is the
+        # architecture-NAME-INDEPENDENT evidence that this checkpoint has a
+        # tower — one definition of "has a tower" for the whole codebase,
+        # not a second one invented here from whichever attribute this file
+        # happens to recognise.
+        #
+        # **The rule is refuse-on-POSITIVE-evidence, not refuse-on-absence:**
+        # only a config with NEITHER key is text-only. An architecture this
+        # file has never heard of, but whose config declares a tower, must
+        # be let through to mlx-vlm — the config already answered the
+        # question, and mlx-vlm is the authority on whether IT can build
+        # that tower, not this worker guessing from an attribute name it
+        # happens to know. Silently answering about a picture the model
+        # cannot even see is still the worst failure this app has — this
+        # check exists for the genuinely text-only case, not to second-guess
+        # every architecture mlx-vlm ships.
+        if "vision_config" not in config and "image_token_id" not in config:
+            write({"type": "done", "ok": False,
+                   "error": f"{_loaded.get('model_id') or 'this model'} has no "
+                            "vision tower to read an image with"})
+            return
+
+        for path in images:
+            problem = _unreadable_image(path)
+            if problem:
+                write({"type": "done", "ok": False, "error": problem})
+                return
         # The ONE place mlx-vlm's own `apply_chat_template` is correct rather
         # than a hazard (see `_messages_to_prompt`'s docstring): the image
         # placeholder tokens it inserts into the prompt are what the model
