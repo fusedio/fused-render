@@ -5747,14 +5747,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   may occupy SEVERAL folders, one per hardware build of it, and then the shared
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
   it** (D381). Diffusers is three folders — `diffusers_image`,
-  `diffusers_image_cuda`, `diffusers_image_rocm` — and llama.cpp is two
-  (`llamacpp_text`, `llamacpp_text_vulkan`), whose manifests are identical except
-  for the index the accelerated distribution is resolved from, and whose
-  `worker.py` is a `sys.path` insert and a call into `runners/torch_image.py` or
-  `runners/llama_text.py`. (D416 removed a third such family — `transformers_text`
-  and its `_cuda`/`_rocm` siblings over `runners/torch_text.py`, which is where
-  this rule was first written. The rule is unchanged; only one of its instances
-  is gone.) Both halves of that are
+  `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
+  (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
+  runner is three (`transformers_embed`, `transformers_embed_cuda`,
+  `transformers_embed_rocm`), whose manifests are identical except for the
+  index the accelerated distribution is resolved from, and whose `worker.py`
+  is a `sys.path` insert and a call into `runners/torch_image.py`,
+  `runners/llama_text.py` or `runners/torch_embed.py`. (D416 removed an
+  earlier such family — `transformers_text` and its `_cuda`/`_rocm` siblings
+  over `runners/torch_text.py`, which is where this rule was first written;
+  the embeddings family above is a LATER, separate instance of the same rule,
+  not that one restored — the text tower's one-forward-pass argument that
+  justified withdrawing `transformers_text_cuda`/`_rocm` never applied to the
+  embeddings runner's image tower, which is genuine batched GPU work at
+  `embed_common.MAX_ITEMS`.) Both halves of that are
   forced rather than chosen. **The folder split is forced by PY-16**: a venv is
   keyed on the folder, so two rows sharing one folder share one environment and
   could not hold two different torch builds; and `_env_install_worker` runs a
