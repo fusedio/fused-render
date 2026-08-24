@@ -2681,6 +2681,164 @@ def test_loading_a_second_text_model_evicts_the_first(fake_runner):
     assert not supervisor._alive(first)
 
 
+def test_evicting_a_model_does_not_block_other_calls_while_it_terminates(fake_runner, monkeypatch):
+    """B1: `_terminate` can block for ~9s (a `/quit` POST, SIGTERM+wait,
+    SIGKILL+wait, `proc.wait`). If the eviction branch in `_start_resident`
+    holds `_lock` across that call, every other supervisor call — `describe`,
+    `ready_worker`, a health poll, another model's load — queues behind it for
+    the whole teardown. This is exactly why a benchmark "Run all" looked frozen
+    specifically on its first model: only the first load evicts a previously
+    resident worker, so 2..N never hit this path and the freeze looked like it
+    was about the first model rather than about eviction."""
+    supervisor.load("org/first", registry.TEXT_GENERATION)
+    _wait_ready("org/first")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    # What a benchmark's second model load does: request a different model for
+    # the same capability, which evicts the first.
+    t = threading.Thread(
+        target=supervisor.load, args=("org/second", registry.TEXT_GENERATION)
+    )
+    t.start()
+    try:
+        assert started.wait(timeout=5), "eviction never reached _terminate"
+
+        # While the old worker is (slowly) tearing down, an ordinary read must
+        # not queue behind it — that queuing is the bug.
+        t0 = time.monotonic()
+        supervisor.describe()
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0, f"describe() blocked {elapsed:.1f}s behind _terminate"
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_eviction_still_starts_the_new_worker_when_terminating_the_old_one_raises(
+        fake_runner, monkeypatch):
+    """The new worker is published into `_workers[capability]` BEFORE
+    `_terminate(current)` runs on the evicted one (see the comment in
+    `_start_resident`). If that call raises — `_terminate` is best-effort
+    internally but not blanket-guarded — the new worker must still get its
+    `_bring_up` thread started, or it sits in the table forever in a
+    non-`error` state: every later `load()` for this capability takes the
+    join branch and hands back that dead record, and `_wait_ready` blocks for
+    `LOAD_WAIT_TIMEOUT_S` (an hour)."""
+    supervisor.load("org/first", registry.TEXT_GENERATION)
+    _wait_ready("org/first")
+
+    real_terminate = supervisor._terminate
+
+    def raising_terminate(worker):
+        real_terminate(worker)  # still actually tear the old one down
+        raise RuntimeError("boom from a _terminate callee")
+
+    monkeypatch.setattr(supervisor, "_terminate", raising_terminate)
+
+    try:
+        supervisor.load("org/second", registry.TEXT_GENERATION)
+        worker = _wait_ready("org/second")
+        assert worker.model == "org/second"
+    finally:
+        # `fake_runner`'s own teardown calls `unload()`, which would hit this
+        # same raising stub again (and, this time unhandled, break fixture
+        # teardown) if it were still installed.
+        monkeypatch.setattr(supervisor, "_terminate", real_terminate)
+
+
+def test_unload_all_waits_for_an_in_progress_eviction_to_finish_draining(
+        fake_runner, monkeypatch):
+    """The lock-release fix (B1) pops the evicted worker from `_workers`
+    before its ~9s `_terminate` runs, so for that window it exists nowhere
+    `unload_all` (walking `_workers` at shutdown) would find it — quitting
+    the app in that window used to leave the old process running with
+    nothing left tracking it, the same orphan-holding-gigabytes failure
+    `unload_all`'s own docstring exists to prevent for weights-only fetches.
+    `_draining` closes that: `unload_all` must wait for it to clear rather
+    than declaring shutdown complete while a worker is still going down."""
+    supervisor.load("org/first", registry.TEXT_GENERATION)
+    first = _wait_ready("org/first")
+
+    real_terminate = supervisor._terminate
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_terminate(worker):
+        started.set()
+        release.wait(timeout=5)
+        real_terminate(worker)
+
+    monkeypatch.setattr(supervisor, "_terminate", slow_terminate)
+
+    t = threading.Thread(
+        target=supervisor.load, args=("org/second", registry.TEXT_GENERATION)
+    )
+    t.start()
+    try:
+        assert started.wait(timeout=5), "eviction never reached _terminate"
+        assert supervisor._draining, "the evicted worker must be visible while it drains"
+
+        done = threading.Event()
+
+        def run_unload_all():
+            supervisor.unload_all()
+            done.set()
+
+        u = threading.Thread(target=run_unload_all)
+        u.start()
+        try:
+            assert not done.wait(timeout=0.3), (
+                "unload_all() returned while an eviction was still draining"
+            )
+            release.set()
+            assert done.wait(timeout=5), "unload_all() never returned once draining finished"
+        finally:
+            u.join(timeout=5)
+
+        assert not supervisor._draining
+        assert not supervisor._alive(first)
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
+def test_cancel_check_is_not_tied_to_the_tightened_health_poll_cadence(
+        fake_runner, monkeypatch):
+    """C1 tightened `_bring_up`'s health-poll sleep from 0.5s to 0.1s for load
+    latency — a local loopback GET, cheap to do 5x more often. The cancel
+    check sitting beside it is a different call, `_cancel_requested` ->
+    `jobs.list_jobs()`, which takes the GLOBAL jobs lock, runs a sweep, and
+    `asdict()`s up to `MAX_JOBS` records — contending with every `_report`
+    call from every other loading worker. It must stay on its own ~0.5s
+    cadence rather than scale 5x alongside the health poll."""
+    calls = {"n": 0}
+    real_cancel_requested = supervisor._cancel_requested
+
+    def counting(job):
+        calls["n"] += 1
+        return real_cancel_requested(job)
+
+    monkeypatch.setattr(supervisor, "_cancel_requested", counting)
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.0")
+
+    supervisor.load("org/slow-count", registry.TEXT_GENERATION)
+    _wait_ready("org/slow-count")
+
+    # ~2-3 calls at the intended 0.5s cadence over a ~1s load; tying it to the
+    # tightened 0.1s health-poll cadence would have made it ~10.
+    assert calls["n"] <= 5, f"_cancel_requested called {calls['n']} times over a ~1s load"
+
+
 def test_loading_the_same_model_twice_joins_rather_than_restarting(fake_runner):
     first = supervisor.load("org/same", registry.TEXT_GENERATION)
     worker = _wait_ready("org/same")

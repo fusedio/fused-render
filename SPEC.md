@@ -4950,9 +4950,26 @@ stop it short of quitting the app.
   likely is not. It is dropped
   entirely after `STALE_DROP_S` (10 min) so a dead reporter cannot wedge the
   list for the session.
-- **BG-6** **Retention.** A finished record stays `FINISHED_TTL_S` (30s) — long
-  enough to be noticed by someone who was not watching the corner, short enough
-  that the manager stays a picture of *now*. An **error is exempt** and stays
+- **BG-6** **Retention.** A finished record stays `FINISHED_TTL_S` (3s) —
+  counted from when the row was first READ (`Job.first_read_at`), not from
+  when it finished. The corner is meant to answer "is my work done", not to
+  be read as a log, so a `done`/`cancelled` row clears itself soon after
+  someone has had a chance to see it, and the manager stays a picture of
+  *now* rather than an accumulating list. Read-gating is what actually
+  delivers "long enough to be noticed by someone who was not watching the
+  corner": a job that starts and finishes entirely server-side (a scheduled
+  run, or a Python reporter POSTing straight to `/api/jobs`) runs no JS and
+  so never pings the shell out of its idle poll — a flat clock from
+  completion could then expire the row between two idle polls with nobody
+  ever having seen it, which a clock gated on the first successful read
+  cannot do. An unread row is bounded instead by `FINISHED_UNREAD_DROP_S`
+  (10 min) — the backstop for a headless server or a closed tab that never
+  polls again, since `MAX_JOBS` alone is capacity pressure, not a statement
+  that the work is over. The client's poll (`pollInterval`, jobs.ts) holds
+  its fast (1s) cadence for a grace window after the last running job
+  disappears so it keeps up with this short a post-read sweep instead of
+  lagging behind on its idle (5s) cadence. An
+  **error is exempt** and stays
   until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.

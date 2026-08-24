@@ -249,16 +249,28 @@ def machine() -> dict:
 #: actually gets rather than a number invented here.
 DEFAULT_IMAGE_STEPS = 28
 
-#: How many further polls to allow a pending record that says `error` with no
-#: `error` message yet. `_bring_up` writes `state` from its health poll OUTSIDE
-#: `supervisor._lock` and only then raises into the handler that writes the
-#: message, so there is a real window where a waiter can read the state and not
-#: the reason. Reporting the generic sentence there would throw away the runner's
-#: own — the very information loss polling the record was meant to recover — and
-#: waiting is enough, because the raise is the next thing that happens on that
-#: thread. Bounded, so a record genuinely stuck at `error` with nothing written is
-#: still answered in a few poll intervals rather than at the hour-long timeout.
-_ERROR_GRACE_POLLS = 4
+#: How long (WALL CLOCK, not a poll count) to allow a pending record that says
+#: `error` with no `error` message yet. `_bring_up` writes `state` from its
+#: health poll OUTSIDE `supervisor._lock` and only then raises into the handler
+#: that writes the message, so there is a real window where a waiter can read
+#: the state and not the reason. Reporting the generic sentence there would
+#: throw away the runner's own — the very information loss polling the record
+#: was meant to recover — and waiting is enough, because the raise is the next
+#: thing that happens on that thread. Bounded, so a record genuinely stuck at
+#: `error` with nothing written is still answered promptly rather than at the
+#: hour-long timeout.
+#:
+#: Deliberately seconds, not `_LOAD_POLL_S * N`: this used to be a poll COUNT
+#: (`_ERROR_GRACE_POLLS = 4`), which silently tracked whatever `_LOAD_POLL_S`
+#: happened to be — tightening that poll interval from 0.5s to 0.1s (for
+#: latency, nothing to do with this window) shrank the grace from 2.0s to
+#: 0.4s with no test or reviewer noticing, and a cancel (`state="error"`,
+#: `error=""` until the exception handler catches up) landing outside a
+#: too-short window gets misrecorded as a genuine model failure — the one
+#: thing this feature's history must never contain (see `_load_to_ready`'s
+#: docstring). Keep this expressed in seconds so a future change to the poll
+#: interval cannot shrink it by accident again.
+_ERROR_GRACE_S = 2.0
 
 #: How long to wait for a cold model, and how often to ask. The wait matches the
 #: supervisor's own (`LOAD_WAIT_TIMEOUT_S`, an hour) because it is the same wait
@@ -266,7 +278,12 @@ _ERROR_GRACE_POLLS = 4
 #: benchmark that gave up sooner would report a load failure for a download that
 #: was going to finish. Module-level so a test can shrink both.
 _LOAD_TIMEOUT_S = supervisor.LOAD_WAIT_TIMEOUT_S
-_LOAD_POLL_S = 0.5
+# 0.1s, not the supervisor's own bring-up loop's old cadence (also 0.5s, also
+# now 0.1s) — the two used to stack, so a model that finished loading was
+# noticed up to a full second late on every single load: this loop's own
+# poll plus the supervisor's before it. Cheap to tighten: both loops read a
+# local loopback HTTP status endpoint, not a real network call.
+_LOAD_POLL_S = 0.1
 
 #: Indirection so tests can script a timeline instead of sleeping through one.
 #: `time.monotonic`, not `time.time`: a clock the user can drag backwards would
@@ -709,10 +726,12 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     `ok:false, "did not finish loading in time"` — a phantom "this model failed
     here", which is the single thing this feature's history must never contain.
     A failed load is now the loader's OWN sentence, immediately, and a cancelled
-    one is not recorded at all — with one honest caveat, `_ERROR_GRACE_POLLS`:
-    the state and the message are not written together, so a sample can land
-    between them, and the wait rides that out rather than reporting a generic
-    failure it would have had the real reason for one poll later.
+    one is not recorded at all — with one honest caveat, `_ERROR_GRACE_S`: the
+    state and the message are not written together, so a sample can land
+    between them, and the wait rides that out (in WALL CLOCK, not a poll count —
+    see the constant's own comment for why that distinction is load-bearing)
+    rather than reporting a generic failure it would have had the real reason
+    for moments later.
 
     `_start_resident` rather than `load()`: it is what `load()` calls for a
     non-`weights_only` request and it hands back the pending record this loop
@@ -726,7 +745,7 @@ def _load_to_ready(model: str, capability: str) -> float | None:
     start = _now()
     _started, pending = supervisor._start_resident(model, capability)
     deadline = start + _LOAD_TIMEOUT_S
-    error_polls = 0
+    error_since: float | None = None
     while True:
         if supervisor.ready_worker(capability, model) is not None:
             return _now() - start
@@ -741,7 +760,7 @@ def _load_to_ready(model: str, capability: str) -> float | None:
         # worth being precise about that rather than implying otherwise: the
         # health-poll path assigns `worker.state` OUTSIDE the lock and only then
         # raises, so `state == "error"` with an empty `error` is a reachable
-        # sample. `_ERROR_GRACE_POLLS` is what that costs us. The cancel
+        # sample. `_ERROR_GRACE_S` is what that costs us. The cancel
         # discrimination below is unaffected — a cancel only ever arrives through
         # the exception path, which does write both under the lock.
         with supervisor._lock:
@@ -757,10 +776,13 @@ def _load_to_ready(model: str, capability: str) -> float | None:
                 raise Cancelled()
             if error:
                 raise supervisor.SupervisorError(error)
-            # The window above. Give the raising thread a few polls to say WHY
-            # before falling back to a sentence that says nothing.
-            error_polls += 1
-            if error_polls > _ERROR_GRACE_POLLS:
+            # The window above. Give the raising thread `_ERROR_GRACE_S` of WALL
+            # CLOCK to say WHY before falling back to a sentence that says
+            # nothing — not a poll count, which would silently shrink alongside
+            # `_LOAD_POLL_S` (see that constant's comment for why this bit us).
+            if error_since is None:
+                error_since = _now()
+            elif _now() - error_since > _ERROR_GRACE_S:
                 raise supervisor.SupervisorError("the model failed to load")
         if evicted:
             # Genuinely taken away rather than broken: another model claimed the

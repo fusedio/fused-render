@@ -129,6 +129,11 @@ function useJobs(): {
   const jobsRef = useRef<Job[]>(jobs);
   jobsRef.current = jobs;
   const pollRef = useRef<() => void>(() => {});
+  // When a running job was last seen, so the poll loop can hold the ACTIVE
+  // cadence for GRACE_MS after the last one disappears (see jobs.ts). Starts
+  // at -Infinity: on first mount nothing has been seen running yet, so there
+  // is no grace to extend.
+  const lastRunningAtRef = useRef<number>(-Infinity);
   // Bumped by every mutation — a request the user made, or a read this hook
   // asked for after one. A response issued BEFORE that describes the list as it
   // was, so painting it flicks the row the user just dismissed back onto the
@@ -151,12 +156,21 @@ function useJobs(): {
       timer = window.setTimeout(poll, ms);
     };
 
+    // Records `jobs` as the latest known snapshot and schedules the next poll
+    // off it — updating `lastRunningAtRef` first, so a job that just stopped
+    // running still gets the grace window rather than an immediate idle drop.
+    const scheduleFor = (jobs: Job[]) => {
+      const now = Date.now();
+      if (jobs.some(isRunning)) lastRunningAtRef.current = now;
+      schedule(pollInterval(jobs, now - lastRunningAtRef.current));
+    };
+
     async function poll() {
       // A page hidden behind another tab is not being read; its throttled
       // timers would fire in a clump on return anyway. Keep the loop alive at
       // the idle cadence so the first visible frame is fresh.
       if (document.visibilityState === "hidden") {
-        schedule(pollInterval(jobsRef.current));
+        scheduleFor(jobsRef.current);
         return;
       }
       if (inFlight) {
@@ -170,18 +184,18 @@ function useJobs(): {
         if (disposed) return;
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
-          schedule(pollInterval(snapshot.jobs));
+          scheduleFor(snapshot.jobs);
         } else {
           // Stale. Dropped rather than painted; `queued` is set (the mutation
           // asked for a read while this one was in flight), so the fresh read
           // is already on its way.
-          schedule(pollInterval(jobsRef.current));
+          scheduleFor(jobsRef.current);
         }
       } catch {
         // The server being unreachable is the ServerStatusBanner's story to
         // tell, not this card's — keep the last list on screen and retry at the
         // idle cadence rather than blanking the manager on one failed probe.
-        if (!disposed) schedule(pollInterval(jobsRef.current));
+        if (!disposed) scheduleFor(jobsRef.current);
       } finally {
         inFlight = false;
         if (queued && !disposed) {
