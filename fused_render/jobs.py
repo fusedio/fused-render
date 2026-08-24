@@ -161,6 +161,12 @@ TITLE_MAX = 120
 DETAIL_MAX = 200
 MESSAGE_MAX = 4000
 PAGE_MAX = 1024
+# The model name is a dimmed SUFFIX on the title row, never the detail line —
+# detail is the one thing a running worker's progress ticks own, and a model
+# name concatenated in there would get overwritten by the next "step 2/4" and
+# vanish. Same cap as `title`: a full repo id ("black-forest-labs/FLUX.1-schnell")
+# is exactly the kind of thing this field carries, so it gets the same room.
+MODEL_MAX = TITLE_MAX
 
 # Dismissed ids, bounded. A reporter that keeps posting after its job finished
 # would otherwise resurrect the row the user just closed, and "it came back"
@@ -198,6 +204,12 @@ class Job:
     id: str
     title: str
     detail: str = ""
+    # The model running this row, if any — a dimmed suffix the UI draws after
+    # the title (JobRow's `.dl-model`), never folded into `title` or `detail`.
+    # "" means "no model to show" (a download, a scheduled run, a page's own
+    # `fused.trackJob()`), which the manager renders with no element at all
+    # rather than an empty one — see DownloadManager.tsx's `job.model &&`.
+    model: str = ""
     kind: str = "task"
     state: str = RUNNING
     done: float | None = None
@@ -359,6 +371,8 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
 
         if "detail" in body:
             job.detail = _text(body.get("detail"), DETAIL_MAX)
+        if "model" in body:
+            job.model = _text(body.get("model"), MODEL_MAX)
         if "message" in body:
             job.message = _text(body.get("message"), MESSAGE_MAX, one_line=False)
         if "kind" in body:
