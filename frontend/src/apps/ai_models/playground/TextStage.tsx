@@ -1,18 +1,14 @@
 // The text stage: one prompt in, one reply out (SPEC AI-1a, reshaped).
 //
-// This USED to be a chat (ChatStage) — bubbles, history, a bottom-anchored
-// composer. The playground unification turned every stage into the same
-// API-surface shape: a prompt, a Run, the rendered result of THAT run. A
-// developer trying a local model wants exactly what one `fused.ai` call
-// returns, and a transcript is state the one-call framing has no place for.
-// Because the prompt is now setup rather than transcript, it rides the URL
-// (`prompt`) the way the image stage's does — the chat rule ("the URL carries
-// the setup, never the transcript") reclassified it.
+// Every stage is the same API-surface shape: a prompt, a Run, the rendered
+// result of THAT run. The prompt is setup rather than transcript, so it rides
+// the URL (`prompt`) the way the image stage's does.
 //
 // The stream rides `playgroundClient.streamChat`; a model that is not resident
 // answers 409 with the job id of the load this send just started (AI-5), and
 // this component owns the dance — watch the job, narrate it, retry ONCE.
 import { useEffect, useRef, useState } from "react";
+import { ChevronRightIcon, CornerDownLeftIcon } from "lucide-react";
 import {
   cancelGeneration,
   streamChat,
@@ -23,16 +19,27 @@ import {
 import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
 import {
-  ConfigPanel,
+  AnswerBlock,
   CopyButton,
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldTitle,
   RailSlider,
   ResultSlot,
-  StageHeader,
+  StageShell,
   StarterCards,
   useAutoGrow,
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { Button } from "@apps/ai_models/ui/button";
+import { Alert, AlertDescription } from "@apps/ai_models/ui/alert";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@apps/ai_models/ui/collapsible";
+import { InputGroup, InputGroupAddon, InputGroupTextarea } from "@apps/ai_models/ui/input-group";
+import { Kbd } from "@apps/ai_models/ui/kbd";
+import { Spinner } from "@apps/ai_models/ui/spinner";
+import { Textarea } from "@apps/ai_models/ui/textarea";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
@@ -40,28 +47,19 @@ import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 // also the WORKER's own default — the slider states the truth of a bare call.
 const DEFAULTS = { temperature: 0.7, top_p: 0.95, max_tokens: 1024 };
 // The server's `_SAMPLING` bounds, restated because it REJECTS an out-of-range
-// value rather than clamping it — so a hand-edited or stale link has to be
-// clamped on the way IN, or every run on that link 400s. Keep in step with
-// server/ai.py.
+// value rather than clamping it. Keep in step with server/ai.py.
 const LIMITS = {
   temperature: [0, 2],
   top_p: [0, 1],
   max_tokens: [1, 32768],
 } as const;
 
-// No system prompt by default. This stage's job is to show what THIS model does
-// on a bare `fused.ai` call, and a standing prompt of ours — however short — is
-// a second author in every reply: verbosity, formatting and reasoning length all
-// come out steered, and nothing on screen says by whom. The panel's field is
-// there for anyone who wants one, and `system=` still rides the URL when it is
-// set. A model that rambles or thinks out loud without one is telling the reader
-// something true about itself, which is what they came to find out.
+// No system prompt by default: this stage's job is to show what THIS model
+// does on a bare `fused.ai` call, and a standing prompt of ours is a second
+// author in every reply. The panel's field is there for anyone who wants one.
 
 // Eight authored examples — two pages of four (D465). Each is a real ask with
-// its constraints spelled out, not a topic: what to write, how long, what to
-// leave out. A one-line "write a haiku" tests that the model answers; these
-// test what the reader actually came to find out, which is whether it follows
-// the shape it was given.
+// its constraints spelled out, not a topic.
 const STARTERS: Starter[] = [
   {
     name: "How it guesses",
@@ -259,18 +257,81 @@ export function TextStage({
   const shown = reply ? splitThink(reply.text) : null;
   const stats = replyStats(reply?.usage);
 
-  return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      {/* The action, and the way to the settings. The hero card above names
-          the model and its state. */}
-      <StageHeader
-        title="Try a prompt"
-        configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+  const config = (
+    <>
+      <RailSlider
+        label="Temperature"
+        hint="Lower is focused and repeatable; higher is varied and creative."
+        min={LIMITS.temperature[0]}
+        max={LIMITS.temperature[1]}
+        step={0.05}
+        value={temperature}
+        fallback={DEFAULTS.temperature}
+        onChange={setTemperature}
       />
+      <RailSlider
+        label="Max tokens"
+        hint="The longest reply allowed. One token is roughly ¾ of a word."
+        min={LIMITS.max_tokens[0]}
+        max={LIMITS.max_tokens[1]}
+        step={1}
+        value={maxTokens}
+        fallback={DEFAULTS.max_tokens}
+        onChange={setMaxTokens}
+      />
+      <Field>
+        <FieldContent>
+          <div className="flex items-center gap-2">
+            <FieldTitle className="flex-1">System prompt</FieldTitle>
+            {/* "clear", not the other controls' "reset": resetting this one IS
+                emptying it, and a button that says reset beside a prompt the
+                user wrote reads like it would restore one of ours. */}
+            {system !== "" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-xs text-muted-foreground"
+                onClick={() => setSystem("")}
+              >
+                clear
+              </Button>
+            )}
+          </div>
+          <Textarea
+            rows={4}
+            value={system}
+            placeholder="Who the model should be"
+            onChange={(e) => setSystem(e.target.value)}
+          />
+          <FieldDescription>
+            Standing instructions, applied to every run. Empty by default — the
+            reply is whatever this model does on its own.
+          </FieldDescription>
+        </FieldContent>
+      </Field>
+      <RailSlider
+        label="Top-p"
+        hint="How much of the probability mass the model may sample from."
+        min={LIMITS.top_p[0]}
+        max={LIMITS.top_p[1]}
+        step={0.01}
+        value={topP}
+        fallback={DEFAULTS.top_p}
+        onChange={setTopP}
+      />
+    </>
+  );
 
-      <div className="pg-composer">
-        <textarea
+  return (
+    <StageShell
+      title="Try a prompt"
+      configOpen={configOpen}
+      onToggleConfig={() => setConfigOpen((open) => !open)}
+      config={config}
+    >
+      <InputGroup>
+        <InputGroupTextarea
           ref={boxRef}
           value={prompt}
           rows={3}
@@ -286,40 +347,38 @@ export function TextStage({
             }
           }}
         />
-        {/* Clear at the top of this column, Run at the bottom — not inline with
-            the prompt. Inline, Clear appeared and disappeared BESIDE the text,
-            narrowing the box by its own width and rewrapping the prompt taller
-            than the height the grow already wrote. The column's width is set by
-            Run, the wider of the two, so nothing moves when Clear comes and
-            goes. */}
-        <div className="pg-composer-side">
+        <InputGroupAddon align="block-end" className="justify-end">
           {!streaming && reply && (
-            <button
+            <Button
               type="button"
-              className="pg-ghost-btn pg-clear"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
               title="Clear the prompt and reply"
               onClick={clear}
             >
               Clear
-            </button>
+            </Button>
           )}
           {streaming ? (
-            <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
+            <Button type="button" variant="secondary" size="sm" className="ml-auto" onClick={stop}>
+              <Spinner data-icon="inline-start" />
               Stop
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
-              className="btn btn-primary pg-send"
+              size="sm"
+              className="ml-auto"
               disabled={!prompt.trim()}
               title="Enter to run · Shift+Enter for a new line"
               onClick={() => void send()}
             >
-              Run <kbd className="pg-kbd">⏎</kbd>
-            </button>
+              Run <Kbd className="bg-transparent text-inherit">⏎</Kbd>
+            </Button>
           )}
-        </div>
-      </div>
+        </InputGroupAddon>
+      </InputGroup>
 
       {/* Examples first, under the box they fill; hidden once there is a
           reply to read, which is what that space is then for. */}
@@ -327,66 +386,17 @@ export function TextStage({
         <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
       )}
 
-      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
-      <ConfigPanel open={configOpen}>
-        <RailSlider
-          label="Temperature"
-          hint="Lower is focused and repeatable; higher is varied and creative."
-          min={LIMITS.temperature[0]}
-          max={LIMITS.temperature[1]}
-          step={0.05}
-          value={temperature}
-          fallback={DEFAULTS.temperature}
-          onChange={setTemperature}
-        />
-        <RailSlider
-          label="Max tokens"
-          hint="The longest reply allowed. One token is roughly ¾ of a word."
-          min={LIMITS.max_tokens[0]}
-          max={LIMITS.max_tokens[1]}
-          step={1}
-          value={maxTokens}
-          fallback={DEFAULTS.max_tokens}
-          onChange={setMaxTokens}
-        />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">System prompt</span>
-            {/* "clear", not the other controls' "reset": resetting this one IS
-                emptying it, and a button that says reset beside a prompt the
-                user wrote reads like it would restore one of ours. */}
-            {system !== "" && (
-              <button type="button" className="pg-ctl-reset" onClick={() => setSystem("")}>
-                clear
-              </button>
-            )}
-          </span>
-          <textarea
-            className="pg-rail-textarea"
-            rows={4}
-            value={system}
-            placeholder="Who the model should be"
-            onChange={(e) => setSystem(e.target.value)}
-          />
-          <span className="pg-ctl-hint">
-            Standing instructions, applied to every run. Empty by default — the
-            reply is whatever this model does on its own.
-          </span>
-        </label>
-        <RailSlider
-          label="Top-p"
-          hint="How much of the probability mass the model may sample from."
-          min={LIMITS.top_p[0]}
-          max={LIMITS.top_p[1]}
-          step={0.01}
-          value={topP}
-          fallback={DEFAULTS.top_p}
-          onChange={setTopP}
-        />
-      </ConfigPanel>
-
-      {status && <p className="pg-status">{status}</p>}
-      {error && <p className="pg-error">{error}</p>}
+      {status && (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner className="size-3.5" />
+          {status}
+        </p>
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {!(reply && shown) ? (
         <ResultSlot
@@ -395,31 +405,37 @@ export function TextStage({
           note="The reply appears here. Ask something above, then Run."
         />
       ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Response</p>
-          <div className="pg-answer">
+        <AnswerBlock
+          label="Response"
+          className="rounded-lg border bg-card px-4 py-3 text-sm leading-relaxed"
+        >
           {!reply.pending && reply.text && (
             <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
           )}
           {shown.think !== null && (
-            <details className="pg-think">
-              <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
-              <div className="pg-think-body">{shown.think}</div>
-            </details>
+            <Collapsible className="mb-2">
+              <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground">
+                <ChevronRightIcon className="size-3 transition-transform group-data-[state=open]:rotate-90" />
+                {shown.thinking ? "Thinking…" : "Thought process"}
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-1 border-l-2 pl-3 text-xs whitespace-pre-wrap text-muted-foreground">
+                {shown.think}
+              </CollapsibleContent>
+            </Collapsible>
           )}
           {shown.answer ? (
             renderMarkdown(shown.answer)
           ) : reply.pending && !shown.thinking ? (
-            <span className="pg-cursor" aria-label="Generating" />
+            <Spinner className="size-4" aria-label="Generating" />
           ) : null}
           {!reply.pending && stats && (
-            <div className="pg-turn-foot">
+            <div className="mt-2 flex items-center gap-2 border-t pt-2 text-xs text-muted-foreground">
+              <CornerDownLeftIcon className="size-3" aria-hidden="true" />
               <span>{stats}</span>
             </div>
           )}
-          </div>
-        </div>
+        </AnswerBlock>
       )}
-    </div>
+    </StageShell>
   );
 }

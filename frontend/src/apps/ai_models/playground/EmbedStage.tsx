@@ -20,8 +20,24 @@
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, withModelReady } from "./client";
-import { ConfigPanel, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
+import {
+  AnswerBlock,
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldTitle,
+  ResultSlot,
+  StageShell,
+  StarterCards,
+  type Starter,
+} from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { Alert, AlertDescription } from "@apps/ai_models/ui/alert";
+import { Button } from "@apps/ai_models/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@apps/ai_models/ui/input-group";
+import { Kbd } from "@apps/ai_models/ui/kbd";
+import { Spinner } from "@apps/ai_models/ui/spinner";
+import { Textarea } from "@apps/ai_models/ui/textarea";
 
 // The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
 // query and the six lines it is searched against travel together, because the
@@ -228,115 +244,128 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
 
   const best = ranked?.length ? Math.max(ranked[0].score, 1e-6) : 1;
 
-  return (
-    <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
-        {/* The action, and the way to the settings. The hero card above names
-            the model and its state. */}
-        <StageHeader
-          title="Search lines by meaning"
-          configOpen={configOpen}
-          onToggleConfig={() => setConfigOpen((open) => !open)}
+  const config = (
+    <Field>
+      <FieldContent>
+        <FieldTitle>Lines to search</FieldTitle>
+        <Textarea
+          rows={7}
+          value={lines}
+          placeholder="One line per entry"
+          onChange={(e) => setLines(e.target.value)}
         />
-        <div className="pg-composer">
-          <input
-            type="text"
-            value={query}
-            placeholder="What are you looking for?"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") void run();
-            }}
-          />
-          {/* Same stack as the other composers — Clear at the top, Search at
-              the foot — so Clear sits in one place across the playground and
-              never appears BESIDE the input, stealing its width. */}
-          <div className="pg-composer-side">
-            {ranked && !busy && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Clear the results"
-                onClick={() => setRanked(null)}
-              >
-                Clear
-              </button>
-            )}
-            <button
+        <FieldDescription>One line per entry, up to {MAX_LINES}.</FieldDescription>
+      </FieldContent>
+    </Field>
+  );
+
+  return (
+    <StageShell
+      title="Search lines by meaning"
+      configOpen={configOpen}
+      onToggleConfig={() => setConfigOpen((open) => !open)}
+      config={config}
+    >
+      <InputGroup>
+        <InputGroupInput
+          type="text"
+          value={query}
+          placeholder="What are you looking for?"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void run();
+          }}
+        />
+        {/* Same stack as the other composers — Clear beside Search in the
+            input's own end slot, so Clear sits in one place across the
+            playground and never steals the input's width unannounced. */}
+        <InputGroupAddon align="inline-end">
+          {ranked && !busy && (
+            <Button
               type="button"
-              className="btn btn-primary pg-send"
-              disabled={busy || !query.trim() || !lines.trim()}
-              title="Enter to run"
-              onClick={() => void run()}
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              title="Clear the results"
+              onClick={() => setRanked(null)}
             >
-              {busy ? "Searching…" : "Search"} <kbd className="pg-kbd">⏎</kbd>
-            </button>
-          </div>
-        </div>
+              Clear
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !query.trim() || !lines.trim()}
+            title="Enter to run"
+            onClick={() => void run()}
+          >
+            {busy && <Spinner data-icon="inline-start" />}
+            {busy ? "Searching…" : "Search"} <Kbd className="bg-transparent text-inherit">⏎</Kbd>
+          </Button>
+        </InputGroupAddon>
+      </InputGroup>
 
-        <ConfigPanel open={configOpen}>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Lines to search</span>
-            </span>
-            <textarea
-              className="pg-embed-lines"
-              rows={7}
-              value={lines}
-              placeholder="One line per entry"
-              onChange={(e) => setLines(e.target.value)}
-            />
-            <span className="pg-ctl-hint">One line per entry, up to {MAX_LINES}.</span>
-          </label>
-        </ConfigPanel>
+      {/* Until there is a ranking to read, the examples. Each one sets both
+          halves of the scenario and runs it — see `run`'s arguments. */}
+      {!ranked && !busy && (
+        <StarterCards
+          samples={STARTERS}
+          onPick={(sample) => {
+            const corpus = sample.lines.join("\n");
+            setQuery(sample.prompt);
+            setLines(corpus);
+            void run(sample.prompt, corpus);
+          }}
+        />
+      )}
 
-        {/* Until there is a ranking to read, the examples. Each one sets both
-            halves of the scenario and runs it — see `run`'s arguments. */}
-        {!ranked && !busy && (
-          <StarterCards
-            samples={STARTERS}
-            onPick={(sample) => {
-              const corpus = sample.lines.join("\n");
-              setQuery(sample.prompt);
-              setLines(corpus);
-              void run(sample.prompt, corpus);
-            }}
-          />
-        )}
-
-        {status && <p className="pg-status">{status}</p>}
-        {error && <p className="pg-error">{error}</p>}
-        {ranked && !busy ? (
-          <div className="pg-answer-block">
-            <p className="pg-answer-label">Ranked by meaning</p>
-            <ol className="pg-embed-results">
-              {ranked.map((row, at) => (
-                <li
-                  key={at}
-                  className="pg-embed-row"
-                  title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
-                >
-                  <span
-                    className="pg-embed-bar"
-                    style={{ width: `${Math.max(0, (row.score / best) * 100)}%` }}
-                    aria-hidden="true"
-                  />
-                  <span className="pg-embed-text">{row.text}</span>
-                  <span className="pg-embed-score">{row.score.toFixed(2)}</span>
-                </li>
-              ))}
-            </ol>
-          </div>
-        ) : (
-          // The slot covers BOTH "nothing has run" and "a re-search is in
-          // flight": the ranking is dropped while `busy` so a stale order is
-          // never read as the new one, and without the slot that left the
-          // column briefly empty at exactly the moment something is happening.
-          <ResultSlot
-            label="Ranked by meaning"
-            capability="embeddings"
-            note="The lines come back here, ordered by how close they are to the query."
-          />
-        )}
-    </div>
+      {status && (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner className="size-3.5" />
+          {status}
+        </p>
+      )}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {ranked && !busy ? (
+        <AnswerBlock label="Ranked by meaning">
+          <ol className="flex flex-col gap-1.5">
+            {ranked.map((row, at) => (
+              <li
+                key={at}
+                className="relative overflow-hidden rounded-md border bg-muted/30"
+                title={`Similarity ${row.score.toFixed(3)} — 1 is identical meaning, 0 is unrelated`}
+              >
+                {/* Scaled against the best match — see the header comment. */}
+                <span
+                  className="absolute inset-y-0 left-0 bg-primary/15"
+                  style={{ width: `${Math.max(0, (row.score / best) * 100)}%` }}
+                  aria-hidden="true"
+                />
+                <span className="relative flex items-center gap-3 px-3 py-1.5 text-sm">
+                  <span className="min-w-0 flex-1">{row.text}</span>
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                    {row.score.toFixed(2)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ol>
+        </AnswerBlock>
+      ) : (
+        // The slot covers BOTH "nothing has run" and "a re-search is in
+        // flight": the ranking is dropped while `busy` so a stale order is
+        // never read as the new one, and without the slot that left the
+        // column briefly empty at exactly the moment something is happening.
+        <ResultSlot
+          label="Ranked by meaning"
+          capability="embeddings"
+          note="The lines come back here, ordered by how close they are to the query."
+        />
+      )}
+    </StageShell>
   );
 }

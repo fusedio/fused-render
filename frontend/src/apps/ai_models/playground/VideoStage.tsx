@@ -19,16 +19,29 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
 import {
-  ConfigPanel,
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldTitle,
   RailSlider,
   ResultSlot,
-  StageHeader,
+  AnswerBlock,
+  StageShell,
   StarterCards,
   useAutoGrow,
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
+import { Alert, AlertDescription } from "@apps/ai_models/ui/alert";
+import { Button } from "@apps/ai_models/ui/button";
+import { Input } from "@apps/ai_models/ui/input";
+import { InputGroup, InputGroupAddon, InputGroupTextarea } from "@apps/ai_models/ui/input-group";
+import { Kbd } from "@apps/ai_models/ui/kbd";
+import { Progress } from "@apps/ai_models/ui/progress";
+import { Skeleton } from "@apps/ai_models/ui/skeleton";
+import { Spinner } from "@apps/ai_models/ui/spinner";
+import { cn } from "@apps/ai_models/ui/utils";
 
 // Small canvas by default — the first clip arriving quickly is the point,
 // exactly like the image stage's 512² default. This is a UI choice
@@ -243,18 +256,78 @@ export function VideoStage({
   const pct = job && job.total ? Math.min(100, ((job.done ?? 0) / job.total) * 100) : null;
   const settled = run?.started;
 
-  return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      {/* The action, and the way to the settings. The hero card above names
-          the model and its state. */}
-      <StageHeader
-        title="Describe a video"
-        configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+  // Every knob is behind the cog; the surface above is prompt and Generate.
+  // The four sliders in the order a render is thought about: how big, how
+  // long, how carefully — then the seed.
+  const config = (
+    <>
+      <RailSlider
+        label="Width"
+        hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
+        min={SIZE_RANGE[0]}
+        max={SIZE_RANGE[1]}
+        step={32}
+        value={width}
+        fallback={DEFAULTS.width}
+        onChange={setWidth}
       />
+      <RailSlider
+        label="Height"
+        hint="Bigger is slower and needs more memory."
+        min={SIZE_RANGE[0]}
+        max={SIZE_RANGE[1]}
+        step={32}
+        value={height}
+        fallback={DEFAULTS.height}
+        onChange={setHeight}
+      />
+      <RailSlider
+        label="Frames"
+        hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
+        min={framesRange[0]}
+        max={framesRange[1]}
+        step={engineTraits.framesStep}
+        value={frames}
+        fallback={engineTraits.defaultFrames}
+        onChange={setFrames}
+      />
+      <RailSlider
+        label="Steps"
+        hint="Denoising passes — more is slower and usually cleaner."
+        min={STEPS_RANGE[0]}
+        max={STEPS_RANGE[1]}
+        step={1}
+        value={steps}
+        fallback={modelSteps}
+        onChange={setSteps}
+      />
+      <Field>
+        <FieldContent>
+          <FieldTitle>Seed</FieldTitle>
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+          />
+          <FieldDescription>
+            Same seed + same prompt + same settings = the same video.
+          </FieldDescription>
+        </FieldContent>
+      </Field>
+    </>
+  );
 
-      <div className="pg-composer">
-        <textarea
+  return (
+    <StageShell
+      title="Describe a video"
+      configOpen={configOpen}
+      onToggleConfig={() => setConfigOpen((open) => !open)}
+      config={config}
+    >
+      <InputGroup>
+        <InputGroupTextarea
           ref={boxRef}
           rows={3}
           value={prompt}
@@ -270,109 +343,54 @@ export function VideoStage({
             }
           }}
         />
-        {/* Clear at the top of this column, Generate at the bottom —
-            the column's width is set by Generate, the wider of the two, so
-            nothing moves when Clear comes and goes. */}
-        <div className="pg-composer-side">
+        <InputGroupAddon align="block-end">
           {!busy && run && (
-            <button
+            <Button
               type="button"
-              className="pg-ghost-btn pg-clear"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
               title="Clear the prompt and the clip"
               onClick={clear}
             >
               Clear
-            </button>
+            </Button>
           )}
           {busy ? (
-            <button
+            <Button
               type="button"
-              className="btn btn-secondary pg-send"
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
               onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
             >
+              <Spinner data-icon="inline-start" />
               Stop
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               type="button"
-              className="btn btn-primary pg-send"
+              size="sm"
+              className="ml-auto"
               disabled={!prompt.trim()}
               title="Enter to run · Shift+Enter for a new line"
               onClick={() => void generate()}
             >
-              Generate <kbd className="pg-kbd">⏎</kbd>
-            </button>
+              Generate <Kbd className="bg-transparent text-inherit">⏎</Kbd>
+            </Button>
           )}
-        </div>
-      </div>
+        </InputGroupAddon>
+      </InputGroup>
 
       {/* Examples first, under the box they fill; hidden once a clip is on
           screen, which is what that space is then for. */}
       {!run && <StarterCards samples={STARTERS} onPick={(s) => void generate(s.prompt)} />}
 
-      {/* Every knob is behind the cog; the surface above is prompt and
-          Generate. The four sliders in the order a render is thought about:
-          how big, how long, how carefully — then the seed. */}
-      <ConfigPanel open={configOpen}>
-        <RailSlider
-          label="Width"
-          hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={width}
-          fallback={DEFAULTS.width}
-          onChange={setWidth}
-        />
-        <RailSlider
-          label="Height"
-          hint="Bigger is slower and needs more memory."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={height}
-          fallback={DEFAULTS.height}
-          onChange={setHeight}
-        />
-        <RailSlider
-          label="Frames"
-          hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
-          min={framesRange[0]}
-          max={framesRange[1]}
-          step={engineTraits.framesStep}
-          value={frames}
-          fallback={engineTraits.defaultFrames}
-          onChange={setFrames}
-        />
-        <RailSlider
-          label="Steps"
-          hint="Denoising passes — more is slower and usually cleaner."
-          min={STEPS_RANGE[0]}
-          max={STEPS_RANGE[1]}
-          step={1}
-          value={steps}
-          fallback={modelSteps}
-          onChange={setSteps}
-        />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">Seed</span>
-          </span>
-          <input
-            className="pg-rail-input"
-            type="text"
-            inputMode="numeric"
-            value={seed}
-            placeholder="Random each time"
-            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-          />
-          <span className="pg-ctl-hint">
-            Same seed + same prompt + same settings = the same video.
-          </span>
-        </label>
-      </ConfigPanel>
-
-      {error && <p className="pg-error">{error}</p>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {!run ? (
         <ResultSlot
@@ -381,24 +399,23 @@ export function VideoStage({
           note="Your clip appears here. Describe one above, then Generate."
         />
       ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Result</p>
-          <figure className="pg-image-result">
+        <AnswerBlock label="Result">
+          <figure className="flex flex-col gap-2">
             <div
-              className="pg-image-frame"
+              className="w-full overflow-hidden rounded-lg border bg-muted"
               style={{
                 aspectRatio: `${run.started.width} / ${run.started.height}`,
-                width: "100%",
               }}
             >
               {run.done ? (
                 <video
                   key={run.started.jobId}
+                  className="size-full"
                   src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
                   controls
                 />
               ) : (
-                <div className="pg-image-wait" aria-hidden="true" />
+                <Skeleton className="size-full rounded-none" aria-hidden="true" />
               )}
             </div>
             {/* Unlike the image stage, the settled line STAYS after a render:
@@ -406,46 +423,47 @@ export function VideoStage({
                 genuinely not what was asked for — and a clip that took an hour
                 is worth being able to reproduce, which is what the seed button
                 is for. */}
-            <figcaption className="pg-image-caption">
+            <figcaption className="flex flex-col gap-2 text-xs text-muted-foreground">
               {busy ? (
                 <>
-                  <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                  {pct !== null && (
-                    <span className="pg-bar">
-                      <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                    </span>
-                  )}
+                  <span className="flex items-center gap-2">
+                    <Spinner className="size-3.5" />
+                    {job?.detail || "Starting — a cold model loads first…"}
+                  </span>
+                  {pct !== null && <Progress value={pct} className="h-1.5" />}
                 </>
               ) : settled ? (
-                <>
+                <span>
                   {settled.width}×{settled.height} · {settled.frames} frames · {settled.steps} steps
                   ·{" "}
                   <button
                     type="button"
-                    className="pg-seed"
+                    className="cursor-pointer underline underline-offset-2 hover:text-foreground"
                     title="Reuse this seed — the same prompt and settings render the same video"
                     onClick={() => setSeed(String(settled.seed))}
                   >
                     seed {settled.seed}
                   </button>
-                </>
+                </span>
               ) : null}
             </figcaption>
           </figure>
-        </div>
+        </AnswerBlock>
       )}
 
       {/* Past clips, kept because a video render is the one call here that can
           cost an hour — losing it to the next Generate is not a fair trade. */}
       {gallery.length > 0 && (
-        <div className="pg-image-strip">
+        <div className="flex gap-2 overflow-x-auto pb-1">
           {gallery.map((item) => (
             <video
               key={item.jobId}
               src={rawUrl(item.path) + "&t=" + item.jobId}
-              className={
-                (run?.started.jobId === item.jobId ? "active" : "") + (busy ? " disabled" : "")
-              }
+              className={cn(
+                "h-16 w-auto shrink-0 rounded-md border",
+                run?.started.jobId === item.jobId && "border-ring ring-2 ring-ring/50",
+                busy ? "opacity-50" : "cursor-pointer",
+              )}
               // Disabled, not wired to a no-op click: a render here can run
               // for HOURS (unlike the image stage's seconds), so swapping
               // `run` mid-render would silently drop the in-flight Stop
@@ -463,6 +481,6 @@ export function VideoStage({
           ))}
         </div>
       )}
-    </div>
+    </StageShell>
   );
 }

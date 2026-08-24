@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +18,7 @@ const BUILD_VERSION = /(?:^|\n)__version__\s*=\s*"([^"]+)"/.exec(
 // libs): `pip install` needs no node. The server serves the built shell for
 // `/`, `/view/*` and `/embed/*`; assets resolve via the absolute base below.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   define: {
     __BUILD_VERSION__: JSON.stringify(BUILD_VERSION),
   },

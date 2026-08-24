@@ -28,21 +28,34 @@
 // the job survives a tab switch on purpose (it shows in Activity), so only the
 // WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
+import { CameraIcon, DownloadIcon, ImageIcon, XIcon } from "lucide-react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
-import { MenuIcons } from "@platform/ui/MenuIcons";
 import {
-  ConfigPanel,
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldTitle,
   RailChips,
   RailSlider,
   ResultSlot,
-  StageHeader,
+  AnswerBlock,
+  StageShell,
   StarterCards,
   useAutoGrow,
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { Alert, AlertDescription } from "@apps/ai_models/ui/alert";
+import { Button } from "@apps/ai_models/ui/button";
+import { InputGroup, InputGroupAddon, InputGroupTextarea } from "@apps/ai_models/ui/input-group";
+import { Input } from "@apps/ai_models/ui/input";
+import { Kbd } from "@apps/ai_models/ui/kbd";
+import { Progress } from "@apps/ai_models/ui/progress";
+import { Skeleton } from "@apps/ai_models/ui/skeleton";
+import { Spinner } from "@apps/ai_models/ui/spinner";
+import { cn } from "@apps/ai_models/ui/utils";
 import {
   canEdit,
   fitToImage,
@@ -675,18 +688,142 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       }
     : undefined;
 
-  return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-      {/* The action, and the way to the settings. The hero card above names
-          the model and its state. */}
-      <StageHeader
-        title="Describe a picture"
-        configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+  // Chips lead the panel; sliders and the seed follow.
+  const config = (
+    <>
+      <div className="flex flex-col gap-3">
+        {/* Hidden, not disabled, while the attached image decides the size:
+            a chip row where nothing is lit and a slider parked on 480 are
+            both controls saying something about a render that will come back
+            at the photo's own size instead. One line replaces them, and it
+            is also the way back to picking a size by hand. */}
+        {!sizeIsTheImages && (
+          <RailChips
+            options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
+            active={aspect}
+            onPick={(value) => {
+              const pick = ASPECTS.find((a) => a.value === value);
+              if (pick) {
+                setWidth(pick.width);
+                setHeight(pick.height);
+              }
+            }}
+          />
+        )}
+        {speedChips && (
+          <RailChips
+            options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
+            active={speed}
+            onPick={(value) => {
+              const pick = speedChips.find((c) => c.value === value);
+              if (pick) setSteps(pick.steps);
+            }}
+          />
+        )}
+      </div>
+      {sizeIsTheImages ? (
+        <Field>
+          <FieldContent>
+            <div className="flex items-center gap-2">
+              <FieldTitle className="flex-1">Size</FieldTitle>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-xs text-muted-foreground"
+                onClick={() => setSizeFromImage(false)}
+              >
+                Set a size
+              </Button>
+            </div>
+            <p className="text-sm">
+              {fitted
+                ? `${fitted.width} × ${fitted.height} — the picture's shape`
+                : "Read from the attached picture"}
+            </p>
+            <FieldDescription>
+              {fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
+                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
+                  "size takes minutes. Set a size to render it bigger."
+                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`}
+            </FieldDescription>
+          </FieldContent>
+        </Field>
+      ) : (
+        <>
+          <RailSlider
+            label="Width"
+            hint="Snapped to a multiple of 16 by the server."
+            min={SIZE_RANGE[0]}
+            max={SIZE_RANGE[1]}
+            step={16}
+            value={width}
+            fallback={DEFAULTS.width}
+            onChange={setWidth}
+          />
+          <RailSlider
+            label="Height"
+            hint="Bigger is slower and needs more memory."
+            min={SIZE_RANGE[0]}
+            max={SIZE_RANGE[1]}
+            step={16}
+            value={height}
+            fallback={DEFAULTS.height}
+            onChange={setHeight}
+          />
+        </>
+      )}
+      <RailSlider
+        label="Steps"
+        hint={
+          entry.defaults?.steps != null
+            ? "This model is distilled for few steps — more is slower, rarely better."
+            : "Denoising passes — more is slower and usually cleaner."
+        }
+        min={STEPS_RANGE[0]}
+        max={STEPS_RANGE[1]}
+        step={1}
+        value={steps}
+        fallback={modelSteps}
+        onChange={setSteps}
       />
+      <RailSlider
+        label="Guidance"
+        hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
+        min={GUIDANCE_RANGE[0]}
+        max={GUIDANCE_RANGE[1]}
+        step={0.5}
+        value={guidance}
+        fallback={DEFAULTS.guidance}
+        onChange={setGuidance}
+      />
+      <Field>
+        <FieldContent>
+          <FieldTitle>Seed</FieldTitle>
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+          />
+          <FieldDescription>
+            Same seed + same prompt + same settings = the same picture.
+          </FieldDescription>
+        </FieldContent>
+      </Field>
+    </>
+  );
 
-      <div className="pg-composer pg-composer-stack">
-        <textarea
+  return (
+    <StageShell
+      title="Describe a picture"
+      configOpen={configOpen}
+      onToggleConfig={() => setConfigOpen((open) => !open)}
+      config={config}
+    >
+      <InputGroup>
+        <InputGroupTextarea
           ref={boxRef}
           rows={3}
           value={prompt}
@@ -702,131 +839,130 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
             }
           }}
         />
-        {/* The live view, while the webcam is open — in the same slot the
-            photo it is about to become occupies, right above the Webcam button
-            that opened it. */}
-        {camera && (
-          <div className="pg-camera">
-            <video ref={videoRef} playsInline muted />
-            <div className="pg-camera-side">
-              <button type="button" className="btn btn-primary" onClick={capture}>
-                Capture
-              </button>
-              <button
-                type="button"
-                className="pg-ghost-btn pg-camera-cancel"
-                onClick={stopCamera}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        )}
-        {/* Clear, floating in the box's top-right corner: it appears only once
-            there is a picture to throw away, and in this stacked composer a
-            slot of its own would have cost the box a permanent 40px of height
-            (the shared Clear-above-Run stack is right where the prompt and the
-            buttons share ONE row — here they do not). Absolute, so it adds
-            none. */}
+        {/* Clear in the box's top-right corner: it appears only once there is
+            a picture to throw away, and a slot of its own on the floor would
+            cost the box a permanent row of height. */}
         {!busy && run && (
-          <button
-            type="button"
-            className="pg-ghost-btn pg-clear pg-clear-corner"
-            title="Clear the prompt and the picture"
-            onClick={clear}
-          >
-            Clear
-          </button>
+          <InputGroupAddon align="inline-end">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              title="Clear the prompt and the picture"
+              onClick={clear}
+            >
+              Clear
+            </Button>
+          </InputGroupAddon>
         )}
-        {/* The composer's floor: the two ways to attach a picture, then the
-            Clear/Generate column — one cluster in the bottom-right corner,
-            attach beside Generate rather than across the box from it. The
-            prompt therefore spans the whole box here rather than sharing its
-            row with the button column the other stages use, and Generate stays
-            exactly where those stages put it. */}
-        <div className="pg-composer-foot">
-          {/* The attached photo, on the floor's own line: the space left of the
-              buttons was empty, and the picture belongs beside the controls
-              that put it there rather than in a band of its own above them.
-              Thumbnail and ✕ only — the filename said nothing a look at the
-              picture does not (and ellipsised to "Screenshot 2026-08-23 at
-              12…", nothing at all), and the sentence about editing was a
-              caption on a control nobody had asked a question about. */}
+        {/* The composer's floor: the two ways to attach a picture, then
+            Generate — one cluster, attach beside Generate rather than across
+            the box from it. */}
+        <InputGroupAddon align="block-end">
+          {/* The attached photo, on the floor's own line: thumbnail and ✕
+              only — the filename said nothing a look at the picture does not,
+              and the sentence about editing was a caption on a control nobody
+              had asked a question about. */}
           {base && (
-            <span className="pg-attach">
+            <span className="flex items-center gap-1">
               <button
                 type="button"
-                className="pg-attach-open"
+                className="overflow-hidden rounded-md border outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 title="See this picture"
                 aria-label="See this picture"
                 onClick={() => setShowBase(true)}
               >
-                <img src={rawUrl(base.path)} alt="" />
+                <img src={rawUrl(base.path)} alt="" className="size-7 object-cover" />
               </button>
-              <button
+              <Button
                 type="button"
-                className="pg-attach-drop"
+                variant="ghost"
+                size="icon-sm"
+                className="size-6 text-muted-foreground"
                 title="Remove this image"
                 aria-label="Remove this image"
                 onClick={() => setAttachment(null)}
               >
-                ✕
-              </button>
+                <XIcon />
+              </Button>
             </span>
           )}
           {editable && (
-            <div className="pg-attach-row">
-              <button
+            <>
+              <Button
                 type="button"
-                className="pg-attach-btn"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
                 title="Point at a picture already on this disk — nothing is copied"
                 disabled={attaching}
                 onClick={() => void choose()}
               >
-                {StarterIcons.landscape}
-                <span>{base ? "Replace" : "Add an image"}</span>
-              </button>
-              <button
+                <ImageIcon />
+                {base ? "Replace" : "Add an image"}
+              </Button>
+              <Button
                 type="button"
-                className={"pg-attach-btn" + (camera ? " active" : "")}
+                variant={camera ? "secondary" : "ghost"}
+                size="sm"
+                className={cn(!camera && "text-muted-foreground")}
                 title="Take one with the webcam"
                 disabled={attaching}
                 onClick={() => (camera ? stopCamera() : void openCamera())}
               >
-                {StarterIcons.camera}
-                <span>Webcam</span>
-              </button>
-              {attaching && <span className="pg-attach-note">Working…</span>}
-            </div>
+                <CameraIcon />
+                Webcam
+              </Button>
+              {attaching && (
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Spinner className="size-3" />
+                  Working…
+                </span>
+              )}
+            </>
           )}
-          {/* Generate alone in this column here: Clear floats in the box's
-              top-right corner instead (see above), because on a STACKED
-              composer the two stacked vertically made the floor 40px taller —
-              a whole row of height for a button that appears only once there
-              is something to clear. */}
-          <div className="pg-composer-side">
-            {busy ? (
-              <button
-                type="button"
-                className="btn btn-secondary pg-send"
-                onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
-              >
-                Stop
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn btn-primary pg-send"
-                disabled={!prompt.trim()}
-                title="Enter to run · Shift+Enter for a new line"
-                onClick={() => void generate()}
-              >
-                Generate <kbd className="pg-kbd">⏎</kbd>
-              </button>
-            )}
+          {busy ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              onClick={() => void cancelJob(run.started.jobId).catch(() => {})}
+            >
+              <Spinner data-icon="inline-start" />
+              Stop
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              className="ml-auto"
+              disabled={!prompt.trim()}
+              title="Enter to run · Shift+Enter for a new line"
+              onClick={() => void generate()}
+            >
+              Generate <Kbd className="bg-transparent text-inherit">⏎</Kbd>
+            </Button>
+          )}
+        </InputGroupAddon>
+      </InputGroup>
+
+      {/* The live view, while the webcam is open — right below the composer
+          whose Webcam button opened it. */}
+      {camera && (
+        <div className="relative overflow-hidden rounded-lg border bg-card">
+          <video ref={videoRef} playsInline muted className="block w-full" />
+          <div className="absolute right-2 bottom-2 flex gap-2">
+            <Button type="button" size="sm" onClick={capture}>
+              Capture
+            </Button>
+            <Button type="button" variant="secondary" size="sm" onClick={stopCamera}>
+              Cancel
+            </Button>
           </div>
         </div>
-      </div>
+      )}
 
       {/* The attached picture at full size. Deliberately the whole modal: an
           image and a way out, no title bar, no filename, no actions — the ✕ on
@@ -835,21 +971,28 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           Escape to close, the two things anybody tries. */}
       {base && showBase && (
         <div
-          className="pg-lightbox"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
           role="dialog"
           aria-label="The attached picture"
           onClick={() => setShowBase(false)}
         >
-          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
-          <button
+          <img
+            src={rawUrl(base.path)}
+            alt=""
+            className="max-h-full max-w-full rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <Button
             type="button"
-            className="pg-lightbox-close"
+            variant="secondary"
+            size="icon-sm"
+            className="absolute top-4 right-4"
             title="Close"
             aria-label="Close"
             onClick={() => setShowBase(false)}
           >
-            ✕
-          </button>
+            <XIcon />
+          </Button>
         </div>
       )}
 
@@ -864,160 +1007,45 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         />
       )}
 
-      {/* Chips lead the panel; sliders and the seed follow. */}
-      <ConfigPanel open={configOpen}>
-        <div className="pg-config-chips">
-          {/* Hidden, not disabled, while the attached image decides the size:
-              a chip row where nothing is lit and a slider parked on 480 are
-              both controls saying something about a render that will come back
-              at the photo's own size instead. One line replaces them, and it
-              is also the way back to picking a size by hand. */}
-          {!sizeIsTheImages && (
-            <RailChips
-              options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
-              active={aspect}
-              onPick={(value) => {
-                const pick = ASPECTS.find((a) => a.value === value);
-                if (pick) {
-                  setWidth(pick.width);
-                  setHeight(pick.height);
-                }
-              }}
-            />
-          )}
-          {speedChips && (
-            <RailChips
-              options={speedChips.map(({ value, label, title }) => ({ value, label, title }))}
-              active={speed}
-              onPick={(value) => {
-                const pick = speedChips.find((c) => c.value === value);
-                if (pick) setSteps(pick.steps);
-              }}
-            />
-          )}
-        </div>
-        {sizeIsTheImages ? (
-          <div className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Size</span>
-              <button
-                type="button"
-                className="pg-ctl-reset"
-                onClick={() => setSizeFromImage(false)}
-              >
-                Set a size
-              </button>
-            </span>
-            <span className="pg-ctl-value">
-              {fitted
-                ? `${fitted.width} × ${fitted.height} — the picture's shape`
-                : "Read from the attached picture"}
-            </span>
-            <span className="pg-ctl-hint">
-              {fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
-                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
-                  "size takes minutes. Set a size to render it bigger."
-                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`}
-            </span>
-          </div>
-        ) : (
-          <>
-            <RailSlider
-              label="Width"
-              hint="Snapped to a multiple of 16 by the server."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={width}
-              fallback={DEFAULTS.width}
-              onChange={setWidth}
-            />
-            <RailSlider
-              label="Height"
-              hint="Bigger is slower and needs more memory."
-              min={SIZE_RANGE[0]}
-              max={SIZE_RANGE[1]}
-              step={16}
-              value={height}
-              fallback={DEFAULTS.height}
-              onChange={setHeight}
-            />
-          </>
-        )}
-        <RailSlider
-          label="Steps"
-          hint={
-            entry.defaults?.steps != null
-              ? "This model is distilled for few steps — more is slower, rarely better."
-              : "Denoising passes — more is slower and usually cleaner."
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {!run ? (
+        <ResultSlot
+          label="Result"
+          capability="text-to-image"
+          note={
+            base
+              ? "The edited picture appears here. Describe the change above, then Generate."
+              : "Your picture appears here. Describe one above, then Generate."
           }
-          min={STEPS_RANGE[0]}
-          max={STEPS_RANGE[1]}
-          step={1}
-          value={steps}
-          fallback={modelSteps}
-          onChange={setSteps}
         />
-        <RailSlider
-          label="Guidance"
-          hint="How literally the prompt is followed. Distilled models want 1; raise it only for classic models. Very high looks overcooked."
-          min={GUIDANCE_RANGE[0]}
-          max={GUIDANCE_RANGE[1]}
-          step={0.5}
-          value={guidance}
-          fallback={DEFAULTS.guidance}
-          onChange={setGuidance}
-        />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">Seed</span>
-          </span>
-          <input
-            className="pg-rail-input"
-            type="text"
-            inputMode="numeric"
-            value={seed}
-            placeholder="Random each time"
-            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-          />
-          <span className="pg-ctl-hint">
-            Same seed + same prompt + same settings = the same picture.
-          </span>
-        </label>
-      </ConfigPanel>
-
-      {error && <p className="pg-error">{error}</p>}
-
-        {!run ? (
-          <ResultSlot
-            label="Result"
-            capability="text-to-image"
-            note={
-              base
-                ? "The edited picture appears here. Describe the change above, then Generate."
-                : "Your picture appears here. Describe one above, then Generate."
-            }
-          />
-        ) : (
-          <div className="pg-answer-block">
-          <p className="pg-answer-label">Result</p>
-          <figure className="pg-image-result">
+      ) : (
+        <AnswerBlock label="Result">
+          <figure className="flex flex-col gap-2">
             {run.done && run.readFailed ? (
               // `watchJob` said done (including a `gone` it reads as done —
               // see the `Run.readFailed` comment) but the file this <img>
               // asked for does not actually exist. Say that plainly rather
               // than leaving a broken-image icon and a save link to nothing.
-              <div className="pg-image-frame" style={shot}>
-                <p className="pg-image-readfailed">
+              <div
+                className="flex items-center justify-center overflow-hidden rounded-lg border bg-card"
+                style={shot}
+              >
+                <p className="p-4 text-sm text-muted-foreground">
                   The image could not be read back — the render may have been
                   interrupted.
                 </p>
               </div>
             ) : run.done ? (
-              <div className="pg-image-frame" style={shot}>
+              <div className="group relative overflow-hidden rounded-lg border bg-card" style={shot}>
                 <img
                   src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
                   alt={run.started.prompt}
+                  className="size-full object-cover"
                   onError={() =>
                     setRun((r) =>
                       r && r.started.jobId === run.started.jobId ? { ...r, readFailed: true } : r,
@@ -1027,43 +1055,42 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
                 {/* A download link, not a clipboard write: ClipboardItem takes
                     image/png only and the render's format is unknown here. */}
                 <a
-                  className="pg-copy-btn pg-image-save"
+                  className="absolute top-2 right-2 inline-flex size-8 items-center justify-center rounded-md bg-background/70 text-muted-foreground backdrop-blur-sm transition-colors hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
                   href={rawUrl(run.started.path)}
                   download={run.started.path.split("/").pop() || "picture.png"}
                   title="Save this picture"
                   aria-label="Save this picture"
                 >
-                  {MenuIcons.download}
+                  <DownloadIcon />
                 </a>
               </div>
             ) : (
-              <div className="pg-image-frame" style={shot}>
+              <div className="relative overflow-hidden rounded-lg border bg-card" style={shot}>
                 <img
                   src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
                   alt="Render in progress"
+                  className="size-full object-cover"
                   style={previewLive ? undefined : { display: "none" }}
                   onLoad={() => setPreviewLive(true)}
                   onError={() => setPreviewLive(false)}
                 />
-                {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
+                {!previewLive && <Skeleton className="absolute inset-0 rounded-none" aria-hidden="true" />}
               </div>
             )}
             {/* Progress only. The settled parameters were dropped by request,
                 and D429's seed-reuse button with them: an invented seed is now
                 surfaced nowhere, so a random render cannot be reproduced. */}
             {busy && (
-              <figcaption className="pg-image-caption">
-                <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                {pct !== null && (
-                  <span className="pg-bar">
-                    <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                  </span>
-                )}
+              <figcaption className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate">
+                  {job?.detail || "Starting — a cold model loads first…"}
+                </span>
+                {pct !== null && <Progress value={pct} className="h-1.5 w-40 shrink-0" />}
               </figcaption>
             )}
           </figure>
-          </div>
-        )}
-    </div>
+        </AnswerBlock>
+      )}
+    </StageShell>
   );
 }
