@@ -11,6 +11,20 @@ from fused_render import projectenv
 from fused_render.server import engine_host
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd_and_syspath():
+    # _Target._load_locked chdirs to (and puts on sys.path) the module's dir, as
+    # the real worker subprocess should; exercised in-process here it would leak
+    # into sibling tests, so restore both.
+    cwd = os.getcwd()
+    path = list(sys.path)
+    try:
+        yield
+    finally:
+        os.chdir(cwd)
+        sys.path[:] = path
+
+
 def _load_engine_worker():
     # engine_worker.py is spawned as a script (its dir on sys.path[0]) so it can
     # `from _binding import bind_params`; import it the same way to test _Target.
@@ -58,13 +72,15 @@ def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
     monkeypatch.setattr(engine_host, "restart",
                         lambda eid, failed=None: healed.append(eid) or child)
 
-    async def fake_proxy(c, request, path, body, call_timeout=None):
+    async def fake_proxy(c, request, path, body, call_timeout=None,
+                         at_most_once=False):
         return engines._TIMEOUT
 
     monkeypatch.setattr(engines, "_proxy", fake_proxy)
 
     resp = asyncio.run(
-        engines._forward("app_timeouttest", None, "/call", b"{}", call_timeout=60.0))
+        engines._forward("app_timeouttest", None, "/call", b"{}",
+                         call_timeout=60.0, at_most_once=True))
     assert resp.status_code == 504
     assert healed == []  # the worker was never restarted
 
@@ -98,6 +114,32 @@ def test_idle_reaper_skips_a_busy_engine(monkeypatch):
     finally:
         engine_host._children.pop(eid, None)
         engine_host._busy.pop(eid, None)
+
+
+def test_idle_reaper_skips_a_worker_still_running_a_call(monkeypatch):
+    # A call that timed out (504) leaves main() running in the worker; the worker
+    # reports it as in-flight, so idle-retire must not kill it mid-call even once
+    # its host-side busy count has been balanced and it looks idle.
+    eid = engine_host.app_engine_id("/tmp/inflight-test/app.py")
+    child = engine_host.Child(
+        engine_id=eid, python=sys.executable, daemon=engine_host.APP_WORKER,
+        cache="unused", version=engine_host.APP_WORKER_VERSION,
+        module="/tmp/inflight-test/app.py")
+    child.last_used = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
+    reaped = []
+    monkeypatch.setattr(engine_host, "_terminate",
+                        lambda c: reaped.append(c.engine_id))
+    monkeypatch.setattr(engine_host, "_inflight", lambda c: 1)
+    engine_host._children[eid] = child
+    try:
+        assert engine_host.reap_idle_app_workers() == 0  # still running: not reaped
+        assert eid in engine_host._children
+
+        monkeypatch.setattr(engine_host, "_inflight", lambda c: 0)  # main() finished
+        assert engine_host.reap_idle_app_workers() == 1
+        assert reaped == [eid]
+    finally:
+        engine_host._children.pop(eid, None)
 
 
 def test_warm_target_persists_then_reloads_on_mtime(tmp_path):

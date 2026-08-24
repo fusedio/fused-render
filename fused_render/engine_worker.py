@@ -185,7 +185,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/ping":
             self._json(200, {"ok": True,
                              "version": self.server.version,  # type: ignore[attr-defined]
-                             "pid": os.getpid()})
+                             "pid": os.getpid(),
+                             "inflight": self.server.inflight})  # type: ignore[attr-defined]
             return
         self._json(404, {"error": "not found"})
 
@@ -208,8 +209,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": f"invalid /call body: {e}"})
             return
         # call() always returns the envelope, so a user-code failure is a normal
-        # 200 — never a 500 that would trip the parent's heal-on-failure.
-        self._json(200, self.server.target.call(params))  # type: ignore[attr-defined]
+        # 200 — never a 500 that would trip the parent's heal-on-failure. Count the
+        # call in flight so the parent's idle reaper never retires a worker still
+        # running main() — e.g. one whose client already gave up on a 504.
+        with self.server.inflight_lock:  # type: ignore[attr-defined]
+            self.server.inflight += 1  # type: ignore[attr-defined]
+        try:
+            result = self.server.target.call(params)  # type: ignore[attr-defined]
+        finally:
+            with self.server.inflight_lock:  # type: ignore[attr-defined]
+                self.server.inflight -= 1  # type: ignore[attr-defined]
+        self._json(200, result)
 
 
 def _write_status(path: str, payload: dict) -> None:
@@ -240,6 +250,8 @@ def main() -> None:
     server.token = token  # type: ignore[attr-defined]
     server.version = args.version  # type: ignore[attr-defined]
     server.target = _Target(args.module)  # type: ignore[attr-defined]
+    server.inflight = 0  # type: ignore[attr-defined]
+    server.inflight_lock = threading.Lock()  # type: ignore[attr-defined]
     port = int(server.server_address[1])
 
     # Status file lands just before serve_forever, closing the gap before the

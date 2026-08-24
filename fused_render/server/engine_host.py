@@ -192,6 +192,19 @@ def _ping(child: Child) -> bool:
         return False
 
 
+def _inflight(child: Child) -> int:
+    """Calls the worker reports still running, or 0 if it can't be reached (an
+    unreachable worker is reaped, not protected). A warm worker keeps running
+    main() after a call's client gives up on a 504, so idle-retire consults this
+    rather than kill a worker mid-call."""
+    try:
+        with urllib.request.urlopen(_url(child, "/ping"), timeout=PING_TIMEOUT_S) as r:
+            payload = json.load(r)
+        return int(payload.get("inflight", 0))
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
 def _kill_tree(child: Child) -> None:
     """Stop the child and everything it started; see ai/supervisor._kill_tree
     for why each platform needs its own mechanism."""
@@ -503,9 +516,15 @@ def reap_idle_app_workers(now: float | None = None) -> int:
     can drive it directly."""
     now = time.monotonic() if now is None else now
     with _lock:
-        stale = [c for c in _children.values()
-                 if c.module and _busy.get(c.engine_id, 0) == 0
-                 and (now - c.last_used) >= APP_IDLE_RETIRE_S]
+        candidates = [c for c in _children.values()
+                      if c.module and _busy.get(c.engine_id, 0) == 0
+                      and (now - c.last_used) >= APP_IDLE_RETIRE_S]
+    # A call that outran its budget got a 504 but its main() may still be running
+    # in the worker (we never kill it); the worker reports that, so skip a worker
+    # that is still mid-call rather than truncate it. Pinged outside _lock.
+    stale = [c for c in candidates if _inflight(c) == 0]
+    with _lock:
+        stale = [c for c in stale if _children.get(c.engine_id) is c]
         for child in stale:
             _children.pop(child.engine_id, None)
             _reinit.pop(child.engine_id, None)

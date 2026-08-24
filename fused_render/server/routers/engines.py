@@ -97,9 +97,15 @@ async def _client_hangup(request: Request) -> None:
 
 
 async def _proxy(child, request: Request, path: str, body: bytes,
-                 call_timeout: float | None = None):
-    """Forward one request to the child. None when the child cannot be reached
-    at all — the healing trigger; an HTTP error from a live child is an answer.
+                 call_timeout: float | None = None, at_most_once: bool = False):
+    """Forward one request to the child. None when the request provably never
+    reached a handler (the healing trigger); an HTTP error from a live child is
+    an answer.
+
+    `at_most_once` marks a call that runs user `main()` with side effects (the
+    warm /call): it never rides a pooled keep-alive, and once the request is on
+    the wire a failure is surfaced rather than retried, so `main()` runs at most
+    once. Idempotent template traffic pools and retries freely.
 
     `call_timeout` is a per-call budget applied at the await level (warm app
     /call passes the ~60s /api/run budget). When it elapses the proxy stops
@@ -117,10 +123,11 @@ async def _proxy(child, request: Request, path: str, body: bytes,
     timeout = POST_TIMEOUT_S if request.method == "POST" else GET_TIMEOUT_S
     separator = "&" if "?" in path else "?"
     target = f"{path}{separator}t={quote(child.token, safe='')}"
+    idempotent = request.method in ("GET", "HEAD")
 
-    # Try a pooled connection first; if a reused one fails (a keep-alive the
-    # child dropped), retry once on a fresh one before declaring the child gone.
-    for reused in (True, False):
+    # Pool keep-alives only for retry-safe traffic: an at-most-once call gets a
+    # fresh connection so a stale pooled one can't force an ambiguous retry.
+    for reused in ((False,) if at_most_once else (True, False)):
         connection = _checkout(child.uid) if reused else None
         if connection is None:
             if reused:
@@ -128,7 +135,9 @@ async def _proxy(child, request: Request, path: str, body: bytes,
             connection = http.client.HTTPConnection("127.0.0.1", child.port,
                                                      timeout=timeout)
 
-        def fetch(connection=connection):
+        sent = [False]
+
+        def fetch(connection=connection, sent=sent):
             if connection.sock is not None:
                 connection.sock.settimeout(timeout)  # a reused conn may carry another
             headers = {}
@@ -140,6 +149,7 @@ async def _proxy(child, request: Request, path: str, body: bytes,
                 headers["Content-Type"] = content_type
             payload = body if request.method == "POST" else None
             connection.request(request.method, target, body=payload, headers=headers)
+            sent[0] = True  # on the wire: a failure past here may have run main()
             answer = connection.getresponse()
             return answer, answer.read()
 
@@ -171,22 +181,31 @@ async def _proxy(child, request: Request, path: str, body: bytes,
             answer, payload = fetch_task.result()
         except (OSError, http.client.HTTPException) as exc:
             connection.close()
+            # An at-most-once call whose request was already on the wire may have
+            # run main(): surface it rather than re-running a side-effecting call.
+            # (A failure before it was sent means main() never ran — fall through
+            # to a safe retry.)
+            if at_most_once and sent[0]:
+                return _error(f"the {child.engine_id} worker dropped the call "
+                              "after it was sent; not retried, to avoid re-running "
+                              "main()", status=502)
             # A pooled keep-alive the child dropped after its idle timeout raises
             # RemoteDisconnected *before* the request is handled — main() never
             # ran — so retry it on a fresh connection to the same, still-warm
             # child rather than declaring the child gone (which would restart it
             # and throw away its warm state). Idempotent GET/HEAD retry on any
-            # failure; a POST that failed any other way may already have run
-            # main(), so report the child unreachable and let _forward heal it
-            # instead of risking a double-execution.
-            retryable = (request.method in ("GET", "HEAD")
+            # failure.
+            retryable = (idempotent
                          or isinstance(exc, http.client.RemoteDisconnected))
             if reused and retryable:
                 continue  # stale pooled connection — retry with a fresh one
             return None
         finally:
             hangup_task.cancel()
-        _checkin(child.uid, connection)  # clean read: keep it warm for the next call
+        if at_most_once:
+            connection.close()  # never pooled: a side-effecting call rides fresh
+        else:
+            _checkin(child.uid, connection)  # clean read: keep it warm for next time
         out = {k: v for k, v in answer.headers.items()
                if k.lower() in _PROXY_HEADERS}
         return Response(content=payload, status_code=answer.status, headers=out)
@@ -194,13 +213,13 @@ async def _proxy(child, request: Request, path: str, body: bytes,
 
 
 async def _forward(engine_id: str, request: Request, path: str, body: bytes,
-                   call_timeout: float | None = None):
+                   call_timeout: float | None = None, at_most_once: bool = False):
     child = engine_host.current(engine_id)
     if child is None:
         return _error(
             f"the {engine_id} engine is not running; register the layer again",
             status=409)
-    response = await _proxy(child, request, path, body, call_timeout)
+    response = await _proxy(child, request, path, body, call_timeout, at_most_once)
     if response is _TIMEOUT:
         # The call outran its budget on a reachable child — the executor's own
         # answer to a slow run. Don't heal or retry (that would kill the still-
@@ -216,7 +235,7 @@ async def _forward(engine_id: str, request: Request, path: str, body: bytes,
             return _error(
                 f"the {engine_id} engine is not running; register the layer again",
                 status=409)
-        response = await _proxy(child, request, path, body, call_timeout)
+        response = await _proxy(child, request, path, body, call_timeout, at_most_once)
     if response is _GONE:
         return Response(status_code=204)
     if response is _TIMEOUT:

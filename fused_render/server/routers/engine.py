@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import Response
 
 from fused_render import projectenv
@@ -31,17 +31,12 @@ def _resolve_py(py, html) -> tuple[str | None, Response | None]:
 
 
 @router.post("/api/engine")
-async def api_engine(request: Request, x_fused: str | None = Header(default=None)):
+async def api_engine(request: Request, body: dict = Body(...),
+                     x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
 
-    try:
-        body = json.loads(await request.body() or b"{}")
-        if not isinstance(body, dict):
-            raise ValueError("body must be a JSON object")
-    except (ValueError, json.JSONDecodeError) as e:
-        return _error(f"invalid request body: {e}")
     resolved, error = _resolve_py(body.get("py"), body.get("html"))
     if error is not None:
         return error
@@ -84,13 +79,14 @@ async def api_engine(request: Request, x_fused: str | None = Header(default=None
     engine_host.mark_busy(engine_id)
     try:
         return await _forward(engine_id, request, "/call", payload,
-                              call_timeout=engine_host.APP_CALL_TIMEOUT_S)
+                              call_timeout=engine_host.APP_CALL_TIMEOUT_S,
+                              at_most_once=True)
     finally:
         engine_host.mark_idle(engine_id)
 
 
 @router.post("/api/engine/forget")
-async def api_engine_forget(request: Request,
+async def api_engine_forget(body: dict = Body(...),
                             x_fused: str | None = Header(default=None)):
     """Drop a warm worker explicitly (idle-retire covers the common case).
 
@@ -100,12 +96,6 @@ async def api_engine_forget(request: Request,
     if guard is not None:
         return guard
 
-    try:
-        body = json.loads(await request.body() or b"{}")
-        if not isinstance(body, dict):
-            raise ValueError("body must be a JSON object")
-    except (ValueError, json.JSONDecodeError) as e:
-        return _error(f"invalid request body: {e}")
     resolved, error = _resolve_py(body.get("py"), body.get("html"))
     if error is not None:
         return error
