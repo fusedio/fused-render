@@ -21,6 +21,7 @@ import { startVideo, watchJob, type VideoStarted } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
 import {
   ConfigPanel,
+  useConfigOpen,
   RailField,
   RailSlider,
   ResultSlot,
@@ -165,7 +166,7 @@ export function VideoStage({
   );
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [seed, setSeed] = useState<string>(() => readParam("seed") ?? "");
-  const [configOpen, setConfigOpen] = useState(true);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
   const [run, setRun] = useState<Run | null>(null);
   const [gallery, setGallery] = useState<VideoStarted[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -252,7 +253,7 @@ export function VideoStage({
       <StageHeader
         title="Describe a video"
         configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+        onToggleConfig={toggleConfig}
       />
 
       <div className="pg-composer">
@@ -315,7 +316,7 @@ export function VideoStage({
       {/* Every knob is behind the cog; the surface above is prompt and
           Generate. The four sliders in the order a render is thought about:
           how big, how long, how carefully — then the seed. */}
-      <ConfigPanel open={configOpen}>
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Width"
           hint="Snapped to a multiple of 32, and shrunk if width×height is too large."

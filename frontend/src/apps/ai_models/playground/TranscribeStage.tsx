@@ -25,7 +25,7 @@ import {
   type TranscribeStarted,
 } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
-import { ConfigPanel, CopyButton, RailCheck, RailField, RailSelect, ResultSlot, StageHeader } from "./controls";
+import { useConfigOpen, ConfigPanel, CopyButton, RailCheck, RailField, RailSelect, ResultSlot, StageHeader } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -57,7 +57,7 @@ export function TranscribeStage({ model }: { model: string }) {
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
   const [dragging, setDragging] = useState(false);
-  const [configOpen, setConfigOpen] = useState(true);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   const [task, setTask] = useState<"transcribe" | "translate">(() =>
     readParam("task") === "translate" ? "translate" : "transcribe",
@@ -312,7 +312,7 @@ export function TranscribeStage({ model }: { model: string }) {
         <StageHeader
           title="Transcribe a recording"
           configOpen={configOpen}
-          onToggleConfig={() => setConfigOpen((open) => !open)}
+          onToggleConfig={toggleConfig}
         />
 
         {phase.step === "recording" ? (
@@ -399,7 +399,7 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
 
-        <ConfigPanel open={configOpen}>
+        <ConfigPanel open={configOpen} animated={configTouched.current}>
           <RailField label="Task">
             <RailSelect
               value={task}

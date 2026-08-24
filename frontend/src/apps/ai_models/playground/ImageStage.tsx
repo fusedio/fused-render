@@ -35,6 +35,7 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Input } from "@platform/shadcn/ui/input";
 import {
   ConfigPanel,
+  useConfigOpen,
   RailChips,
   RailField,
   RailReset,
@@ -268,7 +269,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   const [error, setError] = useState<string | null>(null);
   const [previewTick, setPreviewTick] = useState(0);
   const [previewLive, setPreviewLive] = useState(false);
-  const [configOpen, setConfigOpen] = useState(true);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   // Can THIS model be handed a base image at all (AI-9f)? The server's own
   // answer, read through imageInput.ts so the row that is drawn and the field
@@ -685,7 +686,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       <StageHeader
         title="Describe a picture"
         configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+        onToggleConfig={toggleConfig}
       />
 
       <div className="pg-composer pg-composer-stack">
@@ -868,7 +869,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       )}
 
       {/* Chips lead the panel; sliders and the seed follow. */}
-      <ConfigPanel open={configOpen}>
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
         <div className="pg-config-chips">
           {/* Hidden, not disabled, while the attached image decides the size:
               a chip row where nothing is lit and a slider parked on 480 are

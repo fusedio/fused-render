@@ -21,7 +21,7 @@
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, withModelReady } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
-import { ConfigPanel, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
+import { useConfigOpen, ConfigPanel, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
 // The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
@@ -173,7 +173,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ranked, setRanked] = useState<Ranked[] | null>(null);
-  const [configOpen, setConfigOpen] = useState(true);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   // The run itself is one quick POST, but the cold-start watch loop is not —
   // leaving the stage must stop it, same as the chat stage's rule.
@@ -236,7 +236,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
         <StageHeader
           title="Search lines by meaning"
           configOpen={configOpen}
-          onToggleConfig={() => setConfigOpen((open) => !open)}
+          onToggleConfig={toggleConfig}
         />
         <div className="pg-composer">
           <input
@@ -274,7 +274,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
           </div>
         </div>
 
-        <ConfigPanel open={configOpen}>
+        <ConfigPanel open={configOpen} animated={configTouched.current}>
           <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
             <Textarea
               className="min-h-0 resize-y text-xs leading-relaxed"

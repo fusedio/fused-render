@@ -112,7 +112,31 @@ const CONFIG_EXIT_MS = 160;
  *  Closed by default on purpose: the surface it hides behind has to read as a
  *  simple call. Unmounted while closed, not hidden — every control inside is
  *  driven by stage state, so nothing is lost by not rendering it. */
-export function ConfigPanel({ open, children }: { open: boolean; children: ReactNode }) {
+/** The panel's open state, as the one hook every stage uses: open by default,
+ *  and `touched` remembers whether the cog has ever been clicked. ConfigPanel
+ *  animates its entry only when it has — the card that is simply there when
+ *  the page loads must not fade in a beat after everything else. */
+export function useConfigOpen() {
+  const [open, setOpen] = useState(true);
+  const touched = useRef(false);
+  const toggle = useCallback(() => {
+    touched.current = true;
+    setOpen((now) => !now);
+  }, []);
+  return { open, toggle, touched };
+}
+
+export function ConfigPanel({
+  open,
+  animated = true,
+  children,
+}: {
+  open: boolean;
+  /** False on a mount the user did not cause (the initial load): the fold-in
+   *  animation and its wait are skipped, the card is just there. */
+  animated?: boolean;
+  children: ReactNode;
+}) {
   // Mount is kept for the length of the exit so the card can fade OUT as well
   // as in: a panel that pops out of existence while the column glides back
   // under it is the half-animated version, and reads worse than no animation
@@ -135,7 +159,9 @@ export function ConfigPanel({ open, children }: { open: boolean; children: React
   if (!shown) return null;
   return (
     <aside
-      className={"pg-config-card" + (open ? "" : " is-closing")}
+      className={
+        "pg-config-card" + (open ? "" : " is-closing") + (animated ? "" : " no-entry")
+      }
       aria-label="Settings"
       // On the way out it is a picture of a panel, not a panel: nothing in it
       // can be reached or read while it fades.

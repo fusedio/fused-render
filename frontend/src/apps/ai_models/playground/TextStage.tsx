@@ -25,6 +25,7 @@ import { splitThink } from "./think";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import {
   ConfigPanel,
+  useConfigOpen,
   CopyButton,
   RailField,
   RailReset,
@@ -153,7 +154,7 @@ export function TextStage({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
-  const [configOpen, setConfigOpen] = useState(true);
+  const { open: configOpen, toggle: toggleConfig, touched: configTouched } = useConfigOpen();
 
   const [temperature, setTemperature] = useState(() =>
     numParam("temp", DEFAULTS.temperature, ...LIMITS.temperature),
@@ -269,7 +270,7 @@ export function TextStage({
       <StageHeader
         title="Try a prompt"
         configOpen={configOpen}
-        onToggleConfig={() => setConfigOpen((open) => !open)}
+        onToggleConfig={toggleConfig}
       />
 
       <div className="pg-composer">
@@ -331,7 +332,7 @@ export function TextStage({
       )}
 
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
-      <ConfigPanel open={configOpen}>
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Temperature"
           hint="Lower is focused and repeatable; higher is varied and creative."

@@ -794,6 +794,13 @@
   animation: pg-fold-in var(--pg-fade) cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
 
+/* A mount the user did not cause — the page loading with the panel open — has
+   nothing to animate FROM: the fade (and its wait beside the column) would
+   read as the settings arriving late. The cog's toggles keep the fold. */
+.pg-config-card.no-entry > .pg-config-inner {
+  animation: none;
+}
+
 .pg-config-card.is-closing {
   /* A picture of a panel while it fades — a click landing on a control that is
      already on its way out is a setting changed by accident. */
