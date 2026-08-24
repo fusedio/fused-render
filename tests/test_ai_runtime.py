@@ -4167,12 +4167,13 @@ def test_a_slash_bearing_model_no_runner_can_serve_says_why(client, monkeypatch)
 
 
 def _wait_job(job_id, timeout=20.0):
-    """The record, once it stops running — or `None` if it finished so
-    successfully it was dismissed immediately instead (supervisor._finish):
-    a row given out by a `/api/ai/*` POST always exists by the time the
-    caller has its `jobId` (the opening report is synchronous, before the
-    render/transcribe thread starts), so the row disappearing here can only
-    mean a completed, dismissed success — never "was never created"."""
+    """The record, once it stops running. `None` is a valid outcome — a
+    successful render/load/transcription now dismisses its row immediately
+    (supervisor._finish) rather than leaving it at "done" — but that must
+    never be ASSUMED just because the row is absent: absence also means "was
+    never created", which is exactly the regression a row-lifecycle test
+    exists to catch. Callers that need to tell the two apart use
+    `_wait_dismissed` instead, which proves the row existed first."""
     deadline = time.monotonic() + timeout
     row = None
     while time.monotonic() < deadline:
@@ -4183,16 +4184,46 @@ def _wait_job(job_id, timeout=20.0):
     raise AssertionError(f"{job_id} never finished: {row}")
 
 
+def _wait_dismissed(job_id, timeout=20.0):
+    """Proof, not assumption, that `job_id` APPEARED and was then dismissed
+    by a success (supervisor._finish) — as opposed to never having been
+    created at all, which would look identical to `_wait_job` returning
+    `None` on its very first poll.
+
+    Reads the row FIRST, with no default (`next(...)` raises `StopIteration`
+    if it is missing) — safe because a row handed out by a `/api/ai/*` or
+    `supervisor.load` caller is created synchronously, before the
+    render/transcribe/bring-up thread even starts, so it is guaranteed to
+    exist the instant the caller has the id this function is called with.
+    A regression that stopped opening the row at all makes THIS assertion
+    fail, not silently pass as "already dismissed".
+    """
+    seen = next(j for j in jobs.list_jobs() if j["id"] == job_id)
+    assert seen["state"] == "running", (
+        f"{job_id} was not running when observed: {seen}")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+        if row is None:
+            return
+        if row["state"] != "running":
+            raise AssertionError(
+                f"{job_id} reached a terminal state instead of being "
+                f"dismissed: {row}")
+        time.sleep(0.05)
+    raise AssertionError(f"{job_id} was never dismissed: {row}")
+
+
 def test_an_image_renders_to_disk_and_the_job_finishes(client, fake_image_runner):
     response = client.post("/api/ai/image", json={"prompt": "a red square"},
                            headers={"X-Fused": "1"})
     assert response.status_code == 200
     started = response.json()
 
-    # Dismissed immediately on success (supervisor._finish) — no "done" row
-    # left for the corner to show.
-    row = _wait_job(started["jobId"])
-    assert row is None, row
+    # Proves the row APPEARED (supervisor._start_render's synchronous
+    # opening report) and then was dismissed immediately on success
+    # (supervisor._finish) — not merely absent because it was never created.
+    _wait_dismissed(started["jobId"])
     # The path the POST promised is the path that exists — no second lookup.
     assert os.path.isfile(started["path"])
     assert open(started["path"], "rb").read(8) == b"\x89PNG\r\n\x1a\n"
@@ -4289,8 +4320,7 @@ def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
     exactly as it did, and the advertised path simply never appears."""
     started = client.post("/api/ai/image", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    row = _wait_job(started["jobId"])
-    assert row is None, row  # dismissed immediately on success
+    _wait_dismissed(started["jobId"])  # appeared, then dismissed on success
     assert os.path.isfile(started["path"])
     assert not os.path.exists(started["previewPath"])
 
@@ -4439,7 +4469,6 @@ def test_an_image_row_is_server_owned_and_reserved(client, fake_image_runner):
     assert refused.status_code == 400
     assert "reserved" in refused.json()["error"]
     _wait_job(started["jobId"])  # drain the background thread
-    assert "reserved" in refused.json()["error"]
 
 
 def test_an_image_needs_a_prompt(client, fake_image_runner):
@@ -5084,8 +5113,7 @@ def test_an_image_waits_for_its_model_rather_than_failing_fast(client, fake_imag
     assert supervisor.describe()["loaded"] == []
     started = client.post("/api/ai/image", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    row = _wait_job(started["jobId"], timeout=40)
-    assert row is None, row  # dismissed immediately on success
+    _wait_dismissed(started["jobId"], timeout=40)  # appeared, then dismissed
     assert os.path.isfile(started["path"])
 
 
@@ -5171,10 +5199,27 @@ def test_a_video_renders_to_disk_and_the_job_finishes(client, fake_video_runner)
     assert response.status_code == 200
     started = response.json()
 
-    row = _wait_job(started["jobId"])
-    assert row is None, row  # dismissed immediately on success
+    _wait_dismissed(started["jobId"])  # appeared, then dismissed on success
     assert os.path.isfile(started["path"])
     assert open(started["path"], "rb").read(4) == b"\x00\x00\x00\x18"
+
+
+def test_a_video_row_is_server_owned_and_reserved(client, fake_video_runner):
+    """Mirrors test_an_image_row_is_server_owned_and_reserved — video had no
+    counterpart, so a broken video row (never opened, or opened under the
+    wrong owner) had nothing here that would catch it."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert started["jobId"].startswith(jobs.SERVER_ID_PREFIX)
+    # Checked right away, same reasoning as the image route's own version of
+    # this test: a successful render dismisses its row entirely.
+    row = next(j for j in jobs.list_jobs() if j["id"] == started["jobId"])
+    assert row["owner"] == jobs.OWNER_SERVER
+    refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+    assert "reserved" in refused.json()["error"]
+    _wait_job(started["jobId"])  # drain the background thread
 
 
 def test_the_video_reply_describes_the_render_that_will_actually_happen(
@@ -5462,8 +5507,7 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
     assert supervisor.describe()["loaded"] == []
     started = client.post("/api/ai/video", json={"prompt": "x"},
                           headers={"X-Fused": "1"}).json()
-    row = _wait_job(started["jobId"], timeout=40)
-    assert row is None, row  # dismissed immediately on success
+    _wait_dismissed(started["jobId"], timeout=40)  # appeared, then dismissed
     assert os.path.isfile(started["path"])
 
 
@@ -5481,8 +5525,7 @@ def test_a_transcript_is_written_to_disk_and_the_job_finishes(
         client, fake_transcribe_runner, recording):
     started = _post_transcribe(client, path=recording).json()
 
-    row = _wait_job(started["jobId"])
-    assert row is None, row  # dismissed immediately on success
+    _wait_dismissed(started["jobId"])  # appeared, then dismissed on success
     # The output path the POST promised is the path that exists — no second
     # lookup, exactly as the image route works.
     written = json.load(open(started["output"]))
@@ -5899,6 +5942,42 @@ def test_the_terminal_report_can_rebuild_an_evicted_row(
     assert row is not None and row["state"] == "error"
     assert row["title"] == os.path.basename(recording)
     assert "did not answer" in row["message"]
+
+
+def test_a_row_evicted_mid_flight_stays_gone_when_the_decode_then_succeeds(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The success-side companion of the test above: a decode's row can be
+    evicted by the cap (a raw removal) WHILE it is still running, and the
+    decode then goes on to SUCCEED rather than fail.
+
+    `supervisor._finish`'s terminal `_report(job, state="done")` carries no
+    `title`, unlike the error/cancelled arms — success is meant to leave no
+    row at all, so there was never a reason to restate one. That must not
+    raise or resurrect a stray row when the id is already gone: `jobs.upsert`
+    silently no-ops a titleless report against a missing id (`JobError`,
+    caught by `_report`), and `jobs.dismiss` on an already-absent id is
+    already a no-op (`test_jobs_api.py`'s dismissal tests cover that
+    generically). The end state — no row — is identical to the ordinary
+    success path; this pins that an eviction landing first does not change
+    that outcome or blow up the background thread.
+    """
+    def evicted_then_succeeds(model, request, job):
+        with jobs._lock:
+            jobs._jobs.pop(job, None)
+        return {"text": "hello world", "duration": 1.0}
+
+    monkeypatch.setattr(supervisor, "generate_transcript", evicted_then_succeeds)
+    started = _post_transcribe(client, path=recording).json()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not any(j["id"] == started["jobId"] for j in jobs.list_jobs()):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("row was never cleared")
+    # Stays gone — no stray "done" row resurrected by the terminal report.
+    time.sleep(0.1)
+    assert not any(j["id"] == started["jobId"] for j in jobs.list_jobs())
 
 
 def test_a_transcription_row_is_server_owned_and_reserved(
