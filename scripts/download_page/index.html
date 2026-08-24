@@ -459,8 +459,8 @@
   /* ---------- §how : the how-it-works app's flow diagram, geometry copied
      verbatim, colours mapped onto the page tokens so both themes hold. ---------- */
   #how h2, #under-the-hood h2 { max-width: none; }
-  #how .deck { max-width: none; }
-  #how .deck .hl { color: var(--accent-text); font-weight: 600; }
+  #how .deck, #under-the-hood .deck { max-width: none; }
+  #how .deck .hl, #under-the-hood .deck .hl { color: var(--accent-text); font-weight: 600; }
   .howflow {
     background: var(--tile); border: 1px solid var(--rule);
     border-radius: 16px; padding: 26px 26px 20px;
@@ -888,6 +888,9 @@
   <section id="under-the-hood">
     <div class="sec-head rule-top">
       <h2>Under the hood: a web page and Python.</h2>
+      <p class="deck">A project is just a web page and a Python file in a folder. The page is
+      what you see; Python does the work, on your own machine. One line connects them:
+      <code class="mono hl">fused.runPython()</code>.</p>
     </div>
 
     <div class="howflow">
@@ -923,9 +926,6 @@
   <section id="how">
     <div class="sec-head rule-top">
       <h2>Ecosystem</h2>
-      <p class="deck">A project is just a web page and a Python file in a folder. The page is
-      what you see; Python does the work, on your own machine. One line connects them:
-      <code class="mono hl">fused.runPython()</code>.</p>
     </div>
 
     <div class="howflow">
