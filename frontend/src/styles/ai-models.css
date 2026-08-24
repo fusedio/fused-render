@@ -1949,10 +1949,10 @@
    capability select (same select skin via `.am-bench-capsel-input`, reused
    rather than redeclared), visually subordinate to the `<h3>` beside it
    because IT chooses within a section the heading already named, not a
-   sibling heading in its own right. Unlike the capability select, this one
-   keeps a visible "Metric" caption — it sits beside a card's `<h3>`, not
-   alone in the page-level toolbar, so the two are not read as a matched pair
-   and the caption stays legible chrome here rather than redundant chrome. */
+   sibling heading in its own right. Unlabelled on screen, like the capability
+   select — an option's own text names the metric, so a "Metric" caption was
+   repeating it; what sits in that spot instead is the unit badge, moved to the
+   LEFT of the select so the row reads unit-then-choice. */
 /* The section head's control group — the Metric select and the Share button.
    One flex group rather than two children of the head itself, so
    `.am-section-head`'s own `justify-content: space-between` keeps holding the
@@ -1998,7 +1998,8 @@
    (`metricUnitAndCue`, lib/benchmark.ts). A small badge rather than plain
    text: it is metadata about the current selection, not a second heading, and
    a pill face says so at a glance. Never the metric's own NAME — the select
-   right beside it already shows that. */
+   right beside it already shows that. First in the row, ahead of the select,
+   so it prefixes the choice rather than trailing it. */
 .am-bench-metric {
   flex: 0 0 auto;
   padding: 2px 8px;
@@ -2394,8 +2395,9 @@
    visible caption of its own (an option's text already names the capability,
    e.g. "Text generation", so a "Capability" label beside it repeated that);
    `aria-label` on the element (BenchmarkTab.tsx) keeps it named for assistive
-   tech. Metric moved into each capability's own card below and keeps its
-   caption there (`.am-bench-metricsel`) — see BenchmarkTab.tsx for why native
+   tech. Metric moved into each capability's own card below and is now
+   captionless too (`.am-bench-metricsel`, the unit badge to its left standing
+   where the caption was) — see BenchmarkTab.tsx for why native
    selects rather than a segmented control: this count of options does not
    earn a second control vocabulary on this page, and a THIRD control for the
    model picker is avoided entirely — a leaderboard row IS the model picker,

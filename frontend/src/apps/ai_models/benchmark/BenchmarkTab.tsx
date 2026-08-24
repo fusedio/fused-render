@@ -524,10 +524,9 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           inside the card below — it chooses WHICH section you are looking
           at, which is a page-level question, unlike Metric (now inside
           `CapabilitySection`, right beside the instruments it actually
-          governs, and still captioned "Metric" there — that select sits next
-          to a card's `<h3>`, not on its own line in an empty toolbar, so the
-          two are not read side by side and dropping only this one does not
-          leave them looking inconsistent). No run count in the option labels
+          governs, and unlabelled on screen there too — same reasoning, an
+          option's own text names the metric, so both selects now carry their
+          name in `aria-label` alone). No run count in the option labels
           any more — the reader asked for that gone too, and `capabilityCounts`
           still drives `resolveCapability`'s default pick, it just no longer
           prints itself. */}
@@ -722,8 +721,11 @@ function CapabilitySection({
           from — a select with zero options renders as an empty,
           clickable-looking box, and there is nothing honest for it to say.
 
-          The badge beside it is unit + DIRECTION only, never the metric's own
-          name (the select already shows that) — `metricUnitAndCue`
+          The badge sits to the LEFT of the select and is unit + DIRECTION
+          only, never the metric's own name (the select already shows that) —
+          reading left to right it prefixes the choice ("tok/s ▾ Throughput")
+          rather than trailing it, which is also where the eye lands first now
+          that no "Metric" caption occupies that spot — `metricUnitAndCue`
           (lib/benchmark.ts) states "lower is better" for exactly the metrics
           where the ordinary "longer bar / bigger number wins" habit reads
           backwards (Peak memory, Load time, …), and says nothing extra for
@@ -745,10 +747,11 @@ function CapabilitySection({
         <div className="am-bench-headtools">
           {metricSpecs.length > 0 && (
             <div className="am-bench-metricsel">
-              <label htmlFor={`am-bench-metric-${capability}`}>Metric</label>
+              {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
               <select
                 id={`am-bench-metric-${capability}`}
                 className="field-control am-bench-capsel-input"
+                aria-label="Metric"
                 value={metric?.key ?? ""}
                 onChange={(e) => onSelectMetric(e.target.value)}
               >
@@ -758,7 +761,6 @@ function CapabilitySection({
                   </option>
                 ))}
               </select>
-              {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
             </div>
           )}
           {/* Rendered on exactly the condition the chart itself is (below): a
