@@ -51,6 +51,7 @@ import fnmatch
 import glob
 import os
 import sys
+import threading
 import time
 
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
@@ -64,6 +65,61 @@ import worker_base  # noqa: E402 - the path insert above is what makes it import
 #: weights load happens inside `generate_and_save`, once per render, exactly
 #: as upstream's own CLI drives it).
 _loaded = {}
+
+#: The MLX streams every thread in this process works on, keyed by device name —
+#: ONE PER DEVICE. See `_pin_stream`.
+_STREAMS = {}
+_STREAMS_LOCK = threading.Lock()
+
+
+def _pin_stream():
+    """Put this thread's MLX work on the process's shared streams — EVERY device.
+
+    `mflux_image/worker.py::_pin_stream` is the same function with the long
+    story: from mlx 0.32 the default stream belongs to the THREAD that made
+    it, an unevaluated array is a graph pinned to the stream it was built on,
+    and forcing it from another thread aborts with `There is no Stream(cpu, 0)
+    in current thread`. Copied rather than imported, for the reason
+    `mlx_embed/worker.py`'s copy gives: these workers run in separate venvs
+    with no shared module between them.
+
+    **This runner reaches that abort on the SECOND render, not the first** —
+    which is why the pin was missed here when the four sibling MLX runners got
+    it. `DistilledPipeline` loads its weights inside `generate_and_save`, so
+    render #1 builds and evaluates everything on one `ThreadingTCPServer`
+    request thread and passes; the pipeline then KEEPS those components
+    (`self.dit`, the VAE blocks, `self.upsampler` — `low_memory` frees some
+    between stages, not all of them across calls), and render #2 arrives on a
+    fresh request thread whose graph now mixes in render #1's arrays.
+    Observed on mlx 0.32.1 against `dgrauet/ltx-2.3-mlx-q4`: renders #2 and #3
+    both died at `distilled.py::generate_two_stage`'s `_materialize(video_
+    upscaled)` — the first `mx.eval` after the upscaler runs — with exactly
+    that message.
+
+    `mx.cpu` as well as `default_device()`, `if key not in` rather than
+    `setdefault` (which would mint a fresh stream per call and keep the
+    first), and a no-op on an mlx too old to have the calls: all three are
+    `mflux_image`'s, and its docstring says why each one is load-bearing.
+    """
+    import mlx.core as mx
+
+    make = getattr(mx, "new_thread_unsafe_stream", None)
+    pin = getattr(mx, "set_default_stream", None)
+    if make is None or pin is None:
+        return None
+    devices = [mx.cpu, mx.default_device()]
+    with _STREAMS_LOCK:
+        streams = []
+        for device in devices:
+            key = str(device)
+            if key not in _STREAMS:
+                _STREAMS[key] = make(device)
+            if _STREAMS[key] not in streams:
+                streams.append(_STREAMS[key])
+    for stream in streams:
+        pin(stream)
+    return streams
+
 
 #: Upstream's own default (`DistilledPipeline.__init__`, `ltx_pipelines_mlx.
 #: distilled`) — named explicitly here rather than left to the pipeline's own
@@ -285,6 +341,11 @@ def load(model_id, fetched):
 
     _put_ffmpeg_on_path()
 
+    # Before the pipeline is built, not after: `__init__` composes MLX modules
+    # on THIS (bring-up) thread, and `generate` runs on another. See
+    # `_pin_stream`.
+    _pin_stream()
+
     from ltx_pipelines_mlx.distilled import DistilledPipeline
 
     # `low_memory=True` (the pipeline's own default) is left alone rather than
@@ -411,6 +472,11 @@ def generate(body):
     "why would I change this" — the same reasoning that keeps `guidance` off
     the API entirely for this engine.
     """
+    # FIRST, before a single MLX array is touched: this is a fresh
+    # `ThreadingTCPServer` request thread, and the components a previous render
+    # left on the pipeline were built on a different one. See `_pin_stream`.
+    _pin_stream()
+
     pipeline = _loaded.get("pipeline")
     if pipeline is None:
         raise RuntimeError("no model is loaded")

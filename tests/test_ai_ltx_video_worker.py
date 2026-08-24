@@ -16,6 +16,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import threading
 import types
 
 import pytest
@@ -115,8 +116,38 @@ class FakePipeline:
 
 
 class FakeMlxCore(types.ModuleType):
-    def __init__(self):
+    """`mlx.core` as this runner uses it: two DEVICES and their STREAMS.
+
+    `tests/test_ai_mflux_worker.py`'s double, verbatim in shape — from mlx
+    0.32 the default stream is per (thread, DEVICE), so a worker that pinned
+    only `default_device()` would still abort on `Stream(cpu, 0)`. Both
+    devices are therefore distinct objects here, and every
+    `new_thread_unsafe_stream` records which one it was asked for.
+    """
+
+    def __init__(self, **extra):
         super().__init__("mlx.core")
+        self.cpu = "CPU"
+        self.gpu = "GPU"
+        #: the device of every `new_thread_unsafe_stream`, in order.
+        self.made = []
+        #: (thread name, stream) for every `set_default_stream`.
+        self.pinned = []
+        self._lock = threading.Lock()
+        for name, value in extra.items():
+            setattr(self, name, value)
+
+    def default_device(self):
+        return self.gpu
+
+    def new_thread_unsafe_stream(self, device):
+        with self._lock:
+            self.made.append(device)
+            return f"SHARED-{device}-STREAM"
+
+    def set_default_stream(self, stream):
+        with self._lock:
+            self.pinned.append((threading.current_thread().name, stream))
 
     def get_active_memory(self):
         return 0
@@ -163,7 +194,8 @@ def _fake_ffmpeg_binary():
 
 
 def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
-                with_samplers_tqdm=True, hf_hub=None, ffmpeg_exe=None):
+                with_samplers_tqdm=True, hf_hub=None, ffmpeg_exe=None,
+                mlx_core=None):
     """A fresh import of the ltx_video worker against the fakes.
 
     `monkeypatch.setitem` rather than a save/restore, because this runner
@@ -204,8 +236,14 @@ def load_worker(monkeypatch, base, pipeline=None, with_ffmpeg=True,
         samplers_mod.tqdm = lambda iterable, **kwargs: iter(iterable)
     monkeypatch.setitem(sys.modules, "ltx_pipelines_mlx.utils.samplers", samplers_mod)
 
+    # `mlx.core` is no longer only `memory()`'s business: `load` and `generate`
+    # both pin this process's shared streams (`_pin_stream`), so a render test
+    # that left it out would be testing an import that cannot happen in
+    # production. A caller may still hand in its own — an mlx too old to have
+    # thread-local streams, say — and gets exactly that.
     mlx = types.ModuleType("mlx")
-    mlx_core = FakeMlxCore()
+    if mlx_core is None:
+        mlx_core = FakeMlxCore()
     mlx.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
@@ -622,3 +660,76 @@ def test_the_tqdm_patch_is_restored_even_after_a_cancel(monkeypatch, base, tmp_p
         worker.generate(_request(tmp_path))
 
     assert samplers.tqdm is original
+
+
+# -- the MLX stream every thread shares ------------------------------------------
+
+
+def _pinned_run(monkeypatch, base, tmp_path, mlx_core):
+    """A load and TWO renders, on the threads production uses.
+
+    `load` runs on `worker_base.serve`'s bring-up thread, which then EXITS, and
+    each `generate` arrives on its own `ThreadingTCPServer` request thread —
+    which is the whole of the bug, so the test has to reproduce the threading
+    and not just the calls.
+
+    Two renders rather than `test_ai_mflux_worker.py`'s one, because this
+    runner's abort lands on the SECOND: `DistilledPipeline` loads its weights
+    inside `generate_and_save`, so render #1 builds and evaluates everything on
+    one thread and passes, and it is render #2 — a fresh thread, reusing the
+    components render #1 left on the pipeline — that dies. A one-render version
+    of this test would have gone green against the unpinned worker.
+    """
+    pipeline = FakePipeline()
+    worker, _ = load_worker(monkeypatch, base, pipeline=pipeline, mlx_core=mlx_core)
+    loader = threading.Thread(
+        target=worker.load, args=(MODEL, snapshot(tmp_path)), name="bring-up")
+    loader.start()
+    loader.join()
+    for index in (1, 2):
+        render = threading.Thread(
+            target=worker.generate, args=(_request(tmp_path, steps=2),),
+            name="request-%d" % index)
+        render.start()
+        render.join()
+    return worker, pipeline
+
+
+def test_the_load_and_every_render_share_ONE_mlx_stream_PER_DEVICE(
+        monkeypatch, base, tmp_path):
+    """From mlx 0.32 the default stream belongs to the THREAD that made it, and
+    an unevaluated array forced anywhere else throws. Observed on mlx 0.32.1
+    against `dgrauet/ltx-2.3-mlx-q4`: the second and third renders in a worker's
+    life both died at `distilled.py::generate_two_stage`'s
+    `_materialize(video_upscaled)` with `RuntimeError: There is no Stream(cpu, 0)
+    in current thread`.
+
+    **BOTH devices**, for the reason `test_ai_mflux_worker.py`'s twin gives: the
+    default stream is per (thread, DEVICE), so pinning `default_device()` alone
+    leaves the CPU half of the graph owned by whichever thread first touched it
+    — precisely the stream that abort named.
+    """
+    mlx_core = FakeMlxCore()
+
+    _pinned_run(monkeypatch, base, tmp_path, mlx_core)
+
+    threads = {name for name, _stream in mlx_core.pinned}
+    streams = {stream for _name, stream in mlx_core.pinned}
+    assert len(threads) > 2, f"the render threads did not both pin: {mlx_core.pinned}"
+    assert streams == {"SHARED-CPU-STREAM", "SHARED-GPU-STREAM"}, mlx_core.pinned
+    # One stream per device for the whole process, not one per thread: a second
+    # would be a second owner, which is the thing being prevented.
+    assert sorted(mlx_core.made) == ["CPU", "GPU"], mlx_core.made
+
+
+def test_an_mlx_without_thread_local_streams_is_left_alone(
+        monkeypatch, base, tmp_path):
+    """Streams were process-wide before 0.32 and there was nothing to pin. A
+    runner that insisted on the newer call would turn a version skew into a
+    worker that cannot render at all."""
+    mlx_core = types.SimpleNamespace(cpu="CPU", gpu="GPU",
+                                     get_active_memory=lambda: 0)
+
+    _worker, pipeline = _pinned_run(monkeypatch, base, tmp_path, mlx_core)
+
+    assert len(pipeline.calls) == 2, "the renders never reached the pipeline"
