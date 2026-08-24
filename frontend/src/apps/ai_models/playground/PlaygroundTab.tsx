@@ -837,19 +837,10 @@ export default function PlaygroundTab() {
                 </CardAction>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-                {/* The curator's sentence, in full — the sidebar clamps it.
-                    For the zero-jargon reader this is the model introducing
-                    itself. */}
-                {selected.model.note && (
-                  <p className="m-0 text-sm leading-relaxed text-muted-foreground">
-                    {selected.model.note}
-                  </p>
-                )}
                 {(selected.model.params ||
                   selected.model.quantization ||
                   selected.model.size_gb != null) && (
                   <>
-                    <Separator />
                     <dl className="m-0 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
                       {[
                         selected.model.params
