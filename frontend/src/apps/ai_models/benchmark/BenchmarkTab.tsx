@@ -491,9 +491,11 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
 
   // Selecting a row now OPENS it (D481) — which means it has to be closable
   // too, or `aria-expanded="true"` on an open row would be a control with no
-  // way back. `toggleModel` is the row/chevron's own click: already-open
-  // closes it (writes the EXPLICIT "" `resolveModel` now reads as "closed",
-  // not "no opinion yet" — see that function's own comment), anything else
+  // way back. `toggleModel` is the WHOLE ROW's own click (the row is the
+  // accordion header now, not a small chevron target inside it — see the
+  // big comment above `.am-bench-rows`' render loop): already-open closes
+  // it (writes the EXPLICIT "" `resolveModel` now reads as "closed", not
+  // "no opinion yet" — see that function's own comment), anything else
   // opens it. `openModel` never closes anything — it is what the Run button
   // uses, since starting a benchmark must never hide the row you are about
   // to watch update (see the Run button's own comment in `BenchmarkRow`).
@@ -653,10 +655,11 @@ function CapabilitySection({
   /** `selectedModel`'s own runs, already filtered — `ModelTrendChart` draws
    *  nothing else. */
   trendRuns: AiBenchmarkRun[];
-  /** The row/chevron's own click: closes an already-open row, opens any
-   *  other (`BenchmarkTab`'s `toggleModel`). Exactly one row open at a
-   *  time, same as `selectedModel` always meant — the new part is that
-   *  re-clicking the open one now closes it instead of being a no-op. */
+  /** The whole row's own click (the entire row is the accordion header —
+   *  see D481): closes an already-open row, opens any other
+   *  (`BenchmarkTab`'s `toggleModel`). Exactly one row open at a time, same
+   *  as `selectedModel` always meant — the new part is that re-clicking the
+   *  open one now closes it instead of being a no-op. */
   onToggleModel: (model: string) => void;
   /** The Run button's own click: opens this row, NEVER closes it — starting
    *  a benchmark must not hide the chart you are about to watch update
@@ -984,37 +987,53 @@ function CapabilitySection({
           )}
           {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
               with the action (Run, Details) the chart above has no room for.
-              Clicking a row (or focusing it and pressing Enter/Space, or
-              pressing its own chevron button — see below) TOGGLES it: an
-              already-open row closes, any other opens (and closes whichever
-              row was open before it — exactly one at a time). Open is the
-              one full-width expansion rendered as that row's sibling in
-              `.am-bench-rows`, holding BOTH the per-run detail/failure text
-              and INSTRUMENT THREE, the trend, for `selectedModel` (D481).
+              **The WHOLE ROW is the accordion header** ("let's make the
+              entire row have a dropdown of sorts") — clicking anywhere on
+              it except the Run button, or Enter/Space on its one focusable
+              disclosure control (the model-name cell, `BenchmarkRow`),
+              TOGGLES it: an already-open row closes, any other opens (and
+              closes whichever row was open before it — exactly one at a
+              time). Open is the one full-width expansion rendered as that
+              row's sibling in `.am-bench-rows`, holding BOTH the per-run
+              detail/failure text and INSTRUMENT THREE, the trend, for
+              `selectedModel` — and visually FUSED to its row into one card
+              that grew (ai-models.css: the open row's own bottom corners
+              square off and its bottom border drops, the expansion picks
+              up the matching side/bottom border and radius and the same
+              accent wash, so there is no seam between "the header" and
+              "the part that opened").
 
-              **One row, one open state — now also actually CLOSABLE.** The
-              first D481 pass left the trend expansion driven by selection
-              while the row's own `›` disclosure stayed a SEPARATE
-              `<details>` with its own open state and a `stopPropagation`
-              guard — two independent expanders on one row. Merging them
-              into one control fixed that, but selection was still a plain
-              assignment with no way back to "nothing open": a control
-              reporting `aria-expanded="true"` that cannot be collapsed is
-              broken for exactly the users who read that attribute. Clicking
-              an open row (or its chevron) now writes an EXPLICIT "" into
-              `?benchModel=` — a real third state `resolveModel`
-              (lib/benchmark.ts) reads as "closed", distinct from `null`
-              ("no opinion yet, pick the usual default") — so the closed
-              state survives a reload instead of silently re-resolving to
-              the default row. The Run button is the one click in this row
-              that must never close anything (see its own comment below):
-              it opens via a separate path that bypasses the toggle
-              entirely. At N models the trend's old position (a block below
-              the WHOLE list) put row N's click a full screen away from the
-              thing it changed; the sibling-of-the-row position fixes that,
-              and merging + un-sticking the two disclosures fixes the
-              "what's the dropdown for if the chart shows up anyway" report
-              the very first attempt drew. */}
+              **One row, one open state, one hit target — three passes to
+              get here.** Pass one put the trend behind a SEPARATE
+              `<details>` beside a plain-select row — two independent
+              expanders on one row. Pass two merged them into a single
+              `<button>` chevron with `aria-expanded`, but selection was
+              still a plain assignment with no way back to closed — a
+              control reporting `aria-expanded="true"` that cannot collapse.
+              Pass two-and-a-half fixed closing (an explicit `""` in
+              `?benchModel=`, `resolveModel`/lib/benchmark.ts, distinct from
+              `null`'s "no opinion yet, pick the default" — survives a
+              reload instead of the closed row silently reopening) but left
+              the 16px chevron glyph as the ONLY thing on a 36px-tall row
+              that actually opened it, with the row's own click doing the
+              same job right beside it with no visual hint that it did.
+              This pass fixes THAT: the chevron is now a plain, `aria-
+              hidden` rotation indicator with no handler or focus stop of
+              its own, the row itself carries the click (bubbling from
+              anywhere inside it, Run excepted — see its own comment), and
+              the model-name cell is the row's one real focusable control,
+              carrying `aria-expanded`/`aria-controls` so there is exactly
+              one place that contract lives and exactly one extra Tab stop
+              per row (that cell, then Run) instead of three. A row with
+              nothing to expand (`row === null`, never benchmarked) gets
+              none of this — no chevron, no hand cursor, no `aria-expanded`,
+              a click that does nothing (`BenchmarkRow`'s `expandable`). At
+              N models the trend's original position (a block below the
+              WHOLE list) put row N's click a full screen away from the
+              thing it changed; the sibling-of-the-row position fixed that,
+              and each later pass fixed a way the fix itself still fell
+              short of "click the thing, see the thing change, right
+              there". */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
@@ -1024,8 +1043,8 @@ function CapabilitySection({
               // or a failed run's own error. Computed HERE, not inside
               // `BenchmarkRow`, because the expansion that shows it is a
               // sibling of the row in this same list, not a child of it —
-              // one calculation feeds both the row's chevron (whether to
-              // draw one at all) and the expansion's own content.
+              // one calculation feeds both the row (whether it has anything
+              // to expand at all) and the expansion's own content.
               const detail = row
                 ? row.latest.ok
                   ? rowDetail(row.latest, metric, expectedDevice)
@@ -1111,8 +1130,8 @@ function CapabilitySection({
   );
 }
 
-/** This row's full-width expansion sibling's own DOM id — needed so its
- *  chevron button can point `aria-controls` at it. Sanitized rather than the
+/** This row's full-width expansion sibling's own DOM id — needed so the
+ *  row's model-name button can point `aria-controls` at it. Sanitized rather than the
  *  raw model id verbatim: a model id is a repo path ("org/name") and `/` (or
  *  other punctuation a real id might carry) is not a legal `id` token in
  *  every consumer of this string. Collisions are not a real risk — model ids
@@ -1146,15 +1165,17 @@ function BenchmarkRow({
    *  `expectedDevice` call), not here: the SAME string also opens inside
    *  this row's full-width expansion sibling, and that element is a sibling
    *  of this component's own return value, not a child of it — so the one
-   *  place that can hand it to both is the caller. `null` means this row's
-   *  whole story already fits the headline, which is what decides whether a
-   *  chevron is worth drawing at all. */
+   *  place that can hand it to both is the caller. `null` just means this
+   *  row's whole story already fits the headline — it does NOT decide
+   *  whether the row is expandable at all (`row !== null` alone does that,
+   *  below): the expansion can still hold a trend worth opening even when
+   *  there is no extra detail line to go with it. */
   detail: string | null;
   /** DOM id of this row's own expansion sibling in `.am-bench-rows`
-   *  (`benchExpandId`) — the chevron's `aria-controls` target. Only actually
-   *  points at something real while `selected` is true (that is the only
-   *  time the sibling exists at all), which is exactly when the button
-   *  supplies it below. */
+   *  (`benchExpandId`) — the model-name button's `aria-controls` target.
+   *  Only actually points at something real while `open` is true (that is
+   *  the only time the sibling exists at all), which is exactly when the
+   *  button supplies it below. */
   expansionId: string;
   /** What the Run button says and whether it can be pressed — decided by
    *  `runButtonState`, never here: the rule about which run blocks which button
@@ -1169,15 +1190,21 @@ function BenchmarkRow({
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
   /** This row's expansion (detail text + trend, D481) is open right below
-   *  it — closing it is now a real, reachable state (`onToggle` below), not
-   *  just an implementation detail of "which one is selected". */
+   *  it — closing it is a real, reachable state (the whole row's own
+   *  toggle, below), not just an implementation detail of "which one is
+   *  selected". Only ever true for an EXPANDABLE row (`row !== null`) —
+   *  `CapabilitySection` never sets it otherwise, since a model with no
+   *  history has nothing to open. */
   selected: boolean;
-  /** This row's own toggle — a click anywhere on it, including its own
-   *  chevron button, or Enter/Space while it has focus. Opens the row's
-   *  expansion below it if it was closed, closes it if it was already open
-   *  (`BenchmarkTab`'s `toggleModel`). The Run button below is the one
-   *  exception: it calls `onRun`, never this, so pressing it cannot close a
-   *  row it just opened (or is about to run against). */
+  /** The whole row's own toggle — a click ANYWHERE on it (the model name,
+   *  the headline, empty space — everything except the Run button, which
+   *  carves itself out below), or Enter/Space on the row's one focusable
+   *  disclosure control (the model-name button — see below for why it, and
+   *  not the row itself, carries the keyboard/ARIA contract). Opens this
+   *  row's expansion if it was closed, closes it if it was already open
+   *  (`BenchmarkTab`'s `toggleModel`). Called only when `row !== null`: a
+   *  row with nothing to expand gets no click handler at all, not a toggle
+   *  that would silently write a selection with nothing to show for it. */
   onToggle: () => void;
   /** Runs this model AND opens its row — never closes it, even when the row
    *  is already open (`BenchmarkTab` wires this to call `onOpenModel`
@@ -1185,40 +1212,76 @@ function BenchmarkRow({
    *  why its click must not also reach `onToggle` via bubbling. */
   onRun?: () => void;
 }) {
+  // Whether this row has ANYTHING to expand — the one fact that decides
+  // three things at once: whether the model-name cell becomes a real
+  // disclosure button or stays a plain, inert label; whether the row's own
+  // click does anything; and whether the row gets the `expandable` class
+  // that turns on its pointer cursor and hover hint. A model with no
+  // history (`row === null`, "Never benchmarked") must not LOOK openable —
+  // no chevron (already true: the chevron only ever renders in the `row ?`
+  // branch below), no hand cursor, no `aria-expanded` implying a state that
+  // does not exist, and a click that does nothing rather than writing a
+  // pointless selection.
+  const expandable = row !== null;
+  // `selected` can only be true here when `expandable` is too (see its own
+  // doc comment), but computing this once, locally, means every use below
+  // reads as "is this row's card actually open" rather than trusting a
+  // caller invariant silently.
+  const open = selected && expandable;
+  const nameCell = (
+    <>
+      {/* Budget (28) is a hair under the column's own 30ch so the CSS
+          `overflow: hidden` safety net (ai-models.css) never has to fire
+          for a monospace glyph at this size — see `middleEllipsis`'s own
+          comment for why the ellipsis goes in the MIDDLE rather than the
+          tail. */}
+      <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
+      {gone && <span className="am-bench-gone">not on this machine any more</span>}
+    </>
+  );
   return (
-    // A div-as-button, not a `<button>`: the Run and chevron buttons both
-    // live inside this row (the same shape the Playground's model cards
-    // settled on, D428) and a button inside a button is markup browsers are
-    // free to mangle. This div's own click is now a TOGGLE (D481) rather
-    // than a plain select, which is exactly why the Run button below can no
-    // longer just let its click bubble here the way the chevron still does —
-    // toggling an already-open row closed is the right answer for a plain
-    // row/chevron click, and the wrong one for Run, so Run stops its own
-    // propagation and calls `onRun` (which opens-without-toggling) directly
-    // instead. The chevron carries no handler of its own; bubbling to this
-    // `onClick` is its entire mechanism, same as before.
+    // A div-as-container, not a `<button>`: the Run button lives inside
+    // this row (the same shape the Playground's model cards settled on,
+    // D428), and a `<button>` cannot contain another `<button>`. The whole
+    // row is still the accordion header a reader can click anywhere on
+    // ("Let's make the entire row have a dropdown of sorts" — the direction
+    // this replaces the small chevron-target design with) — but the row
+    // itself carries no ARIA or keyboard contract of its own any more.
+    // That belongs on ONE real focusable control inside it instead (the
+    // model-name button below), so there is exactly one place `aria-
+    // expanded`/`aria-controls` live and exactly one extra Tab stop per
+    // row, rather than the row AND a second element both claiming to be
+    // "the" disclosure control. Only the Run button's click stops here —
+    // see its own comment — everything else (the model name, the headline,
+    // empty space) is left to bubble to `onClick` below.
     <div
-      className={"am-bench-row" + (selected ? " selected" : "")}
-      role="button"
-      tabIndex={0}
-      aria-pressed={selected}
-      onClick={onToggle}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
+      className={"am-bench-row" + (open ? " selected" : "") + (expandable ? " expandable" : "")}
+      onClick={expandable ? onToggle : undefined}
     >
-      <div className="am-bench-model" title={model}>
-        {/* Budget (28) is a hair under the column's own 30ch so the CSS
-            `overflow: hidden` safety net (ai-models.css) never has to fire
-            for a monospace glyph at this size — see `middleEllipsis`'s own
-            comment for why the ellipsis goes in the MIDDLE rather than the
-            tail. */}
-        <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
-        {gone && <span className="am-bench-gone">not on this machine any more</span>}
-      </div>
+      {expandable ? (
+        // The row's ONE focusable disclosure control. A real `<button>`,
+        // not the row div itself (which has no `tabIndex`/`role` any more)
+        // and not the old chevron-only button (demoted below to a bare,
+        // `aria-hidden` indicator with no handler or focus stop of its
+        // own) — putting the ARIA/keyboard contract on the cell that NAMES
+        // what is being expanded is the natural choice, and it collapses
+        // three former Tab stops (row, chevron, Run) to two (this button,
+        // Run). No `onClick` of its own: its native click bubbles to the
+        // row's `onClick` exactly like any other click on the row would,
+        // and Enter/Space on a focused `<button>` fires that same native
+        // click for free, so the row's toggle needs no separate keyboard
+        // handler either.
+        <button type="button" className="am-bench-model" title={model} aria-expanded={open} aria-controls={open ? expansionId : undefined}>
+          {nameCell}
+        </button>
+      ) : (
+        // Not expandable — a plain, inert cell. No button, no `aria-
+        // expanded`, nothing implying this row does something a click on
+        // it will not actually do.
+        <div className="am-bench-model" title={model}>
+          {nameCell}
+        </div>
+      )}
       <div className="am-bench-latest">
         {button?.busy ? (
           // A plain spinner, not `ModelProgress`: that component draws a
@@ -1251,39 +1314,22 @@ function BenchmarkRow({
                 {row.delta.percent.toFixed(1)}%
               </span>
             )}
-            {/* This row's whole disclosure control, and the ONLY one it
-                has (D481). A real `<button>`, not a `<details>`/`<summary>`
-                pair: there is no separate open state to carry any more, so
-                there is nothing native disclosure semantics would be doing
-                here that plain `aria-expanded`/`aria-controls` do not do
-                just as well, explicitly. No `stopPropagation` — the button
-                is left to bubble its click up to the row's own `onClick`,
-                which is now `onToggle`: pressing the chevron toggles this
-                row exactly like pressing anywhere else on it does (the Run
-                button below is the ONE exception, and stops its own click
-                from reaching here — see its comment). Drawn for every row
-                with a history (this whole branch is `row !== null`) whether
-                or not `detail` itself has text, because the expansion below
-                can still hold a trend even when the detail line is empty —
-                `detail && …`, further down inside that expansion, is what
-                decides whether ITS text paragraph draws, not whether this
-                button does. `aria-controls` only names a real id while this
-                row is `selected` (`expansionId`), since that is the only
-                time the element it names actually exists to point at; the
-                glyph's 90° rotation is now keyed off `aria-expanded` itself
-                in ai-models.css, the one place this open/closed fact lives,
-                rather than a second class that could say something
-                different. */}
-            <button
-              type="button"
-              className="am-bench-rowdetail-chevron"
-              aria-label={row.latest.ok ? "Details" : "Failed — details"}
-              title={row.latest.ok ? "Details" : "Failed — details"}
-              aria-expanded={selected}
-              aria-controls={selected ? expansionId : undefined}
-            >
+            {/* A pure STATE INDICATOR now, not a control — the model-name
+                button above carries `aria-expanded`/`aria-controls` and is
+                the row's one focusable disclosure target, so this glyph
+                would otherwise be a second, redundant way to say the exact
+                same thing (and, before this pass, a second independently
+                clickable/focusable target for what is now one accordion
+                header). `aria-hidden` and no `tabIndex`: a screen reader
+                already hears the row's open/closed state from the button
+                above, and a sighted reader gets the same fact from this
+                glyph's own 90° rotation, which is keyed off `.am-bench-row
+                .selected` — the row's OWN open/closed class — in
+                ai-models.css, rather than an `aria-expanded` this element no
+                longer carries. */}
+            <span className="am-bench-rowdetail-chevron" aria-hidden="true">
               {MenuIcons.chevron}
-            </button>
+            </span>
           </>
         ) : (
           <span className="am-bench-never">Never benchmarked</span>

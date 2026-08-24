@@ -2237,8 +2237,10 @@
 /* One model, one line: who, the bar, the number, the button. Compacted from a
    two-line row (a headline plus a full sentence of detail) specifically so a
    failed run's error paragraph — which used to dump straight into this row —
-   cannot dominate the section; it lives behind the row's own chevron
-   (`.am-bench-rowdetail-chevron`), inside `.am-bench-rowexpand`, now. */
+   cannot dominate the section; it lives behind the row's own disclosure now
+   (click the row to open `.am-bench-rowexpand` below it — the chevron,
+   `.am-bench-rowdetail-chevron`, is only that state's indicator, not the
+   control). */
 .am-bench-row {
   display: grid;
   /* Wide enough that two repos differing only in a variant suffix
@@ -2254,26 +2256,62 @@
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  /* A `role="button"` div now (BenchmarkTab.tsx) — it picks the trend chart's
-     model — so it needs its own focus ring and pointer affordance, the two
-     things a native `<button>` gives away for free and a bare div does not. */
+  /* No `cursor`/focus ring here any more — those are conditional on
+     `.expandable` (below) and on the row's own focusable descendant
+     respectively. This is a plain container: BenchmarkTab.tsx puts NO
+     `role`/`tabIndex` on it, since a `<button>` (the Run button, always
+     inside) cannot contain another `<button>`, and the row's own click
+     handler is enough to make it clickable without also making it
+     ITSELF a focus stop — the model-name button inside is that stop. */
+}
+
+/* The whole-row accordion header (D481) — a hand cursor for the entire row,
+   not a stray div-as-button rule any more, and gated so a row with nothing
+   to expand (`row === null`, "Never benchmarked") never LOOKS clickable:
+   BenchmarkTab.tsx only adds this class when `row !== null`. */
+.am-bench-row.expandable {
   cursor: pointer;
 }
 
-.am-bench-row:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+/* Hover says "this row CAN be opened" — a small step toward the border, far
+   short of the accent treatment `.selected` below uses, and the two states
+   must stay visually distinct rather than one bleeding into the other.
+   `:not(.selected)` is what keeps them apart: without it this rule's THREE
+   simple selectors would outrank `.selected`'s two on specificity alone and
+   win regardless of source order, downgrading an already-OPEN row's accent
+   border to this muted hover tint the instant a pointer passed over it —
+   exactly the "two states blurring together" this rule exists to prevent.
+   So hover only ever does anything on a CLOSED expandable row; an open
+   row's border stays accent no matter where the pointer is, which is
+   itself the distinguishing behaviour a reader can rely on. Never drawn on
+   a non-expandable row either (gated on `.expandable`, same as the cursor
+   above) — hovering a never-benchmarked row must not promise an action its
+   click will refuse to perform. */
+.am-bench-row.expandable:hover:not(.selected) {
+  border-color: color-mix(in srgb, var(--fg) 35%, var(--border));
 }
 
 /* The row whose expansion (detail text + trend, D481) is open right below
-   it — selecting a model IS opening its expansion, so this is the same fact
-   `aria-expanded` on the row's own chevron carries, drawn as a border plus a
-   light accent wash rather than either alone. Same idiom
-   `.bar-menu-item.active` (explorer.css) uses for its own "which one is
-   this" state, kept stronger than a hover tint so the two never blur. */
+   it. Border plus a light accent wash rather than either alone — the same
+   idiom `.bar-menu-item.active` (explorer.css) uses for its own "which one
+   is this" state, kept stronger than the hover tint above so the two never
+   blur into each other.
+
+   **Also: one card that grew, not a header with a floating block under
+   it.** This row is ALWAYS immediately followed by its own
+   `.am-bench-rowexpand` whenever `.selected` is set (both are driven by
+   the identical `model === selectedModel && row !== null` test in
+   BenchmarkTab.tsx), so the pairing is a real invariant, not a guess —
+   square the row's own bottom corners and drop its bottom border, and
+   `.am-bench-rowexpand` below picks up the matching side/bottom border,
+   radius and background so the two read as one continuous card rather
+   than two stacked with a seam between them. */
 .am-bench-row.selected {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
 }
 
 .am-bench-model {
@@ -2287,6 +2325,32 @@
      The full id is the row's `title`. */
   white-space: nowrap;
   overflow: hidden;
+}
+
+/* This cell is a real `<button>` for an EXPANDABLE row (BenchmarkTab.tsx) —
+   the row's one focusable disclosure control, carrying `aria-expanded`/
+   `aria-controls` — so it needs the usual reset off native button chrome:
+   no border/background of its own (the row already draws both), text-align
+   left rather than centred, and the same font this cell always had rather
+   than the browser's own button font. A non-expandable row keeps a plain
+   `<div>` here instead (no rule needed — a div has none of this chrome to
+   reset in the first place). */
+button.am-bench-model {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: inherit;
+}
+
+button.am-bench-model:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* A model whose weights are gone but whose runs are not. Not an error colour —
@@ -2353,40 +2417,36 @@
   color: var(--fg-muted);
 }
 
-/* The row's one disclosure control (D481) — a real `<button>` now, not a
-   `<summary>`, since there is no separate `<details>` open state left for it
-   to belong to (selecting the row IS opening its expansion). Icon-only, per
-   the icon-buttons pass: a plain inline-flex box, font/border/background
-   reset off the native button chrome, so the 16×16 SVG is the whole visible
-   control rather than sitting inside a browser-drawn button frame. Font size
-   matches the OLD `.am-bench-rowdetail` wrapper's own 11px — that wrapper is
-   gone (nothing left for it to wrap; the detail text moved into
-   `.am-bench-rowexpand-detail` below), but the button still sits at the same
-   scale beside the headline and delta it always has. */
+/* The row's open/closed STATE INDICATOR (D481) — a plain `<span
+   aria-hidden>` now, not a button: the whole row is the disclosure control
+   (its model-name cell carries the actual `aria-expanded`/`aria-controls`),
+   so a second independently-focusable, independently-clickable chevron
+   would just be a smaller, harder-to-hit copy of the same control — which
+   is exactly the design this class used to BE (a 16px glyph as the only
+   thing on a 36px row that actually opened it) and exactly what "let's make
+   the entire row have a dropdown" replaces. Icon-only sizing carries over
+   unchanged: a plain inline-flex box, no border/background of its own, so
+   the 16×16 SVG is the whole visible mark. Font size matches the OLD
+   `.am-bench-rowdetail` wrapper's own 11px — that wrapper is gone (the
+   detail text moved into `.am-bench-rowexpand-detail` below), but the glyph
+   still sits at the same scale beside the headline and delta it always
+   has. */
 .am-bench-rowdetail-chevron {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
   font-size: 11px;
-  border: none;
-  background: none;
-  padding: 0;
-  margin: 0;
   color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.am-bench-rowdetail-chevron:hover {
-  color: var(--fg);
 }
 
 /* Rotated open rather than swapped for a second "collapse" glyph. Keyed off
-   `aria-expanded` itself — the accessibility attribute the button already
-   carries to say "open" or "closed" — rather than a parallel `.open` class:
-   a second, CSS-only flag next to the one the DOM already exposes is a
-   second place the two facts could disagree, which is the exact hazard this
-   whole rewrite (D481) exists to stop repeating. */
-.am-bench-rowdetail-chevron[aria-expanded="true"] {
+   `.am-bench-row.selected` — the ROW's own open/closed class — rather than
+   an `aria-expanded` this element no longer carries (that attribute now
+   lives on the model-name button, not here): the row's class is the one
+   place this open/closed fact lives, so every visual dependent on it,
+   chevron included, reads off the SAME flag rather than a copy that could
+   drift from it. */
+.am-bench-row.selected .am-bench-rowdetail-chevron {
   transform: rotate(90deg);
 }
 
@@ -2484,35 +2544,40 @@
    model is `selectedModel` — not in its own block below the whole
    leaderboard, which is where the trend half used to live on its own. At N
    models that block-below position put the trend a full screen away from
-   the click that changed it; a sibling of the clicked row's own flex item
-   needs none of the separating machinery that used to live right here (a
-   double head-gap, a border-top, its own heading) — `.am-bench-rows`'s own
-   6px `gap` already sits between it and its neighbours the same way it sits
-   between any two rows, and the accent border below ties it to the row it
-   hangs off instead.
+   the click that changed it.
 
-   **This one block now also carries the per-row detail/failure text that
-   used to open behind its OWN `<details>`, right inside the row's grid
-   cell.** The first pass at moving the trend inline left that `<details>`
-   in place beside the new trend expansion, which put two independent open
-   states on one row: a plain click selected the row and opened the trend
-   regardless, so the chevron read as pointless, and the trend had no
-   toggle of its own to explain why it was showing. One expansion, one
-   control fixes both — the row's chevron (`.am-bench-rowdetail-chevron`)
-   is this block's own disclosure now, `aria-expanded`/`aria-controls` tie
-   the two together explicitly, and "selected" and "open" are the same
-   fact instead of two that could drift apart. Detail text first
-   (`.am-bench-rowexpand-detail`), the trend after — the text explains what
-   the row's own headline had no room for, the chart elaborates on it. */
+   **This block also carries the per-row detail/failure text** that used to
+   open behind its own `<details>` inside the row's grid cell — one
+   disclosure for both, rather than two independent expanders on the same
+   row (the hazard this decision has been through several rounds of
+   fixing). Detail text first (`.am-bench-rowexpand-detail`), the trend
+   after — the text explains what the row's own headline had no room for,
+   the chart elaborates on it.
+
+   **Drawn as ONE continuous card with the row above it, not a floating
+   block under a header.** The row it follows is ALWAYS `.am-bench-row
+   .selected` (same `model === selectedModel && row !== null` test drives
+   both, in BenchmarkTab.tsx) — that row's own bottom corners are squared
+   and its bottom border dropped (see `.am-bench-row.selected`), so this
+   element supplies the matching left/right/bottom border, the bottom
+   radius the row's TOP corners already have, and the identical accent
+   wash, with `margin-top` cancelling `.am-bench-rows`'s own 6px `gap` so
+   there is no seam between "the header" and "the part that opened". */
 .am-bench-rowexpand {
   /* Full row width for free: this is a SIBLING of `.am-bench-row`'s grid, not
      a cell inside it, so it never has to fight that row's
      `grid-template-columns` for room the chart needs in full. */
-  padding: 8px 0 4px 10px;
-  /* The same ink `.am-bench-row.selected`'s own border already uses for
-     "this is the one" — moved down onto the expansion it now owns, rather
-     than a second, unrelated visual language invented for it. */
-  border-left: 2px solid var(--accent);
+  padding: 10px 12px 12px;
+  /* Cancels `.am-bench-rows`' own 6px flex `gap` between this and the row
+     above it — a negative margin equal to the gap is the standard way to
+     opt ONE pair of flex/grid siblings out of an otherwise-uniform gap
+     without touching the container itself (the gap must still separate
+     every OTHER pair of rows normally). */
+  margin-top: -6px;
+  border: 1px solid var(--accent);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
 }
 
 .am-bench-chart {
