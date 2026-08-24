@@ -1914,6 +1914,42 @@
   max-width: 1000px;
 }
 
+/* -- more width on a big screen, WITHOUT reopening the concern above (D482) -
+   1000px was never really a limit on the whole tab — it was a limit on the
+   ONE instrument that actually separates a name from its number as it
+   grows: the comparison chart's bar plot (`.am-bench-compare-body` below),
+   whose name column is FIXED (`flex: 0 0 26ch`) while its plot area is
+   `flex: 1 1 auto` — every extra pixel of width lengthens the bars, and the
+   value label sitting right after each bar drifts that much further from
+   the name column it belongs to. The leaderboard rows do NOT have this
+   problem: a row's model-name and headline-value columns are adjacent grid
+   tracks with a fixed 12px gap between them regardless of the row's own
+   total width, so widening the row only grows blank space before the Run
+   button — annoying at the extreme, never "opposite ends of the window".
+   Neither does the per-model trend chart or the run archive table, which
+   both read MORE easily with more room (a longer time axis, less column
+   truncation) and carry no name-column-vs-drifting-value pairing to break.
+
+   So: raise `.am-bench`'s own ceiling for a genuinely large viewport, but
+   give `.am-bench-compare-body` (below) its OWN, separate, unraised cap —
+   the freed width becomes blank trailing space beside the chart rather
+   than additional bar length, which is exactly the "cap the column, let a
+   spacer absorb the surplus" shape this needed. 1440px is the trigger
+   because it is the point real 13"-16" laptops and small external
+   monitors stop being the majority case and an unscaled 24"+ desktop
+   display becomes the reader — narrower than that, the original 1000px
+   was already a comfortable fit and raising it would just be page filler.
+   1320px is the new ceiling: wide enough to give the trend chart and the
+   archive table a real, noticeable amount of extra breathing room (+32%
+   over 1000px) without approaching the width at which even THOSE start
+   reading as an uncomfortably long line, and comfortably short of 1440px
+   so the panel never touches the viewport's own edges. */
+@media (min-width: 1440px) {
+  .am-bench {
+    max-width: 1320px;
+  }
+}
+
 /* Each capability is now a distinct PANEL, not just a heading with a rule
    under it — the four capabilities used to blur into one scroll of sections
    that differed only by their headings. The card face is the same one
@@ -2019,6 +2055,24 @@
    which is the normal case. */
 .am-bench-compare {
   margin-bottom: var(--am-gap-head);
+  /* Capped independently of `.am-bench`'s own ceiling (D482) — this is the
+     one instrument on the tab where more width is actively harmful: its
+     name column (`.am-bench-compare-namecol`, below) is fixed-width while
+     its plot area stretches, so extra width lengthens every bar and drags
+     the value label after it further from the name it belongs to. On the
+     WHOLE wrapper, not just `.am-bench-compare-body` — `.am-bench-compare-
+     foot`'s tick labels are positioned by percentage relative to THEIR OWN
+     element's width, and body/foot are separate block-level children of
+     this one; capping only the body would let the foot's axis row stay
+     wide while the plot above it narrowed, misaligning every gridline from
+     the tick that names it. 900px keeps this chart at roughly the same
+     footprint it always had (`.am-bench`'s pre-D482 1000px, minus the
+     panel's own horizontal padding — `.am-bench .am-section`'s
+     `padding: 16px 20px 20px` above), no matter how wide `.am-bench`
+     itself is allowed to grow at a large viewport; the extra room becomes
+     blank trailing space to the chart's right rather than additional bar
+     length. */
+  max-width: 900px;
 }
 
 .am-bench-compare-body {
