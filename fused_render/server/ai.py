@@ -772,6 +772,42 @@ def _images_problem(images) -> str | None:
     return None
 
 
+def _images_unsupported_by_runner(model: str) -> str | None:
+    """Why the runner that would actually SERVE `model` cannot be handed an
+    image, or None.
+
+    `_images_problem` only checks the shape of the list; this checks whether
+    the request means anything at all once it reaches a worker. Only
+    `mlx-text`'s own worker reads `images` (`mlx_text/worker.py`'s image
+    branch, which builds the prompt through `mlx_vlm.prompt_utils.
+    apply_chat_template`) — `llamacpp_text`'s shared `generate` (`runners/
+    llama_text.py`) reads `messages`/`prompt`/the sampling knobs and nothing
+    else, so a picture handed to it is silently dropped on the floor. That
+    would read as a confident answer about nothing on Linux, on Windows, or
+    on a Mac where llama.cpp has been promoted over MLX — not a 400, not a
+    warning, just an answer about a photograph the model never saw.
+
+    `_accepts_image` (`ai_runtime.py`, AI-11j) already knows this — it is the
+    SAME computation the catalog's attach affordance is drawn from, both the
+    engine gate and, for `mlx-text`, whether the specific checkpoint even has
+    a vision tower — so it is asked here rather than re-derived: a caller
+    that ignores the flag, or a client built before it existed, must not get
+    an answer the flag never promised.
+    """
+    from fused_render.ai import registry
+    from fused_render.server.routers import ai_runtime
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    runner_code = runner.code if runner else None
+    if ai_runtime._accepts_image(registry.TEXT_GENERATION, runner_code, model):
+        return None
+    if runner_code is None:
+        return "no text-generation runner is available on this machine to read an image"
+    return (f"{model!r} cannot be handed an image on this machine — the resolved "
+            f"runner ({runner_code!r}) either cannot read a picture at all, or "
+            "this checkpoint has no vision tower")
+
+
 def _history_problem(history) -> str | None:
     """Why this history is unusable, or None. The message is the API's manners:
     a chat client passing the wrong shape should be told which turn and what
@@ -1020,6 +1056,27 @@ async def _ai_relay(body: dict):
         problem = _images_problem(images)
         if problem:
             return _ai_error("bad_request", problem, status=400)
+    # `raw` and `images` refuse each other, the same shape as `raw`/`history`
+    # above and for the same underlying reason: `raw` means "no chat template
+    # at all", and the image placeholder tokens a picture needs are inserted
+    # BY that template (`mlx_vlm.prompt_utils.apply_chat_template`, called
+    # only on the image path — see `mlx_text/worker.py::generate`). There is
+    # nowhere in a template-free request to put them, so honouring `raw` here
+    # would mean silently ignoring `images` — the worker's image branch reads
+    # `messages` unconditionally and never looks at `prompt` at all, so a
+    # caller setting both today would watch `raw` have no effect with no
+    # error, which is exactly the silent-drop `history` is refused instead of
+    # dropped for. Refusing the pair, rather than teaching the image path to
+    # honour a raw string, is the correct call: mlx-vlm's own template helper
+    # is what carries the placeholder tokens, and it takes structured messages
+    # to do it, not a bare continuation.
+    if raw and images:
+        return _ai_error(
+            "bad_request",
+            "'raw' sends the prompt with no chat template, and the image "
+            "placeholder tokens 'images' needs are inserted BY that template "
+            "— send one or the other",
+            status=400)
 
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
@@ -1042,6 +1099,21 @@ async def _ai_relay(body: dict):
         sampling = _sampling_problem(body)
         if sampling:
             return _ai_error("bad_request", sampling, status=400)
+        # `images` is shape-checked above (any local model), but SHAPE is not
+        # SUPPORT: only mlx-text's own worker reads `images` at all
+        # (`mlx_text/worker.py`'s image branch) — `llamacpp_text`'s shared
+        # `generate` reads `messages`/`prompt`/the sampling knobs and nothing
+        # else, so a picture handed to it is dropped on the floor rather than
+        # refused, and a caller reads back a confident answer about nothing.
+        # The catalog already knows this answer per entry (`acceptsImage`,
+        # AI-11j) so a caller who never reads that flag — or a stale client
+        # that predates it — must not be trusted to have honoured it; the
+        # request path enforces the SAME computation rather than a second,
+        # looser one.
+        if images:
+            unsupported = _images_unsupported_by_runner(model)
+            if unsupported:
+                return _ai_error("bad_request", unsupported, status=400)
         # In a THREAD. `_local_relay` is blocking I/O to a worker process: it
         # waits for the first token before it can answer, and the non-streaming
         # path waits for the whole completion. On a local model that is seconds

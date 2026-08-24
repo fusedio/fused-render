@@ -7891,6 +7891,8 @@ def test_images_reach_the_worker_alongside_messages(client, fake_runner, monkeyp
     """A list of absolute paths, threaded straight through to the worker's
     request — the worker is the one that knows how to turn them into
     placeholder tokens (`mlx_text/worker.py`'s image path, commit 3)."""
+    from fused_render.server import ai as ai_mod
+
     sent = {}
 
     def capture(model, request):
@@ -7899,6 +7901,13 @@ def test_images_reach_the_worker_alongside_messages(client, fake_runner, monkeyp
         yield {"type": "done", "ok": True, "tokens": 1}
 
     monkeypatch.setattr(supervisor, "generate_text", capture)
+    # `fake_runner` registers `code="fake-text"`, which `_images_unsupported_
+    # by_runner` correctly refuses (only `mlx-text` reads `images` at all) —
+    # that refusal is its OWN test below; this one is about the plumbing once
+    # a request has cleared it, so the runner-support gate is bypassed here
+    # rather than standing up a whole mlx-text-shaped fixture for a threading
+    # test that does not care which runner it is.
+    monkeypatch.setattr(ai_mod, "_images_unsupported_by_runner", lambda model: None)
     response = client.post("/api/ai", json={
         "prompt": "what is this?",
         "model": "org/chat",
@@ -7950,6 +7959,40 @@ def test_images_are_refused_for_claude_rather_than_dropped(client):
     }, headers={"X-Fused": "1"})
     assert response.status_code == 400
     assert "local model" in response.json()["error"]["message"]
+
+
+def test_raw_and_images_together_are_refused(client):
+    """`raw` means no chat template at all, and the image placeholder tokens
+    `images` needs are inserted BY that template — silently ignoring `raw`
+    once a picture is attached (`mlx_text/worker.py`'s image branch reads
+    `messages` unconditionally and never looks at `prompt`) is exactly the
+    silent-drop `history` is refused for instead of dropped, so this pairing
+    gets the same refusal rather than a request that watches `raw` do
+    nothing."""
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?", "model": "org/chat", "raw": True,
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "one or the other" in response.json()["error"]["message"]
+
+
+def test_images_are_refused_when_the_resolved_runner_cannot_read_them(
+        client, fake_runner, monkeypatch):
+    """The shape check (`_images_problem`) says nothing about whether the
+    request MEANS anything: `fake_runner` registers `code="fake-text"`, which
+    `_accepts_image` correctly refuses (only `mlx-text` reads `images` at
+    all — `llamacpp_text`'s shared `generate` drops the field on the floor),
+    and a caller must be told that up front rather than get back a confident
+    answer about a picture the model never saw."""
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?", "model": "org/chat",
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "fake-text" in message
+    assert "org/chat" in message
 
 
 def test_cancel_stops_the_generation_without_unloading(client, fake_runner):
