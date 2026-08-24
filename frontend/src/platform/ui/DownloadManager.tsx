@@ -89,6 +89,7 @@ import {
   pollInterval,
   rowsShown,
   JOB_PING_KEY,
+  SCHEDULE_JOB_PREFIX,
   type Job,
   type QueueCount,
 } from "@platform/lib/jobs";
@@ -326,13 +327,14 @@ export function JobRow({
     }
   };
 
-  // A "done" row is not drawn at all — success is meant to just vanish, and
-  // `jobs.py`'s `FINISHED_TTL_S` (3s) already clears the underlying record
-  // shortly after the first read, so this is a cosmetic head start rather
-  // than a second lifecycle. `error` and `cancelled` rows are NOT this: they
-  // stay visible until dismissed, because only a success disappears on its
-  // own — a failure or a cancellation is something the user needs to see.
-  if (job.state === "done") return null;
+  // Belt-and-braces, not the mechanism: `DownloadManager`'s `isVanishedOnSuccess`
+  // is what actually keeps a vanished job out of the header count, the fold and
+  // the empty-card gate — this is a cheap second guard for any caller that
+  // renders a `JobRow` directly (this file's own test does). Schedule-aware
+  // for the same reason that filter is: a scheduled run's own outcome row
+  // (`sys:schedule:*`) is DELIBERATELY drawn through one closing frame
+  // (jobs.ts `foldedJobRows`), so this must not blanket-hide every "done" job.
+  if (job.state === "done" && !job.id.startsWith(SCHEDULE_JOB_PREFIX)) return null;
 
   return (
     <div className={"dl-row" + (job.stalled ? " is-stalled" : "")}>
@@ -412,8 +414,45 @@ export interface QueueSlot extends QueueCount {
   note?: ReactNode;
 }
 
-export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
-  const { jobs: reported, refresh, patch } = useJobs();
+// A successful job vanishes from this card entirely (PR #785 follow-up) —
+// EXCEPT a scheduled run's own outcome row (`sys:schedule:*`), which
+// deliberately survives one closing frame once folded (jobs.ts
+// `foldedJobRows`'s own reversal: "a run appears, works, and vanishes
+// mid-sentence" is the bug that exists to prevent). Everything else that
+// reaches `state: "done"` — an image/video/transcription render, a model
+// load, a benchmark row — has nothing to say once it has succeeded, so it
+// must not draw at all: not a row, not a header count, not a Clear button
+// for a row nobody can see. This is presentation-only — jobs.py's own
+// FINISHED_TTL_S (3s) still clears the underlying record shortly after the
+// first read; this just stops the card from showing it in the meantime.
+//
+// This is a component-local filter, not a jobs.ts export: other consumers of
+// the same registry (apps/ai_models/lib/useCacheScan.ts's title->job map, the
+// playground's own stage watchers) need a "done" record to keep existing —
+// only this card's presentation of it is what changes here.
+function isVanishedOnSuccess(job: Job): boolean {
+  return job.state === "done" && !job.id.startsWith(SCHEDULE_JOB_PREFIX);
+}
+
+// Exported for `DownloadManager.test.tsx` only, exactly like `JobRow` above —
+// every other caller goes through the default export. Pure props in, a tree
+// out: no polling, no network, no `window`/`document` — which is what makes
+// the parent's own decisions (the empty-card gate, the header count, Clear's
+// count, the fold) testable by rendering it directly with a fixed job list,
+// rather than by mocking `@platform/lib/api` underneath the real polling
+// hook (fragile: that module is shared by dozens of other test files, and a
+// global `mock.module` on it does not scope to one file).
+export function DownloadManagerView({
+  reported,
+  queue,
+  refresh,
+  patch,
+}: {
+  reported: Job[];
+  queue?: QueueSlot;
+  refresh: () => void;
+  patch: (fn: (jobs: Job[]) => Job[]) => void;
+}) {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
   // Hand this poll's snapshot back to the queue half, so the run it is drawing is
   // retired against the same evidence this half is acting on rather than against a
@@ -421,6 +460,10 @@ export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
   // effect and not in the render body: it sets state in the parent, and doing that
   // while rendering is what React warns about. Keyed on the array identity, which
   // changes exactly once per response or per local patch.
+  //
+  // The FULL, unfiltered snapshot — `isVanishedOnSuccess` below decides what
+  // THIS card draws, not what the queue half (which reads its own `isRunning`
+  // off this same list, queue-dock-lib `openRows`) is told about.
   const onJobs = queue?.onJobs;
   useEffect(() => {
     onJobs?.(reported);
@@ -431,7 +474,15 @@ export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
   // rather than none anywhere. jobs.ts `jobRows` owns the argument.
   // `patch`/`refresh` still work on the full list — the filter is what this card
   // SHOWS, not what it knows.
-  const jobs = jobRows(reported, queue?.drawn);
+  //
+  // `isVanishedOnSuccess` runs HERE, upstream of every decision below it — the
+  // empty-card gate, the header count and its "N finished" tally, Clear's
+  // count, the overall bar, the fold — so all of them agree a vanished row
+  // does not exist, rather than a row that opens an empty `.dl-rows` box with
+  // nothing visible inside it (the bug this comment used to leave standing:
+  // `JobRow` alone returning null for a "done" job left every one of those
+  // still counting it).
+  const jobs = jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j));
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;
 
@@ -538,4 +589,9 @@ export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
       {queue?.note}
     </div>
   );
+}
+
+export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
+  const { jobs: reported, refresh, patch } = useJobs();
+  return <DownloadManagerView reported={reported} queue={queue} refresh={refresh} patch={patch} />;
 }
