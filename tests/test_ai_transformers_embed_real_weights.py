@@ -1,44 +1,61 @@
-"""A real-weights smoke test for `runners/torch_embed.py`, run against
-`google/siglip2-base-patch16-384` straight out of the local Hub cache.
+"""A real-weights REPRODUCER for `runners/torch_embed.py`, run against
+`google/siglip2-base-patch16-384` straight out of a local Hub cache.
 
-**Why this exists alongside the mocked suite in
-`test_ai_transformers_embed_worker.py`.** Every other test in that file drives
-`generate()` through a `FakeModel` whose shape is asserted by hand — and an
-earlier version of that fake encoded transformers 4.x's contract
-(`get_text_features` returning the pooled tensor directly) rather than 5.x's
-(`BaseModelOutputWithPooling`, read through `_pooled`). The suite was green
-throughout, because a fake can only fail the assumptions its author wrote into
-it. `worker._pooled` did not exist yet and every real embed call raised
-`AttributeError: 'BaseModelOutputWithPooling' object has no attribute 'to'`.
-This file is the guard a mock cannot be: it loads the real checkpoint through
-the real `AutoModel`/`AutoProcessor` classes and asserts on vectors that came
-out the other end, so a regression in `_pooled` — or in the padding rule, or
-in `unit_normalize` — fails here even if a future fake is written carelessly
-enough to hide it again.
+**This file is NOT part of the default suite's coverage.** It is skipped
+whenever `torch`/`transformers` are not importable or the checkpoint is not
+already cached — which is EVERY run of this repo's own `.venv`, since those
+packages live in a runner's own venv (built lazily on first Download) and are
+never a dependency of the venv the rest of the suite runs under. The actual
+guard against a `_pooled()`/`pooler_output` regression is `FakeOutput` in
+`test_ai_transformers_embed_worker.py` — that file runs in every CI job and
+every local `pytest` invocation; this one is a reproducer a developer runs
+by hand, pointed at an interpreter that actually has torch, to confirm a real
+checkpoint still behaves the way the fake assumes. Do not read a green run of
+the default suite as evidence this file executed.
 
-**Skipped, never fetched.** `google/siglip2-base-patch16-384` is a ~1.5GB
-download (`catalog.py`'s own figure for it), and CI has no Hub cache — asking
-`from_pretrained` to go fetch it would make this file network-dependent and
-slow on every machine that is not this one. The skip is keyed on the snapshot
-already existing under the ordinary Hub cache layout
-(`~/.cache/huggingface/hub/models--<org>--<repo>/snapshots/*`); `torch` and
-`transformers` are also skipped-not-required, because they live in the
-runner's own venv (built on first Download) and are not a dependency of the
-repo's `.venv` that runs the rest of this suite.
+**Why it exists at all, alongside a fake.** `test_ai_transformers_embed_worker.py`
+drives `generate()` through a hand-written `FakeModel`, and a fake can only
+fail the assumptions its author wrote into it — an earlier version of that
+fake encoded transformers 4.x's contract (`get_text_features` returning the
+pooled tensor directly) rather than 5.x's (`BaseModelOutputWithPooling`, read
+through `_pooled`), and the mocked suite stayed green while every real embed
+call raised `AttributeError: 'BaseModelOutputWithPooling' object has no
+attribute 'to'`. This file loads the real checkpoint through the real
+`AutoModel`/`AutoProcessor` classes and asserts on vectors that came out the
+other end, which a mock literally cannot do.
 
-**This runs on CPU here, in fp32 — it is not a GPU dtype test.** `_placement()`
-in `torch_embed.py` has no CUDA or ROCm hardware to place onto on this
-machine, so this file exercises the CONTRACT (the fields `_pooled` reads, the
+**Two ways to run it:**
+
+* Bare `pytest`, no torch installed (the default here) — every test SKIPS,
+  cheaply and offline. This is what CI sees.
+* `FUSED_RENDER_REAL_WEIGHTS=1 pytest ...`, invoked with an interpreter that
+  actually has torch/transformers (a runner's own venv — e.g.
+  `~/.fused-render/venvs/<hash>/bin/python -m pytest
+  tests/test_ai_transformers_embed_real_weights.py`) — an explicit opt-in
+  that turns every skip condition into a hard FAILURE naming what is
+  missing, so a typo'd venv path or an evicted cache entry cannot silently
+  report "1 skipped" and be mistaken for a pass. A silent skip under an
+  explicit opt-in would be the same trap this file exists to avoid, one
+  level up.
+
+**`google/siglip2-base-patch16-384` is a ~1.5GB download** (`catalog.py`'s own
+figure for it) and this file must never fetch it — the skip/fail check is
+keyed on the snapshot already existing under the ordinary Hub cache layout
+(`~/.cache/huggingface/hub/models--<org>--<repo>/snapshots/*`), read directly
+rather than through `huggingface_hub`, which this file has no other reason to
+depend on.
+
+**This runs on CPU, in fp32 — it is not a GPU dtype test.** `_placement()` in
+`torch_embed.py` has no CUDA or ROCm hardware to place onto wherever this is
+actually run, so it exercises the CONTRACT (the fields `_pooled` reads, the
 shapes `generate()` returns) and the SEMANTICS (that the vectors it produces
 actually cluster the way SigLIP2 is supposed to), not the accelerated
-numerics `transformers-embed-cuda`/`-rocm` would need real hardware in CI to
-check.
+numerics `transformers-embed-cuda`/`-rocm` would need real hardware to check.
 """
 import glob
 import importlib.util
 import os
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -49,6 +66,11 @@ RUNNERS = os.path.join(
 WORKER_PATH = os.path.join(RUNNERS, "torch_embed.py")
 
 MODEL_ID = "google/siglip2-base-patch16-384"
+
+#: Set to require this file to actually run rather than skip. See the module
+#: docstring's "Two ways to run it" — unset (the default) is what every other
+#: test in this repo runs under, and must stay fast and offline.
+_REQUIRE_REAL_WEIGHTS = os.environ.get("FUSED_RENDER_REAL_WEIGHTS") == "1"
 
 #: The ordinary Hub cache layout: `models--<org>--<repo>/snapshots/<rev>`.
 #: Read directly rather than through `huggingface_hub` — this file must not
@@ -65,13 +87,45 @@ def _real_snapshot():
     return matches[0] if matches else None
 
 
-torch = pytest.importorskip("torch", reason="lives in the runner's own venv")
-pytest.importorskip("transformers", reason="lives in the runner's own venv")
+def _require_or_skip(condition, reason):
+    """Skip on `condition` being false — unless `FUSED_RENDER_REAL_WEIGHTS=1`
+    asked this file to actually run, in which case the same condition is a
+    hard failure naming what is missing. One gate, two behaviours, so the
+    opt-in cannot be satisfied by the thing it exists to catch: a quiet skip
+    that reads like a pass.
+    """
+    if condition:
+        return
+    if _REQUIRE_REAL_WEIGHTS:
+        pytest.fail(
+            f"FUSED_RENDER_REAL_WEIGHTS=1 was set but {reason} — this run was "
+            f"asked to actually exercise real weights, not skip past their "
+            f"absence.", pytrace=False)
+    pytest.skip(reason, allow_module_level=True)
+
+
+try:
+    import torch  # noqa: F401 - presence check only; see _require_or_skip below
+    _HAVE_TORCH = True
+except ImportError:
+    _HAVE_TORCH = False
+
+try:
+    import transformers  # noqa: F401 - presence check only
+    _HAVE_TRANSFORMERS = True
+except ImportError:
+    _HAVE_TRANSFORMERS = False
+
+_require_or_skip(_HAVE_TORCH, "torch is not importable here — it lives in a "
+                 "runner's own venv, not this interpreter")
+_require_or_skip(_HAVE_TRANSFORMERS, "transformers is not importable here — "
+                 "it lives in a runner's own venv, not this interpreter")
 
 SNAPSHOT = _real_snapshot()
-pytestmark = pytest.mark.skipif(
-    SNAPSHOT is None,
-    reason=f"{MODEL_ID} is not in the local Hub cache — never fetched here")
+_require_or_skip(
+    SNAPSHOT is not None,
+    f"{MODEL_ID} is not in the local Hub cache ({_SNAPSHOT_GLOB}) — never "
+    f"fetched here")
 
 
 @pytest.fixture(scope="module")
@@ -126,12 +180,12 @@ def test_text_vectors_are_768_dim_and_unit_norm(worker):
 def test_semantically_closer_texts_cosine_higher(worker):
     """Two animals should read as closer than an animal and a vehicle.
 
-    Tolerant bands around figures measured on this machine after the
-    `pooler_output` fix (commit 9ffcf768): cos(cat, dog) ~= 0.9423,
-    cos(cat, bicycle) ~= 0.7573. The assertion is the ORDERING plus a loose
-    band, not the exact float — a transformers or torch point release
-    reproducing the same relationship to three decimals is not a promise this
-    test should make.
+    Tolerant bands around figures actually measured under
+    `FUSED_RENDER_REAL_WEIGHTS=1` (torch 2.13.0+cpu, transformers 5.15.1):
+    cos(cat, dog) = 0.9313, cos(cat, bicycle) = 0.8673. The assertion is the
+    ORDERING plus a loose band, not the exact float — a transformers or torch
+    point release reproducing the same relationship to three decimals is not
+    a promise this test should make.
     """
     result = worker.generate({"texts": ["a cat", "a dog", "a bicycle"]})
     cat, dog, bicycle = result["vectors"]
