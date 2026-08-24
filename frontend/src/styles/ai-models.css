@@ -2237,7 +2237,8 @@
 /* One model, one line: who, the bar, the number, the button. Compacted from a
    two-line row (a headline plus a full sentence of detail) specifically so a
    failed run's error paragraph — which used to dump straight into this row —
-   cannot dominate the section; it lives behind `.am-bench-rowdetail` now. */
+   cannot dominate the section; it lives behind the row's own chevron
+   (`.am-bench-rowdetail-chevron`), inside `.am-bench-rowexpand`, now. */
 .am-bench-row {
   display: grid;
   /* Wide enough that two repos differing only in a variant suffix
@@ -2264,11 +2265,12 @@
   outline-offset: -2px;
 }
 
-/* The row whose history the trend instrument below it (D481) is currently
-   showing. Border plus a light accent wash rather than either alone — the
-   same idiom `.bar-menu-item.active` (explorer.css) uses for its own "which
-   one is this" state, kept stronger than a hover tint so the two never
-   blur. */
+/* The row whose expansion (detail text + trend, D481) is open right below
+   it — selecting a model IS opening its expansion, so this is the same fact
+   `aria-expanded` on the row's own chevron carries, drawn as a border plus a
+   light accent wash rather than either alone. Same idiom
+   `.bar-menu-item.active` (explorer.css) uses for its own "which one is
+   this" state, kept stronger than a hover tint so the two never blur. */
 .am-bench-row.selected {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
@@ -2351,51 +2353,54 @@
   color: var(--fg-muted);
 }
 
-/* The detail tucked behind "Details"/"Failed — details" — TTFT, load time,
-   device, or a failed run's full error text. Collapsed by default for the
-   same reason the run archive below is: it is evidence for a row whose
-   headline already gave the answer, not something every reader needs open. */
-.am-bench-rowdetail {
-  flex: 0 0 auto;
-  font-size: 11px;
-}
-
-.am-bench-rowdetail > summary {
-  cursor: pointer;
-  color: var(--fg-muted);
-}
-
-.am-bench-rowdetail > summary:hover {
-  color: var(--fg);
-}
-
-/* The icon-only disclosure summary (icon-buttons pass): no default marker —
-   the chevron glyph itself IS the marker — and a plain inline-flex box so the
-   16×16 SVG doesn't inherit `<summary>`'s own list-item box model, which pads
-   asymmetrically in a way a tiny icon makes obvious. */
+/* The row's one disclosure control (D481) — a real `<button>` now, not a
+   `<summary>`, since there is no separate `<details>` open state left for it
+   to belong to (selecting the row IS opening its expansion). Icon-only, per
+   the icon-buttons pass: a plain inline-flex box, font/border/background
+   reset off the native button chrome, so the 16×16 SVG is the whole visible
+   control rather than sitting inside a browser-drawn button frame. Font size
+   matches the OLD `.am-bench-rowdetail` wrapper's own 11px — that wrapper is
+   gone (nothing left for it to wrap; the detail text moved into
+   `.am-bench-rowexpand-detail` below), but the button still sits at the same
+   scale beside the headline and delta it always has. */
 .am-bench-rowdetail-chevron {
   display: inline-flex;
   align-items: center;
-  list-style: none;
+  flex: 0 0 auto;
+  font-size: 11px;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
 }
 
-.am-bench-rowdetail-chevron::-webkit-details-marker {
-  display: none;
+.am-bench-rowdetail-chevron:hover {
+  color: var(--fg);
 }
 
-/* Rotated open rather than swapped for a second "collapse" glyph — the
-   `<details>` element already IS the open/closed state (MenuIcons.tsx's own
-   comment on `chevron`), so a second path would just be a second place that
-   state could get out of sync with what is actually shown. */
-.am-bench-rowdetail[open] > .am-bench-rowdetail-chevron {
+/* Rotated open rather than swapped for a second "collapse" glyph. Keyed off
+   `aria-expanded` itself — the accessibility attribute the button already
+   carries to say "open" or "closed" — rather than a parallel `.open` class:
+   a second, CSS-only flag next to the one the DOM already exposes is a
+   second place the two facts could disagree, which is the exact hazard this
+   whole rewrite (D481) exists to stop repeating. */
+.am-bench-rowdetail-chevron[aria-expanded="true"] {
   transform: rotate(90deg);
 }
 
-.am-bench-rowdetail > p {
-  margin: 4px 0 0;
+/* The detail text, now inside the row's full-width expansion rather than a
+   `<details>`'s own `<p>` — TTFT, load time, device, or a failed run's full
+   error text. Same typography as before the move: it is evidence for a row
+   whose headline already gave the answer, not something that needs to shout
+   once it is finally visible. */
+.am-bench-rowexpand-detail {
+  margin: 0 0 10px;
   max-width: 60ch;
   color: var(--fg-muted);
   white-space: pre-wrap;
+  font-size: 11px;
 }
 
 /* -- icon-only buttons: the spinner glyph's motion (SPEC AI-14) --------------
@@ -2474,23 +2479,36 @@
   min-width: 220px;
 }
 
-/* -- the trend instrument, and its two possible shapes -----------------------
-   INLINE now (D481): rendered as a plain flex child of `.am-bench-rows`,
-   directly after the one row whose model is `selectedModel` — not in its own
-   block below the whole leaderboard, which is where it used to live (and
-   where the boundary/heading rules that used to sit right here, since
-   deleted, were fighting to mark it as a new instrument rather than a
-   caption on the last row). At N models that block-below position put the
-   trend a full screen away from the click that changed it; a sibling of the
-   clicked row's own flex item needs none of that separating machinery —
-   `.am-bench-rows`'s own 6px `gap` already sits between it and its
-   neighbours the same way it sits between any two rows, and the accent
-   border below ties it to the row it hangs off instead. */
-.am-bench-trend-inline {
+/* -- the row's expansion: detail text, then the trend, one control (D481) --
+   A plain flex child of `.am-bench-rows`, directly after the one row whose
+   model is `selectedModel` — not in its own block below the whole
+   leaderboard, which is where the trend half used to live on its own. At N
+   models that block-below position put the trend a full screen away from
+   the click that changed it; a sibling of the clicked row's own flex item
+   needs none of the separating machinery that used to live right here (a
+   double head-gap, a border-top, its own heading) — `.am-bench-rows`'s own
+   6px `gap` already sits between it and its neighbours the same way it sits
+   between any two rows, and the accent border below ties it to the row it
+   hangs off instead.
+
+   **This one block now also carries the per-row detail/failure text that
+   used to open behind its OWN `<details>`, right inside the row's grid
+   cell.** The first pass at moving the trend inline left that `<details>`
+   in place beside the new trend expansion, which put two independent open
+   states on one row: a plain click selected the row and opened the trend
+   regardless, so the chevron read as pointless, and the trend had no
+   toggle of its own to explain why it was showing. One expansion, one
+   control fixes both — the row's chevron (`.am-bench-rowdetail-chevron`)
+   is this block's own disclosure now, `aria-expanded`/`aria-controls` tie
+   the two together explicitly, and "selected" and "open" are the same
+   fact instead of two that could drift apart. Detail text first
+   (`.am-bench-rowexpand-detail`), the trend after — the text explains what
+   the row's own headline had no room for, the chart elaborates on it. */
+.am-bench-rowexpand {
   /* Full row width for free: this is a SIBLING of `.am-bench-row`'s grid, not
      a cell inside it, so it never has to fight that row's
      `grid-template-columns` for room the chart needs in full. */
-  padding-left: 10px;
+  padding: 8px 0 4px 10px;
   /* The same ink `.am-bench-row.selected`'s own border already uses for
      "this is the one" — moved down onto the expansion it now owns, rather
      than a second, unrelated visual language invented for it. */

@@ -950,33 +950,62 @@ function CapabilitySection({
           )}
           {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
               with the action (Run, Details) the chart above has no room for.
-              Clicking a row (or focusing it and pressing Enter/Space) still
-              chooses which model INSTRUMENT THREE, the trend, is showing —
-              but that instrument now renders as a full-width sibling
-              directly after the clicked row itself (D481), not in a block
-              below the whole list. At N models the old position put the
-              trend a full screen away from row N's click: the thing that
-              visibly changed was off-screen, so the click read as doing
-              nothing. `.am-bench-rows` is already a flex column, so the
-              expansion is just one more child in it, rendered only for the
-              one row whose model equals `selectedModel` — "selected" already
-              means "exactly one" here, so there is nothing new to track. No
-              bar in the row itself any more — that was the SAME proportional
-              comparison the chart above now draws once, properly, with an
-              axis; two copies of one comparison was the duplicated ink this
-              replaces. */}
+              Clicking a row (or focusing it and pressing Enter/Space, or
+              pressing its own chevron button — see below) selects that
+              model, and selecting IS opening: the one full-width expansion
+              rendered as this row's sibling in `.am-bench-rows` holds BOTH
+              the per-run detail/failure text and INSTRUMENT THREE, the
+              trend, for whichever model is currently `selectedModel` (D481).
+
+              **One row, one open state — the second attempt at this.** The
+              first D481 pass left the trend expansion driven by selection
+              while the row's own `›` disclosure stayed a SEPARATE
+              `<details>` with its own open state and a `stopPropagation`
+              guard specifically so opening it did not select the row. That
+              put two independent expanders on one row: the chevron read as
+              purposeless once the trend appeared on a plain row click
+              regardless of it, and the trend expansion had no toggle
+              affordance of its own — exactly the "one row cannot carry two
+              unrelated open states" hazard D481 itself warns against,
+              reached from the other side. Now the chevron IS the row's
+              single disclosure control: it is a real `<button>`
+              (`am-bench-rowdetail-chevron`) carrying `aria-expanded` and
+              `aria-controls` rather than a `<details>`/`<summary>` pair, its
+              click is left to bubble to the row's own `onSelect` with no
+              guard at all (selecting is precisely what pressing it should
+              do), and what it points at is the same full-width sibling a
+              plain row click already opens — there is no second state to
+              keep in sync. At N models the trend's old position (a block
+              below the WHOLE list) put row N's click a full screen away from
+              the thing it changed; the sibling-of-the-row position fixes
+              that, and merging the two disclosures into one fixes the
+              "what's the dropdown for if the chart shows up anyway" report
+              the first attempt drew. */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
                 ? undefined
                 : runButtonState(capability, model, inFlight, row !== null);
+              // The one line beyond the headline — TTFT, load time, device,
+              // or a failed run's own error. Computed HERE, not inside
+              // `BenchmarkRow`, because the expansion that shows it is a
+              // sibling of the row in this same list, not a child of it —
+              // one calculation feeds both the row's chevron (whether to
+              // draw one at all) and the expansion's own content.
+              const detail = row
+                ? row.latest.ok
+                  ? rowDetail(row.latest, metric, expectedDevice)
+                  : failureReason(row.latest)
+                : null;
+              const expansionId = benchExpandId(model);
               return (
                 <Fragment key={model}>
                   <BenchmarkRow
                     model={model}
                     row={row}
                     metric={metric}
-                    expectedDevice={expectedDevice}
+                    detail={detail}
+                    expansionId={expansionId}
                     button={button}
                     busyText={model === busyModel ? busyText : null}
                     gone={gone.has(model)}
@@ -984,43 +1013,49 @@ function CapabilitySection({
                     onSelect={() => onSelectModel(model)}
                     onRun={() => onRun(model, capability)}
                   />
-                  {/* INSTRUMENT THREE, SECONDARY, INLINE (D481): one model's
-                      own history, a real time axis, rendered as a full-width
-                      sibling right after the row it belongs to — a plain flex
-                      child of `.am-bench-rows`, not a grid cell of the row
-                      above it, since the chart needs the whole row's width
-                      rather than whatever the row's own columns leave over.
-                      Drawn only for `selectedModel`'s own row — the row
-                      already names the model (its own headline, a few pixels
-                      up), so unlike the old block-below-the-list version this
-                      needs no title of its own repeating that name.
+                  {/* The row's single expansion (D481): full row width for
+                      free, since this is a SIBLING of `.am-bench-row`'s grid
+                      rather than a cell inside it — the trend chart needs
+                      the whole width, which is exactly what a `<details>`
+                      living in the row's own grid cell could never give it.
+                      Rendered only for `selectedModel`'s own row (selection
+                      IS the open state — nothing new to track), and only
+                      when it has anything to hold: `row !== null` is the
+                      SAME "has this model ever been benchmarked" fact that
+                      already sends a never-run model to "Never benchmarked"
+                      with no chevron below, and the `(detail || metric)`
+                      guard beside it is the belt-and-braces case where
+                      somehow neither a detail line nor a metric to trend
+                      survived — never open a block with nothing in it.
 
-                      Three shapes, not two. A single measured point is NOT a
-                      trend: it has no before to compare against, and drawing
-                      it in the same ~400px frame as a real chart was the
-                      actual bug (one dot, ~95% empty frame, the largest
-                      element on the page). So it gets its own compact state —
-                      the value stated plainly, at a fraction of the height —
-                      and only two-or-more points earn `ModelTrendChart`. Zero
-                      points (a model with runs, just none that measured THIS
-                      metric — a true "Never benchmarked" row has no trend
-                      state at all, see below) draws neither: a reader who
-                      picked a metric this model has no data for gets told so
-                      in words, never an empty axis. */}
-                  {model === selectedModel && metric && (
-                    <div className="am-bench-trend-inline">
-                      {trend === "trend" ? (
-                        <ModelTrendChart runs={trendRuns} metric={metric} />
-                      ) : trend === "single" ? (
-                        <div className="am-bench-trend-single">
-                          <span className="am-bench-trend-value">
-                            {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
-                          </span>
-                          <span className="am-bench-trend-note">one run · run again to see a trend</span>
-                        </div>
-                      ) : (
-                        <p className="am-group-note">No {metric.label.toLowerCase()} recorded for this model yet.</p>
-                      )}
+                      Detail first, then the trend: the text explains what
+                      this row's own headline didn't have room for, the
+                      chart elaborates on it with a real time axis. Three
+                      shapes for the trend half, not two — a single measured
+                      point is NOT a trend (no before to compare against, and
+                      drawing it in the same ~400px frame as a real chart was
+                      the actual bug: one dot, ~95% empty frame, the largest
+                      element on the page), so it gets its own compact state,
+                      and only two-or-more points earn `ModelTrendChart`.
+                      Zero points for THIS metric (the model has other runs,
+                      just none that measured it) says so in words rather
+                      than drawing an empty axis. */}
+                  {model === selectedModel && row !== null && (detail || metric) && (
+                    <div id={expansionId} className="am-bench-rowexpand">
+                      {detail && <p className="am-bench-rowexpand-detail">{detail}</p>}
+                      {metric &&
+                        (trend === "trend" ? (
+                          <ModelTrendChart runs={trendRuns} metric={metric} />
+                        ) : trend === "single" ? (
+                          <div className="am-bench-trend-single">
+                            <span className="am-bench-trend-value">
+                              {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
+                            </span>
+                            <span className="am-bench-trend-note">one run · run again to see a trend</span>
+                          </div>
+                        ) : (
+                          <p className="am-group-note">No {metric.label.toLowerCase()} recorded for this model yet.</p>
+                        ))}
                     </div>
                   )}
                 </Fragment>
@@ -1039,11 +1074,24 @@ function CapabilitySection({
   );
 }
 
+/** This row's full-width expansion sibling's own DOM id — needed so its
+ *  chevron button can point `aria-controls` at it. Sanitized rather than the
+ *  raw model id verbatim: a model id is a repo path ("org/name") and `/` (or
+ *  other punctuation a real id might carry) is not a legal `id` token in
+ *  every consumer of this string. Collisions are not a real risk — model ids
+ *  are already unique within one capability's leaderboard, and the
+ *  sanitizing regex only merges characters that were already distinct
+ *  punctuation, never two different alphanumeric runs. */
+function benchExpandId(model: string): string {
+  return `am-bench-expand-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
 function BenchmarkRow({
   model,
   row,
   metric,
-  expectedDevice,
+  detail,
+  expansionId,
   button,
   busyText,
   gone,
@@ -1056,10 +1104,21 @@ function BenchmarkRow({
   /** The SELECTED metric — what the headline reads. Decided in
    *  `BenchmarkTab`/`leaderboard`, never here. */
   metric: MetricSpec | null;
-  /** The device most of this section's OTHER models report — `rowDetail`
-   *  drops this row's own device when it matches, and keeps it when it
-   *  doesn't (`commonDevice`, lib/benchmark.ts). */
-  expectedDevice: string | null;
+  /** The one line beyond the headline — TTFT, load time, device, or a failed
+   *  run's own error. Computed by `CapabilitySection` (its `rowDetail`/
+   *  `expectedDevice` call), not here: the SAME string also opens inside
+   *  this row's full-width expansion sibling, and that element is a sibling
+   *  of this component's own return value, not a child of it — so the one
+   *  place that can hand it to both is the caller. `null` means this row's
+   *  whole story already fits the headline, which is what decides whether a
+   *  chevron is worth drawing at all. */
+  detail: string | null;
+  /** DOM id of this row's own expansion sibling in `.am-bench-rows`
+   *  (`benchExpandId`) — the chevron's `aria-controls` target. Only actually
+   *  points at something real while `selected` is true (that is the only
+   *  time the sibling exists at all), which is exactly when the button
+   *  supplies it below. */
+  expansionId: string;
   /** What the Run button says and whether it can be pressed — decided by
    *  `runButtonState`, never here: the rule about which run blocks which button
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
@@ -1072,30 +1131,26 @@ function BenchmarkRow({
   busyText?: string | null;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
-  /** This row is the one the inline trend expansion (D481) right below it is currently showing. */
+  /** This row is the one whose expansion (detail text + trend, D481) is open
+   *  right below it — selecting a model IS opening it, there is no separate
+   *  toggle state. */
   selected: boolean;
-  /** Choose this model for the trend chart — a click anywhere on the row, or
-   *  Enter/Space while it has focus. */
+  /** Choose this model — a click anywhere on the row, including its own
+   *  chevron button, or Enter/Space while the row (or the chevron) has
+   *  focus. Selecting opens this row's expansion below it; there is nothing
+   *  else for "select" to mean here any more. */
   onSelect: () => void;
   onRun?: () => void;
 }) {
-  // The one line beyond the headline — TTFT, load time, device, or a failed
-  // run's own error — behind an expander so it never dominates the row. Only
-  // drawn when there is something to say: a row whose whole story fits the
-  // headline gets no expander at all.
-  const detail = row
-    ? row.latest.ok
-      ? rowDetail(row.latest, metric, expectedDevice)
-      : failureReason(row.latest)
-    : null;
-
   return (
-    // A div-as-button, not a `<button>`: the Run button lives inside this row
-    // (the same shape the Playground's model cards settled on, D428) and a
-    // button inside a button is markup browsers are free to mangle. Clicking
-    // Run also selects the model for the trend chart — a harmless, arguably
-    // useful side effect (you are clearly interested in that model right
-    // now), so its own click is left to bubble here rather than stopped.
+    // A div-as-button, not a `<button>`: the Run and chevron buttons both
+    // live inside this row (the same shape the Playground's model cards
+    // settled on, D428) and a button inside a button is markup browsers are
+    // free to mangle. Clicking either one also selects this row and opens
+    // its expansion below — a harmless, arguably useful side effect for Run
+    // (you are clearly interested in that model right now) and precisely
+    // the point for the chevron (D481) — so both buttons' clicks are left to
+    // bubble here rather than stopped.
     <div
       className={"am-bench-row" + (selected ? " selected" : "")}
       role="button"
@@ -1150,31 +1205,38 @@ function BenchmarkRow({
                 {row.delta.percent.toFixed(1)}%
               </span>
             )}
-            {detail && (
-              <details
-                className="am-bench-rowdetail"
-                // A click inside the expander (opening it, or on the summary)
-                // is not a model selection — without this, opening "Details"
-                // on a row you did NOT mean to select would select it anyway.
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Icon-only, per the icon-buttons pass — but still a real
-                    `<summary>`, so the disclosure semantics (native toggle,
-                    keyboard, screen-reader "expanded/collapsed" state) are
-                    untouched. `aria-label`/`title` carry the exact words the
-                    icon replaced; `am-bench-rowdetail-chevron` is what rotates
-                    the glyph 90° on `[open]` (ai-models.css) rather than
-                    swapping to a second path. */}
-                <summary
-                  className="am-bench-rowdetail-chevron"
-                  aria-label={row.latest.ok ? "Details" : "Failed — details"}
-                  title={row.latest.ok ? "Details" : "Failed — details"}
-                >
-                  {MenuIcons.chevron}
-                </summary>
-                <p>{detail}</p>
-              </details>
-            )}
+            {/* This row's whole disclosure control, and the ONLY one it
+                has (D481). A real `<button>`, not a `<details>`/`<summary>`
+                pair: there is no separate open state to carry any more, so
+                there is nothing native disclosure semantics would be doing
+                here that plain `aria-expanded`/`aria-controls` do not do
+                just as well, explicitly. No `stopPropagation` — the button
+                is left to bubble its click up to the row's own `onClick`
+                exactly like the Run button below does, and that IS the
+                point now: pressing the chevron selects this row, which is
+                what opens the expansion it points at. Drawn for every row
+                with a history (this whole branch is `row !== null`) whether
+                or not `detail` itself has text, because the expansion below
+                can still hold a trend even when the detail line is empty —
+                `detail && …`, further down inside that expansion, is what
+                decides whether ITS text paragraph draws, not whether this
+                button does. `aria-controls` only names a real id while this
+                row is `selected` (`expansionId`), since that is the only
+                time the element it names actually exists to point at; the
+                glyph's 90° rotation is now keyed off `aria-expanded` itself
+                in ai-models.css, the one place this open/closed fact lives,
+                rather than a second class that could say something
+                different. */}
+            <button
+              type="button"
+              className="am-bench-rowdetail-chevron"
+              aria-label={row.latest.ok ? "Details" : "Failed — details"}
+              title={row.latest.ok ? "Details" : "Failed — details"}
+              aria-expanded={selected}
+              aria-controls={selected ? expansionId : undefined}
+            >
+              {MenuIcons.chevron}
+            </button>
           </>
         ) : (
           <span className="am-bench-never">Never benchmarked</span>
@@ -1183,10 +1245,11 @@ function BenchmarkRow({
       {!gone && button && (
         // No `stopPropagation` — see the row's own comment above. Pressing
         // Run bubbles its click up to the row's `onClick` too, which selects
-        // this model for the trend chart. That is a plain assignment
-        // (`onSelect` sets state to the same model `onRun` is about to run),
-        // not a toggle, so it cannot fight the button's `disabled` state —
-        // there is nothing here for the two handlers to disagree about.
+        // (and opens the expansion of) this model. That is a plain
+        // assignment (`onSelect` sets state to the same model `onRun` is
+        // about to run), not a toggle, so it cannot fight the button's
+        // `disabled` state — there is nothing here for the two handlers to
+        // disagree about.
         <button
           type="button"
           className="cc-iconbtn"
