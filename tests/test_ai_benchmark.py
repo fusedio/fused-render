@@ -17,6 +17,7 @@ would assert one thing here and another there.
 """
 import json
 import os
+import time
 import wave
 
 import types
@@ -884,6 +885,154 @@ def test_the_measurement_rows_title_never_collides_with_the_load_row(bench):
     model = "org/some-model"
     assert benchmark._bench_job_title(model) != model
     assert model in benchmark._bench_job_title(model)
+
+
+# -- code review findings: the heartbeat, cancellable capabilities, retrying a
+# -- failed cancel forward, the close()-time flush, and the queue rename ------
+#
+# A review of the job-row feature above raised eight findings; the ones
+# confirmed as real bugs are regression-tested here (see the code comments at
+# each fix site for the full reasoning this section only summarises). Every
+# test here that starts a real `_MeasurementRow` pins `_BENCH_ROW_POLL_S` to a
+# large number first, so the row's OWN background watcher thread cannot tick
+# during the test and race the manual `_poll_once()`/`close()` calls the test
+# is trying to observe deterministically.
+
+
+def test_an_unchanged_detail_still_advances_updated_at(bench, monkeypatch):
+    """The FIRST cut only wrote to the job when the detail string changed —
+    which meant `jobs.upsert` (and its unconditional `job.updated_at = now`)
+    was never even CALLED for a tick with nothing new to say. A single-call
+    embedding measurement (one `set_detail`, ever) or a long warm-up (none at
+    all) could then sit long enough to trip `jobs._sweep`'s `STALE_DROP_S`
+    (600s, no exemption for a RUNNING server row) with `updated_at` frozen at
+    whatever it was on the LAST change. `_poll_once` now restates the row in
+    full on every tick regardless, so `updated_at` moves even when nothing
+    the reader would call "new" happened."""
+    monkeypatch.setattr(benchmark, "_BENCH_ROW_POLL_S", 60.0)
+    wall = {"t": 1_700_000_000.0}
+    monkeypatch.setattr(time, "time", lambda: wall["t"])
+    row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
+    row.start()
+    try:
+        before = jobs.list_jobs()[0]["updated_at"]
+        wall["t"] += 1.0
+        # No `set_detail` call in between — the detail is UNCHANGED.
+        row._poll_once()
+        after = next(r for r in jobs.list_jobs() if r["id"] == row.job)["updated_at"]
+        assert after == pytest.approx(before + 1.0), (
+            "a tick with nothing new to say must still advance updated_at, or "
+            "jobs._sweep's STALE_DROP_S silently drops a long-running row"
+        )
+    finally:
+        row.close()
+
+
+def test_a_stale_but_untouched_row_is_not_dropped_by_the_sweep(bench, monkeypatch):
+    """The concrete failure this heartbeat prevents: without it, a row whose
+    detail never changed for `STALE_DROP_S` was `_forget`'n by `jobs._sweep`,
+    which also adds its id to `_dismissed` — after which every later report,
+    including `close()`'s own terminal one, is refused as a "late tick"
+    (`jobs.upsert` only reopens a dismissed id on a report that carries
+    `state: "running"`, which a bare `detail=` tick does not)."""
+    monkeypatch.setattr(benchmark, "_BENCH_ROW_POLL_S", 60.0)
+    wall = {"t": 1_700_000_000.0}
+    monkeypatch.setattr(time, "time", lambda: wall["t"])
+    row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
+    row.start()
+    try:
+        # From `start()`'s own report to the sweep below is comfortably more
+        # than STALE_DROP_S — the exact shape a long warm-up or a
+        # single-shot embedding measurement produces — but a heartbeat lands
+        # WELL INSIDE STALE_DROP_S of the sweep itself.
+        wall["t"] += jobs.STALE_DROP_S - 1.0
+        row._poll_once()  # the heartbeat — the only thing keeping this alive
+        wall["t"] += jobs.STALE_DROP_S - 1.0  # another window, still no change
+        with jobs._lock:
+            jobs._sweep(wall["t"])
+        assert row.job in jobs._jobs, (
+            "the row was forgotten despite a heartbeat well inside "
+            "STALE_DROP_S of the sweep — the restate-every-tick fix did not "
+            "reach jobs._sweep"
+        )
+    finally:
+        row.close()
+
+
+def test_embeddings_row_is_not_cancellable(bench, monkeypatch):
+    """Neither embedding runner (`mlx_embed`, `transformers_embed`) checks
+    `worker_base.CANCEL` — a single blocking `model.encode()` call has no
+    callback to check it from — so a ✕ on an embeddings row would be silently
+    ignored, the call would finish normally, and the run would be recorded
+    `ok:true` despite the user trying to stop it. The row must not offer a ✕
+    that does nothing."""
+    monkeypatch.setattr(benchmark.supervisor, "generate_embed",
+                        lambda model, body: (bench.advance(0.1),
+                                             {"vectors": [], "dim": 8})[1])
+    benchmark.run("some/embed-model", ai_registry.EMBEDDINGS)
+    rows = jobs.list_jobs()
+    assert len(rows) == 1
+    assert rows[0]["cancellable"] is False
+
+
+def test_text_image_and_speech_rows_stay_cancellable(bench, monkeypatch):
+    """The other three capabilities' workers DO check `worker_base.CANCEL`
+    (verified per runner — see `_CANCELLABLE_CAPABILITIES`'s own comment), so
+    their rows must keep advertising a ✕ that actually works."""
+    _text_run(bench, monkeypatch)
+    assert jobs.list_jobs()[0]["cancellable"] is True
+
+
+def test_a_failed_cancel_forward_is_retried_not_abandoned(bench, monkeypatch):
+    """`cancel_generation` returning False (no ready worker yet, or the
+    `/cancel` POST raising `OSError`) used to be read as "done" — `_poll_once`
+    returned True unconditionally after CALLING it, regardless of what it
+    returned — which stopped the watcher thread for good and froze the row's
+    detail for the rest of a multi-minute run, ✕ never actually honoured."""
+    monkeypatch.setattr(benchmark, "_BENCH_ROW_POLL_S", 60.0)
+    attempts = []
+
+    def cancel_generation(capability):
+        attempts.append(capability)
+        return len(attempts) >= 3  # fails twice, then finally reaches a worker
+
+    monkeypatch.setattr(benchmark.supervisor, "cancel_generation", cancel_generation)
+    row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
+    row.start()
+    try:
+        jobs.request_cancel(row.job)
+        assert row._poll_once() is False, "a failed forward must not read as done"
+        assert row._poll_once() is False
+        assert row._poll_once() is True, "the third attempt succeeds and should stop the watcher"
+        assert len(attempts) == 3
+    finally:
+        row.close()
+
+
+def test_close_flushes_detail_without_re_forwarding_a_stale_cancel(bench, monkeypatch):
+    """`cancel_requested` is server state that only a TERMINAL report clears
+    (`jobs.upsert`'s own rule) — so if the run finishes a beat after somebody
+    pressed the ✕ but before the watcher thread's next tick, `cancel_requested`
+    is still True when `close()` runs. The old `close()` flushed detail by
+    calling `_poll_once()` — the SAME method that forwards a cancel — which
+    would ask `cancel_generation` to stop whatever is CURRENTLY resident for
+    the capability, possibly an unrelated generation the user started the
+    instant this run ended. `close()` must flush detail only."""
+    monkeypatch.setattr(benchmark, "_BENCH_ROW_POLL_S", 60.0)
+    cancelled = []
+    monkeypatch.setattr(benchmark.supervisor, "cancel_generation",
+                        lambda capability: cancelled.append(capability) or True)
+    row = benchmark._MeasurementRow("some/text-model", ai_registry.TEXT_GENERATION)
+    row.start()
+    row.set_detail("Decoding — 100/128 tokens")
+    jobs.request_cancel(row.job)  # the ✕, pressed but never yet observed by a tick
+    row.close()  # the run ended on its own before the watcher saw it
+    assert cancelled == [], (
+        "close() forwarded a cancel to whatever is resident NOW, after the "
+        "run it belonged to was already over"
+    )
+    assert jobs.list_jobs()[0]["detail"] == "Decoding — 100/128 tokens"
+
 
 
 # -- cancellation is not a measurement ------------------------------------------

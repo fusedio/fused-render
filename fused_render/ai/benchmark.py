@@ -363,6 +363,24 @@ def _bench_job_title(model: str) -> str:
     return f"Benchmark · {model}"
 
 
+#: Capabilities whose WORKER actually watches `worker_base.CANCEL` mid-call, so
+#: a ✕ on this row can really stop them. Verified per runner, not assumed:
+#: `llama_text.py` (llamacpp-text/-vulkan) and `mlx_text/worker.py` check it
+#: between tokens, `torch_image.py` checks it in its per-step callback, and
+#: `faster_whisper`/`mlx_whisper` check it in their segment loop. The embedding
+#: runners (`mlx_embed`, `transformers_embed`) make ONE blocking
+#: `model.encode()` call with no callback to check anything from — a cancel
+#: request against one would sit unread until the call returns on its own,
+#: complete normally, and get recorded as `ok:true` for a run somebody tried to
+#: stop, which is the opposite of `Cancelled`'s whole guarantee. So an
+#: embeddings row advertises no ✕ at all rather than one that silently does
+#: nothing — the honest answer, not a race against how long `model.encode()`
+#: happens to take.
+_CANCELLABLE_CAPABILITIES = frozenset({
+    registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
+})
+
+
 class _MeasurementRow:
     """The job row `run()` opens once loading is done, for the MEASUREMENT
     phase only — the warm-up pass and the timed pass that follows it.
@@ -378,27 +396,46 @@ class _MeasurementRow:
 
     **The detail is never invented.** A measurement function calls
     `set_detail` with a CHEAP, already-formatted string as often as it likes —
-    text-generation does it every decoded token — and this class is what turns
-    that into an occasional job-row write instead of one HTTP-shaped update
-    per token: the watcher thread below only calls `_report` when the string
-    has actually changed, on its own `_BENCH_ROW_POLL_S` cadence, so a
-    measurement function's own hot loop pays for a lock and a string format
-    and nothing else. That is the whole answer to "must not perturb the
-    measurement" — `tokensPerSecond` is timed independently of how often this
-    class happens to publish, so a slower or faster row update cannot move it.
+    text-generation does it every decoded token — and `_poll_once` is what
+    turns that into an occasional job-row write instead of one HTTP-shaped
+    update per token: it runs on the watcher thread's own `_BENCH_ROW_POLL_S`
+    cadence, so a measurement function's own hot loop pays for a lock and a
+    string format and nothing else. That is the whole answer to "must not
+    perturb the measurement" — `tokensPerSecond` is timed independently of how
+    often this class happens to publish, so a slower or faster row update
+    cannot move it.
 
-    **The image and speech paths need no `set_detail` call at all**, because
-    `supervisor.generate_image`/`generate_transcript` already accept a `job`
-    id and the WORKER reports its own progress straight onto it
-    (`torch_image.py`'s `on_step_end` posts "Denoising — step N/steps" to
-    exactly this mechanism for every other queued render) — `_measure_image`
-    hands this row's own `job` to the call instead of a disposable one, and
-    the real step count arrives on the row for free, from the same channel a
-    Playground render already uses.
+    **`_poll_once` restates the row IN FULL on every tick, not only when the
+    detail changed.** The first cut only wrote when the string differed, which
+    left `updated_at` frozen for as long as the phase text did not change — a
+    single-call embed measurement (one `set_detail`, ever) or a slow warm-up
+    (no `set_detail` at all — see `run`) could sit long enough to trip
+    `jobs._sweep`'s `STALE_DROP_S` (600s), which drops a RUNNING row with no
+    exemption for `OWNER_SERVER` and, once dropped, adds the id to
+    `_dismissed` — after which `jobs.upsert` refuses every later tick as a
+    "late" one UNLESS it carries `state: "running"` again, so even this row's
+    own terminal report from `close()` would be silently swallowed and the ✕
+    would read as gone (`_cancel_state` returns None for a missing row).
+    Restating `title`/`state`/`cancellable` every tick is exactly what
+    `_wait_ready`/`_await_turn` already do for their own rows, and for the same
+    reason: it is what lets a tick both keep `updated_at` moving AND
+    re-create the row if it is ever evicted, rather than only preventing the
+    first.
+
+    **The image and speech paths need no `set_detail` call for their WORKER'S
+    progress**, because `supervisor.generate_image` already accepts a `job` id
+    and the WORKER reports its own straight onto it (`torch_image.py`'s
+    `on_step_end` posts "Denoising — step N/steps" to exactly this mechanism
+    for every other queued render) — `_measure_image` hands this row's own
+    `job` to that call instead of a disposable one, and the real step count
+    arrives on the row for free. Speech does NOT do this — see
+    `_measure_transcript`'s own comment for why handing this row's job to
+    `generate_transcript` would be actively wrong, not merely unnecessary.
 
     **The ✕ cancels COOPERATIVELY, through `supervisor.cancel_generation`,
-    never `unload`.** See `BenchmarkTab.tsx`'s header comment for what
-    `unload` broke the one time this app tried it for a benchmark's Stop
+    never `unload`, and ONLY where a worker can actually honour it**
+    (`_CANCELLABLE_CAPABILITIES`). See `BenchmarkTab.tsx`'s header comment for
+    what `unload` broke the one time this app tried it for a benchmark's Stop
     button: it tears down the worker PROCESS rather than asking it to set its
     own `cancelled` flag, so the held-open request sees the process vanish out
     from under it rather than a clean `cancelled: true` frame, and that lands
@@ -407,13 +444,18 @@ class _MeasurementRow:
     history must never contain. `cancel_generation` is the same channel the
     tab's own queue Stop button already uses, and it acts on whichever worker
     is resident for the capability — it does not need this row's job id at
-    all, only the fact that the ✕ was pressed.
+    all, only the fact that the ✕ was pressed. Its own `False` (no ready
+    worker, or the `/cancel` POST raising) is NOT treated as "done cancelling"
+    — `_poll_once` retries on the next tick rather than giving up, since a
+    watcher that stopped on the first transient failure would freeze the row
+    for the rest of a multi-minute run with the ✕ never actually honoured.
     """
 
     def __init__(self, model: str, capability: str) -> None:
         self._job = jobs.SERVER_ID_PREFIX + "ai-benchmark-" + uuid.uuid4().hex
         self._capability = capability
         self._title = _bench_job_title(model)
+        self._cancellable = capability in _CANCELLABLE_CAPABILITIES
         self._lock = threading.Lock()
         self._detail = "Measuring…"
         self._sent: str | None = None
@@ -422,8 +464,9 @@ class _MeasurementRow:
 
     @property
     def job(self) -> str:
-        """The `sys:`-prefixed id `generate_image`/`generate_transcript` can be
-        handed so the worker's own progress lands here instead of nowhere."""
+        """The `sys:`-prefixed id `generate_image` can be handed so the
+        worker's own progress lands here instead of nowhere. `_measure_transcript`
+        deliberately does NOT use this — see its own comment."""
         return self._job
 
     def set_detail(self, detail: str) -> None:
@@ -434,7 +477,8 @@ class _MeasurementRow:
 
     def start(self) -> None:
         supervisor._report(self._job, title=self._title, state="running",
-                           kind="task", cancellable=True, detail=self._detail)
+                           kind="task", cancellable=self._cancellable,
+                           detail=self._detail)
         self._sent = self._detail
         self._thread = threading.Thread(
             target=self._watch, daemon=True, name="ai-benchmark-row")
@@ -446,20 +490,47 @@ class _MeasurementRow:
                 return
 
     def _poll_once(self) -> bool:
-        """One tick: push a changed detail, then forward a pressed ✕. Returns
-        True once the ✕ has been forwarded (nothing left for the watcher
-        thread to do). Split out from `_watch` so a test can drive exactly one
-        tick directly, without waiting through `_BENCH_ROW_POLL_S` of real
-        wall clock to observe it."""
+        """One watcher tick: restate the row in FULL (see the class docstring
+        for why a changed-only write is not enough), then forward a pressed ✕
+        if this capability can actually honour one. Returns True only once a
+        forward has genuinely SUCCEEDED (`cancel_generation` returned True) —
+        a False (no ready worker yet, or the request failing) is retried on
+        the next tick rather than treated as done, which is what stopped a
+        transient failure from silently freezing the row. Split out from
+        `_watch` so a test can drive exactly one tick directly, without
+        waiting through `_BENCH_ROW_POLL_S` of real wall clock to observe it.
+        """
+        with self._lock:
+            detail = self._detail
+        supervisor._report(self._job, title=self._title, state="running",
+                           kind="task", cancellable=self._cancellable,
+                           detail=detail)
+        self._sent = detail
+        if not self._cancellable:
+            return False
+        if supervisor._cancel_requested(self._job):
+            return supervisor.cancel_generation(self._capability)
+        return False
+
+    def _flush_detail(self) -> None:
+        """Push the LAST detail synchronously — detail only, never a cancel
+        forward. Called from `close()`, after the run is already over: by then
+        `cancel_requested` may still read True (nothing but a terminal state
+        clears it — see `jobs.upsert`), and forwarding it here would ask
+        `cancel_generation` to stop whatever is CURRENTLY resident for this
+        capability, which by now could be an unrelated generation — a
+        Playground chat the user started the instant this run finished. Detail
+        only avoids that: a fast run (an embedding call answering in
+        milliseconds) can finish before the watcher thread's own
+        `_BENCH_ROW_POLL_S` cadence ever ticks, and without this the row would
+        sit on "Measuring…" its entire life even though `set_detail` recorded
+        a real phase.
+        """
         with self._lock:
             detail = self._detail
         if detail != self._sent:
             supervisor._report(self._job, detail=detail)
             self._sent = detail
-        if supervisor._cancel_requested(self._job):
-            supervisor.cancel_generation(self._capability)
-            return True
-        return False
 
     def close(self, failure: BaseException | None = None) -> None:
         """Stop watching and put a terminal state on the row. Reuses
@@ -469,12 +540,7 @@ class _MeasurementRow:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
-        # Flush the LAST detail synchronously: a fast run (an embedding call
-        # answering in milliseconds) can finish before the watcher thread's
-        # own `_BENCH_ROW_POLL_S` cadence ever ticks, and without this the row
-        # would sit on "Measuring…" its entire life even though `set_detail`
-        # recorded a real phase.
-        self._poll_once()
+        self._flush_detail()
         _close_any_row(self._job, failure)
 
 
