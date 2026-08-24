@@ -343,6 +343,7 @@ def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():
     assert set(formats.DIFFUSERS_RUNNERS) <= set(formats.DECISIVE)
     assert not _TEXT & set(formats.DECISIVE)
     assert set(formats.LLAMACPP_RUNNERS) <= set(formats.DECISIVE)
+    assert set(formats.TRANSFORMERS_EMBED_RUNNERS) <= set(formats.DECISIVE)
 
 
 def test_mflux_needs_the_variant_table_as_well_as_the_layout():
@@ -709,21 +710,28 @@ def _clip_config():
     return {"model_type": "clip"}
 
 
-def test_a_siglip_snapshot_resolves_to_both_embedding_runners():
+def test_a_siglip_snapshot_resolves_to_mlx_and_every_torch_embedding_runner():
+    """Renamed from "...resolves_to_both_embedding_runners": since the
+    accelerated torch rows landed there are FOUR engines that read a SigLIP
+    checkpoint, not two — `TRANSFORMERS_EMBED_RUNNERS` is `transformers-embed` plus its
+    CUDA and ROCm siblings, all three genuinely readable regardless of which
+    wheel happens to be installed on this machine, exactly the
+    `DIFFUSERS_RUNNERS` argument applied to embeddings."""
     codes = formats.loaders(
         repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
         dirnames=set(), config=_siglip_config(), torch_weights=True)
-    assert set(codes) == {"mlx-embed", "transformers-embed"}
+    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
 
 
-def test_a_clip_snapshot_resolves_to_transformers_embed_only():
+def test_a_clip_snapshot_resolves_to_the_torch_embedding_runners_only():
     """mlx-embeddings 0.1.x has a `siglip` module and no `clip` one
     (`MLX_EMBED_MODEL_TYPES`) — the one difference between the two families
-    this app treats identically everywhere else."""
+    this app treats identically everywhere else. All three torch builds still
+    apply, for `TRANSFORMERS_EMBED_RUNNERS`'s own reason."""
     codes = formats.loaders(
         repo_id="openai/clip-vit-base-patch32", names={"model.safetensors"},
         dirnames=set(), config=_clip_config(), torch_weights=True)
-    assert codes == ("transformers-embed",)
+    assert codes == formats.TRANSFORMERS_EMBED_RUNNERS
 
 
 def test_an_embed_config_with_no_torch_weights_loads_nowhere():
@@ -749,7 +757,7 @@ def test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners():
     # is the one runner left that reads a bare directory of safetensors, so a
     # family tuple would have nothing to hold together.
     assert "mlx-text" not in codes
-    assert set(codes) == {"mlx-embed", "transformers-embed"}
+    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
 
 
 def test_embed_model_type_is_case_and_whitespace_tolerant():
@@ -766,6 +774,8 @@ def test_embed_model_type_rejects_anything_else():
 def test_the_embed_codes_are_decisive():
     """A directory of safetensors says nothing about the modality on its own
     (`DECISIVE`'s own comment) — a `siglip`/`clip` config is what settles it,
-    exactly like a Parakeet NeMo target or an MLX whisper weights file."""
+    exactly like a Parakeet NeMo target or an MLX whisper weights file. Every
+    torch build is decisive, not just the CPU row, for `DIFFUSERS_RUNNERS`'s
+    own reason applied here."""
     assert "mlx-embed" in formats.DECISIVE
-    assert "transformers-embed" in formats.DECISIVE
+    assert set(formats.TRANSFORMERS_EMBED_RUNNERS) <= set(formats.DECISIVE)
