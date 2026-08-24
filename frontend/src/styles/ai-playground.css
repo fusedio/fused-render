@@ -765,6 +765,17 @@ a.pg-hero-repo:hover {
   background: rgba(var(--accent-rgb), 0.1);
 }
 
+/* The glyph turns one notch while the panel opens. 45deg and not some other
+   angle because the gear has eight lobes: the shape it RESTS in is identical to
+   the shape it left, so the turn is motion the eye catches and never a tilted
+   icon left behind. */
+.pg-cog svg {
+  transition: transform var(--pg-fold-in) cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.pg-cog.active svg {
+  transform: rotate(45deg);
+}
+
 /* The settings, as a narrow card of their own. A card and not a bare band
    because at anything but a phone width it sits BESIDE the column — the two
    centered together — and a floating stack of sliders with no edge would read
@@ -821,6 +832,14 @@ a.pg-hero-repo:hover {
      the full 240 back as soon as there is room for it. */
   --pg-card-min: 192px;
   --pg-card-max: 240px;
+  /* The fold's two durations. The exit is the shorter of the pair on purpose —
+     opening is the reveal and can afford to be seen, closing is a dismissal and
+     should be over. `--pg-fold-out` is mirrored by `CONFIG_EXIT_MS` in
+     controls.tsx, which is the timer that unmounts the card; the two have to
+     agree or the fade is cut off (too short) or an invisible card stays mounted
+     (too long). */
+  --pg-fold-in: 240ms;
+  --pg-fold-out: 160ms;
 }
 
 /* The card's actual width, resolved on the stage's CHILDREN rather than the
@@ -846,6 +865,20 @@ a.pg-hero-repo:hover {
    column by letting the column give up width; it no longer does, which is the
    price of never resizing the input. */
 @container (min-width: 920px) {
+  /* The closed column's own left edge, written as the LENGTH `margin: 0 auto`
+     resolves to. Only so it can be animated: `auto` is not an interpolable
+     value, so with the shorthand left in place the slide below would jump one
+     way and glide the other. Same expression as `.has-config`'s minus the
+     card's half-footprint, which is all the class does to it. */
+  .pg-work {
+    margin-left: calc((100cqw - 680px) / 2);
+    margin-right: 0;
+    /* Position for the exit rule at the end of this block, which anchors the
+       dying card against this box. */
+    position: relative;
+    transition: margin-left var(--pg-fold-in) cubic-bezier(0.2, 0.7, 0.3, 1);
+  }
+
   /* The work column slides left by HALF the card's footprint: what the pair
      gives up on the right it takes back on the left, so the PAIR is centered on
      the stage while the column stays the same 680px it was before the cog was
@@ -862,7 +895,13 @@ a.pg-hero-repo:hover {
        invariant this layout exists for: opening the panel never resizes the
        input. */
     width: calc(680px + var(--pg-gap) + var(--pg-card));
-    grid-template-columns: minmax(0, 1fr) var(--pg-card);
+    /* 680px, not `minmax(0, 1fr)`: `width` is NOT animated — only `margin-left`
+       is — but the class still flips it in one step, and a fractional first
+       track would resolve against whatever the box is at that moment. An
+       explicit track means the input measures 680px in every frame of the
+       slide, which is the invariant this whole layout exists for. Nothing is
+       lost: at this width the fraction resolved to 680px anyway. */
+    grid-template-columns: 680px var(--pg-card);
     column-gap: var(--pg-gap);
     /* So the rail below can take its grid area as a containing block. */
     position: relative;
@@ -896,6 +935,78 @@ a.pg-hero-repo:hover {
   .pg-work.has-config > .pg-config-card > .pg-config-inner {
     position: sticky;
     top: 0;
+  }
+
+  /* The card on its way OUT, after `has-config` has already come off: the rule
+     above no longer applies, so without this the card would fall back into the
+     flow and drop below the composer for the length of its own fade.
+
+     The numbers are chosen so the frame this rule takes over on is identical to
+     the frame the rule above drew: the box's width flips 680+gap+card → 680 in
+     the same step, so an offset of gap+card past the NEW right edge lands
+     exactly where the second track was. The card then travels with the column
+     as it glides back, which is the point — a card that held still while the
+     page slid out from under it would read as two animations, not one. */
+  .pg-work > .pg-config-card.is-closing {
+    position: absolute;
+    top: 0;
+    right: calc(-1 * (var(--pg-gap) + var(--pg-card)));
+    width: var(--pg-card);
+  }
+}
+
+/* The card's own fade. On the INNER box, not the rail: the rail is the
+   full-height track the card sticks inside, so animating it would slide the
+   scroll anchor rather than the thing being looked at. Both directions travel
+   the same 8px, so the card leaves the way it arrived. */
+.pg-config-inner {
+  animation: pg-fold-in var(--pg-fold-in) cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+.pg-config-card.is-closing {
+  /* A picture of a panel while it fades — a click landing on a control that is
+     already on its way out is a setting changed by accident. */
+  pointer-events: none;
+}
+
+.pg-config-card.is-closing > .pg-config-inner {
+  animation: pg-fold-out var(--pg-fold-out) ease-in both;
+}
+
+@keyframes pg-fold-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pg-fold-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+/* Asked for no motion: the fold still happens, it just happens at once. The
+   card's exit KEEPS its duration in JS — the unmount timer is what it is — so
+   the animation is dropped rather than zeroed, leaving the card in its final
+   state for those 160ms instead of flashing a frame of the keyframes. */
+@media (prefers-reduced-motion: reduce) {
+  .pg-work,
+  .pg-cog svg {
+    transition: none;
+  }
+  .pg-config-inner,
+  .pg-config-card.is-closing > .pg-config-inner {
+    animation: none;
   }
 }
 
