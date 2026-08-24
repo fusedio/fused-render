@@ -41,6 +41,34 @@ def test_ensure_app_rejects_foreign_interpreter(tmp_path):
         engine_host.ensure_app(str(app), "/definitely/not/a/real/python")
 
 
+def test_forward_timeout_is_a_504_and_never_heals(monkeypatch):
+    # A call that outruns its budget must become a 504 with the worker left
+    # intact — never a heal/restart (which would kill the still-running worker,
+    # its concurrent calls, and re-run main()).
+    import asyncio
+
+    from fused_render.server.routers import engines
+
+    child = engine_host.Child(
+        engine_id="app_timeouttest", python=sys.executable,
+        daemon=engine_host.APP_WORKER, cache="unused",
+        version=engine_host.APP_WORKER_VERSION, module="/tmp/x.py")
+    monkeypatch.setattr(engine_host, "current", lambda eid: child)
+    healed = []
+    monkeypatch.setattr(engine_host, "restart",
+                        lambda eid, failed=None: healed.append(eid) or child)
+
+    async def fake_proxy(c, request, path, body, call_timeout=None):
+        return engines._TIMEOUT
+
+    monkeypatch.setattr(engines, "_proxy", fake_proxy)
+
+    resp = asyncio.run(
+        engines._forward("app_timeouttest", None, "/call", b"{}", call_timeout=60.0))
+    assert resp.status_code == 504
+    assert healed == []  # the worker was never restarted
+
+
 def test_idle_reaper_skips_a_busy_engine(monkeypatch):
     # A call in flight (mark_busy) must stop idle-retire from killing the worker,
     # and mark_idle must refresh last_used so idle is timed from the call's end —

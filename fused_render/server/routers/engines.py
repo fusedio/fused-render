@@ -41,6 +41,11 @@ _PROXY_HEADERS = ("content-type", "cache-control")
 #: The browser abandoned the request mid-proxy; there is nobody to answer.
 _GONE = object()
 
+#: The call outran its per-call budget. Unlike _GONE/None, the child is alive and
+#: still running the call (a warm worker does not kill its own thread), so this is
+#: NOT a heal trigger and the call is never retried — it becomes a 504.
+_TIMEOUT = object()
+
 # Per-child idle-connection pool. Children speak HTTP/1.1 keep-alive, so a
 # connection is reused across calls instead of a fresh TCP connect+teardown per
 # request. Keyed by child.uid (unique per spawn); _drop_pool, registered as an
@@ -92,12 +97,16 @@ async def _client_hangup(request: Request) -> None:
 
 
 async def _proxy(child, request: Request, path: str, body: bytes,
-                 timeout: float | None = None):
+                 call_timeout: float | None = None):
     """Forward one request to the child. None when the child cannot be reached
     at all — the healing trigger; an HTTP error from a live child is an answer.
 
-    `timeout` overrides the per-method default (warm app /call passes the ~60s
-    /api/run budget rather than the long template-describe POST timeout).
+    `call_timeout` is a per-call budget applied at the await level (warm app
+    /call passes the ~60s /api/run budget). When it elapses the proxy stops
+    waiting and returns `_TIMEOUT`: the child is left running (it does not kill
+    its own thread, and concurrent calls on it must survive), so this neither
+    heals nor retries — the socket timeout below stays the connection-level
+    backstop, not the budget.
 
     A browser that pans/zooms away resolves _client_hangup, which closes the
     child connection: that frees the fetch thread here immediately and shows
@@ -105,8 +114,7 @@ async def _proxy(child, request: Request, path: str, body: bytes,
     urllib proxy parked a threadpool thread for up to the timeout per abandoned
     request — a viewport of those saturated the browser's six connections per
     origin and blocked every other tab."""
-    if timeout is None:
-        timeout = POST_TIMEOUT_S if request.method == "POST" else GET_TIMEOUT_S
+    timeout = POST_TIMEOUT_S if request.method == "POST" else GET_TIMEOUT_S
     separator = "&" if "?" in path else "?"
     target = f"{path}{separator}t={quote(child.token, safe='')}"
 
@@ -139,12 +147,19 @@ async def _proxy(child, request: Request, path: str, body: bytes,
         hangup_task = asyncio.ensure_future(_client_hangup(request))
         try:
             await asyncio.wait(
-                {fetch_task, hangup_task}, return_when=asyncio.FIRST_COMPLETED
+                {fetch_task, hangup_task}, timeout=call_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             if not fetch_task.done():
-                # shutdown(), not close(): the response's makefile() holds an io
-                # ref, so close() defers the real closesocket and the blocked
-                # recv (and the daemon's socket) would live on to the bitter end.
+                # The call is still running: the browser hung up, or (when a
+                # call_timeout is set and neither task finished) it blew its
+                # budget. Either way stop waiting and sever this socket so the
+                # blocked recv frees — shutdown(), not close(): the response's
+                # makefile() holds an io ref, so close() defers the real
+                # closesocket and the blocked recv (and the daemon's socket)
+                # would live on to the bitter end. The child keeps running its
+                # thread; we neither heal nor retry.
+                timed_out = not hangup_task.done()
                 sock = connection.sock
                 if sock is not None:
                     with contextlib.suppress(OSError):
@@ -152,7 +167,7 @@ async def _proxy(child, request: Request, path: str, body: bytes,
                 connection.close()
                 with contextlib.suppress(Exception):
                     await fetch_task
-                return _GONE
+                return _TIMEOUT if timed_out else _GONE
             answer, payload = fetch_task.result()
         except (OSError, http.client.HTTPException) as exc:
             connection.close()
@@ -179,13 +194,19 @@ async def _proxy(child, request: Request, path: str, body: bytes,
 
 
 async def _forward(engine_id: str, request: Request, path: str, body: bytes,
-                   timeout: float | None = None):
+                   call_timeout: float | None = None):
     child = engine_host.current(engine_id)
     if child is None:
         return _error(
             f"the {engine_id} engine is not running; register the layer again",
             status=409)
-    response = await _proxy(child, request, path, body, timeout)
+    response = await _proxy(child, request, path, body, call_timeout)
+    if response is _TIMEOUT:
+        # The call outran its budget on a reachable child — the executor's own
+        # answer to a slow run. Don't heal or retry (that would kill the still-
+        # running worker and re-run its main); surface a timeout, worker intact.
+        return _error(f"the {engine_id} call exceeded its "
+                      f"{call_timeout:g}s budget", status=504)
     if response is None:
         try:
             child = await asyncio.to_thread(engine_host.restart, engine_id, child)
@@ -195,9 +216,12 @@ async def _forward(engine_id: str, request: Request, path: str, body: bytes,
             return _error(
                 f"the {engine_id} engine is not running; register the layer again",
                 status=409)
-        response = await _proxy(child, request, path, body, timeout)
+        response = await _proxy(child, request, path, body, call_timeout)
     if response is _GONE:
         return Response(status_code=204)
+    if response is _TIMEOUT:
+        return _error(f"the {engine_id} call exceeded its "
+                      f"{call_timeout:g}s budget", status=504)
     if response is None:
         return _error(
             f"the {engine_id} engine did not answer, even after a restart",

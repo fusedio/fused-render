@@ -75,14 +75,16 @@ async def api_engine(request: Request, x_fused: str | None = Header(default=None
     # Forward to the worker's /call; it returns the /api/run envelope verbatim.
     # Mark the engine busy (by id, so a heal-restart mid-call still counts) to
     # keep the idle reaper from retiring it, and stamp last_used at completion so
-    # idle is timed from the call's end, not its start. APP_CALL_TIMEOUT_S caps a
-    # wedged main() at the /api/run budget rather than the long template timeout.
+    # idle is timed from the call's end, not its start. call_timeout bounds the
+    # wait at the /api/run budget: a slow call becomes a 504 with the worker left
+    # running (it does not kill its own thread), never a heal that would restart
+    # the worker, re-run main(), and kill the calls running concurrently on it.
     payload = json.dumps(params).encode("utf-8")
     engine_id = child.engine_id
     engine_host.mark_busy(engine_id)
     try:
         return await _forward(engine_id, request, "/call", payload,
-                              timeout=engine_host.APP_CALL_TIMEOUT_S)
+                              call_timeout=engine_host.APP_CALL_TIMEOUT_S)
     finally:
         engine_host.mark_idle(engine_id)
 
