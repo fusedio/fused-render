@@ -744,29 +744,13 @@ export default function PlaygroundTab() {
                   </div>
                 </div>
                 <CardAction className="flex flex-wrap items-center justify-end gap-2">
-                  {/* The playground's exit ramp: everything tried here is one
-                      `fused.ai` call in a page, and this hands the /apps
-                      composer an annotation naming the model and the tuned
-                      settings — shown as a chip, not dumped into the prompt
-                      box — so the user just types the app they want. */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    title="Open the app builder with this model and your settings pre-filled"
-                    onClick={() =>
-                      navigateUrl(
-                        "/apps?annot=" +
-                          encodeURIComponent(
-                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
-                          ),
-                      )
-                    }
-                  >
-                    <Sparkles data-icon="inline-start" />
-                    Build an app
-                  </Button>
+                  {/* The model's own lifecycle first (Download / progress /
+                      Load / Unload), the exit ramp last: the rightmost slot is
+                      the header's landing edge, and "Build an app" is where
+                      the whole playground points. All of them outline — one
+                      state cluster, one weight. */}
                   {!selected.model.downloaded && !selectedDownloading && (
-                    <Button size="sm" onClick={runDownload}>
+                    <Button variant="outline" size="sm" onClick={runDownload}>
                       Download{selectedSize ? ` (${selectedSize.text})` : ""}
                     </Button>
                   )}
@@ -812,6 +796,7 @@ export default function PlaygroundTab() {
                   )}
                   {selected.model.downloaded && !selectedResident && (
                     <Button
+                      variant="outline"
                       size="sm"
                       onClick={runLoad}
                       title="Optional — the first generation loads it too"
@@ -820,10 +805,31 @@ export default function PlaygroundTab() {
                     </Button>
                   )}
                   {selectedResident && selectedResident.state === "ready" && (
-                    <Button variant="secondary" size="sm" onClick={runUnload}>
+                    <Button variant="outline" size="sm" onClick={runUnload}>
                       Unload
                     </Button>
                   )}
+                  {/* The playground's exit ramp: everything tried here is one
+                      `fused.ai` call in a page, and this hands the /apps
+                      composer an annotation naming the model and the tuned
+                      settings — shown as a chip, not dumped into the prompt
+                      box — so the user just types the app they want. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    title="Open the app builder with this model and your settings pre-filled"
+                    onClick={() =>
+                      navigateUrl(
+                        "/apps?annot=" +
+                          encodeURIComponent(
+                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
+                          ),
+                      )
+                    }
+                  >
+                    <Sparkles data-icon="inline-start" />
+                    Build an app
+                  </Button>
                 </CardAction>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
