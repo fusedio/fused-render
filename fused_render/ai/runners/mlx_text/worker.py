@@ -6,7 +6,8 @@ a different interpreter, and the only contract between them is HTTP, which
 `worker_base` implements once for every runner:
 
     GET  /health    {state, model, detail, error, resident_bytes, loaded_at}
-    POST /generate  {messages|prompt, max_tokens, temperature, top_p} -> NDJSON
+    POST /generate  {messages|prompt, images, max_tokens, temperature, top_p}
+                    -> NDJSON
     POST /cancel    stop the generation in flight
     POST /quit      release the weights and exit
 
@@ -167,6 +168,14 @@ def load(model_id, path):
     model, processor = mlx_load(path, lazy=True)
     _loaded["model"] = model
     _loaded["processor"] = processor
+    # Stashed once, here, rather than re-read per request: `generate`'s image
+    # path needs it for `mlx_vlm.prompt_utils.apply_chat_template` (`num_images`
+    # is not enough on its own — the helper also reads the model's own
+    # `model_type` off this dict to pick its message format), and a request is
+    # not the place to be doing filesystem reads this load already paid for.
+    from mlx_vlm.utils import load_config
+
+    _loaded["config"] = load_config(path)
 
 
 def memory():
@@ -263,6 +272,22 @@ def _prompt_tokens(processor, text):
         return None
 
 
+def _unreadable_image(path):
+    """Why `path` cannot be sent to the model, or None.
+
+    Checked BEFORE anything below touches the model: mlx-vlm's own answer to a
+    missing file is a tensor-shape error raised deep inside the vision tower,
+    which names no path at all — exactly the kind of failure a caller cannot
+    act on. This names the path instead, the same discipline `/api/fs/pick-file`
+    and every route that reads a caller-supplied path already follows.
+    """
+    if not os.path.isfile(path):
+        return f"image not found: {path}"
+    if not os.access(path, os.R_OK):
+        return f"image not readable: {path}"
+    return None
+
+
 def generate(body, write):
     """Stream one completion as NDJSON: {chunk} lines, then {done}."""
     _pin_stream()
@@ -276,7 +301,39 @@ def generate(body, write):
         return
 
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
-    text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
+    # A list of absolute paths (`server/ai.py`'s `_images_problem` validates the
+    # shape before this ever runs) — a LIST rather than the single `image` the
+    # `/api/ai/image` route takes, because a VLM's chat template is told
+    # `num_images` and asking about two pictures at once is the ordinary case
+    # for this capability (unlike an edit, which has exactly one base image).
+    #
+    # **Images ride the CURRENT turn only.** `history` (server/ai.py) stays
+    # text-only by design — this worker never re-attaches an image to a prior
+    # turn — so a follow-up question about a picture already sent will not
+    # re-see it. That is a deliberate v1 boundary: multi-turn image memory would
+    # mean re-sending the placeholder tokens (and the pixels) on every turn of
+    # a growing history, which is a real design question this build does not
+    # answer, not an oversight in this one.
+    images = [p for p in (body.get("images") or []) if isinstance(p, str) and p]
+    if images:
+        for path in images:
+            problem = _unreadable_image(path)
+            if problem:
+                write({"type": "done", "ok": False, "error": problem})
+                return
+        # The ONE place mlx-vlm's own `apply_chat_template` is correct rather
+        # than a hazard (see `_messages_to_prompt`'s docstring): the image
+        # placeholder tokens it inserts into the prompt are what the model
+        # needs to know a picture is coming, and the tokenizer's own template
+        # has no notion of that at all. `config` is the dict `load()` stashed
+        # at load time — `model_type` out of it is how the helper picks this
+        # checkpoint's own message format (`prompt_utils.MODEL_CONFIG`).
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        config = _loaded.get("config") or {}
+        text = apply_chat_template(processor, config, messages, num_images=len(images))
+    else:
+        text = _messages_to_prompt(processor, messages, body.get("prompt") or "")
     max_tokens = int(body.get("max_tokens") or 1024)
     sampler = make_sampler(
         temp=float(body.get("temperature", 0.7)),
@@ -289,8 +346,8 @@ def generate(body, write):
 
     count = 0
     started = time.time()
-    for response in stream_generate(model, processor, text, max_tokens=max_tokens,
-                                    sampler=sampler):
+    for response in stream_generate(model, processor, text, image=images or None,
+                                    max_tokens=max_tokens, sampler=sampler):
         if worker_base.CANCEL.is_set():
             write({"type": "done", "ok": True, "cancelled": True, "tokens": count,
                    "input_tokens": prompt_tokens})

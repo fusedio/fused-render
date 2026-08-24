@@ -164,7 +164,10 @@ def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
 
     fake = types.ModuleType("mlx_vlm")
     fake.load = _load
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.load_config = lambda path: {"model_type": "qwen3_5"}
     monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
 
     worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
 
@@ -173,7 +176,8 @@ def test_a_working_environment_is_not_second_guessed(worker, monkeypatch):
     # eager loading materialises the vision tower a text-only chat never
     # touches (+0.67GB on Qwen3.5-4B), and `lazy=True` defers it to first use.
     assert loaded["lazy"] is True
-    assert worker._loaded == {"model": "MODEL", "processor": "PROCESSOR"}
+    assert worker._loaded == {"model": "MODEL", "processor": "PROCESSOR",
+                              "config": {"model_type": "qwen3_5"}}
 
 
 # -- what the prompt cost ------------------------------------------------------
@@ -276,8 +280,11 @@ def _fake_mlx_vlm(monkeypatch, responses=()):
     mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
     sample_utils = types.ModuleType("mlx_vlm.sample_utils")
     sample_utils.make_sampler = lambda **kw: object()
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.load_config = lambda path: {"model_type": "qwen3_5"}
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.sample_utils", sample_utils)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
 
 
 def test_the_load_and_the_generate_share_ONE_mlx_stream_PER_DEVICE(monkeypatch):
@@ -315,6 +322,111 @@ def test_the_load_and_the_generate_share_ONE_mlx_stream_PER_DEVICE(monkeypatch):
     # One stream per device for the whole process, not one per thread: a second
     # would be a second owner, which is the thing being prevented.
     assert sorted(mlx_core.made) == ["CPU", "GPU"], mlx_core.made
+
+
+# -- the image path (commit 3): a list of absolute paths on the CURRENT turn --
+
+
+def _fake_mlx_vlm_with_config(monkeypatch, config=None, responses=()):
+    """`_fake_mlx_vlm`, plus the two extra modules the image path reaches for:
+    `mlx_vlm.utils.load_config` (read once, at load time) and
+    `mlx_vlm.prompt_utils.apply_chat_template` (the ONE place mlx-vlm's own
+    template helper is correct — see `worker._messages_to_prompt`)."""
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.load = lambda path, lazy=False: ("MODEL", _ProcessorWrappingATokenizer())
+    mlx_vlm.stream_generate = lambda *a, **kw: iter(responses)
+    sample_utils = types.ModuleType("mlx_vlm.sample_utils")
+    sample_utils.make_sampler = lambda **kw: object()
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.load_config = lambda path: config if config is not None else {"model_type": "qwen3_5"}
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    calls = []
+
+    def _apply_chat_template(processor, config, messages, num_images=0, **kw):
+        calls.append({"processor": processor, "config": config, "messages": messages,
+                       "num_images": num_images})
+        return "TEMPLATED-PROMPT-WITH-IMAGE-TOKENS"
+
+    prompt_utils.apply_chat_template = _apply_chat_template
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.sample_utils", sample_utils)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+    return calls
+
+
+def test_load_stashes_the_config_for_the_image_path_to_reuse(worker, monkeypatch):
+    """Read ONCE at load time, not per request — `generate`'s image path needs
+    `model_type` off this dict for mlx-vlm's own template helper, and a request
+    is not where a filesystem read this load already paid for belongs."""
+    _fake_mlx_vlm_with_config(monkeypatch, config={"model_type": "gemma4"})
+
+    worker.load("mlx-community/gemma-4-4bit", "/snapshots/gemma")
+
+    assert worker._loaded["config"] == {"model_type": "gemma4"}
+
+
+def test_a_generation_with_no_images_is_the_text_path_exactly_unchanged(worker, monkeypatch):
+    """Empty/absent `images` must not touch `apply_chat_template` at all — the
+    text path is `_messages_to_prompt` and nothing else, byte-identical to
+    before this build."""
+
+    class _Response:
+        text = "hi"
+
+    calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate({"messages": [{"role": "user", "content": "hi"}]}, frames.append)
+
+    assert not calls, "the template helper must be untouched on the text-only path"
+    assert frames[-1]["ok"] is True
+
+
+def test_an_image_bearing_request_uses_mlx_vlms_own_template_helper(worker, monkeypatch, tmp_path):
+    """The ONE place `mlx_vlm.prompt_utils.apply_chat_template` is reached for
+    — its image placeholder tokens are the point, and `num_images` must match
+    the list's length exactly."""
+    photo = tmp_path / "cat.png"
+    photo.write_bytes(b"not a real png, just bytes on disk")
+
+    class _Response:
+        text = "a cat"
+
+    calls = _fake_mlx_vlm_with_config(monkeypatch, responses=[_Response()])
+    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}], "images": [str(photo)]},
+        frames.append)
+
+    assert len(calls) == 1
+    assert calls[0]["num_images"] == 1
+    assert calls[0]["config"] == {"model_type": "qwen3_5"}
+    assert frames[-1]["ok"] is True
+
+
+def test_a_missing_image_path_names_the_path_rather_than_crashing_in_the_model(
+        worker, monkeypatch, tmp_path):
+    """A tensor-shape error out of the vision tower names no path at all — this
+    is the check that stops a caller ever seeing one for a simple typo."""
+    missing = str(tmp_path / "does-not-exist.png")
+    calls = _fake_mlx_vlm_with_config(monkeypatch)
+    worker._loaded.update(model=object(), processor=_ProcessorWrappingATokenizer(),
+                          config={"model_type": "qwen3_5"})
+
+    frames = []
+    worker.generate(
+        {"messages": [{"role": "user", "content": "what is this?"}], "images": [missing]},
+        frames.append)
+
+    assert frames[-1]["ok"] is False
+    assert missing in frames[-1]["error"]
+    assert not calls, "a bad path must be caught before the model is ever asked"
 
 
 def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch):
