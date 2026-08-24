@@ -266,15 +266,42 @@ export function formatMetricSpecValue(value: number | null, spec: MetricSpec): s
  *  correctly for a higher-is-better metric under the ordinary "longer bar /
  *  bigger number wins" habit — labelling that case too would be noise that
  *  makes the one case actually worth flagging (a SHORTER bar winning) stop
- *  standing out. One badge, read by both instruments below it (the
- *  comparison chart and the per-model trend chart both invert the same way),
- *  rather than a copy of the same words drawn twice.
+ *  standing out. Said ONCE, where the metric is chosen — folded into the select's
+ *  own option text by `metricOptionLabel` and read from there by both
+ *  instruments below it (the comparison chart and the per-model trend chart
+ *  both invert the same way) rather than drawn again beside either. The share
+ *  card (`shareCard.ts`) calls this directly, since a PNG leaving this app has
+ *  no select to carry it.
  */
 export function metricUnitAndCue(metric: MetricSpec): string {
   const parts: string[] = [];
   if (metric.unit) parts.push(metric.unit);
   if (!metric.higherIsBetter) parts.push("lower is better");
   return parts.join(" · ");
+}
+
+/** One `<option>` in the Metric select: the metric's name with its unit and
+ *  direction cue in parentheses behind it — "Speed (× realtime)", "Peak memory
+ *  (lower is better)", "Throughput (tok/s)".
+ *
+ *  **This replaced a separate badge beside the select**, and the reason is the
+ *  transcription unit: `× realtime` is a multiplier SUFFIX, which parses only
+ *  when it trails a number ("1.4× realtime"). Alone in a bordered pill next to
+ *  a control it stops being a unit and becomes a stray operator — it read as
+ *  the dismiss ✕ of a removable filter chip, which is a shape this app uses
+ *  elsewhere for exactly that meaning (the Tasks filter pills). Inside the
+ *  option it is back to trailing words that give it a subject.
+ *
+ *  It also answers the metric whose unit is EMPTY: `Peak memory` formats
+ *  through the byte formatter and carries no unit string, so the badge there
+ *  drew a chip containing nothing but "lower is better".
+ *
+ *  A metric with neither a unit nor a cue (none today — every
+ *  higher-is-better metric here has a unit) gets no parenthetical rather than
+ *  an empty pair of brackets. */
+export function metricOptionLabel(metric: MetricSpec): string {
+  const suffix = metricUnitAndCue(metric);
+  return suffix ? `${metric.label} (${suffix})` : metric.label;
 }
 
 /** The primary metric as the page shows it — "42.1 tok/s", or a dash. */

@@ -92,7 +92,7 @@ import {
   formatPrimary,
   latestByModel,
   leaderboard,
-  metricUnitAndCue,
+  metricOptionLabel,
   middleEllipsis,
   orderCapabilities,
   primaryMetric,
@@ -721,22 +721,34 @@ function CapabilitySection({
           from — a select with zero options renders as an empty,
           clickable-looking box, and there is nothing honest for it to say.
 
-          The badge sits to the LEFT of the select and is unit + DIRECTION
-          only, never the metric's own name (the select already shows that) —
-          reading left to right it prefixes the choice ("tok/s ▾ Throughput")
-          rather than trailing it, which is also where the eye lands first now
-          that no "Metric" caption occupies that spot — `metricUnitAndCue`
-          (lib/benchmark.ts) states "lower is better" for exactly the metrics
-          where the ordinary "longer bar / bigger number wins" habit reads
-          backwards (Peak memory, Load time, …), and says nothing extra for
-          the metrics where that habit already reads right — labelling both
+          **The unit and the direction cue are IN the option text**
+          (`metricOptionLabel`, lib/benchmark.ts — "Speed (× realtime)", "Peak
+          memory (lower is better)"), not in a badge beside the select. Two
+          badges have now been tried and both failed on the same axis. Trailing
+          the select it was a third mark in a row that already holds an `<h3>`
+          and a Share button, saying nothing the control it followed could not
+          say itself. Moved to the LEFT of the select — where the "Metric"
+          caption used to be, so the row would read unit-then-choice — it broke
+          outright on transcription: `× realtime` is a multiplier SUFFIX, it
+          parses only when it trails a number ("1.4× realtime"), and alone in a
+          bordered pill beside a control it read as the dismiss ✕ of a
+          removable filter chip — a shape this app uses elsewhere for exactly
+          that (D448's Tasks filter pills). Inside the option the words have a
+          subject again, the empty-unit metric (`Peak memory` formats through
+          the byte formatter and has no unit string, so the pill there held
+          only "lower is better") stops being a special case, and the fact is
+          stated where the choice is made rather than beside it.
+
+          The CUE is one-sided on purpose: "lower is better" for exactly the
+          metrics where the ordinary "longer bar / bigger number wins" habit
+          reads backwards (Peak memory, Load time, …), nothing extra for the
+          metrics where that habit already reads right — labelling both
           directions everywhere would bury the one case actually worth
-          flagging. One badge, read by both instruments below (the comparison
-          chart's shorter-is-better bars and the trend chart's downward-is-
-          better line invert the same way), not a copy drawn twice — the old
-          per-model-name-plus-unit pill that used to live on the trend
-          heading below is GONE; a reader who has just picked a metric from
-          this select does not need it restated a few lines down. */}
+          flagging. Read by both instruments below (the comparison chart's
+          shorter-is-better bars and the trend chart's downward-is-better line
+          invert the same way), and still said only once: the old
+          per-model-name-plus-unit pill on the trend heading below is GONE
+          too. */}
       <div className="am-section-head am-bench-section-head">
         <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
         {/* The head's controls, as one group: the Metric select and — only
@@ -747,7 +759,6 @@ function CapabilitySection({
         <div className="am-bench-headtools">
           {metricSpecs.length > 0 && (
             <div className="am-bench-metricsel">
-              {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
               <select
                 id={`am-bench-metric-${capability}`}
                 className="field-control am-bench-capsel-input"
@@ -757,7 +768,7 @@ function CapabilitySection({
               >
                 {metricSpecs.map((spec) => (
                   <option key={spec.key} value={spec.key}>
-                    {spec.label}
+                    {metricOptionLabel(spec)}
                   </option>
                 ))}
               </select>
@@ -939,9 +950,9 @@ function CapabilitySection({
               than drawing an empty frame (see `trendKind` below).
 
               **Titled by the MODEL alone now** — no metric badge here any
-              more. The section head above already names the metric, right
-              beside the `<select>` that chose it (unit and direction cue
-              included, via `metricUnitAndCue`), and repeating it a few lines
+              more. The section head above already names the metric, in the
+              `<select>`'s own option text (unit and direction cue included,
+              via `metricOptionLabel`), and repeating it a few lines
               down was the exact "drawn twice" duplication that select's own
               move into this card was meant to end. A model with a card gone
               from disk (`gone`) still gets a title here: its history is

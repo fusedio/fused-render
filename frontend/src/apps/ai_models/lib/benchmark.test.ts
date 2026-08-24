@@ -20,6 +20,7 @@ import {
   formatRunTime,
   latestByModel,
   leaderboard,
+  metricOptionLabel,
   metricUnitAndCue,
   metricValueForSpec,
   middleEllipsis,
@@ -1232,9 +1233,39 @@ describe("metricUnitAndCue", () => {
     expect(metricUnitAndCue(MEMORY)).toBe("lower is better");
   });
 
-  it("never states the metric's own name — the select beside it already does", () => {
+  it("never states the metric's own name — `metricOptionLabel` is what pairs the two", () => {
     expect(metricUnitAndCue(REALTIME)).not.toContain("Speed");
     expect(metricUnitAndCue(MEMORY)).not.toContain("Peak memory");
+  });
+});
+
+describe("metricOptionLabel", () => {
+  // The whole reason the unit moved out of a badge and into the option text:
+  // "× realtime" is a multiplier SUFFIX and only parses trailing something.
+  // Alone in a pill beside the select it read as a filter chip's dismiss ✕.
+  it("gives the multiplier unit a subject to trail", () => {
+    expect(metricOptionLabel(REALTIME)).toBe("Speed (× realtime)");
+  });
+
+  it("carries the direction cue for a lower-is-better metric", () => {
+    expect(metricOptionLabel(DECODE_TIME)).toBe("Decode time (s · lower is better)");
+  });
+
+  // The badge's other bad case: a chip holding no unit at all, because peak
+  // memory's is dynamic (bytes through the platform formatter).
+  it("reads as a sentence for the metric with no unit of its own", () => {
+    expect(metricOptionLabel(MEMORY)).toBe("Peak memory (lower is better)");
+  });
+
+  it("never leaves empty brackets when a metric has neither unit nor cue", () => {
+    const bare: MetricSpec = { ...REALTIME, unit: "", higherIsBetter: true };
+    expect(metricOptionLabel(bare)).toBe(bare.label);
+  });
+
+  it("always starts with the metric's own name — it IS the option's label", () => {
+    for (const spec of availableMetrics("text-generation", [run()])) {
+      expect(metricOptionLabel(spec).startsWith(spec.label)).toBe(true);
+    }
   });
 });
 

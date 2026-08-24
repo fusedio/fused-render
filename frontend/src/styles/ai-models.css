@@ -1951,8 +1951,12 @@
    because IT chooses within a section the heading already named, not a
    sibling heading in its own right. Unlabelled on screen, like the capability
    select — an option's own text names the metric, so a "Metric" caption was
-   repeating it; what sits in that spot instead is the unit badge, moved to the
-   LEFT of the select so the row reads unit-then-choice. */
+   repeating it — and now UNBADGED as well: the unit and direction cue live
+   inside the option text (`metricOptionLabel`, lib/benchmark.ts), so this is a
+   one-child flex box today. It stays a flex box rather than becoming a bare
+   `<select>`: `.am-bench-headtools` above already spaces the head's controls,
+   and this wrapper is what keeps the select a group of its own if a per-metric
+   mark ever earns its place beside it again. */
 /* The section head's control group — the Metric select and the Share button.
    One flex group rather than two children of the head itself, so
    `.am-section-head`'s own `justify-content: space-between` keeps holding the
@@ -1990,23 +1994,6 @@
   align-items: baseline;
   gap: 8px;
   font-size: 12px;
-  color: var(--fg-muted);
-}
-
-/* The unit, and — for exactly the metrics where the ordinary "longer bar /
-   bigger number wins" habit reads backwards — the word that says so
-   (`metricUnitAndCue`, lib/benchmark.ts). A small badge rather than plain
-   text: it is metadata about the current selection, not a second heading, and
-   a pill face says so at a glance. Never the metric's own NAME — the select
-   right beside it already shows that. First in the row, ahead of the select,
-   so it prefixes the choice rather than trailing it. */
-.am-bench-metric {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  font-size: 11px;
   color: var(--fg-muted);
 }
 
@@ -2396,8 +2383,9 @@
    e.g. "Text generation", so a "Capability" label beside it repeated that);
    `aria-label` on the element (BenchmarkTab.tsx) keeps it named for assistive
    tech. Metric moved into each capability's own card below and is now
-   captionless too (`.am-bench-metricsel`, the unit badge to its left standing
-   where the caption was) — see BenchmarkTab.tsx for why native
+   captionless too (`.am-bench-metricsel`), carrying its unit and direction cue
+   inside its own option text rather than in a badge — see BenchmarkTab.tsx for
+   why native
    selects rather than a segmented control: this count of options does not
    earn a second control vocabulary on this page, and a THIRD control for the
    model picker is avoided entirely — a leaderboard row IS the model picker,
