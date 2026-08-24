@@ -368,8 +368,17 @@ export async function deliverShareCard(blob: Blob, filename: string): Promise<Sh
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  // Appended before the click, and removed right after: some browsers (most
+  // reliably Firefox) only honour a synthetic `.click()` on an anchor that is
+  // actually IN the document — a detached one is free to be silently ignored.
+  // The revoke is deferred a tick past that, not run synchronously right
+  // after `.click()`: revoking here raced the browser's own async read of the
+  // blob URL to start the save, which could win and leave `deliverShareCard`
+  // reporting "downloaded" for a save that never actually landed a file.
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
   return "downloaded";
 }
 
