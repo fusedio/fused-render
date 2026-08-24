@@ -426,30 +426,56 @@ export function IdentityChip({ name, title, onPick, active = false }: {
       <span className="schedule-tv-id" title={title || name}>{body}</span>
     );
   }
+  // A SHIELD around the tag, and the tag back at its own size (Akshil,
+  // 2026-08-24, final pass on this chip).
+  //
+  // The problem it solves is what the row does with the gap AROUND the pill. The
+  // row is one big stretched link, so the few pixels above, below and beside the
+  // chip belonged to the ROW: hovering them raised the task's title and clicking
+  // them opened the task — a click a pixel outside a filter chip navigating away
+  // is the worst possible outcome for a near-miss. Two earlier passes tried to
+  // fix it by growing the BUTTON to the row's full height, and both were wrong in
+  // the same way: `border-radius` draws on the padding box, so the hover wash
+  // grew with the target into a slab around an 11px word ("that is such a bad
+  // design and hover").
+  //
+  // So the two jobs are split across two elements. This span is the shield: it
+  // occupies the band, it sits above the stretched link so the link never
+  // receives a pointer there, and it does NOTHING — `title=""` stops the
+  // browser walking up to the row's tooltip, `cursor: default` says it is not a
+  // control, and `stopPropagation` covers the row's own click handler on the arm
+  // that has one. The button inside is the whole live target: its own size, its
+  // own wash, its own tooltip, its own press.
   return (
-    <button
-      type="button"
-      className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
-      // The tooltip says what the press DOES, on top of the path it already
-      // said: a chip that only ever labelled something gives the reader no
-      // reason to try clicking it. On an ON chip it says the opposite thing,
-      // because that is what the press now does.
-      //
-      // A NATIVE `title` (2026-08-24, third pass — it spent a day as the custom
-      // `[data-tip]` panel and came back). The panel drew displaced from the
-      // chip it captioned, which is worse than slow. Having a title OF ITS OWN
-      // is what fixes the bug from the screenshots: an element with none lets
-      // the browser walk up to the row's, so hovering this chip showed the
-      // task's name instead of the path.
-      title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
-      aria-pressed={active}
-      onClick={(e) => {
-        e.stopPropagation();
-        onPick();
-      }}
+    <span
+      className="schedule-tv-id-shield"
+      /* Empty, not absent: an element with no `title` lets the browser look up
+         the tree, and what it finds is the row's — the task's name over a band
+         the reader is not pointing at anything in. */
+      title=""
+      onClick={(e) => e.stopPropagation()}
     >
-      {body}
-    </button>
+      <button
+        type="button"
+        className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
+        // The tooltip says what the press DOES, on top of the path it already
+        // said: a chip that only ever labelled something gives the reader no
+        // reason to try clicking it. On an ON chip it says the opposite thing,
+        // because that is what the press now does.
+        //
+        // A NATIVE `title`, by owner call after the custom panel drew displaced
+        // from the chip it captioned. Having one OF ITS OWN is also what stops
+        // the walk up to the row's, which is what put the task's name here.
+        title={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+        aria-pressed={active}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPick();
+        }}
+      >
+        {body}
+      </button>
+    </span>
   );
 }
 

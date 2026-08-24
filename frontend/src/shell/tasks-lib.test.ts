@@ -6969,41 +6969,58 @@ describe("the folder chip as a filter tag", () => {
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("background: none");
     expect(body).toContain("cursor: pointer");
-    // THE BUTTON IS THE HIT AREA AND PAINTS NOTHING (2026-08-24, second pass).
-    // It was 3px of padding — a 17px target on a 36px row, so a pointer aimed at
-    // a folder name landed in the row's own padding and the ROW answered, with
-    // the task's title. Growing the padding fixed the aim and broke the look:
-    // `border-radius` draws on the padding box, so the wash became a 36px pill
-    // around an 11px word. So the box reaches the row's full height and the pill
-    // is drawn on the NAME instead.
-    //
-    // `align-self: stretch` + the row's own `--tasks-row-pad-y`, not a guessed
-    // number: the marks are three different heights, and a flat 7px left a ~4px
-    // strip of row along the top and bottom of each of them.
-    expect(body).toContain("align-self: stretch");
-    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
-    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
-    // Horizontally the 5px it always had, moved onto the name — so the ink has
-    // not shifted: -5px of margin on the button, +5px of padding on the name.
-    expect(body).toContain("margin-inline: -5px");
-    const pill = TASKS_CSS.slice(
-      TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag .schedule-tv-id-name {"),
-    );
-    const pillBody = pill.slice(0, pill.indexOf("}"));
-    expect(pillBody).toContain("padding: 3px 5px");
-    expect(pillBody).toContain("border-radius: 5px");
-    // …and the pill's own 3px must not grow the ROW: the button is stretched, so
-    // its hypothetical height is this element plus the button's padding, which
-    // made every row 39px instead of 36px until this went in.
-    expect(pillBody).toContain("margin-block: -3px");
-    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:focus-visible");
+    // THE PILL IS ITS OWN SIZE AGAIN (2026-08-24, final pass). Two passes tried
+    // to make this box the hit area by growing it to the row's full height, and
+    // both failed the same way: `border-radius` draws on the padding box, so the
+    // target and the WASH grew together into a slab around an 11px word — "that
+    // is such a bad design and hover … keep the tag/button size same". The
+    // enlarged target moved to the shield around it (next test).
+    expect(body).toContain("padding: 3px 5px");
+    expect(body).toContain("border-radius: 5px");
+    // …and its 3px must not grow the ROW: the shield is stretched, so the flex
+    // line is sized from this element plus the shield's box, which made every row
+    // 39px instead of 36px until this went in. Verified in the browser after: 36.
+    expect(body).toContain("margin-block: -3px");
+    // The wash and the focus ring are on the pill, not on a child — one box for
+    // the thing a reader sees, presses, and gets feedback from.
+    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:hover,");
+    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:focus-visible {");
+    expect(TASKS_CSS).not.toContain(".tasks-row .schedule-tv-id--tag:hover .schedule-tv-id-name");
   });
 
-  it("reaches the row's full height, like every other mark", () => {
-    // Akshil, 2026-08-24, after the first pass: "the hover area is still the same
-    // — if I am on a task edge below the button, it still hovers as the task title
-    // instead of the button path". Measured after: row 36px, and the scope mark,
-    // the chip, the count and the time each 36px with zero gap top and bottom.
+  it("puts a DEAD band around the pill, so a near-miss does nothing", () => {
+    // Akshil, 2026-08-24: "don't show the title or [be] clickable in that whole
+    // padding top bottom, and a little bit to the side as well … make that area
+    // unclickable and no hover as well, no tooltip on hover. But when I hover on
+    // the tag itself, that should be clickable and show me the folder [tooltip]."
+    //
+    // The band used to belong to the ROW, whose navigation is an <a> stretched
+    // over all of it — so a pointer a few pixels above a folder chip raised the
+    // TASK's tooltip, and a click there opened the task. The shield takes the
+    // band and does nothing with it.
+    expect(VIEWS).toContain('className="schedule-tv-id-shield"');
+    // `title=""`, not absent: an element with no title lets the browser walk up
+    // the tree, and what it finds is the row's.
+    const shieldJsx = VIEWS.slice(VIEWS.indexOf('className="schedule-tv-id-shield"'));
+    expect(shieldJsx.slice(0, shieldJsx.indexOf(">"))).toContain('title=""');
+    expect(VIEWS).toContain("onClick={(e) => e.stopPropagation()}");
+    const shield = block(TASKS_CSS, ".tasks-row .schedule-tv-id-shield");
+    expect(shield).toContain("cursor: default");
+    // Above the stretched link, which is what stops the click reaching the row.
+    expect(shield).toContain("z-index: 2");
+    expect(shield).toContain("align-self: stretch");
+    // The band is a pseudo-element rather than padding on the shield, so the pill
+    // still centres in the row; `z-index: -1` keeps it BEHIND the pill so the
+    // pill keeps its own hover, cursor and press.
+    const band = block(TASKS_CSS, ".tasks-row .schedule-tv-id-shield::after");
+    expect(band).toContain("top: calc(var(--tasks-row-pad-y) * -1)");
+    expect(band).toContain("bottom: calc(var(--tasks-row-pad-y) * -1)");
+    expect(band).toContain("z-index: -1");
+  });
+
+  it("leaves the other marks reaching the row's full height", () => {
+    // Those were never the complaint — "like you did for messages and time" — and
+    // they have no visual box, so a full-height target is invisible there.
     const marks = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-msgs,\n.tasks-row-time,"));
     const body = marks.slice(0, marks.indexOf("}"));
     expect(body).toContain("align-self: stretch");
