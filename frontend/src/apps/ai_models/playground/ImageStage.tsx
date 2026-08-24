@@ -33,6 +33,7 @@ import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platfo
 import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Input } from "@platform/shadcn/ui/input";
+import { Card } from "@platform/shadcn/ui/card";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -690,6 +691,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(5)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
@@ -882,6 +884,87 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       )}
 
       {/* Chips lead the panel; sliders and the seed follow. */}
+
+      {error && <p className="pg-error">{error}</p>}
+
+        {!run ? (
+          <ResultSlot
+            label="Result"
+            capability="text-to-image"
+            note={
+              base
+                ? "The edited picture appears here. Describe the change above, then Generate."
+                : "Your picture appears here. Describe one above, then Generate."
+            }
+          />
+        ) : (
+          <div className="pg-answer-block">
+          <p className="pg-answer-label">Result</p>
+          <figure className="pg-image-result">
+            {run.done && run.readFailed ? (
+              // `watchJob` said done (including a `gone` it reads as done —
+              // see the `Run.readFailed` comment) but the file this <img>
+              // asked for does not actually exist. Say that plainly rather
+              // than leaving a broken-image icon and a save link to nothing.
+              <div className="pg-image-frame" style={shot}>
+                <p className="pg-image-readfailed">
+                  The image could not be read back — the render may have been
+                  interrupted.
+                </p>
+              </div>
+            ) : run.done ? (
+              <div className="pg-image-frame" style={shot}>
+                <img
+                  src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
+                  alt={run.started.prompt}
+                  onError={() =>
+                    setRun((r) =>
+                      r && r.started.jobId === run.started.jobId ? { ...r, readFailed: true } : r,
+                    )
+                  }
+                />
+                {/* A download link, not a clipboard write: ClipboardItem takes
+                    image/png only and the render's format is unknown here. */}
+                <a
+                  className="pg-copy-btn pg-image-save"
+                  href={rawUrl(run.started.path)}
+                  download={run.started.path.split("/").pop() || "picture.png"}
+                  title="Save this picture"
+                  aria-label="Save this picture"
+                >
+                  {MenuIcons.download}
+                </a>
+              </div>
+            ) : (
+              <div className="pg-image-frame" style={shot}>
+                <img
+                  src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
+                  alt="Render in progress"
+                  style={previewLive ? undefined : { display: "none" }}
+                  onLoad={() => setPreviewLive(true)}
+                  onError={() => setPreviewLive(false)}
+                />
+                {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
+              </div>
+            )}
+            {/* Progress only. The settled parameters were dropped by request,
+                and D429's seed-reuse button with them: an invented seed is now
+                surfaced nowhere, so a random render cannot be reproduced. */}
+            {busy && (
+              <figcaption className="pg-image-caption">
+                <span>{job?.detail || "Starting — a cold model loads first…"}</span>
+                {pct !== null && (
+                  <span className="pg-bar">
+                    <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
+                  </span>
+                )}
+              </figcaption>
+            )}
+          </figure>
+          </div>
+        )}
+      </Card>
+
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         <div className="pg-config-chips">
           {/* Hidden, not disabled, while the attached image decides the size:
@@ -991,85 +1074,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           />
         </RailField>
       </ConfigPanel>
-
-      {error && <p className="pg-error">{error}</p>}
-
-        {!run ? (
-          <ResultSlot
-            label="Result"
-            capability="text-to-image"
-            note={
-              base
-                ? "The edited picture appears here. Describe the change above, then Generate."
-                : "Your picture appears here. Describe one above, then Generate."
-            }
-          />
-        ) : (
-          <div className="pg-answer-block">
-          <p className="pg-answer-label">Result</p>
-          <figure className="pg-image-result">
-            {run.done && run.readFailed ? (
-              // `watchJob` said done (including a `gone` it reads as done —
-              // see the `Run.readFailed` comment) but the file this <img>
-              // asked for does not actually exist. Say that plainly rather
-              // than leaving a broken-image icon and a save link to nothing.
-              <div className="pg-image-frame" style={shot}>
-                <p className="pg-image-readfailed">
-                  The image could not be read back — the render may have been
-                  interrupted.
-                </p>
-              </div>
-            ) : run.done ? (
-              <div className="pg-image-frame" style={shot}>
-                <img
-                  src={rawUrl(run.started.path) + "&t=" + run.started.jobId}
-                  alt={run.started.prompt}
-                  onError={() =>
-                    setRun((r) =>
-                      r && r.started.jobId === run.started.jobId ? { ...r, readFailed: true } : r,
-                    )
-                  }
-                />
-                {/* A download link, not a clipboard write: ClipboardItem takes
-                    image/png only and the render's format is unknown here. */}
-                <a
-                  className="pg-copy-btn pg-image-save"
-                  href={rawUrl(run.started.path)}
-                  download={run.started.path.split("/").pop() || "picture.png"}
-                  title="Save this picture"
-                  aria-label="Save this picture"
-                >
-                  {MenuIcons.download}
-                </a>
-              </div>
-            ) : (
-              <div className="pg-image-frame" style={shot}>
-                <img
-                  src={rawUrl(run.started.previewPath) + "&t=" + previewTick}
-                  alt="Render in progress"
-                  style={previewLive ? undefined : { display: "none" }}
-                  onLoad={() => setPreviewLive(true)}
-                  onError={() => setPreviewLive(false)}
-                />
-                {!previewLive && <div className="pg-image-wait" aria-hidden="true" />}
-              </div>
-            )}
-            {/* Progress only. The settled parameters were dropped by request,
-                and D429's seed-reuse button with them: an invented seed is now
-                surfaced nowhere, so a random render cannot be reproduced. */}
-            {busy && (
-              <figcaption className="pg-image-caption">
-                <span>{job?.detail || "Starting — a cold model loads first…"}</span>
-                {pct !== null && (
-                  <span className="pg-bar">
-                    <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                  </span>
-                )}
-              </figcaption>
-            )}
-          </figure>
-          </div>
-        )}
     </div>
   );
 }

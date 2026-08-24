@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, withModelReady } from "./client";
 import { Textarea } from "@platform/shadcn/ui/textarea";
+import { Card } from "@platform/shadcn/ui/card";
 import { useConfigOpen, ConfigPanel, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
@@ -231,6 +232,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
 
   return (
     <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(5)]">
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader
@@ -274,17 +276,6 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
           </div>
         </div>
 
-        <ConfigPanel open={configOpen} animated={configTouched.current}>
-          <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
-            <Textarea
-              className="min-h-0 resize-y text-xs leading-relaxed"
-              rows={7}
-              value={lines}
-              placeholder="One line per entry"
-              onChange={(e) => setLines(e.target.value)}
-            />
-          </RailField>
-        </ConfigPanel>
 
         {/* Until there is a ranking to read, the examples. Each one sets both
             halves of the scenario and runs it — see `run`'s arguments. */}
@@ -334,6 +325,19 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
             note="The lines come back here, ordered by how close they are to the query."
           />
         )}
+      </Card>
+
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
+        <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
+          <Textarea
+            className="min-h-0 resize-y text-xs leading-relaxed"
+            rows={7}
+            value={lines}
+            placeholder="One line per entry"
+            onChange={(e) => setLines(e.target.value)}
+          />
+        </RailField>
+      </ConfigPanel>
     </div>
   );
 }

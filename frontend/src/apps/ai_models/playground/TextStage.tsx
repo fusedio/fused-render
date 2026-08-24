@@ -23,6 +23,7 @@ import {
 import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
 import { Textarea } from "@platform/shadcn/ui/textarea";
+import { Card } from "@platform/shadcn/ui/card";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -265,6 +266,7 @@ export function TextStage({
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(5)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
@@ -332,6 +334,44 @@ export function TextStage({
       )}
 
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
+
+      {status && <p className="pg-status">{status}</p>}
+      {error && <p className="pg-error">{error}</p>}
+
+      {!(reply && shown) ? (
+        <ResultSlot
+          label="Response"
+          capability="text-generation"
+          note="The reply appears here. Ask something above, then Run."
+        />
+      ) : (
+        <div className="pg-answer-block">
+          <p className="pg-answer-label">Response</p>
+          <div className="pg-answer">
+          {!reply.pending && reply.text && (
+            <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
+          )}
+          {shown.think !== null && (
+            <details className="pg-think">
+              <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
+              <div className="pg-think-body">{shown.think}</div>
+            </details>
+          )}
+          {shown.answer ? (
+            renderMarkdown(shown.answer)
+          ) : reply.pending && !shown.thinking ? (
+            <span className="pg-cursor" aria-label="Generating" />
+          ) : null}
+          {!reply.pending && stats && (
+            <div className="pg-turn-foot">
+              <span>{stats}</span>
+            </div>
+          )}
+          </div>
+        </div>
+      )}
+      </Card>
+
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Temperature"
@@ -380,42 +420,6 @@ export function TextStage({
           onChange={setTopP}
         />
       </ConfigPanel>
-
-      {status && <p className="pg-status">{status}</p>}
-      {error && <p className="pg-error">{error}</p>}
-
-      {!(reply && shown) ? (
-        <ResultSlot
-          label="Response"
-          capability="text-generation"
-          note="The reply appears here. Ask something above, then Run."
-        />
-      ) : (
-        <div className="pg-answer-block">
-          <p className="pg-answer-label">Response</p>
-          <div className="pg-answer">
-          {!reply.pending && reply.text && (
-            <CopyButton text={shown.answer || reply.text} label="Copy the reply" />
-          )}
-          {shown.think !== null && (
-            <details className="pg-think">
-              <summary>{shown.thinking ? "Thinking…" : "Thought process"}</summary>
-              <div className="pg-think-body">{shown.think}</div>
-            </details>
-          )}
-          {shown.answer ? (
-            renderMarkdown(shown.answer)
-          ) : reply.pending && !shown.thinking ? (
-            <span className="pg-cursor" aria-label="Generating" />
-          ) : null}
-          {!reply.pending && stats && (
-            <div className="pg-turn-foot">
-              <span>{stats}</span>
-            </div>
-          )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

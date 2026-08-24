@@ -19,6 +19,7 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
+import { Card } from "@platform/shadcn/ui/card";
 import {
   ConfigPanel,
   useConfigOpen,
@@ -248,6 +249,7 @@ export function VideoStage({
 
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
+      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(5)]">
       {/* The action, and the way to the settings. The hero card above names
           the model and its state. */}
       <StageHeader
@@ -316,60 +318,6 @@ export function VideoStage({
       {/* Every knob is behind the cog; the surface above is prompt and
           Generate. The four sliders in the order a render is thought about:
           how big, how long, how carefully — then the seed. */}
-      <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <RailSlider
-          label="Width"
-          hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={width}
-          fallback={DEFAULTS.width}
-          onChange={setWidth}
-        />
-        <RailSlider
-          label="Height"
-          hint="Bigger is slower and needs more memory."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={height}
-          fallback={DEFAULTS.height}
-          onChange={setHeight}
-        />
-        <RailSlider
-          label="Frames"
-          hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
-          min={framesRange[0]}
-          max={framesRange[1]}
-          step={engineTraits.framesStep}
-          value={frames}
-          fallback={engineTraits.defaultFrames}
-          onChange={setFrames}
-        />
-        <RailSlider
-          label="Steps"
-          hint="Denoising passes — more is slower and usually cleaner."
-          min={STEPS_RANGE[0]}
-          max={STEPS_RANGE[1]}
-          step={1}
-          value={steps}
-          fallback={modelSteps}
-          onChange={setSteps}
-        />
-        <RailField
-          label="Seed"
-          hint="Same seed + same prompt + same settings = the same video."
-        >
-          <Input
-            type="text"
-            inputMode="numeric"
-            value={seed}
-            placeholder="Random each time"
-            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
-          />
-        </RailField>
-      </ConfigPanel>
 
       {error && <p className="pg-error">{error}</p>}
 
@@ -462,6 +410,62 @@ export function VideoStage({
           ))}
         </div>
       )}
+      </Card>
+
+      <ConfigPanel open={configOpen} animated={configTouched.current}>
+        <RailSlider
+          label="Width"
+          hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={32}
+          value={width}
+          fallback={DEFAULTS.width}
+          onChange={setWidth}
+        />
+        <RailSlider
+          label="Height"
+          hint="Bigger is slower and needs more memory."
+          min={SIZE_RANGE[0]}
+          max={SIZE_RANGE[1]}
+          step={32}
+          value={height}
+          fallback={DEFAULTS.height}
+          onChange={setHeight}
+        />
+        <RailSlider
+          label="Frames"
+          hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
+          min={framesRange[0]}
+          max={framesRange[1]}
+          step={engineTraits.framesStep}
+          value={frames}
+          fallback={engineTraits.defaultFrames}
+          onChange={setFrames}
+        />
+        <RailSlider
+          label="Steps"
+          hint="Denoising passes — more is slower and usually cleaner."
+          min={STEPS_RANGE[0]}
+          max={STEPS_RANGE[1]}
+          step={1}
+          value={steps}
+          fallback={modelSteps}
+          onChange={setSteps}
+        />
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same video."
+        >
+          <Input
+            type="text"
+            inputMode="numeric"
+            value={seed}
+            placeholder="Random each time"
+            onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
+          />
+        </RailField>
+      </ConfigPanel>
     </div>
   );
 }
