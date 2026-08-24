@@ -284,6 +284,7 @@
   let viewerKind = "";         // classification the viewer was built for (haov/etc)
   let renderSeq = 0;           // stale-response guard
   let lastView = null;         // {path,w,h,ms,cached} of current converted view
+  let openFailed = false;      // pano.py's open() rejected — no meta is ever coming
 
   const $ = (id) => document.getElementById(id);
   const els = {
@@ -564,7 +565,16 @@
 
   function draw() {
     renderModes(); renderControls();
-    if (!meta) { destroyViewer(); show("empty"); emptyMsg.textContent = "No file selected";
+    if (!meta) {
+      // fused.params.onChange(draw) is registered before pano.py's open() call
+      // settles, so a param change (mode keys, etc.) during that window reaches
+      // here with meta still null. If open() is only pending, the optimistic
+      // view360 sphere (or the skeleton, for other modes) already covers the
+      // screen correctly — leave it alone rather than tearing it down and
+      // flashing "No file selected" for the rest of the wait. Only the true
+      // empty state (open() rejected outright) should actually blank the view.
+      if (!openFailed) return;
+      destroyViewer(); show("empty"); emptyMsg.textContent = "No file selected";
       els.warn.style.display = "none"; els.stAsset.textContent = ""; setViewStatus("", ""); return; }
     els.stAsset.textContent =
       `${meta.name} · ${meta.width}×${meta.height} · ${meta.format} · ${KIND_LABEL[meta.kind] || meta.kind}`;
@@ -637,6 +647,7 @@
   } catch (err) {
     busy(false);
     skeleton(false);
+    openFailed = true;
     toast(`failed to load image: ${err.message}`, true);
     draw();
   }
