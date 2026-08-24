@@ -28,7 +28,7 @@ import { expect, test } from "bun:test";
 };
 
 // Dynamic, so the shim above is in place before the module graph evaluates.
-const { ModelLoading, watchJob, withModelReady } = await import("./client");
+const { ModelLoading, streamChat, watchJob, withModelReady } = await import("./client");
 import type { Job } from "@platform/lib/jobs";
 
 const JOB: Job = {
@@ -268,4 +268,85 @@ test("a load stopped from the Activity panel ends the call", async () => {
 
 test("any other failure is the caller's, untouched", async () => {
   await expect(dance(["boom"])).rejects.toThrow("the model process did not answer");
+});
+
+// -- streamChat's images: AI-11j's text-stage half ----------------------------
+
+/** A minimal `Response.body`-shaped fake: one `read()` per NDJSON line, then
+ *  done — enough for `streamChat`'s reader loop, without a real ReadableStream. */
+function fakeBody(lines: string[]) {
+  let at = 0;
+  const encoder = new TextEncoder();
+  return {
+    getReader() {
+      return {
+        read: async () => {
+          if (at >= lines.length) return { done: true, value: undefined };
+          return { done: false, value: encoder.encode(lines[at++]) };
+        },
+      };
+    },
+  };
+}
+
+test("streamChat sends images in the request body", async () => {
+  let sentBody: Record<string, unknown> | null = null;
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (_url: string, init: RequestInit) => {
+    sentBody = JSON.parse(init.body as string);
+    return {
+      ok: true,
+      body: fakeBody([
+        '{"type":"chunk","text":"a cat"}\n',
+        '{"type":"done","ok":true,"result":{"text":"a cat","model":"m","usage":null}}\n',
+      ]),
+    };
+  };
+  try {
+    const result = await streamChat({
+      model: "m",
+      prompt: "what is this?",
+      history: [],
+      settings: {},
+      images: ["/Users/x/photo.png"],
+      signal: new AbortController().signal,
+      onChunk: () => {},
+    });
+    expect(result.text).toBe("a cat");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(sentBody).not.toBeNull();
+  expect(sentBody!.images).toEqual(["/Users/x/photo.png"]);
+});
+
+test("streamChat omits images entirely when none are attached", async () => {
+  // Optional, and left off the body rather than sent empty — matching the
+  // worker's own "absent/empty is today's text path, unchanged" contract
+  // (mlx_text/worker.py).
+  let sentBody: Record<string, unknown> | null = null;
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (_url: string, init: RequestInit) => {
+    sentBody = JSON.parse(init.body as string);
+    return {
+      ok: true,
+      body: fakeBody([
+        '{"type":"done","ok":true,"result":{"text":"","model":"m","usage":null}}\n',
+      ]),
+    };
+  };
+  try {
+    await streamChat({
+      model: "m",
+      prompt: "hi",
+      history: [],
+      settings: {},
+      signal: new AbortController().signal,
+      onChunk: () => {},
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(sentBody).not.toBeNull();
+  expect("images" in sentBody!).toBe(false);
 });

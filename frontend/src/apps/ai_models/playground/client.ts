@@ -68,12 +68,21 @@ export async function streamChat(opts: {
   settings: ChatSettings;
   signal: AbortSignal;
   onChunk: (text: string) => void;
+  /** Absolute paths to base images for a vision-language model, on THIS turn
+   *  only (AI-11j) — optional, so a caller that never attaches anything (the
+   *  ordinary case) changes nothing about its own request. Omitted from the
+   *  body entirely when absent/empty rather than sent as `images: []`,
+   *  matching the worker's own "absent = today's text path, unchanged"
+   *  contract (mlx_text/worker.py). A LIST, like the wire shape it forwards
+   *  to — server/ai.py's own comment says why a list rather than one path. */
+  images?: string[];
 }): Promise<ChatResult> {
   const body: Record<string, unknown> = {
     prompt: opts.prompt,
     model: opts.model,
     stream: true,
     ...(opts.history.length ? { history: opts.history } : {}),
+    ...(opts.images && opts.images.length ? { images: opts.images } : {}),
   };
   for (const [key, value] of Object.entries(opts.settings)) {
     if (value !== undefined && value !== null && value !== "") body[key] = value;

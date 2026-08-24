@@ -12,7 +12,18 @@
 // The stream rides `playgroundClient.streamChat`; a model that is not resident
 // answers 409 with the job id of the load this send just started (AI-5), and
 // this component owns the dance — watch the job, narrate it, retry ONCE.
+//
+// A model whose checkpoint has a vision tower (AI-11j: `entry.acceptsImage`,
+// grown from an IMAGE_GENERATION-only flag to cover this capability too once
+// mlx_text switched to mlx-vlm) can also be handed a picture to ask about,
+// on THIS turn only — `mlx_text/worker.py`'s own boundary, which costs this
+// stage nothing extra since it already sends `history: []` (a single turn,
+// not a chat). Kept deliberately smaller than `ImageStage`'s attachment row:
+// no webcam here — a screenshot or a saved photo is the ordinary "what is
+// this" ask, and the picker alone covers it without a second capture UI to
+// keep in step with the image stage's own.
 import { useEffect, useRef, useState } from "react";
+import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import {
   cancelGeneration,
   streamChat,
@@ -20,6 +31,7 @@ import {
   type ChatSettings,
   type ChatUsage,
 } from "./client";
+import { canAttachImage, usableAttachment, type AttachedImage } from "./imageInput";
 import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
 import {
@@ -34,6 +46,16 @@ import {
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
+
+// The three formats `ImageStage`'s own picker restricts to (`ATTACH_EXTENSIONS`
+// there) — kept identical here for one reason only: consistency with the
+// picture-picking experience elsewhere in the Playground, not a size-parsing
+// dependency (this stage never reads a picture's pixel dimensions, unlike the
+// image stage's server-side header parse). A dialog that only ever offers
+// three formats and then refuses a fourth picked around it is the one
+// experience this app tries to give everywhere a picture is attached.
+const ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
+const ATTACH_TYPES = ATTACH_EXTENSIONS.map((e) => e.slice(1));
 
 // The server's clamps (`_SAMPLING`, server/ai.py), restated on the controls so
 // a slider cannot ask for a value the request would 400 on. 1024 max tokens is
@@ -140,10 +162,12 @@ export function TextStage({
   model,
   modelLabel,
   downloaded,
+  entry,
 }: {
   model: string;
   modelLabel: string;
   downloaded: boolean;
+  entry: AiCatalogModel;
 }) {
   const [prompt, setPrompt] = useState(() => readParam("prompt") ?? "");
   const [reply, setReply] = useState<Reply | null>(null);
@@ -151,6 +175,25 @@ export function TextStage({
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+
+  // Can THIS model be asked about a picture at all — the server's own answer
+  // (AI-11j), read through `imageInput.ts` so the row drawn here and the
+  // `images` field a send actually carries cannot come to disagree, exactly
+  // as `ImageStage` already keeps `editable`/`base` in step.
+  const attachable = canAttachImage(entry.acceptsImage);
+  // Deliberately NOT persisted to the URL, unlike `ImageStage`'s `img` param:
+  // an image here rides the CURRENT turn only (`mlx_text/worker.py`'s own
+  // boundary) and this stage already sends `history: []` on every send — a
+  // picture surviving a reload would model a permanence the request itself
+  // never had, and a stale path pointing at a picture the user has since
+  // moved would silently 400 the next send.
+  const [attachment, setAttachment] = useState<AttachedImage | null>(null);
+  const attachedImage = usableAttachment(entry.acceptsImage, attachment);
+  const [attaching, setAttaching] = useState(false);
+  // Is the attached picture open at full size? A thumbnail 28px on a side is a
+  // reminder of WHICH picture, not a look at it — the same rule ImageStage's
+  // own lightbox exists for.
+  const [showAttachment, setShowAttachment] = useState(false);
 
   const [temperature, setTemperature] = useState(() =>
     numParam("temp", DEFAULTS.temperature, ...LIMITS.temperature),
@@ -176,6 +219,16 @@ export function TextStage({
 
   const abortRef = useRef<AbortController | null>(null);
   const { ref: boxRef, grow } = useAutoGrow();
+  // Set on the way in as well as cleared on the way out, the same shape
+  // `ImageStage`'s own flag has: a pick awaits the dialog, and a continuation
+  // that lands after an unmount must not write state from a dead component.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
 
   // Leaving the stage must not orphan a generation burning battery behind a
   // tab the user left: abort the fetch AND tell the worker (an abort alone
@@ -189,6 +242,42 @@ export function TextStage({
     },
     [],
   );
+
+  // Escape closes the preview — the one keystroke somebody reaches for before
+  // the ✕, and the same answer every overlay in this app gives it.
+  useEffect(() => {
+    if (!showAttachment) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowAttachment(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showAttachment]);
+
+  /** Point the composer at a file that is ALREADY on this disk — no copy, no
+   *  upload, the user's own path, exactly as `ImageStage.choose` does and for
+   *  the identical reason: a browser's `<input type=file>` strips the path,
+   *  so the OS dialog raised in the server process is the only way to one. */
+  const choose = async () => {
+    setError(null);
+    setAttaching(true);
+    try {
+      const path = await pickFile({
+        title: "Choose a picture to ask about",
+        types: ATTACH_TYPES,
+      });
+      // A cancel is an answer: nothing changes and nothing is said about it.
+      if (path === null || !aliveRef.current) return;
+      const name = path.split("/").pop() || path;
+      if (!ATTACH_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))) {
+        setError(`${name} is not a PNG, JPEG or WebP.`);
+        return;
+      }
+      setAttachment({ path, name });
+    } catch (e) {
+      if (aliveRef.current) setError((e as Error).message);
+    } finally {
+      if (aliveRef.current) setAttaching(false);
+    }
+  };
 
   const settings = (): ChatSettings => ({
     ...(temperature !== DEFAULTS.temperature ? { temperature } : {}),
@@ -215,6 +304,12 @@ export function TextStage({
         settings: settings(),
         signal: controller.signal,
         onChunk: (text) => setReply((r) => (r ? { ...r, text: r.text + text } : r)),
+        // The attached picture, if this model can actually be sent one right
+        // now — `attachedImage` already applies `usableAttachment`, so an
+        // attachment kept from a model that could ask about it, switched to
+        // one that cannot, is never sent (the same rule `ImageStage`'s `base`
+        // applies to its own render request).
+        ...(attachedImage ? { images: [attachedImage.path] } : {}),
       });
 
     try {
@@ -237,11 +332,14 @@ export function TextStage({
     }
   };
 
-  // Back to empty. Settings stay put — this clears the prompt and its reply.
+  // Back to empty. Settings stay put — this clears the prompt, its reply, AND
+  // the attached picture, which is part of the request rather than of the
+  // setup (the same rule `ImageStage.clear` follows for its own attachment).
   const clear = () => {
     setPrompt("");
     setReply(null);
     setError(null);
+    setAttachment(null);
     const box = boxRef.current;
     if (box) {
       box.style.height = "auto";
@@ -270,11 +368,56 @@ export function TextStage({
       />
 
       <div className="pg-composer">
+        {/* The attachment row: only drawn where the server says this model can
+            actually be asked about a picture (AI-11j). Above the textarea
+            rather than in a footer row like `ImageStage`'s stacked composer,
+            because this stage's own layout keeps the prompt and the Run
+            column side by side, not stacked — the same pill and thumbnail
+            classes are reused so the two stages read as one feature. */}
+        {attachable && (
+          <div className="pg-attach-row">
+            {attachedImage && (
+              <span className="pg-attach">
+                <button
+                  type="button"
+                  className="pg-attach-open"
+                  title="See this picture"
+                  aria-label="See this picture"
+                  onClick={() => setShowAttachment(true)}
+                >
+                  <img src={rawUrl(attachedImage.path)} alt="" />
+                </button>
+                <button
+                  type="button"
+                  className="pg-attach-drop"
+                  title="Remove this image"
+                  aria-label="Remove this image"
+                  onClick={() => setAttachment(null)}
+                >
+                  ✕
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              className="pg-attach-btn"
+              title="Point at a picture already on this disk — nothing is copied"
+              disabled={attaching}
+              onClick={() => void choose()}
+            >
+              {StarterIcons.landscape}
+              <span>{attachedImage ? "Replace" : "Add an image"}</span>
+            </button>
+            {attaching && <span className="pg-attach-note">Working…</span>}
+          </div>
+        )}
         <textarea
           ref={boxRef}
           value={prompt}
           rows={3}
-          placeholder={`Ask ${modelLabel} something…`}
+          placeholder={
+            attachedImage ? "Ask about the attached picture…" : `Ask ${modelLabel} something…`
+          }
           onChange={(e) => {
             setPrompt(e.target.value);
             grow();
@@ -320,6 +463,31 @@ export function TextStage({
           )}
         </div>
       </div>
+
+      {/* The attached picture at full size — the whole modal, no title bar, no
+          filename, no actions: the ✕ above already removes it, and this only
+          exists because a 28px thumbnail cannot be looked at. Click the
+          backdrop or press Escape to close, exactly as `ImageStage`'s own
+          lightbox answers to both. */}
+      {attachedImage && showAttachment && (
+        <div
+          className="pg-lightbox"
+          role="dialog"
+          aria-label="The attached picture"
+          onClick={() => setShowAttachment(false)}
+        >
+          <img src={rawUrl(attachedImage.path)} alt="" onClick={(e) => e.stopPropagation()} />
+          <button
+            type="button"
+            className="pg-lightbox-close"
+            title="Close"
+            aria-label="Close"
+            onClick={() => setShowAttachment(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Examples first, under the box they fill; hidden once there is a
           reply to read, which is what that space is then for. */}

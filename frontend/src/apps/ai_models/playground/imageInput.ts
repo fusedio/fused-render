@@ -39,6 +39,22 @@ export function usableBase(
   return canEdit(acceptsImage) ? attachment : null;
 }
 
+// -- the text stage's own names for the identical rule (AI-11j) --------------
+//
+// `acceptsImage` grew a second meaning once the mlx_text runner switched to
+// mlx-vlm: a TEXT_GENERATION model can be handed a picture to be ASKED ABOUT,
+// not only an IMAGE_GENERATION one to EDIT. The computation the server did is
+// unchanged either way — one bool, one flag — but `canEdit`/`usableBase`
+// genuinely do not carry here: this stage never edits anything, and a reader
+// of TextStage.tsx calling `canEdit` on a chat model would read as a bug.
+// Aliases, not a second copy of either rule, so the two stages cannot drift.
+
+/** `canEdit`, under the name the text stage's own affordance reads by. */
+export const canAttachImage = canEdit;
+
+/** `usableBase`, under the text stage's own name. */
+export const usableAttachment = usableBase;
+
 /** A pixel size, both sides. */
 export interface Size {
   width: number;

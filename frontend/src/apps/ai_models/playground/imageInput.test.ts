@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 
-import { fitToImage, imageFields, usableBase, type AttachedImage } from "./imageInput";
+import {
+  canAttachImage,
+  canEdit,
+  fitToImage,
+  imageFields,
+  usableAttachment,
+  usableBase,
+  type AttachedImage,
+} from "./imageInput";
 
 const photo: AttachedImage = { path: "/Users/me/ai/inputs/webcam.png", name: "webcam.png" };
 
@@ -43,6 +51,20 @@ test("an edit whose size was chosen by hand sends that size", () => {
     width: 640,
     height: 480,
   });
+});
+
+// -- the text stage's aliases: same rule, a name that doesn't say "edit" -----
+// AI-11j: `acceptsImage` now also answers "can this model be ASKED ABOUT a
+// picture", which is what the text stage does with it. `canEdit`/`usableBase`
+// say "edit" because that is what the image stage does with the identical
+// flag — a thin alias here, not a second copy of either rule.
+
+test("canAttachImage is the identical rule under the text stage's own name", () => {
+  expect(canAttachImage).toBe(canEdit);
+});
+
+test("usableAttachment is the identical rule under the text stage's own name", () => {
+  expect(usableAttachment).toBe(usableBase);
 });
 
 test("fitting keeps the shape, snaps to a multiple of 16 and never upscales", () => {

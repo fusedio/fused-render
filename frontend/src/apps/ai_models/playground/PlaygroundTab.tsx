@@ -900,6 +900,7 @@ export default function PlaygroundTab() {
                 model={selected.model.id}
                 modelLabel={modelName(selected.model)}
                 downloaded={selected.model.downloaded}
+                entry={selected.model}
               />
             ) : selected.row.capability === "text-to-image" ? (
               <ImageStage
