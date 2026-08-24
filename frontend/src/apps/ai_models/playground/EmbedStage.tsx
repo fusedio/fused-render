@@ -232,7 +232,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
 
   return (
     <div className={"pg-work pg-embed" + (configOpen ? " has-config" : "")}>
-      <Card className="pg-work-card flex-none gap-3 [--card-spacing:--spacing(6)]">
+      <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
         {/* The action, and the way to the settings. The hero card above names
             the model and its state. */}
         <StageHeader
