@@ -7,6 +7,7 @@
 // per-control reset once a value moves.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { capabilityIcon } from "./capabilityIcons";
 
 /** A composer textarea that grows with its own text, so a Shift+Enter newline
  *  is visible. Returns the ref to hand the textarea and the `grow` to call on
@@ -360,6 +361,47 @@ export function StarterCards<S extends Starter>({
           {MenuIcons.refresh}
         </button>
       )}
+    </div>
+  );
+}
+
+/** The result canvas, idle. Every stage draws one where its answer will land,
+ *  so a stage that has not run yet reads as *waiting* rather than as half a
+ *  page — the empty band between the prompt and the app strip below was the
+ *  loudest unfinished signal on the tab.
+ *
+ *  It is a PLACEHOLDER, not a skeleton: no shimmer, no fake rows. A dashed
+ *  frame with the capability's own sidebar glyph and one line naming what
+ *  arrives here — the same grammar an empty folder or an empty inbox gets.
+ *
+ *  One box, one height, on all five stages, rather than the aspect-locked
+ *  frame the image and video renders actually fill. An aspect-locked idle
+ *  frame would avoid the first render's layout shift, but a 9:16 placeholder
+ *  is ~1.8 column widths of empty dashed box — trading the void this fixes for
+ *  a taller one. The shift on first Generate is cheap and reads as the frame
+ *  BECOMING the picture.
+ *
+ *  `label` repeats the filled block's own heading ("Result", "Response",
+ *  "Transcript", …) and the slot sits in the SAME JSX position, so idle and
+ *  filled are one box in two states rather than two siblings taking turns. */
+export function ResultSlot({
+  label,
+  capability,
+  note,
+}: {
+  label: string;
+  capability: string;
+  note: string;
+}) {
+  return (
+    <div className="pg-answer-block">
+      <p className="pg-answer-label">{label}</p>
+      <div className="pg-slot">
+        <span className="pg-slot-icon" aria-hidden="true">
+          {capabilityIcon(capability)}
+        </span>
+        <p className="pg-slot-note">{note}</p>
+      </div>
     </div>
   );
 }

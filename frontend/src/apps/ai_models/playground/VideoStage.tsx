@@ -18,7 +18,15 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
-import { ConfigPanel, RailSlider, StageHeader, StarterCards, useAutoGrow, type Starter } from "./controls";
+import {
+  ConfigPanel,
+  RailSlider,
+  ResultSlot,
+  StageHeader,
+  StarterCards,
+  useAutoGrow,
+  type Starter,
+} from "./controls";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
@@ -366,7 +374,13 @@ export function VideoStage({
 
       {error && <p className="pg-error">{error}</p>}
 
-      {run && (
+      {!run ? (
+        <ResultSlot
+          label="Result"
+          capability="text-to-video"
+          note="Your clip appears here. Describe one above, then Generate."
+        />
+      ) : (
         <div className="pg-answer-block">
           <p className="pg-answer-label">Result</p>
           <figure className="pg-image-result">

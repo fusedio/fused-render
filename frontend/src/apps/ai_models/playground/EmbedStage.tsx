@@ -20,7 +20,7 @@
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, withModelReady } from "./client";
-import { ConfigPanel, StageHeader, StarterCards, type Starter } from "./controls";
+import { ConfigPanel, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
 // The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
@@ -305,7 +305,7 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
 
         {status && <p className="pg-status">{status}</p>}
         {error && <p className="pg-error">{error}</p>}
-        {ranked && !busy && (
+        {ranked && !busy ? (
           <div className="pg-answer-block">
             <p className="pg-answer-label">Ranked by meaning</p>
             <ol className="pg-embed-results">
@@ -326,6 +326,16 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
               ))}
             </ol>
           </div>
+        ) : (
+          // The slot covers BOTH "nothing has run" and "a re-search is in
+          // flight": the ranking is dropped while `busy` so a stale order is
+          // never read as the new one, and without the slot that left the
+          // column briefly empty at exactly the moment something is happening.
+          <ResultSlot
+            label="Ranked by meaning"
+            capability="embeddings"
+            note="The lines come back here, ordered by how close they are to the query."
+          />
         )}
     </div>
   );

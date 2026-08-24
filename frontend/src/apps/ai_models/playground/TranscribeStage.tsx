@@ -24,7 +24,7 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { ConfigPanel, CopyButton, StageHeader } from "./controls";
+import { ConfigPanel, CopyButton, ResultSlot, StageHeader } from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
 
 type Phase =
@@ -483,7 +483,13 @@ export function TranscribeStage({ model }: { model: string }) {
           </div>
         )}
 
-        {(segments.length > 0 || phase.step === "done") && (
+        {segments.length === 0 && phase.step !== "done" ? (
+          <ResultSlot
+            label="Transcript"
+            capability="automatic-speech-recognition"
+            note="The words come back here, timed — record something above, or pick a file."
+          />
+        ) : (
           <div className="pg-answer-block">
             <p className="pg-answer-label">Transcript</p>
             <div className="pg-segments">
