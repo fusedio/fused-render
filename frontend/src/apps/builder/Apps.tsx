@@ -113,6 +113,22 @@ function useShowcaseSync(onSynced: () => void): Set<string> {
   return slugs;
 }
 
+// The grid's search predicate, shared with the chip counts so the two can
+// never drift: a chip promising (7) must be the same seven cards the click
+// leaves on screen.
+const matchesQuery = (a: AppInfo, q: string): boolean =>
+  q === "" ||
+  a.name.toLowerCase().includes(q) ||
+  (a.title ?? "").toLowerCase().includes(q) ||
+  (a.category ?? "").toLowerCase().includes(q) ||
+  a.tag.toLowerCase().includes(q);
+
+// The bracketed count on a chip. Deliberately colorless — it inherits the
+// chip's own color and only steps back with opacity, because the selected
+// chip's label is var(--bg) on a filled plate: a muted-grey token legible on
+// the unselected chips would be near-invisible on that one.
+const ChipCount = ({ n }: { n: number }) => <span className="apps-tag-count">({n})</span>;
+
 export default function Apps({ config }: { config: Config }) {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>(
     catalogCache ? { status: "ok", data: catalogCache } : { status: "loading" },
@@ -260,17 +276,39 @@ export default function Apps({ config }: { config: Config }) {
           (a) =>
             (tag === null || a.tag === tag) &&
             (category === null || a.category === category) &&
-            (q === "" ||
-              a.name.toLowerCase().includes(q) ||
-              (a.title ?? "").toLowerCase().includes(q) ||
-              (a.category ?? "").toLowerCase().includes(q) ||
-              a.tag.toLowerCase().includes(q)),
+            matchesQuery(a, q),
         ),
       ),
     [cards, tag, category, q],
   );
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
+  // What a chip's bracketed number means: how many cards CLICKING IT would
+  // leave. So the search box narrows every count, but the current chip
+  // selection does not — the chips are one selector, and counts that collapsed
+  // to 0 on every chip but the chosen one would say nothing. Same predicate as
+  // the grid above, and the same exact-string match the grid filters on, so a
+  // count can never disagree with what its click produces.
+  //
+  // Counted over `all`, the exhaustive catalog, like the chips themselves —
+  // never over the partial row, which is why the numbers only print once the
+  // catalog has landed.
+  const counts = useMemo(() => {
+    const hits = all.filter((a) => matchesQuery(a, q));
+    const by = (pick: (a: AppInfo) => string | null | undefined) => {
+      const m = new Map<string, number>();
+      for (const a of hits) {
+        const k = pick(a);
+        if (k) m.set(k, (m.get(k) ?? 0) + 1);
+      }
+      return m;
+    };
+    return { all: hits.length, category: by((a) => a.category), repo: by((a) => a.tag) };
+  }, [all, q]);
+  const chipCounts = mode === "repo" ? counts.repo : counts.category;
+  // Only once the catalog is in: through the partial phase `all` is empty, so
+  // every label would read "(0)" under a grid visibly drawing cards.
+  const showCounts = apps.status === "ok";
 
   return (
     <div className="apps-page">
@@ -320,6 +358,7 @@ export default function Apps({ config }: { config: Config }) {
                 onClick={() => setFilter(mode, null)}
               >
                 All
+                {showCounts && <ChipCount n={counts.all} />}
               </button>
               {chips.map((c) => (
                 <button
@@ -329,6 +368,7 @@ export default function Apps({ config }: { config: Config }) {
                   onClick={() => setFilter(mode, active === c ? null : c)}
                 >
                   {c}
+                  {showCounts && <ChipCount n={chipCounts.get(c) ?? 0} />}
                 </button>
               ))}
             </div>
@@ -355,13 +395,14 @@ export default function Apps({ config }: { config: Config }) {
         {apps.status === "loading" && !error && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status !== "loading" && (
           <>
-            <div className="apps-count">
-              {apps.status === "partial"
-                ? "Recently opened — loading all apps…"
-                : shown.length === all.length
-                  ? `${all.length} app${all.length === 1 ? "" : "s"}`
-                  : `${shown.length} of ${all.length} apps`}
-            </div>
+            {/* The numeric count that used to live here — "12 apps", "3 of 12
+                apps" — now rides on the chips themselves, next to the filter
+                each number describes, instead of floating under the toolbar
+                restating it. What is left is the one thing the chips cannot
+                say: that the grid on screen is still only a prefix. */}
+            {apps.status === "partial" && (
+              <div className="apps-count">Recently opened — loading all apps…</div>
+            )}
             {shown.length === 0 ? (
               // Nothing to say yet during the partial phase: "no apps match" is
               // a claim about the whole catalog, which has not arrived.

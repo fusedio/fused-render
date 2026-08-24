@@ -27,7 +27,11 @@
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  margin-bottom: 14px;
+  /* Carries the whole toolbar-to-grid gap now. It used to be 14px with the
+     count line and its own 12px margin below it making up the rest; with the
+     numbers moved onto the chips the grid would otherwise ride up against the
+     filter row. */
+  margin-bottom: 28px;
 }
 
 /* Search is the last item in the toolbar's right-aligned group (see
@@ -117,6 +121,23 @@
   border-color: color-mix(in srgb, var(--fg) 78%, var(--bg));
 }
 
+/* The chip's bracketed match count. A step smaller and a step back from the
+   chip's own label, so the row still reads as words with a number attached
+   rather than as two equal columns of text.
+
+   Backed off with `opacity`, not a color token: the count has to sit on the
+   selected chip too, whose label is var(--bg) on a filled plate (see
+   .apps-tag-chip.is-active). A --fg-muted that reads as "quieter" on the
+   unfilled chips would be all but invisible there, whereas opacity fades
+   whatever ink the chip is already using. */
+.apps-tag-count {
+  margin-left: 4px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+/* Only the partial phase's "loading all apps…" line now — the numbers moved
+   onto the chips. */
 .apps-count {
   margin-bottom: 12px;
   font-size: 12px;
