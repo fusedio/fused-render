@@ -22,9 +22,12 @@ import {
 } from "./client";
 import { renderMarkdown } from "./markdown";
 import { splitThink } from "./think";
+import { Textarea } from "@platform/shadcn/ui/textarea";
 import {
   ConfigPanel,
   CopyButton,
+  RailField,
+  RailReset,
   RailSlider,
   ResultSlot,
   StageHeader,
@@ -349,30 +352,22 @@ export function TextStage({
           fallback={DEFAULTS.max_tokens}
           onChange={setMaxTokens}
         />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">System prompt</span>
-            {/* "clear", not the other controls' "reset": resetting this one IS
-                emptying it, and a button that says reset beside a prompt the
-                user wrote reads like it would restore one of ours. */}
-            {system !== "" && (
-              <button type="button" className="pg-ctl-reset" onClick={() => setSystem("")}>
-                clear
-              </button>
-            )}
-          </span>
-          <textarea
-            className="pg-rail-textarea"
+        {/* "clear", not the other controls' "reset": resetting this one IS
+            emptying it, and a button that says reset beside a prompt the
+            user wrote reads like it would restore one of ours. */}
+        <RailField
+          label="System prompt"
+          action={system !== "" && <RailReset onClick={() => setSystem("")}>clear</RailReset>}
+          hint="Standing instructions, applied to every run. Empty by default — the reply is whatever this model does on its own."
+        >
+          <Textarea
+            className="min-h-0 resize-y text-xs leading-normal"
             rows={4}
             value={system}
             placeholder="Who the model should be"
             onChange={(e) => setSystem(e.target.value)}
           />
-          <span className="pg-ctl-hint">
-            Standing instructions, applied to every run. Empty by default — the
-            reply is whatever this model does on its own.
-          </span>
-        </label>
+        </RailField>
         <RailSlider
           label="Top-p"
           hint="How much of the probability mass the model may sample from."

@@ -20,7 +20,8 @@
 // transcript, and the URL carries only the setup (PlaygroundTab's rule).
 import { useEffect, useRef, useState } from "react";
 import { embedTexts, withModelReady } from "./client";
-import { ConfigPanel, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
+import { Textarea } from "@platform/shadcn/ui/textarea";
+import { ConfigPanel, RailField, ResultSlot, StageHeader, StarterCards, type Starter } from "./controls";
 import { StarterIcons } from "./starterIcons";
 
 // The examples (D465). A sample here is a whole SCENARIO, not a prompt: the
@@ -274,19 +275,15 @@ export function EmbedStage({ model, downloaded }: { model: string; downloaded: b
         </div>
 
         <ConfigPanel open={configOpen}>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Lines to search</span>
-            </span>
-            <textarea
-              className="pg-embed-lines"
+          <RailField label="Lines to search" hint={`One line per entry, up to ${MAX_LINES}.`}>
+            <Textarea
+              className="min-h-0 resize-y text-xs leading-relaxed"
               rows={7}
               value={lines}
               placeholder="One line per entry"
               onChange={(e) => setLines(e.target.value)}
             />
-            <span className="pg-ctl-hint">One line per entry, up to {MAX_LINES}.</span>
-          </label>
+          </RailField>
         </ConfigPanel>
 
         {/* Until there is a ranking to read, the examples. Each one sets both

@@ -5,8 +5,13 @@
 // stage's title row asks for them (D430, D431, reshaped). Each control is a
 // slider+number pair with a one-line hint, defaults baked in and a
 // per-control reset once a value moves.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Card, CardContent, CardHeader, CardTitle } from "@platform/shadcn/ui/card";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
+import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "@platform/shadcn/ui/field";
+import { Input } from "@platform/shadcn/ui/input";
+import { Slider } from "@platform/shadcn/ui/slider";
 import { capabilityIcon } from "./capabilityIcons";
 
 /** A composer textarea that grows with its own text, so a Shift+Enter newline
@@ -137,11 +142,17 @@ export function ConfigPanel({ open, children }: { open: boolean; children: React
       aria-hidden={open ? undefined : true}
     >
       {/* Two boxes, not one: beside the column the <aside> is a full-height
-          rail and this inner box is what sticks inside it. */}
-      <div className="pg-config-inner">
-        <p className="pg-config-head">Settings</p>
-        <div className="pg-config-body">{children}</div>
-      </div>
+          rail and this inner box is what sticks inside it. The Card carries
+          `pg-config-inner` so the sticky, fold-in/out and reduced-motion rules
+          in ai-playground.css keep landing on it. */}
+      <Card className="pg-config-inner flex-none">
+        <CardHeader>
+          <CardTitle className="text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
+            Settings
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">{children}</CardContent>
+      </Card>
     </aside>
   );
 }
@@ -203,24 +214,16 @@ export function RailSlider({
 }) {
   const moved = value !== fallback;
   return (
-    <label className="pg-ctl">
-      <span className="pg-ctl-head">
-        <span className="pg-ctl-label">{label}</span>
+    <Field className="gap-1.5">
+      <div className="flex w-full items-center gap-2">
+        <FieldLabel className="text-xs font-semibold">{label}</FieldLabel>
         {moved && (
-          <button
-            type="button"
-            className="pg-ctl-reset"
-            title={`Back to ${fallback}`}
-            onClick={(e) => {
-              e.preventDefault();
-              onChange(fallback);
-            }}
-          >
+          <RailReset title={`Back to ${fallback}`} onClick={() => onChange(fallback)}>
             reset
-          </button>
+          </RailReset>
         )}
-        <input
-          className="pg-ctl-num"
+        <Input
+          className="ml-auto h-6 w-16 shrink-0 rounded-md px-1.5 text-right text-xs tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
           type="number"
           min={min}
           max={max}
@@ -231,17 +234,120 @@ export function RailSlider({
             if (Number.isFinite(next)) onChange(Math.min(max, Math.max(min, next)));
           }}
         />
-      </span>
-      <input
-        type="range"
+      </div>
+      {/* Base UI wants an array here — a bare number renders a thumb per
+          bound (see slider.tsx's _values fallback), i.e. two of them. */}
+      <Slider
         min={min}
         max={max}
         step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
+        value={[value]}
+        onValueChange={(next) => onChange(Array.isArray(next) ? next[0] : next)}
       />
-      <span className="pg-ctl-hint">{hint}</span>
-    </label>
+      <FieldDescription className="text-xs leading-normal">{hint}</FieldDescription>
+    </Field>
+  );
+}
+
+/** The panel's "back to the default" affordance — a bare dotted-underline
+ *  word, deliberately quieter than a Button: it sits inside a label row and
+ *  must not compete with the value beside it. The appearance/border/background
+ *  resets are load-bearing — preflight is off, so the UA's button chrome
+ *  shows without them. */
+export function RailReset({
+  title,
+  onClick,
+  children,
+}: {
+  title?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground"
+      title={title}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** One non-slider setting: label row (name, optional quiet action on the
+ *  right), the control itself, a one-line hint. The shape every stage's
+ *  bespoke rows (seed, language, system prompt…) share, so the stages compose
+ *  this instead of hand-rolling Field internals. */
+export function RailField({
+  label,
+  action,
+  hint,
+  children,
+}: {
+  label: string;
+  action?: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Field className="gap-1.5">
+      <div className="flex w-full items-baseline gap-2">
+        <FieldLabel className="text-xs font-semibold">{label}</FieldLabel>
+        {action && <span className="ml-auto">{action}</span>}
+      </div>
+      {children}
+      {hint && <FieldDescription className="text-xs leading-normal">{hint}</FieldDescription>}
+    </Field>
+  );
+}
+
+/** A boolean setting: checkbox beside its name-and-hint, all one click
+ *  target (the FieldLabel wrapper is what makes the text toggle it). */
+export function RailCheck({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <FieldLabel className="font-normal">
+      <Field orientation="horizontal" className="items-start gap-2">
+        <Checkbox
+          className="mt-0.5"
+          checked={checked}
+          onCheckedChange={(next) => onChange(!!next)}
+        />
+        <FieldContent className="gap-0.5">
+          <FieldTitle className="text-xs font-semibold">{label}</FieldTitle>
+          <FieldDescription className="text-xs leading-normal">{hint}</FieldDescription>
+        </FieldContent>
+      </Field>
+    </FieldLabel>
+  );
+}
+
+/** A native <select> in the Input's clothes. Native on purpose — the two- and
+ *  three-option pickers in the panel don't earn a popover — and the UA keeps
+ *  its own dropdown arrow, so no `appearance-none`. */
+export function RailSelect({
+  className,
+  ...props
+}: ComponentProps<"select">) {
+  return (
+    <select
+      data-slot="rail-select"
+      className={
+        "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 " +
+        (className ?? "")
+      }
+      {...props}
+    />
   );
 }
 

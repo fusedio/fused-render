@@ -18,8 +18,10 @@ import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
 import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
+import { Input } from "@platform/shadcn/ui/input";
 import {
   ConfigPanel,
+  RailField,
   RailSlider,
   ResultSlot,
   StageHeader,
@@ -354,22 +356,18 @@ export function VideoStage({
           fallback={modelSteps}
           onChange={setSteps}
         />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">Seed</span>
-          </span>
-          <input
-            className="pg-rail-input"
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same video."
+        >
+          <Input
             type="text"
             inputMode="numeric"
             value={seed}
             placeholder="Random each time"
             onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
-          <span className="pg-ctl-hint">
-            Same seed + same prompt + same settings = the same video.
-          </span>
-        </label>
+        </RailField>
       </ConfigPanel>
 
       {error && <p className="pg-error">{error}</p>}

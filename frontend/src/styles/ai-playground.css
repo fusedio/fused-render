@@ -673,32 +673,9 @@
   flex-direction: column;
 }
 
-.pg-config-inner {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-alt);
-}
-
-/* Names the card, because in the gutter it is no longer obviously the thing
-   the cog just opened. */
-.pg-config-head {
-  margin: 0;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-muted);
-}
-
-.pg-config-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
+/* The inner box's chrome (border, radius, background, padding) is the shadcn
+   Card's now — `pg-config-inner` stays on it purely as the hook the sticky,
+   fold and reduced-motion rules below target. */
 
 /* The numbers the placement below is built from, declared OUT here on the
    container itself: a `@container` rule can never target its own container —
@@ -935,106 +912,6 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.pg-ctl {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 12.5px;
-}
-
-.pg-ctl-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.pg-ctl-label {
-  font-weight: 600;
-  color: var(--fg);
-}
-
-.pg-ctl-reset {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  color: var(--fg-muted);
-  text-decoration: underline dotted;
-  cursor: pointer;
-}
-
-.pg-ctl-reset:hover {
-  color: var(--fg);
-}
-
-.pg-ctl-num {
-  margin-left: auto;
-  width: 64px;
-  font: inherit;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 2px 6px;
-}
-
-/* Spinners off — the slider is the coarse control, the field is for typing. */
-.pg-ctl-num::-webkit-outer-spin-button,
-.pg-ctl-num::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.pg-ctl-num {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-
-.pg-ctl input[type="range"] {
-  width: 100%;
-  accent-color: var(--accent);
-}
-
-.pg-ctl-hint {
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--fg-muted);
-}
-
-.pg-ctl-row {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.pg-ctl-row input[type="checkbox"] {
-  margin-top: 2px;
-  accent-color: var(--accent);
-}
-
-.pg-ctl-row span {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.pg-rail-textarea,
-.pg-rail-input {
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  resize: vertical;
-  width: 100%;
 }
 
 .pg-chips {
@@ -1443,13 +1320,6 @@
 .pg-camera-cancel:hover:not(:disabled) {
   color: var(--error);
   opacity: 0.75;
-}
-
-/* A settings row whose value is a sentence rather than a number — the size
-   under an attached image, which the server derives. */
-.pg-ctl-value {
-  font-size: 12px;
-  color: var(--fg);
 }
 
 .pg-ghost-btn {
@@ -2267,17 +2137,6 @@
 
 .pg-embed {
   gap: 14px;
-}
-
-.pg-embed-lines {
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--bg-alt);
-  color: var(--fg);
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .pg-embed-results {

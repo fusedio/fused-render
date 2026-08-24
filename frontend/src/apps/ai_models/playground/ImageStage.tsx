@@ -32,9 +32,12 @@ import { cancelJob, type Job } from "@platform/lib/jobs";
 import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
 import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Input } from "@platform/shadcn/ui/input";
 import {
   ConfigPanel,
   RailChips,
+  RailField,
+  RailReset,
   RailSlider,
   ResultSlot,
   StageHeader,
@@ -897,29 +900,22 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           )}
         </div>
         {sizeIsTheImages ? (
-          <div className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Size</span>
-              <button
-                type="button"
-                className="pg-ctl-reset"
-                onClick={() => setSizeFromImage(false)}
-              >
-                Set a size
-              </button>
-            </span>
-            <span className="pg-ctl-value">
+          <RailField
+            label="Size"
+            action={<RailReset onClick={() => setSizeFromImage(false)}>Set a size</RailReset>}
+            hint={
+              fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
+                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
+                  "size takes minutes. Set a size to render it bigger."
+                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`
+            }
+          >
+            <span className="text-xs">
               {fitted
                 ? `${fitted.width} × ${fitted.height} — the picture's shape`
                 : "Read from the attached picture"}
             </span>
-            <span className="pg-ctl-hint">
-              {fitted && natural && (natural.width > fitted.width || natural.height > fitted.height)
-                ? `Scaled down from ${natural.width} × ${natural.height}: an edit at the full ` +
-                  "size takes minutes. Set a size to render it bigger."
-                : `The picture's own shape, longest side up to ${EDIT_LONGEST_SIDE}.`}
-            </span>
-          </div>
+          </RailField>
         ) : (
           <>
             <RailSlider
@@ -968,22 +964,18 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           fallback={DEFAULTS.guidance}
           onChange={setGuidance}
         />
-        <label className="pg-ctl">
-          <span className="pg-ctl-head">
-            <span className="pg-ctl-label">Seed</span>
-          </span>
-          <input
-            className="pg-rail-input"
+        <RailField
+          label="Seed"
+          hint="Same seed + same prompt + same settings = the same picture."
+        >
+          <Input
             type="text"
             inputMode="numeric"
             value={seed}
             placeholder="Random each time"
             onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
           />
-          <span className="pg-ctl-hint">
-            Same seed + same prompt + same settings = the same picture.
-          </span>
-        </label>
+        </RailField>
       </ConfigPanel>
 
       {error && <p className="pg-error">{error}</p>}
