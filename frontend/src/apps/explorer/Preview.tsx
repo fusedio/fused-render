@@ -86,9 +86,15 @@ import Listing from "@apps/explorer/Listing";
 // template as `window._fusedSelectRev`). Declared here, beside the assignment that
 // installs it, exactly as main.tsx declares `_fusedFsChanged` beside its own — the
 // other half of the same ancestor-global contract with that runtime.
+// The window global the injected runtime calls to hand this shell a prompt the
+// git sidebar's "Fix with AI" button built for a failed operation
+// (static/runtime.js `noteAskClaude`, reached from the git template as
+// `window._fusedAskClaude`). Same ancestor-global shape as `_fusedRevSelected`
+// above, and declared right beside it for the same reason.
 declare global {
   interface Window {
     _fusedRevSelected?: (sha: unknown) => void;
+    _fusedClaudeAsk?: (text: unknown) => void;
   }
 }
 
@@ -920,6 +926,53 @@ function TemplatePreview({
     else if (sideTarget) setSide(sideTarget);
   };
 
+  // --- the CLAUDE sidebar's seeded prompt (`window._fusedAskClaude`) ---------
+  // The git sidebar's "Fix with AI" button has no chat of its own — it hands the
+  // prompt it built to whichever ancestor owns a Claude sidebar, through the
+  // runtime's ancestor-window hop (static/runtime.js `noteAskClaude`), the same
+  // idiom `_fusedRevSelected` above uses for `_rev`. Installed under the same
+  // guard for the same reason: only the splitting surface HAS a sidebar to open,
+  // and two instances racing for one window global would have the last mount
+  // win the callback for all of them.
+  //
+  // A REF, not state: the text has to survive from the moment it arrives to the
+  // one render that builds the claude iframe's `src` (below, `sideSrcFor`), and
+  // it must never cause a render of its own — `setSide` already does that. It is
+  // also the thing that makes the seed ONE-SHOT (see `sideSrcFor`'s comment):
+  // read once into that src string, then left to go stale for every later
+  // render of the SAME mount (the string it produced does not change, so the
+  // iframe never re-navigates), and cleared the moment the sidebar leaves
+  // `claude` so a later, unrelated switch back to it starts clean.
+  const claudeSeedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!splitCapable) return;
+    window._fusedClaudeAsk = (text: unknown) => {
+      if (typeof text !== "string" || !text) return;
+      claudeSeedRef.current = text;
+      // Switches the sidebar to Claude — REPLACING whatever companion (most
+      // often `git`, the one that just failed) was showing. Two sidebars is not
+      // a layout this column has, and it is not a loss here: the error and the
+      // repo state the git pane knew are already folded into `text`.
+      setSide("claude");
+    };
+    return () => {
+      delete window._fusedClaudeAsk;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `setSide` closes
+    // over per-render state (`split.defaultSide`, `sideReq`) that this hook does
+    // not need to react to; re-running it on every one of those renders would
+    // just reinstall the same function.
+  }, [splitCapable]);
+  // Left `claude` (closed the sidebar, switched to `git`/`mcp`, or the file
+  // changed under `splitCapable`'s guard above): any seed left over is now
+  // stale, because reopening or re-choosing Claude from here on is a fresh
+  // request the user made, not a continuation of the ask that is done. Not
+  // fired on ENTERING `claude` — that is precisely the render the seed has to
+  // survive into `sideSrcFor` below.
+  useEffect(() => {
+    if (activeSide !== "claude") claudeSeedRef.current = null;
+  }, [activeSide]);
+
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
   // `_side` that named a mode this file doesn't offer (a carried-over param, or
@@ -1171,9 +1224,25 @@ function TemplatePreview({
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
+    // `_fused_ask`: the one-shot prompt from `window._fusedClaudeAsk`, above.
+    // Rides the iframe src exactly as `chat_only=1` and `_file` do, for the same
+    // "never in the address bar" reason lib/preview-rev states for the content
+    // frame's own revision param — and it is stronger here, because this value
+    // has no page identity at all to preserve; it is one failed command's error
+    // text, gone the instant Claude has read it. `claudeSeedRef` is read but
+    // not cleared here:
+    // clearing on read would change this string on the very next unrelated
+    // re-render (a resize, a sibling state update) while the SAME iframe is
+    // still mounted, which is a second, seed-less navigation of a document that
+    // already loaded once — see the ref's own comment above for why leaving it
+    // means the string, and so the mounted iframe's `src`, stays stable until
+    // `activeSide` actually leaves `claude`.
+    const ask = m === "claude" && claudeSeedRef.current
+      ? "&_fused_ask=" + encodeURIComponent(claudeSeedRef.current)
+      : "";
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${ask}${thumbFlags}`
     );
   };
 

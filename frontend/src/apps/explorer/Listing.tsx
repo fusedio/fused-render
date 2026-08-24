@@ -116,6 +116,17 @@ const FLIP_BUDGET = 2;
 // the client nothing under the marker rule, so the "Open app" button asks
 // GET /api/apps/entry instead of re-deriving anything from row names.)
 
+// The window global the injected runtime calls to hand this pane a prompt the
+// git companion's "Fix with AI" button built for a failed operation
+// (static/runtime.js `noteAskClaude`, reached from the git template as
+// `window._fusedAskClaude`). Same ancestor-global shape Preview.tsx declares
+// for the file sidebar's copy of this hook — this is the folder pane's.
+declare global {
+  interface Window {
+    _fusedClaudeAsk?: (text: unknown) => void;
+  }
+}
+
 export default function Listing({
   fsPath,
   provisional = false,
@@ -883,6 +894,48 @@ export default function Listing({
   // a temporal-dead-zone trap waiting for the first caller that runs during render.
   const selectSide = (mode: PaneSideChoice) =>
     setSide({ open: true, mode: mode === paneSides[0] ? null : mode });
+
+  // --- the CLAUDE companion's seeded prompt (`window._fusedAskClaude`) -------
+  // The `git` companion's "Fix with AI" button has no chat of its own — it
+  // hands the prompt it built to whichever ancestor owns a Claude sidebar,
+  // through the runtime's ancestor-window hop (static/runtime.js
+  // `noteAskClaude`). This pane is one such ancestor for a FOLDER's own `git`
+  // companion (Preview.tsx installs the file sidebar's copy); guarded on
+  // `paneEnabled` for the same reason its declaration there is guarded on
+  // `splitCapable` — a snapshot or panel pane with no pane at all has nothing
+  // to open this into.
+  //
+  // A REF, not state, and for the same reason ListingPreviewPane's caller
+  // needs it read exactly once per mount: it must survive from the moment it
+  // arrives to the one render that builds the companion iframe's `src`
+  // (`ListingPreviewPane`'s `CHAT_ONLY_PARAM` sibling), and must never itself
+  // cause a render — `selectSide` already does that.
+  const claudeSeedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!paneEnabled) return;
+    window._fusedClaudeAsk = (text: unknown) => {
+      if (typeof text !== "string" || !text) return;
+      claudeSeedRef.current = text;
+      // Switches the pane to Claude — REPLACING whatever companion (most often
+      // `git`, the one that just failed) was showing. The error and repo state
+      // the git pane knew are already folded into `text`, so nothing is lost
+      // by the git pane going away.
+      selectSide("claude");
+    };
+    return () => {
+      delete window._fusedClaudeAsk;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectSide`
+    // closes over per-render state (`paneSides`) this hook does not need to
+    // react to; re-running it on every one of those renders would just
+    // reinstall the same function.
+  }, [paneEnabled]);
+  // Left `claude` (closed the pane, switched companion, or the folder changed
+  // under `paneEnabled`'s guard above): any seed left over is stale, exactly as
+  // Preview.tsx's copy of this effect argues.
+  useEffect(() => {
+    if (paneSide !== "claude") claudeSeedRef.current = null;
+  }, [paneSide]);
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
@@ -1872,6 +1925,7 @@ export default function Listing({
                 sideEntries={sideEntries}
                 onSelectSide={selectSide}
                 onClose={closeSide}
+                claudeSeed={paneSide === "claude" ? claudeSeedRef.current : null}
               />
             </div>
           </>

@@ -235,5 +235,9 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     assert "export function paneKey(side: PaneSide, folder: string): string {" in pane_side, (
         "paneKey's signature grew a row/selection parameter back")
     pane = _read(_PANE)
-    assert "`&_file=${encodeURIComponent(folder)}${chatOnly}&_preview=1`" in pane, (
+    # `${ask}` is the git companion's one-shot "Fix with AI" seed
+    # (`_fused_ask`, empty string outside a Claude pane with one pending) — it
+    # rides between `chatOnly` and `_preview=1` and changes nothing about the
+    # folder being the unconditional `_file` target this test is pinning.
+    assert "`&_file=${encodeURIComponent(folder)}${chatOnly}${ask}&_preview=1`" in pane, (
         "the companion iframe's _file target is no longer unconditionally the folder")
