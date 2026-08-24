@@ -2326,6 +2326,15 @@ let streamed = "";
    boolean) so the busy row can be the one being resolved rather than every row
    at once. */
 let resolving = null;
+/* Set once "Fix with AI" is CONFIRMED to have nowhere to go — `noteAskClaude`
+   (static/runtime.js) walked the whole same-origin ancestor chain and found no
+   `_fusedClaudeAsk` listener. That is an environmental fact about how this
+   document was opened (standalone, hosted, or a frame the shell's plumbing
+   never reached), not something that can change between one failed op and the
+   next in the same session, so it is never reset — a later failure swaps the
+   button for the explanation too, instead of it reappearing as a dead click
+   the reader has to discover a second time. See `askClaudeOnError`. */
+let askUnavailable = false;
 
 function resolveButton(path, label) {
   const busyHere = resolving === path;
@@ -2581,25 +2590,31 @@ function askClaudeOnError(message) {
   parts.push("Explain what the error means, then fix it: run whatever is "
     + "needed to get this repository out of the failure and back to a good "
     + "state.");
-  // The one thing this view can tell FOR SURE about whether the hop can work
-  // at all: whether the runtime installed the export in THIS frame. It cannot
-  // tell whether an ancestor further up is actually listening (`noteAskClaude`
-  // broadcasts and never reports back, same as `_fusedSelectRev`/`hopRev`
-  // above) — that half is accepted as unverifiable here, the same way `hopRev`
-  // accepts it. But the export being MISSING outright — this template opened
-  // standalone, under the hosted runtime, or in any frame the shell's
-  // ancestor-window plumbing was never injected into — used to fail with
-  // nothing: the button did something to the eye, and nothing to the page.
-  // The project convention is against exactly that, so this is now a normal
-  // failed op like any other `resolveFailed` — a visible toast, not a swallow.
-  if (typeof window._fusedAskClaude !== "function") {
-    flash = { ok: false, message: "Claude is not available from this view — "
-      + "there is no chat to open it into here." };
-    announce(flash.message);
+  // `window._fusedAskClaude` (static/runtime.js's `noteAskClaude`) is NOT a
+  // reliable "can this work" signal by itself — the runtime installs that
+  // export unconditionally on every framed template, so `typeof … ===
+  // "function"` is true even when nobody up the chain is listening, which is
+  // exactly the standalone/hosted/no-shell-plumbing case this guard exists
+  // for. What answers the real question is the CALL's own return value:
+  // `noteAskClaude` walks the same-origin ancestor chain and reports whether
+  // it found and called a `_fusedClaudeAsk` listener, `true` or `false` — so
+  // that is what this checks, not whether the export merely exists.
+  const delivered = typeof window._fusedAskClaude === "function"
+    && window._fusedAskClaude(parts.join("\n\n"));
+  if (!delivered) {
+    // A real, visible failure — the project convention is against a button
+    // that silently does nothing — but NOT `flash`: overwriting it would throw
+    // away the git error the reader still needs (it is the whole reason this
+    // button is on screen), and replace it with an availability complaint that
+    // then re-renders ANOTHER "Fix with AI" button whose message is that
+    // complaint rather than the error `askClaudeOnError` was ever passed.
+    // `askUnavailable` swaps the BUTTON for an explanation instead (see
+    // toast's own draw site), and the original flash is untouched.
+    askUnavailable = true;
+    announce("Claude is not available from this view — there is no chat to "
+      + "open it into here.");
     draw(true);
-    return;
   }
-  window._fusedAskClaude(parts.join("\n\n"));
 }
 
 function commit(message) {
@@ -3430,26 +3445,36 @@ function render(data, stashes, diff) {
     const note = el("div", { className: "flash" + (flash.ok ? "" : " bad") },
                     el("span", { textContent: flash.message }));
     if (!flash.ok && resolving === null && proposal === null && !aiBusy) {
-      /* A LABELLED button, deliberately not the bare sparkle: the commit box
-         has a sparkle that writes the message, and an identical icon here sent
-         a user expecting a commit message into the Claude sidebar instead.
-         GATED on `resolving`/`proposal`/`aiBusy`, same as `resolveButton` —
-         and for a stronger reason than "this button makes another AI call",
-         which was this comment's original (wrong) justification for dropping
-         the gate. This button makes NO call of its own, but `askClaudeOnError`
-         switches the sidebar to `claude`, which UNMOUNTS this entire git
-         iframe — document, module state and all. Showing it while a conflict
-         resolution is streaming, or a proposal is sitting unreviewed, would
-         let one click throw both away with no warning: the generation simply
-         stops (nothing left running it) and the proposal is gone, not merely
-         hidden. The user finishes or dismisses that first, the same as
-         `resolveButton` already requires. */
-      note.append(action("ask-claude", [icon(SPARK_GLYPH, 14), "Fix with AI"], {
-        className: "ai",
-        label: "Open Claude to explain and fix this error",
-        title: "Open Claude to explain and fix this error",
-        onClick: () => askClaudeOnError(flash.message),
-      }));
+      if (askUnavailable) {
+        /* Confirmed (not merely guessed, see `askClaudeOnError`) that nothing
+           up the ancestor chain can open this into a chat. A dead button that
+           looks clickable is worse than no button, so this replaces it with
+           the reason instead of omitting it — the reader still gets an
+           answer for why there is no "Fix with AI" here. */
+        note.append(el("span", { className: "note",
+          textContent: "(Claude is not available from this view.)" }));
+      } else {
+        /* A LABELLED button, deliberately not the bare sparkle: the commit box
+           has a sparkle that writes the message, and an identical icon here sent
+           a user expecting a commit message into the Claude sidebar instead.
+           GATED on `resolving`/`proposal`/`aiBusy`, same as `resolveButton` —
+           and for a stronger reason than "this button makes another AI call",
+           which was this comment's original (wrong) justification for dropping
+           the gate. This button makes NO call of its own, but `askClaudeOnError`
+           switches the sidebar to `claude`, which UNMOUNTS this entire git
+           iframe — document, module state and all. Showing it while a conflict
+           resolution is streaming, or a proposal is sitting unreviewed, would
+           let one click throw both away with no warning: the generation simply
+           stops (nothing left running it) and the proposal is gone, not merely
+           hidden. The user finishes or dismisses that first, the same as
+           `resolveButton` already requires. */
+        note.append(action("ask-claude", [icon(SPARK_GLYPH, 14), "Fix with AI"], {
+          className: "ai",
+          label: "Open Claude to explain and fix this error",
+          title: "Open Claude to explain and fix this error",
+          onClick: () => askClaudeOnError(flash.message),
+        }));
+      }
     }
     page.append(el("div", { className: "toast-host" }, note));
   }

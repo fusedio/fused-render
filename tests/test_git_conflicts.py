@@ -382,46 +382,71 @@ def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
     assert " file " in fn or "+ file +" in fn or "file +" in fn
     # It asks for a fix, not just an explanation.
     assert "fix it" in fn
-    # And it leaves via the ancestor hop, guarded like every other call to it —
-    # an early-return guard now (review #804 finding 5), not a wrapping `if`,
-    # because the missing-export case is a reportable failure rather than a
-    # silent one (see test_a_missing_ancestor_hook_is_a_visible_failure below).
-    assert 'typeof window._fusedAskClaude !== "function"' in fn
-    assert "window._fusedAskClaude(" in fn
+    # And it leaves via the ancestor hop — checking the CALL'S RETURN VALUE
+    # (review #804 round 2 finding 4), not whether the export merely exists:
+    # the runtime installs `window._fusedAskClaude` unconditionally on every
+    # framed template, so `typeof … === "function"` is true even when nobody
+    # up the chain is listening — only `noteAskClaude`'s own return value (see
+    # test_ask_claude_hop.py) can tell "delivered" from "nobody home".
+    assert 'const delivered = typeof window._fusedAskClaude === "function"' in fn
+    assert "&& window._fusedAskClaude(" in fn
+    assert "if (!delivered) {" in fn
     # It must NOT call fused.ai itself — that is the whole point of the change.
     assert "fused.ai(" not in fn
 
 
 def test_a_missing_ancestor_hook_is_a_visible_failure_not_a_silent_one():
-    """review #804 finding 5: the button used to render on ANY failed op, but
-    `askClaudeOnError` just returned when no ancestor defines
+    """review #804 round 1 finding 5: the button used to render on ANY failed
+    op, but `askClaudeOnError` just returned when no ancestor defines
     `_fusedClaudeAsk` — a real, reachable case (this template opened
     standalone, under the hosted runtime, or inside any frame the shell's
     ancestor-window plumbing was never injected into). The old "Explain"
     button always produced something; this one silently did nothing, which is
     the project's stated convention against.
 
-    Verified NOT to be a defect: the reviewer's second scenario (`claude`
-    genuinely not offered for the same target while `git`'s own template is
-    rendering) is unreachable given the current gates —
+    round 2 finding 5: the FIRST fix for this overwrote `flash` with the
+    availability complaint, destroying the git error the reader still needed
+    and then re-rendering another "Fix with AI" button whose `flash.message`
+    was the complaint rather than the original error. Fixed by leaving `flash`
+    alone and swapping the BUTTON for an inline note instead
+    (`askUnavailable`, checked in the toast's own draw site, not here).
+
+    Verified NOT to be a defect: the round 1 reviewer's second scenario
+    (`claude` genuinely not offered for the same target while `git`'s own
+    template is rendering) is unreachable given the current gates —
     fused_render/templates/claude/condition.py and
     fused_render/templates/git/condition.py refuse on the identical
     mount-backed predicate, and claude adds no narrowing beyond it (`isfile`
     unconditionally allows a file, `isdir` unconditionally allows a
     directory), so wherever git's gate has already passed (a precondition for
     this button being on screen at all), claude's gate is guaranteed to have
-    passed too. Nothing was changed for that half — see the report for the
-    verification.
+    passed too. Nothing was changed for that half.
     """
     src = _view_source()
     fn = src[src.index("function askClaudeOnError(message)"):]
     fn = fn[:fn.index("\n}")]
-    guard = fn[fn.index('if (typeof window._fusedAskClaude !== "function") {'):]
+    guard = fn[fn.index("if (!delivered) {"):]
     guard = guard[:guard.index("\n  }")]
-    assert "flash = { ok: false," in guard
+    assert "askUnavailable = true;" in guard
     assert "announce(" in guard
     assert "draw(true);" in guard
-    assert "return;" in guard
+    # NOT a flash overwrite: the original git error must survive.
+    assert "flash =" not in guard
+
+
+def test_a_confirmed_unavailable_claude_replaces_the_button_not_the_error():
+    """The toast draw site's half of the round 2 finding 5 fix: once
+    `askUnavailable` is set, the NEXT render swaps the button for an
+    explanation — `flash.message` (the original op's error) is never
+    overwritten by anything in this branch."""
+    src = _view_source()
+    toast = src[src.index("if (!flash.ok && resolving === null"):]
+    toast = toast[:toast.index("\n    }\n    page.append(")]
+    assert "if (askUnavailable) {" in toast
+    branch = toast[toast.index("if (askUnavailable) {"):]
+    branch = branch[:branch.index("} else {")]
+    assert "flash =" not in branch
+    assert "Claude is not available" in branch
 
 
 def test_the_claude_ask_reaches_the_shell_through_the_ancestor_global():
