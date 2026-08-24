@@ -1312,6 +1312,53 @@ class CacheReading(NamedTuple):
     runner_reason: str | None = None
 
 
+def has_vision_tower(repo_id: str) -> bool:
+    """Does the cached snapshot of `repo_id` declare a vision tower?
+
+    **Exported, and read by `ai_runtime._accepts_image`** (AI-11j): a
+    TEXT_GENERATION entry may be handed an image only when the resolved
+    runner is the MLX one AND the checkpoint it names actually has a vision
+    tower, and this is how that half is answered WITHOUT loading the model —
+    the AI Models page draws an attach button off this before any request
+    ever reaches the worker.
+
+    Read straight off `config.json` — a `vision_config` block and/or an
+    `image_token_id`, the same evidence `_architecture_task` already uses
+    (see `_VISION_CONFIG`, above) to route a unified vision-language
+    checkpoint to `image-text-to-text` rather than plain `text-generation`.
+
+    **Gotcha, verified by hand: do not decide this by globbing weight
+    files.** `Qwen3.5-*-OptiQ` keeps its vision tower in a SIDE-CAR
+    `optiq/optiq_vision.safetensors`, never in `model.safetensors` — a
+    non-recursive glob over the snapshot's top level concludes these
+    checkpoints have no vision weights at all, which is wrong for every
+    OptiQ entry this app's own catalog recommends. `config.json` declares
+    `vision_config`/`image_token_id` regardless of where the tower's OWN
+    weights physically live, which is why this reads THAT and never a file
+    listing.
+
+    False whenever the answer cannot be determined — no snapshot on disk, an
+    unreadable or empty config, a hostile repo id — because an attach button
+    whose request then 400s is exactly the failure AI-11j exists to prevent,
+    and "no image support" is the failure-closed direction for a control this
+    permissive.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    # The same path-segment guard `cached_capability` applies below: a repo id
+    # reaches here out of a request body, and is not a place to go looking
+    # for `..` or a path separator.
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return False
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    snapshot_dir = _default_snapshot(repo_dir)
+    if snapshot_dir is None:
+        return False
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    if not config:
+        return False
+    return _VISION_CONFIG in config or "image_token_id" in config
+
+
 def cached_capability(repo_id: str) -> CacheReading:
     """Which capability `repo_id` would load as, read off the local snapshot.
 

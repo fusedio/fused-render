@@ -747,6 +747,67 @@ def _sampling_problem(body: dict) -> str | None:
     return None
 
 
+#: How many pictures one request may attach. Bounded for the same reason
+#: `max_tokens` is (`_SAMPLING`, above): ONE model is resident per capability
+#: and serves every page on this machine, so an unbounded list is not one
+#: caller's slow request — it is every other caller's turn behind a request
+#: that decided to carry fifty images' worth of placeholder tokens. Eight is
+#: past any ordinary "compare these pictures" ask and short of a caller that
+#: meant to send a folder.
+_MAX_IMAGES = 8
+
+
+def _images_problem(images) -> str | None:
+    """Why this `images` list is unusable, or None. Local models only — the
+    caller-facing refusal for a Claude-tier request lives in `_ai_relay`,
+    beside `history`'s and `raw`'s own refusals, and this only checks the
+    SHAPE: a list of non-empty strings, under the cap."""
+    if not isinstance(images, list):
+        return "'images' must be a list of absolute file paths"
+    if len(images) > _MAX_IMAGES:
+        return f"'images' may not carry more than {_MAX_IMAGES} paths"
+    for index, path in enumerate(images):
+        if not isinstance(path, str) or not path:
+            return f"'images[{index}]' must be a non-empty string"
+    return None
+
+
+def _images_unsupported_by_runner(model: str) -> str | None:
+    """Why the runner that would actually SERVE `model` cannot be handed an
+    image, or None.
+
+    `_images_problem` only checks the shape of the list; this checks whether
+    the request means anything at all once it reaches a worker. Only
+    `mlx-text`'s own worker reads `images` (`mlx_text/worker.py`'s image
+    branch, which builds the prompt through `mlx_vlm.prompt_utils.
+    apply_chat_template`) — `llamacpp_text`'s shared `generate` (`runners/
+    llama_text.py`) reads `messages`/`prompt`/the sampling knobs and nothing
+    else, so a picture handed to it is silently dropped on the floor. That
+    would read as a confident answer about nothing on Linux, on Windows, or
+    on a Mac where llama.cpp has been promoted over MLX — not a 400, not a
+    warning, just an answer about a photograph the model never saw.
+
+    `_accepts_image` (`ai_runtime.py`, AI-11j) already knows this — it is the
+    SAME computation the catalog's attach affordance is drawn from, both the
+    engine gate and, for `mlx-text`, whether the specific checkpoint even has
+    a vision tower — so it is asked here rather than re-derived: a caller
+    that ignores the flag, or a client built before it existed, must not get
+    an answer the flag never promised.
+    """
+    from fused_render.ai import registry
+    from fused_render.server.routers import ai_runtime
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    runner_code = runner.code if runner else None
+    if ai_runtime._accepts_image(registry.TEXT_GENERATION, runner_code, model):
+        return None
+    if runner_code is None:
+        return "no text-generation runner is available on this machine to read an image"
+    return (f"{model!r} cannot be handed an image on this machine — the resolved "
+            f"runner ({runner_code!r}) either cannot read a picture at all, or "
+            "this checkpoint has no vision tower")
+
+
 def _history_problem(history) -> str | None:
     """Why this history is unusable, or None. The message is the API's manners:
     a chat client passing the wrong shape should be told which turn and what
@@ -816,6 +877,15 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         "max_tokens": body.get("max_tokens"),
         "temperature": body.get("temperature"),
         "top_p": body.get("top_p"),
+        # Absolute paths on THIS turn only (mlx_text/worker.py's own boundary,
+        # AI-11j) — a LIST, unlike `/api/ai/image`'s single `image`, because a
+        # VLM's chat template is told `num_images` and asking about two
+        # pictures at once is the ordinary case for this capability, where an
+        # edit always has exactly one base image. Omitted entirely rather than
+        # sent empty: `images: []` on every call would be a needless departure
+        # from the worker's "absent = today's text path" contract for every
+        # model that never uses it.
+        **({"images": body.get("images")} if body.get("images") else {}),
     }
     request = {k: v for k, v in request.items() if v is not None}
 
@@ -976,6 +1046,38 @@ async def _ai_relay(body: dict):
             "has nowhere to put 'history' — send one or the other",
             status=400)
 
+    # Base images for a vision-language local model, on the CURRENT turn only
+    # (mlx_text/worker.py's own boundary — `history` stays text-only, matching
+    # `_history_problem`'s `content: str` requirement, which this leaves
+    # alone). Shape-checked here, refused for Claude below, same as history
+    # and raw.
+    images = body.get("images")
+    if images is not None:
+        problem = _images_problem(images)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+    # `raw` and `images` refuse each other, the same shape as `raw`/`history`
+    # above and for the same underlying reason: `raw` means "no chat template
+    # at all", and the image placeholder tokens a picture needs are inserted
+    # BY that template (`mlx_vlm.prompt_utils.apply_chat_template`, called
+    # only on the image path — see `mlx_text/worker.py::generate`). There is
+    # nowhere in a template-free request to put them, so honouring `raw` here
+    # would mean silently ignoring `images` — the worker's image branch reads
+    # `messages` unconditionally and never looks at `prompt` at all, so a
+    # caller setting both today would watch `raw` have no effect with no
+    # error, which is exactly the silent-drop `history` is refused instead of
+    # dropped for. Refusing the pair, rather than teaching the image path to
+    # honour a raw string, is the correct call: mlx-vlm's own template helper
+    # is what carries the placeholder tokens, and it takes structured messages
+    # to do it, not a bare continuation.
+    if raw and images:
+        return _ai_error(
+            "bad_request",
+            "'raw' sends the prompt with no chat template, and the image "
+            "placeholder tokens 'images' needs are inserted BY that template "
+            "— send one or the other",
+            status=400)
+
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
@@ -997,6 +1099,21 @@ async def _ai_relay(body: dict):
         sampling = _sampling_problem(body)
         if sampling:
             return _ai_error("bad_request", sampling, status=400)
+        # `images` is shape-checked above (any local model), but SHAPE is not
+        # SUPPORT: only mlx-text's own worker reads `images` at all
+        # (`mlx_text/worker.py`'s image branch) — `llamacpp_text`'s shared
+        # `generate` reads `messages`/`prompt`/the sampling knobs and nothing
+        # else, so a picture handed to it is dropped on the floor rather than
+        # refused, and a caller reads back a confident answer about nothing.
+        # The catalog already knows this answer per entry (`acceptsImage`,
+        # AI-11j) so a caller who never reads that flag — or a stale client
+        # that predates it — must not be trusted to have honoured it; the
+        # request path enforces the SAME computation rather than a second,
+        # looser one.
+        if images:
+            unsupported = _images_unsupported_by_runner(model)
+            if unsupported:
+                return _ai_error("bad_request", unsupported, status=400)
         # In a THREAD. `_local_relay` is blocking I/O to a worker process: it
         # waits for the first token before it can answer, and the non-streaming
         # path waits for the whole completion. On a local model that is seconds
@@ -1032,10 +1149,22 @@ async def _ai_relay(body: dict):
             "which is always a chat",
             status=400)
 
-    # Third flag, same rule. The Claude CLI exposes no sampling knobs at all —
+    # Third flag, same rule. The Claude CLI has no notion of an attachment —
+    # `claude -p` takes a prompt string — so silently dropping the picture
+    # would answer as if it had never been sent, which reads as the model
+    # ignoring what was attached rather than the API declining to attach it.
+    if images:
+        return _ai_error(
+            "bad_request",
+            "'images' is only supported by a local model (a Hugging Face repo "
+            "id, e.g. 'mlx-community/Qwen3-8B-4bit'); this call would go to "
+            f"{model!r}, which cannot be handed a picture",
+            status=400)
+
+    # Fourth flag, same rule. The Claude CLI exposes no sampling knobs at all —
     # `effort` is what it has — so a temperature accepted here would be a
     # setting the caller could watch have no effect, which is the failure mode
-    # `history` and `raw` are refused for.
+    # `history`, `raw` and `images` are refused for.
     named = [name for name in _SAMPLING if body.get(name) is not None]
     if named:
         return _ai_error(

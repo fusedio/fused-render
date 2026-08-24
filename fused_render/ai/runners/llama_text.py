@@ -819,6 +819,34 @@ def generate(body, write):
         write({"type": "done", "ok": False, "error": "no model is loaded"})
         return
 
+    # **This runner reads `messages`/`prompt`/`max_tokens`/`temperature`/
+    # `top_p` and NOTHING else — an `images` list handed to it must be
+    # refused, never silently dropped.** A dropped image is the worst
+    # failure this app has: a confident reply about a picture the model
+    # never saw, with nothing anywhere to say so.
+    #
+    # This is a fact about THIS RUNNER's wiring, not a claim about what
+    # llama.cpp itself can do — llama-cpp-python exposes vision through
+    # `libmtmd` and `create_chat_completion`'s chat-handler table, but this
+    # runner deliberately calls `create_completion(stream=True)` instead (see
+    # the module docstring, "The chat template is rendered by hand, from the
+    # GGUF's own embedded jinja2 source…") to keep the NDJSON streaming
+    # contract identical to every other runner's, and a vision-capable GGUF
+    # would additionally need a second `mmproj` GGUF that nothing here
+    # downloads. So the refusal names THIS wiring, not the engine's ceiling.
+    #
+    # **Shared by BOTH `llamacpp_text` and `llamacpp_text_vulkan`** — this
+    # module is imported by both folders' `worker.py` (see the module
+    # docstring's "which folder imported it" section), so one refusal here
+    # covers both without either shell growing a line of its own.
+    if body.get("images"):
+        write({"type": "done", "ok": False,
+               "error": "llamacpp-text cannot be handed an image — this "
+                        "runner streams through create_completion rather "
+                        "than create_chat_completion, which is where "
+                        "llama.cpp's own vision support lives"})
+        return
+
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     prompt = _prompt_text(llm, messages, body.get("prompt") or "")
     # What the model READ, reported as `input_tokens` (SPEC AI-3) — counted

@@ -2303,3 +2303,59 @@ def test_a_finished_repo_reports_every_byte_as_fetched(client, hub):
     row = _repo_row(client, "org/done")
 
     assert row["fetchedBytes"] == row["size"]
+
+
+# -- has_vision_tower: can a cached checkpoint be handed an image? (AI-11j) ---
+#
+# Read straight off `config.json`, WITHOUT loading the model — the question
+# `ai_runtime._accepts_image` has to answer before an attach button is even
+# drawn, let alone before a request reaches the worker.
+
+
+def test_has_vision_tower_reads_the_vision_config_key(hub):
+    """The same evidence `_architecture_task` already uses to route a unified
+    checkpoint to `image-text-to-text` rather than plain `text-generation`."""
+    repo = _repo(hub, "models--org--vlm", snapshots={"c1": {}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"model_type": "qwen3_5", "vision_config": {"depth": 4}}))
+
+    assert ai_models_mod.has_vision_tower("org/vlm") is True
+
+
+def test_has_vision_tower_is_false_for_a_plain_text_checkpoint(hub):
+    repo = _repo(hub, "models--org--chat", snapshots={"c1": {}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"model_type": "llama"}))
+
+    assert ai_models_mod.has_vision_tower("org/chat") is False
+
+
+def test_has_vision_tower_reads_the_optiq_sidecar_checkpoints_config_too(hub):
+    """**The gotcha, verified by hand:** `Qwen3.5-*-OptiQ` keeps its vision
+    tower in a SIDE-CAR `optiq/optiq_vision.safetensors`, not in
+    `model.safetensors` — a checkpoint that would read as tower-less to
+    anything that decided the answer by globbing weight files (non-recursively,
+    which is the version of that mistake that is easy to write). `config.json`
+    carries `vision_config`/`image_token_id` regardless of where the tower's
+    OWN weights live, which is why this is never answered by a file listing."""
+    repo = _repo(hub, "models--org--optiq", snapshots={"c1": {}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"model_type": "qwen3_5", "image_token_id": 151655,
+                               "vision_config": {"depth": 4}}))
+    # The tower's weights, off in their own side-car — nothing here reads this
+    # file, and that absence is the point of the test.
+    _snapshot_file(repo, "c1", "optiq/optiq_vision.safetensors", b"\x00" * 8)
+
+    assert ai_models_mod.has_vision_tower("org/optiq") is True
+
+
+def test_has_vision_tower_is_false_for_a_never_cached_repo(hub):
+    """No snapshot on disk at all: the answer cannot be determined, and False
+    is the failure-closed direction — an attach button whose request 400s is
+    exactly the failure AI-11j exists to prevent."""
+    assert ai_models_mod.has_vision_tower("org/never-downloaded") is False
+
+
+def test_has_vision_tower_is_false_for_a_hostile_repo_id(hub):
+    """The same path-segment guard `cached_capability` applies to a request
+    body's model id — a repo id is not a place to go looking for `..`."""
+    assert ai_models_mod.has_vision_tower("../../etc/passwd") is False

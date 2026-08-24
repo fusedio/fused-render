@@ -1,6 +1,6 @@
 # The MLX text runner's environment (SPEC §40, PY-16).
 #
-# This folder exists so that `mlx-lm` is named in exactly one place and lives in
+# This folder exists so that `mlx-vlm` is named in exactly one place and lives in
 # exactly one interpreter — not fused-render's. The app is a file explorer; it
 # must start on a machine that has never run a model, and it must not carry a
 # Metal-only dependency into a Windows wheel.
@@ -8,15 +8,35 @@
 # `envinstall` builds this on first use, with the same detached `uv sync`,
 # progress record and verbatim errors any declaring folder gets.
 #
-# Three packages, and each earns its place: mlx-lm loads and generates,
+# **`mlx-vlm`, not `mlx-lm`.** Every model in this app's own MLX text catalog
+# (Qwen3.5, gemma-3, gemma-4) is a unified vision-language checkpoint — the
+# vision tower is already on disk, `download()` below pulls the whole repo with
+# no allow/ignore patterns — and mlx-lm loads only `language_model.*` out of it,
+# refusing to look at the rest. mlx-vlm reads the same repo and the same
+# language tower for a text-only chat (throughput measured a wash between the
+# two engines), and additionally knows how to hand the model an image. See
+# `worker.py`'s module docstring for the two behaviour hazards this switch had
+# to design around.
+#
+# Four packages, and each earns its place: mlx-vlm loads and generates,
+# jinja2 renders the chat template mlx-vlm calls out to (see below),
 # huggingface_hub downloads, psutil answers "how much memory is this costing".
 #
-# `mlx-lm` carries a CEILING for the reason `mflux_image/pyproject.toml` states
+# **`jinja2` is declared here for a reason that only shows up at RUNTIME, not at
+# install.** mlx-vlm 0.6.15 does not declare jinja2 as a dependency of its own —
+# unlike mlx-lm, which does — so a clean `uv sync` of this manifest installs
+# without incident and the failure lands on the first generation instead, as
+# `ImportError: apply_chat_template requires jinja2` out of transformers'
+# template renderer. Nothing about the install step says this environment is
+# incomplete; only a chat proves it. Naming it here is cheaper than tracing
+# that failure a second time.
+#
+# `mlx-vlm` carries a CEILING for the reason `mflux_image/pyproject.toml` states
 # at length: no lockfile is committed beside these manifests and `uv sync` runs
 # bare, so an unbounded line re-resolves from PyPI on every new venv key — which
-# is how an mlx minor bump reached users' machines with no commit behind it.
-# `>=0.31,<0.32` because mlx-lm is pre-1.0, where a minor is the breaking one,
-# and because it is the package that pins `mlx` for this runner.
+# is how an mlx minor bump once reached users' machines with no commit behind
+# it. `>=0.6.15,<0.7` because mlx-vlm is pre-1.0, where a minor is the breaking
+# one, and because it is the package that pins `mlx` for this runner.
 #
 # tqdm used to be here, for a `tqdm_class` shim that reported hf's progress bars
 # to the download manager. It is gone with the shim (AI-5b): that hook only
@@ -27,7 +47,8 @@ name = "fused-render-runner-mlx-text"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mlx-lm>=0.31,<0.32",
+    "mlx-vlm>=0.6.15,<0.7",
+    "jinja2",
     "huggingface_hub",
     "psutil",
 ]

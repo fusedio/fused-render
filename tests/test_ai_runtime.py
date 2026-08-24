@@ -2497,6 +2497,11 @@ UNBOUNDED_RUNNER_DEPENDENCIES = {
     "pillow": "writes the PNG",
     "sentencepiece": "a tokenizer file format, fixed by the checkpoints that use it",
     "protobuf": "sentencepiece's on-disk format, same argument",
+    "jinja2": (
+        "renders the chat template around a prompt; it is a general templating "
+        "library with no notion of a model or a tensor, and its next major "
+        "cannot change what a checkpoint computes"
+    ),
     "av": "the ffmpeg libraries, for decoding to a waveform — not inference",
     "gguf": "a quantized-weight FILE reader; the tensors it returns are diffusers'",
     "triton-rocm": (
@@ -4993,12 +4998,21 @@ def test_the_diffusers_engine_marks_NO_image_model_as_editable(
     assert "Diffusers image engine" in refused.json()["error"]
 
 
-def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, monkeypatch):
+def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, hub, monkeypatch):
     """False on every non-image capability rather than True by vacancy.
 
     `engine_options` is an exception list, so a text runner "refuses nothing"
     — and a flag computed off that answer alone would have every chat model in
     the payload claiming it takes a photo.
+
+    **`hub` (an empty, isolated cache) is load-bearing here since AI-11j grew
+    a second way to earn True**: none of the curated suggestions in this test
+    is actually downloaded, so every one should read False for having no
+    cached `config.json` to answer from at all — but on a real dev machine
+    that HAS `mlx-community/Qwen3.5-4B-OptiQ-4bit` on disk (a unified
+    checkpoint with a real vision tower), the un-isolated cache made this
+    assertion machine-dependent: true here, false on a fresh checkout. The
+    claim this test makes is about VACANCY, not about a lucky empty disk.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
@@ -5008,6 +5022,49 @@ def test_no_TEXT_or_SPEECH_model_claims_to_accept_an_image(client, monkeypatch):
         for model in row["models"]:
             assert model["acceptsImage"] is False, (
                 f"{row['capability']}/{model['id']} claims to accept an image")
+
+
+# -- `acceptsImage` on TEXT_GENERATION: mlx-vlm reads a tower on demand -------
+#
+# AI-11j's other half. mlx_text/worker.py loads every checkpoint through
+# mlx-vlm now (`lazy=True`), which CAN read a vision tower — but only a
+# checkpoint that actually has one, and only on the ONE runner that goes
+# through mlx-vlm at all. Both halves are asserted directly against
+# `ai_runtime._accepts_image` rather than through the whole catalog endpoint,
+# because the fact under test is the FUNCTION's own gate, not the endpoint's
+# plumbing (already covered above).
+
+
+def test_accepts_image_is_true_for_an_mlx_text_model_with_a_vision_tower(hub):
+    _cached_repo(hub, "org/vlm", files=("model.safetensors",),
+                config={"model_type": "qwen3_5", "vision_config": {"depth": 4}})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/vlm") is True
+
+
+def test_accepts_image_is_false_for_an_mlx_text_model_with_no_vision_tower(hub):
+    """The ordinary chat repo: a real cached checkpoint, `mlx-text` resolved
+    it, and it still has nothing to attach a picture to."""
+    _cached_repo(hub, "org/plain-chat", files=("model.safetensors",),
+                config={"model_type": "llama"})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/plain-chat") is False
+
+
+def test_accepts_image_is_false_for_a_llamacpp_text_model_even_with_a_vision_config(hub):
+    """The RUNNER gate, not only the checkpoint's own config: llama.cpp's GGUF
+    loader has no path to a vision tower at all here, whatever a cached
+    repo's `config.json` happens to say — a model that resolves to
+    `llamacpp-text` must come back False exactly as it did before this
+    build."""
+    _cached_repo(hub, "org/vlm", files=("model.safetensors",),
+                config={"model_type": "qwen3_5", "vision_config": {"depth": 4}})
+    assert ai_runtime._accepts_image(
+        registry.TEXT_GENERATION, "llamacpp-text", "org/vlm") is False
+
+
+def test_accepts_image_is_false_with_no_runner_resolved(hub):
+    """`runner_code=None` — a capability with nothing to serve it — must not
+    be read as vacancy meaning yes."""
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, None, "org/whatever") is False
 
 
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
@@ -7825,6 +7882,117 @@ def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client)
     message = response.json()["error"]["message"]
     assert "only applies to a local model" in message
     assert "between" not in message
+
+
+# -- images: a current-turn attachment for a local VLM (D467's shape reused) --
+
+
+def test_images_reach_the_worker_alongside_messages(client, fake_runner, monkeypatch):
+    """A list of absolute paths, threaded straight through to the worker's
+    request — the worker is the one that knows how to turn them into
+    placeholder tokens (`mlx_text/worker.py`'s image path, commit 3)."""
+    from fused_render.server import ai as ai_mod
+
+    sent = {}
+
+    def capture(model, request):
+        sent["request"] = request
+        yield {"type": "chunk", "text": "a cat"}
+        yield {"type": "done", "ok": True, "tokens": 1}
+
+    monkeypatch.setattr(supervisor, "generate_text", capture)
+    # `fake_runner` registers `code="fake-text"`, which `_images_unsupported_
+    # by_runner` correctly refuses (only `mlx-text` reads `images` at all) —
+    # that refusal is its OWN test below; this one is about the plumbing once
+    # a request has cleared it, so the runner-support gate is bypassed here
+    # rather than standing up a whole mlx-text-shaped fixture for a threading
+    # test that does not care which runner it is.
+    monkeypatch.setattr(ai_mod, "_images_unsupported_by_runner", lambda model: None)
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?",
+        "model": "org/chat",
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.text
+    assert sent["request"]["images"] == ["/Users/x/photo.png"]
+
+
+def test_no_images_key_at_all_is_not_sent_to_the_worker(client, fake_runner, monkeypatch):
+    """Absent means absent — the worker's own contract is "empty/absent is
+    today's text path, unchanged", and a bare empty list sent on every call
+    would be a needless departure from that for every model that never uses
+    it."""
+    sent = {}
+
+    def capture(model, request):
+        sent["request"] = request
+        yield {"type": "chunk", "text": "ok"}
+        yield {"type": "done", "ok": True, "tokens": 1}
+
+    monkeypatch.setattr(supervisor, "generate_text", capture)
+    client.post("/api/ai", json={"prompt": "hi", "model": "org/chat"},
+               headers={"X-Fused": "1"})
+    assert "images" not in sent["request"]
+
+
+@pytest.mark.parametrize("images,expected", [
+    ("not a list", "must be a list"),
+    ([""], "must be a non-empty string"),
+    ([123], "must be a non-empty string"),
+    ([f"/img/{i}.png" for i in range(20)], "may not carry more than"),
+])
+def test_a_malformed_images_list_says_why(client, images, expected):
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "images": images,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert expected in response.json()["error"]["message"]
+
+
+def test_images_are_refused_for_claude_rather_than_dropped(client):
+    """The same rule `history` and `raw` are refused for: silently dropping a
+    picture would answer as if it had never been attached, which reads as the
+    model ignoring what was sent rather than the API declining to send it."""
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?",
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "local model" in response.json()["error"]["message"]
+
+
+def test_raw_and_images_together_are_refused(client):
+    """`raw` means no chat template at all, and the image placeholder tokens
+    `images` needs are inserted BY that template — silently ignoring `raw`
+    once a picture is attached (`mlx_text/worker.py`'s image branch reads
+    `messages` unconditionally and never looks at `prompt`) is exactly the
+    silent-drop `history` is refused for instead of dropped, so this pairing
+    gets the same refusal rather than a request that watches `raw` do
+    nothing."""
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?", "model": "org/chat", "raw": True,
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "one or the other" in response.json()["error"]["message"]
+
+
+def test_images_are_refused_when_the_resolved_runner_cannot_read_them(
+        client, fake_runner, monkeypatch):
+    """The shape check (`_images_problem`) says nothing about whether the
+    request MEANS anything: `fake_runner` registers `code="fake-text"`, which
+    `_accepts_image` correctly refuses (only `mlx-text` reads `images` at
+    all — `llamacpp_text`'s shared `generate` drops the field on the floor),
+    and a caller must be told that up front rather than get back a confident
+    answer about a picture the model never saw."""
+    response = client.post("/api/ai", json={
+        "prompt": "what is this?", "model": "org/chat",
+        "images": ["/Users/x/photo.png"],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "fake-text" in message
+    assert "org/chat" in message
 
 
 def test_cancel_stops_the_generation_without_unloading(client, fake_runner):

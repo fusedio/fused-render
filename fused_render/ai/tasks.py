@@ -94,9 +94,12 @@ def _t(tag, label, modality, capability=None, help="", note="") -> Task:
 #: tab's filter menu is this table filtered, and a menu ordered by an enum's
 #: accident reads as random.
 #:
-#: **Five rows carry a capability and the other fifty-two do not**, which is
-#: the honest shape of a desktop app with five runners. The interesting ones are
-#: commented; the rest are ordinary "no runner for this" rows.
+#: **Seven rows carry a capability and the other fifty do not**, which is the
+#: honest shape of a desktop app whose five capabilities are each reachable by
+#: more than one Hub tag (a chat model answers both `text-generation` and,
+#: with a vision tower, `image-text-to-text`/`visual-question-answering`).
+#: The interesting ones are commented; the rest are ordinary "no runner for
+#: this" rows.
 _TASKS: tuple[Task, ...] = (
     # ---------------------------------------------------------------- text
     _t("text-generation", "text generation", "nlp", TEXT_GENERATION,
@@ -104,9 +107,17 @@ _TASKS: tuple[Task, ...] = (
     # **A vision-language checkpoint IS the causal LM the text runner loads**
     # when you only give it text — Qwen3.5 and gemma-4 ship as one checkpoint
     # with a vision tower attached, including every entry in this app's own MLX
-    # catalog. mlx-lm loads the language tower and ignores the rest. Leaving
-    # this row unmapped once took the Load button off the models the app was
-    # recommending on the next tab over.
+    # catalog. Leaving this row unmapped once took the Load button off the
+    # models the app was recommending on the next tab over.
+    #
+    # **This comment used to explain why the row is mapped despite the tower
+    # being ignored — mlx-lm loaded the language half and never touched the
+    # rest. That is no longer true, and it is the interesting kind of
+    # out-of-date: the runner switched to mlx-vlm (`mlx_text/worker.py`),
+    # which loads the SAME checkpoint `lazy=True` and reads the tower on
+    # demand, when a request actually attaches an image (`_accepts_image`,
+    # `ai_runtime.py`). So this row is no longer "map it anyway so the Load
+    # button isn't hidden" — it is a real capability, image and all.
     _t("image-text-to-text", "image + text to text", "multimodal", TEXT_GENERATION,
        "Takes an image AND a prompt, answers in text — describing a picture, reading a chart, visual chat."),
     _t("text-to-image", "text to image", "multimodal", IMAGE_GENERATION,
@@ -195,10 +206,18 @@ _TASKS: tuple[Task, ...] = (
        "Turns an image into a vector, so images can be compared or searched.",
        "The embedding runners here serve dual encoders that take BOTH images and text; "
        "an image-only encoder has no runner."),
-    _t("visual-question-answering", "visual question answering", "multimodal", None,
-       "Answers a question about a picture.",
-       "The models that do this today carry the image + text to text tag, which loads as a "
-       "chat model; a VQA-only checkpoint has no runner."),
+    # The Hub's OTHER tag for the same checkpoints `image-text-to-text` above
+    # already maps: a repo carrying this tag instead is still the identical
+    # unified vision-language chat model, and mlx-vlm answers a question about
+    # a picture exactly the way it describes one — there is no separate
+    # VQA-only architecture here that needs its own row. Used to be `None` with
+    # a note that a VQA-only checkpoint has no runner; that was true of the
+    # architecture this tag is COMMONLY seen on, but the note was reachable
+    # from a repo that actually carries this exact tag and IS one of the
+    # catalog's own recommendations, which read as "no runner" for a model
+    # this app runs today.
+    _t("visual-question-answering", "visual question answering", "multimodal", TEXT_GENERATION,
+       "Answers a question about a picture."),
     _t("document-question-answering", "document question answering", "multimodal", None,
        "Answers a question by reading a scanned document."),
     _t("visual-document-retrieval", "visual document retrieval", "multimodal", None,

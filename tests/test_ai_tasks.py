@@ -68,6 +68,11 @@ def test_ruled_out_and_unknown_are_tellable_apart():
     # you only give it text — every entry in this app's own MLX catalog carries
     # this tag, and leaving it unmapped once took the Load button off them.
     ("image-text-to-text", registry.TEXT_GENERATION),
+    # The same checkpoints, the Hub's OTHER tag for asking about a picture —
+    # mlx-vlm answers this exactly as it answers "image + text to text": one
+    # runner, one capability, no separate VQA-only model exists to need a
+    # runner of its own.
+    ("visual-question-answering", registry.TEXT_GENERATION),
     ("text-to-image", registry.IMAGE_GENERATION),
     ("automatic-speech-recognition", registry.SPEECH_TO_TEXT),
     # The tag a SigLIP or CLIP repo actually carries: a dual encoder, named
