@@ -13,13 +13,13 @@ this file never sees one and has no branch for it.
 **`mlx_embeddings.load()` does the whole load**, unlike `mlx_text`'s bare
 `mlx_lm.load`: it also resolves the processor (`AutoProcessor` for a model
 whose config carries a `vision_config`, which SigLIP's does), so there is no
-separate processor line here the way `transformers_embed/worker.py` has one —
-the library already made that choice for a checkpoint shaped like this one.
+separate processor line here the way `runners/torch_embed.py` has one — the
+library already made that choice for a checkpoint shaped like this one.
 
 `embed_common.py` (one directory up) is where the request validation and the
-unit-normalization live, shared with `transformers_embed/worker.py` because
-the two engines answer for the SAME repos (`catalog.py`'s embeddings block)
-and must refuse and shape a request identically.
+unit-normalization live, shared with `runners/torch_embed.py` because the two
+engines answer for the SAME repos (`catalog.py`'s embeddings block) and must
+refuse and shape a request identically.
 """
 
 import os
@@ -47,9 +47,9 @@ _loaded = {}
 _STREAMS = {}
 _STREAMS_LOCK = threading.Lock()
 
-#: SigLIP's own padding rule. See `transformers_embed/worker.py`'s
-#: `_TEXT_PADDING` — the same convention, because it is a fact about how the
-#: checkpoint was trained and not about which engine is reading it.
+#: SigLIP's own padding rule. See `runners/torch_embed.py`'s `_TEXT_PADDING`
+#: — the same convention, because it is a fact about how the checkpoint was
+#: trained and not about which engine is reading it.
 _TEXT_PADDING = "max_length"
 
 
@@ -164,7 +164,7 @@ def _to_lists(array):
     `.tolist()` on an mx array already returns plain Python numbers (mlx has
     no numpy dependency to round-trip through), so this is a name for the
     conversion rather than a computation of its own — kept as a function so
-    both call sites below read the same way `transformers_embed/worker.py`'s
+    both call sites below read the same way `runners/torch_embed.py`'s
     two do.
     """
     import mlx.core as mx
@@ -190,9 +190,9 @@ def _image_vectors(model, processor, paths):
     """One vector per path in `paths`, unnormalized, as a plain nested list.
 
     Opened one at a time through `embed_common.open_image`, exactly
-    `transformers_embed/worker.py`'s `_image_vectors` — see that function's
-    docstring for why a bad path in the middle of a batch must be opened here
-    rather than handed to the processor as a filename.
+    `runners/torch_embed.py`'s `_image_vectors` — see that function's docstring
+    for why a bad path in the middle of a batch must be opened here rather than
+    handed to the processor as a filename.
     """
     import mlx.core as mx
 
