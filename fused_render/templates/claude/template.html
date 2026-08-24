@@ -11392,18 +11392,34 @@ archiveOpt.addEventListener("click", async () => {
     // DISABLED item until the read lands would trade the bug for the lateness
     // the instant paint exists to remove, so the check moves to the press,
     // where one extra read is invisible next to the write that follows it.
-    const check = await fetch("/api/tasks");
-    if (check.ok) {
-      const listing = await check.json();
-      const now = ((listing && listing.tasks) || []).find((t) => t && t.key === archiveKey);
-      // Only a POSITIVE answer overrides the cache. An unreadable listing, or a
-      // task the listing no longer holds, leaves the reader's own reading of the
-      // button in force — refusing the press on a listing we could not read
-      // would make a network blip look like a broken control.
-      if (now) {
-        filed = now.status === "archived";
-        archiveStates.set(archiveKey, filed);
+    // ITS OWN try, INSIDE this one, and that nesting is the whole point (bugbot,
+    // PR #802). Sharing the outer `try` with the write below meant a THROWN
+    // fetch — offline, a dropped connection, a body that would not parse — went
+    // straight to the catch and never attempted the POST at all: the press
+    // refused because its own confirmation failed, which is exactly the failure
+    // mode the comment above forbids. Only a non-OK STATUS fell through, which
+    // is the one unreachable-server case that does not throw.
+    //
+    // So every way this read can fail is one way: it declines to override, and
+    // the cached verb — the one the reader actually read off the button — is
+    // spent. A confirmation is an improvement on a guess, never a precondition
+    // for acting on it.
+    try {
+      const check = await fetch("/api/tasks");
+      if (check.ok) {
+        const listing = await check.json();
+        const now = ((listing && listing.tasks) || []).find((t) => t && t.key === archiveKey);
+        // Only a POSITIVE answer overrides the cache. An unreadable listing, or a
+        // task the listing no longer holds, leaves the reader's own reading of the
+        // button in force — refusing the press on a listing we could not read
+        // would make a network blip look like a broken control.
+        if (now) {
+          filed = now.status === "archived";
+          archiveStates.set(archiveKey, filed);
+        }
       }
+    } catch (err) {
+      /* the cached verb stands — see above */
     }
     const res = await fetch(filed ? "/api/tasks/unarchive" : "/api/tasks/archive", {
       method: "POST",
