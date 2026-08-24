@@ -382,17 +382,21 @@ export async function deliverShareCard(blob: Blob, filename: string): Promise<Sh
   return "downloaded";
 }
 
-/** What the button says after a delivery — the outcomes differ in WHERE the
- *  card went, and a single "Done" would leave a reader hunting for a file that
- *  is actually on their clipboard. */
+/** What the toast (D478) says after a delivery — the outcomes differ in WHERE
+ *  the card went, and a single "Done" would leave a reader hunting for a file
+ *  that is actually on their clipboard. Each string names the DESTINATION,
+ *  not the format: a toast lands away from the button, with no page context
+ *  around it to lean on, so "Copied as an image" or "Saved as a PNG" answers
+ *  a question ("as what?") nobody who just clicked Share was asking, while
+ *  leaving the one they were ("where did it go?") unanswered. */
 export function shareOutcomeNote(outcome: ShareOutcome): string {
   switch (outcome) {
     case "shared":
-      return "Shared";
+      return "Chart shared";
     case "copied":
-      return "Copied as an image";
+      return "Chart copied to the clipboard";
     case "downloaded":
-      return "Saved as a PNG";
+      return "Chart saved to your Downloads folder";
     case "cancelled":
       return "";
   }

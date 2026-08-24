@@ -13,6 +13,7 @@ import {
   provenanceLine,
   shareCardFilename,
   shareCardHeight,
+  shareOutcomeNote,
 } from "./shareCard";
 
 const MAC: AiBenchmarkMachine = {
@@ -71,6 +72,18 @@ describe("shareCardFilename", () => {
     expect(shareCardFilename("text-generation", metric("text-generation", "tokensPerSecond"))).toBe(
       "fused-render-benchmark-text-generation-tokens-per-second.png",
     );
+  });
+});
+
+describe("shareOutcomeNote", () => {
+  it("names the destination, not the format — a toast has no page context to lean on", () => {
+    expect(shareOutcomeNote("shared")).toBe("Chart shared");
+    expect(shareOutcomeNote("copied")).toBe("Chart copied to the clipboard");
+    expect(shareOutcomeNote("downloaded")).toBe("Chart saved to your Downloads folder");
+  });
+
+  it("says nothing for a cancelled share sheet — the reader dismissed it themselves", () => {
+    expect(shareOutcomeNote("cancelled")).toBe("");
   });
 });
 
