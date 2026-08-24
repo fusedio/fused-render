@@ -1294,6 +1294,99 @@
     }
   }
 
+  // Tell the NEAREST same-origin ancestor that owns a Claude sidebar that a
+  // prompt is waiting for it, and switch it to Claude. The climbing/try-catch
+  // discipline is noteRevSelected's (D3/D4: a global on the ancestor, not a
+  // postMessage) — underscore-prefixed for the same reason too, plumbing
+  // between the built-in git template and the shell that ships with it, NOT a
+  // documented `fused.*` contract — but the DELIVERY is deliberately NOT the
+  // same: noteRevSelected calls the hook on EVERY same-origin ancestor that has
+  // it, because "which commit is previewed" is idempotent to repeat — two
+  // listeners agreeing is harmless. Sending a prompt is not that: each
+  // delivery STARTS A REAL AGENT RUN with write access to the repository, so
+  // two listeners in one chain would mean one click launches two concurrent,
+  // uncoordinated sessions against the same working tree. So this STOPS at the
+  // first match, and RETURNS WHATEVER THAT ANCESTOR'S OWN CALLBACK RETURNS —
+  // NOT a hardcoded `true` the instant one is found. A callback existing is
+  // not the same fact as "claude will actually be shown": the host's own
+  // `_fusedClaudeAsk` (Preview.tsx/Listing.tsx) can find claude gate-denied or
+  // still pending for this exact file/folder and answer `false` — this
+  // function is a transparent conduit for that answer, not a source of its
+  // own opinion. The caller (the git template's `askClaudeOnError`) uses the
+  // result to tell "delivered, and about to be shown" from "nobody is
+  // listening OR nobody can show it right now" — a distinction that whether
+  // this export merely EXISTS could never make (it always does — every framed
+  // template gets it, whether or not any ancestor is around to act on it, or
+  // able to).
+  //
+  // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
+  // It used to (a `_fused_ask` query param baked into the claude iframe's URL,
+  // one-shot by construction) and that shape had a hole no amount of caching
+  // fixed: ANY remount of that iframe for ANY reason — toggling the sidebar
+  // away and back, closing and reopening the folder pane, a panel/tab
+  // reattaching — rebuilds the src from the same cached value and replays the
+  // ask into a brand new conversation. A src is not a message; it is a
+  // document's ADDRESS, and an address that is only supposed to be visited
+  // once is a contradiction; nothing about "build a URL" can express
+  // "and only follow it the first time." So the prompt is handed to the host
+  // as plain in-memory state (see `_fusedClaudeAsk` below) and PULLED by the
+  // claude template itself at its own boot, through `pullClaudeAsk` below —
+  // consumption happens in the one frame that actually uses the text, at the
+  // one moment (its own boot) that can matter, which is a property of WHEN a
+  // pull happens rather than something a cache has to reconstruct.
+  //
+  // Deliberately not a param either way: the git view has no chat of its own,
+  // only a working tree, so fixing an error it hit means handing the ask to
+  // whichever ancestor is showing (or can show) the Claude sidebar — a
+  // different iframe entirely, on a different template, with its own
+  // transcript and its own file/shell access. `fused.params.set` would write
+  // the ancestor's URL, and the address bar is the one place this text must
+  // never appear: it is one failed command's error message, not a page's
+  // identity, and a bookmark of it would replay a stale error at whoever
+  // opened it later.
+  function noteAskClaude(text) {
+    const value = typeof text === "string" && text ? text : null;
+    if (!value) return false;
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedClaudeAsk === "function") { return !!t._fusedClaudeAsk(value); }
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+    return false;
+  }
+
+  // The other half of the hop: the claude template calls this at its OWN
+  // boot to ask the nearest same-origin ancestor "is a prompt waiting for me",
+  // and get back the text — or `null`, plainly, if there is none (no ancestor
+  // installed the hook, or one did but has nothing pending). A QUERY, not a
+  // notify, so it climbs to the first ancestor that answers and returns
+  // WHATEVER that ancestor's `_fusedClaudeAskTake` returns, rather than
+  // broadcasting: the host's `_fusedClaudeAskTake` (Preview.tsx/Listing.tsx)
+  // reads its pending-ask ref and CLEARS it in the same step, so calling this
+  // is itself the consumption — there is no separate "and now mark it used"
+  // step to forget, and calling it twice in a row (which nothing here does,
+  // but a future caller might) safely gets the text once and `null` after.
+  function pullClaudeAsk() {
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedClaudeAskTake === "function") return t._fusedClaudeAskTake();
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href;
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+    return null;
+  }
+
   // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
   // Most .py files run on the app's own interpreter and install nothing. A file
@@ -4294,6 +4387,24 @@
   // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
   // does nothing.
   window._fusedSelectRev = noteRevSelected;
+
+  // The git sidebar's "fix this error" hop, the same internal plumbing as
+  // `_fusedSelectRev` just above and for the same reason it is not on
+  // `window.fused`: the built-in git template calls this with the prompt it
+  // built for a failed operation, and the shell (if it has a Claude sidebar to
+  // drive) switches to it and remembers the text. Not present in the hosted
+  // runtime, same as `_fusedSelectRev` — a window with no `_fusedClaudeAsk`
+  // hook is simply not a shell that can open one, and the call returns `false`
+  // rather than doing nothing quietly: the git template uses that to show a
+  // real failure instead of a button that looked like it worked.
+  window._fusedAskClaude = noteAskClaude;
+
+  // The claude template's own half: called at ITS boot to collect whatever
+  // prompt is waiting for it (see `pullClaudeAsk` above for why this is a pull
+  // rather than a param on the src). Not present in the hosted runtime, same
+  // as the two above — a window with no `_fusedClaudeAskTake` hook simply has
+  // nothing to pull, and this answers `null`.
+  window._fusedTakeClaudeAsk = pullClaudeAsk;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).

@@ -99,6 +99,7 @@ export interface SidebarEntry {
 export default function PreviewSidebar({
   entries,
   active,
+  frameKey = active,
   src,
   onSelect,
   onClose,
@@ -109,6 +110,14 @@ export default function PreviewSidebar({
   // The one being shown — always one of the SELECTABLE entries, never a disabled
   // placeholder (Preview resolves `_side` against the short list; lib/preview-side).
   active: string;
+  // What actually keys the iframe below, defaulting to `active` (an ordinary
+  // mode switch is already the right moment for a fresh document). Distinct
+  // from `active` for exactly one caller's one case: the claude companion,
+  // where a second "Fix with AI" ask can arrive while claude is ALREADY
+  // showing — the mode never changes, so `active` alone never would force the
+  // remount that lets the new document's boot pull the fresh prompt
+  // (Preview.tsx's `claudeFrameKey`/`claudeAskInstance`).
+  frameKey?: string;
   // Its /render URL, or null while its gate is still resolving.
   src: string | null;
   onSelect: (mode: string) => void;
@@ -320,7 +329,7 @@ export default function PreviewSidebar({
              a narrow column of chrome-heavy tools, and the two of them look
              nothing alike — there is no illusion of continuity to protect. */
           <iframe
-            key={active}
+            key={frameKey}
             className="preview-side-frame"
             src={src}
             title={modeTitle(active)}

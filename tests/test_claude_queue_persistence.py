@@ -305,7 +305,12 @@ def test_a_boot_with_no_conversation_leaves_the_store_completely_alone():
     conversation elsewhere in the same tab had parked behind a running turn —
     silently, and in exactly the situation the queue exists for."""
     boot = _html()[_html().index("// ── boot:"):]
-    landing = boot[boot.index("} else {"):]
+    # From the `session_id`/`run` resume branch onward, not from the FIRST
+    # `"} else {"` in the IIFE — the ask branch (review #804 round 3 finding
+    # 5) now has its own inner `if (sending) { … } else { … }` ahead of this
+    # one, and slicing from that would miss the real landing branch entirely.
+    after_resume_branch = boot[boot.index("} else if (session_id || run_id) {"):]
+    landing = after_resume_branch[after_resume_branch.index("} else {"):]
     assert "restoreQueue(" not in landing, \
         "the landing branch touches a store it cannot own"
 

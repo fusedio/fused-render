@@ -109,3 +109,29 @@ NN heuristics as the bar: no layout shift, clear hierarchy, no overload.
 Deliberately kept against the letter of the feedback: text confirm bars for
 destructive ops (icon-only destruction fails error-prevention), and the Commit
 button's label.
+
+---
+
+# v3 — "Fix with AI" replaces the operation-error advice panel (2026-08-24, D484)
+
+- **Error-flash AI helper is no longer "Explain."** It is now labeled
+  **"Fix with AI"** and hands the failed operation off to the Claude sidebar
+  instead of streaming advice into this view's own proposal panel — see
+  SPEC.md's GT-19 and DECISIONS.md's D484 for the mechanism (a pull, not a
+  push onto the claude iframe's URL, and an honest readiness check before
+  anything is switched or stored). v1/v2's "labeled Explain" lines above are
+  superseded by this; kept in place rather than edited, per this doc's own
+  append-only convention for later rounds.
+- **The conflict-resolution sparkle is untouched** — same button, same panel,
+  same model, same confirmation-before-write. Only the operation-error case
+  moved.
+- **Gated the same way the old "Explain" button was disabled** (a call
+  in flight, a proposal on screen): "Fix with AI" is hidden while THIS
+  pane's own conflict-resolution AI call is streaming or a proposal is
+  unreviewed — clicking it would otherwise unmount the whole git iframe
+  (switching the sidebar to claude) and discard that work with no warning.
+- **Silent failure is not acceptable here either**: if nothing up the
+  ancestor chain can open a Claude sidebar (this template opened standalone,
+  under the hosted runtime, or the target's own claude gate denies/is still
+  pending), the button is replaced by a plain note explaining that Claude is
+  not available from this view, rather than doing nothing visible.

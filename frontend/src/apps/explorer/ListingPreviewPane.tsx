@@ -163,6 +163,12 @@ export default function ListingPreviewPane({
     // here: git/mcp's gates refuse a mount-backed directory outright, and
     // claude reads through the server either way.
     const chatOnly = paneChatOnly(side) ? CHAT_ONLY_PARAM : "";
+    // No mention of the git companion's "Fix with AI" prompt here any more
+    // (review #804 round 2): it is not a param this src carries at all — the
+    // claude template PULLS it at its own boot instead (Listing.tsx's
+    // `_fusedClaudeAskTake`), and this component's `key` (Listing.tsx, folded
+    // with `claudeAskInstance` for exactly the claude case) is what makes sure
+    // a fresh ask gets a fresh mount to pull it into.
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}

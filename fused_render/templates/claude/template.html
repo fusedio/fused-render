@@ -4188,6 +4188,21 @@ const BASENAME = FILE.split("/").pop();
 // fused.params), so this one is read directly.
 const CHAT_ONLY = new URLSearchParams(location.search).get("chat_only") === "1";
 
+// A one-shot prompt the git sidebar's "Fix with AI" button built for a failed
+// operation is NOT read off this document's URL at all (review #804 round 2 —
+// it used to be a `_fused_ask` query param here, the same "host fact, read off
+// location.search" shape as `_file`/`chat_only` above, and that shape had a
+// hole: ANY remount of this iframe for a reason that has nothing to do with a
+// new ask — the sidebar toggled away and back, the pane closed and reopened —
+// rebuilds the identical src and replays a stale error into a brand-new
+// conversation, because a `src` is an address and "follow this part of the
+// address only the first time" is not something a URL can express). The boot
+// IIFE below PULLS it instead, through the runtime's ancestor-window hop
+// (static/runtime.js `pullClaudeAsk`, `window._fusedTakeClaudeAsk`) — a query
+// to the host that ALSO clears whatever it returns, so consumption happens in
+// this frame, at the one moment (its own boot) that can matter, rather than
+// being reconstructed from a src string a cache had to keep stable.
+
 if (!FILE) {
   document.body.innerHTML = '<div id="msg">No file selected (missing _file param).</div>';
   throw new Error("claude template: missing _file");
@@ -4497,6 +4512,12 @@ function searchParamsOf(search) {
 // `msg` is here for the `session_id` reason: it is this chat's own bookkeeping
 // (which turn a Tasks-list link asked to land on), and reporting it to the model
 // as a param the APP is running with describes our navigation as its state.
+//
+// The git sidebar's "Fix with AI" seed is NOT in this set (and does not need
+// to be, as of review #804 round 2): it is no longer a URL param at all — the
+// boot IIFE PULLS it through the runtime's ancestor hop instead of reading it
+// off `location.search` — so there is nothing here for a framed app to
+// inherit in the first place.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
                              "annmode", "leftmode", "paneview", "chat_only",
@@ -10848,7 +10869,15 @@ window.addEventListener("resize", closeSelPop);
 // lands, then snap to the real config — unless a pane param already pinned a
 // choice, which curModel/curEffort rank higher. Values are validated against
 // the selector's own lists so a config this build doesn't know stays fallback.
-fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((d) => {
+//
+// Captured into a named promise (`detectionReady`), not just fired: an ordinary
+// visit never awaits it (a person has to read the page and type before the
+// first `sendMessage`, which is normally slower than this settling), but the
+// "Fix with AI" boot branch below sends IMMEDIATELY with no human in between —
+// without awaiting this first, that automatic send would launch on
+// `DEFAULT_MODEL`/`DEFAULT_EFFORT` every time, silently ignoring the project's
+// detected config, racing a promise it never even looks at.
+const detectionReady = fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((d) => {
   if (d && d.model && MODELS.includes(d.model)) detectedModel = d.model;
   if (d && d.effort && EFFORTS.includes(d.effort)) detectedEffort = d.effort;
   if (detectedModel || detectedEffort) syncSelects();
@@ -10859,7 +10888,12 @@ fused.runPython(AGENT, { action: "defaults", file: FILE }, { key: null }).then((
 // whichever of the two arrives second simply re-renders the same ranking.
 // Validated against MODELS for the same reason detection is — a name this
 // build's selector doesn't have can't be shown as selected.
-fetch("/api/prefs").then((r) => r.json()).then((p) => {
+//
+// Captured into `prefsReady` for the same reason `detectionReady` is: the
+// "Fix with AI" boot branch awaits both before its automatic send, so it picks
+// up the user's Preferences → Default model exactly as a manually-sent first
+// message would.
+const prefsReady = fetch("/api/prefs").then((r) => r.json()).then((p) => {
   const m = p && p.model && p.model.default;
   if (m && MODELS.includes(m)) { prefModel = m; syncSelects(); }
 }).catch(() => {});
@@ -16892,11 +16926,106 @@ async function loadSnapshots() {
   }
 }
 
+// The bound on how long the "Fix with AI" boot branch (below) will wait for
+// model/effort detection before sending anyway. Detection is a
+// `fused.runPython` call (`detectionReady`), and on a COLD project venv that
+// can mean a real environment install running for tens of seconds — an
+// ordinary visit never notices (nothing here is waiting on it, a person is
+// reading the page), but the boot branch has no person to keep the composer
+// company, so a blank transcript sitting for that long with no send and no
+// explanation is worse than sending on the fallback model a little early.
+// 1.5s is comfortably longer than the warm-venv case this whole wait exists
+// for (a local read or two) and short enough that a cold one still resolves
+// this fast, silently, most of the time; it does not need to be exact, only
+// bounded.
+const ASK_DETECTION_TIMEOUT_MS = 1500;
+
 // ── boot: resume from URL, or show the landing page ──
 (async () => {
   const session_id = fused.params.get("session_id");
   const run_id = fused.params.get("run");
-  if (session_id || run_id) {
+  // The git sidebar's "Fix with AI" seed, PULLED rather than read off this
+  // document's own URL (see the comment above CHAT_ONLY/CHAT_PARAMS) — a
+  // query to the host through the runtime's ancestor hop
+  // (`window._fusedTakeClaudeAsk`, static/runtime.js `pullClaudeAsk`) that
+  // also CLEARS whatever it returns in the host, in the same step, so this is
+  // the one and only place this text is ever read: calling it twice (nothing
+  // here does, but the guard costs nothing) would get the text once and
+  // `null` after. Guarded the same way every other ancestor-hop call in this
+  // codebase is (`typeof … === "function"`): a window with no
+  // `_fusedTakeClaudeAsk` hook is simply not a shell with a pending ask to
+  // give, hosted runtime included.
+  const ask = typeof window._fusedTakeClaudeAsk === "function"
+    ? window._fusedTakeClaudeAsk()
+    : null;
+  if (ask) {
+    // The git sidebar's "Fix with AI" button opened THIS document fresh for
+    // exactly this ask — but `session_id`/`run` above are read through
+    // `fused.params`, which (this page sets no `_fusedParamBoundary`) targets
+    // the SHELL's own address bar, not this iframe's own src. That address bar
+    // is NOT guaranteed clean: closing the sidebar (Preview.tsx's
+    // `setSide`/Listing.tsx's `closeSide`) never clears it, so a
+    // `session_id`/`run` a PAST conversation on this same file left behind
+    // survives sitting right there — this branch used to assume otherwise
+    // ("never onto an existing session_id or run") and that was wrong:
+    // `sendMessage` below reads `fused.params.get("session_id")` again at send
+    // time (its own `agent.py` "start" call), independently of anything
+    // decided here, so a stale id would have appended this fresh ask's
+    // message to a DIFFERENT conversation server-side while this frame shows
+    // an empty transcript, and any leftover in-flight `run` would never be
+    // re-attached and would keep streaming invisibly.
+    //
+    // So this branch does what "New chat" does before it starts one (the
+    // `back` button's click handler, above) — disown both, the same way and
+    // for the same reason (`{history: "replace", default: ""}`: a stale
+    // identifier is not a place anyone navigated to, so disowning it must not
+    // buy a Back entry) — before entering chat and sending, which is what
+    // makes "this is a genuinely new conversation" true here rather than
+    // merely assumed.
+    fused.params.set("session_id", "", { history: "replace", default: "" });
+    fused.params.set("run", "", { history: "replace", default: "" });
+    enterChat();
+    // `detectionReady`/`prefsReady` (above) are already in flight by the time
+    // this runs (both are fired unconditionally near the top of the script),
+    // but an ordinary visit never has to WAIT for them — a person reads the
+    // page and types before their first send, which is normally slower than
+    // either settling. This send has no person in between: it fires the
+    // instant boot reaches this branch, which is faster than both, so without
+    // awaiting them here `curModel()`/`curEffort()` inside `sendMessage` would
+    // read `detectedModel`/`prefModel` while they are still "", and every
+    // "Fix with AI" run would launch on `DEFAULT_MODEL`/`DEFAULT_EFFORT`,
+    // silently ignoring the project's detected config and the user's
+    // Preferences → Default model. Both already swallow their own failures
+    // (`.catch(() => {})`), so this can only be slow, never rejected — and
+    // `ASK_DETECTION_TIMEOUT_MS` bounds the slow case, so a cold-venv
+    // detection cannot leave the user staring at an empty transcript
+    // indefinitely; it sends on whatever is known so far once the bound
+    // passes.
+    await Promise.race([
+      Promise.all([detectionReady, prefsReady]),
+      new Promise((resolve) => setTimeout(resolve, ASK_DETECTION_TIMEOUT_MS)),
+    ]);
+    // The composer went live the moment `enterChat()` ran, above — this wait
+    // (bounded, but still real time) is a window the user can type and send
+    // their OWN message in before it ends. `sendMessage` opens with
+    // `if (sending) return;`, so calling it here unconditionally would drop
+    // the git error's prompt on the floor with no trace whenever that race is
+    // lost — and by this point it is UNRECOVERABLE: the host's pending ask
+    // was already taken (and cleared) by `window._fusedTakeClaudeAsk` above,
+    // so there is nowhere left to read it back from.
+    //
+    // `queueMessage` is the existing answer to "something wants to send while
+    // a turn is already live" (normally reached from `activeRun`, not a race
+    // at boot) — it shows a visible "queued" bubble and `sendMessage`'s own
+    // tail already calls `drainQueue()` once the live turn ends, so reusing
+    // it here costs nothing new: the ask still gets sent, in order, right
+    // after the user's own message finishes, instead of vanishing.
+    if (sending) {
+      queueMessage(ask);
+    } else {
+      sendMessage(ask);
+    }
+  } else if (session_id || run_id) {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.
     enterChat();

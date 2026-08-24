@@ -235,5 +235,9 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     assert "export function paneKey(side: PaneSide, folder: string): string {" in pane_side, (
         "paneKey's signature grew a row/selection parameter back")
     pane = _read(_PANE)
+    # review #804 round 2: the git companion's "Fix with AI" seed no longer
+    # rides this src at all — the claude template PULLS it at its own boot
+    # instead (see ListingPreviewPane.tsx/Listing.tsx) — so this string is back
+    # to exactly its pre-"Fix with AI" shape.
     assert "`&_file=${encodeURIComponent(folder)}${chatOnly}&_preview=1`" in pane, (
         "the companion iframe's _file target is no longer unconditionally the folder")

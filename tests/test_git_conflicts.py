@@ -284,8 +284,12 @@ def test_view_destructive_set_mirrors_ops_module(ops):
 def test_view_asks_sonnet_for_a_resolution():
     src = _view_source()
     assert 'const RESOLVE_MODEL = "claude-sonnet-5"' in src
-    # And it is the model actually passed, not just declared.
-    assert src.count("model: RESOLVE_MODEL") == 2      # conflict + error advice
+    # And it is the model actually passed, not just declared. The failed-
+    # operation case used to be a second `fused.ai` call here too (advice-only,
+    # same model) — it is gone now that a failed operation hands its error to
+    # the Claude sidebar instead of asking the model from this pane (see
+    # `askClaudeOnError`), so conflict resolution is the only caller left.
+    assert src.count("model: RESOLVE_MODEL") == 1
 
 
 def test_view_reads_conflicts_on_its_own_channel():
@@ -330,6 +334,135 @@ def test_view_offers_the_button_only_on_a_conflicted_row():
     src = _view_source()
     assert "if (change.conflicted) {" in src
     assert "resolveButton(path," in src
+
+
+def test_failed_operation_toast_offers_fix_with_ai_not_explain():
+    """The toast's old advice-only button ("Explain") is gone; a failed
+    operation now hands off to the Claude sidebar instead of asking this pane's
+    own AI for advice (see the module docstring's "two situations" -> "one
+    situation" note above `RESOLVE_MODEL`)."""
+    src = _view_source()
+    assert '"Fix with AI"' in src
+    assert '"Explain"' not in src
+    assert "async function adviseOnError" not in src
+    assert "ADVISE_SYSTEM" not in src
+    # The button's click handler is the new function, not the deleted one.
+    toast = src[src.index("if (!flash.ok && resolving === null"):]
+    toast = toast[:toast.index("\n    }")]
+    assert "onClick: () => askClaudeOnError(flash.message)" in toast
+
+
+def test_the_fix_with_ai_button_stays_gated_on_this_panes_own_ai_state():
+    """review #804 finding 7: the button used to drop this gate on the theory
+    that it makes no AI call of its own — true, but beside the point.
+    `askClaudeOnError` switches the sidebar to `claude`, which UNMOUNTS this
+    entire git iframe, and an unmount throws away a conflict resolution
+    streaming in `resolving`/`streamed` and any `proposal` sitting unreviewed
+    with no warning at all — the exact work `resolveButton`'s own gate exists
+    to protect. Restored to the same three-part gate `resolveButton` uses."""
+    src = _view_source()
+    assert ("if (!flash.ok && resolving === null && proposal === null "
+            "&& !aiBusy) {") in src
+
+
+def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
+    """`askClaudeOnError` reuses exactly the facts the old advice-only prompt
+    assembled (the error, plus branch/upstream/ahead-behind/dirty) — only the
+    ask at the end changed from "what does this mean" to "explain and fix it" —
+    and hands them to the ancestor-window hop instead of calling `fused.ai`
+    itself."""
+    src = _view_source()
+    fn = src[src.index("function askClaudeOnError(message)"):]
+    fn = fn[:fn.index("\n}")]
+    assert "repo.branch" in fn
+    assert "repo.upstream" in fn
+    assert "repo.ahead" in fn and "repo.behind" in fn
+    assert "repo.dirty" in fn
+    # It names the repository/working directory the error is about, and
+    # prefers `repo.root` (review #804 round 3 finding 2) over `file`: `file`
+    # is only reliably a DIRECTORY in the main-body case, and in the sidebar
+    # case is BORROWED from the file's parent for git/mcp -- except when a
+    # user's own registry rebinds git onto a file extension, where `file`
+    # names that file, not something an agent could `cd` into. `repo.root`
+    # (already resolved by log.py) is unambiguous across all of those shapes.
+    assert "const workingDir = (repo && repo.root) || file || " in fn
+    assert "workingDir" in fn
+    # It asks for a fix, not just an explanation.
+    assert "fix it" in fn
+    # And it leaves via the ancestor hop — checking the CALL'S RETURN VALUE
+    # (review #804 round 2 finding 4), not whether the export merely exists:
+    # the runtime installs `window._fusedAskClaude` unconditionally on every
+    # framed template, so `typeof … === "function"` is true even when nobody
+    # up the chain is listening — only `noteAskClaude`'s own return value (see
+    # test_ask_claude_hop.py) can tell "delivered" from "nobody home".
+    assert 'const delivered = typeof window._fusedAskClaude === "function"' in fn
+    assert "&& window._fusedAskClaude(" in fn
+    assert "if (!delivered) {" in fn
+    # It must NOT call fused.ai itself — that is the whole point of the change.
+    assert "fused.ai(" not in fn
+
+
+def test_a_missing_ancestor_hook_is_a_visible_failure_not_a_silent_one():
+    """review #804 round 1 finding 5: the button used to render on ANY failed
+    op, but `askClaudeOnError` just returned when no ancestor defines
+    `_fusedClaudeAsk` — a real, reachable case (this template opened
+    standalone, under the hosted runtime, or inside any frame the shell's
+    ancestor-window plumbing was never injected into). The old "Explain"
+    button always produced something; this one silently did nothing, which is
+    the project's stated convention against.
+
+    round 2 finding 5: the FIRST fix for this overwrote `flash` with the
+    availability complaint, destroying the git error the reader still needed
+    and then re-rendering another "Fix with AI" button whose `flash.message`
+    was the complaint rather than the original error. Fixed by leaving `flash`
+    alone and swapping the BUTTON for an inline note instead
+    (`askUnavailable`, checked in the toast's own draw site, not here).
+
+    Verified NOT to be a defect: the round 1 reviewer's second scenario
+    (`claude` genuinely not offered for the same target while `git`'s own
+    template is rendering) is unreachable given the current gates —
+    fused_render/templates/claude/condition.py and
+    fused_render/templates/git/condition.py refuse on the identical
+    mount-backed predicate, and claude adds no narrowing beyond it (`isfile`
+    unconditionally allows a file, `isdir` unconditionally allows a
+    directory), so wherever git's gate has already passed (a precondition for
+    this button being on screen at all), claude's gate is guaranteed to have
+    passed too. Nothing was changed for that half.
+    """
+    src = _view_source()
+    fn = src[src.index("function askClaudeOnError(message)"):]
+    fn = fn[:fn.index("\n}")]
+    guard = fn[fn.index("if (!delivered) {"):]
+    guard = guard[:guard.index("\n  }")]
+    assert "askUnavailable = true;" in guard
+    assert "announce(" in guard
+    assert "draw(true);" in guard
+    # NOT a flash overwrite: the original git error must survive.
+    assert "flash =" not in guard
+
+
+def test_a_confirmed_unavailable_claude_replaces_the_button_not_the_error():
+    """The toast draw site's half of the round 2 finding 5 fix: once
+    `askUnavailable` is set, the NEXT render swaps the button for an
+    explanation — `flash.message` (the original op's error) is never
+    overwritten by anything in this branch."""
+    src = _view_source()
+    toast = src[src.index("if (!flash.ok && resolving === null"):]
+    toast = toast[:toast.index("\n    }\n    page.append(")]
+    assert "if (askUnavailable) {" in toast
+    branch = toast[toast.index("if (askUnavailable) {"):]
+    branch = branch[:branch.index("} else {")]
+    assert "flash =" not in branch
+    assert "Claude is not available" in branch
+
+
+def test_the_claude_ask_reaches_the_shell_through_the_ancestor_global():
+    """Same idiom as `_fusedSelectRev` (D3/D4): an ancestor-window global, not a
+    postMessage, and not a param — see test_the_commit_reaches_the_shell_
+    through_the_ancestor_global in test_git_scope.py for the `_rev` sibling of
+    this hop."""
+    src = _view_source()
+    assert src.count("window._fusedAskClaude(") == 1
 
 
 def test_resolve_never_stages_or_commits(ops):

@@ -2272,16 +2272,20 @@ async function generateMessage() {
 
 /* ------------------------------------------- AI conflict resolution (GT-19)
  *
- * Two situations, one button, one panel, and NOTHING is written by any of it.
+ * One situation, one button, one panel, and NOTHING is written by any of it.
  *
- *   a merge/rebase CONFLICT — the primary case. The model is given the
+ *   a merge/rebase CONFLICT is the only case left here. The model is given the
  *     conflicted file with its markers and asked for the resolved file. What
  *     comes back is shown, and `ops.py resolve` writes it only after the
  *     confirmation every destructive op in this view gets.
- *   a failed git OPERATION — the secondary case. There is no file to write, so
- *     the model is asked for the next command instead, and the panel has no
- *     Apply at all. Advice is not an action; offering to run a command a model
- *     picked is a different feature, and a much larger one.
+ *
+ * A failed git OPERATION used to be a second, advice-only case handled in this
+ * same panel — the model was asked what the error meant and what to run next,
+ * with no file involved and no Apply. That is gone: the toast's "Fix with AI"
+ * button now hands the error straight to the Claude sidebar instead (see
+ * `askClaudeOnError`, below the toast), which can both explain the failure AND
+ * run the fix, in a place that already has a transcript, file access and a
+ * shell — all of which this pane's advice-only panel never had.
  *
  * The model is Sonnet, not the default: a resolution has to be READ out of two
  * versions of a file and reconciled, which is the kind of work the cheap default
@@ -2309,28 +2313,28 @@ const RESOLVE_SYSTEM = [
   "reply with exactly UNRESOLVABLE and one short sentence saying why.",
 ].join(" ");
 
-const ADVISE_SYSTEM = [
-  "You are a git expert helping someone whose git command just failed inside a",
-  "GUI. Explain in one or two sentences what the error means, then give the",
-  "exact command(s) to run in a terminal, one per line, to get out of it.",
-  "Be concrete and brief. Never suggest a force push, a hard reset, or",
-  "anything that rewrites published history unless the error leaves no",
-  "alternative — and say so explicitly if it does.",
-].join(" ");
-
-/* The model's answer for exactly one situation, awaiting review. One at a time,
-   like `busy`: two proposals on screen would make "Apply" ambiguous.
-     { path: <repo-relative> | null, text, note, unresolvable }
-   `path` null = advice for a failed operation (no Apply). Module-level, and read
-   at BUILD time like `aiBusy`, so a repaint cannot hand out a second click. */
+/* The model's answer for the one situation left, awaiting review. One at a
+   time, like `busy`: two proposals on screen would make "Apply" ambiguous.
+     { path: <repo-relative>, text, note, unresolvable }
+   Module-level, and read at BUILD time like `aiBusy`, so a repaint cannot hand
+   out a second click. */
 let proposal = null;
 /* What has arrived from the stream so far. Kept out of `proposal` because a
    partial answer is not a proposal — it has no Apply and must not get one. */
 let streamed = "";
-/* The subject of the call in flight — a path, or "" for the error case — or null
-   when nothing is in flight. A string (not a boolean) so the busy row can be the
-   one being resolved rather than every row at once. */
+/* The path of the call in flight, or null when nothing is. A string (not a
+   boolean) so the busy row can be the one being resolved rather than every row
+   at once. */
 let resolving = null;
+/* Set once "Fix with AI" is CONFIRMED to have nowhere to go — `noteAskClaude`
+   (static/runtime.js) walked the whole same-origin ancestor chain and found no
+   `_fusedClaudeAsk` listener. That is an environmental fact about how this
+   document was opened (standalone, hosted, or a frame the shell's plumbing
+   never reached), not something that can change between one failed op and the
+   next in the same session, so it is never reset — a later failure swaps the
+   button for the explanation too, instead of it reappearing as a dead click
+   the reader has to discover a second time. See `askClaudeOnError`. */
+let askUnavailable = false;
 
 function resolveButton(path, label) {
   const busyHere = resolving === path;
@@ -2352,10 +2356,8 @@ function proposalPanel() {
   const head = el("div", { className: "panel-head" },
     el("span", { className: "what",
                  textContent: proposal
-                   ? (proposal.path ? "Proposed resolution — " + proposal.path
-                                    : "What to do about that error")
-                   : (resolving ? "Resolving " + resolving + "…"
-                                : "Asking the AI…") }));
+                   ? "Proposed resolution — " + proposal.path
+                   : "Resolving " + resolving + "…" }));
   /* Cancel is offered while a call is in flight, and it is a real cancel: it
      stops the generation as well as dropping the panel. */
   if (resolving !== null) {
@@ -2373,11 +2375,11 @@ function proposalPanel() {
     } else {
       const foot = el("div", { className: "foot" });
       foot.append(el("span", { className: "note", textContent: proposal.note }));
-      /* An Apply exists ONLY for a file, and only when the model produced
-         something it called a resolution. Advice has nothing to apply, and an
-         UNRESOLVABLE answer is the model declining — offering to write that
-         sentence into the user's source would be the worst button in the view. */
-      if (proposal.path && !proposal.unresolvable) {
+      /* An Apply exists only when the model produced something it called a
+         resolution. An UNRESOLVABLE answer is the model declining — offering to
+         write that sentence into the user's source would be the worst button in
+         the view. */
+      if (!proposal.unresolvable) {
         foot.append(confirmable("resolve:" + proposal.path, "Apply to file",
           "Overwrite " + proposal.path + " with the proposed resolution.",
           { label: "Apply the proposed resolution to " + proposal.path }));
@@ -2401,7 +2403,7 @@ function proposalPanel() {
    would offer a Yes that could only fail. */
 function resolveConfirmBar() {
   const ask = param("ask");
-  if (!proposal || !proposal.path || proposal.unresolvable) return null;
+  if (!proposal || proposal.unresolvable) return null;
   if (ask !== "resolve:" + proposal.path) return null;
   const path = proposal.path;
   return confirmBar(
@@ -2561,15 +2563,21 @@ function conflictPrompt(payload, entry) {
   return parts.join("\n\n");
 }
 
-/* The secondary case: a git operation failed and the message is all the user
-   has. No file is involved, so this can only ever produce advice. */
-async function adviseOnError(message) {
-  if (resolving !== null || aiBusy || busy !== null) return;
-  resolving = "";
-  streamed = "";
-  proposal = null;
-  draw(true);
-
+/* The failed-operation case: a git command errored and the message is all the
+   user has. There is no file to hand the model here, and no chat, no
+   transcript and no shell either — this pane is the working-tree list, not a
+   place to hold a conversation. So instead of asking the AI FROM here (the old
+   `adviseOnError`, gone with this function), the prompt is built and handed to
+   whichever ancestor owns the Claude sidebar, through the same ancestor-window
+   hop the git template already uses for `_rev` (`window._fusedAskClaude`,
+   static/runtime.js's `noteAskClaude`) — deliberately NOT a param, for the same
+   reason: this is one failed command's error message, not a page's identity,
+   and it must not end up in an address bar or a bookmark.
+   Reuses exactly the context `adviseOnError` used to assemble (the error plus
+   branch/upstream/ahead-behind/dirty), because the model needs the same facts
+   to fix the problem that it needed to explain it — only the ask at the end
+   changed, from "what does this mean" to "explain it and fix it". */
+function askClaudeOnError(message) {
   const repo = snapshot && snapshot.repo;
   const parts = ["A git operation failed in a GUI. The error was:\n" + message];
   if (repo) {
@@ -2578,37 +2586,47 @@ async function adviseOnError(message) {
       + ", " + (repo.ahead || 0) + " ahead / " + (repo.behind || 0) + " behind"
       + ", working tree " + (repo.dirty ? "dirty" : "clean") + ".");
   }
-  parts.push("What does this mean, and what should I run next?");
-
-  try {
-    const result = await fused.ai(parts.join("\n\n"), {
-      systemPrompt: ADVISE_SYSTEM,
-      model: RESOLVE_MODEL,
-      effort: "low",
-      onChunk: (text) => {
-        if (resolving !== "") return;
-        streamed += text;
-        const body = document.querySelector(".proposal .text");
-        if (body) body.textContent = streamed;
-      },
-    });
-    if (resolving !== "") return;
-    const text = cleanMessage(result.text);
-    if (!text) throw new Error("The AI returned nothing.");
-    resolving = null;
-    streamed = "";
-    proposal = {
-      path: null,
-      text: text,
-      unresolvable: false,
-      note: "Advice only — nothing here has been run, and this view will not "
-            + "run it. Copy what you need into a terminal.",
-    };
-    announce("The AI answered. Read it before running anything.");
+  // `file` is the SCOPE `_file` named this view onto -- correct for the
+  // main-body case (a directory) but, in the file preview's sidebar,
+  // BORROWED from the file's parent folder for git/mcp, never the opened file
+  // itself (lib/preview-side.ts's own header: "git AND mcp ARE IN NO FILE'S
+  // TEMPLATE LIST", enforced server-side by templates.py's dir-only match on
+  // the universal "/" key) -- EXCEPT when a user's own registry rebinds git
+  // onto a file extension directly (an explicit, deliberate override this
+  // codebase documents as possible), where `file` names that FILE, not a
+  // directory an agent could `cd` into. `repo.root` is what `log.py` already
+  // resolved as the actual repository root for every one of these shapes, so
+  // it is unambiguous regardless of which one `file` happens to be -- prefer
+  // it, and fall back to `file` only on the read failing entirely (no repo).
+  const workingDir = (repo && repo.root) || file || ".";
+  parts.push("This repository/working directory is " + workingDir + ".");
+  parts.push("Explain what the error means, then fix it: run whatever is "
+    + "needed to get this repository out of the failure and back to a good "
+    + "state.");
+  // `window._fusedAskClaude` (static/runtime.js's `noteAskClaude`) is NOT a
+  // reliable "can this work" signal by itself — the runtime installs that
+  // export unconditionally on every framed template, so `typeof … ===
+  // "function"` is true even when nobody up the chain is listening, which is
+  // exactly the standalone/hosted/no-shell-plumbing case this guard exists
+  // for. What answers the real question is the CALL's own return value:
+  // `noteAskClaude` walks the same-origin ancestor chain and reports whether
+  // it found and called a `_fusedClaudeAsk` listener, `true` or `false` — so
+  // that is what this checks, not whether the export merely exists.
+  const delivered = typeof window._fusedAskClaude === "function"
+    && window._fusedAskClaude(parts.join("\n\n"));
+  if (!delivered) {
+    // A real, visible failure — the project convention is against a button
+    // that silently does nothing — but NOT `flash`: overwriting it would throw
+    // away the git error the reader still needs (it is the whole reason this
+    // button is on screen), and replace it with an availability complaint that
+    // then re-renders ANOTHER "Fix with AI" button whose message is that
+    // complaint rather than the error `askClaudeOnError` was ever passed.
+    // `askUnavailable` swaps the BUTTON for an explanation instead (see
+    // toast's own draw site), and the original flash is untouched.
+    askUnavailable = true;
+    announce("Claude is not available from this view — there is no chat to "
+      + "open it into here.");
     draw(true);
-  } catch (err) {
-    if (resolving !== "") return;
-    resolveFailed(aiErrorText(err));
   }
 }
 
@@ -3440,15 +3458,36 @@ function render(data, stashes, diff) {
     const note = el("div", { className: "flash" + (flash.ok ? "" : " bad") },
                     el("span", { textContent: flash.message }));
     if (!flash.ok && resolving === null && proposal === null && !aiBusy) {
-      /* A LABELLED button, deliberately not the bare sparkle: the commit box
-         has a sparkle that writes the message, and an identical icon here sent
-         a user expecting a commit message into a panel of terminal advice. */
-      note.append(action("advise", [icon(SPARK_GLYPH, 14), "Explain"], {
-        className: "ai",
-        label: "Ask AI what this error means and what to do next",
-        title: "Ask AI what this error means and what to do next",
-        onClick: () => adviseOnError(flash.message),
-      }));
+      if (askUnavailable) {
+        /* Confirmed (not merely guessed, see `askClaudeOnError`) that nothing
+           up the ancestor chain can open this into a chat. A dead button that
+           looks clickable is worse than no button, so this replaces it with
+           the reason instead of omitting it — the reader still gets an
+           answer for why there is no "Fix with AI" here. */
+        note.append(el("span", { className: "note",
+          textContent: "(Claude is not available from this view.)" }));
+      } else {
+        /* A LABELLED button, deliberately not the bare sparkle: the commit box
+           has a sparkle that writes the message, and an identical icon here sent
+           a user expecting a commit message into the Claude sidebar instead.
+           GATED on `resolving`/`proposal`/`aiBusy`, same as `resolveButton` —
+           and for a stronger reason than "this button makes another AI call",
+           which was this comment's original (wrong) justification for dropping
+           the gate. This button makes NO call of its own, but `askClaudeOnError`
+           switches the sidebar to `claude`, which UNMOUNTS this entire git
+           iframe — document, module state and all. Showing it while a conflict
+           resolution is streaming, or a proposal is sitting unreviewed, would
+           let one click throw both away with no warning: the generation simply
+           stops (nothing left running it) and the proposal is gone, not merely
+           hidden. The user finishes or dismisses that first, the same as
+           `resolveButton` already requires. */
+        note.append(action("ask-claude", [icon(SPARK_GLYPH, 14), "Fix with AI"], {
+          className: "ai",
+          label: "Open Claude to explain and fix this error",
+          title: "Open Claude to explain and fix this error",
+          onClick: () => askClaudeOnError(flash.message),
+        }));
+      }
     }
     page.append(el("div", { className: "toast-host" }, note));
   }

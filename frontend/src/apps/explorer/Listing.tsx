@@ -79,6 +79,7 @@ import {
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
@@ -115,6 +116,20 @@ const FLIP_BUDGET = 2;
 // first top-level page carrying `<meta name="fused-app">`. A filename tells
 // the client nothing under the marker rule, so the "Open app" button asks
 // GET /api/apps/entry instead of re-deriving anything from row names.)
+
+// The window global the injected runtime calls to hand this pane a prompt the
+// git companion's "Fix with AI" button built for a failed operation
+// (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
+// template as `window._fusedAskClaude` and from the claude template as
+// `window._fusedTakeClaudeAsk`). Same ancestor-global shape Preview.tsx
+// declares for the file sidebar's copy of this pair — this is the folder
+// pane's.
+declare global {
+  interface Window {
+    _fusedClaudeAsk?: (text: unknown) => void;
+    _fusedClaudeAskTake?: () => string | null;
+  }
+}
 
 export default function Listing({
   fsPath,
@@ -883,6 +898,101 @@ export default function Listing({
   // a temporal-dead-zone trap waiting for the first caller that runs during render.
   const selectSide = (mode: PaneSideChoice) =>
     setSide({ open: true, mode: mode === paneSides[0] ? null : mode });
+
+  // --- the CLAUDE companion's seeded prompt (`window._fusedAskClaude`) -------
+  // The `git` companion's "Fix with AI" button has no chat of its own — it
+  // hands the prompt it built to whichever ancestor owns a Claude sidebar,
+  // through the runtime's ancestor-window hop (static/runtime.js
+  // `noteAskClaude`). This pane is one such ancestor for a FOLDER's own `git`
+  // companion (Preview.tsx installs the file sidebar's copy); guarded on
+  // `paneEnabled` for the same reason its declaration there is guarded on
+  // `splitCapable` — a snapshot or panel pane with no pane at all has nothing
+  // to open this into.
+  //
+  // THIS IS A PULL, NOT A PARAM ON THE COMPANION IFRAME'S SRC (review #804
+  // round 2) — see Preview.tsx's copy of this comment for the full argument.
+  // In short: a param baked into `ListingPreviewPane`'s src, kept "one-shot" by
+  // a cache keyed on `paneKey(paneSide, fsPath)`, still replayed on any
+  // remount that key comparison could not tell apart from a genuinely new ask
+  // — closing and reopening the pane on the SAME folder is a fresh mount with
+  // an unchanged key, and so is toggling `git` -> `claude` -> `git` -> `claude`
+  // without a second click. So the prompt lives here as plain state instead,
+  // and the CLAUDE TEMPLATE pulls it at its own boot
+  // (`window._fusedClaudeAskTake`, via the claude template's
+  // `_fusedTakeClaudeAsk` / static/runtime.js `pullClaudeAsk`) — consumption is
+  // then a property of WHEN a pull happens, not something a cache reconstructs
+  // from a key.
+  //
+  // A REF, not state: it must survive from the moment it arrives to whichever
+  // later boot pulls it, and must never itself cause a render —
+  // `selectSide` already does that.
+  const claudeSeedRef = useRef<string | null>(null);
+  // A new ask can arrive while the pane is ALREADY showing claude on the SAME
+  // folder — a second "Fix with AI" click without switching companion or
+  // folder first — and `paneKey(paneSide, fsPath)` alone cannot tell that
+  // apart from an unrelated re-render: neither `paneSide` nor `fsPath` changed,
+  // so `ListingPreviewPane`'s key would not either, and nothing would remount
+  // it to make its boot pull the new text. Bumped on every incoming ask and
+  // folded into the key passed down (below), the same fix Preview.tsx's
+  // `claudeAskInstance` is for the sidebar's copy of this gap.
+  const [claudeAskInstance, setClaudeAskInstance] = useState(0);
+  // Whether claude is confirmed showable for THIS folder right now — the
+  // exact question `selectSide("claude")` would answer by hand, with
+  // `claudeEntryReady` additionally requiring the gate to have SETTLED, not
+  // merely exist (review #804 round 3 finding 3: a still-PENDING verdict is
+  // not a "no", but promising delivery for it would store a seed nothing is
+  // about to pull — see lib/claude-ask.ts's own header for the full argument,
+  // shared with Preview.tsx's copy of this problem).
+  const claudeReady = claudeEntryReady(sideEntries.claude, !!sideEntries.claudePending);
+  // The action this render would take if an ask arrives, kept in a ref
+  // updated on EVERY render (no dependency array) — review #804 round 3
+  // finding 6. The export installed below is a stable wrapper that only ever
+  // reads `claudeAskActionRef.current` at CALL time, so it never needs
+  // reinstalling to stay current; the ORIGINAL version of this hook
+  // (reinstalled only when `paneEnabled` changed) called a `selectSide`
+  // closed over whatever `paneSides` was at THAT install — a list that
+  // resolves asynchronously from the companion gates and can legitimately
+  // change without `paneEnabled` doing so, which risked exactly the same
+  // "wrong `_side` spelling written on a later reload/bookmark" bug
+  // Preview.tsx's copy of this fix documents in full.
+  const claudeAskActionRef = useRef<(text: string) => boolean>(() => false);
+  useEffect(() => {
+    claudeAskActionRef.current = (text: string) => {
+      if (!claudeReady) return false;
+      claudeSeedRef.current = text;
+      setClaudeAskInstance((n) => n + 1);
+      // Switches the pane to Claude — REPLACING whatever companion (most often
+      // `git`, the one that just failed) was showing. The error and repo state
+      // the git pane knew are already folded into `text`, so nothing is lost
+      // by the git pane going away.
+      selectSide("claude");
+      return true;
+    };
+  });
+  useEffect(() => {
+    if (!paneEnabled) return;
+    window._fusedClaudeAsk = (text: unknown) => {
+      if (typeof text !== "string" || !text) return false;
+      return claudeAskActionRef.current(text);
+    };
+    // The other half of the pull: the claude template's own boot calls this to
+    // collect whatever is pending. `takeClaudeAsk` (lib/claude-ask.ts, shared
+    // with Preview.tsx's copy of this hook) is what actually reads-and-clears.
+    window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);
+    return () => {
+      delete window._fusedClaudeAsk;
+      delete window._fusedClaudeAskTake;
+    };
+    // The wrapper itself never goes stale just by staying installed — see
+    // `claudeAskActionRef`'s own comment just above.
+  }, [paneEnabled]);
+  // A still-pending ask abandoned by a folder navigation that lands BETWEEN
+  // storing the seed (once `claudeReady` confirmed it was about to be
+  // delivered) and the switch actually completing must not survive into an
+  // unrelated later boot on a DIFFERENT folder.
+  useEffect(() => {
+    claudeSeedRef.current = null;
+  }, [fsPath]);
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
@@ -1861,9 +1971,17 @@ export default function Listing({
                   mode does — never when the selection moves — which is what stops
                   arrow-keying down the listing remounting the chat/git/mcp iframe
                   (a `git status`/`git log` fork, or a second `agent.py` spawn) on
-                  every keystroke. */}
+                  every keystroke.
+
+                  `claudeAskInstance` rides along ONLY for `claude` (see its own
+                  comment above): a second "Fix with AI" ask on the same folder
+                  changes neither `paneSide` nor `fsPath`, so without it the key
+                  would not change either, and the claude template's next boot
+                  would never fire to pull the new prompt. */}
               <ListingPreviewPane
-                key={paneKey(paneSide, fsPath)}
+                key={paneSide === "claude"
+                  ? `${paneKey(paneSide, fsPath)}:${claudeAskInstance}`
+                  : paneKey(paneSide, fsPath)}
                 undecided={paneUndecided}
                 appEntry={appEntryPath}
                 onOpenApp={openAppEntry}
