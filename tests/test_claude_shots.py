@@ -1198,8 +1198,8 @@ def test_a_thrown_capture_degrades_to_sending_the_annotations_without_a_picture(
     """The non-negotiable one: a user losing their typed message because a
     screenshot did not work is not a trade this feature makes."""
     out = _node(_CAPTURE_FNS + ["let targetNoun", "let paneNoun",
-                                "const ANN_TAG", "function annClock(",
-                                "function annStanza(",
+                                "const ANN_TAG", "const ANN_NO_WORDS",
+                                "function annClock(", "function annStanza(",
                                 "function formatAnnotations("],
                 _CAPTURE_STUBS + """
 var console2 = console;
@@ -1281,7 +1281,7 @@ const legacyWire = (msg, pend, st, v) => {
 };
 """
 
-_WIRE_ALSO = ["let targetNoun", "let paneNoun", "const ANN_TAG",
+_WIRE_ALSO = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WORDS",
              "function annClock(", "function annStanza(", "function formatAnnotations(", "const PANE_SHOT_TAG",
               "function stripPaneBlock(",
               "function stripAnnBlock(", "function stripAppStateBlock(",
@@ -1417,7 +1417,7 @@ console.log(JSON.stringify({keys: Object.keys(a).sort()}));
 # `targetNoun` is what formatAnnotations' preamble names the target kind
 # from — one writer for every piece of chrome that says "project"/"file"
 # (test_claude_kind.py), and the annotation block is one of them.
-_WIRE_FNS = ["let targetNoun", "let paneNoun", "const ANN_TAG",
+_WIRE_FNS = ["let targetNoun", "let paneNoun", "const ANN_TAG", "const ANN_NO_WORDS",
              "function annClock(", "function annStanza(", "function formatAnnotations(",
              "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
@@ -1428,6 +1428,16 @@ _WIRE_FNS = ["let targetNoun", "let paneNoun", "const ANN_TAG",
              "function isMarkerOnly(",
              "function stripPaneBlock(", "function paneShotIn(",
              "function composeOutgoing("]
+
+
+# What `annotationsIn` needs on top of the writer's own list: the stanza
+# grammar it parses back. Declared once — three tests read the wire.
+_READER_FNS = ["const ANN_STANZA_HEAD", "const ANN_STANZA_CLOCK",
+               "const ANN_STANZA_SEP", "const ANN_STANZA_POINT",
+               "const ANN_STANZA_TAG", "const ANN_STANZA_OFFSCREEN",
+               # ANN_NO_WORDS is the WRITER's too and is already in _WIRE_FNS —
+               # extracting it twice is a duplicate `const` and a SyntaxError.
+               "function annStanzaIn(", "function annotationsIn("]
 
 
 def _wire(html, body):
@@ -1508,6 +1518,54 @@ console.log(JSON.stringify({block: formatAnnotations([a])}));
 """)
     assert ("_no badge on the overview: the spot was scrolled out of the "
             "visible pane_\nthe map is empty") in out["block"]
+
+
+def test_a_blank_line_inside_a_note_cannot_end_its_stanza(html):
+    """A blank line is the stanza boundary, and the composer takes a newline on
+    Shift+Enter — so two of them inside one note used to end the stanza mid-note
+    and every reader dropped the rest of the user's words (Bugbot, PR #783).
+    Single line breaks survive: they are the user's and cost nothing."""
+    out = _wire(html, """
+const a = {id: "x", label: "A", anchorId: "hdr", tag: "header",
+           content: "first thought\\n\\n\\nsecond thought\\nthird"};
+const b = {id: "y", label: "B", anchorId: "ftr", content: "and this one"};
+const block = formatAnnotations([a, b]);
+console.log(JSON.stringify({block, paras: block.split(/\\n\\s*\\n/).length}));
+""")
+    # preamble + two stanzas, not preamble + three
+    assert out["paras"] == 3, out["block"]
+    assert "first thought\nsecond thought\nthird" in out["block"]
+
+
+def test_an_element_digest_that_quotes_coordinates_is_not_read_as_a_point(html):
+    """The heading is parsed positionally, not searched: an element note whose
+    `text` digest happens to say "point (12, 34)" used to come back as
+    `kind: "point"` carrying the digest's numbers as the spot the user clicked
+    (Bugbot, PR #783)."""
+    out = _node(_WIRE_FNS + _READER_FNS, """
+const a = {id: "x", label: "A", anchorId: "chart", tag: "figcaption",
+           text: "Nearest point (12, 34) on the trend line", content: "wrong axis"};
+const back = annotationsIn(formatAnnotations([a]));
+console.log(JSON.stringify({back}));
+""", html)
+    got = out["back"][0]
+    assert "kind" not in got and "x" not in got and "y" not in got, got
+    assert got["tag"] == "figcaption" and got["content"] == "wrong axis"
+
+
+def test_a_note_that_is_one_emphasised_word_survives_the_restore(html):
+    """The machine lines are matched EXACTLY, not as "any wholly-italic line" —
+    otherwise a user whose whole note is `_gone_` loses it to a rule about our
+    own prose."""
+    out = _node(_WIRE_FNS + _READER_FNS, """
+const a = {id: "x", label: "A", anchorId: "hdr", tag: "h1", content: "_gone_"};
+const b = {id: "y", label: "B", anchorId: "ftr", tag: "p", content: ""};
+const back = annotationsIn(formatAnnotations([a, b]));
+console.log(JSON.stringify({back}));
+""", html)
+    assert out["back"][0]["content"] == "_gone_"
+    # …and the real placeholder still reads as "no words", not as the words.
+    assert out["back"][1]["content"] == ""
 
 
 def test_a_point_note_names_what_it_landed_inside(html):
@@ -1599,10 +1657,7 @@ def test_the_annotation_wire_reader_is_the_exact_counterpart_of_the_writer(html)
     not come back either, for the same reason: no reader shows it. Both are
     pinned below so a future reader that DOES want them fails here rather than
     silently rendering blanks."""
-    out = _node(_WIRE_FNS + ["const ANN_STANZA_LABEL", "const ANN_STANZA_CLOCK",
-                             "const ANN_STANZA_POINT", "const ANN_STANZA_TAG",
-                             "const ANN_STANZA_OFFSCREEN",
-                             "function annStanzaIn(", "function annotationsIn("], """
+    out = _node(_WIRE_FNS + _READER_FNS, """
 const a = {id: "x", sent: 1, createdAt: 5, content: "misaligned", label: "A",
            t: 12.5, anchorPath: "div:nth-of-type(2)", tag: "div"};
 const b = {id: "y", content: "the map is empty", label: "B", kind: "point",

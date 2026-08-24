@@ -9030,6 +9030,11 @@ function annClock(t) {
 // Each piece is conditional on being THERE, which the JSON shape could not
 // manage: a typed note paid for the walkthrough paragraph, a walkthrough with no
 // point notes paid for the point paragraph, and so on.
+// The placeholder for a stanza with no words, spelled once: annStanza writes it
+// and every reader has to recognise it, and a second spelling is a note whose
+// text is our own apology.
+const ANN_NO_WORDS = "_(no words for this spot)_";
+
 function annStanza(c) {
   const bits = [];
   if (c.kind === "point") {
@@ -9066,7 +9071,18 @@ function annStanza(c) {
   // landed), but a walkthrough whose transcript assigned nothing to THIS click
   // and something to another one reaches here — and silence about it would read
   // as a note the model failed to see.
-  lines.push(c.content ? c.content : "_(no words for this spot)_");
+  //
+  // A BLANK LINE inside the note is collapsed, because a blank line is what
+  // separates one stanza from the next: the composer commits on Enter and
+  // inserts a newline on Shift+Enter (and a paste can carry anything), so two
+  // of those in a row would end the stanza mid-note — the readers would treat
+  // the rest of the user's words as a paragraph nobody wrote and drop it from
+  // restores and from the session title. Single newlines SURVIVE: the user's
+  // line breaks are theirs, they cost nothing to carry, and annotationsIn puts
+  // them back. Only the boundary is reserved. (Bugbot, PR #783.)
+  lines.push(c.content
+    ? c.content.replace(/\n[ \t]*(\n[ \t]*)+/g, "\n").trim()
+    : ANN_NO_WORDS);
   return lines.join("\n");
 }
 
@@ -9665,38 +9681,60 @@ function annReceiptRow(c) {
 // tasks_store.py and agent.py) — a blank line between stanzas, `**` opening
 // each heading, and a wholly-italic line being machine prose rather than the
 // user's words.
-const ANN_STANZA_LABEL = /^\*\*(.+?)\*\*/;
-const ANN_STANZA_CLOCK = /·\s*(\d+):(\d\d)\s*$/;
-const ANN_STANZA_POINT = /point \((-?\d+), (-?\d+)\)/;
-const ANN_STANZA_TAG = /`<([a-zA-Z0-9-]+)>`/;
+// The heading is parsed POSITIONALLY, not searched. annStanza builds it as
+// `**LABEL** — bit — bit — bit  · M:SS`, and the first bit is the only one that
+// says WHAT the note points at: `point (x, y)…` or `` `<tag>` ``. Searching the
+// whole line for those instead — which this did — reads an ELEMENT note whose
+// `text` digest happens to quote coordinates as a point note, and hands the
+// receipt and the popup the digest's numbers as the spot the user clicked
+// (Bugbot, PR #783). Anchored at the first bit, a digest cannot be mistaken for
+// one: it is never first when a tag is known, and when it is (an old note with
+// no `tag`) it arrives wrapped in “curly quotes”, which neither pattern starts
+// with.
+const ANN_STANZA_HEAD = /^\*\*(.+?)\*\* — /;
+const ANN_STANZA_CLOCK = /\s+·\s+(\d+):(\d\d)$/;
+const ANN_STANZA_SEP = " — ";
+const ANN_STANZA_POINT = /^point \((-?\d+), (-?\d+)\)/;
+const ANN_STANZA_TAG = /^`<([a-zA-Z0-9-]+)>`$/;
 const ANN_STANZA_OFFSCREEN = /^_no badge on the overview: ([\s\S]+)_$/;
 
 function annStanzaIn(para) {
   const lines = para.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!lines.length) return null;
   // The preamble paragraph, or a stanza we did not write.
-  if (!lines.length || !ANN_STANZA_LABEL.test(lines[0])) return null;
-  const head = lines[0];
-  const c = { label: ANN_STANZA_LABEL.exec(head)[1] };
-  const clock = ANN_STANZA_CLOCK.exec(head);
-  if (clock) c.t = Number(clock[1]) * 60 + Number(clock[2]);
-  const point = ANN_STANZA_POINT.exec(head);
+  const head = ANN_STANZA_HEAD.exec(lines[0]);
+  if (!head) return null;
+  const c = { label: head[1] };
+  let rest = lines[0].slice(head[0].length);
+  const clock = ANN_STANZA_CLOCK.exec(rest);
+  if (clock) {
+    c.t = Number(clock[1]) * 60 + Number(clock[2]);
+    rest = rest.slice(0, clock.index);
+  }
+  const sep = rest.indexOf(ANN_STANZA_SEP);
+  const first = sep === -1 ? rest : rest.slice(0, sep);
+  const point = ANN_STANZA_POINT.exec(first);
   if (point) {
     c.kind = "point";
     c.x = Number(point[1]);
     c.y = Number(point[2]);
   }
-  const tag = ANN_STANZA_TAG.exec(head);
+  const tag = ANN_STANZA_TAG.exec(first);
   if (tag) c.tag = tag[1];
   const said = [];
   for (const line of lines.slice(1)) {
     const off = ANN_STANZA_OFFSCREEN.exec(line);
     if (off) { c.offscreen = off[1]; continue; }
-    // Any other wholly-italic line is machine prose too — today that is only
-    // the no-words placeholder, and an entry carrying it has no words to show.
-    if (line.startsWith("_") && line.endsWith("_")) continue;
+    // The two KNOWN machine lines only, not "any wholly-italic line": a user
+    // whose note is a single emphasised word wrote that word, and dropping it
+    // as prose of ours loses the whole note.
+    if (line === ANN_NO_WORDS) continue;
     said.push(line);
   }
-  c.content = said.join(" ");
+  // "\n", not " ": the writer keeps the user's single line breaks (only a blank
+  // line is reserved, as the stanza boundary), so the note comes home shaped the
+  // way it was typed.
+  c.content = said.join("\n");
   return c;
 }
 

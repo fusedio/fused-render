@@ -670,17 +670,26 @@ _LEADING_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
 # has no `content` key to ask for. Hence the shape rules below, which are the
 # ones `formatAnnotations` writes and nothing else:
 #
-#   * stanzas are separated by a blank line;
+#   * stanzas are separated by a blank line, and the writer collapses any blank
+#     line INSIDE a note so that boundary is unambiguous (the composer commits
+#     on Enter and takes a newline on Shift+Enter, so a note really can hold
+#     one);
 #   * the FIRST paragraph is the block's own preamble, and it is the only one
-#     that does not open with `**` (a stanza always opens `**A** — …`);
-#   * inside a stanza the first line is that heading, any wholly-italic `_…_`
-#     line is machine prose (the no-badge caveat, the no-words placeholder), and
-#     what is left is what the user said.
+#     that does not open with `**A** — ` (every stanza opens with its label);
+#   * inside a stanza the first line is that heading, the no-badge caveat and
+#     the no-words placeholder are OURS, and what is left is what the user said.
+#
+# The two machine lines are matched EXACTLY rather than as "any wholly-italic
+# line": a note that is one emphasised word is a note, and dropping it as prose
+# of ours loses the row's whole name.
 #
 # Anything that does not match is answered "" rather than guessed at — a row
 # named with a fragment of our own preamble is worse than one named by its id.
 _ANN_TAG = "annotations"
 _ANN_BLOCK = re.compile(r"<%s>(.*?)</%s>" % (_ANN_TAG, _ANN_TAG), re.DOTALL)
+_ANN_STANZA_HEAD = re.compile(r"^\*\*(.+?)\*\* — ")
+_ANN_NO_WORDS = "_(no words for this spot)_"
+_ANN_OFFSCREEN = re.compile(r"^_no badge on the overview: .+_$", re.DOTALL)
 
 # The annotation notes as they were written BEFORE that tag existed: one opening
 # sentence, a paragraph of field notes for the model, and a fenced json payload.
@@ -694,14 +703,17 @@ _ANN_FENCE_CLOSE = "\n```"
 
 
 def _ann_notes_md(block: str) -> str:
-    """The user's words from one `<annotations>` block's stanzas, joined."""
+    """The user's words from one `<annotations>` block's stanzas, joined.
+
+    Flattened with spaces, unlike the page's own reader (which rejoins with
+    newlines): this builds a row TITLE, and a title is one line."""
     notes = []
     for para in re.split(r"\n\s*\n", block.strip()):
         lines = [ln.strip() for ln in para.strip().splitlines() if ln.strip()]
-        if not lines or not lines[0].startswith("**"):
+        if not lines or not _ANN_STANZA_HEAD.match(lines[0]):
             continue            # the preamble paragraph, or something we did not write
         said = [ln for ln in lines[1:]
-                if not (ln.startswith("_") and ln.endswith("_"))]
+                if ln != _ANN_NO_WORDS and not _ANN_OFFSCREEN.match(ln)]
         if said:
             notes.append(" ".join(said))
     return " · ".join(notes)

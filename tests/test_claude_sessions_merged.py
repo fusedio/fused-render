@@ -235,6 +235,27 @@ def test_the_no_badge_caveat_is_not_mistaken_for_the_users_words(agent):
         records.ANNOTATION_TAGGED_NOTES
 
 
+def test_a_one_word_emphasised_note_still_names_its_row(agent):
+    """The machine lines are matched EXACTLY, not as "any wholly-italic line":
+    a note whose whole text is `_gone_` is the row's only name, and a rule about
+    OUR prose eating it leaves the chat nameless (Bugbot, PR #783)."""
+    block = ("<annotations>\npreamble\n\n**A** — `<h1>`\n_gone_\n</annotations>")
+    assert tasks_store.ann_notes(block) == "_gone_"
+    # …while the real placeholder still yields nothing to name a row with.
+    empty = ("<annotations>\npreamble\n\n**A** — `<h1>`\n"
+             "_(no words for this spot)_\n</annotations>")
+    assert tasks_store.ann_notes(empty) == ""
+
+
+def test_a_multi_line_note_is_flattened_into_one_title(agent):
+    """The writer keeps the user's single line breaks (only a BLANK line is
+    reserved, as the stanza boundary), so a title has to join them — a row title
+    is one line."""
+    block = ("<annotations>\npreamble\n\n**A** — `<p>`  · 0:01\n"
+             "first thought\nsecond thought\n</annotations>")
+    assert tasks_store.ann_notes(block) == "first thought second thought"
+
+
 def test_free_text_still_wins_over_the_notes_on_the_pins(agent, target):
     """The pins are a FALLBACK. When the user both pinned and typed, the typed
     words are the title — they are the thing they wrote to be read."""
@@ -336,6 +357,15 @@ def test_the_templates_stripper_and_the_servers_agree_exactly(agent, text):
     "<annotations>\npreamble\n\n**A** — `<b>`  · 0:01\n</annotations>",
     "<annotations>\npreamble\n\nnot a stanza at all\n</annotations>",
     "<annotations>\n</annotations>",
+    # A multi-line note (the composer takes a newline on Shift+Enter), which the
+    # writer keeps as single breaks — both readers flatten it to one title line.
+    "<annotations>\npreamble\n\n**A** — `<p>`  · 0:01\nfirst thought\n"
+    "second thought\n</annotations>",
+    # A note that is one emphasised word, and the placeholder it must not be
+    # confused with — the machine lines are matched exactly (Bugbot, PR #783).
+    "<annotations>\npreamble\n\n**A** — `<h1>`\n_gone_\n</annotations>",
+    "<annotations>\npreamble\n\n**A** — `<h1>`\n_(no words for this spot)_\n"
+    "</annotations>",
     "",
 ])
 def test_the_two_annotation_readers_agree_exactly(agent, text):

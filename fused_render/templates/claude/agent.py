@@ -1561,12 +1561,18 @@ def _task_notification(text: str) -> dict | None:
 # import fused_render, so the rule is written twice and tested once).
 #
 # The shape rules are the ones `formatAnnotations` writes and nothing else:
-# stanzas separated by a blank line, the first paragraph the block's preamble
-# (the only one not opening with `**`), and inside a stanza the first line is the
-# heading, any wholly-italic `_…_` line is machine prose (the no-badge caveat,
-# the no-words placeholder), and what is left is what the user said.
+# stanzas separated by a blank line (the writer collapses any blank line INSIDE a
+# note, so that boundary is unambiguous even though the composer takes a newline
+# on Shift+Enter), the first paragraph the block's preamble (the only one not
+# opening with `**A** — `), and inside a stanza the first line is the heading,
+# the no-badge caveat and the no-words placeholder are OURS — matched exactly
+# rather than as "any wholly-italic line", since a note that is one emphasised
+# word is still a note — and what is left is what the user said.
 _ANN_TAG = "annotations"
 _ANN_BLOCK = re.compile(r"<%s>(.*?)</%s>" % (_ANN_TAG, _ANN_TAG), re.DOTALL)
+_ANN_STANZA_HEAD = re.compile(r"^\*\*(.+?)\*\* — ")
+_ANN_NO_WORDS = "_(no words for this spot)_"
+_ANN_OFFSCREEN = re.compile(r"^_no badge on the overview: .+_$", re.DOTALL)
 
 # The same block as it was written BEFORE that tag existed: a prose preamble and
 # a fenced json payload, recognised at position ZERO because it has no tag —
@@ -1578,14 +1584,17 @@ _ANN_FENCE_CLOSE = "\n```"
 
 
 def _ann_notes_md(block: str) -> str:
-    """The user's words from one `<annotations>` block's stanzas, joined."""
+    """The user's words from one `<annotations>` block's stanzas, joined.
+
+    Flattened with spaces, unlike the page's own reader (which rejoins with
+    newlines): this builds a row TITLE, and a title is one line."""
     notes = []
     for para in re.split(r"\n\s*\n", block.strip()):
         lines = [ln.strip() for ln in para.strip().splitlines() if ln.strip()]
-        if not lines or not lines[0].startswith("**"):
+        if not lines or not _ANN_STANZA_HEAD.match(lines[0]):
             continue            # the preamble paragraph, or something we did not write
         said = [ln for ln in lines[1:]
-                if not (ln.startswith("_") and ln.endswith("_"))]
+                if ln != _ANN_NO_WORDS and not _ANN_OFFSCREEN.match(ln)]
         if said:
             notes.append(" ".join(said))
     return " · ".join(notes)
