@@ -1964,7 +1964,21 @@
    select into the middle of the row once a second control appeared. */
 .am-bench-headtools {
   display: flex;
-  align-items: baseline;
+  /* CENTRE, not baseline. An icon-only button's baseline is the BOTTOM EDGE of
+     its `<svg>` (an inline-flex box with no text in it has no text baseline of
+     its own), so under `baseline` the Share glyph was pulled up until its
+     bottom sat on the select's TEXT baseline — a few pixels above the select's
+     own box centre, which is what read as "not aligned with the rest". These
+     are two boxes of known height (a `.field-control` select and a 26px
+     `.cc-iconbtn`), and what a reader lines up is their centres; baseline was
+     inherited from when this row held a text badge, where it was the right
+     rule and there was a second run of text to line up with. `.am-engine-row`
+     above already made this exact call for the same reason ("the select is a
+     32px box and the two text runs beside it should sit on its middle, not
+     hang off the text baseline inside it") — this row is that lesson arriving
+     a second time, now that the badge is gone and the only thing beside the
+     select is a glyph with no text baseline at all. */
+  align-items: center;
   flex-wrap: wrap;
   gap: 12px;
 }
@@ -1976,7 +1990,11 @@
    file that is actually on their clipboard. */
 .am-bench-share {
   display: inline-flex;
-  align-items: baseline;
+  /* Same reason as `.am-bench-headtools` above: the button is a 26px box and
+     the receipt beside it is one line of 11px text, so their centres are what
+     line up. Baseline here put the note's text baseline on the button's
+     bottom edge, hanging the sentence low. */
+  align-items: center;
   gap: 8px;
   font-size: 11px;
 }
@@ -1991,7 +2009,7 @@
 
 .am-bench-metricsel {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   font-size: 12px;
   color: var(--fg-muted);
