@@ -914,6 +914,22 @@ def _binding_source() -> str:
     return files("fused_render").joinpath("_binding.py").read_text(encoding="utf-8")
 
 
+def _shared_templates_dir() -> str:
+    """Absolute path to `fused_render/templates/shared`, computed from this
+    file's own location — never from an env var or `appenv`.
+
+    The wrapper below is generated source for a subprocess that may not have
+    inherited the server's environment at all (a bare `fused_render.engine`
+    caller, or a test), and the shared dir has to resolve regardless. This
+    file lives at `fused_render/engine.py`, so `templates/shared` is a fixed
+    sibling of its own directory. `_child.py`'s worker computes the identical
+    path from its own `__file__` for the same reason — the two must agree, or
+    `import fused_ai` works under one engine and not the other (this file's
+    own module note on that trap).
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "shared")
+
+
 def build_code(user_code: str, script_dir: str, script_path: str = "script") -> str:
     """Wrap user code so its imports/data paths resolve next to the .py, and
     bridge the bare-``main()`` contract.
@@ -963,6 +979,11 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
     preamble = (
         f"import os as _fused_os, sys as _fused_sys\n"
         f"_fused_sys.path.insert(0, {script_dir!r})\n"
+        # APPENDED (not inserted at 0), so a user module of the same name
+        # still wins over the shared copy — `_child.py`'s worker follows the
+        # identical precedence for the built-in engine. Lets a user script
+        # `import fused_ai` (and `appenv`) under this engine too.
+        f"_fused_sys.path.append({_shared_templates_dir()!r})\n"
         f"__file__ = {script_path!r}\n"
         f'__name__ = "__fused_module__"\n'
         f"exec(compile({user_code!r}, {script_path!r}, 'exec'), globals())\n"

@@ -1,6 +1,6 @@
 ---
 name: fused-render-ai
-description: Use when a fused-render page needs an AI model — calling fused.ai for text, streaming tokens, holding a conversation, generating an image with fused.ai.image, transcribing audio or video with fused.ai.transcribe, or driving local models with fused.ai.models (list/catalog/load/download/unload) and fused.ai.cancel. Also use when an AI call rejects with ai_unavailable, model_loading, unavailable, cancelled, or timeout, when a model download needs watching, or when a page that calls AI must survive export.
+description: Use when a fused-render page needs an AI model — calling fused.ai for text, streaming tokens, holding a conversation, generating an image with fused.ai.image, transcribing audio or video with fused.ai.transcribe, or driving local models with fused.ai.models (list/catalog/load/download/unload) and fused.ai.cancel. Also use when a .py data file or an external process wants the same calls via `import fused_ai`, when an AI call rejects with ai_unavailable, model_loading, unavailable, cancelled, timeout, or stalled, when a model download needs watching, or when a page (or a .py file) that calls AI must survive export.
 ---
 
 # AI in a fused-render Page
@@ -26,6 +26,7 @@ Both destinations are **local-only** — there is no hosted path — so an expor
 - A page generates an image (`fused.ai.image`) or transcribes a recording (`fused.ai.transcribe`) locally.
 - A page manages what this machine is holding in memory (`fused.ai.models.*`).
 - An AI call rejects and you need to know whose fault it is.
+- A `.py` data file, or a process outside the browser entirely, wants the same AI calls — see "Calling from Python".
 
 For `runPython`, params, or file IO → **`fused-render-authoring`**. For opening/running the app → **`fused-render-usage`**.
 
@@ -451,6 +452,93 @@ Those four strings are the capability vocabulary — what `unload({capability})`
 
 **And a switch EVICTS.** A model resident under the outgoing engine is unloaded as the preference is written — it belongs to the backend that loaded it. A page holding it gets `model_loading` on its next `fused.ai()` call (the cold-start path it already handles); the artefact calls reload inside their own job and just take longer.
 
+## Calling from Python: `fused_ai`
+
+Everything above is also reachable **without a browser**. `fused_render/templates/shared/fused_ai.py` is a stdlib-only Python client mirroring `fused.ai` 1:1 — same names, same option names, same closed-envelope rejections (D413) — so a `.py` data file or an external process never has to reinvent the model layer (SPEC PY-19, D470-D472).
+
+### `import fused_ai` — no install, no path setup
+
+A user `.py` running under the server just imports it:
+
+```python
+import fused_ai
+
+def main(path: str = "meeting.m4a"):
+    rec = fused_ai.transcribe(path=path)   # blocks until the transcript is ready
+    return rec["text"]
+```
+
+That's the whole thing. Both execution engines append `templates/shared` onto the module's own `sys.path` before it runs, so `import fused_ai` resolves the way `import pandas` does — no `sys.path.insert`, no `pip install fused-render`, nothing to configure.
+
+### The surface
+
+Same names, same options as `fused.ai` above:
+
+| Python | JS equivalent |
+|---|---|
+| `fused_ai.text(prompt, model=, effort=, system_prompt=)` → `str` | `fused.ai(prompt, opts)` |
+| `fused_ai.stream(prompt, model=, effort=, system_prompt=)` → generator of `str` | `fused.ai(prompt, {onChunk})` |
+| `fused_ai.transcribe(path=, model=, language=, task=, initial_prompt=, vad=, diarize=, speakers=, words=, ...)` | `fused.ai.transcribe({...})` |
+| `fused_ai.image(prompt=, model=, width=, height=, steps=, guidance=, seed=, image=, ...)` | `fused.ai.image({...})` |
+| `fused_ai.embed(texts=, paths=, model=)` | same `/api/ai/embed` endpoint (not covered above) — one forward pass, not job-backed |
+| `fused_ai.models.list()` / `.catalog()` / `.load(id, capability=)` / `.download(id)` / `.unload(id)` | `fused.ai.models.*` |
+| `fused_ai.cancel(capability)` | `fused.ai.cancel(capability)` |
+
+`from fused_ai import ai` gives the same functions as `ai.text(...)`, `ai.models.load(...)`, etc., if you prefer that spelling — one module, two ways to reach it.
+
+### Job-backed calls block by default
+
+`transcribe`, `image`, and `models.load`/`models.download` start a job and hand back a job id over HTTP — identical to the JS bridge. But a Python caller has a thread to spend, where a page has a promise to keep, so the wrapper does the waiting for you: **`await` becomes `return`.**
+
+```python
+rec = fused_ai.transcribe(path="meeting.m4a")   # does not return until the job is DONE
+```
+
+`fused_ai.transcribe()`'s settled reply carries the transcript's **contents**, not just its paths — same as `fused.ai.transcribe`'s own resolve above: `{**reply, "text", "segments", "language", "duration", "speakers", "estimatedSpeakers"}`, read off `rec["output"]` for you (`rec["output"]`/`rec["outputText"]` still ride along too, if you want the raw files). `fused_ai.image()` is different, and correctly so: `fused.ai.image` resolves with `{path, url, previewUrl, seed, ...}` and no pixel data, so `img["path"]` is genuinely the whole answer there — nothing is being left for you to read that the JS bridge already hands over.
+
+For anything else, three keyword arguments:
+
+- **`wait=False`** returns the immediate reply (`{"jobId", "path", ...}`) instead of blocking, for a caller that wants to drive its own loop.
+- **`on_progress=`** — a callable that receives each polled job row (the same shape `GET /api/jobs` returns), so a long-running caller can print/log ticks instead of sitting silent.
+- **`timeout=`** bounds the wait; past it, `AiError(type="timeout")`.
+
+### Two exceptions, for two different situations
+
+```python
+try:
+    text = fused_ai.text("summarise this")
+except fused_ai.ServerNotRunning:
+    print("no fused-render server is reachable from here")
+except fused_ai.AiError as e:
+    print(f"{e.type}: {e.message}")
+```
+
+- **`ServerNotRunning`** — there is nothing to call at all. Different remedy from a failed call: start the app, or give up, not retry.
+- **`AiError`** — the app is there and the call failed. Carries `.type`/`.message`/`.status` off the same `{ok, error:{type, message}}` shape (or the plainer `{"error": "..."}` a job-backed endpoint's own validation returns) the rejections table above already documents — `model_loading`, `ai_unavailable`, `bad_request`, `ai_error`, `timeout`, `unavailable`, `cancelled` all show up here as `.type` too, plus `stalled` (the job stopped reporting progress) which the JS bridge has no equivalent for.
+
+### From outside a running server: the `server.json` bootstrap
+
+A process the server did not spawn — a menubar app, a notebook, a standalone script — has no `sys.path` seeded for it and no `FUSED_RENDER_ORIGIN` in its environment. The server publishes both facts it needs to `~/.fused-render/server.json` at startup (branch-nested like everything else under the shell home dir):
+
+```python
+import json, os, sys
+with open(os.path.expanduser("~/.fused-render/server.json")) as f:
+    sys.path.insert(0, json.load(f)["shared"])
+import fused_ai
+```
+
+`fused_ai.resolve_origin()` (called internally by every function above) already does this lookup for you *after* checking `FUSED_RENDER_ORIGIN` — the snippet above is only for the one thing it cannot do itself: putting `fused_ai.py` on `sys.path` in the first place. If nothing is running, `resolve_origin()` raises `ServerNotRunning` rather than guessing a port.
+
+### When NOT to use it
+
+**If the page wants streaming tokens or live progress in its UI, call `fused.ai` in JavaScript — not `fused_ai` through `runPython()`.** A `runPython()` round trip is one request and one response; there is no channel back into the page while Python is still running, so a blocking `fused_ai.transcribe()` call behind `runPython()` cannot feed a progress bar or a token-by-token stream no matter what `on_progress=` you pass it — that callback runs INSIDE the same `runPython()` subprocess, with nothing connecting it to the browser until the whole call returns; a `print()` inside it lands in that subprocess's captured stdout, not on the page, and the page sees one lump reply when the call ends. A page that wants to *watch* a transcription arrive, or show text appearing as the model writes it, has to call `fused.ai`/`fused.ai.transcribe` directly and let the browser hold the connection open.
+
+Reach for `fused_ai` when the AI call is incidental to work that is already in Python — a batch script, a scheduled job, a `main()` that happens to want a summary alongside a DataFrame — not as a Python-flavored way to build a chat UI.
+
+### Export
+
+An exported page has no server behind it, so this is moot rather than dangerous: no `/api/ai`, no job registry, nothing for `fused_ai` to call — and `export.py` does not copy `templates/shared/` into the exported bundle in the first place, so `import fused_ai` fails before it could even try.
+
 ## Surviving Export
 
 The exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11) — matched textually, so `if (fused.env === "local")` does **not** make a page exportable, and aliasing the call to dodge the match only trades a clear refusal for a page that ships broken. An exported page has no CLI and no worker; the call could only fail at the reader.
@@ -458,6 +546,8 @@ The exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11)
 If a view must export, **keep AI out of it** and gate the feature at the page level — a local-only companion view, or a UI that hides the AI panel when `fused.env !== "local"` with no `fused.ai(` in the file at all. `fused.trackJob` exports fine (it no-ops hosted); `fused.ai` never will.
 
 **The DOTTED calls are a trap in the opposite direction.** The check matches `fused.ai(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it — and then fail at the reader, since a hosted page has no worker, no `<home>/ai/` directories and no `/api/fs/raw`, making every `url`, `previewUrl` and `output` a dead address. Gate them on `fused.env === "local"` yourself; nothing will stop you at export time. (Recorded as an open question in `docs/EXPORT.md`.)
+
+**Same story for the Python client.** `export.py` does not copy `templates/shared/` into an exported bundle at all, so `import fused_ai` fails outright rather than resolving to a dead server — moot rather than dangerous, but worth knowing before you assume a `.py` data file survives export unchanged.
 
 ## Debugging
 
@@ -515,3 +605,10 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 
 - **Gating `fused.ai` on `fused.env` and expecting export to pass** → the match is textual.
 - **Assuming `fused.ai.image`/`.transcribe` are safe to export because they pass the check** → they do, and then fail at the reader. Gate them yourself.
+
+**Python**
+
+- **Calling `fused_ai` from a page that wants live progress or streamed tokens on screen** → a `runPython()` round trip has no channel back until it returns; use `fused.ai` in JavaScript instead. See "When NOT to use it" above.
+- **Expecting `fused_ai.image()` to hand back pixel data** → it returns the same paths `fused.ai.image` does (`img["path"]`); there is no bytes-returning form on either surface. `fused_ai.transcribe()` is the opposite case — it already reads the transcript back for you (`rec["text"]`, `rec["segments"]`), so there is no file to open yourself there.
+- **Catching only `AiError`** → a call made when nothing is running raises `ServerNotRunning`, not `AiError` — catch both, or catch neither and let it surface.
+- **Assuming a user `.py` needs `sys.path.insert` or `pip install` to reach `fused_ai`** → both engines already seed `templates/shared` onto its `sys.path`; a bare `import fused_ai` just works.

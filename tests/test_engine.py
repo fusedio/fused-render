@@ -1930,3 +1930,30 @@ def test_app_packages_does_not_cache_an_unresolved_interpreter(monkeypatch):
         )
     finally:
         engine.reset_app_packages_cache()
+
+
+# --- shared-template path seeding (SPEC PY-19): both engines, in lockstep ----
+
+
+def test_build_code_appends_the_shared_templates_dir_to_sys_path(tmp_path):
+    """`import fused_ai` must work under the fused engine too — the generated
+    wrapper appends `templates/shared` (not inserts it at 0, so a user module
+    of the same name still wins), the identical precedence `_child.py`'s
+    worker uses for the built-in engine. See that file's own module docstring
+    for the trap of only fixing one engine."""
+    code = engine.build_code("result = 1\n", str(tmp_path))
+    shared_dir = os.path.join(
+        os.path.dirname(os.path.abspath(engine.__file__)), "templates", "shared")
+    assert os.path.isdir(shared_dir), "fused_render/templates/shared must exist"
+    assert f"_fused_sys.path.append({shared_dir!r})" in code
+    # Appended, not inserted at [0] — the script dir keeps first-hit precedence.
+    insert_at = code.index(f"_fused_sys.path.insert(0, {str(tmp_path)!r})")
+    append_at = code.index(f"_fused_sys.path.append({shared_dir!r})")
+    assert insert_at < append_at
+
+
+def test_a_script_under_the_fused_engine_can_import_fused_ai(tmp_path):
+    """Exec the wrapped code the way the backend's runner does (`_run_wrapped`
+    pattern above) and prove `import fused_ai` actually resolves."""
+    g = _run_wrapped(tmp_path, "import fused_ai\nresult = callable(fused_ai.text)\n", {})
+    assert g["result"] is True
