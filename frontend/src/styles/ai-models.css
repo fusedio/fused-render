@@ -2600,8 +2600,35 @@ button.am-bench-model:focus-visible {
   background: color-mix(in srgb, var(--accent) 10%, var(--bg));
 }
 
+/* `.am-group-note` is a widely shared class (Local tab section notes, the
+   empty-leaderboard note, the no-chart note above the rows) whose base rule
+   (near the top of this file) carries a `--am-gap-head` bottom margin sized
+   for a section-level caption clearing space before the cards under it.
+   The "no {metric} recorded for this model yet" note is the ONE usage of
+   it that lives INSIDE this expansion instead — there is no card under it
+   to clear, only `.am-bench-rowexpand`'s own bottom padding, so that margin
+   just opened the same stale gap `.am-bench-chart`/`.am-bench-trend-single`
+   used to. Scoped to this one descendant context rather than touched on
+   the shared base rule, which every OTHER `.am-group-note` still needs. */
+.am-bench-rowexpand .am-group-note {
+  margin-bottom: 0;
+}
+
+/* No bottom margin here any more — checked (grep) and `ModelTrendChart.tsx`
+   is this class's ONE consumer, and that component is itself only ever
+   rendered inside `.am-bench-rowexpand` now (D481 moved the trend chart
+   off its own page-level section and into the row's expansion); it is NOT
+   shared with `ComparisonChart` (the section-level hero chart), which
+   carries its own, entirely separate `.am-bench-compare*` classes and
+   never touches this one. So the old `--am-gap-head` (16px) bottom margin
+   — sized for when this WAS a page-level section that needed to clear
+   space before the archive table below it — had nothing left to clear:
+   `.am-bench-rowexpand`'s own padding is the expansion's bottom edge now,
+   and the old margin only opened an extra gap between the expansion and
+   the NEXT row, breaking `.am-bench-rows`' 6px rhythm between every other
+   pair of rows. */
 .am-bench-chart {
-  margin-bottom: var(--am-gap-head);
+  margin-bottom: 0;
 }
 
 /* The ONE-RUN state: no trend to draw (a single point has no before to read
@@ -2609,16 +2636,19 @@ button.am-bench-model:focus-visible {
    was a lone dot in an otherwise empty chart, reading as the page being
    broken rather than as "here is the one number we have". A fraction of the
    chart's own height, the value stated as plainly as the leaderboard states
-   it, with the fix in the same breath. */
+   it, with the fix in the same breath.
+
+   **No border/background/margin of its own any more.** Like `.am-bench-
+   chart` above, this class's one consumer (BenchmarkTab.tsx) is inside
+   `.am-bench-rowexpand` — the row's own card — so a second bordered,
+   `--bg`-filled box here drew a box inside a box, with a visible band of
+   plain `--bg` sitting inside the expansion's accent wash around it. The
+   card is the container now; this is one of its children, not a second
+   container of its own. */
 .am-bench-trend-single {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 14px 16px;
-  margin-bottom: var(--am-gap-head);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .am-bench-trend-value {
@@ -2673,14 +2703,22 @@ button.am-bench-model:focus-visible {
 
 /* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
    plot fills whatever width the column has without the component measuring
-   anything (see ModelTrendChart.tsx). */
+   anything (see ModelTrendChart.tsx).
+
+   **No `background`/`border`/`border-radius` of its own any more** — this
+   was the actual "box inside a box": a `--bg`-filled, bordered rectangle
+   floating inside `.am-bench-rowexpand`'s own accent-tinted card, with a
+   visible plain band around the plot where the two backgrounds disagreed.
+   `ModelTrendChart` (this class's only consumer, confirmed by grep — it is
+   NOT shared with `ComparisonChart`, which draws its own `.am-bench-
+   compare-plot`) already delineates the plot with its OWN gridlines and
+   baseline (`.am-bench-gridline`/`.am-bench-axis-line`, drawn inside the
+   SVG) — a second, outer rectangle around all of that was doing the same
+   job twice. */
 .am-bench-plot {
   display: block;
   width: 100%;
   height: var(--am-bench-plot-h);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .am-bench-axis-line {
