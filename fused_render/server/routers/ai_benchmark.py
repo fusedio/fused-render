@@ -6,10 +6,12 @@ Three routes and nothing else:
   request is **held open for the whole run**, which is minutes, exactly as
   `POST /api/ai/image` and `POST /api/ai/transcribe` already are for work of the
   same length. Inventing a poll-a-benchmark-job protocol for a third long call
-  would be new machinery with no new capability. **No job id comes back and no
-  download-manager row is created** — see `benchmark.run` for why a benchmark
-  cannot own a row for a model that already has a load row; the tab shows its own
-  spinner for the duration.
+  would be new machinery with no new capability. **No `jobId` comes back on the
+  wire** — a titled download-manager row IS created for the measurement phase
+  (`benchmark._MeasurementRow`), but a page finds it the same way it finds any
+  other server row, through `useCacheScan.ts`'s `job.title -> job` map, never
+  through a value this endpoint hands back. See `benchmark.run` for why the row
+  is titled the way it is and why it opens only once loading ends.
 * `GET /api/ai/benchmark` — every stored run, plus THIS machine. The machine
   block travels with the history rather than only on each run because the page
   has to caption a comparison ("these numbers are from this laptop") before it

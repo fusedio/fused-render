@@ -54,6 +54,20 @@ def run():
         module_dir = os.path.dirname(path)
         os.chdir(module_dir)  # relative data paths in user code resolve next to the .py
         sys.path.insert(0, module_dir)
+        # APPENDED, not inserted at 0: a user module of the same name (e.g. a
+        # user's own `appenv.py`) must still win over the shared copy. Derived
+        # from this file's own location (never an env var) because this
+        # process was invoked as a standalone script with no guarantee the
+        # server's env made it across — `templates/shared/` sits beside
+        # `_child.py` at `fused_render/templates/shared`. Lets a user .py
+        # `import fused_ai` (and `appenv`) the same way a built-in template
+        # does. `engine.py`'s generated wrapper does the identical append for
+        # the fused engine — the two must not disagree (see this file's own
+        # module docstring on the PYTHONPATH-stripping trap that made ONE of
+        # them silently work before).
+        sys.path.append(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates", "shared")
+        )
         spec = importlib.util.spec_from_file_location("__fused_module__", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

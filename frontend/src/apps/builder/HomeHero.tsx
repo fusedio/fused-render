@@ -10,6 +10,7 @@ import { TroubleCard } from "@platform/ui/TroubleCard";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { Select, TextArea } from "@platform/ui/field/fields";
+import { type AppAnnotation } from "@platform/lib/appAnnotation";
 
 // URL of an app folder's claude chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
@@ -296,6 +297,10 @@ function ComposerPick<T extends string>({
 // lands in the new folder's claude chat exactly like the New-app panel does.
 function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [prompt, setPrompt] = useState("");
+  // The chip above the box — set by the Playground's "Build an app with this
+  // AI" button (?annot=). null means no model is annotated; the composer
+  // reads as a plain prompt box exactly like today.
+  const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
   // Empty = "let the chat decide", the default; see MODEL_CHOICES.
   const [model, setModel] = useState<DefaultModel>("");
   const [effort, setEffort] = useState<SessionEffort>("");
@@ -313,29 +318,26 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     [],
   );
 
-  // A `?seed=` in the URL pre-fills the composer — the Playground's "Build an
-  // app with this AI" hands its model + tuned settings through here. Consumed
-  // once and removed (replaceSearch, no history entry): a seed that survived
-  // in the URL would re-stomp whatever the user typed on the next mount.
+  // A `?annot=` in the URL pre-fills the chip — the Playground's "Build an
+  // app with this AI" hands its model + tuned settings through here as a
+  // JSON `AppAnnotation`, encoded rather than dumped into the prompt text.
+  // Consumed once and removed (replaceSearch, no history entry): an annot
+  // that survived in the URL would reappear on the next mount.
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    const seed = params.get("seed");
-    if (!seed) return;
-    setPrompt(seed);
-    params.delete("seed");
+    const raw = params.get("annot");
+    if (!raw) return;
+    try {
+      setAnnotation(JSON.parse(raw) as AppAnnotation);
+    } catch {
+      // Malformed/tampered param — drop it silently rather than crash the
+      // composer over a URL someone hand-edited.
+    }
+    params.delete("annot");
     const search = params.toString();
     replaceSearch(location.pathname + (search ? "?" + search : ""));
-    // The seed ends mid-sentence ("The app I want: ") — put the person at the
-    // end of it, ready to finish it. After the render that paints the value:
-    // focusing first and selecting in the same tick reads a still-empty box.
-    requestAnimationFrame(() => {
-      const box = inputRef.current;
-      if (!box) return;
-      box.focus();
-      box.setSelectionRange(box.value.length, box.value.length);
-      box.scrollTop = box.scrollHeight;
-    });
+    requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
   const busy = phase !== "idle";
@@ -344,6 +346,11 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const submit = async () => {
     if (!canSubmit) return;
     const trimmed = prompt.trim();
+    // The chip's detail is instructions for the CLAUDE SESSION, not something
+    // the user typed — spliced in ahead of what they wrote so it reads as
+    // "here's the model, here's the app I want" without the user ever
+    // seeing or editing the model prose.
+    const full = annotation ? `${annotation.detail}\n\nThe app I want: ${trimmed}` : trimmed;
     setError(null);
     setSessionError(null);
     setPhase("naming");
@@ -351,7 +358,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
       const name = await suggestAppName(trimmed);
       if (!alive.current) return;
       setPhase("creating");
-      const res = await createAppUnderFreeName(name, trimmed, model, effort);
+      const res = await createAppUnderFreeName(name, full, model, effort);
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the session-error branch below stays on this page.
       onCreated();
@@ -381,6 +388,23 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   return (
     <div className="home-composer-wrap">
       <div className={"home-composer" + (busy ? " is-busy" : "")}>
+        {annotation && (
+          <div className="home-composer-annots">
+            <span className="home-composer-annot" title={annotation.detail}>
+              <span className="home-composer-annot-at" aria-hidden="true">@</span>
+              {annotation.name}
+              <button
+                type="button"
+                className="home-composer-annot-x"
+                aria-label={`Remove ${annotation.name} annotation`}
+                disabled={busy}
+                onClick={() => setAnnotation(null)}
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        )}
         <TextArea
           ref={inputRef}
           className="home-composer-input"

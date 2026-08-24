@@ -806,22 +806,46 @@ a.pg-hero-repo:hover {
   gap: 14px;
 }
 
-/* The two numbers the placement below is built from, declared OUT here on the
+/* The numbers the placement below is built from, declared OUT here on the
    container itself: a `@container` rule can never target its own container —
    the query would resolve against .pg-stage's ANCESTOR — so a var declared on
    .pg-stage inside the block would simply never land, and every calc() that
    read it would fall over. */
 .pg-stage {
-  --pg-card: 240px;
   --pg-gap: 16px;
+  /* The card's band, not one number. A single 240px card put the side-by-side
+     threshold at 1000cqw, which a ~1000px window misses by a hair — the stage
+     gets ~950 of it — so a window with obvious room beside the column still
+     stacked the settings under it. Letting the card give up width instead of
+     the column moves the threshold down to where that window lands, and hands
+     the full 240 back as soon as there is room for it. */
+  --pg-card-min: 192px;
+  --pg-card-max: 240px;
 }
 
-/* Wide enough for the whole PAIR — column plus card — to sit centered with the
-   stage's own 32px edges: 680 + 16 gap + 240 card + 2×32 = 1000cqw. Below this
-   the card stays in flow under the input, the placement the cog pass shipped. That band used to
-   keep the card beside the column by letting the column give up width; it no
-   longer does, which is the price of never resizing the input. */
-@container (min-width: 1000px) {
+/* The card's actual width, resolved on the stage's CHILDREN rather than the
+   stage: `cqw` on the container itself measures the container's own ANCESTOR,
+   the same trap as the vars above, and every box that reads --pg-card (hero,
+   work column, apps strip, and the card itself by inheritance) is a descendant
+   of .pg-stage, so each one resolves it against the stage. It is one shared
+   expression, so all four still agree to the pixel — the hero and the apps
+   strip keep spanning exactly the pair below them. */
+.pg-stage > * {
+  --pg-card: clamp(
+    var(--pg-card-min),
+    100cqw - 680px - var(--pg-gap) - 32px,
+    var(--pg-card-max)
+  );
+}
+
+/* Wide enough for the whole PAIR — column plus card at its NARROWEST — to sit
+   centered with the stage's own 32px edges: 680 + 16 gap + 192 card + 2×32 =
+   920cqw. Above it the clamp above widens the card until it reaches 240 (at
+   968cqw) and holds. Below it the card stays in flow under the input, the
+   placement the cog pass shipped. That band used to keep the card beside the
+   column by letting the column give up width; it no longer does, which is the
+   price of never resizing the input. */
+@container (min-width: 920px) {
   /* The work column slides left by HALF the card's footprint: what the pair
      gives up on the right it takes back on the left, so the PAIR is centered on
      the stage while the column stays the same 680px it was before the cog was
@@ -832,8 +856,11 @@ a.pg-hero-repo:hover {
   .pg-work.has-config {
     margin-left: calc((100cqw - 680px) / 2 - (var(--pg-gap) + var(--pg-card)) / 2);
     margin-right: 0;
-    /* Fixed, not a min(): the threshold above already guarantees it fits, and
-       the point of this layout is that this number never moves. */
+    /* A plain calc, not a min(): the threshold above already guarantees the
+       pair fits, so nothing here has to clamp. The number tracks the stage's
+       width through --pg-card, but it is blind to the cog — which is the
+       invariant this layout exists for: opening the panel never resizes the
+       input. */
     width: calc(680px + var(--pg-gap) + var(--pg-card));
     grid-template-columns: minmax(0, 1fr) var(--pg-card);
     column-gap: var(--pg-gap);
@@ -853,7 +880,7 @@ a.pg-hero-repo:hover {
      exists to avoid. An abspos grid child takes its grid area as its
      containing block, with the row edges falling back to the container's
      padding box when the row placement is auto, so `inset: 0` is a full-height
-     rail in a 240px track. (`grid-row: 1 / -1` would NOT do this: negative
+     rail in the --pg-card track. (`grid-row: 1 / -1` would NOT do this: negative
      line numbers resolve against the EXPLICIT grid, and there are no explicit
      rows here.) The track holds its width whether anything is in it or not, so
      the column-width math above is untouched. */

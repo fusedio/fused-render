@@ -1842,6 +1842,38 @@
    keeps a visible "Metric" caption — it sits beside a card's `<h3>`, not
    alone in the page-level toolbar, so the two are not read as a matched pair
    and the caption stays legible chrome here rather than redundant chrome. */
+/* The section head's control group — the Metric select and the Share button.
+   One flex group rather than two children of the head itself, so
+   `.am-section-head`'s own `justify-content: space-between` keeps holding the
+   heading at one end and ALL the controls at the other, instead of pushing the
+   select into the middle of the row once a second control appeared. */
+.am-bench-headtools {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* Share: the chart, this machine's hardware and the fused render mark as one
+   PNG (benchmark/shareCard.ts). The receipt beside it says WHERE the card went
+   — the three delivery channels (share sheet, clipboard, download) leave it in
+   three different places, and a silent success sends the reader hunting for a
+   file that is actually on their clipboard. */
+.am-bench-share {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.am-bench-share-note {
+  color: var(--fg-muted);
+}
+
+.am-bench-share-error {
+  color: var(--error);
+}
+
 .am-bench-metricsel {
   display: flex;
   align-items: baseline;
@@ -2172,11 +2204,51 @@
   color: var(--fg);
 }
 
+/* The icon-only disclosure summary (icon-buttons pass): no default marker —
+   the chevron glyph itself IS the marker — and a plain inline-flex box so the
+   16×16 SVG doesn't inherit `<summary>`'s own list-item box model, which pads
+   asymmetrically in a way a tiny icon makes obvious. */
+.am-bench-rowdetail-chevron {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+}
+
+.am-bench-rowdetail-chevron::-webkit-details-marker {
+  display: none;
+}
+
+/* Rotated open rather than swapped for a second "collapse" glyph — the
+   `<details>` element already IS the open/closed state (MenuIcons.tsx's own
+   comment on `chevron`), so a second path would just be a second place that
+   state could get out of sync with what is actually shown. */
+.am-bench-rowdetail[open] > .am-bench-rowdetail-chevron {
+  transform: rotate(90deg);
+}
+
 .am-bench-rowdetail > p {
   margin: 4px 0 0;
   max-width: 60ch;
   color: var(--fg-muted);
   white-space: pre-wrap;
+}
+
+/* -- icon-only buttons: the spinner glyph's motion (SPEC AI-14) --------------
+   The glyph itself (`MenuIcons.spinner`) is a static partial ring; this is
+   the only thing that turns it into "working". Shared by the Benchmark tab's
+   Run button and the Share button, so one rule covers both rather than two
+   copies drifting apart. */
+.am-icon-spin {
+  display: inline-flex;
+  animation: am-icon-spin 0.9s linear infinite;
+}
+
+@keyframes am-icon-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-icon-spin { animation: none; }
 }
 
 /* A run stopped from outside — `fused.ai.cancel()` from another page reaching

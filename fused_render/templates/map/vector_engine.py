@@ -426,7 +426,6 @@ class VectorEngine:
             OrderedDict()
         )
         self.inflight: dict[tuple[str, int, int, int], threading.Event] = {}
-        self._sqlite: dict[str, sqlite3.Connection] = {}
         self._summaries: dict[str, tuple | None] = {}
         self._summary_jobs: dict[str, dict[str, Any]] = {}
         # One persistent worker builds feature-bbox overviews off the tile path,
@@ -697,19 +696,16 @@ class VectorEngine:
         except (OSError, sqlite3.Error):
             return
 
-    def _connection(self, source: VectorSource) -> sqlite3.Connection:
-        with self.lock:
-            connection = self._sqlite.get(source.source_id)
-            if connection is None:
-                # One reader per source, reused across tiles. VTILE_POOL
-                # serialises all tile work onto one persistent thread, but the
-                # connection is born wherever the first query runs.
-                connection = sqlite3.connect(
-                    source.sqlite_uri, uri=True, timeout=30,
-                    check_same_thread=False,
-                )
-                self._sqlite[source.source_id] = connection
-        return connection
+    @contextlib.contextmanager
+    def _open_connection(self, source: VectorSource):
+        """A fresh read-only connection, closed on exit. Opened per query, not
+        cached: a cached connection locks the user's GeoPackage for the daemon's
+        life. Reopening is cheap, and tile work is serialised by VTILE_POOL."""
+        connection = sqlite3.connect(source.sqlite_uri, uri=True, timeout=30)
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def _query(
         self,
@@ -718,14 +714,14 @@ class VectorEngine:
         sql: str,
         parameters: tuple,
     ) -> list:
-        connection = self._connection(source)
-        if cancel is not None:
-            connection.set_progress_handler(cancel.is_set, 100_000)
-        try:
-            return connection.execute(sql, parameters).fetchall()
-        finally:
+        with self._open_connection(source) as connection:
             if cancel is not None:
-                connection.set_progress_handler(None, 0)
+                connection.set_progress_handler(cancel.is_set, 100_000)
+            try:
+                return connection.execute(sql, parameters).fetchall()
+            finally:
+                if cancel is not None:
+                    connection.set_progress_handler(None, 0)
 
     def _transformer(self, source: VectorSource):
         transformer = self._transformers.get(source.source_id)
@@ -793,30 +789,30 @@ class VectorEngine:
     def _parse_node_summary(self, source: VectorSource) -> tuple | None:
         import numpy as np
 
-        connection = self._connection(source)
         node_table = _quote_identifier(f"{source.rtree_table}_node")
-        row = connection.execute(
-            f"SELECT data FROM {node_table} WHERE nodeno = 1"
-        ).fetchone()
-        if row is None:
-            raise ValueError("the rtree has no root node")
-        depth = int.from_bytes(row[0][:2], "big")
-        if depth < 1:
-            return None
-        blobs = [row[0]]
-        for level in range(depth):
-            ids, bounds = [], []
-            for blob in blobs:
-                count = int.from_bytes(blob[2:4], "big")
-                cells = np.frombuffer(
-                    blob, dtype=np.uint8, count=count * 24, offset=4
-                ).reshape(count, 24)
-                ids.append(cells[:, :8].copy().view(">i8").ravel())
-                bounds.append(cells[:, 8:].copy().view(">f4").reshape(count, 4))
-            child_ids = np.concatenate(ids)
-            child_bounds = np.concatenate(bounds).astype(np.float64)
-            if level < depth - 1:
-                blobs = self._fetch_nodes(connection, node_table, child_ids)
+        with self._open_connection(source) as connection:
+            row = connection.execute(
+                f"SELECT data FROM {node_table} WHERE nodeno = 1"
+            ).fetchone()
+            if row is None:
+                raise ValueError("the rtree has no root node")
+            depth = int.from_bytes(row[0][:2], "big")
+            if depth < 1:
+                return None
+            blobs = [row[0]]
+            for level in range(depth):
+                ids, bounds = [], []
+                for blob in blobs:
+                    count = int.from_bytes(blob[2:4], "big")
+                    cells = np.frombuffer(
+                        blob, dtype=np.uint8, count=count * 24, offset=4
+                    ).reshape(count, 24)
+                    ids.append(cells[:, :8].copy().view(">i8").ravel())
+                    bounds.append(cells[:, 8:].copy().view(">f4").reshape(count, 4))
+                child_ids = np.concatenate(ids)
+                child_bounds = np.concatenate(bounds).astype(np.float64)
+                if level < depth - 1:
+                    blobs = self._fetch_nodes(connection, node_table, child_ids)
         if not (source.feature_count / 500 <= len(child_bounds) <= source.feature_count):
             raise ValueError("the rtree node walk is inconsistent with the layer")
         weights = np.full(len(child_bounds), source.feature_count / len(child_bounds))

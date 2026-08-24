@@ -38,6 +38,7 @@ import {
   runCountsByCapability,
   runCountsByModel,
   runsFor,
+  busyRowText,
   shortModelName,
   stoppedNote,
   summaryLine,
@@ -439,6 +440,34 @@ describe("runButtonState", () => {
     expect(runButtonState("text-generation", "org/text", {
       "text-generation": "org/text",
     }, true).label).toBe("Running…");
+  });
+});
+
+// -- the busy row: phase + a real elapsed clock, never an invented bar --------
+
+describe("busyRowText", () => {
+  it("says the model is still loading, while it is", () => {
+    // Matches the AI runtime's OWN state for this model — never a guess from
+    // elapsed time, which cannot distinguish a slow cold load from a slow
+    // measurement.
+    expect(busyRowText(true, 1_000, 5_000)).toBe("Loading weights into memory…");
+  });
+
+  it("switches to a ticking elapsed clock once loading ends", () => {
+    // 84 seconds since the click -> 1:24, `TranscribeStage.tsx`'s own mm:ss
+    // shape.
+    expect(busyRowText(false, 0, 84_000)).toBe("Measuring — 1:24");
+  });
+
+  it("pads seconds under ten", () => {
+    expect(busyRowText(false, 0, 65_000)).toBe("Measuring — 1:05");
+  });
+
+  it("never goes negative on a clock skew", () => {
+    // `now` before `startedAt` should not happen, but a floor at 0 is cheaper
+    // than a nonsense negative count and matches the null-over-estimate
+    // spirit the rest of this feature holds elsewhere.
+    expect(busyRowText(false, 5_000, 1_000)).toBe("Measuring — 0:00");
   });
 });
 

@@ -59,6 +59,7 @@ import platform
 import secrets
 import struct
 import tempfile
+import threading
 import time
 import uuid
 import wave
@@ -335,7 +336,216 @@ def _write_tone_wav(path: str, seconds: float, sample_rate: int, hz: float) -> N
         out.writeframes(samples)
 
 
-def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
+#: How often the measurement row's watcher writes a changed detail and checks
+#: for a pressed ✕. Independent of `_LOAD_POLL_S`, which polls a worker's local
+#: HTTP health endpoint every generation: this loop polls an in-process dict
+#: (`jobs.list_jobs()`) and a `threading.Event` a measurement function wrote
+#: to, so tying the two cadences together would make one look like it costs
+#: what the other does, which it does not.
+_BENCH_ROW_POLL_S = 0.2
+
+
+def _bench_job_title(model: str) -> str:
+    """The measurement row's title: distinct from `supervisor.load`'s own row,
+    which is titled bare `model`.
+
+    This is the whole mechanism. `useCacheScan.ts` maps `job.title -> model`,
+    so two rows sharing a title are indistinguishable to every consumer — the
+    ORIGINAL design opened no row at all specifically because a decorated
+    title ("Benchmark: <model>") is a row no consumer can find and the bare
+    model id SHADOWS the load row, putting the download manager's only ✕ on
+    the load instead of the benchmark and letting a cold run spin to its
+    hour-long timeout (see `run`'s own docstring, still accurate about why a
+    naive row is worse than none). A title that is neither of those two shapes
+    is a row of its own, findable by the corner and never confused with the
+    load underneath it.
+    """
+    return f"Benchmark · {model}"
+
+
+#: Capabilities whose WORKER actually watches `worker_base.CANCEL` mid-call, so
+#: a ✕ on this row can really stop them. Verified per runner, not assumed:
+#: `llama_text.py` (llamacpp-text/-vulkan) and `mlx_text/worker.py` check it
+#: between tokens, `torch_image.py` checks it in its per-step callback, and
+#: `faster_whisper`/`mlx_whisper` check it in their segment loop. The embedding
+#: runners (`mlx_embed`, `transformers_embed`) make ONE blocking
+#: `model.encode()` call with no callback to check anything from — a cancel
+#: request against one would sit unread until the call returns on its own,
+#: complete normally, and get recorded as `ok:true` for a run somebody tried to
+#: stop, which is the opposite of `Cancelled`'s whole guarantee. So an
+#: embeddings row advertises no ✕ at all rather than one that silently does
+#: nothing — the honest answer, not a race against how long `model.encode()`
+#: happens to take.
+_CANCELLABLE_CAPABILITIES = frozenset({
+    registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
+})
+
+
+class _MeasurementRow:
+    """The job row `run()` opens once loading is done, for the MEASUREMENT
+    phase only — the warm-up pass and the timed pass that follows it.
+
+    **Why a row now, when three earlier attempts explicitly rejected one.**
+    Those attempts collided on TITLE (see `_bench_job_title`); this is the
+    fourth design, and the one that actually works, because it fixes the part
+    that was broken (the title) rather than giving up on having a row at all.
+    Without one, a cold run's "Loading weights into memory…" (the LOAD row,
+    reported by the supervisor) is followed by total silence for the whole
+    measurement — no row, no percentage, nothing — which reads as the app
+    having frozen even though it has not.
+
+    **The detail is never invented.** A measurement function calls
+    `set_detail` with a CHEAP, already-formatted string as often as it likes —
+    text-generation does it every decoded token — and `_poll_once` is what
+    turns that into an occasional job-row write instead of one HTTP-shaped
+    update per token: it runs on the watcher thread's own `_BENCH_ROW_POLL_S`
+    cadence, so a measurement function's own hot loop pays for a lock and a
+    string format and nothing else. That is the whole answer to "must not
+    perturb the measurement" — `tokensPerSecond` is timed independently of how
+    often this class happens to publish, so a slower or faster row update
+    cannot move it.
+
+    **`_poll_once` restates the row IN FULL on every tick, not only when the
+    detail changed.** The first cut only wrote when the string differed, which
+    left `updated_at` frozen for as long as the phase text did not change — a
+    single-call embed measurement (one `set_detail`, ever) or a slow warm-up
+    (no `set_detail` at all — see `run`) could sit long enough to trip
+    `jobs._sweep`'s `STALE_DROP_S` (600s), which drops a RUNNING row with no
+    exemption for `OWNER_SERVER` and, once dropped, adds the id to
+    `_dismissed` — after which `jobs.upsert` refuses every later tick as a
+    "late" one UNLESS it carries `state: "running"` again, so even this row's
+    own terminal report from `close()` would be silently swallowed and the ✕
+    would read as gone (`_cancel_state` returns None for a missing row).
+    Restating `title`/`state`/`cancellable` every tick is exactly what
+    `_wait_ready`/`_await_turn` already do for their own rows, and for the same
+    reason: it is what lets a tick both keep `updated_at` moving AND
+    re-create the row if it is ever evicted, rather than only preventing the
+    first.
+
+    **The image and speech paths need no `set_detail` call for their WORKER'S
+    progress**, because `supervisor.generate_image` already accepts a `job` id
+    and the WORKER reports its own straight onto it (`torch_image.py`'s
+    `on_step_end` posts "Denoising — step N/steps" to exactly this mechanism
+    for every other queued render) — `_measure_image` hands this row's own
+    `job` to that call instead of a disposable one, and the real step count
+    arrives on the row for free. Speech does NOT do this — see
+    `_measure_transcript`'s own comment for why handing this row's job to
+    `generate_transcript` would be actively wrong, not merely unnecessary.
+
+    **The ✕ cancels COOPERATIVELY, through `supervisor.cancel_generation`,
+    never `unload`, and ONLY where a worker can actually honour it**
+    (`_CANCELLABLE_CAPABILITIES`). See `BenchmarkTab.tsx`'s header comment for
+    what `unload` broke the one time this app tried it for a benchmark's Stop
+    button: it tears down the worker PROCESS rather than asking it to set its
+    own `cancelled` flag, so the held-open request sees the process vanish out
+    from under it rather than a clean `cancelled: true` frame, and that lands
+    as a real `ok:false` failure — a permanent "this model failed" row for a
+    run somebody stopped on purpose, which is the one thing this feature's
+    history must never contain. `cancel_generation` is the same channel the
+    tab's own queue Stop button already uses, and it acts on whichever worker
+    is resident for the capability — it does not need this row's job id at
+    all, only the fact that the ✕ was pressed. Its own `False` (no ready
+    worker, or the `/cancel` POST raising) is NOT treated as "done cancelling"
+    — `_poll_once` retries on the next tick rather than giving up, since a
+    watcher that stopped on the first transient failure would freeze the row
+    for the rest of a multi-minute run with the ✕ never actually honoured.
+    """
+
+    def __init__(self, model: str, capability: str) -> None:
+        self._job = jobs.SERVER_ID_PREFIX + "ai-benchmark-" + uuid.uuid4().hex
+        self._capability = capability
+        self._title = _bench_job_title(model)
+        self._cancellable = capability in _CANCELLABLE_CAPABILITIES
+        self._lock = threading.Lock()
+        self._detail = "Measuring…"
+        self._sent: str | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def job(self) -> str:
+        """The `sys:`-prefixed id `generate_image` can be handed so the
+        worker's own progress lands here instead of nowhere. `_measure_transcript`
+        deliberately does NOT use this — see its own comment."""
+        return self._job
+
+    def set_detail(self, detail: str) -> None:
+        """Publish a new phase/progress string. Called from the measurement
+        function's own thread — cheap on purpose, see the class docstring."""
+        with self._lock:
+            self._detail = detail
+
+    def start(self) -> None:
+        supervisor._report(self._job, title=self._title, state="running",
+                           kind="task", cancellable=self._cancellable,
+                           detail=self._detail)
+        self._sent = self._detail
+        self._thread = threading.Thread(
+            target=self._watch, daemon=True, name="ai-benchmark-row")
+        self._thread.start()
+
+    def _watch(self) -> None:
+        while not self._stop.wait(_BENCH_ROW_POLL_S):
+            if self._poll_once():
+                return
+
+    def _poll_once(self) -> bool:
+        """One watcher tick: restate the row in FULL (see the class docstring
+        for why a changed-only write is not enough), then forward a pressed ✕
+        if this capability can actually honour one. Returns True only once a
+        forward has genuinely SUCCEEDED (`cancel_generation` returned True) —
+        a False (no ready worker yet, or the request failing) is retried on
+        the next tick rather than treated as done, which is what stopped a
+        transient failure from silently freezing the row. Split out from
+        `_watch` so a test can drive exactly one tick directly, without
+        waiting through `_BENCH_ROW_POLL_S` of real wall clock to observe it.
+        """
+        with self._lock:
+            detail = self._detail
+        supervisor._report(self._job, title=self._title, state="running",
+                           kind="task", cancellable=self._cancellable,
+                           detail=detail)
+        self._sent = detail
+        if not self._cancellable:
+            return False
+        if supervisor._cancel_requested(self._job):
+            return supervisor.cancel_generation(self._capability)
+        return False
+
+    def _flush_detail(self) -> None:
+        """Push the LAST detail synchronously — detail only, never a cancel
+        forward. Called from `close()`, after the run is already over: by then
+        `cancel_requested` may still read True (nothing but a terminal state
+        clears it — see `jobs.upsert`), and forwarding it here would ask
+        `cancel_generation` to stop whatever is CURRENTLY resident for this
+        capability, which by now could be an unrelated generation — a
+        Playground chat the user started the instant this run finished. Detail
+        only avoids that: a fast run (an embedding call answering in
+        milliseconds) can finish before the watcher thread's own
+        `_BENCH_ROW_POLL_S` cadence ever ticks, and without this the row would
+        sit on "Measuring…" its entire life even though `set_detail` recorded
+        a real phase.
+        """
+        with self._lock:
+            detail = self._detail
+        if detail != self._sent:
+            supervisor._report(self._job, detail=detail)
+            self._sent = detail
+
+    def close(self, failure: BaseException | None = None) -> None:
+        """Stop watching and put a terminal state on the row. Reuses
+        `_close_any_row`'s outcome-follows-the-exception rule, so a cancel, a
+        real failure and a success are told apart exactly the way the
+        image/speech paths already are."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        self._flush_detail()
+        _close_any_row(self._job, failure)
+
+
+def _measure_text(model: str, workload: Workload, *, timed: bool,
+                  row: "_MeasurementRow | None" = None) -> dict:
     """Decode the fixed prompt, splitting prefill from decode.
 
     Two numbers, because one would hide the other: `ttftMs` is everything up to
@@ -362,10 +572,12 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
         "max_tokens": params["maxTokens"],
         "temperature": params["temperature"],
     }
+    max_tokens = params["maxTokens"]
     deadline = _now() + _LOAD_TIMEOUT_S
     while True:
         start = _now()
         first_token_at = None
+        count = 0
         # `None`, not `{}` — a stream that closes WITHOUT ever yielding a
         # `done` frame (a worker killed or OOM-reaped mid-generation, the
         # socket simply reaching EOF with no exception) must not be
@@ -377,8 +589,34 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
         try:
             for event in supervisor.generate_text(model, body):
                 kind = event.get("type")
-                if kind == "chunk" and first_token_at is None:
-                    first_token_at = _now()
+                if kind == "chunk":
+                    if first_token_at is None:
+                        first_token_at = _now()
+                    count += 1
+                    if row is not None:
+                        # A cheap counter plus a string format, called once
+                        # PER CHUNK — never a network call, see
+                        # `_MeasurementRow`'s own docstring for why that is
+                        # safe: the watcher thread, not this loop, decides how
+                        # often that turns into an actual job-row write, so
+                        # this cannot perturb `tokensPerSecond` no matter how
+                        # fast or slow decode is.
+                        #
+                        # `count` is a CHUNK count standing in for a token
+                        # count, and the two are not the same thing by
+                        # definition (AI-3: the authoritative token counts —
+                        # `outputTokens`/`tokensPerSecond` below — are always
+                        # the WORKER's own `done["tokens"]`, never derived
+                        # here). Verified 1:1 for every runner this capability
+                        # currently has (`llama_text.py`'s `create_completion`
+                        # stream and `mlx_lm.stream_generate` both yield
+                        # exactly one chunk per sampled token), so the label
+                        # is accurate today — but `min(...)` keeps a live
+                        # display honest even against a hypothetical future
+                        # runner whose chunks are not 1:1, rather than trusting
+                        # that invariant to hold forever un-enforced.
+                        row.set_detail(
+                            f"Decoding — {min(count, max_tokens)}/{max_tokens} tokens")
                 elif kind == "done":
                     done = event
             break
@@ -434,7 +672,8 @@ def _measure_text(model: str, workload: Workload, *, timed: bool) -> dict:
     }
 
 
-def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
+def _measure_embed(model: str, workload: Workload, *, timed: bool,
+                   row: "_MeasurementRow | None" = None) -> dict:
     """Encode the fixed batch of texts in one call.
 
     The whole batch in one request rather than eight requests, because batching
@@ -443,8 +682,14 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
 
     Retries on `supervisor.ModelNotReady` exactly like `_measure_text` — see
     `_await_settled_load` for the race this settles.
+
+    One call, so there is no PER-CALL progress to count — the row gets a
+    single phase word rather than an invented percentage over a request that
+    either has not answered yet or has.
     """
     texts = list(workload.params["texts"])
+    if row is not None:
+        row.set_detail(f"Encoding {len(texts)} texts…")
     deadline = _now() + _LOAD_TIMEOUT_S
     while True:
         start = _now()
@@ -464,12 +709,21 @@ def _measure_embed(model: str, workload: Workload, *, timed: bool) -> dict:
     }
 
 
-def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
+def _measure_image(model: str, workload: Workload, *, timed: bool,
+                   row: "_MeasurementRow | None" = None) -> dict:
     """Render one image at the fixed canvas and this model's own step count.
 
     The PNG goes to a temp file that is deleted on the way out: a benchmark is a
     measurement, not a picture somebody asked for, and putting it in the user's
     images folder would leave the Playground's gallery full of lighthouses.
+
+    **No `set_detail` call here, and that is deliberate.** `generate_image`
+    already takes a `job` id and the WORKER reports its own step progress
+    straight onto it (`torch_image.py`'s `on_step_end`, "Denoising — step
+    N/steps") — the exact channel a Playground render already uses. Handing it
+    THIS row's own job, when there is one, means that real per-step detail
+    lands on the row with no invented number in between; the warm-up pass gets
+    a disposable job instead (see `run`), same as before this row existed.
     """
     params = workload.params
     steps = _image_steps(model)
@@ -483,18 +737,24 @@ def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
             "seed": params["seed"],
             "out": os.path.join(tmp, "benchmark.png"),
         }
-        job = _unwatched_job()
+        job = row.job if row is not None else _unwatched_job()
         start = _now()
         try:
             supervisor.generate_image(model, request, job)
         except BaseException as e:
-            # The image path has no queue and so inherits no row today; closing
-            # anyway costs one swallowed `JobError` and means the two long calls
-            # do not differ in a way somebody has to remember.
-            _close_any_row(job, e)
+            # `row is None` on the WARM-UP pass (see `run`), which is exactly
+            # when `job` is the disposable, titleless one — closing it anyway
+            # costs one swallowed `JobError` and means the two long calls do
+            # not differ in a way somebody has to remember. When `row` is not
+            # None this is the row `run()` itself opened and will close once,
+            # AFTER sampling memory/device — closing it here too would report
+            # "done" a beat before that sampling actually happens.
+            if row is None:
+                _close_any_row(job, e)
             raise
         else:
-            _close_any_row(job)
+            if row is None:
+                _close_any_row(job)
         total = _now() - start
     if not timed:
         return {}
@@ -507,8 +767,8 @@ def _measure_image(model: str, workload: Workload, *, timed: bool) -> dict:
     }
 
 
-def _measure_transcript(model: str, workload: Workload, *,
-                        timed: bool) -> dict:
+def _measure_transcript(model: str, workload: Workload, *, timed: bool,
+                        row: "_MeasurementRow | None" = None) -> dict:
     """Decode the synthesized tone and report how many times faster than
     realtime it was.
 
@@ -521,9 +781,33 @@ def _measure_transcript(model: str, workload: Workload, *,
     optional passes that change what the decode IS, and a model benchmarked with
     speech detection on a tone would be measured on how much of it it decided to
     skip.
+
+    A phase word, not a percentage: the worker's own decode has no per-chunk
+    tick this module reads (unlike the image path's step callback), so a bar
+    here would be invented rather than measured.
+
+    **`row.job` is NEVER handed to `generate_transcript`, on either pass, and
+    that is deliberate rather than an oversight.** `_TRANSCRIBE_LOCK`
+    (`supervisor.py`) serialises EVERY transcription in the process — real
+    ones from the Playground included — regardless of whether this model is
+    already resident, so `generate_transcript` always goes through
+    `_transcribe_turn`/`_await_turn` first. If that lock is held by a real,
+    concurrent transcription, `_await_turn` reports the QUEUED wait onto
+    whatever `job` it was given, using `_transcribe_row(title, ...)` — and
+    `title` there is the audio FILE's basename, not this row's identity.
+    Handing it this row's real `job` would let that queued-wait report
+    OVERWRITE "Benchmark · <model>" with "fused-benchmark-tone.wav" for as
+    long as the wait lasts (which can be minutes), with nothing to restore it
+    afterwards — destroying the one property `_bench_job_title` exists to
+    guarantee. A private, disposable id absorbs that rename harmlessly instead,
+    exactly as it always has; `row.set_detail` above already put the real
+    phase text on THIS row through its own channel, independent of whatever
+    `generate_transcript` does with the id it is given.
     """
     params = workload.params
     seconds = float(params["audioSeconds"])
+    if row is not None:
+        row.set_detail(f"Transcribing {seconds:.0f}s of audio…")
     with tempfile.TemporaryDirectory(prefix="fused-bench-") as tmp:
         # Named so that a row INHERITED from the transcribe queue reads as ours:
         # `supervisor._transcribe_title` titles that row with this basename, and
@@ -542,22 +826,19 @@ def _measure_transcript(model: str, workload: Workload, *,
             "words": False,
             "out": os.path.join(tmp, "fused-benchmark-tone.json"),
             "outText": os.path.join(tmp, "fused-benchmark-tone.txt"),
-            # No `row`: that key is how a caller gives the worker a progress row
-            # to restate its identity onto, and a benchmark has none by design
-            # (see `run`). Without it the worker's ticks carry no title,
-            # `jobs.upsert` refuses them and `worker_base.report` swallows the
-            # refusal — so the decode runs and no row is created, which is
-            # exactly what is wanted here.
+            # No `row` REQUEST KEY: that is how a caller gives the worker a
+            # QUEUE-WAIT row to restate its identity onto (`_await_turn`'s own
+            # `row=` parameter) — a benchmark has none to give, on either
+            # pass, for the same reason `job` below is always disposable.
         }
+        # ALWAYS disposable — see the docstring's own note on why this is the
+        # one measurement function that never hands the real `_MeasurementRow`
+        # its job, on either the warm-up or the timed pass.
         job = _unwatched_job()
         start = _now()
         try:
             supervisor.generate_transcript(model, request, job)
         except BaseException as e:
-            # Both arms close the row, because the row this closes is inherited on
-            # the QUEUED path and a run that raises out of the queue (a ✕, a dead
-            # worker) is exactly when a row left running is most misleading. What
-            # the arms do NOT share is the state — see `_close_any_row`.
             _close_any_row(job, e)
             raise
         else:
@@ -834,20 +1115,20 @@ def run(model: str, capability: str) -> dict:
     inventing a second protocol for a third long call would be new machinery
     with no new capability.
 
-    **No download-manager row is created, deliberately, and this is the third
-    design after two failures.** Server job rows are a TITLE-KEYED global
-    namespace — a page's only route to one is `useCacheScan.ts`'s map of
-    `job.title -> job` — and `supervisor.load` already owns the row titled
-    exactly `model`. Both spellings of a benchmark row are therefore broken: a
-    decorated title ("Benchmark: <model>") is a row no consumer can find, and the
-    bare model id SHADOWS the load row, which put the download manager's only
-    visible ✕ on the load rather than on the benchmark and let a cold run spin to
-    its hour-long timeout and record a phantom "did not finish loading in time".
-    A benchmark cannot own a row for a model that already has one, so it owns
-    none: the tab shows its own in-tab spinner for the duration. What the user
-    still sees through the expensive phase is the LOAD's own row, reported by the
-    supervisor with real byte counts, which is the row that was always right for
-    that wait.
+    **A download-manager row is opened for the MEASUREMENT phase only, and
+    this is the fourth design after three failures — see `_bench_job_title`
+    and `_MeasurementRow`.** Server job rows are a TITLE-KEYED global namespace
+    — a page's only route to one is `useCacheScan.ts`'s map of `job.title ->
+    job` — and `supervisor.load` already owns the row titled exactly `model`.
+    The first three attempts collided on that title (a decorated one no
+    consumer can find, or the bare model id shadowing the load row and letting
+    a cold run spin to its hour-long timeout) and gave up on having a row at
+    all, which meant total silence through the whole measurement — no row, no
+    percentage, nothing, which reads as the app having frozen. The fix was the
+    title, not the absence: `_bench_job_title` names a row that collides with
+    neither, so through the LOAD phase the user still watches the supervisor's
+    own row (real byte counts, exactly as before), and once loading ends this
+    module's own row opens for the phase that used to be silent.
 
     **A failure is a RESULT, and it is stored.** "This model OOMs on this
     laptop" is precisely the sort of thing somebody benchmarks to find out, so a
@@ -865,20 +1146,28 @@ def run(model: str, capability: str) -> dict:
     1. Resolve the runner FIRST. A capability this machine cannot serve fails
        with the registry's own sentence before anything is loaded or timed.
     2. Load to ready, timed (`None` when already resident).
-    3. One discarded warm-up pass. A first generation pays for graph
+    3. Open the measurement row (`_MeasurementRow`) — after loading, never
+       before, because the LOAD already has its own row and this one's whole
+       reason to exist is the phase that row does not cover.
+    4. One discarded warm-up pass. A first generation pays for graph
        compilation, a lazily-built tokenizer and a cold cache; timing it would
        make every benchmark a measurement of the first token in the process's
        life. Uniform across capabilities rather than tuned per capability, which
        does cost a second image render — accepted, because a warm-up rule that
        varies by capability is a rule nobody can hold in their head while
-       reading two numbers side by side.
-    4. The timed pass.
-    5. Memory and device off `describe()`.
-    6. **Unload, if step 2 loaded it** (D446) — success, failure or exception
+       reading two numbers side by side. Runs with NO row (`row=None`): the
+       warm-up is thrown away, and a progress row for work whose own timing is
+       discarded is more noise than signal.
+    5. The timed pass, with the row.
+    6. Memory and device off `describe()`.
+    7. **Unload, if step 2 loaded it** (D446) — success, failure or exception
        alike. A benchmark is a measurement, not a claim on the model's
        residency, so a cold run must not leave gigabytes parked after the
        button stops spinning; a WARM run (step 2 returned `None`) unloads
        nothing, because the model belongs to whoever already had it running.
+    8. Close the row with the outcome — cancelled, error with the reason, or
+       done — the same three-way split `_close_any_row` already uses for the
+       image/speech paths.
     """
     workload = WORKLOADS.get(capability)
     measure = _MEASURE.get(capability)
@@ -921,41 +1210,61 @@ def run(model: str, capability: str) -> dict:
         loaded_seconds = _load_to_ready(model, capability)
         record["loadSeconds"] = loaded_seconds
 
+        # Opened AFTER the load, never before — see the docstring's ordering
+        # and `_MeasurementRow`'s own for the whole design. `row_failure`
+        # travels the exception to the row's own `close()` at the very
+        # bottom of this block, rather than closing inline at each raise
+        # site: there are three of them below (Cancelled, SupervisorError,
+        # BaseException) and a row closed at only one would leave the other
+        # two "running" forever on a run that already ended.
+        row = _MeasurementRow(model, capability)
+        row.start()
+        row_failure: BaseException | None = None
         try:
-            # The discarded warm-up, then the timed pass. Same function twice — see
-            # step 3 of the docstring for why the first one's timings are thrown away
-            # and why the rule is uniform across capabilities.
-            measure(model, workload, timed=False)
-            record["metrics"] = measure(model, workload, timed=True)
+            try:
+                # The discarded warm-up (no row — see the docstring), then the
+                # timed pass, which gets the row so its own progress and its ✕
+                # both reach somewhere real.
+                measure(model, workload, timed=False)
+                record["metrics"] = measure(model, workload, timed=True, row=row)
 
-            record["peakResidentBytes"], record["device"] = _memory_and_device(
-                model, capability)
-            record["ok"] = True
+                record["peakResidentBytes"], record["device"] = _memory_and_device(
+                    model, capability)
+                record["ok"] = True
+            finally:
+                # D446: a benchmark that had to COLD-LOAD the model tears it back
+                # down when it is done — success, a failed workload, a timeout, or
+                # an exception mid-measurement alike, which is exactly the `finally`
+                # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`
+                # found the model already resident (its own docstring's
+                # null-over-estimate rule, reused here as the unload signal rather
+                # than adding a second piece of state to track the same fact): a
+                # model somebody else was already using — a Playground chat, another
+                # tab — is never ours to unload, and the capability may not even be
+                # ours any more by the time we get here. Placed AFTER the memory and
+                # device read above, which needs the worker still resident to answer
+                # at all — unloading first would record both as null. `unload`'s own
+                # exception is swallowed rather than left to propagate: a teardown
+                # that fails must not steal the traceback from a measurement that
+                # failed for a real reason (and on the success path there is no
+                # exception in flight for it to compete with).
+                if loaded_seconds is not None:
+                    try:
+                        supervisor.unload(
+                            model=model, capability=capability,
+                            reason="Unloaded — a benchmark run loaded it and is done")
+                    except Exception:
+                        logger.exception(
+                            "benchmark: failed to unload %s after measuring it", model)
+        except BaseException as e:
+            row_failure = e
+            raise
         finally:
-            # D446: a benchmark that had to COLD-LOAD the model tears it back
-            # down when it is done — success, a failed workload, a timeout, or
-            # an exception mid-measurement alike, which is exactly the `finally`
-            # shape. `loaded_seconds` is `None` precisely when `_load_to_ready`
-            # found the model already resident (its own docstring's
-            # null-over-estimate rule, reused here as the unload signal rather
-            # than adding a second piece of state to track the same fact): a
-            # model somebody else was already using — a Playground chat, another
-            # tab — is never ours to unload, and the capability may not even be
-            # ours any more by the time we get here. Placed AFTER the memory and
-            # device read above, which needs the worker still resident to answer
-            # at all — unloading first would record both as null. `unload`'s own
-            # exception is swallowed rather than left to propagate: a teardown
-            # that fails must not steal the traceback from a measurement that
-            # failed for a real reason (and on the success path there is no
-            # exception in flight for it to compete with).
-            if loaded_seconds is not None:
-                try:
-                    supervisor.unload(
-                        model=model, capability=capability,
-                        reason="Unloaded — a benchmark run loaded it and is done")
-                except Exception:
-                    logger.exception(
-                        "benchmark: failed to unload %s after measuring it", model)
+            # Closed once, here, regardless of which of the three outer
+            # `except` clauses below ends up handling `row_failure` (or
+            # whether none of them do, on success) — see this row's own
+            # comment above for why a single close site is load-bearing.
+            row.close(row_failure)
     except (KeyboardInterrupt, SystemExit):
         # NOT a result, and not ours to swallow. A Ctrl-C on the dev server or
         # an interpreter shutdown arriving on this threadpool thread is not a
