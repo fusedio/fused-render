@@ -701,10 +701,11 @@
   gap: 12px;
 }
 
-/* Wide enough for the pair: at 870cqw the frame is 838px, which leaves a
-   ~580px content track beside the 240px card. Below it the card stays in flow
-   under the input. */
-@container (min-width: 870px) {
+/* Side-by-side survives down to a 480px content track: content = frame - 16
+   gap - 240 card, and the frame is 100cqw - 32 below its cap, so 480 + 256 +
+   32 = 768cqw is the floor. Below it the card moves into flow under the
+   input. */
+@container (min-width: 768px) {
   /* The column always spans the hero's full width — closed or open, its box is
      the header's box, so the bottom of the stage stays in sync with the top.
      What the cog changes is the TRACKS inside it: closed, the content track is
