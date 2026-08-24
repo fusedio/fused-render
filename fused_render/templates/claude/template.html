@@ -17005,7 +17005,26 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
       Promise.all([detectionReady, prefsReady]),
       new Promise((resolve) => setTimeout(resolve, ASK_DETECTION_TIMEOUT_MS)),
     ]);
-    sendMessage(ask);
+    // The composer went live the moment `enterChat()` ran, above — this wait
+    // (bounded, but still real time) is a window the user can type and send
+    // their OWN message in before it ends. `sendMessage` opens with
+    // `if (sending) return;`, so calling it here unconditionally would drop
+    // the git error's prompt on the floor with no trace whenever that race is
+    // lost — and by this point it is UNRECOVERABLE: the host's pending ask
+    // was already taken (and cleared) by `window._fusedTakeClaudeAsk` above,
+    // so there is nowhere left to read it back from.
+    //
+    // `queueMessage` is the existing answer to "something wants to send while
+    // a turn is already live" (normally reached from `activeRun`, not a race
+    // at boot) — it shows a visible "queued" bubble and `sendMessage`'s own
+    // tail already calls `drainQueue()` once the live turn ends, so reusing
+    // it here costs nothing new: the ask still gets sent, in order, right
+    // after the user's own message finishes, instead of vanishing.
+    if (sending) {
+      queueMessage(ask);
+    } else {
+      sendMessage(ask);
+    }
   } else if (session_id || run_id) {
     // A bare `run` param (frame died before the first poll saw the session id)
     // still means an in-flight conversation — enter chat and re-attach.

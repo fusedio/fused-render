@@ -155,6 +155,33 @@ def test_the_ask_branch_bounds_its_wait_for_model_and_effort_detection(code):
     assert ask_branch.index("Promise.race([") < ask_branch.index("sendMessage(ask)")
 
 
+def test_the_ask_is_queued_rather_than_dropped_if_the_user_sends_first(code):
+    """review #804 round 3 finding 5: the composer went live the moment
+    `enterChat()` ran, and `ASK_DETECTION_TIMEOUT_MS` is REAL time (up to
+    1.5s) the user can type and send their own message in before it elapses.
+    `sendMessage` opens with `if (sending) return;`, so calling it
+    unconditionally after the wait would silently drop the git error's prompt
+    whenever that race is lost — and by then it is UNRECOVERABLE, because the
+    host's pending ask was already taken (and cleared) by
+    `window._fusedTakeClaudeAsk` earlier in this same branch.
+
+    Fixed by checking `sending` after the wait and, if the user's own send
+    won the race, queuing the ask through the EXISTING `queueMessage`/
+    `drainQueue` mechanism (normally reached from `activeRun`, not a boot-time
+    race) instead of firing `sendMessage` into a call that will refuse it.
+    """
+    boot = _boot(code)
+    ask_branch = boot[boot.index("if (ask) {"):boot.index("} else if (session_id")]
+    assert "if (sending) {" in ask_branch
+    assert "queueMessage(ask);" in ask_branch
+    assert "} else {\n      sendMessage(ask);\n    }" in ask_branch
+    # The check happens AFTER the bounded wait (the whole point is to look at
+    # `sending` post-wait, not pre-wait) and BEFORE either send path fires.
+    wait = ask_branch.index("Promise.race([")
+    check = ask_branch.index("if (sending) {")
+    assert wait < check < ask_branch.index("queueMessage(ask)")
+
+
 def test_the_ask_is_never_reported_to_the_model_as_an_app_param(source):
     """There is nothing to strip any more (round 2): the ask is not a URL
     param at all, so it cannot leak into a framed app's reported params
