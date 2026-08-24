@@ -866,6 +866,13 @@
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: none;
+  /* Full-bleed inside the settings Card: the row borrows the card's own
+     padding (--card-spacing is on the Card element, so it inherits) and hands
+     it back as scroll padding — a cut-off chip is clipped by the card's edge,
+     not left floating mid-padding. */
+  margin-inline: calc(var(--card-spacing, 16px) * -1);
+  padding-inline: var(--card-spacing, 16px);
+  scroll-padding-inline: var(--card-spacing, 16px);
 }
 .pg-chips::-webkit-scrollbar {
   display: none;

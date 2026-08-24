@@ -177,7 +177,7 @@ export function ConfigPanel({
             Settings
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-5">{children}</CardContent>
+        <CardContent className="flex flex-col gap-4">{children}</CardContent>
       </Card>
     </aside>
   );
@@ -270,7 +270,7 @@ export function RailSlider({
         value={[value]}
         onValueChange={(next) => onChange(Array.isArray(next) ? next[0] : next)}
       />
-      <FieldDescription className="text-xs leading-normal">{hint}</FieldDescription>
+      <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>
     </Field>
   );
 }
@@ -323,7 +323,7 @@ export function RailField({
         {action && <span className="ml-auto">{action}</span>}
       </div>
       {children}
-      {hint && <FieldDescription className="text-xs leading-normal">{hint}</FieldDescription>}
+      {hint && <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>}
     </Field>
   );
 }
@@ -351,7 +351,7 @@ export function RailCheck({
         />
         <FieldContent className="gap-0.5">
           <FieldTitle className="text-xs font-semibold">{label}</FieldTitle>
-          <FieldDescription className="text-xs leading-normal">{hint}</FieldDescription>
+          <FieldDescription className="text-xs leading-snug">{hint}</FieldDescription>
         </FieldContent>
       </Field>
     </FieldLabel>
