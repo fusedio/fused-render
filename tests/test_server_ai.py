@@ -22,12 +22,19 @@ from pathlib import Path
 import pytest
 
 import fused_render
-from fused_render import server
+from fused_render import jobs, server
 from fused_render.server import ai as _server_ai
 from fused_render.export import plan_export
 
 _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _clean_jobs():
+    jobs.reset()
+    yield
+    jobs.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -309,6 +316,105 @@ def test_is_local_model_recognises_both_id_shapes(model, expected):
     every curated llamacpp id to the Claude CLI path as an unrecognised
     alias (D411/D412)."""
     assert _server_ai._is_local_model(model) is expected
+
+
+# -- remote-Claude job-row notification -------------------------------------
+#
+# The bottom-right activity card (DownloadManager.tsx) is driven purely by
+# `GET /api/jobs`, which reads `fused_render/jobs.py`'s in-memory registry.
+# Before this, only the local-model path (`supervisor._report`) ever wrote a
+# row — a page calling fused.ai() against remote Claude produced NOTHING
+# there, so a user watching the corner could not tell they were talking to
+# Claude instead of a model on their own machine. These pin: a remote call
+# opens a row whose text says "remote"/"Claude" (not a local model id), and
+# the row reaches a terminal state once the call ends — never left running.
+
+
+def test_relay_opens_and_closes_a_remote_job_row(monkeypatch):
+    _cli_ok(monkeypatch, _CLI_RESULT)
+    assert jobs.list_jobs() == []  # nothing before the call
+    _relay({"prompt": "hello"})
+    rows = jobs.list_jobs()
+    assert len(rows) == 1
+    row = rows[0]
+    # Unmistakably remote, not a local model id or a generic "Claude" title.
+    assert "remote" in row["title"].lower() or "remote" in row["detail"].lower()
+    assert "claude" in row["title"].lower()
+    # Terminal by the time the call has returned — never left "running".
+    assert row["state"] == "done"
+
+
+def test_relay_remote_job_row_does_not_advertise_a_dead_cancel(monkeypatch):
+    # JobRow renders a ✕ Cancel affordance whenever cancellable=True on a
+    # running row. Nothing in the remote-Claude path polls cancel_requested,
+    # so a row claiming to be cancellable would ship a button that does
+    # nothing — the thing the brief explicitly forbids.
+    _cli_ok(monkeypatch, _CLI_RESULT)
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["cancellable"] is False
+
+
+def test_relay_remote_job_row_closes_on_cli_error(monkeypatch):
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"Invalid model name")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_remote_job_row_closes_on_timeout(monkeypatch):
+    _cli_ok(monkeypatch, hang=True)
+    monkeypatch.setattr(_server_ai, "_AI_TIMEOUT_S", 0.05)
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_remote_job_row_closes_on_missing_binary(monkeypatch):
+    fake = _FakeSpawn()
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai, "_AI_SESSION", _server_ai._AiSession())
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(_server_ai.os.path, "isfile", lambda p: False)
+    _relay({"prompt": "hello"})
+    # No row at all: the call never reached the CLI, so there is nothing
+    # remote happening to report — matches the local path's own behavior of
+    # opening a row only once the work can actually start.
+    assert jobs.list_jobs() == []
+
+
+def test_relay_stream_opens_and_closes_a_remote_job_row(monkeypatch):
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
+    resp, frames = _stream({"prompt": "hello", "stream": True})
+    assert frames[-1]["ok"] is True
+    row = jobs.list_jobs()[0]
+    assert "remote" in (row["title"] + row["detail"]).lower()
+    assert row["state"] == "done"
+
+
+def test_relay_stream_remote_job_row_closes_on_error(monkeypatch):
+    _cli_ok(monkeypatch, lines=[_delta_line("hi")], exit_code=1,
+            stderr=b"something broke")
+    resp, frames = _stream({"prompt": "x", "stream": True})
+    assert frames[-1]["ok"] is False
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
+    # Sanity anchor for the seam this whole feature adds: the LOCAL branch of
+    # `_ai_relay` never runs the remote job-row code at all — it is a
+    # distinct `if _is_local_model(model): ...` branch that this feature does
+    # not touch (local rows keep coming from supervisor._report, elsewhere).
+    monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
+    monkeypatch.setattr(
+        _server_ai, "_local_relay",
+        lambda model, prompt, system_prompt, stream, body:
+            _server_ai.JSONResponse({"ok": True, "result": {
+                "text": "hi", "model": model, "usage": None}}))
+    _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
+    assert jobs.list_jobs() == []  # this path never touches jobs.py itself
 
 
 # -- happy path -----------------------------------------------------------------
