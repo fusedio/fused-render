@@ -1,37 +1,41 @@
-// The one rule the Apps hub's category chips add on top of "alphabetical":
-// a newcomer must meet the learning categories (starters, tutorials, …)
-// before the topical ones. Everything below is about that boundary holding —
-// including for authored spellings that differ only in case or separators.
+// The one rule the Apps hub's category chips add on top of "alphabetical": the
+// curated categories (starters, local-ai, productivity, geospatial) run in
+// their authored order, ahead of anything else the workspace turns up.
+// Everything below is about that boundary holding — including for authored
+// spellings that differ only in case or separators.
 import { describe, expect, it } from "bun:test";
-import { learnRank, orderCategories, repoChips } from "./app-categories";
+import { chipRank, orderCategories, repoChips } from "./app-categories";
 
 describe("orderCategories", () => {
-  it("puts learn categories first, in the authored priority order", () => {
-    expect(orderCategories(["guides", "tutorials", "starters"])).toEqual([
-      "starters",
-      "tutorials",
-      "guides",
-    ]);
+  it("runs the curated categories in their authored order, not alphabetically", () => {
+    // Both ends of this row are ones alphabetical order gets wrong: geospatial
+    // would lead it and productivity would sit mid-row.
+    expect(
+      orderCategories(["productivity", "geospatial", "local-ai", "starters"]),
+    ).toEqual(["starters", "local-ai", "productivity", "geospatial"]);
   });
 
-  it("sorts the non-priority tail alphabetically after every learn one", () => {
-    expect(orderCategories(["productivity", "geospatial", "local-ai", "starters"])).toEqual([
+  it("sorts the uncurated tail alphabetically after every curated one", () => {
+    expect(orderCategories(["zebra", "geospatial", "apple", "starters"])).toEqual([
       "starters",
       "geospatial",
-      "local-ai",
-      "productivity",
+      "apple",
+      "zebra",
     ]);
   });
 
-  it("ranks a learn category the same however its name is cased or separated", () => {
+  it("ranks a curated category the same however its name is cased or separated", () => {
     // "aaa" wins on locale order, so each spelling below only leads the row if
-    // normalize actually matched it against LEARN_ORDER's "howitworks" — drop
-    // the case-folding or the separator stripping and the ordering breaks, not
-    // just the rank-equality check.
-    expect(orderCategories(["aaa", "How It Works"])).toEqual(["How It Works", "aaa"]);
-    expect(orderCategories(["aaa", "how_it_works"])).toEqual(["how_it_works", "aaa"]);
-    expect(orderCategories(["aaa", "How-It-Works"])).toEqual(["How-It-Works", "aaa"]);
-    expect(learnRank("how-it-works")).toBe(learnRank("How_It Works"));
+    // normalize actually matched it against CHIP_ORDER's "local-ai" — drop the
+    // case-folding or the separator stripping and the ordering breaks, not just
+    // the rank-equality check.
+    expect(orderCategories(["aaa", "Local AI"])).toEqual(["Local AI", "aaa"]);
+    expect(orderCategories(["aaa", "local_ai"])).toEqual(["local_ai", "aaa"]);
+    expect(orderCategories(["aaa", "LOCAL-AI"])).toEqual(["LOCAL-AI", "aaa"]);
+    expect(chipRank("local-ai")).toBe(chipRank("Local_AI"));
+    // CHIP_ORDER spells this entry with a hyphen, so it only ranks at all if
+    // the rank map is keyed on the normalized name too.
+    expect(chipRank("local-ai")).toBeLessThan(chipRank("aaa"));
   });
 
   it("dedups repeats and survives an empty list", () => {
@@ -42,10 +46,10 @@ describe("orderCategories", () => {
     ]);
   });
 
-  it("never lets an unknown category outrank a learn one", () => {
-    // "aaa" wins on plain alphabetical order; the learn rank must beat it.
-    expect(orderCategories(["aaa", "tutorials"])).toEqual(["tutorials", "aaa"]);
-    expect(learnRank("aaa")).toBeGreaterThan(learnRank("examples"));
+  it("never lets an uncurated category outrank a curated one", () => {
+    // "aaa" wins on plain alphabetical order; the curated rank must beat it.
+    expect(orderCategories(["aaa", "geospatial"])).toEqual(["geospatial", "aaa"]);
+    expect(chipRank("aaa")).toBeGreaterThan(chipRank("geospatial"));
   });
 
   it("leaves the input array untouched", () => {

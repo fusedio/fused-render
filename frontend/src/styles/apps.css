@@ -95,10 +95,26 @@
   border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
 }
 
+/* Selected chip: a GREY plate, not a white one. --fg is the page's ink, so a
+   filled --fg pill is the brightest thing on the toolbar — the filter row was
+   out-shouting the app cards it filters. A step off --fg keeps the "one of
+   these is on" read (still a filled pill against the unfilled ones, still well
+   clear of :hover, which only moves the border) at the weight of chrome.
+
+   The step is a MIX of --fg toward --bg rather than --fg-muted, because the
+   plate carries --bg as its label: --fg-muted is only ~4:1 off --bg, which at
+   this 12px mono size read as a chip with the text sunk into it. Mixing keeps
+   the label's contrast where it needs to be in BOTH themes, which one flat
+   grey cannot — the same "lighter" that fixes dark would push the light plate
+   toward white and swallow its white text, whereas this expression moves each
+   theme's plate away from that theme's own ground.
+
+   Shared with .apps-filter-mode-btn.is-active below so the row's two
+   selections match. */
 .apps-tag-chip.is-active {
   color: var(--bg);
-  background: var(--fg);
-  border-color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 78%, var(--bg));
+  border-color: color-mix(in srgb, var(--fg) 78%, var(--bg));
 }
 
 .apps-count {
@@ -138,9 +154,10 @@
   color: var(--fg);
 }
 
+/* Grey fill, matching the selected chip above — see the note there. */
 .apps-filter-mode-btn.is-active {
   color: var(--bg);
-  background: var(--fg);
+  background: color-mix(in srgb, var(--fg) 78%, var(--bg));
 }
 
 /* -- Preview cards ------------------------------------------------------------

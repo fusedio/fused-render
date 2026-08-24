@@ -4,7 +4,7 @@
 // scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
 // filter row — a Category/Folders mode selector with chips derived from the
 // apps themselves (categories from each folder's metadata.json, ordered
-// learn-first then locale-alphabetical by app-categories; folders from the
+// curated-first then locale-alphabetical by app-categories; folders from the
 // top-level tag dirs, plain code-unit sort) — and a search box
 // (name/title/tag/category, case-insensitive); the selector sits at the row's
 // left edge with the chips and search gathered at the right.
@@ -242,10 +242,11 @@ export default function Apps({ config }: { config: Config }) {
   const tags = useMemo(() => repoChips(all), [all]);
   // Categories scanned from the apps themselves (metadata.json `category`).
   // Apps without one carry null and so only ever appear under All. Ordered by
-  // orderCategories: learn-first so the tutorial and starter chips lead the
-  // row, then locale-alphabetical (which also replaces the code-unit sort the
-  // Folders chips still use — see app-categories). Card order in the grid is
-  // unaffected.
+  // orderCategories: the curated running order (starters, local-ai,
+  // productivity, geospatial) leads the row, then locale-alphabetical for
+  // anything else a workspace turns up (which also replaces the code-unit sort
+  // the Folders chips still use — see app-categories). Card order in the grid
+  // is unaffected.
   const categories = useMemo(
     () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
     [all],
