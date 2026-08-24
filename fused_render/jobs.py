@@ -86,7 +86,7 @@ KINDS = ("download", "task")
 # is a much larger feature for a case this rare; "seen by the first reader
 # to look" is the guarantee actually being made.
 #
-# Two rejected alternatives (see DECISIONS.md D464): a shorter fixed TTL from
+# Two rejected alternatives (see DECISIONS.md D469): a shorter fixed TTL from
 # `finished_at` (does not fix the "never read at all" case, only shrinks its
 # window) and dropping `POLL_IDLE_MS` to ~2s (a permanent background request
 # every 2s for the life of every session, to cover a rare case a read gate
