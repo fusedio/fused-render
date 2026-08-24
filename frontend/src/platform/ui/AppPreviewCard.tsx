@@ -32,7 +32,7 @@
 // near the viewport and unmounts it once scrolled well past, showing step 3's
 // empty thumb in between — an offloaded card reads the same as an app with no
 // live preview (D365).
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
@@ -127,6 +127,13 @@ export function AppPreviewCard({
       : app.preview_image
         ? rawUrl(app.preview_image)
         : null;
+  // Reset if the still's own URL ever changes under an already-mounted card
+  // (narrow edge case — cards are keyed by `app.path`, so this is a safety net
+  // rather than a path this component normally takes; unlike the live
+  // iframe below, this `<img>` is never conditionally unmounted by scrolling).
+  useEffect(() => {
+    setShotLoaded(false);
+  }, [shotSrc]);
   // Gates the live-iframe branch only — preview.png costs nothing to keep
   // mounted and the empty thumb costs nothing at all, so neither needs this.
   const [thumbRef, nearViewport, onScreen] = useNearViewport<HTMLSpanElement>();
@@ -180,6 +187,20 @@ export function AppPreviewCard({
     wantsLive,
     hoverPriority || onScreen,
   );
+  // Whether the CURRENTLY MOUNTED body iframe has painted — separate from
+  // `bodyLive` above on purpose. `bodyLive` is deliberately one-way for the
+  // export capture's sake (see its comment); reusing it here would mean a
+  // card that once painted, then scrolled out of view and back in, shows its
+  // brand-new, not-yet-loaded iframe at FULL opacity — a blank/booting frame
+  // presented as finished, the same bug `loaded` in BookmarkCards.tsx's
+  // LivePreview has this same fix for. `bodyPainted` resets whenever the
+  // iframe itself is torn down and remounted (`liveStarted` or `liveSrc`
+  // changing) and drives the fade/shimmer instead; `bodyLive` keeps its
+  // existing one-way contract untouched.
+  const [bodyPainted, setBodyPainted] = useState(false);
+  useEffect(() => {
+    setBodyPainted(false);
+  }, [liveStarted, liveSrc]);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -238,19 +259,32 @@ export function AppPreviewCard({
             Never for the "nothing to show" case (D365, the module comment) —
             that's `liveSrc == null`, which keeps `wantsLive` false and this
             condition with it, so a card with no entry file stays the plain
-            empty box it always was rather than shimmering forever. */}
+            empty box it always was rather than shimmering forever.
+            The second clause's "has it painted yet" signal depends on WHICH
+            live branch is live: a still-thumbed card's hover preview sets
+            `liveReady` (below) and never touches `bodyPainted` — that branch
+            doesn't render at all when there's a still — so testing
+            `bodyPainted` here would stay permanently true-less and shimmer
+            for the entire duration of every hover on a still-thumbed card. */}
         {((shotSrc && !shotFailed && !shotLoaded) ||
-          (wantsLive && (!liveStarted || !bodyLive))) && (
+          (wantsLive &&
+            (!liveStarted || !(shotSrc && !shotFailed ? liveReady : bodyPainted)))) && (
           <span className="app-pcard-skel" />
         )}
         {shotSrc && !shotFailed ? (
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
-                order so the still stays on top until the app has painted. */}
+                order so the still stays on top until the app has painted.
+                No `loading="lazy"`: mounting is already gated by
+                `useNearViewport`/`liveStarted`, so lazy adds no savings, and
+                the UA's lazy heuristics read the layout box — which here is
+                400% wide and `scale(0.25)`-ed — and can defer past the point
+                a `load` event ever fires, which would leave `liveReady` (and
+                the shimmer above) stuck forever and a scheduler slot held
+                until the 10s timeout. */}
             {hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
                 src={liveSrc}
-                loading="lazy"
                 style={{
                   width: `${100 / PREVIEW_SCALE}%`,
                   height: `${100 / PREVIEW_SCALE}%`,
@@ -260,7 +294,15 @@ export function AppPreviewCard({
                   liveSettled();
                   setLiveReady(true);
                 }}
-                onError={liveSettled}
+                // An error is still a painted result (the frame shows the
+                // app's own error page) — `onError={liveSettled}` alone freed
+                // the scheduler slot but left `liveReady` false forever, so
+                // the still never faded out and the shimmer clause above
+                // never cleared either.
+                onError={() => {
+                  liveSettled();
+                  setLiveReady(true);
+                }}
                 tabIndex={-1}
                 scrolling="no"
                 title=""
@@ -298,17 +340,21 @@ export function AppPreviewCard({
           </>
         ) : liveSrc && nearViewport && liveStarted ? (
           <>
+            {/* No `loading="lazy"` — see the comment on the hover iframe
+                above; the same failure mode applies here to `bodyPainted`. */}
             <iframe
               src={liveSrc}
-              loading="lazy"
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
                 transform: `scale(${PREVIEW_SCALE})`,
                 // Fades in over the skeleton above rather than popping in
-                // mid-boot; one-way with `bodyLive`, so nothing here ever
-                // fades back out.
-                opacity: bodyLive ? 1 : 0,
+                // mid-boot. Gated on `bodyPainted`, NOT `bodyLive`: `bodyLive`
+                // is one-way for the export capture's sake (see its
+                // declaration) and stays true across a scroll-away/back
+                // remount, which would otherwise show the freshly-mounted,
+                // not-yet-loaded iframe at full opacity.
+                opacity: bodyPainted ? 1 : 0,
                 transition: "opacity 0.15s ease",
               }}
               tabIndex={-1}
@@ -320,8 +366,19 @@ export function AppPreviewCard({
               onLoad={() => {
                 liveSettled();
                 setBodyLive(true);
+                setBodyPainted(true);
               }}
-              onError={liveSettled}
+              // An error is still a painted result (the frame shows the app's
+              // own error page) — `onError={liveSettled}` alone freed the
+              // scheduler slot but left `bodyLive`/`bodyPainted` false
+              // forever, so the shimmer never cleared, the frame never faded
+              // in, and `data-capture-ready` was never set (silently breaking
+              // export-from-card for an app whose live render errors).
+              onError={() => {
+                liveSettled();
+                setBodyLive(true);
+                setBodyPainted(true);
+              }}
             />
             {/* Shield: the preview is display-only — every pointer event lands
                 on the card's link, never inside the app — which is also what

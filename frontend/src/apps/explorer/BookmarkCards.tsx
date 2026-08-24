@@ -76,6 +76,17 @@ export function LivePreview({ src }: { src: string }) {
   // `loaded` (not `started`) is what keeps the crossfade from handing the
   // shimmer off to a raw white/blank frame mid-boot.
   const [loaded, setLoaded] = useState(false);
+  // Reset whenever the CURRENT iframe goes away, not just on mount: `started`
+  // flips back to false when the card scrolls far enough out of view
+  // (usePreviewStart's effect unmounts the iframe), and scrolling back in
+  // mounts a brand-new, unloaded one. Without this, `loaded` from the
+  // previous mount survived the round trip and the new iframe rendered at
+  // full opacity before it had painted anything — a blank/booting frame shown
+  // as if it were done. `src` too, in case the same component is ever handed
+  // a different preview target without a full unmount.
+  useEffect(() => {
+    setLoaded(false);
+  }, [started, src]);
   if (!started) {
     return (
       <span ref={previewRef} className="fhb-preview" aria-hidden="true">
@@ -91,7 +102,6 @@ export function LivePreview({ src }: { src: string }) {
       {!loaded && <span className="fhb-preview-skel" />}
       <iframe
         src={src}
-        loading="lazy"
         style={{
           width: `${100 / PREVIEW_SCALE}%`,
           height: `${100 / PREVIEW_SCALE}%`,
@@ -106,7 +116,15 @@ export function LivePreview({ src }: { src: string }) {
           setLoaded(true);
           settled();
         }}
-        onError={settled}
+        // An error is still a PAINTED result — the frame shows the embedded
+        // page's own error state — and before this shimmer existed that error
+        // page was exactly what a card peek showed. `onError={settled}` alone
+        // freed the scheduler slot but left `loaded` false forever, so the
+        // shimmer covered the error page permanently instead of revealing it.
+        onError={() => {
+          setLoaded(true);
+          settled();
+        }}
       />
       <span className="fhb-shield" />
     </span>
